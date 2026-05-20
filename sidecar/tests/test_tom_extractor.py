@@ -72,10 +72,10 @@ class TestParseAffectJson:
 
 class TestParseFactArray:
     def test_valid_array(self):
-        raw = '[{"fact": "the owner knows about v0.5.0", "source": "told_to_contact", "confidence": 0.9}]'
+        raw = '[{"fact": "User knows about v0.5.0", "source": "told_to_contact", "confidence": 0.9}]'
         result = _parse_fact_array(raw)
         assert len(result) == 1
-        assert result[0]["fact"] == "the owner knows about v0.5.0"
+        assert result[0]["fact"] == "User knows about v0.5.0"
         assert result[0]["source"] == "told_to_contact"
 
     def test_with_code_fence(self):
@@ -138,12 +138,12 @@ class TestTomExtractor:
 
     async def test_extract_facts(self):
         router = FakeRouter([
-            '[{"fact": "the owner knows Colony v0.5.0 shipped", "source": "told_to_contact", "confidence": 0.9}]'
+            '[{"fact": "User knows Colony v0.5.0 shipped", "source": "told_to_contact", "confidence": 0.9}]'
         ])
         extractor = TomExtractor(router)
         result = await extractor.extract_facts("v0.5.0 is released with pattern extraction", "owner")
         assert len(result) == 1
-        assert result[0]["fact"] == "the owner knows Colony v0.5.0 shipped"
+        assert result[0]["fact"] == "User knows Colony v0.5.0 shipped"
         assert result[0]["contact_id"] == "owner"
 
     async def test_extract_facts_empty(self):

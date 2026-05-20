@@ -354,7 +354,7 @@ Search the world model for entities or relationships.
 ```json
 {
   "entities": [
-    {"name": "AuthService", "entity_type": "component", "properties": {"status": "broken", "owner": "owner"}}
+    {"name": "AuthService", "entity_type": "component", "properties": {"status": "broken", "owner": "user"}}
   ],
   "relationships": [
     {"from": "AuthService", "type": "depends_on", "to": "UserDB"}

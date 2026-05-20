@@ -267,13 +267,13 @@ Current initiatives are just titles. Rich initiatives include:
 {
   "initiative_type": "research",
   "title": "Research calendar AI integration options",
-  "description": "the owner's goal 'Research calendar AI integration options' has been pending for 11 days. He previously asked about Google Calendar API, Notion calendar, and Calendly.",
+  "description": "The owner's goal 'Research calendar AI integration options' has been pending for 11 days. He previously asked about Google Calendar API, Notion calendar, and Calendly.",
   "context": {
     "goal_id": "af47b77e-...",
     "goal_created_at": "2026-05-10T02:41:34Z",
     "days_pending": 11,
     "related_memories": [
-      "the owner mentioned wanting calendar integration on May 10",
+      "The owner mentioned wanting calendar integration on May 10",
       "He already has Google Workspace skills loaded"
     ],
     "suggested_actions": [

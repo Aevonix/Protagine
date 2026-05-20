@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-15
 **Author:** The agent (Hermes agent)
-**Status:** Draft — awaiting the owner review
+**Status:** Draft — awaiting owner review
 **Version:** Targets ColonyAI v0.7.25
 **Replaces:** `2026-05-15-temporal-awareness-and-sync-health.md`
 
@@ -77,7 +77,7 @@ The `colony start --force` command in `cli.py` does work (time is imported at li
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           THE OWNER (USER)                                    │
+|                           USER                                           |
 │                    WhatsApp DM ←→ Hermes Gateway                         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -101,7 +101,7 @@ The `colony start --force` command in `cli.py` does work (time is imported at li
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  LAYER 1 — OS SERVICE (macOS launchd)                                    │
 │                                                                          │
-│  Label: ai.aevonix.colony-sidecar                                        │
+│  Label: com.example.colony-sidecar                                        │
 │  KeepAlive.SuccessfulExit: false ← restart on crash, not clean exit     │
 │  RunAtLoad: true      ← starts on boot/login                             │
 │  ThrottleInterval: 60 ← waits 60s between restart attempts (MLX warmup) │
@@ -154,7 +154,7 @@ The sidecar takes ~3 minutes for MLX model warmup. If `ThrottleInterval` is too 
 
 **Solution:** `ThrottleInterval: 60` and `KeepAlive` with `SuccessfulExit: false` so launchd only restarts on crashes, not on clean exits.
 
-### 4.3 New plist: `~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist`
+### 4.3 New plist: `~/Library/LaunchAgents/com.example.colony-sidecar.plist`
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -162,7 +162,7 @@ The sidecar takes ~3 minutes for MLX model warmup. If `ThrottleInterval` is too 
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>ai.aevonix.colony-sidecar</string>
+    <string>com.example.colony-sidecar</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -283,7 +283,7 @@ def attempt_wake_up():
     cycle and let the next poll verify health."""
     # Check if service is installed
     result = subprocess.run(
-        ["launchctl", "list", "ai.aevonix.colony-sidecar"],
+        ["launchctl", "list", "com.example.colony-sidecar"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -292,7 +292,7 @@ def attempt_wake_up():
 
     # Service exists but may be stopped — try to start it
     subprocess.run(
-        ["launchctl", "start", "ai.aevonix.colony-sidecar"],
+        ["launchctl", "start", "com.example.colony-sidecar"],
         capture_output=True, timeout=10,
     )
 
@@ -316,7 +316,7 @@ When the sidecar is down and wake-up fails:
     "severity": "critical",
     "message": "Colony sidecar is down and could not be restarted via launchd.",
     "last_seen_at": "2026-05-15T05:00:00Z",  // last time poller got a healthy /health response
-    "suggested_action": "Run: colony service start  or  launchctl load ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist"
+    "suggested_action": "Run: colony service start  or  launchctl load ~/Library/LaunchAgents/com.example.colony-sidecar.plist"
   },
   "delivery_context": {
     "user_chat": "whatsapp:USER_LID@lid",
@@ -735,7 +735,7 @@ Update `colony start` to detect if the launchd service is loaded:
 def _is_service_loaded() -> bool:
     """Check if the launchd service is currently loaded and running."""
     result = subprocess.run(
-        ["launchctl", "list", "ai.aevonix.colony-sidecar"],
+        ["launchctl", "list", "com.example.colony-sidecar"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -828,15 +828,15 @@ curl -s http://127.0.0.1:7777/v1/host/health | python3 -m json.tool
 colony service status
 
 # Via launchd
-launchctl list ai.aevonix.colony-sidecar
+launchctl list com.example.colony-sidecar
 ```
 
 ### Manual restart
 
 ```bash
 # If service is installed:
-launchctl unload ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist
-launchctl load ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist
+launchctl unload ~/Library/LaunchAgents/com.example.colony-sidecar.plist
+launchctl load ~/Library/LaunchAgents/com.example.colony-sidecar.plist
 
 # If service is NOT installed:
 colony start --force
@@ -866,13 +866,13 @@ cat ~/.hermes/.colony_last_health | python3 -m json.tool
 
 ```bash
 # Stop the launchd service without uninstalling (legacy syntax)
-launchctl unload ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist
+launchctl unload ~/Library/LaunchAgents/com.example.colony-sidecar.plist
 
 # Modern macOS alternative
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.colony-sidecar.plist
 
 # Re-enable
-launchctl load ~/Library/LaunchAgents/ai.aevonix.colony-sidecar.plist
+launchctl load ~/Library/LaunchAgents/com.example.colony-sidecar.plist
 ```
 
 ---

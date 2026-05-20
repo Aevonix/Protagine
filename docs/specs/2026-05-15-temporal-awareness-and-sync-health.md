@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-15  
 **Author:** The agent (Hermes agent)  
-**Status:** Draft — awaiting the owner review  
+**Status:** Draft — awaiting owner review  
 **Version:** Targets ColonyAI v0.7.25
 
 ---

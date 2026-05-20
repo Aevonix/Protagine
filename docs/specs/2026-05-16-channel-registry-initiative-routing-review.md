@@ -265,7 +265,7 @@ The spec says update `~/.hermes/config.yaml` but doesn't show the FULL prompt �
 3. **Fix prompt fallback wording** (§5.1) — remove `"whatsapp"` string fallback
 4. **Define gateway-to-platform mapping** (§3.2, §6.3) — make inference generic and configurable
 5. **Remove `label` field** (§3.1) — redundant with `channel_type`
-6. **Fix integration test PII** (§8.2) — `owner` → `owner`
+6. **Fix integration test PII** (§8.2) — `owner` → `owner` (already generic)
 7. **Fix `++` double-plus bug** (§6.3) — `++1555` → `+1555`
 
 ### Deferred to v2

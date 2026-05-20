@@ -76,7 +76,7 @@ class TestCommitmentStoreList:
         assert len(result["commitments"]) == 2
 
     def test_list_by_person_id(self, store):
-        store.create(person_id="owner", description="the owner's task")
+        store.create(person_id="owner", description="Owner's task")
         store.create(person_id="alice", description="Alice's task")
         result = store.list(person_id="owner")
         assert result["total"] == 1
@@ -181,7 +181,7 @@ class TestCommitmentStoreOverdue:
         assert isinstance(overdue, list)
 
     def test_get_pending_for_person(self, store):
-        store.create(person_id="owner", description="the owner's task")
+        store.create(person_id="owner", description="Owner's task")
         store.create(person_id="alice", description="Alice's task")
         result = store.get_pending_for_person("owner")
         assert len(result) == 1

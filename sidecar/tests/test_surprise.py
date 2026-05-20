@@ -33,12 +33,12 @@ def pattern_store():
 class TestSurpriseCreate:
     def test_create_basic(self, surprise_store):
         result = surprise_store.create_surprise(
-            observation="the owner mentioned a new project called BlueBio",
-            expected="the owner usually discusses ColonyAI",
+            observation="User mentioned a new project called BlueBio",
+            expected="User usually discusses ColonyAI",
             surprise_score=0.8,
         )
-        assert result["observation"] == "the owner mentioned a new project called BlueBio"
-        assert result["expected"] == "the owner usually discusses ColonyAI"
+        assert result["observation"] == "User mentioned a new project called BlueBio"
+        assert result["expected"] == "User usually discusses ColonyAI"
         assert result["surprise_score"] == 0.8
         assert result["resolved"] is False
         assert result["id"]
@@ -152,10 +152,10 @@ class TestSurpriseScorer:
         for _ in range(6):
             pattern_store.create_pattern(
                 pattern_type="entity_cooccurrence",
-                description="the owner and ColonyAI appear together",
-                pattern_key="cooc:Owner:ColonyAI",
+                description="User and ColonyAI appear together",
+                pattern_key="cooc:User:ColonyAI",
             )
-        result = compute_surprise("the owner ColonyAI discussion", pattern_store=pattern_store)
+        result = compute_surprise("User ColonyAI discussion", pattern_store=pattern_store)
         assert result["surprise_score"] == 0.0
         assert result["pattern_id"] is not None
 

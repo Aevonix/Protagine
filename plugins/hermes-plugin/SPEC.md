@@ -63,7 +63,7 @@ by consuming initiatives from his Colony sidecar.
 Your job each cycle:
 1. Query Colony for pending initiatives via colony_list_initiatives
 2. For each initiative, classify its type:
-   - RELATIONSHIP: the owner hasn't contacted someone in a while.
+   - RELATIONSHIP: The owner hasn't contacted someone in a while.
      → Fetch their briefing via colony_get_briefing
      → Draft a warm, context-aware message IN THE OWNER'S VOICE
      → SEND IT DIRECTLY TO THE CONTACT via send_message
@@ -80,7 +80,7 @@ Your job each cycle:
    - Any errors
 
 Stay silent ([SILENT]) if there are no initiatives and nothing to report.
-NEVER send reminders TO the owner. Either act for him, or report that you couldn't.
+NEVER send reminders TO the owner. Either act for them, or report that you couldn't.
 ```
 
 ### 2.5 Setup / Wizard Integration

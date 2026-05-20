@@ -156,8 +156,8 @@ The `AutonomyLoop` runs on a configurable tick interval (default: 60s). Each tic
     "expires_at": null
   },
   "delivery_context": {
-    "user_chat": "whatsapp:+15164481505",
-    "home_chat": "whatsapp:120363425135486141@g.us"
+    "user_chat": "whatsapp:+1555XXXXXXX",
+    "home_chat": "whatsapp:GROUP_ID@g.us"
   },
   "channel_hint": "home"
 }
