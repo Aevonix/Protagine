@@ -5486,7 +5486,7 @@ async def respond_to_initiative(
 
 @router.get("/agent-snapshot", response_model=AgentSnapshotResponse)
 async def agent_snapshot() -> AgentSnapshotResponse:
-    """Return a comprehensive snapshot of Colony state for the agent evaluation."""
+    """Return a comprehensive snapshot of Colony state for agent evaluation."""
     now = datetime.now(timezone.utc)
 
     # Telemetry
@@ -5551,7 +5551,7 @@ async def record_outreach(body: RecordOutreachRequest) -> RecordOutreachResponse
         if _telemetry.last_agent_outreach_at is not None:
             outreach_at = _telemetry.last_agent_outreach_at.isoformat()
     logger.info(
-        "the agent outreach recorded: agent=%s channel=%s reason=%s",
+        "Agent outreach recorded: agent=%s channel=%s reason=%s",
         body.agent_id, body.channel, body.reason,
     )
     return RecordOutreachResponse(
