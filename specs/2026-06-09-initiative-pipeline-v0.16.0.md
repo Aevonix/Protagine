@@ -21,7 +21,7 @@ silent. Colony never sends messages directly; the agent is the sole
 decision-maker for outbound communication.
 
 Colony is agent-name-agnostic: it is a public project, and every
-deployment names its own agent ("Agent" is the reference deployment's).
+deployment names its own agent.
 Agent identity always comes from configuration — `COLONY_AGENT_NAME`,
 `COLONY_WORKER_NODE_ID` — never from code, defaults, or prompts.
 

@@ -180,11 +180,11 @@ The provider's system prompt block instructs the LLM to prefer host-provided cur
 
 -----
 
-## Agent Heartbeat & Agent Snapshot (v0.13.0)
+## Agent Heartbeat & Snapshot (v0.13.0)
 
-Colony v0.13.0 replaces the old silence-triggered owner check-in with a **state-exposure model**. Colony exposes its full state via an API endpoint. The agent (the agent) pulls that state, evaluates it, and decides whether, when, and how to communicate with the owner.
+Colony v0.13.0 replaces the old silence-triggered owner check-in with a **state-exposure model**. Colony exposes its full state via an API endpoint. The agent pulls that state, evaluates it, and decides whether, when, and how to communicate with the owner.
 
-**Colony never messages the owner directly. The agent decides on outreach.**
+**Colony never messages the owner directly. the agent decides on outreach.**
 
 ### Agent Snapshot Endpoint
 
@@ -209,7 +209,7 @@ After the agent proactively messages the owner, it records the outreach:
 curl -X POST http://localhost:7777/v1/host/agent-snapshot/record-outreach \
   -H "Authorization: Bearer $COLONY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"agent_id": "agent", "channel": "whatsapp", "reason": "high_priority_pending"}'
+  -d '{"agent_id": "my-agent", "channel": "whatsapp", "reason": "high_priority_pending"}'
 ```
 
 This touches `TelemetryStore.last_agent_outreach_at`, which appears in subsequent snapshots and suppresses redundant outreach.
@@ -231,7 +231,7 @@ hermes cron create \
 1. **Colony runs everything autonomously** — initiatives, execution, telemetry, scheduling
 2. **Colony exposes state to the agent** — via snapshot endpoint, not direct messages
 3. **The agent evaluates and decides** — whether, when, and what to communicate
-4. **State survives session resets** — all temporal state lives in Colony, not the agent memory
+4. **State survives session resets** — all temporal state lives in Colony, not agent memory
 
 -----
 
@@ -307,7 +307,7 @@ See [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md) for:
 - [What Is Colony](#what-is-colony)
 - [Quick Start](#quick-start)
 - [Temporal Awareness, Sync Health & Auto-Restart](#temporal-awareness-sync-health--auto-restart-v08x)
-- [Agent Heartbeat & Agent Snapshot](#agent-heartbeat--agent-snapshot-v0130)
+- [Agent Heartbeat & Snapshot](#agent-heartbeat--snapshot-v0130)
 - [Multi-Agent (v0.7.0)](#multi-agent-v070)
 - [Why Colony](#why-colony)
 - [36 Wired Subsystems](#36-wired-subsystems)
@@ -839,7 +839,7 @@ Colony is not a reminder service. When the autonomy loop detects work, it genera
 - 37 wired subsystems, 59+ API endpoints
 - **Memory governance & epistemic hygiene** — source anchoring, confidence computation, Ebbinghaus decay, pruning, file reconciliation, archival
 - Epistemic state machine: 8 states from `inferred` to `archived` with automatic transitions
-- Agent snapshot endpoint for the agent proactive outreach evaluation
+- Agent snapshot endpoint for agent proactive outreach evaluation
 - Telemetry `last_agent_outreach_at` with state-survival across session resets
 - Colony exposes state; the agent decides on communication (no direct owner messaging)
 - Temporal awareness and sync health monitoring with auto-restart

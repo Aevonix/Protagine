@@ -3,7 +3,7 @@
 **Status:** DRAFT  
 **Supersedes:** `2026-05-19-agent-driven-initiative-delivery-v0.12.0.md`  
 **Date:** 2026-05-20  
-**Author:** The agent (deep-dive validated against codebase)  
+**Author:** the agent (deep-dive validated against codebase)  
 
 ---
 
@@ -11,7 +11,7 @@
 
 Colony already has a distributed task queue (`sidecar/colony_sidecar/task_queue/`). This spec leverages that existing infrastructure rather than building a new one.
 
-**Goal:** Enable Colony to classify certain initiatives as *agent-actionable* — tasks the agent can execute autonomously using her Hermes toolsets. These become Jobs in the existing queue. The agent polls Colony, claims matching jobs, executes them, and reports results. Colony manages the lifecycle: generation → queuing → claiming → execution → completion → acknowledgment → archival.
+**Goal:** Enable Colony to classify certain initiatives as *agent-actionable* — tasks the agent can execute autonomously using her Hermes toolsets. These become Jobs in the existing queue. the agent polls Colony, claims matching jobs, executes them, and reports results. Colony manages the lifecycle: generation → queuing → claiming → execution → completion → acknowledgment → archival.
 
 **Non-goal:** Building a new queue, modifying Hermes core harness, or adding LLM-based implicit acknowledgment detection.
 
@@ -67,7 +67,7 @@ Colony already has a distributed task queue (`sidecar/colony_sidecar/task_queue/
 ### 2.4 What Does NOT Exist (Previous Spec Was Wrong)
 
 1. **The scheduler does NOT push-assign jobs.** `Scheduler.notify_worker()` (`queue_manager.py:920`) is a no-op. Workers poll `claim_job()` and self-assign atomically. The scheduler's role is abandonment detection, retry, and deadline expiry.
-2. **The agent is NOT a mesh SOVEREIGN node.** Mesh roles (`SOVEREIGN`, `REGENT`, `VASSAL`) are for distributed Colony networking. The task queue has a separate `WorkerCapabilities` registry. The agent registers as a **task queue worker**, not a mesh node.
+2. **the agent is NOT a mesh SOVEREIGN node.** Mesh roles (`SOVEREIGN`, `REGENT`, `VASSAL`) are for distributed Colony networking. The task queue has a separate `WorkerCapabilities` registry. the agent registers as a **task queue worker**, not a mesh node.
 3. **There is NO implicit acknowledgment detection.** No code analyzes Hermes response text for initiative acknowledgment. This would require a new webhook consumer + text analysis pipeline.
 4. **There is NO `pre_llm_call` hook that can modify the system prompt.** The hook only appends a string to the user message. Silent injection must use the existing `prefetch()` path.
 5. **`colony_acknowledge_initiative` does NOT exist in the Hermes plugin.** The MCP server has `colony_initiative_feedback` (which calls `/v1/host/initiatives/{id}/respond`), but the Hermes colony-memory provider does not expose it.
@@ -82,7 +82,7 @@ Colony already has a distributed task queue (`sidecar/colony_sidecar/task_queue/
 4. **Explicit acknowledgment only.** No implicit detection in this version. The agent acknowledges via a tool call (`colony_initiative_feedback`).
 5. **Destructive ops require approval by default.** Toggleable via env var. Default = message the owner for approval.
 6. **Advisory scheduler, atomic self-claim.** Document the actual pull-based semantics. Don't pretend the scheduler pushes.
-7. **Coexist with internal WorkerNode.** `server.py:802` already starts an in-process `WorkerNode` that handles compute jobs (INFERENCE, TRAINING, etc.). The agent is an external worker that handles `AGENT_ACTION` jobs. They claim different job types and do not interfere.
+7. **Coexist with internal WorkerNode.** `server.py:802` already starts an in-process `WorkerNode` that handles compute jobs (INFERENCE, TRAINING, etc.). the agent is an external worker that handles `AGENT_ACTION` jobs. They claim different job types and do not interfere.
 
 ---
 
@@ -217,7 +217,7 @@ The provider's `_format_sections()` already wraps everything in `<memory-context
 
 ### 6.1 Registration
 
-The agent (via cron job every 5 minutes):
+the agent (via cron job every 5 minutes):
 1. Reads `~/.hermes/config.yaml` enabled toolsets.
 2. Maps toolsets to Colony capability names:
    - `terminal` → `shell`
@@ -230,7 +230,7 @@ The agent (via cron job every 5 minutes):
 3. POSTs to `/v1/host/queue/workers/register`:
    ```json
    {
-     "node_id": "hermes-agent-node",
+     "node_id": "test-agent-hermes-agent",
      "capabilities": ["shell", "filesystem", "web_search", "web_browser", "code_search", "git", "media_control"],
      "job_types": ["agent_action"],
      "max_concurrent": 1,
@@ -241,8 +241,8 @@ The agent (via cron job every 5 minutes):
 
 ### 6.2 Polling and Claiming
 
-The agent's cron job:
-1. POST `/v1/host/queue/jobs/claim` with body `{"node_id": "hermes-agent-node", "job_types": ["agent_action"]}`.
+the agent's cron job:
+1. POST `/v1/host/queue/jobs/claim` with body `{"node_id": "test-agent-hermes-agent", "job_types": ["agent_action"]}`.
 2. If a job is returned, execute it using available tools.
 3. If execution succeeds: POST `/v1/host/queue/jobs/{job_id}/complete` with result payload.
 4. If execution fails: POST `/v1/host/queue/jobs/{job_id}/fail` with error details.
@@ -419,7 +419,7 @@ Instead of messaging on every completion, completed job results accumulate in th
 
 **P4-B: Implement tool handlers** in Colony sidecar (or route to queue API).
 
-### Phase 5 — Agent Cron Worker
+### Phase 5 — the agent Cron Worker
 
 **P5-A: Create cron job** in `~/.hermes/cron/`:
 - Runs every 5 minutes.
@@ -444,7 +444,7 @@ Instead of messaging on every completion, completed job results accumulate in th
 |------|-----------|--------|------------|
 | SQLite blocking event loop (sync `initiative_store` from async context) | High | High | Use `run_in_executor()` for all `initiative_store` calls from `_phase_execute`. |
 | Cron job edits files while the owner is also editing | Medium | High | Skip write-capable jobs when `last_user_message_at < 5 min ago`. |
-| The agent claims a job then the session resets mid-execution | Low | Medium | Job heartbeat + timeout. If heartbeat stops, Colony marks ABANDONED and re-queues. |
+| the agent claims a job then the session resets mid-execution | Low | Medium | Job heartbeat + timeout. If heartbeat stops, Colony marks ABANDONED and re-queues. |
 | Approval message fails to reach the owner (Hermes down) | Low | High | Approval is a tool call, not a webhook. The tool handler updates the job status directly in SQLite. No external dependency. |
 | Duplicate agent_action jobs from multiple initiative triggers | Medium | Medium | Strong dedup keys (`agent_action:{hint}:{entity}`) + cooldown in initiative engine. |
 | Bearer token leaks | Low | High | Token is env-var only, never logged. Rotate via `COLONY_AGENT_API_TOKEN`. Phase 2 replaces with Ed25519. |
@@ -472,7 +472,7 @@ Instead of messaging on every completion, completed job results accumulate in th
 
 ### 12.2 Worker Registration is Ephemeral
 
-Workers must re-register after sidecar restart. There is no persistent worker registry across restarts. The agent's cron job must re-register on every tick (or at minimum, handle 404 from heartbeat by re-registering).
+Workers must re-register after sidecar restart. There is no persistent worker registry across restarts. the agent's cron job must re-register on every tick (or at minimum, handle 404 from heartbeat by re-registering).
 
 ### 12.3 Job Payload Schema for Agent Actions
 
@@ -494,7 +494,7 @@ Workers must re-register after sidecar restart. There is no persistent worker re
 
 ### 12.4 Internal vs. External Workers
 
-`server.py:802` starts an in-process `WorkerNode` with handlers from `build_default_handlers()`. This worker claims jobs of type `INFERENCE`, `TRAINING`, `DESKTOP`, `BROWSER`, etc. The agent is an external worker (cron job) that claims only `AGENT_ACTION` jobs. They share the same `QueueManager` but claim different job types, so they do not compete.
+`server.py:802` starts an in-process `WorkerNode` with handlers from `build_default_handlers()`. This worker claims jobs of type `INFERENCE`, `TRAINING`, `DESKTOP`, `BROWSER`, etc. the agent is an external worker (cron job) that claims only `AGENT_ACTION` jobs. They share the same `QueueManager` but claim different job types, so they do not compete.
 
 ---
 

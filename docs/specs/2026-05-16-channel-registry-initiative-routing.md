@@ -1,6 +1,6 @@
 # Spec: ChannelRegistry — Per-Person Initiative Delivery Routing
 
-**Author:** The agent  
+**Author:** ColonyAI agent  
 **Date:** 2026-05-16  
 **Version:** 0.2.0  
 **Status:** Draft — pending review
