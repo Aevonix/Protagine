@@ -4,7 +4,7 @@
 
 Completes the relationship program's promised curation surface (it was
 designed in docs/RELATIONSHIPS.md but never shipped): when the resolver
-files a handle proposal, or you want to say "that WhatsApp is David's", or a
+files a handle proposal, or you want to say "that WhatsApp is Sam's", or a
 shadow contact turns out to be someone you know, there is now a way to act.
 
 - `link_contact(who, gateway, address)` tool + `POST /contacts/{id}/handles`:
