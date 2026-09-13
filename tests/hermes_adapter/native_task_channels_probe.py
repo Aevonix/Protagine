@@ -1,5 +1,6 @@
 """Disposable real gateway, canonical ASGI routes and controlled SDK HTTP only."""
 import asyncio
+import itertools
 import json
 import os
 from pathlib import Path
@@ -77,7 +78,7 @@ context_reads = []
 held = {name: threading.Event() for name in ('alpha', 'beta', 'alpha_next')}
 release = {name: threading.Event() for name in held}
 task_ids = {}
-source_parents = {}
+source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
 update_text = 'Keep the alpha comparison scoped to the violet notes and label the result ORANGE-472.'
 
@@ -104,7 +105,7 @@ def answer(body, text):
 
 def tool(body, name, arguments):
     return message_response(body, {'role': 'assistant', 'content': None, 'tool_calls': [{
-        'id': 'fixture-tool', 'type': 'function', 'function': {'name': 'tool_call',
+        'id': 'fixture-tool-' + str(next(tool_ids)), 'type': 'function', 'function': {'name': 'tool_call',
         'arguments': json.dumps({'name': name, 'arguments': arguments})}}]}, 'tool_calls')
 
 
@@ -181,7 +182,8 @@ def respond(request):
     assert body['model'] == 'fixture-model', 'Task model selection escaped into foreground work'
     latest = next(row.get('content') for row in reversed(body['messages']) if row.get('role') == 'user')
     latest = latest if isinstance(latest, str) else json.dumps(latest)
-    tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA')
+    tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA',
+                                 'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED')
                 if latest.startswith('FG_' + name + ':')), None)
     assert tag is not None, latest
     foreground_calls[tag] = foreground_calls.get(tag, 0) + 1
@@ -189,6 +191,33 @@ def respond(request):
     if tag == 'ORDINARY':
         assert step == 1
         return answer(body, 'The ordinary conversation completed while both tasks stayed active.')
+    if tag.startswith('STATUS_'):
+        assert step <= (3 if tag == 'STATUS_QUEUED' else 2)
+        if step == 1:
+            return tool(body, 'pacomind_task', {'operation': 'status', 'task_id': task_ids['alpha']})
+        results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
+        result = json.loads(results[-1])
+        if step == 2:
+            status_views[tag] = result
+            assert 'error' not in result, result
+            if tag == 'STATUS_ERASED':
+                assert not result.get('source_refs') and not result.get('updates'), result
+            else:
+                original = adapter.handoffs.get(task_ids['alpha'])['source']['source_refs']
+                update = adapter.handoffs.updates(task_ids['alpha'])[0]
+                assert result['input_source_refs'] == original, result
+                assert result['updates_complete'] and len(result['updates']) == 1, result
+                observed = result['updates'][0]
+                assert observed['source_refs'] == update['source']['source_refs']
+                assert observed['accepted'] and observed['native_control_acknowledged']
+                assert observed['provider_delivery'] == observed['behavior_applied'] == 'unobserved'
+                assert observed['middleware_visible'] == observed['native_request_visible'] == (tag == 'STATUS_VISIBLE')
+                assert 'instruction' not in observed
+                if tag == 'STATUS_QUEUED':
+                    return tool(body, 'pacomind_memory_read_source', observed['source_refs'][0])
+        else:
+            assert result['pacomind_source_read_v1'] and update_text in result['content'], result
+        return answer(body, 'FG_' + tag + '_ACK')
     assert step <= 2, (tag, body)
     if step == 1:
         if tag.startswith('SUBMIT_'):
@@ -305,8 +334,13 @@ async def exercise():
         assert updates[0]['source']['origin']['sender_id'] == '15550003@s.whatsapp.net'
         assert not adapter.handoffs.updates(task_ids['beta'])
         assert not updates[0]['observations'].get('native_request_visible')
+        inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_QUEUED')), 12)
+        assert inspected == 'FG_STATUS_QUEUED_ACK', inspected
+        assert not release['alpha'].is_set(), 'Inspection released or readmitted the held task'
         release['alpha'].set()
         await wait_for(held['alpha_next'].is_set, 'steered next native SDK request')
+        inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_VISIBLE')), 12)
+        assert inspected == 'FG_STATUS_VISIBLE_ACK', inspected
         stopped = await asyncio.wait_for(runner._handle_message(event('STOP_ALPHA', whatsapp=True)), 12)
         assert stopped == 'FG_STOP_ALPHA_ACK', stopped
         assert adapter.handoffs.get(task_ids['alpha'])['stop']['native_control_acknowledged']
@@ -354,7 +388,13 @@ async def exercise():
         assert len(generation['alpha']) == 2 and len(generation['beta']) == 1
         assert 'Native task participant does not match its owner' in (home/'logs'/'errors.log').read_text()
         assert all(handle.gateway != 'pacomind_task' for handle in await contacts.get_handles(owner))
+        ledger.erase_sources(contact_id=owner, turn_ids=[updates[0]['source']['source_refs'][0]['source_id']])
+        inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_ERASED')), 12)
+        assert inspected == 'FG_STATUS_ERASED_ACK', inspected
+        assert adapter.handoffs.get(task_ids['beta'])['response'] == beta['response']
         print(json.dumps({'cross_channel_native_tasks': True, 'separate_native_roots': 2,
+            'queued_update_source_read_in_another_owner_conversation': True,
+            'status_flags_track_native_request_visibility': True, 'erased_status_refs_withheld': True,
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,
             'matching_native_stop_terminal': True, 'late_reply_suppressed': True,
             'native_recollection_uses_canonical_owner': True,

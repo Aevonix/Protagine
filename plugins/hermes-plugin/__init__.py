@@ -2828,7 +2828,14 @@ def register(ctx: Any) -> None:
         context = _TOOL_EXECUTION_CONTEXT.get() or {}
         scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),
             task_id=context.get('task_id', ''), turn_id=context.get('turn_id', ''))
-        return native_tasks.handle(args or {}, scope)
+        text = native_tasks.handle(args or {}, scope)
+        if isinstance(args, dict) and args.get('operation') == 'status':
+            result = json.loads(text)
+            if result.get('source_refs') and not request_memory.register_source_read(
+                    scope, context.get('tool_call_id'), text, result):
+                return json.dumps({'task_id': args.get('task_id'),
+                    'error': 'Task source inspection could not be retained for this turn.'})
+        return text
     def source_forget_handler(args=None, **kwargs):
         context = _TOOL_EXECUTION_CONTEXT.get() or {}
         scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),

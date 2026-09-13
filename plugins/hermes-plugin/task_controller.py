@@ -25,6 +25,9 @@ TOOL_SCHEMA = {
         'Submit a bounded request; inspect, steer or stop the returned task_id from '
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
+        'Status includes original-input and recent authorized update source references; '
+        'open them with pacomind_memory_read_source. Update acknowledgment and request '
+        'visibility do not prove that the behavior was applied. '
         'List also reports profile-declared model role names for task submission. '
         'Use normal conversation for questions and native delegation for child work.'),
     'parameters': {
@@ -389,12 +392,12 @@ class NativeTasks:
             observed = self._call('status', identity)
             if observed is not None:
                 return json.dumps({'task_id': identity, 'executor': 'native_hermes', **observed})
-            row, _ = self.handoffs.resolve(identity)
+            row, _, sources = self.handoffs.inspect_sources(identity)
             if row['response']:
-                return json.dumps({'task_id': identity, 'status': 'done', 'result': row['response']['text'],
+                return json.dumps({'task_id': identity, 'status': 'done', **sources, 'result': row['response']['text'],
                     'source_dependencies': row['response']['source_dependencies'],
                     'delivery': {'retained': True, 'outward': 'unobserved'}})
-            return json.dumps(self._metadata(row))
+            return json.dumps({**self._metadata(row), **sources})
         except Exception as error:
             # Retain a known association in the error so an ambiguous native
             # dispatch can be inspected, rather than submitted as another task.

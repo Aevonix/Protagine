@@ -235,6 +235,29 @@ def update_consumption_and_erasure():
     fails(lambda: store().resolve(row['id']), 'Source erased')
     assert store().control(row['id'])['stop']  # Erasure does not erase established stop ownership.
 
+def status_source_inspection():
+    row = admitted()
+    updates = []
+    for index in range(6):
+        current = source('status-update-' + str(index), 'text-channel')
+        updates.append(store().admit_update(row['id'], instruction='Update ' + str(index),
+            source_input=current, principal='text-channel'))
+    _, _, view = store().inspect_sources(row['id'])
+    assert view['input_source_refs'] == row['source']['source_refs']
+    assert [u['update_id'] for u in view['updates']] == [u['id'] for u in updates[-4:]]
+    assert not view['updates_complete']
+    assert all(not u['native_request_visible'] and 'instruction' not in u for u in view['updates'])
+    # An owner task does not make a revoked or erased update readable.
+    grants['status-update-5'] = False
+    erased.add('source-status-update-4')
+    _, _, view = store().inspect_sources(row['id'])
+    assert [u['update_id'] for u in view['updates']] == [u['id'] for u in updates[2:4]]
+    assert not ({'source-status-update-4', 'source-status-update-5'} &
+                {ref['source_id'] for ref in view['source_refs']})
+    assert all(u['provider_delivery'] == u['behavior_applied'] == 'unobserved' for u in view['updates'])
+    owners['call-α'] = 'another-person'
+    fails(lambda: store().inspect_sources(row['id']), 'Source owner changed')
+
 def recovery_receipts():
     row = admitted()
     store().request_stop(row['id'])
@@ -262,7 +285,7 @@ print(json.dumps({'case':sys.argv[2],'passed':True,'execution_started':False}))
 @pytest.mark.parametrize('case', [
     'legacy_adoption', 'cross_channel', 'stop_after_erasure', 'generation_fencing',
     'reply_ordering', 'concurrent_stop_reply', 'update_consumption_and_erasure',
-    'recovery_receipts',
+    'recovery_receipts', 'status_source_inspection',
 ])
 def test_generic_handoff_store(artifacts, tmp_path, case):
     installed = artifacts[3]
