@@ -38,6 +38,21 @@ Assertion keys are scoped to the attributed contact and normalized subject/prope
 
 A newer timestamp alone never supersedes a conflicting assertion. Generated property names and prior-record matching can still fail; an unmatched correction becomes an independent assertion. The model is not permitted to invent a predecessor ID. The implemented projection does not grant authority, alter relationships or execute tools.
 
+A partial correction can carry unchanged parts of the exact prior value. For
+example, changing a glove quantity does not require repeating an unchanged brush
+quantity. Each changed portion must occur in the current quotation; carried
+portions retain their original quoted sources. The existing semantic review
+checks the complete update against both records before the prior claim is
+retired. This does not permit unsupported new values or merge unrelated facts.
+
+Recall includes these supporting quotations, source versions, report times and
+timezones. A word such as "tomorrow" keeps its original source clock when a later
+correction changes only the hour. This provenance does not itself resolve a
+compound deadline. Further corrections preserve each contribution's original
+source. Erasure or changed attribution removes dependent projections, while
+other raw correction messages remain; an annotation makes disputed support
+ineligible. None of these operations revives a retracted value.
+
 ## Recall and time
 
 Canonical source hits locate assertion keys. Recall expands each key into its scoped, time-appropriate evidence before the existing shared reranker and context budget. An unresolved conflict is one atomic candidate: the packet cannot retain just the winning side or truncate away its qualifications. Raw source chunks have the projected spans removed; each remaining excerpt is still a contiguous quotation, including when source chunks overlap. Graph summaries do not participate in automatic context or explicit canonical memory search.
