@@ -51,7 +51,8 @@ class TaskHandoffs:
                 source_json TEXT NOT NULL, created REAL NOT NULL,
                 dispatch_json TEXT, observations_json TEXT NOT NULL DEFAULT '{}')''')
 
-    def admit(self, *, request_id, request, source_input, model_role=None, experience=None):
+    def admit(self, *, request_id, request, source_input, model_role=None, experience=None,
+              request_image_receipts=False):
         """Retain task purpose when the trusted caller knows it prospectively.
 
         Operator work can pass operational; evaluation runs pass qualification.
@@ -80,6 +81,12 @@ class TaskHandoffs:
             if not isinstance(experience, str) or experience not in {'operational', 'qualification'}:
                 raise self._error('A known task experience purpose is required')
             source['task_experience'] = experience
+        # A trusted operator opts in one immutable qualification admission.
+        # This is not a model field, request-text convention or global setting.
+        if type(request_image_receipts) is not bool or (request_image_receipts and experience != 'qualification'):
+            raise self._error('Request image receipts require an explicit qualification opt-in')
+        if request_image_receipts:
+            source['request_image_receipts'] = True
         payload = json.dumps(source, sort_keys=True, separators=(',', ':'))
         immutable = {key: value for key, value in source.items() if key != 'watermark'}
         identity_fields = [request_id, request, immutable]

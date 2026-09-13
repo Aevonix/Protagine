@@ -49,13 +49,20 @@ class NativeMemoryRequests:
             return False
         key = (scope.session_id, scope.task_id, scope.turn_id)
         consumer = 'pacomind.memory:' + str(turn.handle.uuid)
+        image_observer = None
+        if getattr(scope, 'platform', '') == 'pacomind_task':
+            try:
+                from .native_task_platform import request_image_observer
+                image_observer = request_image_observer(scope)
+            except Exception:
+                logger.warning('Qualification image receipt binding unavailable', exc_info=False)
         with self._lock:
             if key in self._turns:
                 return True
             seen = OrderedDict()
             self._turns[key] = (host, consumer, seen, turn)
 
-        def rewritten(request):
+        def rewritten(request, kind):
             # A child can inherit the parent's Relay ancestry. Its own bound
             # participant and RequestMemory instance must govern its requests.
             if relay_runtime.active_turn() is not turn:
@@ -77,13 +84,19 @@ class NativeMemoryRequests:
                         else self.memory(request.content, scope)['request'])
             if supplied is not None and not supplied.observe_updates(scope, filtered, stage='native_request_visible'):
                 filtered = withheld_request(filtered, failure=supplied.failure)
+            if image_observer is not None:
+                try:
+                    if not image_observer(filtered, kind=kind):
+                        logger.warning('Qualification image receipt unavailable', exc_info=False)
+                except Exception:
+                    logger.warning('Qualification image receipt unavailable', exc_info=False)
             return relay.LLMRequest(request.headers, filtered)
 
         async def execute(_name, request, next_call):
-            return await next_call(rewritten(request))
+            return await next_call(rewritten(request, 'nonstreaming'))
 
         async def stream(request, next_call):
-            return await next_call(rewritten(request))
+            return await next_call(rewritten(request, 'streaming'))
 
         def ended(event):
             if (getattr(event, 'scope_category', None) == 'end'

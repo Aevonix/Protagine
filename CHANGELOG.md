@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.12 - bounded image request receipts
+
+An explicitly opted-in qualification task can retain bounded image hashes in
+its existing gateway session metadata. Receipts identify the task and native
+turn and observe the filtered request immediately before its provider callback.
+They retain hashes, byte counts and structural positions, without image bytes,
+URLs, prompt text or credentials. Ordinary tasks cannot enable this capture,
+and an existing task cannot acquire the opt-in later.
+
+These receipts do not enable global request dumps or establish network delivery,
+provider acceptance or model perception. Missing image bytes, incomplete capture
+and exhausted limits remain explicit qualification limitations.
+
 ## v1.5.11 - native source-copy erasure
 
 Forgotten sources can now be removed from Hermes transcript rows and their
