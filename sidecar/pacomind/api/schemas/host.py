@@ -465,6 +465,39 @@ class SourceInputReference(BaseModel):
     input_message_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class TransportImageInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ordinal: int = Field(ge=0, le=7, strict=True)
+    # Base64 rounds up complete 3-byte groups; JPEG/WebP have the longest prefix.
+    data_url: Optional[str] = Field(default=None,
+        max_length=4 * ((4 * 1024 * 1024 + 2) // 3) + len('data:image/jpeg;base64,'))
+    native_block_index: Optional[int] = Field(default=None, ge=0, le=32, strict=True)
+    unavailable: Optional[Literal['original_unavailable']] = None
+
+    @model_validator(mode='after')
+    def exact_original(self):
+        if sum(value is not None for value in (self.data_url, self.native_block_index, self.unavailable)) != 1:
+            raise ValueError('supply original bytes, their native block index, or an unavailable disposition')
+        if self.data_url is not None and not self.data_url.startswith('data:image/'):
+            raise ValueError('transport images require inline bytes, not paths or URLs')
+        return self
+
+
+class TransportMediaInput(BaseModel):
+    """Host-attested provider identity and clean caption, without caller hashes."""
+    model_config = ConfigDict(extra='forbid')
+    platform: str = Field(min_length=1, max_length=64)
+    provider_message_id: str = Field(min_length=1, max_length=512)
+    caption: str = Field(max_length=32768)
+    images: List[TransportImageInput] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode='after')
+    def unique_ordinals(self):
+        if len({image.ordinal for image in self.images}) != len(self.images):
+            raise ValueError('transport attachment ordinals must be unique')
+        return self
+
+
 class TurnSyncRequest(BaseModel):
     identity: HostIdentity
     context: HostTurnContext
@@ -481,6 +514,7 @@ class TurnSyncRequest(BaseModel):
     assistant_message: Optional[Union[HostMessage, TurnMessage]] = None
     assistant_source_refs: Optional[List[SourceReference]] = Field(default=None, min_length=1)
     assistant_input_refs: Optional[List[SourceInputReference]] = Field(default=None, min_length=1)
+    transport_media: Optional[TransportMediaInput] = None
     source_only: Optional[Literal[True]] = None
     # Model that produced the assistant side of this turn (optional, additive).
     # Lets the mining layer detect provider escalations / cloud failovers from
@@ -495,6 +529,20 @@ class TurnSyncRequest(BaseModel):
     def bounded_checkpoint(self):
         if len(self.model_dump_json().encode("utf-8")) > 8 * 1024 * 1024:
             raise ValueError("turn exceeds the 8 MiB source limit")
+        if self.transport_media is not None and (self.sender is None or self.user_message is None
+                or self.user_message.role != 'user' or not self.user_message.content
+                or self.sender.platform != self.transport_media.platform or self.checkpoint_messages is not None
+                or not self.context.turn_id):
+            raise ValueError('transport media requires a matching direct sender and identified native input')
+        if self.transport_media is not None and isinstance(self.user_message.content, list) and any(
+                not isinstance(block, dict) or block.get('type') not in {'text', 'input_text', 'output_text', 'image_url', 'input_image'}
+                for block in self.user_message.content):
+            raise ValueError('transport image normalization cannot replace mixed native media')
+        if self.transport_media is not None:
+            from pacomind.turns.transport_media import native_image_url
+            for image in self.transport_media.images:
+                if image.native_block_index is not None:
+                    native_image_url(self.user_message.content, image.native_block_index)
         if self.checkpoint_messages is not None:
             if self.sender is not None or self.user_message is not None or self.assistant_message is not None:
                 raise ValueError("checkpoint cannot also represent an ordinary turn")
@@ -515,6 +563,7 @@ class TurnSyncRequest(BaseModel):
 
 class TurnSyncResponse(BaseModel):
     accepted: bool
+    transport_media: Optional[Dict[str, Any]] = None
     continuity_updated: bool
     skipped_reason: Optional[str] = None
     errors: Optional[List[str]] = None

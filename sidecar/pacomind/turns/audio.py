@@ -114,6 +114,10 @@ def claim_message(message):
     if isinstance(message.get('content'), str):
         return message
     text, segments = _render(message.get('content'))
+    # Transport image normalization separates an actual person's caption from
+    # runtime vision enrichment. The former remains eligible direct evidence.
+    if message.get('_transport_provenance', {}).get('caption_origin') == 'transport':
+        return {**message, 'content': text} if text.strip() else None
     return {**message, 'content': text, '_audio_segments': segments} if segments else None
 
 

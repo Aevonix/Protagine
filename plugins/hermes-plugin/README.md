@@ -101,6 +101,30 @@ attempting network delivery. These settings and the explicit local `fsync`
 establish configuration readiness; they are not a physical power-loss test, so
 the attestation always reports `physical_power_loss_verified=false`.
 
+Image-only gateway messages use the same canonical media store even when Hermes
+prepares a text-only vision description. The pre-dispatch hook records actual
+attachment metadata; the native turn must match its sender, channel and provider
+message before cached image bytes are read. Paths written in chat are never
+attachment admission. The owner-provided caption stays separate from labeled,
+fallible runtime interpretation. Native source hashes remain linked through
+normalization, so corrections and forgetting still cover the original history.
+
+This path accepts up to eight attachment references and 4 MiB of original PNG,
+JPEG or WebP bytes per turn, within the existing 8 MiB turn envelope limit.
+Missing, changed, oversized or unsupported originals receive an explicit
+unavailable disposition. Mixed media events keep their existing ingestion path;
+this image carrier cannot replace native audio, document or video blocks.
+Already-inline native originals are referenced without duplicating their bytes.
+Each active native turn keeps its own carrier until durable outbox handoff or
+terminal cleanup; concurrent or long-running turns do not evict its originals.
+If differing native pixels plus the original would exceed the existing turn
+budget, the existing native ingestion path is preserved.
+The existing `turns:write` permission covers its typed
+route; no new credential or service is required. The receipt identifies each
+attachment and reports whether its original was actually retained. An older
+receiver cannot acknowledge caption-only storage as this capability. Existing
+caption-only historical records are not retroactively upgraded.
+
 The default hook drains up to 16 rows within one shared 250 ms cooperative
 budget covering SQLite lock acquisition, claim, delivery, and finalization. It
 never holds a database lock during HTTP. The delivery callback runs on the

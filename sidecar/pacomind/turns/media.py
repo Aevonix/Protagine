@@ -87,14 +87,14 @@ def normalize_messages(conn, store, turn_id, session_id, messages):
     Only the ledger writes _source_message_hash. External turn/checkpoint schemas
     never accept that field. Immutable turn digests still cover the input bytes.
     """
-    from pacomind.turns.idempotency import canonical_turn_digest
+    from pacomind.turns.idempotency import source_message_hash
     result = []
     for message in messages:
         content = message.get('content')
         if not isinstance(content, list):
             result.append(dict(message))
             continue
-        original_hash = canonical_turn_digest({'session_id': session_id, 'role': message.get('role'), 'content': content})
+        original_hash = source_message_hash(session_id, message)
         blocks, changed, consumed = [], False, set()
         for index, block in enumerate(content):
             if index in consumed:

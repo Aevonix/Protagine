@@ -177,6 +177,45 @@ def native_original(scope, call_id, expected):
     return content, native
 
 
+def native_input(scope, call_id, expected, *, result_message_id, result_content):
+    """Recover the executed arguments from the exact native call, not its label.
+
+    Completion already witnessed the argument hash at dispatch. The persisted
+    assistant call supplies the values only if they still match that witness.
+    A request-side retelling or a different same-tool call supplies no input.
+    """
+    from hermes_state import _default_db_path
+    path = _default_db_path().resolve()
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=.25)) as db:
+        rows = db.execute('''SELECT c.value FROM messages m,
+            json_each(CASE WHEN json_valid(m.tool_calls) THEN m.tool_calls ELSE '[]' END) c
+            WHERE m.session_id=? AND m.role='assistant' AND m.active=1 AND m.id<?
+              AND json_extract(c.value,'$.id')=? LIMIT 2''',
+            (scope.session_id, result_message_id, call_id)).fetchall()
+    if len(rows) != 1:
+        raise ValueError('A unique original native call is required to include its input')
+    try:
+        call = json.loads(rows[0][0])['function']
+        name, arguments = call['name'], call['arguments']
+        arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+        if name == 'tool_call':
+            from tools import tool_search
+            name, arguments, error = tool_search.resolve_underlying_call(arguments)
+            if error:
+                raise ValueError('Invalid original deferred call')
+        digest = _arguments_hash(arguments)
+        if (name != expected['name'] or not isinstance(arguments, dict)
+                or digest is None or digest != expected['arguments_sha256']):
+            raise ValueError('Original call arguments differ from the executed input')
+        encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=True,
+                             separators=(',', ':'), allow_nan=False)
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError('The original executed input is unavailable') from exc
+    if len(encoded.encode()) + len(result_content.encode()) > MAX_BYTES:
+        raise ValueError('Original input and result exceed the combined 16 KiB retention budget; no input was saved')
+    return {'arguments': arguments, 'arguments_sha256': digest}
+
+
 class ToolObservations:
     def __init__(self, client, outbox, request_memory):
         self.client, self.outbox, self.request_memory = client, outbox, request_memory
@@ -235,7 +274,10 @@ class ToolObservations:
         guidance = (f'For durable findings or meaningful outcomes with likely future use, you may retain '
             f'an original tool result using {name}(call_id, reason). Skip incidental output, duplicate '
             'status, transient noise and secrets. These are candidates, not saved memories. '
-            'Match the call ID to its execution arguments; truncated previews require checking the original call. ')
+            'Match the call ID to its execution arguments; truncated previews require checking the original call. '
+            'For recipe reuse, set include_input=true on the actual workflow/config call when its arguments matter; '
+            'retain a separate final-result call if needed. A locator alone is not a recipe. Inputs may contain secrets; '
+            'skip those calls. Input plus result must fit 16 KiB. ')
         if deferred:
             guidance += f'Load {name} with tool_describe, then invoke it with tool_call. '
         guidance += '\nEligible completed calls in this request: '
@@ -261,7 +303,9 @@ class ToolObservations:
         key = _key(scope)
         if key is None:
             return json.dumps({'accepted': False, 'error': 'Retention requires an ordinary authenticated owner conversation with matching native session origin'})
-        if (not isinstance(args, dict) or set(args) != {'call_id', 'reason'}
+        if (not isinstance(args, dict) or not {'call_id', 'reason'} <= set(args)
+                or set(args) - {'call_id', 'reason', 'include_input'}
+                or type(args.get('include_input', False)) is not bool
                 or not isinstance(args['call_id'], str) or not 1 <= len(args['call_id']) <= 256
                 or not isinstance(args['reason'], str) or not args['reason'].strip() or len(args['reason']) > 512):
             return json.dumps({'accepted': False, 'error': 'Nominate one completed current owner-turn call and a bounded future-use reason'})
@@ -281,6 +325,9 @@ class ToolObservations:
             else:
                 record['visible_name'] = record['visible'][context['api_request_id']]
                 content, native = native_original(scope, args['call_id'], record)
+                original_input = (native_input(scope, args['call_id'], record,
+                    result_message_id=native['message_id'], result_content=content)
+                    if args.get('include_input', False) else None)
                 origins = capture_instruction(scope, self.client)
                 if len(origins) != 1:
                     raise ValueError('The exact current owner instruction must be retained first')
@@ -292,6 +339,8 @@ class ToolObservations:
                     'observation': {'native': native, 'content': content, 'reason': args['reason'],
                         'origin': {'source_id': origin_id, 'source_version': origin_version},
                         'sources': references}}
+                if original_input is not None:
+                    payload['observation']['input'] = original_input
                 with self._lock:
                     current = self._turns.get(key, {}).get(args['call_id'])
                     if current is None or context.get('api_request_id') not in current['visible']:
@@ -316,6 +365,7 @@ class ToolObservations:
             return json.dumps({'accepted': receipt['state'] == 'delivered', 'state': receipt['state'],
                 'source_id': payload['turn_id'], 'source_recorded': receipt['state'] == 'delivered',
                 'kind': 'original_tool_quotation', 'selection_author': 'model',
+                'input_included': payload['observation'].get('input') is not None,
                 'selected_call': {**{key: payload['observation']['native'][key] for key in
                     ('tool_call_id', 'tool_name', 'message_id', 'result_sha256')}, **record['arguments']}})
         except ValueError as exc:

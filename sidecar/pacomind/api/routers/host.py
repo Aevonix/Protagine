@@ -3665,6 +3665,21 @@ async def source_input_linked_sync(turn_id: str, body: TurnSyncRequest, response
     return await turns_sync_v2(turn_id, body, response, request)
 
 
+@v2_router.put('/turns/source-media/transport/{turn_id:path}', response_model=TurnSyncResponse)
+async def transport_media_source_sync(turn_id: str, body: TurnSyncRequest, response: Response, request: Request):
+    """Same turn authority; older receivers reject this capability-specific path."""
+    if body.context.turn_id == 'source-media/transport/' + turn_id:
+        return await turns_sync_v2(body.context.turn_id, body, response, request)
+    if body.context.turn_id != turn_id or body.transport_media is None:
+        raise HTTPException(422, detail={'code': 'invalid_transport_media_source'})
+    result = await turns_sync_v2(turn_id, body, response, request)
+    if result.source_recorded:
+        from pacomind.turns import get_turn_idempotency_ledger
+        from pacomind.turns.transport_media import receipt
+        result = result.model_copy(update={'transport_media': receipt(get_turn_idempotency_ledger(get_state_dir()), turn_id)})
+    return result
+
+
 @v2_router.put('/turns/source-media/audio/{turn_id:path}', response_model=TurnSyncResponse)
 async def audio_source_sync(turn_id: str, body: TurnSyncRequest, response: Response, request: Request = None):
     """An older generic turn route must not persist unowned audio bytes."""
@@ -3833,6 +3848,9 @@ async def _process_turn_sync(
     source_messages = [{"role": message.role, "content": message.content}
                        for message in (body.user_message, body.assistant_message)
                        if message is not None and (message.content.strip() if isinstance(message.content, str) else message.content)]
+    if body.transport_media is not None:
+        from pacomind.turns.transport_media import apply
+        source_messages = apply(source_messages, body.transport_media, session_id=body.context.session_id)
     if body.assistant_source_refs:
         for message in source_messages:
             if message['role'] == 'assistant':
@@ -3842,6 +3860,11 @@ async def _process_turn_sync(
             if message['role'] == 'assistant':
                 message['_supplied_inputs'] = [ref.model_dump() for ref in body.assistant_input_refs]
     body = body.model_copy(deep=True)
+    if body.transport_media is not None:
+        # Every ordinary cognition consumer sees the actual human caption.
+        # Runtime vision enrichment remains explicitly labeled source metadata.
+        body.user_message.content = body.transport_media.caption
+        body.summary = None
     for field in ("user_message", "assistant_message"):
         message = getattr(body, field)
         if message is not None and isinstance(message.content, list):

@@ -161,10 +161,11 @@ _LOCAL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "pacomind_memory_retain_observation",
-        "description": "Retain a useful original tool result in persistent memory. When a completed result supplies concrete information useful beyond this conversation, nominate its actual call_id from the current request and briefly explain its future use. Prefer durable findings or meaningful task outcomes; skip routine chatter, duplicate status, transient noise and secrets. The host reads the exact original, up to 16 KiB; you cannot supply replacement facts. A tool result remains an observation, not verified external truth. This first route supports current ordinary owner conversations, not historical session_search results or background workers. Pending or unconfirmed is not saved. Repeating a nomination uses its first reason and the same source.",
+        "description": "Retain a useful original tool result in persistent memory. When a completed result supplies concrete information useful beyond this conversation, nominate its actual call_id from the current request and briefly explain its future use. Prefer durable findings or meaningful task outcomes; skip routine chatter, duplicate status, transient noise and secrets. For a reusable recipe, set include_input=true when the selected workflow/config call's executed arguments are needed; retain separate actual final-result calls when needed. A file locator or your nomination reason is not a complete recipe. The host recovers original executed input by its native call and dispatch hash; you cannot supply replacement facts. Inputs can contain credentials: do not select those calls. Input plus result must fit 16 KiB, or the nomination fails without inventing missing evidence. Result-only retention remains available by default. A tool result remains an observation, not verified external truth. This route supports current ordinary owner conversations, not historical session_search results or background workers. Pending or unconfirmed is not saved. Repeating a nomination uses its first reason, input choice and the same source.",
         "parameters": _parameters({
             "call_id": {"type": "string", "minLength": 1, "maxLength": 256},
             "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+            "include_input": {"type": "boolean", "description": "Also retain the actual executed arguments for this call when needed for reuse; default false. Never include secrets."},
         }, ("call_id", "reason")),
     },
     {
@@ -2367,6 +2368,8 @@ def register(ctx: Any) -> None:
     turn_writer_platforms = boundary.turn_writer_platforms
     turn_outbox = boundary.turn_outbox
     request_memory = RequestMemory(client, turn_outbox)
+    from .transport_media import TransportMedia
+    transport_media = TransportMedia()
     tool_observations = ToolObservations(client, turn_outbox, request_memory)
     task_config = config.get('native_tasks')
     native_tasks = (configured_tasks(client, turn_outbox, owner_contact_id, config=task_config,
@@ -2446,6 +2449,7 @@ def register(ctx: Any) -> None:
             attested_system_platforms=attested_system_platforms,
         )
         _TRANSPORT_SCOPES.put(scope)
+        transport_media.bind(scope, kwargs)
         supplied_input = input_provenance.current()
         if supplied_input is not None:
             supplied_input.bind(scope, str(kwargs.get('parent_session_id') or ''))
@@ -2542,6 +2546,10 @@ def register(ctx: Any) -> None:
             "sender": {"platform": scope.authority_gateway or scope.platform,
                        "user_id": scope.sender_id},
         }
+        original_media = transport_media.for_turn(scope)
+        if original_media is not None and supplied_input is None:
+            payload['transport_media'] = original_media
+            payload['summary'] = ''
         if supplied_input is not None:
             # The host already admitted the human input. This native turn is
             # derived work, not another human statement containing its task
@@ -2576,6 +2584,10 @@ def register(ctx: Any) -> None:
                 "durable Hermes turn enqueue failed (%s)", type(error).__name__,
             )
             return None
+        # The existing outbox now owns the original, including pending HTTP
+        # delivery. Failed enqueues keep it until this turn's terminal cleanup.
+        transport_media.finish(session_id=scope.session_id,
+            task_id=scope.task_id, turn_id=scope.turn_id)
         if supplied_input is not None:
             supplied_input.completed(scope, stable_turn_id, supplied_sources)
         if receipt.get("state") == "pending" or receipt.get("survivor_state") == "pending":
@@ -2865,8 +2877,12 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook('on_kanban_dispatch_tick', native_reviews.reconcile)
     ctx.register_hook('on_kanban_dispatch_tick', native_followups.reconcile)
+    def observe_gateway(**kwargs):
+        transport_media.observe(**kwargs)
+        if native_tasks is not None:
+            return native_tasks.observe_gateway(**kwargs)
+    ctx.register_hook('pre_gateway_dispatch', observe_gateway)
     if native_tasks is not None:
-        ctx.register_hook('pre_gateway_dispatch', native_tasks.observe_gateway)
         ctx.register_platform(name='pacomind_task', label='PacoMind background tasks',
             adapter_factory=native_tasks.create_adapter, check_fn=lambda: True,
             is_connected=lambda selected: bool(getattr(selected, 'enabled', False)),
@@ -2932,6 +2948,7 @@ def register(ctx: Any) -> None:
     ctx.register_middleware('llm_request', reconcile_request)
     ctx.register_hook("transform_llm_output", transform_llm_output)
     ctx.register_hook("post_llm_call", post_llm_call)
+    ctx.register_hook('on_session_end', transport_media.finish)
     def detached_turn_end(**kwargs):
         scope = _TRANSPORT_SCOPES.for_execution(
             session_id=kwargs.get('session_id', ''),

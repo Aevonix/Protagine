@@ -3,6 +3,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
 import json
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +38,27 @@ class ObservationSource(BaseModel):
     source_version: str = Field(pattern='^[0-9a-f]{64}$')
 
 
+class NativeToolInput(BaseModel):
+    """Actual executed argument values, separately attributed from nomination."""
+    model_config = ConfigDict(extra='forbid')
+    arguments: dict[str, Any]
+    arguments_sha256: str = Field(pattern='^[0-9a-f]{64}$')
+
+    def encoded(self):
+        return json.dumps(self.arguments, sort_keys=True, ensure_ascii=True,
+                          separators=(',', ':'), allow_nan=False).encode()
+
+    @model_validator(mode='after')
+    def exact_arguments(self):
+        try:
+            digest = hashlib.sha256(self.encoded()).hexdigest()
+        except (TypeError, ValueError) as exc:
+            raise ValueError('invalid_original_tool_input') from exc
+        if digest != self.arguments_sha256:
+            raise ValueError('invalid_original_tool_input_digest')
+        return self
+
+
 class ToolObservation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     native: NativeToolIdentity
@@ -44,6 +66,7 @@ class ToolObservation(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
     origin: ObservationSource
     sources: list[ObservationSource] = Field(default_factory=list, max_length=256)
+    input: NativeToolInput | None = None
 
     @model_validator(mode='after')
     def exact_result(self):
@@ -51,6 +74,8 @@ class ToolObservation(BaseModel):
                 or len(self.content.encode()) > MAX_BYTES
                 or hashlib.sha256(self.content.encode()).hexdigest() != self.native.result_sha256):
             raise ValueError('invalid_original_tool_result')
+        if self.input is not None and len(self.input.encoded()) + len(self.content.encode()) > MAX_BYTES:
+            raise ValueError('original_tool_input_and_result_exceed_budget')
         return self
 
 
@@ -92,7 +117,8 @@ def retained_for_origin(ledger, conn, origin, *, contact_id, session_id):
                     or provenance['selection']['author'] != 'model'):
                 continue
             observation = ToolObservation(native=provenance['native'], content=message['content'],
-                reason=provenance['selection']['reason'], origin=dependencies[0], sources=dependencies[1:])
+                reason=provenance['selection']['reason'], origin=dependencies[0], sources=dependencies[1:],
+                input=provenance.get('input'))
             native = observation.native.model_dump()
             ref = {'source_id': row['turn_id'], 'source_version': canonical_turn_digest(messages)}
             current = ledger.source_references([ref['source_id'], *(r['source_id'] for r in dependencies)], **scope)
@@ -105,6 +131,7 @@ def retained_for_origin(ledger, conn, origin, *, contact_id, session_id):
                 'entry': {**ref, 'tool_name': native['tool_name'], 'tool_call_id': native['tool_call_id'],
                     'observed_at': datetime.fromtimestamp(native['timestamp'], timezone.utc).isoformat(),
                     'recorded_at': row['ingested_at'],
+                    'input_available': observation.input is not None,
                     'selection_reason': {'author': 'model', 'reason': observation.reason}}})
         except (KeyError, TypeError, ValueError):
             # Non-v1 or incomplete originals have no trustworthy opening link.
@@ -141,6 +168,8 @@ def record(ledger, observation, *, contact_id, session_id, source_id):
         '_observation_sources': list(refs.values()),
         'provenance': {'kind': VERSION, 'native': native,
                        'selection': {'author': 'model', 'reason': observation.reason}}}
+    if observation.input is not None:
+        message['provenance']['input'] = observation.input.model_dump()
     created = ledger.record_source(source_id, contact_id=contact_id, session_id=session_id,
         messages=[message], occurred_at=datetime.fromtimestamp(native['timestamp'], timezone.utc).isoformat(),
         derive_claims=False)
