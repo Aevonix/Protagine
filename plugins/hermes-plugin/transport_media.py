@@ -7,7 +7,7 @@ file locator. This bounded carrier is transient, not another media store.
 from collections import OrderedDict
 import base64
 import copy
-import mimetypes
+import io
 import os
 from pathlib import Path
 import threading
@@ -53,7 +53,14 @@ def _read_image(path, remaining, observed):
             raise ValueError('original_changed')
     if not data or len(data) > min(MAX_BYTES, remaining):
         raise ValueError('image_size_limit')
-    mime = mimetypes.guess_type(selected.name)[0]
+    # Adapters can use a generic .jpg cache suffix for PNG bytes. Preserve the
+    # original codec, rather than making canonical decoding reject that image.
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            mime = Image.MIME.get(image.format)
+    except Image.DecompressionBombError as exc:
+        raise ValueError('unsupported_image') from exc
     if mime not in {'image/png', 'image/jpeg', 'image/webp'}:
         raise ValueError('unsupported_image')
     return 'data:' + mime + ';base64,' + base64.b64encode(data).decode('ascii'), len(data)
@@ -115,7 +122,7 @@ class TransportMedia:
                     data_url, size = _read_image(path, remaining, observed)
                     remaining -= size
                     images.append({'ordinal': ordinal, 'data_url': data_url})
-                except (OSError, ValueError):
+                except (ImportError, OSError, ValueError):
                     images.append({'ordinal': ordinal, 'unavailable': 'original_unavailable'})
             envelope = {'platform': platform, 'provider_message_id': message_id,
                         'caption': entry[1], 'images': images}

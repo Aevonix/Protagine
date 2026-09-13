@@ -145,6 +145,14 @@ def test_file_replaced_after_dispatch_does_not_become_the_original(transport):
         {'ordinal': 0, 'unavailable': 'original_unavailable'}]
 
 
+def test_generic_cache_suffix_preserves_actual_original_codec(transport):
+    renamed = transport.image.with_suffix('.jpg')
+    transport.image.rename(renamed)
+    transport.event.media_urls = [str(renamed)]
+    body = capture(transport)
+    assert body['transport_media']['images'][0]['data_url'].startswith('data:image/png;base64,')
+
+
 @pytest.mark.asyncio
 async def test_missing_original_is_explicit_and_caption_not_promoted(transport, source_app):
     transport.image.unlink()
