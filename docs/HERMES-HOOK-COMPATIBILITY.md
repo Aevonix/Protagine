@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`792f9e89e04daec25d90aa8d6c2ff8767760a785`](https://github.com/Kurcide/hermes-agent/commit/792f9e89e04daec25d90aa8d6c2ff8767760a785),
+`23eb9390a594d2a2d564b2f6150a5093716c477f`](https://github.com/Kurcide/hermes-agent/commit/23eb9390a594d2a2d564b2f6150a5093716c477f),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/792f9e89e04daec25d90aa8d6c2ff8767760a785/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/23eb9390a594d2a2d564b2f6150a5093716c477f/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -220,3 +220,11 @@ and unchanged-prompt checks; avoid restoring unconditional prompt rebuilding.
 Keep the regression tests and upstream attribution after removing the fork
 selection. Do not carry an old dispatcher diff over a newer implementation
 without checking whether the upstream behavior already satisfies the contract.
+
+Iteration-limit summaries use the existing `llm_request` middleware after provider
+request construction, including every retry. They retain the active session, task
+and turn identifiers; the runtime summary instruction is not recorded as a new
+participant input. Chat, Anthropic and Responses modes keep their existing
+provider controls. The existing `HERMES_DUMP_REQUESTS` diagnostic setting also
+records the transformed summary request when enabled. This repairs the summary
+path; it does not add middleware to unrelated auxiliary model calls.

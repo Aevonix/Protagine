@@ -150,6 +150,9 @@ with patch(OPENAI_TARGET,return_value=client), patch(TOOLS_TARGET + '.get_tool_d
     assert posts[0][0]['contact_id']=='person' and posts[0][0]['session_id']=='later'
     rejected=dispatch({**args,'excerpt':'A fabricated excerpt'})
     assert rejected['accepted'] is False and rejected['status_code']==409,rejected
+    assert rejected['reason']=='source_excerpt_mismatch',rejected
+    assert rejected['retry_identical'] is False,rejected
+    assert 'exact contiguous excerpt' in rejected['next_step'],rejected
     client.chat.completions.create.assert_not_called()
 with sqlite3.connect(ledger.db_path) as db:
     assert db.execute('SELECT count(*) FROM source_annotations').fetchone()[0]==1

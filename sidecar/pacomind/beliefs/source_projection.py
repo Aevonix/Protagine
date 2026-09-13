@@ -48,10 +48,10 @@ def erase_removed(conn, turn_id, session_id, retained):
     rows = conn.execute('SELECT id,message_hash FROM source_claims WHERE turn_id=?', (turn_id,)).fetchall()
     for row in rows:
         if row["message_hash"] not in hashes:
-            # Inherited identities point directly to their original grounded
-            # claim, so erasure needs one hop and never removes raw corrections.
-            conn.execute("DELETE FROM source_claims WHERE json_extract(data_json,'$.subject_basis_claim_id')=?", (row['id'],))
-            conn.execute('DELETE FROM source_claims WHERE id=?', (row["id"],))
+            # Remove projections depending on the erased quote, including
+            # carried values. The owner's other raw corrections survive.
+            from .value_revision import erase_dependents
+            erase_dependents(conn, row['id'])
     if not retained:
         conn.execute('DELETE FROM source_claim_jobs WHERE turn_id=?', (turn_id,))
     # Supersession/retraction links on surviving claims retain IDs, not erased
@@ -323,6 +323,8 @@ class SourceClaimProjection:
             # checks on returned rows below.
             where.append("(json_extract(c.data_json,'$.subject_basis_claim_id') IS NULL OR EXISTS (SELECT 1 "
                 + _subject_basis_source_sql("json_extract(c.data_json,'$.subject_basis_claim_id')", 's.contact_id') + '))')
+            from .value_revision import dependency_sql
+            where.append(dependency_sql('c.data_json', 's.contact_id'))
             columns += ",row_number() OVER (PARTITION BY c.value_key ORDER BY s.ingested_at DESC,c.id) AS value_rank"
         query = ("SELECT " + columns + " FROM source_claims c JOIN turn_sources s ON s.turn_id=c.turn_id WHERE "
                  + " AND ".join(where))
@@ -344,6 +346,12 @@ class SourceClaimProjection:
                 if basis is None:
                     continue
                 data['subject_basis'] = basis
+            if data.get('value_parts'):
+                from .value_revision import value_basis
+                basis = value_basis(conn, data, contact_id=contact_id)
+                if basis is None:
+                    continue
+                data['value_basis'] = basis
             data.update({key: row[key] for key in ("id", "turn_id", "message_hash", "subject_key", "predicate",
                         "valid_from", "valid_to", "superseded_by", "retracted_by")})
             data.update(observed_at=row["occurred_at"], recorded_at=row["ingested_at"])
@@ -432,10 +440,25 @@ class SourceClaimProjection:
                 basis = [source["turn_id"], message_hash, claim["subject_key"], claim["predicate"], claim["value"], claim["evidence"]]
                 if claim.get('subject_basis_claim_id'):
                     basis.append(claim['subject_basis_claim_id'])
+                if claim.get('value_parts'):
+                    basis.append(claim['value_parts'])
                 cid = "claim:" + hashlib.sha256(json.dumps(basis, ensure_ascii=False).encode()).hexdigest()
                 if conn.execute('SELECT 1 FROM source_claims WHERE id=?', (cid,)).fetchone():
                     continue
                 old = prior.get(claim.get("prior_claim_id"))
+                if claim.get('value_parts'):
+                    from .value_revision import revision_parts, value_basis
+                    live = self._rows(conn, current['contact_id'], current['session_id'],
+                                      ids=[claim.get('prior_claim_id')])
+                    old = live[0] if live else None
+                    if (old is None or old['subject_key'] != claim['subject_key']
+                            or old['predicate'] != claim['predicate'] or old['subject'] != claim['subject']
+                            or old['superseded_by'] or old['retracted_by']
+                            or claim['operation'] not in {'correct', 'change'}
+                            or admission_metadata(claim) is None
+                            or revision_parts(claim['value'], claim['evidence'], old) != claim['value_parts']
+                            or value_basis(conn, claim, contact_id=current['contact_id']) is None):
+                        continue
                 if claim.get('subject_basis_claim_id'):
                     # Re-read current status even when another candidate in
                     # this same batch already corrected the supplied prior.
@@ -593,6 +616,9 @@ class SourceClaimProjection:
                     basis = claim['subject_basis']
                     refs.append({'source_id': basis['turn_id'], 'source_contact_id': contact_id,
                                  'source_version': basis['source_version'], 'message_hash': basis['message_hash']})
+                refs.extend({'source_id': b['turn_id'], 'source_contact_id': contact_id,
+                             'source_version': b['source_version'], 'message_hash': b['message_hash']}
+                            for b in claim.get('value_basis', []))
                 result.append({**claim, 'session_id': source['session_id'], 'sources': refs})
         return result
 
@@ -899,12 +925,13 @@ class SourceClaimProjection:
                             "status": "legacy_precision_unknown" if c.get("event_at") else "unknown"}),
                         "reported_at": c["observed_at"], "validity_basis": c["validity_basis"],
                         "operation": c["operation"], "prior_claim_id": c.get("prior_claim_id"),
-                        **{k: c[k] for k in ('representation', 'evidence_basis', 'epistemic_state', 'source_modality', 'subject_basis') if k in c}}
+                        **{k: c[k] for k in ('representation', 'evidence_basis', 'epistemic_state', 'source_modality', 'subject_basis', 'value_basis') if k in c}}
                        for c in group]
             status = "unresolved_conflict" if conflict else ("temporal_history" if len(values) > 1 else "source_assertion")
             source_refs = [(c['turn_id'], c['message_hash']) for c in group]
             source_refs.extend((c['subject_basis']['turn_id'], c['subject_basis']['message_hash'])
                                for c in group if c.get('subject_basis'))
+            source_refs.extend((b['turn_id'], b['message_hash']) for c in group for b in c.get('value_basis', []))
             identifier = hashlib.sha256(json.dumps([contact_id, key, [c["id"] for c in group]]).encode()).hexdigest()
             bundle = {"id": "assertions:" + identifier, "kind": "source_quote",
                             "history_anchor": {"source_id": group[0]['turn_id'], "claim_id": group[0]['id']},
@@ -967,8 +994,8 @@ class SourceClaimProjection:
                     # Other represented properties can inherit an exact subject
                     # from another source. Retain every opening dependency.
                     for represented in context['claims']:
-                        basis = represented.get('subject_basis')
-                        if basis:
+                        bases = ([represented['subject_basis']] if represented.get('subject_basis') else [])
+                        for basis in [*bases, *represented.get('value_basis', [])]:
                             if basis['turn_id'] not in bundle['source_turn_ids']:
                                 bundle['source_turn_ids'].append(basis['turn_id'])
                             hashes = bundle['_source_message_hashes'].setdefault(basis['turn_id'], [])

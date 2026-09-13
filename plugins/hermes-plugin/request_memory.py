@@ -45,6 +45,131 @@ def _content_key(content):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
+def _call_key(call):
+    """Same call, even when native summary reserializes its JSON arguments."""
+    normalized = dict(call)
+    if call.get('type') == 'function' and isinstance(call.get('function'), dict):
+        target = normalized['function'] = dict(call['function'])
+        field = 'arguments'
+    elif call.get('type') in ('function_call', 'tool_use'):
+        target = normalized
+        field = 'input' if call['type'] == 'tool_use' else 'arguments'
+    else:
+        return None
+    if not isinstance(target.get('name'), str) or not target['name']:
+        return None
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Ambiguous duplicate argument key')
+            result[key] = value
+        return result
+    try:
+        arguments = target.get(field)
+        if field == 'arguments' and isinstance(arguments, str):
+            arguments = json.loads(arguments, object_pairs_hook=unique_object)
+        elif field != 'input':
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        # Preserve argument values and all other call metadata. Only object-key
+        # order and JSON spacing/escapes are serialization details, not identity.
+        target[field] = json.dumps(arguments, sort_keys=True, ensure_ascii=True,
+                                  separators=(',', ':'), allow_nan=False)
+        return _content_key(normalized)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+def _active_call_rows(request, current_content):
+    """Only an observed current input, never a summary nudge, scopes ownership."""
+    if current_content is None:
+        return
+    for key in ('messages', 'input'):
+        rows = request.get(key)
+        if not isinstance(rows, list):
+            continue
+        start = max((i for i, row in enumerate(rows) if isinstance(row, dict)
+            and _user_input(row) and row.get('content') == current_content), default=len(rows))
+        for index in range(start + 1, len(rows)):
+            row = rows[index]
+            if isinstance(row, dict):
+                yield key, index, row
+
+
+def _active_calls(request, current_content):
+    for key, _, row in _active_call_rows(request, current_content):
+        if row.get('type') == 'function_call':
+            calls = [row]
+        elif row.get('role') == 'assistant':
+            calls = list(row.get('tool_calls') or [])
+            if isinstance(row.get('content'), list):
+                calls += [part for part in row['content'] if isinstance(part, dict)
+                          and part.get('type') == 'tool_use']
+        else:
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            identifier = call.get('call_id') if call.get('type') == 'function_call' else call.get('id')
+            if isinstance(identifier, str):
+                yield key, identifier, _call_key(call)
+
+
+def _filter_owned_calls(request, current_content, owned, rules):
+    """Remove exact prior admitted calls, not guessed dependencies or tool names.
+
+    The native source ledger owns durable erasure. These turn-local hashes only
+    project that admitted lineage onto copies already seen at this boundary.
+    A fresh forget call/receipt and calls with unknown ownership remain intact.
+    """
+    from .native_owned_copies import _affected
+    calls = list(_active_calls(request, current_content))
+    counts = {}
+    for key, identifier, _ in calls:
+        counts[key, identifier] = counts.get((key, identifier), 0) + 1
+    removed = {(key, identifier) for key, identifier, digest in calls
+        if digest is not None and counts[key, identifier] == 1
+        and (refs := owned.get((key, identifier, digest)))
+        and _affected(refs, rules)}
+    if not removed:
+        return request
+    result = dict(request)
+    changed = {}
+    for key, index, original in _active_call_rows(request, current_content):
+        row = dict(original)
+        if ((key, row.get('tool_call_id', row.get('call_id'))) in removed
+                and (row.get('role') == 'tool' or row.get('type') in ('function_call', 'function_call_output'))):
+            changed[key, index] = None
+            continue
+        if row.get('role') == 'assistant' and isinstance(row.get('tool_calls'), list):
+            remaining = [call for call in row['tool_calls']
+                if not isinstance(call, dict) or (key, call.get('id')) not in removed]
+            if len(remaining) != len(row['tool_calls']):
+                row['tool_calls'] = remaining
+                if not remaining:
+                    row.pop('tool_calls')
+                    if not row.get('content'):
+                        changed[key, index] = None
+                        continue
+        if isinstance(row.get('content'), list):
+            remaining = [part for part in row['content'] if not (isinstance(part, dict)
+                and (row.get('role'), part.get('type')) in (('assistant','tool_use'), ('user','tool_result'))
+                and (key, part.get('id', part.get('tool_use_id'))) in removed)]
+            if len(remaining) != len(row['content']):
+                row['content'] = remaining
+                if not remaining and not row.get('tool_calls'):
+                    changed[key, index] = None
+                    continue
+        changed[key, index] = row
+    for key in ('messages', 'input'):
+        if isinstance(request.get(key), list):
+            result[key] = [value for index, row in enumerate(request[key])
+                          if (value := changed.get((key, index), row)) is not None]
+    return result
+
+
 def _native_packet(row):
     """Only the outer packet in a native-appended suffix can attest inputs.
 
@@ -520,6 +645,7 @@ class RequestMemory:
         self._host_inputs = {}
         self._plain_user_tails = {}
         self._native_history = {}
+        self._owned_calls = {}
 
     def observe(self, scope, messages, *, user_message=None):
         # Native pre_llm_call exposes both clean content and persisted
@@ -548,6 +674,7 @@ class RequestMemory:
             self._aliases[key] = (aliases, current, copy.deepcopy(user_message) if current else None, packets)
             self._supplied[key] = {}
             self._read_receipts[key] = {}
+            self._owned_calls[key] = {}
             self._requests_seen.discard(key)
             self._host_inputs.pop(key, None)
             self._trim_observations(key)
@@ -562,6 +689,7 @@ class RequestMemory:
             self._host_inputs.pop(evicted, None)
             self._plain_user_tails.pop(evicted, None)
             self._native_history.pop(evicted, None)
+            self._owned_calls.pop(evicted, None)
 
     def snapshot_review_parent(self, scope):
         """Copy native observations before parent cleanup, without attesting freshness."""
@@ -594,6 +722,7 @@ class RequestMemory:
             self._aliases[key] = copy.deepcopy(snapshot.aliases), None, None, set(snapshot.packets)
             self._supplied[key] = {}
             self._read_receipts[key] = copy.deepcopy(snapshot.read_receipts)
+            self._owned_calls[key] = {}
             self._requests_seen.discard(key)
             self._host_inputs.pop(key, None)
             self._plain_user_tails[key] = []
@@ -746,6 +875,7 @@ class RequestMemory:
                     self._host_inputs.pop(key, None)
                     self._plain_user_tails.pop(key, None)
                     self._native_history.pop(key, None)
+                    self._owned_calls.pop(key, None)
         return list(refs.values())
 
     def __call__(self, request, scope, *, operational=None):
@@ -761,6 +891,8 @@ class RequestMemory:
             host_input = copy.deepcopy(self._host_inputs.get(observed_key))
             tail = list(self._plain_user_tails.get(observed_key, []))
             native_history = list(self._native_history.get(observed_key, []))
+            owned_calls = dict(self._owned_calls.get(observed_key, {}))
+            prior_sources = copy.deepcopy(list(self._supplied.get(observed_key, {}).values()))
         current_content = current.get('api_content', current.get('content')) if current else None
         # Only native-observed recall and authenticated read receipts can
         # nominate parents. User-authored markers cannot select other people's
@@ -938,6 +1070,13 @@ class RequestMemory:
         if observed:
             request, repair = _restore_current_suffix(request, tail, current)
         try:
+            before_owned = len(request[repair[0]]) if repair else 0
+            request = _filter_owned_calls(request, current_content, owned_calls, rules)
+            if repair:
+                # Native's joined-user repair locates its split rows from the
+                # current tool tail. Owned-call removal shortened only that tail.
+                key, following, count, original = repair
+                repair = key, following - (before_owned - len(request[key])), count, original
             filtered = filter_request(request, contact_id=contact, watermark=watermark,
                                       rules=rules, fresh=fresh, aliases=aliases,
                                       current_content=current_content, current_input=current_input,
@@ -1033,6 +1172,18 @@ class RequestMemory:
                         supplied[(ref['source_id'], ref['source_version'])] = ref
             with self._lock:
                 if observed_key in self._supplied:
+                    # The first observed call owns only sources admitted before
+                    # it was generated. Later reads must not retroactively mark
+                    # earlier unrelated calls. Retain hashes, never argument text.
+                    if self.ownership is not None:
+                        from .native_owned_copies import _affected
+                        owners = self._owned_calls[observed_key]
+                        dependencies = prior_sources if not _affected(prior_sources, rules) else []
+                        for call in _active_calls(request, current_content):
+                            if call[2] is None:
+                                continue
+                            if len(owners) < 512:
+                                owners.setdefault(call, dependencies)
                     self._supplied[observed_key].update(supplied)
                     self._requests_seen.add(observed_key)
         return {'request': filtered, 'source': 'pacomind',

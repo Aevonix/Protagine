@@ -39,8 +39,24 @@ def handle(args, scope, client, request_memory, context=None):
             json={**args, 'annotation_id': annotation_id, 'contact_id': scope.contact_id,
                   'session_id': scope.session_id})
         if response.status_code in {403, 409, 422}:
+            steps = {
+                'source_excerpt_mismatch': 'Read the source and copy an exact contiguous excerpt; do not join separate passages.',
+                'source_version_mismatch': 'Read the current source revision before submitting a revised annotation.',
+                'source_not_found': 'Search the current scoped evidence; this source is unavailable.',
+                'source_erased': 'This source was forgotten. Do not recreate it from the rejected annotation.',
+                'annotation_id_conflict': 'Inspect the existing annotation before proposing a different correction.',
+                'source_annotation_not_authorized': 'This caller cannot annotate the source.',
+                'invalid_source_annotation': 'Check the annotation arguments against the tool schema.',
+            }
+            try:
+                reason = response.json()['detail']['code']
+                next_step = steps[reason]
+            except (ValueError, KeyError, TypeError):
+                reason = 'source_annotation_rejected'
+                next_step = 'Inspect current scoped evidence before changing the request.'
             return json.dumps({'error': 'The source annotation was rejected; inspect current scoped evidence',
-                               'accepted': False, 'status_code': response.status_code})
+                               'accepted': False, 'status_code': response.status_code,
+                               'reason': reason, 'retry_identical': False, 'next_step': next_step})
         response.raise_for_status()
         receipt = response.json()
         if (not isinstance(receipt, dict) or receipt.get('target') != ref

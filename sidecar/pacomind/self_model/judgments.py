@@ -237,8 +237,14 @@ class SelfJudgments:
                 if basis is None:
                     continue
                 claim['subject_basis'] = basis
+            if claim.get('value_parts'):
+                from pacomind.beliefs.value_revision import value_basis
+                basis = value_basis(conn, claim, contact_id=self.owner_id)
+                if basis is None:
+                    continue
+                claim['value_basis'] = basis
             result.append({'claim_id': row['id'], **{key: claim[key] for key in (
-                'representation', 'subject', 'predicate', 'value', 'evidence', 'memory_quality', 'model_provenance', 'subject_basis') if key in claim},
+                'representation', 'subject', 'predicate', 'value', 'evidence', 'memory_quality', 'model_provenance', 'subject_basis', 'value_basis') if key in claim},
                 'admission': {key: admission[key] for key in
                     ('version', 'basis', 'model_provenance') if key in admission}})
         return result
@@ -670,6 +676,8 @@ class SelfJudgments:
                     basis = premise.get('subject_basis')
                     if basis:
                         refs.append({k: basis[k] for k in ('turn_id', 'message_hash')})
+                    refs.extend({k: b[k] for k in ('turn_id', 'message_hash')}
+                                for b in premise.get('value_basis', []))
             refs = list({_json(ref): ref for ref in refs}.values())
             cur = conn.execute('''INSERT INTO self_judgment_revisions
                 (owner_id,topic,payload_json,dependency_json,supersedes,processor_json,created_at,status,source_turn_id,version)

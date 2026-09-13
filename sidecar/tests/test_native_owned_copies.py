@@ -1,5 +1,6 @@
 """Real native SQLite/FTS erasure, driven by canonical lineage and settled hooks."""
 import asyncio
+import copy
 from contextlib import closing
 import importlib
 import json
@@ -82,6 +83,169 @@ def erase(rt):
 
 def settle(rt):
     return rt.owned.native_settled(session_id='reader', task_id='reader', turn_id='read-turn', platform='cli')
+
+
+@pytest.mark.parametrize('summary_nudge', [False, True])
+def test_current_turn_forget_drops_previously_admitted_owned_call_arguments(native_runtime, summary_nudge):
+    """The first 1.5.17 journey retained a rejected batch after its source was erased.
+
+    The successful forget receipt was present. Earlier assistant arguments,
+    including a batch with no successful read receipt, survived beside it.
+    Exercise that wire shape against native storage without a model resample.
+    """
+    rt = native_runtime
+    rt.db.append_message('reader', 'user', 'Keep the unrelated calendar task.')
+    unrelated = {'id':'calendar', 'type':'function', 'function':{
+        'name':'calendar_read', 'arguments':json.dumps({'day':'Monday'})}}
+    rt.db.append_message('reader', 'assistant', None, tool_calls=[unrelated])
+    rt.db.append_message('reader', 'tool', 'Meeting at nine.', tool_call_id='calendar')
+    current = begin_read(rt, recall=True)
+    stale = {'id':'rejected-batch', 'type':'function', 'function':{
+        'name':'tool_call', 'arguments':json.dumps({'calls':[
+            {'name':'pacomind_memory_search', 'arguments':{'query':'Orchard forgettoken badge violet'}},
+            {'name':'pacomind_memory_search', 'arguments':{'query':'Earlier orchard label correction'}}]})}}
+    rt.db.append_message('reader', 'assistant', None, tool_calls=[stale])
+    rt.db.append_message('reader', 'tool', '{"error":"multiple_local_tools_not_supported"}',
+                         tool_call_id='rejected-batch')
+    def request():
+        history = rt.db.get_messages_as_conversation('reader')
+        return {'messages':[{key:value for key,value in row.items() if not key.startswith('_')
+                             and key != 'api_content'} | {
+            'content':row.get('api_content', row.get('content'))} for row in history]}
+    before = request()
+    assert 'forgettoken' in json.dumps(rt.memory(before, rt.scope)['request'])
+    forget = {'id':'forget-now', 'type':'function', 'function':{
+        'name':'tool_call', 'arguments':json.dumps({'name':'pacomind_source_forget',
+            'arguments':{'source_ids':['original-source']}})}}
+    fresh = {'id':'fresh-status', 'type':'function', 'function':{
+        'name':'task_status', 'arguments':'{"task":"calendar"}'}}
+    rt.db.append_message('reader', 'assistant', 'The unrelated task remains active.', tool_calls=[forget, fresh])
+    receipt = json.dumps({'source_erased':True, 'affected_source_ids':['original-source'],
+        'host_reconciliation':{'status':'not_observed'}, 'scope':'canonical_turn_sources_and_linked_projections'})
+    rt.db.append_message('reader', 'tool', receipt, tool_call_id='forget-now')
+    rt.db.append_message('reader', 'tool', 'Calendar task is active.', tool_call_id='fresh-status')
+    erase(rt)
+    original_rows = rows(rt)
+    outgoing = request()
+    if summary_nudge:
+        outgoing['messages'].append({'role':'user', 'content':'Summarize the work before the iteration limit.'})
+    original_request = copy.deepcopy(outgoing)
+    result = rt.memory(outgoing, rt.scope)['request']
+    wire = json.dumps(result)
+    assert 'forgettoken' not in wire
+    assert 'rejected-batch' not in wire
+    assert any(row.get('tool_calls') == [forget, fresh] for row in result['messages'])
+    assert any(row.get('content') == receipt and row.get('tool_call_id') == 'forget-now'
+               for row in result['messages'])
+    # The existing freshness policy withholds historical context when the old
+    # source handles are no longer current. The owned-call projection itself
+    # must leave the unrelated earlier pair untouched.
+    key = ('owner', 'reader', 'read-turn')
+    projected = rt.requests._filter_owned_calls(outgoing, current['api_content'],
+        rt.memory._owned_calls[key], rt.outbox.erasure_state('owner')[1])
+    assert any(row.get('tool_calls') == [unrelated] for row in projected['messages'])
+    assert current['content'] in wire and 'Calendar task is active.' in wire
+    assert 'The unrelated task remains active.' in wire
+    assert rows(rt) == original_rows  # Request filtering does not mutate the native ledger.
+    assert outgoing == original_request
+    assert rt.memory(outgoing, rt.scope)['request'] == result  # Ordinary retries are stable.
+    assert settle(rt)['status'] == 'settled'  # Existing native writer still owns durable erasure.
+
+
+def test_native_summary_drops_owned_call_with_reserialized_json_arguments(native_runtime):
+    """The first 1.5.18 summary retained this previously admitted query shape.
+
+    Native normal requests canonicalize arguments, while its summary uses the
+    original JSON string. The same call ID, function and parsed arguments must
+    retain their authenticated source dependency across those two builders.
+    """
+    rt = native_runtime
+    current = begin_read(rt, recall=True)
+    summary_call = {'id':'old-search', 'type':'function', 'function':{
+        'name':'tool_call', 'arguments':
+            '{"calls": [{"name": "pacomind_memory_search", "arguments": '
+            '{"query": "Orchard forgettoken badge violet", "limit": 10}}]}'}}
+    normal_call = copy.deepcopy(summary_call)
+    normal_call['function']['arguments'] = json.dumps(
+        json.loads(summary_call['function']['arguments']), sort_keys=True, separators=(',', ':'))
+    assert normal_call != summary_call
+    current_input = {'role':'user', 'content':current['api_content']}
+    rt.memory({'messages':[current_input,
+        {'role':'assistant','content':None,'tool_calls':[normal_call]},
+        {'role':'tool','tool_call_id':'old-search','content':rt.fact}]}, rt.scope)
+    erase(rt)
+    forget = {'id':'forget-now','type':'function','function':{
+        'name':'pacomind_source_forget','arguments':'{"source_ids":["original-source"]}'}}
+    receipt = {'role':'tool','tool_call_id':'forget-now','content':json.dumps({
+        'source_erased':True,'watermark':1,'host_reconciliation':{'status':'not_observed'}})}
+    outgoing = {'messages':[current_input,
+        {'role':'assistant','content':None,'tool_calls':[summary_call]},
+        {'role':'tool','tool_call_id':'old-search','content':rt.fact},
+        {'role':'assistant','content':None,'tool_calls':[forget]}, receipt,
+        {'role':'user','content':'Summarize the work before the iteration limit.'}]}
+    original = copy.deepcopy(outgoing)
+    result = rt.memory(outgoing, rt.scope)['request']
+    assert 'old-search' not in json.dumps(result)
+    assert 'forgettoken' not in json.dumps(result)
+    assert receipt in result['messages']
+    assert any(row.get('tool_calls') == [forget] for row in result['messages'])
+    assert current['content'] in json.dumps(result)
+    assert outgoing == original
+    assert rt.memory(outgoing, rt.scope)['request'] == result
+
+
+def test_later_source_admission_cannot_own_an_earlier_independent_call(native_runtime):
+    rt = native_runtime
+    current = begin_read(rt)  # The native read call precedes the first source-bearing request.
+    def request():
+        return {'messages':[{key:row[key] for key in ('role','content','tool_calls','tool_call_id') if key in row}
+                            for row in rt.db.get_messages_as_conversation('reader')]}
+    rt.memory(request(), rt.scope)
+    first = next(row['tool_calls'][0] for row in request()['messages'] if row.get('tool_calls'))
+    later = {'id':'later-owned-call', 'type':'function', 'function':{
+        'name':'tool_call', 'arguments':'{"query":"forgettoken violet"}'}}
+    rt.db.append_message('reader', 'assistant', None, tool_calls=[later])
+    rt.db.append_message('reader', 'tool', 'Source-derived work result.', tool_call_id=later['id'])
+    rt.memory(request(), rt.scope)
+    erase(rt)
+    result = rt.memory(request(), rt.scope)['request']
+    assert any(row.get('tool_calls') == [first] for row in result['messages'])
+    assert later['id'] not in json.dumps(result)
+    assert current['content'] in json.dumps(result)
+    key = ('owner','reader','read-turn')
+    assert rt.memory._owned_calls[key][('messages','source-read',rt.requests._call_key(first))] == []
+    rt.memory.finish(task_id='reader', turn_id='read-turn', contact_id='owner')
+    assert key not in rt.memory._owned_calls
+
+
+def test_owned_call_removal_updates_native_joined_user_repair(native_runtime):
+    rt = native_runtime
+    earlier = {'role':'user','content':'Keep the independent earlier input.'}
+    current = {'role':'user','content':'Forget the source after this work.'}
+    rt.db.append_message('reader', 'user', earlier['content'])
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    rt.memory.observe_native_anchor(rt.scope, [earlier,current], user_message=current['content'])
+    rt.memory.observe(rt.scope, [earlier,current], user_message=current['content'])
+    current['api_content'] = current['content'] + '\n\n[pacomind-recall-v1 ' + json.dumps({
+        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+    joined = {'role':'user','content':earlier['content'] + '\n\n' + current['content']}
+    rt.memory({'messages':[joined]}, rt.scope)
+    old = {'id':'old', 'type':'function', 'function':{'name':'tool_call', 'arguments':'{"query":"forgettoken"}'}}
+    rt.db.append_message('reader', 'assistant', None, tool_calls=[old])
+    rt.db.append_message('reader', 'tool', 'Rejected batch.', tool_call_id='old')
+    tail = [{'role':'assistant','content':None,'tool_calls':[old]},
+            {'role':'tool','tool_call_id':'old','content':'Rejected batch.'}]
+    rt.memory({'messages':[joined,*tail]}, rt.scope)
+    erase(rt)
+    # Native may refresh its appended context while preserving the observed
+    # input. A fresh request still must remove copies owned by the earlier read.
+    current.pop('api_content')
+    forget = {'id':'forget', 'type':'function', 'function':{'name':'source_forget','arguments':'{}'}}
+    receipt = [{'role':'assistant','content':None,'tool_calls':[forget]},
+               {'role':'tool','tool_call_id':'forget','content':'Actual forget receipt.'}]
+    result = rt.memory({'messages':[joined,*tail,*receipt]}, rt.scope)
+    assert result['reason'] == 'source_erasure_checked'
+    assert result['request'] == {'messages':[joined,*receipt]}
 
 
 @pytest.mark.parametrize('storage_available', [True, False])

@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.5.18 - partial corrections and active-conversation forgetting
+
+A partial memory correction can preserve unchanged parts of the prior value.
+Every carried portion keeps its original quoted source, report time and timezone;
+changed portions come from the correction. The existing semantic review checks
+the update before replacing the old claim. Recall and derived judgments keep
+those dependencies, and erasure removes dependent projections.
+
+After a source is forgotten, request processing removes earlier tool calls whose
+arguments were generated from that source, along with their paired results.
+The current user input, fresh forgetting receipt and unrelated calls remain.
+Ownership comes from previously admitted source references and exact call
+fingerprints; the adapter does not infer it from a matching word.
+Equivalent JSON argument formatting keeps that identity when Hermes builds a
+summary request. Changed arguments and ambiguous calls remain distinct.
+
+Rejected source annotations now explain the specific correction needed, such
+as copying one contiguous quotation. A rejected request is distinguished from
+an unknown acknowledgement, which can still be retried with identical input.
+
+The qualified Hermes build now applies its existing request middleware to
+iteration-limit summaries, including retries and the supported provider modes.
+This closes a path that previously bypassed memory reconciliation. The build
+uses the same stable Hermes release with a narrow interface repair.
+
 ## v1.5.17 - forgetting source annotations
 
 Memory annotations now retain their exact creating Hermes tool call. Forgetting
