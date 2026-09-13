@@ -109,8 +109,9 @@ def pair_conversation_candidates(rows, pairs, sources):
 def render_memory_context(memories: list[dict[str, Any]]) -> str:
     """Render authorized evidence once per exact passage and message version.
 
-    The projection's typed assertion cards contain JSON data, not a quoted JSON
-    string. Raw quotations (including text resembling a card) remain strings.
+    Typed assertion cards and conversations contain JSON data, not quoted JSON
+    strings. Attributed corrections retain their complete original conversation.
+    Raw quotations (including text resembling a card) remain strings.
     Claim histories stay indivisible; only repeated supporting passages share a
     reference. References are local to this packet, not new source handles.
     """
@@ -149,10 +150,25 @@ def render_memory_context(memories: list[dict[str, Any]]) -> str:
         if memory.get("rerank_status") == "unavailable":
             source["rerank_status"] = "unavailable"
         content = str(memory.get('content', ''))
-        if memory.get('content_format') == 'source_conversation_v1' and memory.get('epistemic_state') == 'quotation':
-            pair = json.loads(content) if memory.get('conversation_context') == 'direct_input_and_response' else None
+        if (memory.get('content_format') == 'source_conversation_v1'
+                and memory.get('conversation_context') == 'direct_input_and_response'
+                and memory.get('epistemic_state') in ('quotation', 'correction_evidence')):
+            try:
+                evidence = json.loads(content)
+                pair = evidence
+                if memory['epistemic_state'] == 'correction_evidence':
+                    original = evidence.get('original') if isinstance(evidence, dict) else None
+                    pair = (json.loads(original['content']) if isinstance(original, dict)
+                            and isinstance(original.get('content'), str) else None)
+            except (ValueError, TypeError):
+                pair = None
             if isinstance(pair, dict) and all(isinstance(pair.get(name), dict) for name in ('input', 'response')):
-                lines.append('- ' + json.dumps(dict(source, content=pair), ensure_ascii=False))
+                if memory['epistemic_state'] == 'correction_evidence':
+                    # Annotation expansion wraps the typed pair as a string.
+                    # Decode only that known format; retain roles, quotes,
+                    # source versions and every correction without summarizing.
+                    evidence['original']['content'] = pair
+                lines.append('- ' + json.dumps(dict(source, content=evidence), ensure_ascii=False))
                 continue
         card = None
         if (memory.get('content_format') == 'source_assertions_v1'
