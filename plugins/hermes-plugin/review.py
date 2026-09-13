@@ -62,6 +62,19 @@ def stage_skill_change(arguments):
         denied = manager._background_review_preflight(action, name)
         if denied is not None:
             return json.dumps(denied)
+        # Staging intercepts native dispatch, so retain Hermes' existing
+        # review-local read requirement as well as its ownership preflight.
+        # Native read marks identify paths, not a content-freshness guarantee.
+        if action in {'edit', 'patch', 'write_file', 'remove_file'}:
+            existing = manager._find_skill(name)
+            if existing:
+                file_path = operation.get('file_path') or 'SKILL.md'
+                target = existing['path'] / file_path
+                if target.exists():
+                    denied = manager._background_review_read_before_write_guard(
+                        name, target, action, file_path)
+                    if denied is not None:
+                        return json.dumps(denied)
     summary = ('Review skill operation batch' if operations is not None else
                approval.skill_gist(arguments.get('action', ''), arguments.get('name', ''),
                    content=arguments.get('content') or '', file_path=arguments.get('file_path') or '',

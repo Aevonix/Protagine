@@ -1,6 +1,7 @@
 """Actual Hermes proposal, mutation, evidence and recovery contracts."""
 import importlib.util
 import json
+import os
 
 import pytest
 from conftest import run_python
@@ -13,12 +14,14 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1]); scenario=sys.argv[2]
+if sys.argv[3]: sys.path.insert(0,sys.argv[3])
 home=Path(os.environ['HERMES_HOME']); home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 (home/'config.yaml').write_text('skills:\n  ledger: true\n')
 def no_network(*a,**kw): raise AssertionError('Contract fixture must stay offline')
 socket.socket.connect=no_network; socket.create_connection=no_network
-from tools import skill_manager_tool as manager,skill_provenance as provenance,skill_ledger as ledger,write_approval as approval
+from tools import skill_manager_tool as manager,skill_provenance as provenance,skill_ledger as ledger,write_approval as approval,skills_tool
+if sys.argv[3]: assert Path(manager.__file__).resolve().is_relative_to(Path(sys.argv[3]).resolve())
 from pacomind_hermes.review import stage_skill_change
 from pacomind_hermes.review_evaluation import evaluate_pending,audit_evaluation
 from pacomind_hermes.review_evidence import capture,current
@@ -37,6 +40,7 @@ try:
         pending=approval.stage_write(approval.SKILLS,{'action':'patch','name':name,'content':new},summary='fixture',origin='background_review')
         pid=pending['id']
     else:
+        assert json.loads(skills_tool.skill_view(name,preprocess=False)).get('success',True)
         operation={'action':'patch','name':name,'content':new}
         if scenario in {'targeted','patch_conflict','interrupted_targeted'}:
             operation={'action':'patch','name':name,'old_string':'absent-text' if scenario=='patch_conflict' else 'earlier','new_string':'current supplied'}
@@ -130,10 +134,11 @@ print(json.dumps({'passed':True,'scenario':scenario}))
 
 @pytest.mark.parametrize('scenario',['activate','batch','targeted','periodic_unavailable','initial_unavailable','patch_conflict','regression','owner_changed','stale','user_owned','ledger_failed','interrupted','interrupted_targeted','pending_retained','cleanup_interrupted'])
 def test_native_measured_proposal_and_recovery(artifacts,tmp_path,scenario):
-    if importlib.util.find_spec('hermes_cli') is None:
+    native=os.environ.get('PACOMIND_TEST_HERMES_PATH','')
+    if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native skill evaluation')
     _,_,_,installed=artifacts
-    result=run_python('-I','-c',PROBE,installed,scenario,cwd=tmp_path,env=environment(tmp_path))
+    result=run_python('-I','-c',PROBE,installed,scenario,native,cwd=tmp_path,env=environment(tmp_path))
     assert json.loads(result.stdout.splitlines()[-1])['passed']
 
 
@@ -141,12 +146,13 @@ SHAPE_PROBE = r'''
 import json,os,socket,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1]); scenario=sys.argv[2]
+if sys.argv[3]: sys.path.insert(0,sys.argv[3])
 home=Path(os.environ['HERMES_HOME']); home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 (home/'config.yaml').write_text('skills:\n  ledger: true\n')
 def no_network(*a,**kw): raise AssertionError('Contract fixture must stay offline')
 socket.socket.connect=no_network; socket.create_connection=no_network
-from tools import skill_manager_tool as manager,skill_provenance as provenance,skill_ledger as ledger,write_approval as approval
+from tools import skill_manager_tool as manager,skill_provenance as provenance,skill_ledger as ledger,write_approval as approval,skills_tool
 from pacomind_hermes.review import stage_skill_change
 name='neutral-batch-shape'
 old='---\nname: '+name+'\ndescription: Use for neutral batch shape checks.\n---\nOriginal guidance.\n'
@@ -174,6 +180,7 @@ try:
         assert result['success'] is False and not result.get('staged'),result
         assert approval.list_pending(approval.SKILLS)==before
     else:
+        assert json.loads(skills_tool.skill_view(name,preprocess=False)).get('success',True)
         if scenario=='legacy_edit': operation={**operation,'action':'edit'}
         arguments=operation if scenario in {'legacy','legacy_edit'} else {'operations':[operation]}
         if scenario=='batch_default_name':
@@ -195,8 +202,68 @@ print(json.dumps({'passed':True,'scenario':scenario}))
                                     'missing_action','missing_name','too_many','mixed_delete',
                                     'legacy','legacy_edit','batch','batch_default_name'])
 def test_native_review_batch_shape_before_staging(artifacts,tmp_path,scenario):
-    if importlib.util.find_spec('hermes_cli') is None:
+    native=os.environ.get('PACOMIND_TEST_HERMES_PATH','')
+    if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native skill evaluation')
     _,_,_,installed=artifacts
-    result=run_python('-I','-c',SHAPE_PROBE,installed,scenario,cwd=tmp_path,env=environment(tmp_path))
+    result=run_python('-I','-c',SHAPE_PROBE,installed,scenario,native,cwd=tmp_path,env=environment(tmp_path))
+    assert json.loads(result.stdout.splitlines()[-1])['passed']
+
+
+READ_PROBE = r'''
+import hashlib,json,os,socket,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+if sys.argv[2]: sys.path.insert(0,sys.argv[2])
+home=Path(os.environ['HERMES_HOME']);home.mkdir()
+Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
+(home/'config.yaml').write_text('skills:\n  ledger: true\n')
+def no_network(*a,**kw):raise AssertionError('Native review read qualification is offline')
+socket.socket.connect=no_network;socket.create_connection=no_network
+from tools import skill_manager_tool as manager,skill_provenance as provenance,skills_tool,write_approval as approval
+from tools.skill_manager_guards import _reset_background_review_read_marks
+from pacomind_hermes.review import stage_skill_change
+from pacomind_hermes.review_evaluation import evaluate_pending
+if sys.argv[2]:assert Path(manager.__file__).resolve().is_relative_to(Path(sys.argv[2]).resolve())
+name='neutral-current-contract'
+old='---\nname: '+name+'\ndescription: Read the current contract.\n---\nUse current receipts.\n'
+token=provenance.set_current_write_origin('background_review')
+try:
+    assert json.loads(manager.skill_manage('create',name,content=old))['success']
+    target=manager._find_skill(name)['path']/'SKILL.md'
+    operation={'action':'patch','name':name,'old_string':'Use current receipts.','new_string':'Distinguish acceptance and delivery.'}
+    _reset_background_review_read_marks()
+    before=approval.list_pending(approval.SKILLS)
+    denied=json.loads(stage_skill_change({'operations':[operation]}))
+    assert denied.get('_read_before_write_required') and not denied.get('staged'),denied
+    assert approval.list_pending(approval.SKILLS)==before and target.read_text()==old
+    viewed=json.loads(skills_tool.skill_view(name,preprocess=False))
+    assert viewed.get('success',True) and 'Use current receipts.' in json.dumps(viewed)
+    staged=json.loads(stage_skill_change({'operations':[operation]}))
+    assert staged['staged'] and target.read_text()==old,staged
+    pending=approval.get_pending(approval.SKILLS,staged['pending_id'])
+    assert pending['payload']['_pacomind_review_base_sha256']==hashlib.sha256(old.encode()).hexdigest()
+    # A separate owner edit after staging invalidates the existing proposal.
+    # Native path-read marks do not claim same-review byte freshness.
+    target.write_text(old+'Owner correction.\n')
+    def no_measure(*a,**kw):raise AssertionError('Stale candidate must not be measured or applied')
+    outcome=evaluate_pending(staged['pending_id'],name,no_measure,oracle_id='must-not-run')
+    assert outcome['status']=='stale_proposal' and target.read_text()==old+'Owner correction.\n',outcome
+    assert approval.get_pending(approval.SKILLS,staged['pending_id'])==pending
+    # A new detached review cannot inherit the prior review's read mark.
+    _reset_background_review_read_marks()
+    again=json.loads(stage_skill_change({'operations':[operation]}))
+    assert again.get('_read_before_write_required') and not again.get('staged'),again
+finally:provenance.reset_current_write_origin(token)
+print(json.dumps({'passed':True,'native_manager':manager.__file__,'adapter':str(Path(sys.modules['pacomind_hermes.review'].__file__).resolve()),
+                  'read_guard':'native path mark','changed_after_staging':'stale_proposal','model_calls':0,'live_effect':False}))
+'''
+
+
+def test_native_review_reads_current_skill_before_staging(artifacts,tmp_path):
+    native=os.environ.get('PACOMIND_TEST_HERMES_PATH','')
+    if not native and importlib.util.find_spec('hermes_cli') is None:
+        pytest.skip('Install qualified Hermes for native skill evaluation')
+    _,_,_,installed=artifacts
+    result=run_python('-I','-c',READ_PROBE,installed,native,cwd=tmp_path,env=environment(tmp_path))
     assert json.loads(result.stdout.splitlines()[-1])['passed']
