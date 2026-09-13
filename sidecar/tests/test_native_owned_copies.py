@@ -152,6 +152,48 @@ def test_current_turn_forget_drops_previously_admitted_owned_call_arguments(nati
     assert settle(rt)['status'] == 'settled'  # Existing native writer still owns durable erasure.
 
 
+def test_native_summary_drops_owned_call_with_reserialized_json_arguments(native_runtime):
+    """The first 1.5.18 summary retained this previously admitted query shape.
+
+    Native normal requests canonicalize arguments, while its summary uses the
+    original JSON string. The same call ID, function and parsed arguments must
+    retain their authenticated source dependency across those two builders.
+    """
+    rt = native_runtime
+    current = begin_read(rt, recall=True)
+    summary_call = {'id':'old-search', 'type':'function', 'function':{
+        'name':'tool_call', 'arguments':
+            '{"calls": [{"name": "pacomind_memory_search", "arguments": '
+            '{"query": "Orchard forgettoken badge violet", "limit": 10}}]}'}}
+    normal_call = copy.deepcopy(summary_call)
+    normal_call['function']['arguments'] = json.dumps(
+        json.loads(summary_call['function']['arguments']), sort_keys=True, separators=(',', ':'))
+    assert normal_call != summary_call
+    current_input = {'role':'user', 'content':current['api_content']}
+    rt.memory({'messages':[current_input,
+        {'role':'assistant','content':None,'tool_calls':[normal_call]},
+        {'role':'tool','tool_call_id':'old-search','content':rt.fact}]}, rt.scope)
+    erase(rt)
+    forget = {'id':'forget-now','type':'function','function':{
+        'name':'pacomind_source_forget','arguments':'{"source_ids":["original-source"]}'}}
+    receipt = {'role':'tool','tool_call_id':'forget-now','content':json.dumps({
+        'source_erased':True,'watermark':1,'host_reconciliation':{'status':'not_observed'}})}
+    outgoing = {'messages':[current_input,
+        {'role':'assistant','content':None,'tool_calls':[summary_call]},
+        {'role':'tool','tool_call_id':'old-search','content':rt.fact},
+        {'role':'assistant','content':None,'tool_calls':[forget]}, receipt,
+        {'role':'user','content':'Summarize the work before the iteration limit.'}]}
+    original = copy.deepcopy(outgoing)
+    result = rt.memory(outgoing, rt.scope)['request']
+    assert 'old-search' not in json.dumps(result)
+    assert 'forgettoken' not in json.dumps(result)
+    assert receipt in result['messages']
+    assert any(row.get('tool_calls') == [forget] for row in result['messages'])
+    assert current['content'] in json.dumps(result)
+    assert outgoing == original
+    assert rt.memory(outgoing, rt.scope)['request'] == result
+
+
 def test_later_source_admission_cannot_own_an_earlier_independent_call(native_runtime):
     rt = native_runtime
     current = begin_read(rt)  # The native read call precedes the first source-bearing request.
@@ -171,7 +213,7 @@ def test_later_source_admission_cannot_own_an_earlier_independent_call(native_ru
     assert later['id'] not in json.dumps(result)
     assert current['content'] in json.dumps(result)
     key = ('owner','reader','read-turn')
-    assert rt.memory._owned_calls[key][('messages','source-read',rt.requests._content_key(first))] == []
+    assert rt.memory._owned_calls[key][('messages','source-read',rt.requests._call_key(first))] == []
     rt.memory.finish(task_id='reader', turn_id='read-turn', contact_id='owner')
     assert key not in rt.memory._owned_calls
 

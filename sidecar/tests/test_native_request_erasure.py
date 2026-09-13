@@ -154,7 +154,7 @@ def test_owned_current_calls_require_exact_prior_identity_and_source_erasure(run
             {'role':'tool','tool_call_id':'old','content':'Rejected local batch'},
             {'role':'tool','tool_call_id':'forget','content':'Actual forget receipt'}]
     key = 'input' if shape == 'responses' else 'messages'
-    owned = {(key,'old',rt.module._content_key(call)):[ref]} if ownership != 'unknown' else {}
+    owned = {(key,'old',rt.module._call_key(call)):[ref]} if ownership != 'unknown' else {}
     if ownership == 'changed':
         call['name' if shape != 'chat' else 'changed_identity'] = 'Different unobserved call'
     if ownership == 'duplicate':
@@ -182,6 +182,76 @@ def test_owned_current_calls_require_exact_prior_identity_and_source_erasure(run
     else:
         assert result == original
     assert request == original
+
+
+@pytest.mark.parametrize('shape', ['chat', 'responses'])
+@pytest.mark.parametrize('arguments, removed', [
+    ('{ "tags": ["a", "b"], "limit": 10, "query": "caf\\u00e9" }', True),
+    ('{"query":"café","limit":11,"tags":["a","b"]}', False),
+    ('{"query":"café","limit":"10","tags":["a","b"]}', False),
+    ('{"query":"café","limit":10,"tags":["b","a"]}', False),
+    ('{"query":"other","query":"café","limit":10,"tags":["a","b"]}', False),
+    ('{"query":"café","limit":10,"tags":["a","b"],"nested":{"a":1,"a":2}}', False),
+    ('{"query":"café","limit":NaN,"tags":["a","b"]}', False),
+    ('{"query":', False),
+    ('[]', False),
+    ('null', False),
+    ({'query':'café','limit':10,'tags':['a','b']}, False),
+])
+def test_owned_call_json_serialization_does_not_change_arguments(runtime, shape, arguments, removed):
+    rt = runtime
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='native')[0]
+    baseline = '{"query":"café","limit":10,"tags":["a","b"]}'
+    current = 'Forget the earlier source.'
+    if shape == 'responses':
+        call = {'type':'function_call','call_id':'old','name':'tool_call','arguments':baseline}
+        rows = [{'role':'user','content':current}, call,
+                {'type':'function_call_output','call_id':'old','output':'Old tool result'}]
+        key, target = 'input', call
+    else:
+        call = {'type':'function','id':'old','function':{'name':'tool_call','arguments':baseline}}
+        rows = [{'role':'user','content':current}, {'role':'assistant','tool_calls':[call]},
+                {'role':'tool','tool_call_id':'old','content':'Old tool result'}]
+        key, target = 'messages', call['function']
+    owned = {(key,'old',rt.module._call_key(call)):[ref]}
+    target['arguments'] = arguments
+    rt.ledger.erase_sources(contact_id='owner', turn_ids=['fixture-source'])
+    request = {key:rows}
+    original = copy.deepcopy(request)
+    result = rt.module._filter_owned_calls(request, current, owned, rt.ledger.erasure_feed('owner')['events'])
+    assert result == ({key:[rows[0]]} if removed else original)
+    assert request == original
+
+
+@pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])
+def test_invalid_duplicate_call_identity_cannot_remove_valid_pair(runtime, shape):
+    rt = runtime
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='native')[0]
+    current = 'Forget the earlier source.'
+    if shape == 'responses':
+        call = {'type':'function_call','call_id':'old','name':'tool_call','arguments':'{}'}
+        duplicate = dict(call, arguments='malformed JSON')
+        rows = [{'role':'user','content':current}, call, duplicate,
+                {'type':'function_call_output','call_id':'old','output':'Keep ambiguous result'}]
+        key = 'input'
+    elif shape == 'anthropic':
+        call = {'type':'tool_use','id':'old','name':'tool_call','input':{}}
+        duplicate = dict(call, input='{}')
+        rows = [{'role':'user','content':current}, {'role':'assistant','content':[call,duplicate]},
+                {'role':'user','content':[{'type':'tool_result','tool_use_id':'old','content':'Keep ambiguous result'}]}]
+        key = 'messages'
+    else:
+        call = {'type':'function','id':'old','function':{'name':'tool_call','arguments':'{}'}}
+        duplicate = dict(call, type='unknown_call_shape')
+        rows = [{'role':'user','content':current}, {'role':'assistant','tool_calls':[call,duplicate]},
+                {'role':'tool','tool_call_id':'old','content':'Keep ambiguous result'}]
+        key = 'messages'
+    assert rt.module._call_key(duplicate) is None
+    owned = {(key,'old',rt.module._call_key(call)):[ref]}
+    rt.ledger.erase_sources(contact_id='owner', turn_ids=['fixture-source'])
+    request = {key:rows}
+    result = rt.module._filter_owned_calls(request, current, owned, rt.ledger.erasure_feed('owner')['events'])
+    assert result == request
 
 
 @pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])

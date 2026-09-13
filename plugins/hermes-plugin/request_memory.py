@@ -45,6 +45,43 @@ def _content_key(content):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
+def _call_key(call):
+    """Same call, even when native summary reserializes its JSON arguments."""
+    normalized = dict(call)
+    if call.get('type') == 'function' and isinstance(call.get('function'), dict):
+        target = normalized['function'] = dict(call['function'])
+        field = 'arguments'
+    elif call.get('type') in ('function_call', 'tool_use'):
+        target = normalized
+        field = 'input' if call['type'] == 'tool_use' else 'arguments'
+    else:
+        return None
+    if not isinstance(target.get('name'), str) or not target['name']:
+        return None
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Ambiguous duplicate argument key')
+            result[key] = value
+        return result
+    try:
+        arguments = target.get(field)
+        if field == 'arguments' and isinstance(arguments, str):
+            arguments = json.loads(arguments, object_pairs_hook=unique_object)
+        elif field != 'input':
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        # Preserve argument values and all other call metadata. Only object-key
+        # order and JSON spacing/escapes are serialization details, not identity.
+        target[field] = json.dumps(arguments, sort_keys=True, ensure_ascii=True,
+                                  separators=(',', ':'), allow_nan=False)
+        return _content_key(normalized)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
 def _active_call_rows(request, current_content):
     """Only an observed current input, never a summary nudge, scopes ownership."""
     if current_content is None:
@@ -77,7 +114,7 @@ def _active_calls(request, current_content):
                 continue
             identifier = call.get('call_id') if call.get('type') == 'function_call' else call.get('id')
             if isinstance(identifier, str):
-                yield key, identifier, _content_key(call)
+                yield key, identifier, _call_key(call)
 
 
 def _filter_owned_calls(request, current_content, owned, rules):
@@ -93,7 +130,8 @@ def _filter_owned_calls(request, current_content, owned, rules):
     for key, identifier, _ in calls:
         counts[key, identifier] = counts.get((key, identifier), 0) + 1
     removed = {(key, identifier) for key, identifier, digest in calls
-        if counts[key, identifier] == 1 and (refs := owned.get((key, identifier, digest)))
+        if digest is not None and counts[key, identifier] == 1
+        and (refs := owned.get((key, identifier, digest)))
         and _affected(refs, rules)}
     if not removed:
         return request
@@ -1142,6 +1180,8 @@ class RequestMemory:
                         owners = self._owned_calls[observed_key]
                         dependencies = prior_sources if not _affected(prior_sources, rules) else []
                         for call in _active_calls(request, current_content):
+                            if call[2] is None:
+                                continue
                             if len(owners) < 512:
                                 owners.setdefault(call, dependencies)
                     self._supplied[observed_key].update(supplied)
