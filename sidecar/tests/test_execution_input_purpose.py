@@ -76,6 +76,14 @@ def test_registered_hooks_api_and_request_inject_admitted_input_not_task_wrapper
     assert original in json.dumps(request) and wrapper not in json.dumps(request)
     assert retained == [('observer', h.ledger.source_references(
         ['original-input'], contact_id='owner', session_id='observer'))]
+    # A displayed locator is actionable through the registered tool in this
+    # independent conversation, not merely readable through an internal API.
+    from test_hermes_native_tool_authority import call
+    ref = h.ledger.source_references(['original-input'], contact_id='owner', session_id='observer')[0]
+    opened = json.loads(call(ctx, 'pacomind_memory_read_source', session='observer',
+        task='observer-task', turn='observer-turn', args=ref,
+        dispatch=ctx.tools['pacomind_memory_read_source']['handler']))
+    assert original in opened['content'], opened
     ctx.hooks['post_llm_call'](session_id='observer', task_id='observer-task', turn_id='observer-turn',
         user_message='What are you doing?', assistant_response='I am inspecting the requested lamp record.',
         platform='cli', model='controlled')

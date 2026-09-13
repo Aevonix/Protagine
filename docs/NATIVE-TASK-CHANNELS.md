@@ -54,7 +54,7 @@ attested local platforms keep their existing local owner policy.
 | Operation | Fields | Observation |
 | --- | --- | --- |
 | `submit` | `request`, optional `model_role` | Stable `task_id`, durable acceptance and any observed native admission. Acceptance is not completion. |
-| `status` | `task_id` | Existing native state and, when still readable, the retained result. |
+| `status` | `task_id` | Native state, readable retained result, original-input references and up to four recent authorized updates with visibility receipts. |
 | `steer` | `task_id`, `request` | One captured source update and separate native control/request visibility receipts. Visibility does not prove model obedience. |
 | `stop` | `task_id` | Durable stop intent and matching native termination or verified admission/resume suppression when observed. |
 | `list` | none | Recent owned associations, with an explicit incomplete-running-inventory marker. Use the existing current-work view for the wider activity picture. |
@@ -64,6 +64,14 @@ Submission and steering capture the actual current ordinary instruction through
 the existing canonical source API. Original source and update owners are
 resolved independently. Derived task turns and subagents cannot manufacture
 new ordinary instructions through this tool.
+
+Shared work context exposes the active task handle and a source reference for
+its original request. The latest finished task remains inspectable for seven
+days. Use `status` for retained results and `pacomind_memory_read_source` for
+original inputs or correction references returned by status. A correction can
+be accepted while still waiting to reach the working model. Request visibility
+records that delivery stage; the result still needs inspection to establish
+whether the correction was applied.
 
 ### Choose a processor for the work
 

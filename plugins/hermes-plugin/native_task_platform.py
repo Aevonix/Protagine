@@ -400,12 +400,18 @@ class NativeTaskAdapter(BasePlatformAdapter):
             retained = await asyncio.to_thread(self.handoffs.control, identity)
             stopped = self.handoffs.stop_view(retained)
             if stopped:
-                return {'handoff_id': identity, **stopped,
+                result = {'handoff_id': identity, **stopped,
                     **{key: retained[key] for key in ('native_session_id', 'native_task_id', 'native_turn_id')}}
-            row, resolved = await asyncio.to_thread(self.handoffs.resolve, identity)
+                try:
+                    _, _, sources = await asyncio.to_thread(self.handoffs.inspect_sources, identity)
+                    result.update(sources)
+                except (TaskHandoffError, self._error):
+                    pass  # Stop ownership remains inspectable after source erasure.
+                return result
+            row, resolved, sources = await asyncio.to_thread(self.handoffs.inspect_sources, identity)
         except (TaskHandoffError, self._error):
             return {'handoff_id': identity, 'status': 'unavailable', 'reason': 'source_unavailable'}
-        result = {'handoff_id': identity, 'status': 'queued',
+        result = {'handoff_id': identity, 'status': 'queued', **sources,
                   'native_session_id': row['native_session_id'],
                   'native_task_id': row['native_task_id'], 'native_turn_id': row['native_turn_id']}
         if row['response']:

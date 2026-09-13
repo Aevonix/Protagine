@@ -2132,24 +2132,6 @@ async def context_assemble(
                 priority=100,
             ))
 
-        # --- Self-knowledge: when the message asks about PacoMind ITSELF
-        # (capabilities, architecture, subsystems), ground the answer in the
-        # identity-bootstrap corpus instead of leaving the model to guess. ---
-        try:
-            from pacomind.identity_bootstrap.self_query import (
-                build_self_context_from_corpus, query_is_self_referential)
-            if query_text and query_is_self_referential(query_text):
-                self_ctx = build_self_context_from_corpus()
-                if self_ctx:
-                    sections.append(ContextSection(
-                        id="pacomind-self-knowledge",
-                        title="What I Am",
-                        body=self_ctx,
-                        priority=100,
-                    ))
-        except Exception as exc:
-            logger.debug("context_assemble self-knowledge section failed: %s", exc)
-
     # --- Memory: authorized candidates, one selection and one budget ---
     if _canonical_person_allowed and query_text:
         from pacomind.memory.search import collect_sources, select_memory

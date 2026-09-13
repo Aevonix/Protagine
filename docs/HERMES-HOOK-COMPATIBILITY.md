@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`23eb9390a594d2a2d564b2f6150a5093716c477f`](https://github.com/Kurcide/hermes-agent/commit/23eb9390a594d2a2d564b2f6150a5093716c477f),
+`27d1366d64daa6069b74d1ba71f04212d60df7c5`](https://github.com/Kurcide/hermes-agent/commit/27d1366d64daa6069b74d1ba71f04212d60df7c5),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/23eb9390a594d2a2d564b2f6150a5093716c477f/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/27d1366d64daa6069b74d1ba71f04212d60df7c5/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -106,6 +106,12 @@ writer. A timed-out delivery can still have a live sender; cleanup remains
 pending until it settles. PacoMind's [source reminders](SOURCE-REMINDERS.md) use
 this interface with the existing source-ownership ledger. No second scheduler
 or delivery service is added.
+
+The detailed API health response now reads the attached runner's existing active
+work count when available. Its stored lifecycle and platform diagnostics remain
+unchanged. First-contact onboarding also respects the adapter's existing
+`supports_async_delivery` capability: an adapter that cannot send asynchronously
+does not ask the user to configure it as a home channel.
 
 ## What is qualified
 

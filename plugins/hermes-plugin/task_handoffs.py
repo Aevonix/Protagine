@@ -388,6 +388,32 @@ class TaskHandoffs:
         row = self.get(identity)
         return row, self._resolve_source(row['source'], row['dependencies'])
 
+    def inspect_sources(self, identity):
+        """Current original/update locators, without copying instruction prose."""
+        row, original = self.resolve(identity)
+        refs = list(original['source_refs'])
+        watermark = original['watermark']
+        if row['response']:
+            # resolve() has checked these consumed parents too. Retain the
+            # existing result's full lineage even when only recent updates fit.
+            refs.extend(row['response']['source_dependencies'].get('source_refs', []))
+        updates = self.updates(identity)
+        inspected = []
+        complete = len(updates) <= 4
+        for update in updates[-4:]:
+            try:
+                _, update, current = self.resolve_update(identity, update['id'])
+            except (TaskHandoffError, self._error):
+                complete = False
+                continue
+            inspected.append({**self.update_view(update), 'source_refs': current['source_refs']})
+            refs.extend(current['source_refs'])
+            watermark = min(watermark, current['watermark'])
+        refs = list({json.dumps(ref, sort_keys=True): ref for ref in refs}.values())
+        return row, original, {'input_source_refs': original['source_refs'],
+            'updates': inspected, 'updates_complete': complete,
+            'source_refs': refs, 'watermark': watermark}
+
     def bind(self, identity, native):
         fields = ('session_id', 'task_id', 'turn_id')
         if any(not isinstance(native.get(key), str) or not native[key] for key in fields):
