@@ -162,6 +162,17 @@ class NativeTaskAdapter(BasePlatformAdapter):
             raise self._error('Native task model role provider has no enabled native route')
         return dict(selected)
 
+    def select_task_model_role(self, role):
+        """Resolve a named task role from the profile, before durable admission."""
+        roles = self.config.extra.get('task_model_roles')
+        if (not isinstance(role, str) or not role.strip() or len(role) > 256
+                or not isinstance(roles, dict) or role not in roles):
+            raise self._error('The requested task model role is not configured')
+        selected = roles[role]
+        if not isinstance(selected, dict) or selected.get('role') != role:
+            raise self._error('The configured task model role name does not match')
+        return self._task_model_role(selected)
+
     def _check_native_origin(self, entry, source, key):
         origin = entry.origin
         if (entry.session_key != key or origin is None or origin.platform != source.platform
@@ -173,7 +184,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
         return bool(entry.active_turn_token or entry.resume_pending or entry.suspended
                     or await asyncio.to_thread(store.load_transcript, entry.session_id))
 
-    async def _select_new_task_model(self, store, entry, event):
+    async def _select_new_task_model(self, store, entry, event, model_role=None):
         """Select only empty admission state, before native execution can start.
 
         Persist the role snapshot before its native override so either early
@@ -183,7 +194,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
         if entry is not None and entry.model_override:
             return entry
         retained = entry.metadata.get(self.task_role_metadata) if entry is not None else None
-        selected = await asyncio.to_thread(self._task_model_role, retained)
+        selected = await asyncio.to_thread(self._task_model_role, retained or model_role)
         if selected is None:
             return entry
         if store is None:
@@ -250,7 +261,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
             result['status'] = 'running'
         elif result['status'] == 'queued':
             try:
-                selected = await asyncio.to_thread(self._task_model_role)
+                selected = await asyncio.to_thread(self._task_model_role, row.get('model_role'))
                 if selected is not None and store is None:
                     raise self._error('Native session store is unavailable')
             except (self._error, OSError, ValueError):
@@ -402,7 +413,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
                     if await self._entry_has_work(store, entry):
                         return {'handoff_id': row['id'], 'native_observed': True,
                                 'native_session_id': entry.session_id, 'replayed': True}
-            entry = await self._select_new_task_model(store, entry, event)
+            entry = await self._select_new_task_model(store, entry, event, row.get('model_role'))
             if entry is not None and await self._entry_has_work(store, entry):
                 return {'handoff_id': row['id'], 'native_observed': True,
                         'native_session_id': entry.session_id, 'replayed': True}

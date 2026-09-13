@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.8 - model roles for accepted background tasks
+
+The existing `pacomind_task` tool accepts an optional profile-declared
+`model_role` on submission. A short coding task can use an interactive processor
+while a deliberation task uses a reasoner. The task list exposes configured role
+names; provider routes and credentials remain in the native profile.
+
+An explicit selection is saved with task acceptance and applied through the
+existing Hermes session model override. Updating a role mapping affects new
+work; it does not redirect an admitted task, rewrite an owner-selected session
+route or change a concurrent foreground conversation. Omitted roles retain the
+existing task default. No executor, proxy or Hermes core interface was added.
+
+Qualification covers the installed adapter and actual native session store,
+reopening before execution, mapping changes, conflicting replay and concurrent
+native gateway requests with different selected models. SDK responses in the
+concurrency fixture are controlled. Useful real-model task completion and
+latency are measured separately; role selection itself claims neither a quality
+improvement nor enforced per-task execution budgets.
+
 ## v1.5.7 - dated memory guidance and vision role checks
 
 Memory guidance separates the current clock from an event's scheduled time.

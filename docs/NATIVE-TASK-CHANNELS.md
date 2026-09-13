@@ -53,7 +53,7 @@ attested local platforms keep their existing local owner policy.
 
 | Operation | Fields | Observation |
 | --- | --- | --- |
-| `submit` | `request` | Stable `task_id`, durable acceptance and any observed native admission. Acceptance is not completion. |
+| `submit` | `request`, optional `model_role` | Stable `task_id`, durable acceptance and any observed native admission. Acceptance is not completion. |
 | `status` | `task_id` | Existing native state and, when still readable, the retained result. |
 | `steer` | `task_id`, `request` | One captured source update and separate native control/request visibility receipts. Visibility does not prove model obedience. |
 | `stop` | `task_id` | Durable stop intent and matching native termination or verified admission/resume suppression when observed. |
@@ -64,6 +64,40 @@ Submission and steering capture the actual current ordinary instruction through
 the existing canonical source API. Original source and update owners are
 resolved independently. Derived task turns and subagents cannot manufacture
 new ordinary instructions through this tool.
+
+### Choose a processor for the work
+
+Background work need not use the slow reasoning model. A profile can declare
+task roles using its existing native providers:
+
+```yaml
+platforms:
+  pacomind_task:
+    enabled: true
+    extra:
+      task_model_role: {role: reasoning, provider: local-reasoning, model: reasoner}
+      task_model_roles:
+        coding: {role: coding, provider: local-interactive, model: coding-model}
+        reasoning: {role: reasoning, provider: local-reasoning, model: reasoner}
+```
+
+The provider names must already exist and be enabled in the Hermes profile.
+`list` reports configured role names; their native providers are checked at submission.
+Submitting `model_role: coding` selects that declared role; omitting it keeps
+the task default. The caller cannot supply a provider URL, credential or arbitrary
+model. Select a role for its measured suitability to the task, not its size.
+
+An explicitly selected role/provider/model snapshot is retained with acceptance
+and then projected into the native session's existing model override. An omitted
+role keeps the existing default selection at native admission. New tasks can use a
+changed mapping without changing an admitted task or explicit native owner
+override. Resubmitting the same captured request under a changed mapping reports
+the conflicting binding instead of silently launching a replacement. No model
+call is needed for role selection, and this adds no executor or routing proxy.
+
+A request describing a time limit is still natural-language instruction. This
+field does not enforce per-task time or iteration budgets; the native gateway's
+configured execution limits and existing stop control remain in force.
 
 Stop remains available to the current owner after original input erasure or a
 memory service outage, provided the current owner binding can be established.
