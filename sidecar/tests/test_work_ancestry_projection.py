@@ -61,6 +61,56 @@ def concurrent_view():
                             'status': 'completed', 'liveness': 'native_terminal_record'}]}}
 
 
+@pytest.mark.parametrize('with_input', [False, True])
+def test_running_native_task_survives_other_readers_before_and_during_request(with_input):
+    # Observed live shape: a foreground conversation, a native coding task,
+    # blocked board work and a verbose idle delivery snapshot. The task must
+    # remain inspectable within the same budget, even without an input quote.
+    observer = execution(1, session='observer')
+    worker = execution(2, age=8)
+    worker.update(task_id='a' * 64, platform='pacomind_task')
+    if with_input:
+        worker['request_input'] = {
+            'status': 'admitted_input_excerpt', 'source_id': 'original-task',
+            'source_version': 'b' * 64, 'content': 'Build the timing report.',
+            '_provenance': {'contact_id': 'owner', 'watermark': 0,
+                'source_refs': [{'source_id': 'original-task', 'source_version': 'b' * 64}],
+                'unannotated_input_refs': [{'source_id': 'original-task', 'input_message_hash': 'c' * 64}]}}
+    view = concurrent_view()
+    view['items'] = [observer, worker] + [execution(n, age=500) for n in range(3, 18)]
+    view['total'] = 17
+    view['local_work']['items'] = [{'initiative_id': 'assigned-draft', 'status': 'assigned',
+        'liveness': 'unknown', 'native_execution_id': 'e' * 32, 'native_job_id': 'scheduled-briefing'}]
+    view['native_kanban']['items'] = [
+        {'native_task_id': 'blocked-review-' + str(n), 'label': 'Review the deployment gaps',
+         'status': 'blocked', 'liveness': 'unknown', 'native_board': 'default',
+         'source_home_id': 'f' * 64, 'assignee': 'default'} for n in range(2)]
+    view['reported_worker']['items'] = [
+        {'label': 'Feed transport', 'state': 'stopped', 'freshness': 'stale',
+         'liveness': 'unverified', 'status_sha256': 'd' * 64},
+        {'label': 'Direct delivery', 'state': 'reported_ready', 'freshness': 'recent',
+         'liveness': 'unverified', 'status_sha256': 'e' * 64,
+         'work_snapshot': {'schema': 'PacoMindWorkSnapshotV1', 'available': True,
+             'complete': False, 'coverage': 'Selected producer deliveries and exact intent-linked provider cursors; no recipient read proof',
+             'freshness': 'recent', 'items': [], 'observed_at': 1234.5, 'partial': False,
+             'pending_total': 0, 'source_status': {'outbox': 'observed', 'provider': 'observed'},
+             'state_counts': {}, 'terminal_total': 0, 'total': 0, 'truncated': False,
+             'unmatched_provider_total': 0}}]
+    before = copy.deepcopy(view)
+    result = request_work_context(view, session_id='observer')
+    selected = rows(result)
+    task, = [row for row in selected if row.get('task_id') == 'a' * 64]
+    assert task['liveness'] == 'recently_observed' and task['phase'] == worker['phase']
+    assert selected[0]['execution_id'] == observer['execution_id']
+    assert result['work_sources']['execution']['total'] == 17
+    assert 'execution=17 active' not in result['text']
+    assert len(result['text']) <= 4000 and len(selected) <= 8 and result['truncated']
+    assert view == before
+    if with_input:
+        assert task['input_source'] == {'source_id': 'original-task', 'source_version': 'b' * 64}
+        assert result['input_provenance']['source_refs'] == worker['request_input']['_provenance']['source_refs']
+
+
 def test_real_multi_reader_shape_retains_native_parent_before_unrelated_history():
     view = concurrent_view()
     original = copy.deepcopy(view)

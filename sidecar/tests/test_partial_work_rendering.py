@@ -116,5 +116,5 @@ def test_recent_terminal_rows_are_not_described_as_zero_observed_records(source,
         group.update(recent_total=5,recent_truncated=True)
     result=request_work_context({'items':[],source:group})
     count='5' if known_total else '1+'
-    assert source+'=0 active, '+count+' recent records' in result['text']
+    assert source+'=0 open, '+count+' recent records' in result['text']
     assert 'just-finished' in result['text']
