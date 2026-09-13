@@ -21,7 +21,7 @@ from test_turn_source_evidence import source_app
 @pytest.fixture
 def handoff(source_app, tmp_path, monkeypatch):
     module = _load_plugin('pacomind_supplied_input_test')
-    _record_origin_storage(module, monkeypatch)
+    origin_storage = _record_origin_storage(module, monkeypatch)
     # These tests exercise source ownership and typed transport failures, not
     # the ASGI fixture's wall-clock latency. Keep one logical deadline clock
     # across request validation and its SQLite outbox; dedicated socket tests
@@ -91,6 +91,7 @@ def handoff(source_app, tmp_path, monkeypatch):
                 assistant_response='The controlled fixture result cites the supplied maintenance record.',
                 platform='cli', model='controlled')
         yield SimpleNamespace(module=module, ctx=ctx, api=api, ledger=ledger, parents=parents, clock=clock,
+                               origin_storage=origin_storage,
                                refs=refs, start=start, finish=finish, outbox=module.TurnOutbox(outbox))
 
 

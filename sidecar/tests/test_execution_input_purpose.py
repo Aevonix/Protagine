@@ -80,6 +80,7 @@ def test_registered_hooks_api_and_request_inject_admitted_input_not_task_wrapper
         user_message='What are you doing?', assistant_response='I am inspecting the requested lamp record.',
         platform='cli', model='controlled')
     receipt = h.outbox.snapshot()[0]
+    assert h.origin_storage[-1][-1] == observer_input['content']
     assert receipt['state'] == 'delivered', receipt
     assert receipt['payload']['assistant_source_refs'] == h.ledger.source_references(
         ['original-input'], contact_id='owner', session_id='observer')

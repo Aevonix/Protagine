@@ -146,7 +146,7 @@ async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_
 
 def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, monkeypatch):
     module = _load_plugin('answer_lineage_native')
-    _record_origin_storage(module, monkeypatch)
+    origins = _record_origin_storage(module, monkeypatch)
     ref = {'source_id': 'origin', 'source_version': 'a' * 64}
     forged = {'source_id': 'forged', 'source_version': 'f' * 64}
     # This sidecar-only fixture has no Hermes database. Isolate that storage
@@ -193,6 +193,7 @@ def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, 
     assert [row for row in result['request']['messages'] if row['role'] == 'user'] == request['messages']
     assert retained == [('fresh', [ref])]
     context.hooks['post_llm_call'](**kwargs, conversation_history=history, assistant_response='A useful paraphrase.', model='fixture')
+    assert origins[-1][-1] == user
     assert Client.instances[-1].synced[-1]['assistant_source_refs'] == [ref]
 
 

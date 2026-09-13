@@ -60,7 +60,7 @@ def _record_origin_storage(module, monkeypatch):
     def retain(self, scope, source_id, *, messages=None, row_only_ids=(), canonical_user_message=None):
         assert scope.valid_participant and scope.session_id and source_id
         assert isinstance(messages, list)
-        calls.append((scope.contact_id, scope.session_id, source_id, messages))
+        calls.append((scope.contact_id, scope.session_id, source_id, messages, canonical_user_message))
         return True
     ownership = importlib.import_module(module.__name__ + '.native_owned_copies')
     monkeypatch.setattr(ownership.NativeOwnedCopies, 'retain_origin', retain)
