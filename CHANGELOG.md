@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.10 - task experience and current role mappings
+
+When working judgments are enabled, operational native tasks can contribute
+source-linked completion and failure observations to the existing reflection
+worker. Runtime completion remains separate from output quality. The records
+preserve request lineage and processor observations, and do not create lexical
+or vector memory chunks. Corrections, erasure and replay use the existing source
+machinery. Qualification and unclassified historical work are not backfilled.
+Useful opinions still need evidence of a later behavioral benefit.
+
+Native task role listing and new selections now read the current profile file.
+The previous implementation retained its startup role map. Explicit accepted
+role snapshots and native session overrides remain stable; changed mappings
+apply to new work without an adapter restart. File-based native tests replace
+an earlier test that changed only the in-memory configuration object. This does
+not add automatic fleet enrollment, select a better model or change provider
+fallback behavior.
+
 ## v1.5.9 - ordinary skill failures across sessions
 
 When native reviews are enabled, recurring tool failures associated with a viewed
