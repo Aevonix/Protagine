@@ -20,7 +20,7 @@ jobs:
           # Explicit qualification build; latest unmodified upstream is checked
           # separately by hermes-upstream.yml. See the compatibility note.
           repository: Kurcide/hermes-agent
-          ref: 792f9e89e04daec25d90aa8d6c2ff8767760a785
+          ref: e58ac660bf3532f84c32a2d284258acb18152f19
           path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
