@@ -132,6 +132,79 @@ def test_unavailable_origin_leaves_no_empty_binding_before_exact_retry(native_ru
     assert set(row['metadata']['anchors']) == {str(current['_row_id'])}
 
 
+def test_explicit_unavailable_native_descriptor_cannot_reuse_old_anchor(native_runtime):
+    rt = native_runtime
+    begin_read(rt, recall=True)
+    assert rt.memory.native_anchor(rt.scope) is not None
+    rt.memory.observe_native_message(rt.scope, None)
+    assert rt.memory.native_anchor(rt.scope) is None
+    assert not rt.owned.retain(rt.scope, [rt.ref])
+    assert len(rt.owned._rows()) == 1  # Existing ownership is still required.
+
+
+@pytest.mark.parametrize('in_place', [False, True])
+def test_native_compaction_keeps_old_and_new_exact_supplied_anchors(native_runtime, in_place):
+    rt = native_runtime
+    current = begin_read(rt, recall=True)
+    handoff = rt.db.get_messages_as_conversation('reader')
+    holder = 'fixture-native-compaction'
+    assert rt.db.try_acquire_compression_lock('reader', holder)
+    try:
+        if in_place:
+            rt.db.archive_and_compact('reader', handoff, lock_holder=holder, tail_count=len(handoff))
+        else:
+            rt.db.publish_compression_child(parent_session_id='reader', child_session_id='continuation',
+                source='cli', messages=handoff, compression_lock_holder=holder)
+    finally:
+        rt.db.release_compression_lock('reader', holder)
+    session = 'reader' if in_place else 'continuation'
+    scope = SimpleNamespace(**{**vars(rt.scope), 'session_id':session})
+    clone = handoff[-1]
+    assert clone['_row_id'] != current['_row_id']
+    rt.memory.observe_native_message(scope, clone)
+    assert rt.owned.retain(scope, [rt.ref])
+    retained = rt.owned._rows()
+    assert {row['metadata']['anchor_id'] for row in retained} == {current['_row_id'], clone['_row_id']}
+    rt.db.append_message(session, 'assistant', 'The forgettoken label is violet.')
+    erase(rt)
+    assert asyncio.run(rt.owned.reconcile(contact='owner'))['status'] == 'settled'
+    after = rows(rt)
+    for row_id in (current['_row_id'], clone['_row_id']):
+        assert after[row_id]['content'] == current['content']
+        assert after[row_id]['api_content'] is None
+    assert not rt.db.search_messages('forgettoken', include_inactive=True)
+
+
+@pytest.mark.parametrize('changed_native', [False, True])
+def test_partial_canonical_input_erasure_selects_exact_native_wrapper(native_runtime, changed_native):
+    rt = native_runtime
+    original = 'Use the exact maintenance receipt I supplied.'
+    current = {'role':'user', 'content':'Execute the admitted maintenance task wrapper.'}
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    answer = {'role':'assistant', 'content':'The receipt was inspected.'}
+    answer['_row_id'] = rt.db.append_message('reader', 'assistant', answer['content'])
+    for source_id, messages in (
+        ('admitted-input', [{'role':'user','content':original}]),
+        ('captured-input', [{'role':'user','content':original}, {'role':'assistant','content':answer['content']}]),
+    ):
+        rt.ledger.record_source(source_id, contact_id='owner', session_id='reader', messages=messages, derive_claims=False)
+        assert rt.owned.retain_origin(rt.scope, source_id,
+            messages=[current] if source_id=='admitted-input' else [current, answer], canonical_user_message=original)
+    unrelated = rt.db.append_message('reader', 'user', 'Keep the unrelated calendar request.')
+    before = rows(rt)[unrelated]
+    if changed_native:
+        rt.db._execute_write(lambda db: db.execute('UPDATE messages SET content=? WHERE id=?',
+            ('New unrelated native content.', current['_row_id'])))
+    rt.ledger.erase_sources(contact_id='owner', turn_ids=['admitted-input'])
+    partial = next(rule for rule in rt.ledger.erasure_feed('owner')['events']
+                   if rule['source_turn_id']=='captured-input')
+    assert not partial['whole_source']
+    assert settle(rt)['status'] == ('pending' if changed_native else 'settled')
+    assert rows(rt)[current['_row_id']]['content'] == (
+        'New unrelated native content.' if changed_native else '[Content removed.]')
+    assert rows(rt)[unrelated] == before
+
+
 @pytest.mark.parametrize('capture', [False, True])
 def test_source_read_and_linked_native_answer_are_physically_erased(native_runtime, capture):
     rt = native_runtime

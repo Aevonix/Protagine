@@ -57,7 +57,7 @@ def _record_origin_storage(module, monkeypatch):
     publication failure path are exercised in test_native_owned_copies.
     """
     calls = []
-    def retain(self, scope, source_id, *, messages=None, row_only_ids=()):
+    def retain(self, scope, source_id, *, messages=None, row_only_ids=(), canonical_user_message=None):
         assert scope.valid_participant and scope.session_id and source_id
         assert isinstance(messages, list)
         calls.append((scope.contact_id, scope.session_id, source_id, messages))

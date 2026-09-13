@@ -660,6 +660,8 @@ class RequestMemory:
             observed = self._native_anchors.get(key)
             if observed is not None:
                 current, persisted_input = observed
+                if current is None:
+                    return None  # The host explicitly could not identify its current native row.
                 # Native voice/task turns can send a wrapper while persisting
                 # the original human input. Keep the later-stamped native ID,
                 # but validate ownership against that trusted persisted input.
@@ -682,6 +684,25 @@ class RequestMemory:
             # the API-facing row. Retain the row reference until turn-start
             # persistence stamps _row_id; request aliases remain independent.
             self._native_anchors[key] = current, copy.deepcopy(user_message)
+            self._native_anchors.move_to_end(key)
+            while len(self._native_anchors) > 32:
+                self._native_anchors.popitem(last=False)
+
+    def observe_native_message(self, scope, message):
+        """Refresh storage identity from the host's indexed, persisted turn row.
+
+        Compression can clone the row without retaining the original persistence
+        override. Its actual stored content is not a new owner statement.
+        """
+        if scope is None or not scope.valid_participant:
+            return
+        valid = (isinstance(message, dict) and message.get('role') == 'user'
+                 and type(message.get('_row_id')) is int and message['_row_id'] > 0
+                 and 'content' in message)
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            self._native_anchors[key] = ((copy.deepcopy(message), copy.deepcopy(message['content']))
+                                         if valid else (None, None))
             self._native_anchors.move_to_end(key)
             while len(self._native_anchors) > 32:
                 self._native_anchors.popitem(last=False)

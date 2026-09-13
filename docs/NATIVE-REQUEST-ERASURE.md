@@ -58,6 +58,14 @@ turn hooks. Authentic source reads and actually supplied recall record their
 source revisions, native database location and current input anchor in one
 metadata-only table in the existing outbox. This also works when ordinary CLI
 capture is disabled. It does not create a canonical copy of the CLI answer.
+Before each request, the qualified host supplies the exact persisted row at its
+validated current-turn index. This refreshes storage ownership after rotation
+or in-place compaction without selecting the last user message or matching text
+against another turn. Old and newly authenticated rows retain separate ownership.
+Canonical admission stays separate from native storage: a compressed row may
+contain an API task wrapper. Its native content hash validates the stored row;
+the admitted canonical message hash selects partial erasure. An unavailable or
+changed host anchor withholds affected source context rather than reusing a stale ID.
 Ordinary canonical capture records its native database location and verified
 current user/final assistant row IDs before enqueue. A retained tool observation
 binds the exact completed native result row before publication. Identical text

@@ -2581,7 +2581,7 @@ def register(ctx: Any) -> None:
             payload["occurred_at"] = str(kwargs["occurred_at"])
         if kwargs.get("timezone"):
             payload["timezone_name"] = str(kwargs["timezone"])
-        if not native_owned.retain_origin(scope, stable_turn_id, messages=(
+        if not native_owned.retain_origin(scope, stable_turn_id, canonical_user_message=payload.get('user_message'), messages=(
             ([native_origin] if payload.get('user_message') else []) +
             [row for row in (kwargs.get('conversation_history') or [])[-1:]
              if isinstance(row, dict) and row.get('role') == 'assistant' and type(row.get('_row_id')) is int])):
@@ -2963,6 +2963,10 @@ def register(ctx: Any) -> None:
             pre_llm_call(**native, model=kwargs.get('model'))
             scope = _TRANSPORT_SCOPES.for_execution(session_id=native['session_id'],
                 task_id=native['task_id'], turn_id=native['turn_id'])
+        if 'native_user_message' in kwargs:
+            # This comes from Hermes's guarded current-turn index and exact
+            # native row read, not the API request or a last-user heuristic.
+            request_memory.observe_native_message(scope, kwargs['native_user_message'])
         _REVIEW_PARENT_SCOPE.set(scope if scope is not None and scope.valid_participant else None)
         review_parent_memory.set(request_memory.snapshot_review_parent(scope))
         from .review_evidence import capture

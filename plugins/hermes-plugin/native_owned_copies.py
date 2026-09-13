@@ -71,7 +71,7 @@ class NativeOwnedCopies:
                         {'role':row['role'],'content':SessionDB._decode_content(row['content'])}) != expected):
                     raise ValueError('native_source_anchor_unavailable')
             identity = 'turn:' + hashlib.sha256(_json(
-                [scope.contact_id, scope.session_id, scope.task_id, scope.turn_id]).encode()).hexdigest()
+                [scope.contact_id, scope.session_id, scope.task_id, scope.turn_id, row['id']]).encode()).hexdigest()
             with closing(self.outbox._connect()) as db, db:
                 db.execute('BEGIN IMMEDIATE')
                 previous = db.execute('SELECT metadata_json FROM native_source_ownership WHERE ownership_id=?',
@@ -94,7 +94,7 @@ class NativeOwnedCopies:
             logger.warning('Native source ownership unavailable (%s)', type(error).__name__)
             return False
 
-    def retain_origin(self, scope, source_id, *, messages=None, row_only_ids=()):
+    def retain_origin(self, scope, source_id, *, messages=None, row_only_ids=(), canonical_user_message=None):
         """Bind canonical capture to actual native row IDs, never all equal text.
 
         Root and helper profiles can share one outbox. This content-free mapping
@@ -109,7 +109,7 @@ class NativeOwnedCopies:
                     return False
                 for message in messages:
                     if not isinstance(message, dict):
-                        continue
+                        raise ValueError('native_source_origin_unavailable')
                     if type(message.get('_row_id')) is int:
                         original = db.execute('SELECT id,role,content FROM messages WHERE session_id=? AND id=?',
                             (scope.session_id, message['_row_id'])).fetchone()
@@ -125,7 +125,17 @@ class NativeOwnedCopies:
                     if (original is None or source_message_hash(scope.session_id, {
                             'role':original['role'], 'content':SessionDB._decode_content(original['content'])}) != digest):
                         raise ValueError('native_source_origin_changed')
-                    anchors[str(original['id'])] = {'mode':'payload', 'source_hash':digest}
+                    source_digest = digest
+                    if message.get('role') == 'user' and canonical_user_message is not None:
+                        # Canonical admission remains the original human input;
+                        # a native compressed row may store its task wrapper.
+                        content = (canonical_user_message if isinstance(canonical_user_message, list)
+                                   else str(canonical_user_message))
+                        source_digest = source_message_hash(scope.session_id, {'role':'user', 'content':content})
+                    binding = {'mode':'payload', 'source_hash':source_digest}
+                    if source_digest != digest:
+                        binding['native_hash'] = digest
+                    anchors[str(original['id'])] = binding
             if not anchors:
                 return False
             if row_only_ids:
@@ -309,7 +319,7 @@ class NativeOwnedCopies:
                     'content':SessionDB._decode_content(actual['content'])})
                 row_changed = (binding.get('row_sha256') is not None and
                     native.message_redaction_snapshot(actual)['sha256'] != binding['row_sha256'])
-                if digest != binding['source_hash'] or row_changed:
+                if digest != binding.get('native_hash', binding['source_hash']) or row_changed:
                     prior = previous.get(anchor)
                     markers = json.loads(actual['display_metadata'] or '{}')
                     marker = markers.get('redacted_from_sha256')
