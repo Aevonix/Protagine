@@ -25,12 +25,17 @@ TOOL_SCHEMA = {
         'Submit a bounded request; inspect, steer or stop the returned task_id from '
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
+        'List also reports profile-declared model role names for task submission. '
         'Use normal conversation for questions and native delegation for child work.'),
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {
             'operation': {'type': 'string', 'enum': ['submit', 'status', 'steer', 'stop', 'list']},
             'request': {'type': 'string', 'minLength': 1, 'maxLength': 32768},
+            'model_role': {'type': 'string', 'minLength': 1, 'maxLength': 256,
+                'description': 'Optional for submit: a task role declared in this profile, '
+                    'such as coding or reasoning. Omit to use the configured task default. '
+                    'Choose for the work, not merely because it runs in the background.'},
             'task_id': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
         },
         'required': ['operation'],
@@ -295,6 +300,8 @@ class NativeTasks:
     def _metadata(row):
         result = {'task_id': row['id'], 'executor': 'native_hermes',
                   **{key: row[key] for key in ('native_session_id', 'native_task_id', 'native_turn_id')}}
+        if row.get('model_role') is not None:
+            result['model_role'] = row['model_role']
         if row['response']:
             return {**result, 'status': 'done', 'delivery': 'unobserved'}
         stopped = TaskHandoffs.stop_view(row)
@@ -309,6 +316,8 @@ class NativeTasks:
             operation = args.get('operation')
             expected = {'operation'} | ({'request'} if operation == 'submit' else
                 {'task_id', 'request'} if operation == 'steer' else {'task_id'} if operation in {'status', 'stop'} else set())
+            if operation == 'submit' and 'model_role' in args:
+                expected.add('model_role')
             if set(args) != expected or operation not in {'submit', 'status', 'steer', 'stop', 'list'}:
                 raise TaskHandoffError('Use one task operation with its exact fields')
             if operation == 'list':
@@ -316,19 +325,30 @@ class NativeTasks:
                 for row in self.handoffs.recent(contact_id=self.owner):
                     self.sources.authorize_control(row['source'], scope)
                     items.append(self._metadata(row))
-                return json.dumps({'items': items, 'view': 'retained_associations', 'complete_running_inventory': False})
+                roles = self.adapter.config.extra.get('task_model_roles') if self.adapter is not None else None
+                return json.dumps({'items': items, 'view': 'retained_associations',
+                    'complete_running_inventory': False,
+                    'configured_model_roles': sorted(key for key in roles
+                        if isinstance(key, str) and key.strip() and len(key) <= 256)
+                        if isinstance(roles, dict) else []})
             if operation == 'submit':
                 adapter = self.adapter
                 if adapter is None or adapter.loop is None or not adapter.loop.is_running():
                     raise TaskHandoffError('The native task gateway is not connected')
+                selected = adapter.select_task_model_role(args['model_role']) if 'model_role' in args else None
                 source = self.sources.capture(scope)
-                request_id = hashlib.sha256(json.dumps([args['request'], {
-                    key: value for key, value in source.items() if key != 'watermark'}],
+                request_fields = [args['request'], {
+                    key: value for key, value in source.items() if key != 'watermark'}]
+                if selected is not None:
+                    request_fields.append(args['model_role'])
+                request_id = hashlib.sha256(json.dumps(request_fields,
                     sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-                row = self.handoffs.admit(request_id=request_id, request=args['request'], source_input=source)
+                row = self.handoffs.admit(request_id=request_id, request=args['request'],
+                    source_input=source, model_role=selected)
                 identity = row['id']
                 observed = self._call('submit', identity)
                 return json.dumps({'task_id': identity, 'accepted': True, 'executor': 'native_hermes',
+                    **({'model_role': selected} if selected is not None else {}),
                     'native_admission': observed, 'callback_observed': observed is not None,
                     'status': 'queued', 'delivery': 'unobserved'})
             identity = args['task_id']

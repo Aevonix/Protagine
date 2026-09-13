@@ -51,6 +51,8 @@ keyring.write_text(json.dumps({'version': 1, 'principals': [{
 keyring.chmod(0o600)
 (home/'config.yaml').write_text(json.dumps({
     'model': {'provider': 'custom', 'default': 'fixture-model', 'base_url': 'http://model.fixture/v1'},
+    'providers': {'task-interactive': {
+        'base_url': 'http://model.fixture/v1', 'api_key': 'fixture-task-model-key'}},
     'auxiliary': {'title_generation': {'enabled': False}},
     'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4}, 'toolsets': ['pacomind'],
     'display': {'platforms': {'pacomind_task': {'streaming': False, 'tool_progress': 'off'}}},
@@ -131,6 +133,7 @@ def respond(request):
         row = adapter.handoffs.get(active['id'])
         name = 'alpha' if 'TASK_ALPHA' in row['request'] else 'beta'
         assert 'TASK_' + name.upper() in row['request'], row
+        assert body['model'] == ('fixture-coding-model' if name == 'alpha' else 'fixture-model')
         generation[name].append(body)
         step = len(generation[name])
         assert step <= (2 if name == 'alpha' else 1), (name, step)
@@ -173,6 +176,7 @@ def respond(request):
         return answer(body, 'LATE_ALPHA_RESULT_MUST_NOT_BE_RETAINED')
 
     assert current() is None, 'An ordinary conversation inherited a task source context'
+    assert body['model'] == 'fixture-model', 'Task model selection escaped into foreground work'
     latest = next(row.get('content') for row in reversed(body['messages']) if row.get('role') == 'user')
     latest = latest if isinstance(latest, str) else json.dumps(latest)
     tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA')
@@ -188,7 +192,8 @@ def respond(request):
         if tag.startswith('SUBMIT_'):
             name = tag.removeprefix('SUBMIT_')
             return tool(body, 'pacomind_task', {'operation': 'submit',
-                'request': 'TASK_' + name + ': Compare my violet calibration notes and retain the result.'})
+                'request': 'TASK_' + name + ': Compare my violet calibration notes and retain the result.',
+                **({'model_role': 'coding'} if name == 'ALPHA' else {})})
         return tool(body, 'pacomind_task', {'operation': 'steer' if tag == 'STEER_ALPHA' else 'stop',
             'task_id': task_ids['alpha'], **({'request': update_text} if tag == 'STEER_ALPHA' else {})})
     results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
@@ -236,6 +241,8 @@ import tools.tirith_security
 tools.tirith_security.ensure_installed = lambda **kwargs: False
 config = GatewayConfig(sessions_dir=home/'sessions', loop_watchdog=False)
 platform_config = PlatformConfig(enabled=True, typing_indicator=False, gateway_restart_notification=False)
+platform_config.extra['task_model_roles'] = {
+    'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}
 config.platforms = {Platform('pacomind_task'): platform_config}
 runner = GatewayRunner(config)
 adapter = platform_registry.create_adapter('pacomind_task', platform_config)

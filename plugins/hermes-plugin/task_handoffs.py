@@ -43,7 +43,7 @@ class TaskHandoffs:
                 UNIQUE(request_id))''')
             db.execute('BEGIN IMMEDIATE')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(native_voice_handoffs)')}
-            for name in ('stop_json', 'terminal_json'):
+            for name in ('stop_json', 'terminal_json', 'model_role_json'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE native_voice_handoffs ADD COLUMN {name} TEXT')
             db.execute('''CREATE TABLE IF NOT EXISTS native_voice_updates (
@@ -51,27 +51,36 @@ class TaskHandoffs:
                 source_json TEXT NOT NULL, created REAL NOT NULL,
                 dispatch_json TEXT, observations_json TEXT NOT NULL DEFAULT '{}')''')
 
-    def admit(self, *, request_id, request, source_input):
+    def admit(self, *, request_id, request, source_input, model_role=None):
         if (not isinstance(request_id, str) or not request_id or len(request_id) > 256
                 or any(ord(char) < 32 for char in request_id)):
             raise self._error('A bounded stable identifier is required')
         if not isinstance(request, str) or not request.strip() or len(request) > 32768:
             raise self._error('A bounded task request is required')
+        if model_role is not None and (
+                not isinstance(model_role, dict) or set(model_role) != {'role', 'provider', 'model'}
+                or any(not isinstance(v, str) or not v.strip() or len(v) > 256
+                       for v in model_role.values())):
+            raise self._error('A declared task model role is required')
         # Only the injected resolver can attest source content and its actual
         # authenticated channel. Caller-supplied provenance is not authority.
         resolved = self._resolve_source(source_input)
         source = self._source_record(resolved)
         payload = json.dumps(source, sort_keys=True, separators=(',', ':'))
         immutable = {key: value for key, value in source.items() if key != 'watermark'}
-        identity = hashlib.sha256(json.dumps([request_id, request, immutable],
+        identity_fields = [request_id, request, immutable]
+        if model_role is not None:
+            identity_fields.append(model_role)
+        identity = hashlib.sha256(json.dumps(identity_fields,
             sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self._database() as db:
             row = db.execute('SELECT id FROM native_voice_handoffs WHERE request_id=?', (request_id,)).fetchone()
             if row and row['id'] != identity:
                 raise self._error('A request ID cannot be rebound')
             db.execute('INSERT OR IGNORE INTO native_voice_handoffs '
-                '(id,request_id,request,source_json,created) VALUES(?,?,?,?,?)',
-                (identity, request_id, request, payload, time.time()))
+                '(id,request_id,request,source_json,created,model_role_json) VALUES(?,?,?,?,?,?)',
+                (identity, request_id, request, payload, time.time(),
+                 json.dumps(model_role, sort_keys=True) if model_role is not None else None))
         return self.get(identity)
 
     def pending(self, limit=16, *, after=None):
@@ -117,7 +126,7 @@ class TaskHandoffs:
         if row is None:
             raise self._error('Unknown native task handoff')
         result = dict(row)
-        for key in ('source', 'dependencies', 'response', 'stop', 'terminal'):
+        for key in ('source', 'dependencies', 'response', 'stop', 'terminal', 'model_role'):
             result[key] = json.loads(result.pop(key + '_json') or 'null')
         return result
 
