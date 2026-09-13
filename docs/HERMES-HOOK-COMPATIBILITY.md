@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`218dad993564d57977f07b5d6bffd6a88d10e32f`](https://github.com/Kurcide/hermes-agent/commit/218dad993564d57977f07b5d6bffd6a88d10e32f),
+`792f9e89e04daec25d90aa8d6c2ff8767760a785`](https://github.com/Kurcide/hermes-agent/commit/792f9e89e04daec25d90aa8d6c2ff8767760a785),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/218dad993564d57977f07b5d6bffd6a88d10e32f/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/792f9e89e04daec25d90aa8d6c2ff8767760a785/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -98,7 +98,20 @@ Live history repair also preserves separate durable user rows. After a crash,
 merging those rows in place discarded the resumed input's storage coordinate.
 Provider requests still use Hermes's existing merge of the API copy when needed.
 
+Source-dependent cron output uses the native `cron.owned_output` interface.
+Mirrored messages and channel/thread seeds retain the job and execution IDs.
+The interface pauses the exact job and removes its retained files, queue payloads
+and errors, then supplies exact message selections to the existing transcript
+writer. A timed-out delivery can still have a live sender; cleanup remains
+pending until it settles. PacoMind's [source reminders](SOURCE-REMINDERS.md) use
+this interface with the existing source-ownership ledger. No second scheduler
+or delivery service is added.
+
 ## What is qualified
+
+The cron ownership change passed 33 focused native checks, including real mirror
+and thread persistence, selective erasure, active delivery timeout and queue
+retention. They establish local output ownership, not remote message retraction.
 
 The durable-row repair passed 65 affected native checks, two unchanged private
 crash-resume cases and three unchanged public transported-input cases.

@@ -248,7 +248,7 @@ def _native_interpreter(tmp_path, wheel, adapter_installation):
     venv.EnvBuilder(with_pip=False, symlinks=True).create(target)
     site = target/'lib'/f'python{sys.version_info.major}.{sys.version_info.minor}'/'site-packages'
     for source in Path(sysconfig.get_path('purelib')).iterdir():
-        if any(name in source.name for name in ('pacomind_hermes', 'pacomind_hermes')) or source.name in {'pacomind_memory', 'pacomind_memory', '__pycache__'}:
+        if 'pacomind_hermes' in source.name or source.name in {'pacomind_memory', '__pycache__'}:
             continue
         if adapter_installation == 'absent' and source.name.startswith('typer'):
             continue  # Hermes core does not require PacoMind's legacy CLI dependency.
@@ -355,8 +355,10 @@ def test_packaged_guided_setup_captures_and_recalls_with_real_native_sessions(ar
     env.update(HOME=str(tmp_path), HERMES_HOME=str(home), HERMES_BUNDLED_PLUGINS=str(bundled),
                HERMES_BIN=str(native_python.parent/'hermes'),
                HERMES_DISABLE_LAZY_INSTALLS='1', TIRITH_ENABLED='false',
-               HERMES_DISABLE_TELEMETRY='1', PACOMIND_GUARD_CHAT_MODE='off', LITELLM_LOCAL_MODEL_COST_MAP='True',
-               PYTHONPATH=dependency_path)
+               HERMES_DISABLE_TELEMETRY='1', PACOMIND_GUARD_CHAT_MODE='off', LITELLM_LOCAL_MODEL_COST_MAP='True')
+    # INSTALL/SERVER/DOCTOR explicitly load optional test dependencies under -I.
+    # Exporting that directory to native workers also exposes unrelated installed
+    # adapter entry points and defeats the fresh runtime's installation mode.
     if named_home:
         run_native('-I', '-c',
             'import os; os.umask(0o077); from hermes_cli.profiles import create_profile; '

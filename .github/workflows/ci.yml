@@ -20,7 +20,7 @@ jobs:
           # Explicit qualification build; latest unmodified upstream is checked
           # separately by hermes-upstream.yml. See the compatibility note.
           repository: Kurcide/hermes-agent
-          ref: 218dad993564d57977f07b5d6bffd6a88d10e32f
+          ref: 792f9e89e04daec25d90aa8d6c2ff8767760a785
           path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -48,6 +48,7 @@ jobs:
               ('test_native_review_boundary', 'test_native_executor_read_only_review', 2),
               ('test_native_skill_catalog', 'test_native_skill_index_and_view_remain_authoritative', 1),
               ('test_native_skill_updates', 'test_native_skill_updates_reach_running_and_saved_conversations', 2),
+              ('test_native_source_reminders', 'test_native_source_deadline_correction_and_forgetting', 1),
           ):
               cases = [case for case in collected
                        if case.get('classname', '').endswith('.' + module)
@@ -63,7 +64,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
         run: |
           python -c "from hermes_state import SessionDB; assert all(callable(getattr(SessionDB, name, None)) for name in ('redact_message_payloads', 'message_redaction_snapshot'))"
-          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py -q
+          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py -q
 
   python:
     runs-on: ubuntu-latest

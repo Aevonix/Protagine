@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.14 - reminders that follow corrected memory
+
+The `pacomind_reminder` plugin tool schedules an existing recalled deadline through
+Hermes cron. An explicit correction moves the same job; an obsolete occurrence
+stays silent. Forgotten or unresolved evidence prevents a reminder from using
+the old value. General schedules continue to use Hermes' native cron tools.
+
+Source-bound output uses the existing ownership ledger and a small native cron
+interface for retained files, queued delivery and mirrored messages. Delivery
+that remains in flight keeps cleanup pending. Packaged setup tests also isolate
+native workers from unrelated installed adapter entry points.
+Later replies and native compressed summaries inherit the reminder's source
+references, so forgetting also reaches those retained derivatives.
+
+This release implements the path; ordinary channel usefulness and unattended
+operation remain part of Phase 1 validation. See [source reminders](docs/SOURCE-REMINDERS.md).
+
 ## v1.5.13 - preserve transcript housekeeping during forgetting
 
 Forgetting a source now leaves Hermes session housekeeping rows intact while

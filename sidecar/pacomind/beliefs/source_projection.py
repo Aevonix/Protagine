@@ -137,6 +137,126 @@ class SourceClaimProjection:
     def __init__(self, ledger):
         self.ledger = ledger
 
+    def deadline(self, *, contact_id, session_id, source_id, source_version, claim_id,
+                 timezone_name="UTC"):
+        """Resolve an explicitly selected claim's value, without creating work.
+
+        The original source stays pinned even after a correction. A changed
+        source, missing correction or annotation must not revive an old date.
+        All eligibility, successor and value reads share one SQLite snapshot.
+        """
+        from .source_time import source_event_time
+        from pacomind.turns.idempotency import canonical_turn_digest
+
+        original = {"original_source_ref": {"source_id": source_id, "source_version": source_version},
+                    "original_claim_id": claim_id}
+
+        def unavailable(reason):
+            return {**original, "status": "unavailable", "reason": reason}
+
+        with closing(self.ledger._connect()) as conn:
+            conn.execute("BEGIN")
+
+            def source_ref(identifier):
+                row = conn.execute('''SELECT s.messages_json FROM turn_sources s
+                    WHERE s.turn_id=? AND s.contact_id=? AND (s.scope='person' OR s.session_id=?)
+                    AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=s.turn_id)
+                    AND NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=s.turn_id)''',
+                    (identifier, contact_id, session_id)).fetchone()
+                return ({"source_id": identifier, "source_version": canonical_turn_digest(json.loads(row[0]))}
+                        if row else None)
+
+            def eligible(row):
+                return (source_ref(row['turn_id']) is not None and not conn.execute('''
+                    SELECT 1 FROM source_annotations a,json_each(a.target_message_hashes_json) h
+                    WHERE a.target_source_id=? AND h.value=?''',
+                    (row['turn_id'], row['message_hash'])).fetchone())
+
+            if source_ref(source_id) != original['original_source_ref']:
+                return unavailable("original_source_unavailable")
+            selected = self._rows(conn, contact_id, session_id, ids=[claim_id])
+            if len(selected) != 1 or not eligible(selected[0]):
+                return unavailable("claim_unavailable")
+            if selected[0]['turn_id'] != source_id:
+                return unavailable("original_claim_mismatch")
+            chain_sources = {source_id: original['original_source_ref']}
+            # The same corrected undertaking can be selected in another
+            # conversation. Its stable identity is the exact qualified root,
+            # not whichever revision happened to be recalled this time.
+            root, ancestors = selected[0], set()
+            for _ in range(32):
+                if root['id'] in ancestors:
+                    return unavailable("invalid_successor_chain")
+                ancestors.add(root['id'])
+                if root.get('operation') not in {'correct', 'change'}:
+                    break
+                prior = self._rows(conn, contact_id, session_id, ids=[root.get('prior_claim_id')])
+                if len(prior) != 1 or not eligible(prior[0]):
+                    return unavailable("ancestor_unavailable")
+                previous = prior[0]
+                links = {previous[key] for key in ('retracted_by', 'superseded_by') if previous[key]}
+                if (links != {root['id']} or (root['subject_key'], root['predicate']) !=
+                        (previous['subject_key'], previous['predicate'])):
+                    return unavailable("invalid_successor_chain")
+                chain_sources[previous['turn_id']] = source_ref(previous['turn_id'])
+                root = previous
+            else:
+                return unavailable("successor_limit")
+            original['root_claim_id'] = root['id']
+            seen, previous = ancestors - {claim_id}, None
+            for _ in range(32):
+                if claim_id in seen:
+                    return unavailable("invalid_successor_chain")
+                if len(seen) >= 32:
+                    return unavailable("successor_limit")
+                seen.add(claim_id)
+                rows = self._rows(conn, contact_id, session_id, ids=[claim_id])
+                if len(rows) != 1 or not eligible(rows[0]):
+                    return unavailable("claim_unavailable")
+                current = rows[0]
+                chain_sources[current['turn_id']] = source_ref(current['turn_id'])
+                if previous is None:
+                    if current['turn_id'] != source_id:
+                        return unavailable("original_claim_mismatch")
+                elif (current.get('operation') not in {'correct', 'change'}
+                      or current.get('prior_claim_id') != previous['id']
+                      or (current['subject_key'], current['predicate']) !=
+                         (previous['subject_key'], previous['predicate'])):
+                    return unavailable("invalid_successor_chain")
+                successors = {current[key] for key in ('retracted_by', 'superseded_by') if current[key]}
+                if not successors:
+                    break
+                if len(successors) != 1:
+                    return unavailable("ambiguous_successor_chain")
+                previous, claim_id = current, successors.pop()
+            else:
+                return unavailable("successor_limit")
+
+            result = {**original, "source_ref": source_ref(current['turn_id']), "claim_id": current['id'],
+                      "source_refs": list(chain_sources.values()),
+                      **{key: current[key] for key in ('subject', 'predicate', 'value', 'evidence')}}
+            # An independently asserted competing value is not an authorized
+            # correction. Never choose a deadline merely because it is newer.
+            # Bound raw candidates before _rows filters message membership;
+            # filtered early rows cannot hide a later conflicting claim.
+            count = conn.execute('''SELECT count(*) FROM (SELECT c.id FROM source_claims c
+                JOIN turn_sources s ON s.turn_id=c.turn_id WHERE s.contact_id=?
+                AND (s.scope='person' OR s.session_id=?) AND c.subject_key=? AND c.predicate=? LIMIT 257)''',
+                (contact_id, session_id, current['subject_key'], current['predicate'])).fetchone()[0]
+            if count > 256:
+                return {**result, "status": "unresolved", "reason": "claim_limit"}
+            peers = self._rows(conn, contact_id, session_id,
+                               key=(current['subject_key'], current['predicate']), limit=257)
+            if any(not row['superseded_by'] and not row['retracted_by'] and eligible(row)
+                   and norm_value(row['value']) != norm_value(current['value']) for row in peers):
+                return {**result, "status": "unresolved", "reason": "conflicting_claims"}
+            deadline = source_event_time(current['value'], observed_at=current['observed_at'],
+                                         timezone_name=timezone_name)
+            result['deadline_time'] = deadline
+            if deadline.get('status') != 'resolved' or deadline.get('precision') != 'instant':
+                return {**result, "status": "unresolved", "reason": "deadline_not_instant"}
+            return {**result, "status": "current", "deadline_at": deadline['at']}
+
     def _rows(self, conn, contact_id, session_id, *, turn_ids=None, message_hashes=None, ids=None,
               key=None, time_query=None, distinct_values=False, limit=256):
         from pacomind.turns.idempotency import source_message_hash

@@ -555,6 +555,29 @@ def test_registration_has_no_network_event_or_environment_side_effect(runtime):
     assert all("disabled" in command("").lower() for command in context.commands.values())
 
 
+def test_registration_without_native_cron_keeps_other_tools(monkeypatch, tmp_path):
+    module = _load_plugin("pacomind_hermes_without_native_cron_test")
+    module.PacoMindClient = _Client
+    monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")
+    monkeypatch.setenv("PACOMIND_MEMORY_WORKER_TOOLS", "0")
+    monkeypatch.setenv("PACOMIND_MEMORY_TURN_WRITER", "disabled")
+    # The sidecar package does not depend on Hermes. Plugin registration also
+    # remains usable when the optional native scheduling interface is absent.
+    monkeypatch.setitem(sys.modules, "cron", None)
+    monkeypatch.setitem(sys.modules, "cron.owned_output", None)
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
+    context = _Context({
+        "url": "http://pacomind.test",
+        "turn_outbox_path": str(tmp_path / "without-native-cron.sqlite3"),
+    })
+    module.register(context)
+    assert "pacomind_reminder" not in context.tools
+    assert set(module._READ_TOOL_NAMES).issubset(context.tools)
+    assert "pacomind_followup" in context.tools
+    assert "pre_llm_call" in context.hooks
+
+
 def test_concurrent_reordered_senders_keep_exact_handler_context(runtime):
     _module, context, _client, mediator = runtime
     assert _pre(context, session="s-owner", task="t-owner", turn="turn-owner",
@@ -1400,6 +1423,8 @@ def test_read_subset_preserves_default_catalog_and_other_capabilities(
     # Native background execution is a separate explicit opt-in. Its authored
     # schema belongs to the catalog, but an ordinary profile must not expose it.
     default_coordination = set(module._COORDINATION_TOOL_NAMES) - {"pacomind_task"}
+    if not module.NativeReminders.available():
+        default_coordination.remove("pacomind_reminder")
     assert "pacomind_task" not in default_context.tools
     expected_default = [
         schema for schema in module._TOOL_SCHEMAS
@@ -1453,7 +1478,7 @@ def test_read_subset_preserves_default_catalog_and_other_capabilities(
     }
     subset_context = _Context(subset_config)
     module.register(subset_context)
-    assert set(subset_context.tools) == {
+    expected_subset = {
         "pacomind_accept_local_draft", "pacomind_read_work_source",
         "pacomind_commitment_work",
         "pacomind_contacts",
@@ -1469,6 +1494,9 @@ def test_read_subset_preserves_default_catalog_and_other_capabilities(
         "pacomind_send_message",
         "pacomind_work_initiative",
     }
+    if module.NativeReminders.available():
+        expected_subset.add("pacomind_reminder")
+    assert set(subset_context.tools) == expected_subset
     # Read filtering does not rewrite action or message schemas.
     for name in ("pacomind_create_commitment", "pacomind_send_message"):
         expected = next(

@@ -36,6 +36,7 @@ import httpx
 
 from . import local_work
 from .initiative_work import NativeReviews, NativeFollowups
+from .reminders import NativeReminders, SCHEMA as _REMINDER_SCHEMA
 from .native_drafts import NativeDrafts
 from . import judgments as judgment_tools
 from . import contacts as contact_tools
@@ -63,6 +64,7 @@ from .client import (
     TurnOutboxFull,
     TurnOutboxPayloadError,
     derive_hermes_turn_id,
+    turn_outbox_path as _turn_outbox_path,
 )
 from .slash import SLASH_COMMANDS
 from .executions import ExecutionObserver
@@ -116,6 +118,7 @@ def _parameters(
 # they are not part of that governed-action execution boundary.  The merged
 # model catalog is sorted before its exact JSON shape is hashed for preflight.
 _LOCAL_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    _REMINDER_SCHEMA,
     {
         "name": "pacomind_followup",
         "description": "Track an expected reply for a claimed owner task. Use the exact outbound delivery reference and recipient contact ID, a response window in seconds and expiry as Unix seconds. It starts timing only after an actual dispatch receipt; a missing receipt means unknown, not late. Recording a wait authorizes local review only; sending uses existing task consent. Inspect, cancel or defer an exact wait_id. Optional source_ids must be retained evidence supplied to this turn. Legitimate delay is not negative personality evidence.",
@@ -347,7 +350,7 @@ _ACTION_INTENT_TOOL_NAMES: tuple[str, ...] = tuple(
 )
 
 _OWNER_MESSAGE_TOOL_NAMES: tuple[str, ...] = ("pacomind_send_message",)
-_COORDINATION_TOOL_NAMES = ('pacomind_accept_local_draft', 'pacomind_commitment_work', 'pacomind_contacts', 'pacomind_followup', 'pacomind_read_work_source', 'pacomind_judgments', 'pacomind_memory_forget', 'pacomind_memory_annotate', 'pacomind_memory_retain_observation', 'pacomind_memory_read_source', 'pacomind_work_initiative', 'pacomind_task')
+_COORDINATION_TOOL_NAMES = ('pacomind_accept_local_draft', 'pacomind_commitment_work', 'pacomind_contacts', 'pacomind_followup', 'pacomind_reminder', 'pacomind_read_work_source', 'pacomind_judgments', 'pacomind_memory_forget', 'pacomind_memory_annotate', 'pacomind_memory_retain_observation', 'pacomind_memory_read_source', 'pacomind_work_initiative', 'pacomind_task')
 
 # No event can be injected until PacoMind exposes an exact viewer-attested event
 # projection.  An empty catalog is an intentional security and attribution
@@ -2012,20 +2015,6 @@ def _configured_text(config: Mapping[str, Any], key: str) -> str:
     return value
 
 
-def _turn_outbox_path(config: Mapping[str, Any]) -> str:
-    configured = config.get("turn_outbox_path")
-    if configured is not None and not isinstance(configured, (str, os.PathLike)):
-        raise RuntimeError("turn_outbox_path must be a filesystem path")
-    return str(
-        configured
-        or os.environ.get("PACOMIND_HERMES_TURN_OUTBOX")
-        or os.path.join(
-            os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"),
-            "state", "pacomind-turn-outbox.sqlite3",
-        )
-    )
-
-
 def _mediator_runtime_posture(mediator: ActionMediator) -> dict[str, bool]:
     """Return only non-secret booleans about the exact mediator boundary."""
 
@@ -2374,6 +2363,9 @@ def register(ctx: Any) -> None:
     turn_writer_platforms = boundary.turn_writer_platforms
     turn_outbox = boundary.turn_outbox
     request_memory = RequestMemory(client, turn_outbox)
+    reminders_available = NativeReminders.available()
+    native_reminders = (NativeReminders(client, owner_contact_id, request_memory)
+                        if reminders_available else None)
     from .native_owned_copies import NativeOwnedCopies
     native_owned = NativeOwnedCopies(request_memory, _TRANSPORT_SCOPES)
     request_memory.ownership = native_owned
@@ -2821,6 +2813,11 @@ def register(ctx: Any) -> None:
         scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),
             task_id=context.get('task_id', ''), turn_id=context.get('turn_id', ''))
         return followup_tools.handle(args or {}, scope, client, work_coordinator, request_memory, context)
+    def reminder_handler(args=None, **kwargs):
+        context = _TOOL_EXECUTION_CONTEXT.get() or {}
+        scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),
+            task_id=context.get('task_id', ''), turn_id=context.get('turn_id', ''))
+        return native_reminders.handle(args or {}, scope, context)
     def initiative_work_handler(args=None, **kwargs):
         context = _TOOL_EXECUTION_CONTEXT.get() or {}
         scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),
@@ -2856,6 +2853,8 @@ def register(ctx: Any) -> None:
         return source_read.handle(args or {}, scope, client, request_memory, context)
     for schema in _TOOL_SCHEMAS:
         name = schema["name"]
+        if name == 'pacomind_reminder' and not reminders_available:
+            continue
         if name == 'pacomind_task' and native_tasks is None:
             continue
         if name in _READ_TOOL_NAMES and name not in boundary.enabled_read_tools:
@@ -2878,6 +2877,7 @@ def register(ctx: Any) -> None:
                 judgment_handler if name == "pacomind_judgments" else
                 contact_handler if name == "pacomind_contacts" else
                 followup_handler if name == "pacomind_followup" else
+                reminder_handler if name == "pacomind_reminder" else
                 commitment_work_handler if name == "pacomind_commitment_work" else
                 (lambda args=None, _name=name, **kwargs: local_work_handler(_name, args))
                 if name in {'pacomind_accept_local_draft', 'pacomind_read_work_source'} else
@@ -2900,6 +2900,8 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook('on_kanban_dispatch_tick', native_reviews.reconcile)
     ctx.register_hook('on_kanban_dispatch_tick', native_followups.reconcile)
+    if reminders_available:
+        ctx.register_hook('on_kanban_dispatch_tick', native_reminders.reconcile)
     def observe_gateway(**kwargs):
         transport_media.observe(**kwargs)
         native_owned.observe_gateway(**kwargs)

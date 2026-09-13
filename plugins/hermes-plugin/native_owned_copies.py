@@ -47,14 +47,92 @@ class NativeOwnedCopies:
         db.row_factory = sqlite3.Row
         return db
 
-    def retain(self, scope, sources):
+    def retain(self, scope, sources, *, native_lineage=False):
         """Called only for authentic native recall/read observations, never prose."""
         if (scope is None or not scope.valid_participant or not sources
                 or scope.platform == 'background_review'):
             return not sources or (scope is not None and scope.platform == 'background_review')
-        return self._retain_anchor(scope, sources)
+        return self._retain_anchor(scope, sources, native_lineage=native_lineage)
 
-    def _retain_anchor(self, scope, sources, anchor=None, *, inputs=(), carrier_hash=None):
+    def observed_sources(self, scope, messages):
+        """Join observed native row identities to this owner's existing source ledger.
+
+        Mirror labels and request-authored metadata never grant ownership. The
+        row, clean payload, profile, participant, and reserved cron job must all
+        agree before its source references can enter ordinary request checking.
+        """
+        if scope is None or not scope.valid_participant:
+            return []
+        observed = {row['_row_id']:row for row in messages if isinstance(row, dict)
+                    and type(row.get('_row_id')) is int and row.get('role') != 'session_meta'}
+        if not observed:
+            return []
+        path = self._path()
+        with closing(self.outbox._connect()) as ledger:
+            owners = [dict(row, metadata=json.loads(row['metadata_json'])) for row in ledger.execute(
+                "SELECT * FROM native_source_ownership WHERE contact_id=? AND ("
+                "(json_extract(metadata_json,'$.kind')='cron' AND json_extract(metadata_json,'$.native_home')=?) OR "
+                "(json_extract(metadata_json,'$.native_lineage')=1 AND json_extract(metadata_json,'$.native_db')=?)) "
+                "LIMIT 513", (scope.contact_id, str(path.parent), str(path)))]
+        if not owners:
+            return []
+        if len(owners) > 512:
+            raise ValueError('native_source_observation_exceeds_batch')
+        from hermes_state import SessionDB
+        receipts = []
+        with closing(self._native_read(path)) as db:
+            db.execute('BEGIN')
+            lineage = {row[0] for row in db.execute("""WITH RECURSIVE lineage(id) AS (
+                SELECT id FROM sessions WHERE id=? UNION ALL
+                SELECT parent.id FROM sessions child JOIN lineage ON child.id=lineage.id
+                JOIN sessions parent ON parent.id=child.parent_session_id
+                WHERE parent.end_reason='compression'
+                AND coalesce(json_extract(child.model_config,'$._branched_from'),'')=''
+            ) SELECT id FROM lineage""", (scope.session_id,))}
+            spans = {owner['ownership_id']:db.execute(
+                "SELECT MIN(id) FROM messages WHERE session_id=? AND role='user' AND id>?",
+                (owner['session_id'], owner['metadata']['anchor_id'])).fetchone()[0]
+                for owner in owners if owner['metadata']['kind'] == 'supplied' and owner['session_id'] in lineage}
+            actual_rows = []
+            ids = list(observed)
+            for start in range(0, len(ids), 512):
+                batch = ids[start:start+512]
+                actual_rows.extend(db.execute('SELECT * FROM messages WHERE id IN ('+
+                    ','.join('?' for _ in batch)+')', batch))
+            for actual in actual_rows:
+                if actual['session_id'] not in lineage:
+                    continue
+                row_id = actual['id']
+                descriptor = observed[row_id]
+                content = SessionDB._decode_content(actual['content'])
+                if (actual['role'] != descriptor.get('role') or content != descriptor.get('content')
+                        or not isinstance(content, str) or not content):
+                    continue
+                metadata = json.loads(actual['display_metadata'] or '{}')
+                sources = {}
+                for owner in owners:
+                    binding = owner['metadata']
+                    if binding['kind'] == 'cron':
+                        matches = (actual['role'] == 'user' and metadata.get('mirror_source') == 'cron'
+                                   and metadata.get('cron_job_id') == binding['job_id'])
+                    elif owner['session_id'] in lineage:
+                        end = spans[owner['ownership_id']]
+                        matches = ((actual['session_id'] == owner['session_id']
+                            and binding['anchor_id'] < row_id and (end is None or row_id < end))
+                            or (actual['_compressed_summary'] and row_id > binding['anchor_id']))
+                    else:
+                        matches = False
+                    if matches:
+                        for ref in binding['sources']:
+                            sources[(ref['source_id'], ref['source_version'])] = ref
+                if sources:
+                    receipts.append({'content':content, 'sources':list(sources.values())})
+                    if len(receipts) > 512:
+                        raise ValueError('native_source_observation_exceeds_batch')
+        return receipts
+
+    def _retain_anchor(self, scope, sources, anchor=None, *, inputs=(), carrier_hash=None,
+                       native_lineage=False):
         try:
             anchor = anchor if anchor is not None else self.memory.native_anchor(scope)
             if anchor is None:
@@ -91,13 +169,16 @@ class NativeOwnedCopies:
                 merged_inputs = list({(ref['source_id'], ref['input_message_hash']):dict(ref)
                     for ref in [*metadata.get('input_refs', []), *inputs]}.values())
                 if (previous and merged == metadata['sources']
-                        and merged_inputs == metadata.get('input_refs', [])):
+                        and merged_inputs == metadata.get('input_refs', [])
+                        and (not native_lineage or metadata.get('native_lineage'))):
                     return True
                 metadata['sources'] = merged
                 if merged_inputs:
                     metadata['input_refs'] = merged_inputs
                 if carrier_hash:
                     metadata['update_carrier_hash'] = carrier_hash
+                if native_lineage:
+                    metadata['native_lineage'] = True
                 db.execute('INSERT OR REPLACE INTO native_source_ownership VALUES (?,?,?,?,?)',
                            (identity, scope.contact_id, scope.session_id, scope.turn_id, _json(metadata)))
             self.outbox._fsync_storage()
@@ -375,6 +456,55 @@ class NativeOwnedCopies:
             raise ValueError('native_source_span_exceeds_batch')
         return rows
 
+    def _summary_copies(self, row, native):
+        """Reserve only marked summaries published after this consumed source.
+
+        The native writer has already checked compression leases before this
+        call. Its exact compression family and durable marker identify derived
+        summaries; ordinary user rows and text that merely resembles one do not.
+        """
+        if not row['metadata'].get('native_lineage'):
+            return []
+        from hermes_state_messages import _redacted_payload
+        family = native.get_transcript_dependents(row['session_id'])
+        with closing(self._native_read(native.db_path)) as db:
+            summaries = db.execute('SELECT * FROM messages WHERE _compressed_summary=1 AND id>? '
+                'AND session_id IN ('+','.join('?' for _ in family)+') ORDER BY id LIMIT 513',
+                (row['metadata']['anchor_id'], *family)).fetchall()
+        if len(summaries) > 512:
+            raise ValueError('native_source_summary_exceeds_batch')
+        retained = []
+        with closing(self.outbox._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            for summary in summaries:
+                # Already-erased summaries have no retained source payload.
+                marker = json.loads(summary['display_metadata'] or '{}').get('redacted_from_sha256')
+                if (isinstance(marker, str) and re.fullmatch('[0-9a-f]{64}', marker)
+                        and all(summary[field] == value for field, value in _redacted_payload(summary, marker).items())):
+                    continue
+                identity = 'summary:' + hashlib.sha256(_json([
+                    row['contact_id'], str(native.db_path), summary['session_id'], summary['id']]).encode()).hexdigest()
+                metadata = {'kind':'supplied', 'native_db':str(native.db_path),
+                    'anchor_id':summary['id'], 'anchor_hash':source_message_hash(summary['session_id'],
+                        {'role':summary['role'], 'content':native._decode_content(summary['content'])}),
+                    'payload_anchor':True, 'native_lineage':True, 'sources':row['metadata']['sources']}
+                old = db.execute('SELECT metadata_json FROM native_source_ownership WHERE ownership_id=?',
+                                 (identity,)).fetchone()
+                if old:
+                    previous = json.loads(old[0])
+                    if previous['anchor_hash'] != metadata['anchor_hash']:
+                        raise ValueError('native_source_summary_changed')
+                    metadata['sources'] = list({(ref['source_id'], ref['source_version']):ref
+                        for ref in [*previous['sources'], *metadata['sources']]}.values())
+                    metadata = previous | {'sources':metadata['sources']}
+                db.execute('INSERT OR REPLACE INTO native_source_ownership VALUES (?,?,?,?,?)',
+                    (identity, row['contact_id'], summary['session_id'], 'compression:'+str(summary['id']), _json(metadata)))
+                retained.append({'ownership_id':identity, 'contact_id':row['contact_id'],
+                    'session_id':summary['session_id'], 'turn_id':'compression:'+str(summary['id']), 'metadata':metadata})
+        if retained:
+            self.outbox._fsync_storage()
+        return retained
+
     def _selection(self, row, rules, native, origin=None):
         meta, session = row['metadata'], row['session_id']
         if meta['kind'] == 'origin':
@@ -384,7 +514,8 @@ class NativeOwnedCopies:
                 return None
             anchors = ({int(key):value for key,value in meta.get('anchors', {}).items()}
                 if meta.get('update_carrier_hash') else
-                {meta['anchor_id']: {'mode':'api_content', 'source_hash':meta['anchor_hash']}})
+                {meta['anchor_id']: {'mode':'payload' if meta.get('payload_anchor') else 'api_content',
+                                     'source_hash':meta['anchor_hash']}})
         else:
             # Persist authentic anchor IDs before erasing the text that proved
             # ownership. On retry, expand the turn again: its writer may have
@@ -516,6 +647,21 @@ class NativeOwnedCopies:
                         continue
                     if row['metadata']['kind'] == 'origin':
                         continue
+                    if row['metadata']['kind'] == 'cron':
+                        if not _affected(row['metadata']['sources'], rules):
+                            continue
+                        try:
+                            from .cron_memory import erase
+                            receipt = await erase(row, gateway)
+                            if receipt.get('status') == 'redacted':
+                                self._remove(row)
+                                result['redacted_rows'] += receipt['redacted_rows']
+                            else:
+                                result['pending'] += 1
+                        except Exception:
+                            result['pending'] += 1
+                            logger.warning('Native cron source erasure remains pending', exc_info=True)
+                        continue
                     if (row['metadata']['kind'] == 'supplied'
                             and not _affected(row['metadata']['sources'], rules, row['metadata'].get('input_refs', ()))):
                         continue
@@ -554,11 +700,15 @@ class NativeOwnedCopies:
                             else:
                                 raise ValueError('native_erasure_routing_unavailable')
                         if receipt.get('status') == 'redacted':
+                            known = {item['ownership_id'] for item in owner_rows}
+                            owner_rows.extend(item for item in self._summary_copies(row, native)
+                                              if item['ownership_id'] not in known)
                             self._remove(row, origin)
                             result['redacted_rows'] += len(receipt['redacted_ids'])
                             full_ids = {item['id'] for item in selected if item['mode'] == 'payload'}
                             for linked in owner_rows:
                                 if (linked['metadata']['kind'] == 'supplied'
+                                        and not linked['metadata'].get('native_lineage')
                                         and linked['metadata'].get('native_db') == str(location)
                                         and linked['session_id'] == row['session_id']
                                         and linked['metadata']['anchor_id'] in full_ids):

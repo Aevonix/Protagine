@@ -106,7 +106,7 @@ Install the current tagged release:
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.13 https://github.com/Aevonix/PacoMind.git
+git clone --depth 1 --branch v1.5.14 https://github.com/Aevonix/PacoMind.git
 python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```
@@ -125,8 +125,8 @@ Start a fresh Hermes session, provide a harmless fact and ask for it in another
 session. Check the remembered source as well as the answer. The minimum profile
 provides memory and work observation; background execution needs configuration.
 
-The current qualification target is Hermes 0.21.2. Some concurrent task and
-review interfaces use the [documented compatibility build](docs/HERMES-HOOK-COMPATIBILITY.md).
+The current qualification target is Hermes 0.21.2. Some concurrent task, review
+and source-reminder interfaces use the [documented compatibility build](docs/HERMES-HOOK-COMPATIBILITY.md).
 Setup does not patch Hermes core or restart a running gateway. The
 [setup guide](docs/LOCAL-HERMES-SETUP.md) covers services, profile attachment,
 tasks and adapter updates.

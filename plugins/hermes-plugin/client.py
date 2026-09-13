@@ -28,6 +28,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def turn_outbox_path(config):
+    configured = config.get('turn_outbox_path')
+    if configured is not None and not isinstance(configured, (str, os.PathLike)):
+        raise RuntimeError('turn_outbox_path must be a filesystem path')
+    return str(configured or os.environ.get('PACOMIND_HERMES_TURN_OUTBOX') or
+               Path(os.environ.get('HERMES_HOME') or Path.home()/'.hermes')/'state'/'pacomind-turn-outbox.sqlite3')
+
+
 class TurnOutboxConflict(RuntimeError):
     """The same stable turn id was offered with different content."""
 

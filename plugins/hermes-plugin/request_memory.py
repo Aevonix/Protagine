@@ -10,6 +10,7 @@ import copy
 import hashlib
 import logging
 import re
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -455,9 +456,10 @@ def _restore_current_suffix(request, tail, current):
     """
     if len(tail) < 2 or not isinstance(current, dict):
         return request, None
-    clean, enriched = current.get('content'), current.get('api_content')
+    clean = current.get('content')
+    enriched = current.get('api_content', clean)
     if (not isinstance(clean, str) or not isinstance(enriched, str)
-            or clean != tail[-1] or not enriched.startswith(clean) or enriched == clean):
+            or clean != tail[-1] or not enriched.startswith(clean)):
         return request, None
     # Native versions may merge the clean row or retain its api_content. Both
     # exact observed forms need splitting so erasure checks see historical
@@ -500,6 +502,7 @@ class _ReviewParentObservation:
     aliases: dict
     packets: set
     read_receipts: dict
+    native_history: list
 
 
 class RequestMemory:
@@ -516,6 +519,7 @@ class RequestMemory:
         self._read_receipts = {}
         self._host_inputs = {}
         self._plain_user_tails = {}
+        self._native_history = {}
 
     def observe(self, scope, messages, *, user_message=None):
         # Native pre_llm_call exposes both clean content and persisted
@@ -539,6 +543,7 @@ class RequestMemory:
         key = (scope.contact_id, scope.task_id, scope.turn_id)
         with self._lock:
             self._plain_user_tails[key] = tail if scope.valid_participant else []
+            self._native_history[key] = list(messages) if scope.valid_participant else []
             packets = {match.group() for row in messages if (match := _native_packet(row)) is not None}
             self._aliases[key] = (aliases, current, copy.deepcopy(user_message) if current else None, packets)
             self._supplied[key] = {}
@@ -556,6 +561,7 @@ class RequestMemory:
             self._read_receipts.pop(evicted, None)
             self._host_inputs.pop(evicted, None)
             self._plain_user_tails.pop(evicted, None)
+            self._native_history.pop(evicted, None)
 
     def snapshot_review_parent(self, scope):
         """Copy native observations before parent cleanup, without attesting freshness."""
@@ -573,7 +579,8 @@ class RequestMemory:
             if packet is not None:
                 packets.add(packet.group())
             return _ReviewParentObservation(self, scope.contact_id, scope.session_id, scope.turn_id,
-                aliases, packets, copy.deepcopy(self._read_receipts.get(key, {})))
+                aliases, packets, copy.deepcopy(self._read_receipts.get(key, {})),
+                copy.deepcopy(self._native_history.get(key, [])))
 
     def observe_review(self, scope, snapshot):
         """Carry exact parent observations into a detached turn, never its current input."""
@@ -590,6 +597,7 @@ class RequestMemory:
             self._requests_seen.discard(key)
             self._host_inputs.pop(key, None)
             self._plain_user_tails[key] = []
+            self._native_history[key] = copy.deepcopy(snapshot.native_history)
             self._trim_observations(key)
         return True
 
@@ -737,6 +745,7 @@ class RequestMemory:
                     self._read_receipts.pop(key, None)
                     self._host_inputs.pop(key, None)
                     self._plain_user_tails.pop(key, None)
+                    self._native_history.pop(key, None)
         return list(refs.values())
 
     def __call__(self, request, scope, *, operational=None):
@@ -751,6 +760,7 @@ class RequestMemory:
             read_receipts = copy.deepcopy(self._read_receipts.get(observed_key, {}))
             host_input = copy.deepcopy(self._host_inputs.get(observed_key))
             tail = list(self._plain_user_tails.get(observed_key, []))
+            native_history = list(self._native_history.get(observed_key, []))
         current_content = current.get('api_content', current.get('content')) if current else None
         # Only native-observed recall and authenticated read receipts can
         # nominate parents. User-authored markers cannot select other people's
@@ -760,7 +770,15 @@ class RequestMemory:
         annotation_checks = {}
         searched_receipts = []
         unannotated_inputs = []
+        native_copies = []
         try:
+            if self.ownership is not None and observed:
+                visible = list(_request_texts(request))
+                native_copies = [copy for copy in self.ownership.observed_sources(scope, native_history)
+                                 if any(copy['content'] in text for text in visible)]
+                for native_copy in native_copies:
+                    for ref in native_copy['sources']:
+                        source_refs[(ref['source_id'], ref['source_version'])] = ref
             current_packet = _native_packet(current)
             if current_packet:
                 meta = json.loads(_STAMP.match(current_packet.group()).group(1))
@@ -787,7 +805,7 @@ class RequestMemory:
                     source_refs[(ref['source_id'], ref['source_version'])] = ref
                 unannotated_inputs = operational['unannotated_input_refs']
             parents_valid = len(source_refs) <= 512 and len(annotation_checks) <= 512
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (KeyError, TypeError, ValueError, AttributeError, OSError, sqlite3.Error):
             parents_valid = False
         deadline = time.monotonic() + .25
         watermark, rules, fresh = 0, [], False
@@ -917,7 +935,7 @@ class RequestMemory:
         # Failure returns an explicit reduced request instead of stale history.
         repair = None
         original_request = request
-        if fresh and observed:
+        if observed:
             request, repair = _restore_current_suffix(request, tail, current)
         try:
             filtered = filter_request(request, contact_id=contact, watermark=watermark,
@@ -929,7 +947,7 @@ class RequestMemory:
                                       read_receipts=read_receipts)
             fresh = False
             repair = None
-        filtered = _recombine_current_suffix(filtered, repair)
+        filtered = _recombine_current_suffix(filtered, repair if fresh else None)
         if supplied_input is not None and updates:
             if not supplied_input.check_updates(scope, updates, fresh=fresh and observed, rules=rules):
                 return {'request': withheld_request(filtered, failure=supplied_input.failure),
@@ -955,6 +973,10 @@ class RequestMemory:
             current_packet = _native_packet(current)
             packets = packets | ({current_packet.group()} if current_packet else set())
             supplied = {}
+            for native_copy in native_copies:
+                if any(native_copy['content'] in text for text in actual_texts):
+                    for ref in native_copy['sources']:
+                        supplied[(ref['source_id'], ref['source_version'])] = ref
             if (operational and operational['contact_id'] == contact and operational['watermark'] == watermark
                     and any(operational['text'] in text for text in actual_texts)):
                 for ref in operational['source_refs']:
@@ -989,14 +1011,14 @@ class RequestMemory:
                             supplied[(ref['source_id'], ref['source_version'])] = ref
                 except (ValueError, KeyError, TypeError):
                     continue
-            if self.ownership is not None and supplied and not self.ownership.retain(scope, list(supplied.values())):
+            retention = {'native_lineage':True} if native_copies else {}
+            if self.ownership is not None and supplied and not self.ownership.retain(scope, list(supplied.values()), **retention):
                 # Native middleware intentionally fails open on exceptions.
                 # Return its existing reduced request explicitly instead: the
                 # ordinary input survives, recalled/read sources do not leave.
                 filtered = filter_request(request, contact_id=contact, watermark=watermark,
                     rules=rules, fresh=False, aliases=aliases, current_content=current_content,
                     current_input=current_input, read_receipts=read_receipts)
-                filtered = _recombine_current_suffix(filtered, repair)
                 if operational:
                     from .request_work import replace_context
                     filtered = replace_context(filtered,
