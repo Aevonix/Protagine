@@ -113,6 +113,7 @@ def respond(self,request):
  if request.url.path=='/v1/host/context/temporal':
   assert request.url.params['contact_id']=='owner'
   return httpx.Response(200,json={'title':'Current Time','body':
+   'Captured UTC: 2030-07-12T00:00:01+00:00. '
    'Agent reference (UTC). Recorded timezone for Robin (Asia/Tokyo). '
    'A recorded timezone is not evidence of current location.'})
  raise AssertionError('Greeting must not search memory: '+str(request.url))
@@ -122,6 +123,7 @@ socket.socket.connect=no_network;socket.create_connection=no_network
 provider=load_memory_provider('pacomind-memory',register_skills=False)
 provider._configure({'url':'http://clock.fixture','api_key':'fixture-key',
  'contact_id':'owner','turn_writer':'disabled'})
+provider._current_time_line=lambda:'2030-07-11T23:59:59+00:00'
 manager=MemoryManager();manager.add_provider(provider)
 manager.initialize_all('clock-greeting',platform='whatsapp')
 agent=SimpleNamespace(_memory_manager=manager,session_id='clock-greeting',_user_turn_count=1)
@@ -139,6 +141,9 @@ for sender in ('owner-handle','guest-handle','unknown-handle'):
   assert 'on later turns it is historical' in content
   assert 'Gap before current turn:' not in content,content
   assert ('Recorded timezone for Robin' in content)==(sender=='owner-handle'),content
+  if sender=='owner-handle':
+   assert '2030-07-12T00:00:01+00:00' in content
+   assert '2030-07-11T23:59:59+00:00' not in content,content
  finally:clear_session_vars(tokens)
 assert sum(path=='/v1/host/context/temporal' for path,_ in requests)==1,requests
 # Nontrivial turns use native prefetch for temporal context; the hook does not

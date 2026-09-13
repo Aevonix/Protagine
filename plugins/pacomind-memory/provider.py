@@ -950,9 +950,11 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
                     ) + "\n"
             except Exception as exc:
                 logger.debug("PacoMind turn clock frames unavailable: %s", exc)
+        # The brief already contains a captured instant and its zone frames.
+        # Do not add an independently captured clock across midnight or DST.
+        clock = temporal or f"{line} (runtime reference, not the contact's location).\n"
         return (
-            f"Clock captured for this user turn: {line} (runtime reference, not the contact's location).\n"
-            + temporal +
+            "Clock captured for this user turn: " + clock +
             "This clock applies only to this turn; on later turns it is historical. "
             "Use the latest turn's clock for relative dates, not earlier 'now' or 'today' "
             "notes or the conversation-start date. Keep source event and observation "
