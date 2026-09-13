@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.5.11 - native source-copy erasure
+
+Forgotten sources can now be removed from Hermes transcript rows and their
+full-text search entries when PacoMind has recorded their ownership. Authentic
+source reads and supplied recall retain native input anchors and source revisions
+in the existing host outbox. Cleanup includes linked tool results and answers;
+an independent human input loses only its recalled API copy.
+
+The qualified native writer checks exact payloads and active writer leases.
+Gateway cleanup also clears affected cached history. Busy work stays pending
+until its final answer is persisted. Changed anchors and unknown historical
+locations remain pending instead of selecting unrelated content. Delegated and
+scheduled source reads can retain storage ownership without becoming owner
+statements or acquiring new memory access.
+
+This requires the qualified Hermes native writer and settled hooks. The host
+outbox advances to schema 3, so every process sharing it must use the updated
+adapter. Recovery must preserve that schema and erased-data state. Untracked
+historical reads, compaction and fork copies, request dumps and backups still
+need explicit ownership and cleanup. This is not complete forgetting across
+all storage surfaces.
+
 ## v1.5.10 - task experience and current role mappings
 
 When working judgments are enabled, operational native tasks can contribute
