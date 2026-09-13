@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.5 - original attachment and executed recipe evidence
+
+Image-only gateway turns retain their actual cached attachment originals through
+the existing canonical media store, including when Hermes prepares a text-only
+vision description. The adapter matches sender, channel and provider message
+identity before reading bytes. The sender's caption remains separate from the
+runtime's fallible interpretation; paths written in chat cannot admit images.
+Source reads, corrections and forgetting retain the original native identity.
+
+Already-inline originals use references within the existing request, avoiding
+duplicate image bytes. Mixed media keep their existing ingestion path. The
+existing size limits remain, and receipts distinguish retained originals from
+unavailable attachments. Historical caption-only records are not backfilled.
+
+Selected tool observations can optionally retain their original executed inputs
+when those inputs are needed to reuse a recipe. Native call identity and the
+execution-time argument hash bind the inputs to the unchanged result. Missing,
+changed or oversized inputs reject that nomination; result-only retention remains
+the default. The existing source reader exposes included inputs and their hash.
+
+These changes preserve evidence for later use. They do not establish accurate
+image selection, visual interpretation or complete recipe recall by a model.
+Phase 1 ordinary-use validation remains open.
+
 ## v1.5.4 - explicit turn clocks and numeric timezone offsets
 
 Clock context identifies UTC, the agent's reference timezone and a contact's
