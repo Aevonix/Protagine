@@ -267,3 +267,123 @@ def test_native_review_reads_current_skill_before_staging(artifacts,tmp_path):
     _,_,_,installed=artifacts
     result=run_python('-I','-c',READ_PROBE,installed,native,cwd=tmp_path,env=environment(tmp_path))
     assert json.loads(result.stdout.splitlines()[-1])['passed']
+
+
+CREATE_PROBE = r'''
+import json,os,socket,sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1]); scenario=sys.argv[2]
+if sys.argv[3]:sys.path.insert(0,sys.argv[3])
+home=Path(os.environ['HERMES_HOME']);home.mkdir()
+Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
+(home/'config.yaml').write_text('skills:\n  ledger: true\n')
+def no_network(*a,**kw):raise AssertionError('Native creation qualification stays offline')
+socket.socket.connect=no_network;socket.create_connection=no_network
+from tools import skill_manager_tool as manager,skill_provenance as provenance,skill_ledger as ledger,write_approval as approval
+from pacomind_hermes.review import stage_skill_change,editable_operation
+from pacomind_hermes.review_evaluation import evaluate_pending,audit_evaluation
+name='neutral-json-boundary'
+new='---\nname: '+name+'\ndescription: Use when generating strict JSON utilities.\n---\nCheck the declared input and output contract.\n'
+operation={'action':'create','name':name,'content':new}
+assert editable_operation(operation) is None
+target=manager._resolve_skill_dir(name)/'SKILL.md'
+assert not target.parent.exists() and manager._find_skill(name) is None
+token=provenance.set_current_write_origin('background_review')
+try:
+    arguments={'operations':[operation]} if scenario=='batch' else dict(operation)
+    arguments['_pacomind_review_base_absent']=False
+    staged=json.loads(stage_skill_change(arguments));assert staged['staged'],staged
+finally:provenance.reset_current_write_origin(token)
+pid=staged['pending_id'];pending=approval.get_pending(approval.SKILLS,pid)
+assert pending['payload']['_pacomind_review_base_absent'] is True
+assert not target.parent.exists() and manager._find_skill(name) is None
+phases=[]
+def owner_create():
+    token=provenance.set_current_write_origin('foreground')
+    try:assert json.loads(manager.apply_skill_pending(operation))['success']
+    finally:provenance.reset_current_write_origin(token)
+def oracle(text,*,phase):
+    phases.append(phase)
+    if phase=='baseline':
+        assert text is None and not target.exists(), 'Absence is not a seeded weak skill'
+    else:assert text==new
+    if phase=='candidate' and scenario=='concurrent_owner':owner_create()
+    if phase=='post_activation':
+        assert target.read_text()==new
+        if scenario=='owner_changed':target.write_text('LATER_OWNER_EDIT')
+        if scenario=='owner_extra_file':(target.parent/'owner-note.md').write_text('KEEP_OWNER_NOTE')
+    # Controlled outcomes test lifecycle; actual skill usefulness needs model/task evidence.
+    rows=[{'id':'selected-task','passed':text is not None or scenario=='not_improved'},
+          {'id':'retained-behavior','passed':True}]
+    if phase=='post_activation':
+        rows.append({'id':'independent-transfer','passed':scenario not in {'transfer','owner_changed','owner_extra_file','interrupted'}})
+    return {'cases':rows,'scope':'controlled creation/evaluation lifecycle'}
+if scenario=='preexisting_owner':owner_create()
+if scenario=='interrupted':
+    real=manager.apply_skill_pending
+    def stop_after_native_creation(payload):
+        response=real(payload);assert json.loads(response)['success']
+        raise KeyboardInterrupt('after native create, before evaluator result')
+    with patch.object(manager,'apply_skill_pending',side_effect=stop_after_native_creation):
+        try:evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
+        except KeyboardInterrupt:pass
+        else:raise AssertionError('Expected interrupted native creation')
+    assert target.read_text()==new
+    phases.clear()
+    result=evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
+    assert phases==['post_activation'] and result['status']=='rolled_back',result
+    assert not target.exists()
+elif scenario=='owner_after_intent':
+    real=manager.apply_skill_pending
+    def owner_won(payload):
+        token=provenance.set_current_write_origin('foreground')
+        try:assert json.loads(real(operation))['success']
+        finally:provenance.reset_current_write_origin(token)
+        return json.dumps({'success':False,'error':'An owner independently created the name'})
+    with patch.object(manager,'apply_skill_pending',side_effect=owner_won):
+        result=evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
+    assert result['status']=='apply_failed' and target.read_text()==new,result
+    phases.clear()
+    result=evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
+    assert result['status']=='apply_unobserved' and not phases and target.read_text()==new,result
+    assert not any(row['action']=='rollback' for row in ledger.list_entries())
+else:
+    result=evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
+    expected={'activate':'activated','batch':'activated','transfer':'rolled_back',
+              'owner_changed':'changed_elsewhere','owner_extra_file':'rolled_back',
+              'preexisting_owner':'stale_proposal','concurrent_owner':'changed_elsewhere',
+              'not_improved':'not_improved'}[scenario]
+    assert result['status']==expected,result
+    if scenario=='preexisting_owner':assert not phases and target.read_text()==new
+    elif scenario=='concurrent_owner':assert phases==['baseline','candidate'] and target.read_text()==new
+    elif scenario=='owner_changed':assert target.read_text()=='LATER_OWNER_EDIT'
+    elif scenario in {'transfer','owner_extra_file','not_improved'}:
+        assert not target.exists() and manager._find_skill(name) is None
+        if scenario=='owner_extra_file':assert (target.parent/'owner-note.md').read_text()=='KEEP_OWNER_NOTE'
+        if scenario=='not_improved':assert not target.parent.exists()
+    else:
+        assert target.read_text()==new
+        entry=ledger.get_entry(result['evaluation_id'])
+        assert entry['before']==[] and entry['evidence']['before_sha256'] is None
+        assert entry['evidence']['change_kind']=='create' and len(entry['after'])==1
+        assert entry['after'][0]['path']==str(target)
+        def later_failed_transfer(text,*,phase):
+            return {'cases':[{'id':'selected-task','passed':True},{'id':'retained-behavior','passed':True},
+                             {'id':'independent-transfer','passed':False}]}
+        result=audit_evaluation(entry['id'],later_failed_transfer,oracle_id='creation-v1')
+        assert result['status']=='rolled_back' and not target.exists(),result
+print(json.dumps({'passed':True,'scenario':scenario,'model_calls':0,'live_effect':False}))
+'''
+
+
+@pytest.mark.parametrize('scenario', ['activate','batch','transfer','owner_changed','owner_extra_file',
+                                    'preexisting_owner','concurrent_owner','owner_after_intent',
+                                    'not_improved','interrupted'])
+def test_native_new_skill_creation_and_owned_rollback(artifacts,tmp_path,scenario):
+    native=os.environ.get('PACOMIND_TEST_HERMES_PATH','')
+    if not native and importlib.util.find_spec('hermes_cli') is None:
+        pytest.skip('Install qualified Hermes for native skill evaluation')
+    _,_,_,installed=artifacts
+    result=run_python('-I','-c',CREATE_PROBE,installed,scenario,native,cwd=tmp_path,env=environment(tmp_path))
+    assert json.loads(result.stdout.splitlines()[-1])['passed']

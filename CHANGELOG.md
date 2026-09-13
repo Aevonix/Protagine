@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.20 - current tasks and evaluated skill creation
+
+Fresh native tasks retain space in shared work context before idle status reports
+and blocked board records. This repairs an observed omission during a separate
+conversation about a running task. Parent links, source references and the
+existing context budget remain intact. Coverage labels unfinished records as
+open, since a retained record does not prove that a process is running.
+
+The native skill evaluator accepts staged creation of one new SKILL.md. It
+compares the proposed skill against an absent-skill baseline and requires
+measured improvement before applying it, followed by a separate audit. The
+existing Hermes ledger records the actual creation and owns rollback. An
+interrupted apply can resume without adopting an independently created owner
+file, and rollback preserves later owner changes.
+
+These changes provide context and an evaluation path. Correct task answers and
+useful autonomous learning still require behavioral validation.
+
 ## v1.5.19 - inspectable work across conversations
 
 Shared work context now includes a native task handle and an exact reference to

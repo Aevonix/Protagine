@@ -54,6 +54,18 @@ def _matches(manifest):
                for item in manifest)
 
 
+def _creation_observed(entry):
+    """A predicted snapshot is not proof that native creation actually ran."""
+    from tools import skill_ledger as ledger
+    for row in ledger.list_entries(skill=entry['skill']):
+        if row['id'] == entry['id']:
+            break
+        if (row.get('action') == 'create' and row.get('actor') == 'curator'
+                and not row.get('before') and row.get('after') == entry['after']):
+            return True
+    return False
+
+
 def audit_evaluation(entry_id, oracle, *, oracle_id):
     """Repeat a measured task, reverting only the still-current candidate files."""
     from tools import skill_ledger as ledger, write_approval as approval
@@ -66,6 +78,9 @@ def audit_evaluation(entry_id, oracle, *, oracle_id):
     skill = entry['skill']
     if not _matches(entry['after']):
         return {'status': 'changed_elsewhere', 'evaluation_id': entry_id}
+    creating = evidence.get('change_kind') == 'create'
+    if creating and not _creation_observed(entry):
+        return {'status': 'apply_unobserved', 'evaluation_id': entry_id}
     target = Path(evidence['skill_path'])
     previously_activated = any(
         row.get('action') == 'evaluation'
@@ -92,7 +107,8 @@ def audit_evaluation(entry_id, oracle, *, oracle_id):
         status = 'activated'
     else:
         ok, _ = ledger.rollback_entry(entry_id)
-        status = 'rolled_back' if ok and _matches(entry['before']) else 'rollback_failed'
+        restored = _matches(entry['before']) and (not creating or not target.exists())
+        status = 'rolled_back' if ok and restored else 'rollback_failed'
     result = {'status': status, 'evaluation_id': entry_id, 'measurement': measured}
     result['result_entry_id'] = _record(skill, result)
     if status in {'activated', 'rolled_back'}:
@@ -103,7 +119,8 @@ def audit_evaluation(entry_id, oracle, *, oracle_id):
 def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
     """Compare current/proposed SKILL.md with the same checks before applying.
 
-    Only a main-file edit of this exact existing curator-owned skill is supported.
+    A new main file uses None as the oracle's genuinely absent skill baseline.
+    Existing main files must remain curator-owned under the native write guard.
     Unknown proposals remain in the native pending list for explicit review.
     """
     from tools import skill_ledger as ledger, skill_manager_tool as manager
@@ -113,18 +130,28 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
     if not pending or pending.get('origin') != 'background_review':
         raise ValueError('Expected a native background-review proposal')
     payload = pending['payload']
-    operation = editable_operation(payload)
+    operation = editable_operation(payload, allow_create=True)
     if operation is None or operation.get('name') != skill:
-        raise ValueError('Evaluator supports one main-file edit of the explicitly selected skill only')
+        raise ValueError('Evaluator supports one main-file change of the explicitly selected skill only')
+    creating = operation['action'] == 'create'
     token = provenance.set_current_write_origin('background_review')
     try:
-        denied = manager._background_review_preflight('edit', skill)
+        denied = manager._background_review_preflight('create' if creating else 'edit', skill)
         existing = manager._find_skill(skill)
-        if denied or not existing:
+        if denied or (not creating and not existing):
             raise ValueError('Selected skill is not available for native curator editing')
-        target = existing['path'] / 'SKILL.md'
-        original = target.read_bytes()
-        original_text = original.decode()
+        if creating:
+            invalid = (manager._validate_name(skill) or manager._validate_category(operation.get('category'))
+                       or manager._validate_frontmatter(operation['content'], new_skill=True)
+                       or manager._validate_content_size(operation['content']))
+            if invalid:
+                raise ValueError('Native skill creation contract is invalid: ' + invalid)
+            target = manager._resolve_skill_dir(skill, operation.get('category')) / 'SKILL.md'
+        else:
+            target = existing['path'] / 'SKILL.md'
+        original = target.read_bytes() if target.is_file() else None
+        original_text = original.decode() if original is not None else None
+        original_sha256 = _digest(original) if original is not None else None
         payload_hash = _digest(json.dumps(payload, sort_keys=True).encode())
         # An interrupted apply retains its proposal and its recoverable native
         # candidate entry. Resume the measurement instead of applying twice.
@@ -145,11 +172,17 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
                 if terminal.get(entry['id']) == 'rolled_back':
                     approval.discard_pending(approval.SKILLS, pending_id)
                     return {'status': 'rolled_back', 'evaluation_id': entry['id'], 'already_final': True}
-                if _digest(original) == evidence.get('candidate_sha256'):
+                if original_sha256 == evidence.get('candidate_sha256'):
                     return audit_evaluation(entry['id'], oracle, oracle_id=oracle_id)
                 if terminal.get(entry['id']) == 'activated':
                     return {'status': 'changed_elsewhere', 'evaluation_id': entry['id']}
-        if payload.get('_pacomind_review_base_sha256') != _digest(original):
+        def unchanged():
+            if creating:
+                return manager._find_skill(skill) is None and not target.parent.exists()
+            return target.is_file() and target.read_bytes() == original
+        if (creating and (payload.get('_pacomind_review_base_absent') is not True or not unchanged())):
+            return {'status': 'stale_proposal'}
+        if not creating and payload.get('_pacomind_review_base_sha256') != original_sha256:
             return {'status': 'stale_proposal'}
         if operation.get('content'):
             candidate_text = operation['content']
@@ -164,19 +197,20 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
         proposed, new_cases = _measure(oracle, candidate_text, 'candidate')
         evidence = {'pending_id': pending_id, 'payload_sha256': payload_hash,
                     'oracle_id': oracle_id, 'skill_path': str(target),
-                    'before_sha256': _digest(original), 'candidate_sha256': _digest(candidate),
+                    'before_sha256': original_sha256, 'candidate_sha256': _digest(candidate),
+                    **({'change_kind': 'create'} if creating else {}),
                     'baseline': baseline, 'candidate': proposed, 'case_ids': list(old_cases),
                     'source_evidence': payload.get('_pacomind_review_evidence')}
         improved = (original != candidate and old_cases.keys() == new_cases.keys() and all(new_cases.values())
                     and sum(new_cases.values()) > sum(old_cases.values()))
         if not improved:
             return {'status': 'not_improved', 'result_entry_id': _record(skill, {**evidence, 'status': 'not_improved'})}
-        if target.read_bytes() != original or approval.get_pending(approval.SKILLS, pending_id) != pending:
+        if not unchanged() or approval.get_pending(approval.SKILLS, pending_id) != pending:
             return {'status': 'changed_elsewhere'}
-        before = ledger.snapshot_paths(existing['path'])
-        if not any(item['path'] == str(target) and item['sha256'] == _digest(original) for item in before):
+        before = [] if creating else ledger.snapshot_paths(existing['path'])
+        if not creating and not any(item['path'] == str(target) and item['sha256'] == original_sha256 for item in before):
             return {'status': 'changed_elsewhere'}
-        after = [dict(item) for item in before]
+        after = [{'path': str(target), 'sha256': ledger._store_blob(candidate)}] if creating else [dict(item) for item in before]
         for item in after:
             if item['path'] == str(target):
                 item['sha256'] = ledger._store_blob(candidate)
@@ -184,12 +218,13 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
         # already happened. It is also a native rollback target if apply dies
         # before Hermes' best-effort mutation telemetry is written.
         entry_id = _record(skill, {**evidence, 'status': 'candidate_passed'}, before=before, after=after)
-        if not _matches(before):
+        if not unchanged() or not _matches(before):
             return {'status': 'changed_elsewhere', 'evaluation_id': entry_id}
-        viewed = json.loads(skills_tool.skill_view(skill, preprocess=False))
-        if not viewed.get('success', True):
-            raise RuntimeError('Native current-content read failed')
-        if not _matches(before):
+        if not creating:
+            viewed = json.loads(skills_tool.skill_view(skill, preprocess=False))
+            if not viewed.get('success', True):
+                raise RuntimeError('Native current-content read failed')
+        if not unchanged() or not _matches(before):
             return {'status': 'changed_elsewhere', 'evaluation_id': entry_id}
         applied = json.loads(manager.apply_skill_pending(payload))
         if not applied.get('success'):

@@ -3,8 +3,8 @@ import json
 import hashlib
 
 
-def editable_operation(arguments):
-    """One native main-file edit, including its current single-op batch form."""
+def editable_operation(arguments, *, allow_create=False):
+    """One native main-file change, with creation explicitly selected by callers."""
     operations = arguments.get('operations')
     if operations is not None:
         if not isinstance(operations, list) or len(operations) != 1 or not isinstance(operations[0], dict):
@@ -13,7 +13,8 @@ def editable_operation(arguments):
         operation['name'] = operation.get('name') or arguments.get('name')
     else:
         operation = arguments
-    if operation.get('action') not in {'edit', 'patch'} or operation.get('file_path') not in {None, '', 'SKILL.md'}:
+    actions = {'edit', 'patch', 'create'} if allow_create else {'edit', 'patch'}
+    if operation.get('action') not in actions or operation.get('file_path') not in {None, '', 'SKILL.md'}:
         return None
     if operation.get('content'):
         if not isinstance(operation['content'], str) or operation.get('old_string') or operation.get('new_string') is not None:
@@ -84,10 +85,14 @@ def stage_skill_change(arguments):
     # Hermes forked this review, never from the proposed skill's arguments.
     from .review_evidence import current
     payload['_pacomind_review_evidence'] = current()
-    operation = editable_operation(arguments)
+    operation = editable_operation(arguments, allow_create=True)
     if operation is not None:
         current = manager._find_skill(operation.get('name', ''))
-        if current:
+        if operation['action'] == 'create':
+            # Absence comes from the native catalog, never proposed metadata.
+            payload['_pacomind_review_base_absent'] = current is None
+            payload['_pacomind_review_base_sha256'] = None
+        elif current:
             payload['_pacomind_review_base_sha256'] = hashlib.sha256((current['path'] / 'SKILL.md').read_bytes()).hexdigest()
     record = approval.stage_write(approval.SKILLS, payload, summary=summary, origin='background_review')
     # Native staging is best-effort. Never report a stored proposal when its
