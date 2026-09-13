@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.6 - uncertain owner-message outcomes
+
+If an owner-message acknowledgement is lost after submission, the native tool
+reports an unknown outcome and preserves the existing delivery identity. A
+missing acknowledgement no longer claims that no message was sent. The result
+calls for reconciling that delivery before any new send; it adds no automatic
+retry. Pre-submission checks and normal receipt handling remain unchanged.
+
 ## v1.5.5 - original attachment and executed recipe evidence
 
 Image-only gateway turns retain their actual cached attachment originals through
