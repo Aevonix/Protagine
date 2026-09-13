@@ -1,6 +1,6 @@
 ---
 name: pacomind
-version: 1.5.8
+version: 1.5.9
 description: PacoMind context sidecar for Hermes with exact per-turn participant binding, scoped guest projection, and read-only general-plugin coexistence.
 author: Aevonix
 ---

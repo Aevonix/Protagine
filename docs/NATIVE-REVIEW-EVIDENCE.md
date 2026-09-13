@@ -1,8 +1,7 @@
 # Source references for native review proposals
 
-Version 1.0.6 adds a small provenance connection to the existing Hermes
-background review and skill evaluation path. It does not add a review worker,
-recurrence queue, scheduler, automatic skill activation or new memory store.
+PacoMind connects actual tool-result references to Hermes background review
+and skill evaluation. Reviews and adoption remain native-owned.
 
 The native request middleware captures references to structured tool failures
 linked to actual assistant tool-call IDs. It uses the same participant scope
@@ -34,7 +33,8 @@ capture function after participant resolution:
 
 ```python
 from .review_evidence import capture
-capture(scope, kwargs.get('request'))
+capture(scope, kwargs.get('request'),
+        durable=(config.get('native_reviews') or {}).get('enabled') is True)
 ```
 
 Its existing early return for background review must remain: Hermes inherits
@@ -59,3 +59,25 @@ the intended matches, while simple and no-match controls already worked.
 That establishes a supported recovery option. It does not establish learned
 adoption, task impossibility without a correction, or an automatic skill gain.
 No tool implementation or regular-expression meaning is changed by this work.
+
+## Recurring failures across conversations
+
+With native reviews enabled, the same middleware appends ordinary skill-use
+failures to Hermes' existing skill ledger. This path only accepts a resolved
+owner, a successful `skill_view`, and a linked structured error after the
+current user message. It records the exact viewed skill content hash. Earlier
+errors replayed in a later turn, CLI/system work and background reviews do not
+become ordinary experience. Original task text and error prose are not copied.
+
+`review_experience.next_batch` selects the same failure from at least two
+distinct ordinary turns, possibly from different sessions. Unknown error
+classes must also match the exact result hash. One result does not count twice
+when its history is replayed. Review receipts consume selected observation IDs;
+new experience is required for another batch. A consumer must still check
+current skill ownership and use its existing evaluator before any adoption.
+
+Viewing a skill before an error establishes association, not causation. These
+observations do not detect unsupported prose or every task failure. A caller
+that deliberately injects an operator exercise into an authenticated owner
+transport must preserve its explicit test provenance or suppress collection;
+the participant fields alone cannot distinguish it from ordinary owner work.
