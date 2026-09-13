@@ -115,6 +115,8 @@ Missing, changed, oversized or unsupported originals receive an explicit
 unavailable disposition. Mixed media events keep their existing ingestion path;
 this image carrier cannot replace native audio, document or video blocks.
 Already-inline native originals are referenced without duplicating their bytes.
+Each active native turn keeps its own carrier until durable outbox handoff or
+terminal cleanup; concurrent or long-running turns do not evict its originals.
 If differing native pixels plus the original would exceed the existing turn
 budget, the existing native ingestion path is preserved.
 The existing `turns:write` permission covers its typed

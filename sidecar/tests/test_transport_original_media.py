@@ -1,5 +1,6 @@
 """Admitted attachments survive text vision without becoming human assertions."""
 import base64
+import gc
 from contextlib import closing
 import copy
 import hashlib
@@ -188,6 +189,73 @@ async def test_large_native_image_retains_once_within_existing_limit(transport, 
     assert response.json()['transport_media']['attachments'][0]['asset_hash'] == hashlib.sha256(data).hexdigest()
 
 
+@pytest.mark.asyncio
+async def test_full_four_mib_jpeg_crosses_carrier_schema_and_canonical_store(transport, source_app):
+    from PIL import Image
+    output = io.BytesIO()
+    Image.new('RGB', (16, 16), 'blue').save(output, format='JPEG')
+    original = output.getvalue()
+    # Legal JPEG comment segments exercise the exact byte limit without a huge
+    # decoded bitmap or non-image trailing bytes.
+    comments = bytearray()
+    remaining = 4 * 1024 * 1024 - len(original)
+    while remaining:
+        size = min(65537, remaining)
+        if 0 < remaining - size < 4:
+            size -= 4
+        comments.extend(b'\xff\xfe' + (size - 2).to_bytes(2, 'big') + b'x' * (size - 4))
+        remaining -= size
+    data = original[:2] + comments + original[2:]
+    assert len(data) == 4 * 1024 * 1024
+    transport.image.write_bytes(data)
+    transport.event.media_types = ['image/jpeg']
+    body = capture(transport)
+    assert len(body['transport_media']['images'][0]['data_url']) == 5592431
+    TurnSyncRequest.model_validate(body)
+    client = _load_client()
+    queued = client.TurnOutbox(transport.image.parents[2] / 'jpeg-outbox.sqlite3').enqueue('media-turn', {
+        'session_id': 'native-session', 'contact_id': 'person', 'turn_id': 'media-turn',
+        'sender': body['sender'], 'user_message': body['user_message']['content'],
+        'transport_media': body['transport_media']}, capture_ordinary=True)
+    assert queued['state'] == 'pending'
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as api:
+        response = await api.put('/v2/host/turns/source-media/transport/media-turn', json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()['transport_media']['attachments'] == [
+        {'ordinal': 0, 'retained': True, 'asset_hash': hashlib.sha256(data).hexdigest()}]
+
+
+def test_active_turns_survive_concurrency_and_long_work(transport, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(transport.module.time, 'monotonic', lambda: now[0])
+    scopes = []
+    for index in range(17):
+        scope = copy.copy(transport.scope)
+        scope.turn_id = 'turn-' + str(index)
+        transport.event.message_id = 'provider-' + str(index)
+        transport.carrier.observe(event=transport.event)
+        transport.carrier.bind(scope, native_context(transport))
+        scopes.append(scope)
+    now[0] += 7200
+    for index, scope in enumerate(scopes):
+        assert transport.carrier.for_turn(scope)['provider_message_id'] == 'provider-' + str(index)
+    transport.carrier.finish(**vars(scopes[0]))
+    assert transport.carrier.for_turn(scopes[0]) is None
+    assert all(transport.carrier.for_turn(scope) for scope in scopes[1:])
+
+
+def test_abandoned_native_owner_releases_only_its_carrier(transport, monkeypatch):
+    class NativeTurn:
+        closed = False
+    owners = [NativeTurn()]
+    monkeypatch.setattr(transport.module, '_native_turn', lambda scope: owners[0])
+    capture(transport)
+    assert transport.carrier.for_turn(transport.scope)
+    owners.clear()
+    gc.collect()
+    assert transport.carrier.for_turn(transport.scope) is None
+
+
 @pytest.mark.parametrize('selector', [0, 9])
 def test_native_reference_requires_an_actual_inline_image(transport, selector):
     body = capture(transport, 'native')
@@ -264,6 +332,39 @@ def test_registered_hooks_retain_matching_transport_input(plugin_runtime, transp
     assert written['transport_media']['caption'] == transport.event.text
     assert base64.b64decode(written['transport_media']['images'][0]['data_url'].split(',', 1)[1]) == image_bytes()
     assert written['summary'] == ''
+
+
+@pytest.mark.parametrize('terminal', ['completed', 'failed', 'interrupted'])
+def test_registered_handoff_and_terminal_release_exact_turn(plugin_runtime, transport, monkeypatch, terminal):
+    module, context, client, _ = plugin_runtime
+    helper = importlib.import_module(module.__package__ + '.transport_media')
+    monkeypatch.setattr(helper, '_home', lambda: transport.image.parents[2])
+    monkeypatch.setattr(helper, '_transport', lambda: ('sms', '+15550001', 'fixture-chat'))
+    carrier = next(cell.cell_contents for cell in context.hooks['post_llm_call'].__closure__
+                   if isinstance(cell.cell_contents, helper.TransportMedia))
+    transport.event.source.platform.value = 'sms'
+    transport.event.source.user_id = '+15550001'
+    kwargs = native_context(transport) | {'session_id': 'hook-session', 'task_id': 'hook-task',
+        'turn_id': 'hook-turn', 'platform': 'sms', 'sender_id': '+15550001'}
+    context.hooks['pre_gateway_dispatch'](event=transport.event)
+    context.hooks['pre_llm_call'](**kwargs)
+    scope = SimpleNamespace(**{key: kwargs[key] for key in ('session_id', 'task_id', 'turn_id')})
+    assert carrier.for_turn(scope)
+    original = module.TurnOutbox.enqueue
+    def unavailable(*args, **kwargs):
+        raise OSError('fixture disk unavailable')
+    monkeypatch.setattr(module.TurnOutbox, 'enqueue', unavailable)
+    context.hooks['post_llm_call'](**kwargs, assistant_response='Retained.', model='fixture-text')
+    assert carrier.for_turn(scope) and not client.turns
+    context.hooks['on_session_end'](**(vars(scope) | {'turn_id': 'other-turn'}), outcome=terminal)
+    assert carrier.for_turn(scope)
+    if terminal == 'completed':
+        monkeypatch.setattr(module.TurnOutbox, 'enqueue', original)
+        context.hooks['post_llm_call'](**kwargs, assistant_response='Retained.', model='fixture-text')
+        assert client.turns[0]['transport_media']['caption'] == transport.event.text
+        assert carrier.for_turn(scope) is None
+    context.hooks['on_session_end'](**vars(scope), outcome=terminal)
+    assert carrier.for_turn(scope) is None
 
 
 @pytest.mark.parametrize('server', ['current', 'old', 'missing'])

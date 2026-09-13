@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import weakref
 
 
 MAX_BYTES = 4 * 1024 * 1024
@@ -31,6 +32,19 @@ def _home():
 
 def _fingerprint(value):
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _native_turn(scope):
+    try:
+        from agent.relay_runtime import current_turn, current_profile_key
+        turn = current_turn()
+        if (turn is not None and turn.lease.profile_key == current_profile_key()
+                and (turn.lease.session_id, turn.task_id, turn.turn_id)
+                == (scope.session_id, scope.task_id, scope.turn_id)):
+            return turn
+    except ImportError:
+        pass
+    return None
 
 
 def _image_metadata(path):
@@ -83,7 +97,10 @@ class TransportMedia:
     def __init__(self):
         self._lock = threading.Lock()
         self._pending = OrderedDict()
-        self._bound = OrderedDict()
+        # Hermes dispatches hooks in separate copied timeout contexts. Keep
+        # exact-turn entries until durable handoff/terminal cleanup, with weak
+        # native ownership for abandoned turns. Active entries never expire.
+        self._bound = {}
 
     def observe(self, *, event=None, **_):
         source = getattr(event, 'source', None)
@@ -149,16 +166,30 @@ class TransportMedia:
             if (isinstance(kwargs.get('user_message'), list) and len(json.dumps(
                     [kwargs['user_message'], envelope], ensure_ascii=True).encode()) > 7 * 1024 * 1024):
                 return
+            turn = _native_turn(scope)
+            if turn is not None and turn.closed:
+                return
+            owned = (weakref.ref(turn, lambda ref: self._discard_gone(native, ref))
+                     if turn is not None else None)
             with self._lock:
-                self._bound[native] = (time.monotonic(), envelope)
-                while len(self._bound) > 16:
-                    self._bound.popitem(last=False)
+                self._bound[native] = (envelope, owned)
         except (ImportError, OSError, ValueError):
             return
 
     def for_turn(self, scope):
         with self._lock:
             entry = self._bound.get((scope.session_id, scope.task_id, scope.turn_id))
-            if entry and entry[0] >= time.monotonic() - 3600:
-                return copy.deepcopy(entry[1])
+            if entry is not None:
+                return copy.deepcopy(entry[0])
         return None
+
+    def finish(self, *, session_id='', task_id='', turn_id='', **_):
+        """Release only this exact turn after handoff or terminal cleanup."""
+        with self._lock:
+            self._bound.pop((session_id, task_id, turn_id), None)
+
+    def _discard_gone(self, key, reference):
+        with self._lock:
+            entry = self._bound.get(key)
+            if entry is not None and entry[1] is reference:
+                self._bound.pop(key)

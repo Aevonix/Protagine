@@ -2584,6 +2584,10 @@ def register(ctx: Any) -> None:
                 "durable Hermes turn enqueue failed (%s)", type(error).__name__,
             )
             return None
+        # The existing outbox now owns the original, including pending HTTP
+        # delivery. Failed enqueues keep it until this turn's terminal cleanup.
+        transport_media.finish(session_id=scope.session_id,
+            task_id=scope.task_id, turn_id=scope.turn_id)
         if supplied_input is not None:
             supplied_input.completed(scope, stable_turn_id, supplied_sources)
         if receipt.get("state") == "pending" or receipt.get("survivor_state") == "pending":
@@ -2944,6 +2948,7 @@ def register(ctx: Any) -> None:
     ctx.register_middleware('llm_request', reconcile_request)
     ctx.register_hook("transform_llm_output", transform_llm_output)
     ctx.register_hook("post_llm_call", post_llm_call)
+    ctx.register_hook('on_session_end', transport_media.finish)
     def detached_turn_end(**kwargs):
         scope = _TRANSPORT_SCOPES.for_execution(
             session_id=kwargs.get('session_id', ''),

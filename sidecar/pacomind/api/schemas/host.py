@@ -468,7 +468,9 @@ class SourceInputReference(BaseModel):
 class TransportImageInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     ordinal: int = Field(ge=0, le=7, strict=True)
-    data_url: Optional[str] = Field(default=None, max_length=5592424)
+    # Base64 rounds up complete 3-byte groups; JPEG/WebP have the longest prefix.
+    data_url: Optional[str] = Field(default=None,
+        max_length=4 * ((4 * 1024 * 1024 + 2) // 3) + len('data:image/jpeg;base64,'))
     native_block_index: Optional[int] = Field(default=None, ge=0, le=32, strict=True)
     unavailable: Optional[Literal['original_unavailable']] = None
 
