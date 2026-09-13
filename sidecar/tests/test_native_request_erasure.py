@@ -124,6 +124,67 @@ def test_unavailable_feed_returns_current_turn_and_tool_results_without_old_cont
 
 
 @pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])
+@pytest.mark.parametrize('ownership', ['erased', 'current', 'unknown', 'changed', 'duplicate'])
+def test_owned_current_calls_require_exact_prior_identity_and_source_erasure(runtime, shape, ownership):
+    rt = runtime
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='native')[0]
+    current = 'Forget the earlier label. Keep my current correction: violet is only an example.'
+    if shape == 'responses':
+        call = {'type':'function_call', 'call_id':'old', 'name':'tool_call',
+                'arguments':'{"query":"source-derived-cutoff-1789751700"}'}
+        fresh = {'type':'function_call', 'call_id':'forget', 'name':'source_forget', 'arguments':'{}'}
+        rows = [{'role':'user','content':current}, call,
+                {'type':'function_call_output','call_id':'old','output':'Rejected local batch'}, fresh,
+                {'type':'function_call_output','call_id':'forget','output':'Actual forget receipt'}]
+    elif shape == 'anthropic':
+        call = {'type':'tool_use', 'id':'old', 'name':'tool_call',
+                'input':{'query':'source-derived-cutoff-1789751700'}}
+        fresh = {'type':'tool_use', 'id':'forget', 'name':'source_forget', 'input':{}}
+        rows = [{'role':'user','content':current}, {'role':'assistant','content':[
+            {'type':'text','text':'Keep independent assistant content.'}, call, fresh]},
+            {'role':'user','content':[
+                {'type':'tool_result','tool_use_id':'old','content':'Rejected local batch'},
+                {'type':'tool_result','tool_use_id':'forget','content':'Actual forget receipt'}]}]
+    else:
+        call = {'id':'old', 'type':'function', 'function':{'name':'tool_call',
+                'arguments':'{"query":"source-derived-cutoff-1789751700"}'}}
+        fresh = {'id':'forget','type':'function','function':{'name':'source_forget','arguments':'{}'}}
+        rows = [{'role':'user','content':current}, {'role':'assistant',
+            'content':'Keep independent assistant content.', 'tool_calls':[call,fresh]},
+            {'role':'tool','tool_call_id':'old','content':'Rejected local batch'},
+            {'role':'tool','tool_call_id':'forget','content':'Actual forget receipt'}]
+    key = 'input' if shape == 'responses' else 'messages'
+    owned = {(key,'old',rt.module._content_key(call)):[ref]} if ownership != 'unknown' else {}
+    if ownership == 'changed':
+        call['name' if shape != 'chat' else 'changed_identity'] = 'Different unobserved call'
+    if ownership == 'duplicate':
+        if shape == 'responses':
+            rows.append(copy.deepcopy(call))
+        elif shape == 'anthropic':
+            rows[1]['content'].append(copy.deepcopy(call))
+        else:
+            rows[1]['tool_calls'].append(copy.deepcopy(call))
+    if ownership != 'current':
+        rt.ledger.erase_sources(contact_id='owner', turn_ids=['fixture-source'])
+    rules = rt.ledger.erasure_feed('owner')['events']
+    request = {key:rows}
+    original = copy.deepcopy(request)
+    result = rt.module._filter_owned_calls(request, current, owned, rules)
+    if ownership == 'erased':
+        assert 'source-derived-cutoff-1789751700' not in json.dumps(result)
+        assert 'Rejected local batch' not in json.dumps(result)
+        assert any(value == fresh for row in result[key] for value in (
+            [row] if shape == 'responses' else row.get('tool_calls', []) if shape == 'chat'
+            else row['content'] if isinstance(row.get('content'), list) else []))
+        assert 'Actual forget receipt' in json.dumps(result) and current in json.dumps(result)
+        if shape != 'responses':
+            assert 'Keep independent assistant content.' in json.dumps(result)
+    else:
+        assert result == original
+    assert request == original
+
+
+@pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])
 @pytest.mark.parametrize('anchor', ['user', 'assistant'])
 def test_exact_erased_origin_withholds_its_historical_tool_turn(runtime, shape, anchor):
     rt = runtime
