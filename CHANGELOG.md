@@ -13,12 +13,20 @@ Already-inline originals use references within the existing request, avoiding
 duplicate image bytes. Mixed media keep their existing ingestion path. The
 existing size limits remain, and receipts distinguish retained originals from
 unavailable attachments. Historical caption-only records are not backfilled.
+Active turns retain their originals until durable handoff or terminal cleanup,
+including long-running and concurrent turns. The typed image limit accepts the
+full supported 4 MiB attachment with its encoded format prefix.
 
 Selected tool observations can optionally retain their original executed inputs
 when those inputs are needed to reuse a recipe. Native call identity and the
 execution-time argument hash bind the inputs to the unchanged result. Missing,
 changed or oversized inputs reject that nomination; result-only retention remains
 the default. The existing source reader exposes included inputs and their hash.
+
+Background skill proposals retain Hermes' existing read-before-write requirement
+before staging. Reading marks a path within that review; it does not establish
+that the proposed lesson is correct. The existing evaluator still checks the
+skill's staged base before applying a change.
 
 These changes preserve evidence for later use. They do not establish accurate
 image selection, visual interpretation or complete recipe recall by a model.
