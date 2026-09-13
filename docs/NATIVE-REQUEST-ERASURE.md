@@ -120,8 +120,9 @@ The outbox schema advances to version 3 without copying source content. Every
 process sharing that outbox must select the updated adapter before reopening it,
 including separately pinned voice and helper clients. An older adapter cannot
 reopen this schema. Recovery must retain the version 3 reader and the current-row
-middleware interface, including the post-tool compression index correction, to
-preserve recall through compression. If the selected Hermes build lacks the
+middleware interface, including the post-tool compression index correction and
+preservation of durable user rows during live history repair, to preserve recall
+through compression and crash recovery. If the selected Hermes build lacks the
 native writer hooks, storage cleanup remains pending until that interface
 returns; ordinary request filtering still applies.
 Restoring an old database would restore erased data and is not a rollback path.

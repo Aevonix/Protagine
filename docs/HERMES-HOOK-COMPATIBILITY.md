@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf`](https://github.com/Kurcide/hermes-agent/commit/3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf),
+`218dad993564d57977f07b5d6bffd6a88d10e32f`](https://github.com/Kurcide/hermes-agent/commit/218dad993564d57977f07b5d6bffd6a88d10e32f),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/218dad993564d57977f07b5d6bffd6a88d10e32f/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -94,8 +94,14 @@ keeps the original admission for canonical memory. Missing or changed native
 rows produce no descriptor; the request middleware still runs. Post-tool
 compression also updates the current-turn index through Hermes's existing
 reanchor path, as other compression paths already do.
+Live history repair also preserves separate durable user rows. After a crash,
+merging those rows in place discarded the resumed input's storage coordinate.
+Provider requests still use Hermes's existing merge of the API copy when needed.
 
 ## What is qualified
+
+The durable-row repair passed 65 affected native checks, two unchanged private
+crash-resume cases and three unchanged public transported-input cases.
 
 The current-row interface and post-tool index correction passed ten focused
 native checks. Three installed-adapter cases use the actual compression commit
