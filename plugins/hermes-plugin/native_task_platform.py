@@ -7,8 +7,12 @@ The generic adapter accepts in-process control only and retains result text.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from contextvars import ContextVar, copy_context
+import hashlib
 import json
+import threading
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -18,6 +22,7 @@ from .task_handoffs import TaskHandoffError
 
 PLATFORM = 'pacomind_task'
 TASK_ROLE_METADATA = 'pacomind_task_model_role'
+TASK_IMAGE_RECEIPTS_METADATA = 'pacomind_task_request_image_receipts'
 ACTIVE = ContextVar('pacomind_native_task_handler', default=None)
 CONTROL = ContextVar('pacomind_native_task_control', default=None)
 CONTROL_UPDATE = ContextVar('pacomind_native_task_control_update', default=None)
@@ -62,6 +67,143 @@ def execution_experience(**kwargs):
         return None
     return {'task_id': row['id'], 'purpose': purpose,
             'origin_platform': row['source'].get('origin', {}).get('platform', 'unknown')}
+
+
+def _request_image_hashes(request):
+    """Bounded hashes of inline image bytes, never prompt text or image locators."""
+    images, errors, pending = [], [], [(request, '', 0)]
+    nodes, encoded_bytes, decoded_bytes = 0, 0, 0
+    while pending:
+        value, path, depth = pending.pop()
+        nodes += 1
+        if nodes > 4096 or depth > 20:
+            errors.append('request_structure_limit')
+            break
+        if isinstance(value, list):
+            if len(value) + len(pending) > 4096:
+                errors.append('request_structure_limit')
+                break
+            pending.extend((item, f'{path}/{i}', depth + 1) for i, item in reversed(list(enumerate(value))))
+        elif isinstance(value, dict):
+            kind = value.get('type')
+            if isinstance(kind, str) and kind in {'image_url', 'input_image', 'image'}:
+                if len(images) + len(errors) >= 8:
+                    errors.append('image_count_limit')
+                    break
+                media_type, data = None, None
+                if kind == 'image':
+                    source = value.get('source')
+                    if isinstance(source, dict) and source.get('type') == 'base64':
+                        media_type, data = source.get('media_type'), source.get('data')
+                else:
+                    url = value.get('image_url')
+                    if isinstance(url, dict):
+                        url = url.get('url')
+                    if isinstance(url, str) and url.startswith('data:'):
+                        header, comma, data = url.partition(',')
+                        if comma and header.endswith(';base64'):
+                            media_type = header[5:-7]
+                if (not isinstance(media_type, str) or not media_type.startswith('image/')
+                        or not 6 < len(media_type) <= 64
+                        or any(not (c.isascii() and (c.isalnum() or c in '.+-/')) for c in media_type)
+                        or not isinstance(data, str)):
+                    errors.append('image_bytes_unavailable')
+                    continue
+                encoded_bytes += len(data)
+                if encoded_bytes > 4 * ((2 * 1024 * 1024 + 2) // 3):
+                    errors.append('image_byte_limit')
+                    break
+                try:
+                    raw = base64.b64decode(data, validate=True)
+                except (ValueError, binascii.Error):
+                    errors.append('invalid_image_encoding')
+                    continue
+                decoded_bytes += len(raw)
+                if decoded_bytes > 2 * 1024 * 1024:
+                    errors.append('image_byte_limit')
+                    break
+                images.append({'path': path, 'media_type': media_type,
+                    'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+            else:
+                # Provider text/credentials are leaves: only traverse containers.
+                children = [(item, f'{path}/{key}', depth + 1) for key, item in value.items()
+                            if key in {'messages', 'input', 'content'} and isinstance(item, (dict, list))]
+                pending.extend(reversed(children))
+    return {'images': images, 'complete': not errors, 'errors': errors}
+
+
+def request_image_observer(scope):
+    """One opted-in task's existing native metadata sink, bound before its request.
+
+    NativeMemoryRequests supplies only its filtered raw callback body. This
+    attests that boundary, not transport bytes, delivery or model perception.
+    """
+    fields = {key: getattr(scope, key, '') for key in ('platform', 'session_id', 'task_id', 'turn_id')}
+    experience = execution_experience(**fields)
+    if experience is None or experience['purpose'] != 'qualification':
+        return None
+    active = ACTIVE.get()
+    handoffs, identity, adapter = active['handoffs'], active['id'], active['adapter']
+    native = {key: fields[key] for key in ('session_id', 'task_id', 'turn_id')}
+    row = handoffs.control(identity, require_task_grant=True)
+    if (row['source'].get('request_image_receipts') is not True
+            or not scope.valid_participant or scope.contact_id != row['source']['contact_id']):
+        return None
+    store, key, source = getattr(adapter, '_session_store', None), active.get('session_key'), active.get('source')
+    if not callable(getattr(store, '_update_entry', None)) or not key or source is None:
+        return None
+    lock = threading.Lock()
+
+    def observe(request, *, kind):
+        with lock:
+            current = handoffs.control(identity, require_task_grant=True)
+            if (current['stop'] or current['source'].get('task_experience') != 'qualification'
+                    or current['source'].get('request_image_receipts') is not True
+                    or current['source']['contact_id'] != scope.contact_id
+                    or any(current['native_' + name] != value for name, value in native.items())):
+                return False
+            prior = store.get_session_metadata(key, TASK_IMAGE_RECEIPTS_METADATA)
+            if prior and prior.get('limit_reached'):
+                return False
+            # Stop inspecting image bytes once the persisted request quota is
+            # exhausted; only the bounded limit marker still needs retention.
+            receipt = (None if prior and len(prior.get('observations', [])) >= 32
+                       else {**native, 'kind': kind, **_request_image_hashes(request)})
+            saved = None
+            def retain(entry):
+                nonlocal saved
+                if entry.session_id != native['session_id']:
+                    return False
+                adapter._check_native_origin(entry, source, key)
+                previous = entry.metadata.get(TASK_IMAGE_RECEIPTS_METADATA)
+                if previous is not None and previous.get('handoff_id') != identity:
+                    return False
+                saved = dict(previous or {'version': 1, 'handoff_id': identity, 'observations': [],
+                    'boundary': 'native_memory_filtered_request_before_next_call',
+                    'provider_delivery': 'unobserved', 'network_wire': 'unobserved'})
+                observations = list(saved['observations'])
+                if len(observations) >= 32:
+                    saved['limit_reached'] = True
+                    saved['limit_reason'] = 'request_count_limit'
+                elif receipt is None:
+                    return False
+                else:
+                    observations.append({**receipt, 'sequence': len(observations) + 1})
+                    saved['observations'] = observations
+                    # Reserve room for the bounded terminal limit marker.
+                    if len(json.dumps(saved).encode()) > 65536 - 128:
+                        saved['observations'] = observations[:-1]
+                        saved['limit_reached'] = True
+                        saved['limit_reason'] = 'receipt_byte_limit'
+                entry.metadata[TASK_IMAGE_RECEIPTS_METADATA] = saved
+                return True
+            # This is the primitive used by set_session_metadata. Its guarded
+            # mutation keeps a concurrent route reset from receiving this task's
+            # receipt. Never acquire the native store's non-reentrant lock here.
+            return (store._update_entry(key, retain) is True
+                    and store.get_session_metadata(key, TASK_IMAGE_RECEIPTS_METADATA) == saved
+                    and not saved.get('limit_reached'))
+    return observe
 
 
 def bound_task_contact(platform, sender, session_id):
@@ -512,7 +654,8 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 inputs = [*resolved['input_refs'], *(row['dependencies'] or {}).get('input_refs', [])]
                 with transport_input(contact_id=resolved['contact_id'], platform=self.platform.value,
                         input_refs=inputs, source_refs=refs, recall_query=recall_query) as supplied:
-                    active = {'handoffs': self.handoffs, 'id': row['id'], 'supplied': supplied, 'adapter': self}
+                    active = {'handoffs': self.handoffs, 'id': row['id'], 'supplied': supplied, 'adapter': self,
+                              'session_key': self._event_session_key(event), 'source': event.source}
                     token = ACTIVE.set(active)
                     self._active_inputs[row['id']] = active
                     # Inert until the ordinary public hook authenticates/binds
