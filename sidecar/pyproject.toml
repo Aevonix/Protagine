@@ -62,4 +62,4 @@ include = ["pacomind*"]
 exclude = ["*.tests", "*.tests.*", "*.test_*", "*.conftest"]
 
 [tool.setuptools.package-data]
-pacomind = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt"]
+pacomind = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png"]
