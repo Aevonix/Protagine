@@ -82,7 +82,10 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
             beliefs, collected.hits, **scope, time_query=time_query,
             classify_work_replies=current_work_available and current_work_query(query),
             include_conversation_inputs=True)
-        media_hits = SourceMedia(ledger).search(query, **scope)
+        media_store = SourceMedia(ledger)
+        media_hits = media_store.search(query, **scope)
+        quotations.extend(filter_unstructured(
+            media_store.named_locators(query, collected.hits, **scope), time_query))
         media_by_id = {row['id']: row for row in media_hits + collected.media}
         quotations.extend(filter_unstructured(list(media_by_id.values()), time_query))
     else:
@@ -111,6 +114,9 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
         quotations = [row for row in quotations if not row.get('source_turn_id')
                       or row['source_turn_id'] in {
                           ref['source_id'] for ref in row.get('_annotation_source_refs', [])}]
+        quotations = [row for row in quotations if row.get('kind') != 'media_locator'
+                      or {key: row['source_read'][key] for key in ('source_id', 'source_version')}
+                      in row.get('_annotation_source_refs', [])]
     selected, content = await selector.select_context(query, beliefs, quotations, limit=limit,
         current_work_available=current_work_available, max_chars=max_chars)
     if ledger is not None:

@@ -123,6 +123,10 @@ def render_memory_context(memories: list[dict[str, Any]]) -> str:
         for name in ("source_turn_id", "source_message_hash", "source_modality", "role", "occurred_at", "ingested_at", "excerpt_truncated", "validity_status", "claim_status", "asset_id", "description_model", "description_version", "recorded_source", "history_anchor", "source_anchors", "procedure_context", "procedure_history_anchors", "source_context", "source_history_anchors", "source_evidence_bases", "conversation_context"):
             if memory.get(name) is not None:
                 source[name] = memory[name]
+        if memory.get('kind') == 'media_locator':
+            for name in ('matched_names', 'source_read', 'attachment_index', 'mime_type',
+                         'caption_status', 'matching_attachment_candidates'):
+                source[name] = memory[name]
         if memory.get('kind') == 'media_description':
             # Keep the reader's existing canonical pair beside the media row.
             # The row/asset ID is not a source ID; expansion checked this pair.
