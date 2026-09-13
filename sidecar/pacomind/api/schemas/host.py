@@ -465,6 +465,36 @@ class SourceInputReference(BaseModel):
     input_message_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class TransportImageInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ordinal: int = Field(ge=0, le=7, strict=True)
+    data_url: Optional[str] = Field(default=None, max_length=5592424)
+    unavailable: Optional[Literal['original_unavailable']] = None
+
+    @model_validator(mode='after')
+    def exact_original(self):
+        if (self.data_url is None) == (self.unavailable is None):
+            raise ValueError('supply original bytes or an unavailable disposition')
+        if self.data_url is not None and not self.data_url.startswith('data:image/'):
+            raise ValueError('transport images require inline bytes, not paths or URLs')
+        return self
+
+
+class TransportMediaInput(BaseModel):
+    """Host-attested provider identity and clean caption, without caller hashes."""
+    model_config = ConfigDict(extra='forbid')
+    platform: str = Field(min_length=1, max_length=64)
+    provider_message_id: str = Field(min_length=1, max_length=512)
+    caption: str = Field(max_length=32768)
+    images: List[TransportImageInput] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode='after')
+    def unique_ordinals(self):
+        if len({image.ordinal for image in self.images}) != len(self.images):
+            raise ValueError('transport attachment ordinals must be unique')
+        return self
+
+
 class TurnSyncRequest(BaseModel):
     identity: HostIdentity
     context: HostTurnContext
@@ -481,6 +511,7 @@ class TurnSyncRequest(BaseModel):
     assistant_message: Optional[Union[HostMessage, TurnMessage]] = None
     assistant_source_refs: Optional[List[SourceReference]] = Field(default=None, min_length=1)
     assistant_input_refs: Optional[List[SourceInputReference]] = Field(default=None, min_length=1)
+    transport_media: Optional[TransportMediaInput] = None
     source_only: Optional[Literal[True]] = None
     # Model that produced the assistant side of this turn (optional, additive).
     # Lets the mining layer detect provider escalations / cloud failovers from
@@ -495,6 +526,11 @@ class TurnSyncRequest(BaseModel):
     def bounded_checkpoint(self):
         if len(self.model_dump_json().encode("utf-8")) > 8 * 1024 * 1024:
             raise ValueError("turn exceeds the 8 MiB source limit")
+        if self.transport_media is not None and (self.sender is None or self.user_message is None
+                or self.user_message.role != 'user' or not self.user_message.content
+                or self.sender.platform != self.transport_media.platform or self.checkpoint_messages is not None
+                or not self.context.turn_id):
+            raise ValueError('transport media requires a matching direct sender and identified native input')
         if self.checkpoint_messages is not None:
             if self.sender is not None or self.user_message is not None or self.assistant_message is not None:
                 raise ValueError("checkpoint cannot also represent an ordinary turn")
@@ -515,6 +551,7 @@ class TurnSyncRequest(BaseModel):
 
 class TurnSyncResponse(BaseModel):
     accepted: bool
+    transport_media: Optional[Dict[str, Any]] = None
     continuity_updated: bool
     skipped_reason: Optional[str] = None
     errors: Optional[List[str]] = None

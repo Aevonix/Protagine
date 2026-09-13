@@ -101,6 +101,23 @@ attempting network delivery. These settings and the explicit local `fsync`
 establish configuration readiness; they are not a physical power-loss test, so
 the attestation always reports `physical_power_loss_verified=false`.
 
+Gateway image originals use the same canonical media store even when Hermes
+prepares a text-only vision description. The pre-dispatch hook records actual
+attachment metadata; the native turn must match its sender, channel and provider
+message before cached image bytes are read. Paths written in chat are never
+attachment admission. The owner-provided caption stays separate from labeled,
+fallible runtime interpretation. Native source hashes remain linked through
+normalization, so corrections and forgetting still cover the original history.
+
+This path accepts up to eight attachment references and 4 MiB of original PNG,
+JPEG or WebP bytes per turn, within the existing 8 MiB turn envelope limit.
+Missing, changed, oversized or unsupported originals receive an explicit
+unavailable disposition. The existing `turns:write` permission covers its typed
+route; no new credential or service is required. The receipt identifies each
+attachment and reports whether its original was actually retained. An older
+receiver cannot acknowledge caption-only storage as this capability. Existing
+caption-only historical records are not retroactively upgraded.
+
 The default hook drains up to 16 rows within one shared 250 ms cooperative
 budget covering SQLite lock acquisition, claim, delivery, and finalization. It
 never holds a database lock during HTTP. The delivery callback runs on the

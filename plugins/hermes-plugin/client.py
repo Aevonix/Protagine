@@ -653,6 +653,8 @@ def redact_source_payload(payload: Mapping[str, Any], rules: Sequence[Mapping[st
                   'sender': original['sender'], 'source_only': True, 'require_source_receipt': True}
         for message in retained:
             result[message['role'] + '_message'] = message['content']
+        if original.get('transport_media') and any(message['role'] == 'user' for message in retained):
+            result['transport_media'] = original['transport_media']
         for name in ('occurred_at', 'timezone_name'):
             if original.get(name) is not None:
                 result[name] = original[name]
@@ -1714,6 +1716,7 @@ class PacoMindClient:
         observation: Mapping[str, Any] | None = None,
         assistant_source_refs: Sequence[Mapping[str, str]] | None = None,
         assistant_input_refs: Sequence[Mapping[str, str]] | None = None,
+        transport_media: Mapping[str, Any] | None = None,
         source_only: bool | None = None,
         instruction_only: bool = False,
         require_source_receipt: bool = False,
@@ -1772,6 +1775,10 @@ class PacoMindClient:
                 payload['assistant_source_refs'] = list(assistant_source_refs)
             if assistant_input_refs:
                 payload['assistant_input_refs'] = list(assistant_input_refs)
+            if transport_media is not None:
+                if not turn_id:
+                    return False
+                payload['transport_media'] = dict(transport_media)
             if source_only:
                 payload['source_only'] = True
             if tools_used:
@@ -1810,6 +1817,7 @@ class PacoMindClient:
                                     *(payload.get('checkpoint_messages') or [])])
                 # Mixed sources must also require a video-aware receiver.
                 route = ('turns/source-observation' if observation is not None else
+                         'turns/source-media/transport' if transport_media is not None else
                          'turns/source-media/video' if video_source else
                          'turns/source-media/document' if document_source else
                          'turns/source-media/audio' if audio_source else
@@ -1840,6 +1848,10 @@ class PacoMindClient:
                 )
             return bool(
                 isinstance(value, Mapping) and value.get("accepted")
+                and (transport_media is None or isinstance(value.get('transport_media'), dict)
+                     and value['transport_media'].get('processed') is True
+                     and value['transport_media'].get('source_id') == turn_id
+                     and value['transport_media'].get('provider_message_id') == transport_media['provider_message_id'])
                 and (
                     not (require_source_receipt or checkpoint_messages is not None)
                     or value.get("source_recorded") is True

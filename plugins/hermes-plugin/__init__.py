@@ -2368,6 +2368,8 @@ def register(ctx: Any) -> None:
     turn_writer_platforms = boundary.turn_writer_platforms
     turn_outbox = boundary.turn_outbox
     request_memory = RequestMemory(client, turn_outbox)
+    from .transport_media import TransportMedia
+    transport_media = TransportMedia()
     tool_observations = ToolObservations(client, turn_outbox, request_memory)
     task_config = config.get('native_tasks')
     native_tasks = (configured_tasks(client, turn_outbox, owner_contact_id, config=task_config,
@@ -2447,6 +2449,7 @@ def register(ctx: Any) -> None:
             attested_system_platforms=attested_system_platforms,
         )
         _TRANSPORT_SCOPES.put(scope)
+        transport_media.bind(scope, kwargs)
         supplied_input = input_provenance.current()
         if supplied_input is not None:
             supplied_input.bind(scope, str(kwargs.get('parent_session_id') or ''))
@@ -2543,6 +2546,10 @@ def register(ctx: Any) -> None:
             "sender": {"platform": scope.authority_gateway or scope.platform,
                        "user_id": scope.sender_id},
         }
+        original_media = transport_media.for_turn(scope)
+        if original_media is not None and supplied_input is None:
+            payload['transport_media'] = original_media
+            payload['summary'] = ''
         if supplied_input is not None:
             # The host already admitted the human input. This native turn is
             # derived work, not another human statement containing its task
@@ -2866,8 +2873,12 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook('on_kanban_dispatch_tick', native_reviews.reconcile)
     ctx.register_hook('on_kanban_dispatch_tick', native_followups.reconcile)
+    def observe_gateway(**kwargs):
+        transport_media.observe(**kwargs)
+        if native_tasks is not None:
+            return native_tasks.observe_gateway(**kwargs)
+    ctx.register_hook('pre_gateway_dispatch', observe_gateway)
     if native_tasks is not None:
-        ctx.register_hook('pre_gateway_dispatch', native_tasks.observe_gateway)
         ctx.register_platform(name='pacomind_task', label='PacoMind background tasks',
             adapter_factory=native_tasks.create_adapter, check_fn=lambda: True,
             is_connected=lambda selected: bool(getattr(selected, 'enabled', False)),
