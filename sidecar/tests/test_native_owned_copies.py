@@ -521,3 +521,33 @@ def test_changed_native_turn_between_selection_and_writer_stays_pending(native_r
     else:
         assert settle(rt)['status'] == 'pending'
         assert rows(rt)[current['_row_id']]['content'] == 'Preserve this newly edited unrelated request.'
+
+
+@pytest.mark.parametrize('changed_original', [False, True])
+def test_native_persisted_input_override_is_distinct_from_request_wrapper(native_runtime, changed_original):
+    rt = native_runtime
+    original = 'Use the original maintenance request.'
+    wrapper = 'Native task wrapper: perform the requested maintenance work.'
+    current = {'role':'user', 'content':wrapper}
+    # Exact native order: original in the hook, wrapper in its shallow history,
+    # then the native writer persists original and stamps the same live row ID.
+    rt.memory.observe_native_anchor(rt.scope, [current], user_message=original)
+    rt.memory.observe(rt.scope, [current], user_message=original)
+    rt.memory.observe_host_input(rt.scope, [current], wrapper, text='Typed source context',
+                                 sources=[rt.ref], watermark=0)
+    current['api_content'] = wrapper + '\nTyped source context'
+    current['_row_id'] = rt.db.append_message('reader', 'user',
+        'A different persisted human input.' if changed_original else original, api_content=current['api_content'])
+    assert rt.memory._aliases[('owner','reader','read-turn')][1]['content'] == wrapper
+    assert rt.memory.native_anchor(rt.scope)['content'] == original
+    assert rt.memory.native_anchor(rt.scope)['_row_id'] == current['_row_id']
+    assert rt.owned.retain(rt.scope, [rt.ref]) is (not changed_original)
+    if changed_original:
+        assert not rt.owned._rows()
+    else:
+        rt.db.append_message('reader','assistant','Derived forgettoken maintenance answer.')
+        erase(rt)
+        assert settle(rt)['status'] == 'settled'
+        persisted = rows(rt)[current['_row_id']]
+        assert persisted['content'] == original and persisted['api_content'] is None
+        assert not rt.db.search_messages('forgettoken', include_inactive=True)

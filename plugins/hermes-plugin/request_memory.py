@@ -657,10 +657,15 @@ class RequestMemory:
         """The native-observed current row, including its persisted row ID."""
         key = (scope.contact_id, scope.task_id, scope.turn_id)
         with self._lock:
+            observed = self._native_anchors.get(key)
+            if observed is not None:
+                current, persisted_input = observed
+                # Native voice/task turns can send a wrapper while persisting
+                # the original human input. Keep the later-stamped native ID,
+                # but validate ownership against that trusted persisted input.
+                return {**current, 'content':copy.deepcopy(persisted_input)}
             value = self._aliases.get(key)
             current = value[1] if value else None
-            if current is None:
-                current = self._native_anchors.get(key)
             return dict(current) if isinstance(current, dict) and current.get('role') == 'user' else None
 
     def observe_native_anchor(self, scope, messages, *, user_message=None):
@@ -669,11 +674,14 @@ class RequestMemory:
             return
         current = messages[-1]
         if (not isinstance(current, dict) or current.get('role') != 'user'
-                or user_message is None or current.get('content') != user_message):
+                or user_message is None):
             return
         key = (scope.contact_id, scope.task_id, scope.turn_id)
         with self._lock:
-            self._native_anchors[key] = current
+            # The native hook supplies its persistence override separately from
+            # the API-facing row. Retain the row reference until turn-start
+            # persistence stamps _row_id; request aliases remain independent.
+            self._native_anchors[key] = current, copy.deepcopy(user_message)
             self._native_anchors.move_to_end(key)
             while len(self._native_anchors) > 32:
                 self._native_anchors.popitem(last=False)
