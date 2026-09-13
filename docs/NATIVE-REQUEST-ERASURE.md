@@ -58,8 +58,20 @@ turn hooks. Authentic source reads and actually supplied recall record their
 source revisions, native database location and current input anchor in one
 metadata-only table in the existing outbox. This also works when ordinary CLI
 capture is disabled. It does not create a canonical copy of the CLI answer.
-Ordinary canonical capture records its native database location before enqueue,
-so profiles sharing an outbox can find the actual source transcript.
+Ordinary canonical capture records its native database location and verified
+current user/final assistant row IDs before enqueue. A retained tool observation
+binds the exact completed native result row before publication. Identical text
+in a later turn is not another copy of that origin. Historical sources without
+row bindings require unique matches; ambiguous or unobserved origins remain
+pending. Partial erasures select only the affected bound message, preserving
+the other speaker's input. Reconciliation reads actionable ownership and looks
+up required origins by source ID, rather than decoding all past origins each turn.
+
+Optional tool-input retention also binds its sole original assistant call row
+with a native payload digest. That row is erased individually, keeping native
+call identity but removing its arguments. A row shared with other tool calls
+cannot be retained this way; the tool returns an error and can retain the result
+without input instead. This optional capability requires the native snapshot API.
 
 Canonical erasure events and pending native ownership commit with the existing
 feed cursor. Reconciliation verifies each anchor, selects its owned turn span,
@@ -77,6 +89,16 @@ including a final answer written after the first attempt. Gateway erasure also
 evicts the affected agent cache. Changed anchors and unknown historical profile
 locations stay pending with a retained reason. Previously retained erasures can
 finish during a sidecar outage; discovery of newer events remains unconfirmed.
+An incomplete feed page also remains pending, with its cursor retained for the
+next existing callback. It does not report complete cleanup after one partial page.
+
+Failed ownership retention withholds the affected source-read result or recall
+from the model request and preserves ordinary current input. The response or
+middleware result reports the failure. This does not make a cross-store atomicity
+claim: Hermes may already have persisted recalled `api_content` before request
+middleware runs. If its ownership write then fails, withholding model exposure
+does not prove that preexisting native copy was physically erased during the
+storage outage.
 
 The outbox schema advances to version 3 without copying source content. Every
 process sharing that outbox must select the updated adapter before reopening it,

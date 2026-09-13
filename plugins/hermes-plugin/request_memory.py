@@ -624,6 +624,11 @@ class RequestMemory:
         with self._lock:
             if key not in self._requests_seen or not tool_call_id:
                 return False
+        if self.ownership is not None and not self.ownership.retain(scope, result['source_refs']):
+            return False
+        with self._lock:
+            if key not in self._requests_seen or not tool_call_id:
+                return False
             self._read_receipts[key][tool_call_id] = {
                 'text': text, 'watermark': result['watermark'], 'evidence_kind': evidence_kind,
                 'sources': copy.deepcopy(result['source_refs'])}
@@ -646,8 +651,6 @@ class RequestMemory:
                 self._read_receipts[key][tool_call_id]['document_read'] = {
                     field: result[field] for field in ('source_id', 'source_version', 'read_revision', 'offset')
                 } | {field: result['document'][field] for field in ('asset_hash', 'page')}
-        if self.ownership is not None:
-            self.ownership.retain(scope, result['source_refs'])
         return True
 
     def native_anchor(self, scope):
@@ -949,12 +952,24 @@ class RequestMemory:
                             supplied[(ref['source_id'], ref['source_version'])] = ref
                 except (ValueError, KeyError, TypeError):
                     continue
+            if self.ownership is not None and supplied and not self.ownership.retain(scope, list(supplied.values())):
+                # Native middleware intentionally fails open on exceptions.
+                # Return its existing reduced request explicitly instead: the
+                # ordinary input survives, recalled/read sources do not leave.
+                filtered = filter_request(request, contact_id=contact, watermark=watermark,
+                    rules=rules, fresh=False, aliases=aliases, current_content=current_content,
+                    current_input=current_input, read_receipts=read_receipts)
+                filtered = _recombine_current_suffix(filtered, repair)
+                if operational:
+                    from .request_work import replace_context
+                    filtered = replace_context(filtered,
+                        'Current shared work withheld because source ownership could not be retained.')
+                return {'request':filtered, 'source':'pacomind', 'freshness_retryable':False,
+                        'reason':'native_source_ownership_unavailable'}
             with self._lock:
                 if observed_key in self._supplied:
                     self._supplied[observed_key].update(supplied)
                     self._requests_seen.add(observed_key)
-            if self.ownership is not None and supplied:
-                self.ownership.retain(scope, list(supplied.values()))
         return {'request': filtered, 'source': 'pacomind',
                 'freshness_retryable': freshness_retryable and not fresh,
                 'reason': 'source_erasure_checked' if fresh else 'source_erasure_unavailable'}

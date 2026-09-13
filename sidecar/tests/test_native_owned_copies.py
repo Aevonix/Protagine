@@ -354,3 +354,137 @@ def test_persistent_child_and_cron_reads_use_storage_anchor_without_owner_admiss
     assert not rt.db.search_messages('forgettoken', include_inactive=True)
     assert rt.db.get_messages('reader')[0]['content'] == current['content']
     assert not rt.owned._rows() and not rt.memory._native_anchors
+
+
+@pytest.mark.parametrize('prospective', [True, False])
+def test_identical_later_input_is_not_an_origin_identity(native_runtime, prospective):
+    rt = native_runtime
+    first_answer = rt.db.append_message('original', 'assistant', 'The original label is forgettoken violet.')
+    repeated = rt.db.append_message('original', 'user', rt.fact)
+    other_answer = rt.db.append_message('original', 'assistant', 'Keep this separate later decision.')
+    if prospective:
+        scope = SimpleNamespace(**{**vars(rt.scope), 'session_id':'original'})
+        assert rt.owned.retain_origin(scope, 'original-source', messages=[
+            {'role':'user', 'content':rt.fact, '_row_id':rt.original}])
+    before = rows(rt)
+    erase(rt)
+    result = settle(rt)
+    after = rows(rt)
+    if prospective:
+        assert result['status'] == 'settled', result
+        assert after[rt.original]['content'] == '[Content removed.]'
+        assert after[first_answer]['content'] == '[Content removed.]'
+    else:
+        assert result['status'] == 'pending'
+        assert after == before
+        assert rt.owned._rows()[0]['metadata']['pending_reason'] == 'native_source_origin_ambiguous'
+    assert after[repeated] == before[repeated]
+    assert after[other_answer] == before[other_answer]
+
+
+def test_partial_canonical_answer_erasure_preserves_its_exact_user_origin(native_runtime):
+    rt = native_runtime
+    current = {'role':'user', 'content':'Keep the independent calendar instruction.'}
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    answer = {'role':'assistant', 'content':'The label is forgettoken violet.'}
+    answer['_row_id'] = rt.db.append_message('reader', 'assistant', answer['content'])
+    assert rt.owned.retain_origin(rt.scope, 'reader-source', messages=[current, answer])
+    rt.ledger.record_source('reader-source', contact_id='owner', session_id='reader', messages=[
+        {'role':'user','content':current['content']},
+        {'role':'assistant','content':answer['content'],'_supplied_sources':[rt.ref]}], derive_claims=False)
+    before = rows(rt)[current['_row_id']]
+    erase(rt)
+    assert any(not rule['whole_source'] for rule in rt.ledger.erasure_feed('owner')['events'])
+    assert settle(rt)['status'] == 'settled'
+    assert rows(rt)[current['_row_id']] == before
+    assert rows(rt)[answer['_row_id']]['content'] == '[Content removed.]'
+    assert not rt.db.search_messages('forgettoken', include_inactive=True)
+
+
+def test_incomplete_feed_cannot_report_settled_before_next_existing_callback(native_runtime, monkeypatch):
+    rt = native_runtime
+    other = rt.db.append_message('reader', 'user', 'Second purgefixture record.')
+    rt.ledger.record_source('second-source', contact_id='owner', session_id='reader',
+        messages=[{'role':'user','content':'Second purgefixture record.'}], derive_claims=False)
+    rt.ledger.erase_sources(contact_id='owner', turn_ids=['original-source','second-source'])
+    def page(path, **kwargs):
+        return httpx.Response(200, request=httpx.Request('GET','http://fixture'+path),
+            json=rt.ledger.erasure_feed('owner', kwargs['params']['after'], limit=1))
+    monkeypatch.setattr(rt.client, 'get', page)
+    assert settle(rt)['status'] == 'pending'
+    assert rows(rt)[other]['content'] == 'Second purgefixture record.'
+    assert settle(rt)['status'] == 'settled'
+    assert not rt.db.search_messages('purgefixture', include_inactive=True)
+
+
+def test_failed_ownership_write_withholds_actual_source_read_output(native_runtime, monkeypatch):
+    rt = native_runtime
+    begin_read(rt, recall=True)
+    handler = importlib.import_module(rt.plugin.__name__ + '.source_read').handle
+    def post(path, **kwargs):
+        assert path == '/v1/host/memory/read'
+        return httpx.Response(200, request=httpx.Request('POST','http://fixture'+path),
+            json={'source':{'source_refs':[rt.ref], 'watermark':0, 'content':rt.fact}})
+    monkeypatch.setattr(rt.client, 'post', post)
+    # This is a real persistence error, not a mocked success/failure boolean.
+    monkeypatch.setattr(rt.outbox, '_connect', lambda **kw: (_ for _ in ()).throw(OSError('fixture disk unavailable')))
+    result = json.loads(handler(rt.ref, rt.scope, rt.client, rt.memory, {'tool_call_id':'failed-read'}))
+    assert result['complete'] is False and 'unavailable' in result['error']
+    assert rt.fact not in json.dumps(result)
+    assert 'failed-read' not in rt.memory._read_receipts[('owner','reader','read-turn')]
+
+
+def test_failed_ownership_write_withholds_recall_and_preserves_ordinary_input(native_runtime, monkeypatch):
+    rt = native_runtime
+    current = {'role':'user', 'content':'Preserve this ordinary new request.'}
+    rt.memory.observe_native_anchor(rt.scope, [current], user_message=current['content'])
+    rt.memory.observe(rt.scope, [current], user_message=current['content'])
+    current['api_content'] = current['content'] + '\n[pacomind-recall-v1 ' + json.dumps({
+        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+    current['_row_id'] = rt.db.append_message('reader','user',current['content'],api_content=current['api_content'])
+    # The feed works; only the ownership retention transaction fails.
+    original_connect = rt.owned._native_read
+    monkeypatch.setattr(rt.owned, '_native_read', lambda *a, **kw: (_ for _ in ()).throw(OSError('fixture ownership read unavailable')))
+    result = rt.memory({'messages':[{'role':'user','content':current['api_content']}]}, rt.scope)
+    assert result['reason'] == 'native_source_ownership_unavailable'
+    assert rt.fact not in json.dumps(result['request'])
+    assert current['content'] in json.dumps(result['request'])
+    assert not rt.memory.supplied_snapshot(rt.scope)
+    # Withholding model exposure is not a claim that a preexisting native API
+    # copy disappeared during a storage outage. That copy remains observable.
+    monkeypatch.setattr(rt.owned, '_native_read', original_connect)
+    assert rt.fact in rows(rt)[current['_row_id']]['api_content']
+
+
+def test_settlement_does_not_decode_permanent_origin_history(native_runtime, monkeypatch):
+    rt = native_runtime
+    with closing(rt.outbox._connect()) as db, db:
+        for index in range(300):
+            db.execute('INSERT INTO native_source_ownership VALUES (?,?,?,?,?)',
+                (f'origin:history-{index}', 'owner', 'reader', f'history-{index}',
+                 json.dumps({'kind':'origin','native_db':str(rt.db.db_path),'anchors':{}})))
+    decode = rt.module.json.loads
+    def checked(value, *args, **kwargs):
+        result = decode(value, *args, **kwargs)
+        assert not isinstance(result, dict) or result.get('kind') != 'origin'
+        return result
+    monkeypatch.setattr(rt.module.json, 'loads', checked)
+    assert settle(rt)['status'] == 'settled'
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_exact_origin_replays_only_fully_redacted_native_marker(native_runtime, changed):
+    rt = native_runtime
+    scope = SimpleNamespace(**{**vars(rt.scope), 'session_id':'original'})
+    assert rt.owned.retain_origin(scope, 'original-source', messages=[
+        {'role':'user','content':rt.fact,'_row_id':rt.original}])
+    expected = rt.db.get_message_redaction_snapshot('original', [rt.original])
+    rt.db.redact_message_payloads('original', expected)
+    if changed:
+        rt.db._execute_write(lambda db: db.execute('UPDATE messages SET content=? WHERE id=?',
+            ('Keep this new unrelated content despite the retained marker.', rt.original)))
+    before = rows(rt)[rt.original]
+    erase(rt)
+    result = settle(rt)
+    assert result['status'] == ('pending' if changed else 'settled')
+    assert rows(rt)[rt.original] == before

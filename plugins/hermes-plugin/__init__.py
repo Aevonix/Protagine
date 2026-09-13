@@ -2508,6 +2508,7 @@ def register(ctx: Any) -> None:
         supplied_input = input_provenance.current()
         input_allowed = check_supplied_input(scope)
         tool_observations.finish(scope)
+        native_origin = request_memory.native_anchor(scope) if scope is not None else None
         supplied_sources = request_memory.finish(task_id=str(kwargs.get('task_id') or ''),
             turn_id=str(kwargs.get('turn_id') or ''), contact_id=scope.contact_id if scope else None)
         request_memory.release_native_anchor(scope)
@@ -2580,7 +2581,10 @@ def register(ctx: Any) -> None:
             payload["occurred_at"] = str(kwargs["occurred_at"])
         if kwargs.get("timezone"):
             payload["timezone_name"] = str(kwargs["timezone"])
-        native_owned.retain_origin(scope, stable_turn_id)
+        native_owned.retain_origin(scope, stable_turn_id, messages=(
+            ([native_origin] if payload.get('user_message') else []) +
+            [row for row in (kwargs.get('conversation_history') or [])[-1:]
+             if isinstance(row, dict) and row.get('role') == 'assistant' and type(row.get('_row_id')) is int]))
         try:
             receipt = turn_outbox.enqueue(stable_turn_id, payload, capture_ordinary=True)
         except TurnOutboxConflict:

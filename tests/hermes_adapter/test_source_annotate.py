@@ -74,7 +74,9 @@ from hermes_cli.lifecycle import invoke_hook
 from hermes_cli.middleware import apply_llm_request_middleware
 from model_tools import handle_function_call
 from run_agent import AIAgent
+from hermes_state import SessionDB
 import run_agent
+native_db=SessionDB(home/'state.db')
 # 0.21.0 binds eager aliases; 0.21.1 calls the defining modules directly.
 OPENAI_TARGET = 'run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
 TOOLS_TARGET = 'run_agent' if 'get_tool_definitions' in vars(run_agent) else 'model_tools'
@@ -90,6 +92,10 @@ def prime(session,task,turn,*,platform='cli',sender='',supplied=True):
     invoke_hook('pre_llm_call',session_id=session,task_id=task,turn_id=turn,
         platform=platform,sender_id=sender,user_message='',conversation_history=[row])
     row['api_content']=compose_user_api_content('',recalled if supplied else '', '')
+    # Reproduce the native persistence boundary before request dispatch. These
+    # remain synthetic operator inputs, not invented owner conversation facts.
+    native_db.create_session(session,platform)
+    row['_row_id']=native_db.append_message(session,'user','',api_content=row['api_content'])
     result=apply_llm_request_middleware({'messages':[{'role':'user','content':row['api_content']}]},
         session_id=session,task_id=task,turn_id=turn).payload
     if supplied and platform=='cli': assert ref['source_version'] in json.dumps(result),result

@@ -126,7 +126,7 @@ client.chat.completions.create.side_effect=responses
 with patch(OPENAI_TARGET,return_value=client), patch(TOOLS_TARGET + '.get_tool_definitions',return_value=[]), patch(TOOLS_TARGET + '.check_toolset_requirements',return_value={}):
     agent=AIAgent(api_key='fixture',base_url='http://127.0.0.1:1/v1',provider='openai',
         model='fixture/model',quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',max_iterations=2,
-        load_soul_identity=True,ephemeral_system_prompt=ephemeral)
+        load_soul_identity=True,ephemeral_system_prompt=ephemeral,session_db=SessionDB(home/'state.db'))
     assert isinstance(agent.context_compressor, ContextCompressor)
     agent._use_prompt_caching=False; agent.save_trajectories=False
     question='What is my orchard badge in the retained neutral source?'

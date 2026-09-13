@@ -631,6 +631,58 @@ def test_origin_erasure_removes_observation_and_queued_retry(native):
     assert 'files_written' not in n.recall().get('body','')
     again = n.retain()
     assert not again['source_recorded'] and again['state']=='erased', again
+    if hasattr(n.db, 'redact_message_payloads'):
+        # The instruction span and the observation overlap on the same native
+        # result. Both canonical erasures must settle through native replay.
+        result = n.context.hooks['on_native_turn_settled'](**n.scope, platform='cli')
+        assert result['status'] == 'settled', result
+        assert not n.db.search_messages('synchronization', include_inactive=True)
+
+
+@pytest.mark.parametrize('include_input', [False, True])
+def test_native_observation_erasure_uses_exact_result_and_optional_input_rows(native, include_input):
+    n = native
+    if not hasattr(n.db, 'redact_message_payloads'):
+        pytest.skip('selected native runtime lacks owned-copy erasure')
+    result_row = n.complete(arguments={'recipe':'copper-input-original'})
+    n.request()
+    receipt = n.retain(include_input=include_input)
+    assert receipt['accepted'], n.diagnostics(receipt)
+    before = {row['id']:row for row in n.db.get_messages('native-session')}
+    input_row = next(row['id'] for row in before.values() if row['role']=='assistant')
+    answer = n.db.append_message('native-session','assistant','The copper result needs investigation.')
+    kept_input = n.db.append_message('native-session','user','Keep this separate later task.')
+    duplicate_result = n.complete(call_id='later-call', arguments={'recipe':'independent-later-input'})
+    kept_before = {row['id']:row for row in n.db.get_messages('native-session') if row['id'] >= kept_input}
+    n.ledger.erase_sources(contact_id='cid-owner', turn_ids=[receipt['source_id']])
+    result = n.context.hooks['on_native_turn_settled'](**n.scope, platform='cli')
+    assert result['status'] == 'settled', result
+    after = {row['id']:row for row in n.db.get_messages('native-session')}
+    assert after[result_row]['content'] == '[Content removed.]'
+    assert after[answer]['content'] == '[Content removed.]'
+    assert {key:after[key] for key in kept_before} == kept_before
+    assert after[duplicate_result]['content'] == RESULT
+    if include_input:
+        assert after[input_row]['tool_calls'] == [{'id':'call-1','type':'function',
+            'function':{'name':'fixture_observe','arguments':'{}'}}]
+        assert not n.db.search_messages('copper-input-original', include_inactive=True)
+    else:
+        assert after[input_row] == before[input_row]
+
+
+def test_input_retention_withholds_shared_assistant_call_row(native):
+    n = native
+    n.complete(arguments={'recipe':'first-input'})
+    n.request()
+    row = next(row for row in n.db.get_messages('native-session') if row['role']=='assistant')
+    calls = [*row['tool_calls'], {'id':'independent-sibling','type':'function',
+             'function':{'name':'other_tool','arguments':'{"keep":"sibling-input"}'}}]
+    n.db._execute_write(lambda db: db.execute('UPDATE messages SET tool_calls=? WHERE id=?',
+                                              (json.dumps(calls), row['id'])))
+    result = n.retain(include_input=True)
+    assert not result['accepted'] and 'shares a native row' in result['error']
+    assert not [item for item in n.outbox.snapshot() if item['turn_id'].startswith('native-observation:')]
+    assert n.db.get_messages('native-session')[1]['tool_calls'] == calls
 
 
 def test_erased_origin_cannot_be_restored_by_pending_delivery(native):

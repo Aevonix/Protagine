@@ -50,11 +50,11 @@ class NativeOwnedCopies:
         """Called only for authentic native recall/read observations, never prose."""
         if (scope is None or not scope.valid_participant or not sources
                 or scope.platform == 'background_review'):
-            return
+            return not sources or (scope is not None and scope.platform == 'background_review')
         try:
             anchor = self.memory.native_anchor(scope)
             if anchor is None:
-                return
+                raise ValueError('native_source_anchor_unavailable')
             from hermes_state import SessionDB
             with closing(self._native_read()) as db:
                 if type(anchor.get('_row_id')) is int:
@@ -84,31 +84,67 @@ class NativeOwnedCopies:
                 merged = list({(ref['source_id'], ref['source_version']):dict(ref)
                     for ref in [*metadata['sources'], *sources]}.values())
                 if previous and merged == metadata['sources']:
-                    return
+                    return True
                 metadata['sources'] = merged
                 db.execute('INSERT OR REPLACE INTO native_source_ownership VALUES (?,?,?,?,?)',
                            (identity, scope.contact_id, scope.session_id, scope.turn_id, _json(metadata)))
             self.outbox._fsync_storage()
+            return True
         except Exception as error:
             logger.warning('Native source ownership unavailable (%s)', type(error).__name__)
+            return False
 
-    def retain_origin(self, scope, source_id):
-        """Bind the existing canonical writer to its actual selected native DB.
+    def retain_origin(self, scope, source_id, *, messages=None, row_only_ids=()):
+        """Bind canonical capture to actual native row IDs, never all equal text.
 
         Root and helper profiles can share one outbox. This content-free mapping
         is retained before enqueue; it is not a new canonical source or answer.
         """
         try:
+            from hermes_state import SessionDB
+            messages = messages if messages is not None else [self.memory.native_anchor(scope)]
+            anchors = {}
             with closing(self._native_read()) as db:
                 if not db.execute('SELECT 1 FROM sessions WHERE id=?', (scope.session_id,)).fetchone():
-                    return
+                    return False
+                for message in messages:
+                    if not isinstance(message, dict):
+                        continue
+                    if type(message.get('_row_id')) is int:
+                        original = db.execute('SELECT id,role,content FROM messages WHERE session_id=? AND id=?',
+                            (scope.session_id, message['_row_id'])).fetchone()
+                    elif message.get('role') == 'user':
+                        # Some native callers omit _row_id from the hook copy.
+                        # The observed current input can bind only the newest
+                        # user row, never every historical hash match.
+                        original = db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
+                            "AND role='user' ORDER BY id DESC LIMIT 1", (scope.session_id,)).fetchone()
+                    else:
+                        raise ValueError('native_source_origin_unavailable')
+                    digest = source_message_hash(scope.session_id, message)
+                    if (original is None or source_message_hash(scope.session_id, {
+                            'role':original['role'], 'content':SessionDB._decode_content(original['content'])}) != digest):
+                        raise ValueError('native_source_origin_changed')
+                    anchors[str(original['id'])] = {'mode':'payload', 'source_hash':digest}
+            if row_only_ids:
+                # A sole original tool-call row owns only that exact row. Its
+                # arguments require a full native preimage, not an empty
+                # assistant-content hash. Older native service remains usable;
+                # this optional input-retention capability can be unavailable.
+                with SessionDB(self._path()) as native:
+                    for snapshot in native.get_message_redaction_snapshot(scope.session_id, list(row_only_ids)):
+                        binding = anchors[str(snapshot['id'])]
+                        binding.update(row_only=True, row_sha256=snapshot['sha256'])
+            metadata = {'kind':'origin', 'native_db':str(self._path()), 'anchors':anchors}
             with closing(self.outbox._connect()) as db, db:
                 db.execute('INSERT OR IGNORE INTO native_source_ownership VALUES (?,?,?,?,?)',
                     ('origin:' + source_id, scope.contact_id, scope.session_id, source_id,
-                     _json({'kind':'origin', 'native_db':str(self._path())})))
+                     _json(metadata)))
             self.outbox._fsync_storage()
+            return bool(anchors)
         except Exception as error:
             logger.warning('Native source location unavailable (%s)', type(error).__name__)
+            return False
 
     def observe_gateway(self, **kwargs):
         gateway = kwargs.get('gateway')
@@ -123,13 +159,37 @@ class NativeOwnedCopies:
         response = self.memory.client.get('/v1/host/memory/sources/erasures',
             params={'contact_id':contact,'after':watermark}, timeout=2)
         response.raise_for_status()
-        self.outbox.apply_erasure_page(contact, response.json())
+        page = response.json()
+        self.outbox.apply_erasure_page(contact, page)
+        if page.get('complete') is not True:
+            # The retained cursor advances, so the next existing settled/idle
+            # callback continues the feed. This finite pass is not yet clean.
+            raise ValueError('native_erasure_feed_incomplete')
 
-    def _rows(self, contact=None):
+    def _rows(self, contact=None, *, actionable=False):
         with closing(self.outbox._connect()) as db:
+            # Two primary-key ranges avoid loading permanent origin records on
+            # every turn. Origins are looked up by exact source ID when needed.
+            source = ('(SELECT * FROM native_source_ownership WHERE ownership_id < \'origin:\' '
+                      'UNION ALL SELECT * FROM native_source_ownership WHERE ownership_id >= \'origin;\')'
+                      if actionable else 'native_source_ownership')
             return [dict(row, metadata=json.loads(row['metadata_json'])) for row in db.execute(
-                'SELECT * FROM native_source_ownership '+('WHERE contact_id=? ' if contact else '')+
+                'SELECT * FROM '+source+' '+('WHERE contact_id=? ' if contact else '')+
                 'ORDER BY ownership_id', (contact,) if contact else ())]
+
+    def _origin(self, row, rules):
+        if row['metadata']['kind'] != 'erasure':
+            return None
+        rule = next((value for value in rules if value['sequence'] == row['metadata']['sequence']), None)
+        if rule is None:
+            raise ValueError('native_erasure_rule_unavailable')
+        with closing(self.outbox._connect()) as db:
+            origin = db.execute('SELECT * FROM native_source_ownership WHERE ownership_id=? AND contact_id=?',
+                ('origin:' + rule.get('source_turn_id', rule['turn_id']), row['contact_id'])).fetchone()
+        if origin is not None:
+            if origin['session_id'] != row['session_id']:
+                raise ValueError('native_source_origin_changed')
+            return dict(origin, metadata=json.loads(origin['metadata_json']))
 
     def _save(self, row, metadata):
         with closing(self.outbox._connect()) as db, db:
@@ -151,10 +211,13 @@ class NativeOwnedCopies:
             db.execute('DELETE FROM native_source_ownership WHERE ownership_id=?', (row['ownership_id'],))
         self.outbox._fsync_storage()
 
-    def _location(self, row, owner_rows):
+    def _location(self, row, owner_rows, origin=None):
         meta = row['metadata']
         if meta.get('native_db'):
             return Path(meta['native_db'])
+        if origin is not None:
+            self._save(row, {**meta, 'native_db':origin['metadata']['native_db']})
+            return Path(origin['metadata']['native_db'])
         # Pre-migration canonical erasures have no location mapping. Inspect
         # only this profile and native paths already attested by this owner’s
         # actual adapter. Ambiguous session identities remain pending.
@@ -183,7 +246,7 @@ class NativeOwnedCopies:
             raise ValueError('native_source_span_exceeds_batch')
         return rows
 
-    def _selection(self, row, rules, native):
+    def _selection(self, row, rules, native, origin=None):
         meta, session = row['metadata'], row['session_id']
         if meta['kind'] == 'origin':
             return None
@@ -195,25 +258,40 @@ class NativeOwnedCopies:
             # Persist authentic anchor IDs before erasing the text that proved
             # ownership. On retry, expand the turn again: its writer may have
             # added a final answer after an earlier attempt returned pending.
+            rule = next((value for value in rules if value['sequence'] == meta['sequence']), None)
+            if rule is None:
+                raise ValueError('native_erasure_rule_unavailable')
             anchors = {int(key): value for key, value in meta.get('anchors', {}).items()}
+            if not anchors and origin is not None:
+                anchors = {int(key): value for key, value in origin['metadata'].get('anchors', {}).items()}
+                if anchors and not rule.get('whole_source', True):
+                    anchors = {key:value for key,value in anchors.items()
+                               if value['source_hash'] in rule['message_hashes']}
+                    if not anchors:
+                        raise ValueError('native_source_partial_origin_unobserved')
+                if anchors:
+                    meta = {**meta, 'anchors':anchors}
+                    self._save(row, meta)
             if not anchors:
-                rule = next((value for value in rules if value['sequence'] == meta['sequence']), None)
-                if rule is None:
-                    raise ValueError('native_erasure_rule_unavailable')
                 from hermes_state import SessionDB
+                matches = {}
                 with closing(self._native_read(native.db_path)) as db:
                     for original in db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
-                                               "AND role IN ('user','assistant')", (session,)):
+                                               "AND role IN ('user','assistant','tool')", (session,)):
                         message = {'role': original['role'],
                                    'content': SessionDB._decode_content(original['content'])}
                         digest = source_message_hash(session, message)
                         # Metadata-only observations are not native transcript
                         # messages merely because both have an empty body.
                         if message['content'] and digest in rule['message_hashes']:
+                            if digest in matches:
+                                raise ValueError('native_source_origin_ambiguous')
+                            matches[digest] = original['id']
                             anchors[original['id']] = {'mode':'payload', 'source_hash':digest}
-                if anchors:
-                    meta = {**meta, 'anchors':anchors}
-                    self._save(row, meta)
+                if not anchors:
+                    raise ValueError('native_source_origin_unobserved')
+                meta = {**meta, 'anchors':anchors}
+                self._save(row, meta)
         modes, replay = {}, {}
         previous = {item['id']:item for item in meta.get('selection', [])}
         with closing(self._native_read(native.db_path)) as db:
@@ -225,16 +303,27 @@ class NativeOwnedCopies:
                     raise ValueError('native_source_anchor_missing')
                 digest = source_message_hash(session, {'role':actual['role'],
                     'content':SessionDB._decode_content(actual['content'])})
-                if digest != binding['source_hash']:
+                row_changed = (binding.get('row_sha256') is not None and
+                    native.get_message_redaction_snapshot(session, [anchor])[0]['sha256'] != binding['row_sha256'])
+                if digest != binding['source_hash'] or row_changed:
                     prior = previous.get(anchor)
                     markers = json.loads(actual['display_metadata'] or '{}')
+                    marker = markers.get('redacted_from_sha256')
+                    if prior is None and isinstance(marker, str) and re.fullmatch('[0-9a-f]{64}', marker):
+                        # Another authentically overlapping source may already
+                        # have erased this exact bound row. The native writer
+                        # accepts this digest only when EVERY payload field
+                        # still has its fully redacted shape. A retained marker
+                        # beside new unrelated content cannot pass that check.
+                        prior = {'id':anchor, 'mode':'payload', 'sha256':marker}
                     if (not prior or prior['mode'] != 'payload'
-                            or markers.get('redacted_from_sha256') != prior['sha256']):
+                            or marker != prior['sha256']):
                         raise ValueError('native_source_anchor_changed')
                     # Native validates the full already-redacted row against
                     # this original preimage before accepting the replay.
                     replay[anchor] = prior
-                for item in self._span(db, session, anchor):
+                span = [{'id':anchor}] if binding.get('row_only') else self._span(db, session, anchor)
+                for item in span:
                     selected_mode = binding['mode'] if item['id'] == anchor else 'payload'
                     # A canonical origin is stronger ownership than an API-only
                     # recall copy attached to an otherwise unrelated user row.
@@ -269,7 +358,7 @@ class NativeOwnedCopies:
                     result['pending'] += 1
                 _, rules = self.outbox.erasure_state(owner)
                 from hermes_state import SessionDB
-                owner_rows = self._rows(owner)
+                owner_rows = self._rows(owner, actionable=True)
                 removed = set()
                 for row in owner_rows:
                     if row['ownership_id'] in removed:
@@ -281,7 +370,8 @@ class NativeOwnedCopies:
                         continue
                     native = None
                     try:
-                        location = self._location(row, owner_rows)
+                        origin = self._origin(row, rules)
+                        location = self._location(row, owner_rows, origin)
                         native = SessionDB(location)
                         with closing(self._native_read(location)) as db:
                             routes = [json.loads(value[0]) for value in db.execute('SELECT entry_json FROM gateway_routing')]
@@ -291,7 +381,7 @@ class NativeOwnedCopies:
                         standalone = (not family_keys and
                             (native.get_session(row['session_id']) or {}).get('source')
                             in {'cli', 'local', 'cron', 'subagent'})
-                        selected = self._selection(row, rules, native)
+                        selected = self._selection(row, rules, native, origin)
                         if not selected:
                             receipt = {'status':'redacted', 'redacted_ids':[]}
                         elif gateway is None:
@@ -323,10 +413,8 @@ class NativeOwnedCopies:
                             if row['metadata']['kind'] == 'erasure':
                                 rule = next(value for value in rules if value['sequence'] == row['metadata']['sequence'])
                                 if rule.get('whole_source', True):
-                                    source = rule.get('source_turn_id', rule['turn_id'])
-                                    for origin in owner_rows:
-                                        if origin['ownership_id'] == 'origin:' + source:
-                                            self._remove(origin)
+                                    if origin is not None:
+                                        self._remove(origin)
                         else:
                             result['pending'] += 1
                     except Exception as error:
