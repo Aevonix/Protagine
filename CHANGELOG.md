@@ -15,6 +15,11 @@ locations remain pending instead of selecting unrelated content. Delegated and
 scheduled source reads can retain storage ownership without becoming owner
 statements or acquiring new memory access.
 
+Instruction capture records its native origin before publishing a memory.
+Mid-task corrections retain their source lineage on the first request and own
+their steering rows and dependent answers, preserving earlier independent work.
+Overlapping partial and whole erasures keep their shared origin until both finish.
+
 This requires the qualified Hermes native writer and settled hooks. The host
 outbox advances to schema 3, so every process sharing it must use the updated
 adapter. Recovery must preserve that schema and erased-data state. Untracked
