@@ -1648,11 +1648,17 @@ class _ToolDispatcher:
         try:
             result = self._owner_message_mediator.submit(intent)
         except BaseException:
+            # Losing an acknowledgement does not revoke a durable admission or
+            # prove the provider did nothing. Preserve the existing identity so
+            # its receipt can be reconciled without creating another delivery.
             return _canonical_json({
-                "effect_performed": False,
+                "effect_performed": None,
                 "delivery_id": intent.delivery_id,
-                "reason": "owner message mediator is unavailable",
-                "status": "unavailable",
+                "reason": (
+                    "owner message acknowledgement is unavailable; delivery may "
+                    "have occurred. Reconcile this delivery_id before any new send"
+                ),
+                "status": "unknown",
             })
         return _canonical_json(result)
 
