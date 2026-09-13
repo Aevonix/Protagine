@@ -936,6 +936,14 @@ class RequestMemory:
                     'source': 'pacomind', 'freshness_retryable': False,
                     'reason': 'source_update_unavailable'}
             filtered = _restore_source_updates(original_request, filtered, updates)
+            visible = [entry for entry in updates
+                if any(entry['carrier'] in text for text in _request_texts(filtered))]
+            if (self.ownership is not None and visible
+                    and not self.ownership.retain_updates(scope, visible, filtered)):
+                supplied_input.block_update_ownership()
+                return {'request':withheld_request(filtered, failure=supplied_input.failure),
+                    'source':'pacomind', 'freshness_retryable':False,
+                    'reason':'source_update_ownership_unavailable'}
             supplied_input.admit_updates(scope, filtered, updates)
         if operational and not (fresh and observed and operational['contact_id'] == contact
                                 and operational['watermark'] == watermark):
@@ -995,6 +1003,12 @@ class RequestMemory:
                         'Current shared work withheld because source ownership could not be retained.')
                 return {'request':filtered, 'source':'pacomind', 'freshness_retryable':False,
                         'reason':'native_source_ownership_unavailable'}
+            # A correction owns its typed carrier and later answer, not the
+            # earlier independent tool work in the original input's span.
+            for entry in updates:
+                if entry['admitted']:
+                    for ref in entry['update'].source_refs:
+                        supplied[(ref['source_id'], ref['source_version'])] = ref
             with self._lock:
                 if observed_key in self._supplied:
                     self._supplied[observed_key].update(supplied)

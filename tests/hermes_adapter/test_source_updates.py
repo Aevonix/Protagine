@@ -57,6 +57,14 @@ root_input=[{'source_id':'root-source','input_message_hash':source_message_hash(
 change_input=[{'source_id':'change-source','input_message_hash':source_message_hash(
  'email-input',{'role':'user','content':instruction})}]
 scenario=sys.argv[3];bodies=[];observations=[];granted=True;carrier=change_ref=None
+if scenario=='ownership_failure':
+ from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ retain=NativeOwnedCopies._retain_anchor
+ def fail_update_write(self,*args,**kwargs):
+  if kwargs.get('carrier_hash'):
+   raise OSError('Controlled update ownership write failure')
+  return retain(self,*args,**kwargs)
+ NativeOwnedCopies._retain_anchor=fail_update_write
 def observe(value):
  observations.append(copy.deepcopy(value))
  return scenario!='receipt_failure'
@@ -90,7 +98,7 @@ def respond(request):
    'function':{'name':'tool_call','arguments':json.dumps({'name':'pacomind_memory_read_source',
     'arguments':root_ref})}}]};finish='tool_calls'
  else:
-  if scenario in {'erased','revoked','receipt_failure'} or (scenario=='erased_after_visibility' and step==3):
+  if scenario in {'erased','revoked','receipt_failure','ownership_failure'} or (scenario=='erased_after_visibility' and step==3):
    assert instruction not in text and carrier not in text and body.get('tools',[])==[],body
    assert supplied.failure and supplied.result is None
    message={'role':'assistant','content':'The task source is unavailable.'}
@@ -102,6 +110,14 @@ def respond(request):
    else:
     assert carrier in text,body
    assert root_input[0] in supplied.parents()[0] and change_input[0] in supplied.parents()[0]
+   if scenario=='normal':
+    import sqlite3
+    with sqlite3.connect(home/'outbox.db') as stored:
+     reservations=[json.loads(row[0]) for row in stored.execute(
+      'SELECT metadata_json FROM native_source_ownership') if 'update_carrier_hash' in row[0]]
+    assert len(reservations)==1 and reservations[0]['sources']==[change_ref]
+    assert reservations[0]['input_refs']==change_input
+    assert instruction not in json.dumps(reservations),'Ownership retained a plaintext copy'
    assert any(row['stage']=='native_request_visible' for row in observations),observations
    assert all(row['boundary'] in {'hermes_request_middleware','relay_before_next_call'} for row in observations)
    assert all('instruction' not in row and row['update_id']=='change-one' for row in observations)
@@ -151,12 +167,41 @@ try:
  with transport_input(contact_id='owner',platform='cli',input_refs=root_input,source_refs=[root_ref]) as supplied:
   result=parent.run_conversation('Perform the admitted checklist task.',persist_user_message=original)
   assert len(bodies)==(4 if scenario=='joined_child' else 3 if scenario=='erased_after_visibility' else 2),bodies
-  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility'}:
+  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility','ownership_failure'}:
    assert supplied.result is None and supplied.failure
+   if scenario=='ownership_failure':
+    assert supplied.failure['reason']=='source_update_ownership_unavailable'
+    assert supplied.parents()[0]==root_input,'Failed ownership admitted update parents'
   else:
    assert supplied.result and change_input[0] in supplied.result['input_refs'],supplied.result
    assert change_ref in supplied.result['source_refs'],supplied.result
 finally:parent.close()
+if scenario=='normal':
+ import asyncio, sqlite3
+ from pacomind_hermes.client import TurnOutbox, PacoMindClient
+ from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ with SessionDB(home/'state.db') as native:
+  session=parent.session_id
+  before={row['id']:dict(row) for row in native._conn.execute(
+   'SELECT * FROM messages WHERE session_id=? ORDER BY id',(session,))}
+  original_id=next(key for key,row in before.items() if row['role']=='user' and row['content']==original)
+  carrier_id=next(key for key,row in before.items() if row['display_kind']=='steer')
+  final_id=max(key for key,row in before.items() if row['role']=='assistant')
+  assert carrier in before[carrier_id]['content'] and 'ORANGE-472' in before[final_id]['content']
+  unrelated_id=native.append_message(session,'user','Unrelated next task stays intact.')
+  unrelated=dict(native._conn.execute('SELECT * FROM messages WHERE id=?',(unrelated_id,)).fetchone())
+ ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
+ owned=NativeOwnedCopies(NS(outbox=TurnOutbox(home/'outbox.db'),client=PacoMindClient('http://fixture',key)),None)
+ erased=asyncio.run(owned.reconcile(contact='owner'))
+ with SessionDB(home/'state.db') as native:
+  after={row['id']:dict(row) for row in native._conn.execute(
+   'SELECT * FROM messages WHERE session_id=? ORDER BY id',(session,))}
+  assert after[carrier_id]['content']=='[Content removed.]',('steering carrier survived',carrier_id,erased)
+  assert after[final_id]['content']=='[Content removed.]',('dependent final survived',final_id,erased)
+  assert after[original_id]['content']==before[original_id]['content']==original
+  assert all(after[key]==row for key,row in before.items() if key<carrier_id)
+  assert after[unrelated_id]==unrelated
+  assert not native._conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'ORANGE'").fetchall()
 assert current() is None
 print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
  'controlled_reported_model':'fixture-reported','observation_stages':[r['stage'] for r in observations],
@@ -165,7 +210,7 @@ print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
 
 
 @pytest.mark.parametrize('scenario', ['normal', 'summary', 'erased', 'revoked', 'receipt_failure',
-                                      'erased_after_visibility', 'joined_child'])
+                                      'erased_after_visibility', 'joined_child', 'ownership_failure'])
 def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, scenario):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified Hermes release for native qualification')

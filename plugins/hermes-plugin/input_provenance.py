@@ -185,6 +185,10 @@ class SuppliedInput:
                 return False
             return True
 
+    def block_update_ownership(self):
+        with self._lock:
+            self._block('source_update_ownership_unavailable')
+
     def admit_updates(self, scope, request, entries):
         """Record parents only after their exact carrier survives request filtering."""
         texts = tuple(_request_texts(request))

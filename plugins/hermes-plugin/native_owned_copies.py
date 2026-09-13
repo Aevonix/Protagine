@@ -14,7 +14,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from .client import source_message_hash
+from .client import source_input_erased, source_message_hash
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,9 @@ def _json(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
 
 
-def _affected(refs, rules):
-    return any(ref['source_id'] == rule.get('source_turn_id', rule['turn_id'])
+def _affected(refs, rules, inputs=()):
+    return any(source_input_erased(ref, rules) for ref in inputs) or any(
+        ref['source_id'] == rule.get('source_turn_id', rule['turn_id'])
         and (rule.get('whole_source', True) or ref['source_version'] == rule.get('source_version'))
         for ref in refs for rule in rules)
 
@@ -51,8 +52,11 @@ class NativeOwnedCopies:
         if (scope is None or not scope.valid_participant or not sources
                 or scope.platform == 'background_review'):
             return not sources or (scope is not None and scope.platform == 'background_review')
+        return self._retain_anchor(scope, sources)
+
+    def _retain_anchor(self, scope, sources, anchor=None, *, inputs=(), carrier_hash=None):
         try:
-            anchor = self.memory.native_anchor(scope)
+            anchor = anchor if anchor is not None else self.memory.native_anchor(scope)
             if anchor is None:
                 raise ValueError('native_source_anchor_unavailable')
             from hermes_state import SessionDB
@@ -71,7 +75,8 @@ class NativeOwnedCopies:
                         {'role':row['role'],'content':SessionDB._decode_content(row['content'])}) != expected):
                     raise ValueError('native_source_anchor_unavailable')
             identity = 'turn:' + hashlib.sha256(_json(
-                [scope.contact_id, scope.session_id, scope.task_id, scope.turn_id, row['id']]).encode()).hexdigest()
+                [scope.contact_id, scope.session_id, scope.task_id, scope.turn_id, row['id'],
+                 *([carrier_hash] if carrier_hash else [])]).encode()).hexdigest()
             with closing(self.outbox._connect()) as db, db:
                 db.execute('BEGIN IMMEDIATE')
                 previous = db.execute('SELECT metadata_json FROM native_source_ownership WHERE ownership_id=?',
@@ -83,15 +88,62 @@ class NativeOwnedCopies:
                     raise ValueError('native_source_anchor_changed')
                 merged = list({(ref['source_id'], ref['source_version']):dict(ref)
                     for ref in [*metadata['sources'], *sources]}.values())
-                if previous and merged == metadata['sources']:
+                merged_inputs = list({(ref['source_id'], ref['input_message_hash']):dict(ref)
+                    for ref in [*metadata.get('input_refs', []), *inputs]}.values())
+                if (previous and merged == metadata['sources']
+                        and merged_inputs == metadata.get('input_refs', [])):
                     return True
                 metadata['sources'] = merged
+                if merged_inputs:
+                    metadata['input_refs'] = merged_inputs
+                if carrier_hash:
+                    metadata['update_carrier_hash'] = carrier_hash
                 db.execute('INSERT OR REPLACE INTO native_source_ownership VALUES (?,?,?,?,?)',
                            (identity, scope.contact_id, scope.session_id, scope.turn_id, _json(metadata)))
             self.outbox._fsync_storage()
             return True
         except Exception as error:
             logger.warning('Native source ownership unavailable (%s)', type(error).__name__)
+            return False
+
+    def retain_updates(self, scope, entries, request):
+        """Reserve exact registered steering before its native row is persisted.
+
+        Only hashes/refs accompany the verified current native anchor. A later
+        reconciliation must find the exact typed row inside that turn; absent
+        or ambiguous persistence stays pending, never a physical-erasure claim.
+        """
+        try:
+            from agent.prompt_builder import steer_user_row, STEER_MARKER_OPEN, STEER_MARKER_CLOSE
+            from .input_provenance import _request_texts
+            anchor = self.memory.native_anchor(scope)
+            if anchor is None or type(anchor.get('_row_id')) is not int:
+                return False
+            found, groups = set(), set()
+            for text in _request_texts(request):
+                for block in text.split(STEER_MARKER_OPEN + '\n')[1:]:
+                    inner, separator, _ = block.partition('\n' + STEER_MARKER_CLOSE)
+                    members = [entry for entry in entries if entry['carrier'] in inner]
+                    members.sort(key=lambda entry: inner.index(entry['carrier']))
+                    # Syntax alone grants no ownership. Require a full native
+                    # steer consisting solely of this transport's registered
+                    # carriers; extra unowned text cannot become our payload.
+                    if (not separator or not members
+                            or inner != '\n'.join(entry['carrier'] for entry in members)):
+                        continue
+                    digest = source_message_hash(scope.session_id, steer_user_row(inner))
+                    if digest in groups:
+                        continue
+                    if not self._retain_anchor(scope,
+                            [ref for entry in members for ref in entry['update'].source_refs], anchor,
+                            inputs=[ref for entry in members for ref in entry['update'].input_refs],
+                            carrier_hash=digest):
+                        return False
+                    groups.add(digest)
+                    found.update(entry['update'].update_id for entry in members)
+            return found == {entry['update'].update_id for entry in entries}
+        except Exception as error:
+            logger.warning('Native update ownership unavailable (%s)', type(error).__name__)
             return False
 
     def retain_origin(self, scope, source_id, *, messages=None, row_only_ids=(), canonical_user_message=None):
@@ -290,9 +342,11 @@ class NativeOwnedCopies:
         if meta['kind'] == 'origin':
             return None
         if meta['kind'] == 'supplied':
-            if not _affected(meta['sources'], rules):
+            if not _affected(meta['sources'], rules, meta.get('input_refs', ())):
                 return None
-            anchors = {meta['anchor_id']: {'mode':'api_content', 'source_hash':meta['anchor_hash']}}
+            anchors = ({int(key):value for key,value in meta.get('anchors', {}).items()}
+                if meta.get('update_carrier_hash') else
+                {meta['anchor_id']: {'mode':'api_content', 'source_hash':meta['anchor_hash']}})
         else:
             # Persist authentic anchor IDs before erasing the text that proved
             # ownership. On retry, expand the turn again: its writer may have
@@ -318,6 +372,27 @@ class NativeOwnedCopies:
             db.execute('BEGIN')
             message_watermark = db.execute('SELECT coalesce(MAX(id),0) FROM messages WHERE session_id=?',
                                             (session,)).fetchone()[0]
+            if not anchors and meta.get('update_carrier_hash'):
+                from agent.prompt_builder import STEER_DISPLAY_KIND
+                root = db.execute('SELECT role,content FROM messages WHERE session_id=? AND id=?',
+                    (session, meta['anchor_id'])).fetchone()
+                if (root is None or source_message_hash(session, {'role':root['role'],
+                        'content':SessionDB._decode_content(root['content'])}) != meta['anchor_hash']):
+                    raise ValueError('native_source_anchor_changed')
+                end = db.execute("SELECT MIN(id) FROM messages WHERE session_id=? AND role='user' "
+                    "AND coalesce(display_kind,'')!=? AND id>?",
+                    (session, STEER_DISPLAY_KIND, meta['anchor_id'])).fetchone()[0]
+                candidates = db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
+                    "AND role='user' AND display_kind=? AND id>? AND (? IS NULL OR id<?) LIMIT 17",
+                    (session, STEER_DISPLAY_KIND, meta['anchor_id'], end, end)).fetchall()
+                if len(candidates) > 16:
+                    raise ValueError('native_source_span_exceeds_batch')
+                matches = [value['id'] for value in candidates if source_message_hash(session,
+                    {'role':value['role'], 'content':SessionDB._decode_content(value['content'])})
+                    == meta['update_carrier_hash']]
+                if len(matches) != 1:
+                    raise ValueError('native_source_update_unobserved_or_ambiguous')
+                anchors = {matches[0]: {'mode':'payload', 'source_hash':meta['update_carrier_hash']}}
             if not anchors:
                 matches = {}
                 for original in db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
@@ -404,7 +479,7 @@ class NativeOwnedCopies:
                     if row['metadata']['kind'] == 'origin':
                         continue
                     if (row['metadata']['kind'] == 'supplied'
-                            and not _affected(row['metadata']['sources'], rules)):
+                            and not _affected(row['metadata']['sources'], rules, row['metadata'].get('input_refs', ()))):
                         continue
                     native = None
                     try:
