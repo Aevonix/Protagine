@@ -3264,11 +3264,13 @@ class SourceDeadlineRequest(BaseModel):
     source_id: str = Field(min_length=1, max_length=256)
     source_version: str = Field(pattern='^[0-9a-f]{64}$')
     claim_id: str = Field(min_length=1, max_length=256)
-    timezone_name: str = Field(default='UTC', min_length=1, max_length=128)
+    timezone_name: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode='after')
     def valid_timezone(self):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        if self.timezone_name is None:
+            return self
         try:
             ZoneInfo(self.timezone_name)
         except (ValueError, ZoneInfoNotFoundError) as exc:
@@ -3284,8 +3286,15 @@ async def read_source_deadline(body: SourceDeadlineRequest, request: Request):
     person = resolve_request_person(request, claimed_person_id=body.contact_id)
     from pacomind.turns import get_turn_idempotency_ledger
     from pacomind.beliefs.source_projection import SourceClaimProjection
+    from pacomind.util.temporal import resolve_communication_timezone
+    contact_tz = None
+    if body.timezone_name is None and _contacts_store is not None:
+        contact = await _contacts_store.get(person)
+        contact_tz = getattr(contact, 'timezone', None)
+    zone = resolve_communication_timezone(contact_tz, body.timezone_name)
     projection = SourceClaimProjection(get_turn_idempotency_ledger(get_state_dir()))
-    return projection.deadline(**{**body.model_dump(), 'contact_id': person})
+    return projection.deadline(**{**body.model_dump(), 'contact_id': person,
+        'timezone_name': zone, 'timezone_basis': 'caller_override' if body.timezone_name else 'communication_frame'})
 
 
 @router.post('/memory/sources/annotations')

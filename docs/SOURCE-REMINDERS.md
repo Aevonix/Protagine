@@ -21,8 +21,11 @@ It does not retract a message already delivered to another device.
 
 If a correction reaches the source store after the old occurrence was claimed, the script checks the current deadline again. A later deadline produces no output at the old time; after that occurrence ends, reconciliation rearms the same job for the corrected time. This check observes a source snapshot before output preparation. It does not provide a transaction spanning a simultaneous memory correction and a remote messaging service.
 
-The first version requires a precise timestamp supported by the existing source date parser. A calendar day alone does not become midnight, and a date stored as a value is not rewritten into the memory claim's validity interval. General recurring jobs continue to use Hermes' `cronjob_manage`; waiting for a person's reply continues to use the separate expected-reply workflow.
+The deadline reader uses the selected claim's complete, quoted event expression when it contains that claim's value. For example, a stored value of `9:30am` can retain `9:30am Monday morning` in its event metadata. It does not borrow a date from another claim or from assistant prose. Equal clock values with different event dates remain a conflict.
 
-Earlier development releases cannot reconcile this reminder ownership. After
-admitting a reminder, retain the current adapter and native ownership interface
-until its cleanup is complete, including when pausing reminder use during recovery.
+The reminder uses Hermes' configured timezone, including `HERMES_TIMEZONE`. When that setting is absent, the deadline endpoint uses PacoMind's existing communication frame: the contact timezone, configured contact default, or agent timezone. Absence does not silently select UTC. The response names the chosen zone and its basis, and the reminder freezes that frame in its existing job binding for later reads. This is a clock interpretation frame, not independent evidence of a travel event's timezone. An explicit caller timezone remains authoritative.
+
+An explicit deadline read supports ordinary clocks with full dates, today or tomorrow. In a present or scheduled assertion such as “My appointment is 9:30am Monday morning,” a bare weekday means its next distinct occurrence after the source report's local day. The response labels this interpretation with the source occurrence timestamp, caller timezone and rule. It never anchors to import time or the current clock. Same-day weekdays, historical or unsupported wording, contradictory morning/evening clocks and ambiguous daylight-saving times remain unresolved. This convention applies only to deadline reads; it does not rewrite stored event dates or historical memory interpretation. A calendar day alone does not become midnight, and a deadline value is not rewritten into the claim's validity interval. General recurring jobs continue to use Hermes' `cronjob_manage`; waiting for a person's reply continues to use the separate expected-reply workflow.
+
+Retain the adapter and native reminder ownership reader while reminder jobs exist,
+including when pausing reminder use during recovery, until their cleanup is complete.

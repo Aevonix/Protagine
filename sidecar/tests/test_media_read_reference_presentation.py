@@ -53,7 +53,7 @@ async def test_real_context_pair_opens_original_through_native_reader(media_sour
     row, = [r for r in rendered_rows(section['body']) if r.get('kind') == 'media_description']
     copied = {key: row[key] for key in ('source_id', 'source_version')}
     assert copied == ref and copied in section['citations']
-    assert row['source_id'] != row['id'] and row['source_id'] == row['source_turn_id']
+    assert row['source_id'] != row['display_id'] and row['source_id'] == row['source_turn_id']
     if corrected:
         assert 'not a camera observation' in row['content']
         assert note['source_id'] in {r['source_id'] for r in section['citations']}

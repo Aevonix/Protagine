@@ -6,6 +6,7 @@ from contextlib import closing
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -138,21 +139,33 @@ class SourceClaimProjection:
         self.ledger = ledger
 
     def deadline(self, *, contact_id, session_id, source_id, source_version, claim_id,
-                 timezone_name="UTC"):
+                 timezone_name="UTC", timezone_basis="caller_override"):
         """Resolve an explicitly selected claim's value, without creating work.
 
         The original source stays pinned even after a correction. A changed
         source, missing correction or annotation must not revive an old date.
         All eligibility, successor and value reads share one SQLite snapshot.
         """
-        from .source_time import source_event_time
+        from .source_time import source_deadline_time
         from pacomind.turns.idempotency import canonical_turn_digest
 
         original = {"original_source_ref": {"source_id": source_id, "source_version": source_version},
-                    "original_claim_id": claim_id}
+                    "original_claim_id": claim_id, "timezone_name": timezone_name,
+                    "timezone_basis": timezone_basis}
 
         def unavailable(reason):
             return {**original, "status": "unavailable", "reason": reason}
+
+        def expression(claim):
+            # Extraction may retain the clock as value and its complete date
+            # in event_time. Use that exact quoted operand only when it also
+            # contains this claim's value; another event's date is not a join.
+            value = claim['value']
+            event = claim.get('event_time', {}).get('expression')
+            if (isinstance(event, str) and event in claim['evidence']
+                    and re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', event)):
+                return event
+            return value
 
         with closing(self.ledger._connect()) as conn:
             conn.execute("BEGIN")
@@ -248,10 +261,10 @@ class SourceClaimProjection:
             peers = self._rows(conn, contact_id, session_id,
                                key=(current['subject_key'], current['predicate']), limit=257)
             if any(not row['superseded_by'] and not row['retracted_by'] and eligible(row)
-                   and norm_value(row['value']) != norm_value(current['value']) for row in peers):
+                   and norm_value(expression(row)) != norm_value(expression(current)) for row in peers):
                 return {**result, "status": "unresolved", "reason": "conflicting_claims"}
-            deadline = source_event_time(current['value'], observed_at=current['observed_at'],
-                                         timezone_name=timezone_name)
+            deadline = source_deadline_time(expression(current), observed_at=current['observed_at'],
+                                            timezone_name=timezone_name, evidence=current['evidence'])
             result['deadline_time'] = deadline
             if deadline.get('status') != 'resolved' or deadline.get('precision') != 'instant':
                 return {**result, "status": "unresolved", "reason": "deadline_not_instant"}
@@ -591,7 +604,9 @@ class SourceClaimProjection:
         remains recallable. This transient hint never changes stored history.
         """
         from pacomind.turns.idempotency import canonical_turn_digest, source_message_hash
-        if message.get('role') != 'assistant' or source['scope'] != 'person':
+        from pacomind.self_model.task_assessments import quotation_metadata
+        if (message.get('role') != 'assistant' or source['scope'] != 'person'
+                or quotation_metadata(message)):
             return False
         refs = message.get('_supplied_inputs')
         if refs is not None:
@@ -649,6 +664,7 @@ class SourceClaimProjection:
         """
         from pacomind.turns.idempotency import source_message_hash
         from pacomind.turns.audio import source_text, evidence_metadata
+        from pacomind.self_model.task_assessments import quotation_metadata
         from pacomind.memory.recall import source_candidates, pair_conversation_candidates
         source_hits = list(source_hits)
         input_pairs = {}
@@ -730,6 +746,7 @@ class SourceClaimProjection:
         for original in source_hits:
             hit = dict(original)
             hit.pop('_current_work_status_reply', None)
+            hit.pop('assessment_context', None)
             source = sources.get(hit["turn_id"])
             removed = []
             if source:
@@ -752,6 +769,10 @@ class SourceClaimProjection:
                     # every matching chunk occurrence; never depend on an entire
                     # corrected quotation fitting inside one retrieved chunk.
                     offset = text.find(hit["content"])
+                    if offset >= 0:
+                        # The canonical admission marker owns this relation;
+                        # index hints and words inside a quote cannot mint it.
+                        hit.update(quotation_metadata(message))
                     if offset >= 0 and hit["content"] != text:
                         hit["excerpt_truncated"] = True
                     while offset >= 0:

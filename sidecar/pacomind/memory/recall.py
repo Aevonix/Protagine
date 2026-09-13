@@ -41,7 +41,9 @@ def source_candidates(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "kind": "source_quote", "source_uri": "turn:" + turn,
             "source_turn_id": turn, "role": hit["role"],
             "content": hit["content"], "epistemic_state": (
-                'derived_unverified' if hit.get('source_modality') == 'audio_transcript' else 'quotation'),
+                'derived_unverified' if hit.get('source_modality') == 'audio_transcript'
+                or hit.get('assessment_context') else 'quotation'),
+            **({'assessment_context': hit['assessment_context']} if hit.get('assessment_context') else {}),
             **({'source_modality': 'audio_transcript'} if hit.get('source_modality') == 'audio_transcript' else {}),
             **{name: hit[name] for name in ("contact_id", "session_id", "scope") if name in hit},
             "occurred_at": hit.get("occurred_at"),
@@ -117,11 +119,13 @@ def render_memory_context(memories: list[dict[str, Any]]) -> str:
     """
     lines, passages, passage_ids = [], [], {}
     for memory in memories:
-        source = {"id": str(memory.get("id") or ""),
+        # Candidate IDs identify rendered items, never canonical source selectors.
+        # Keep the internal identity for ranking/deduplication unchanged.
+        source = {"display_id": str(memory.get("id") or ""),
                   "kind": memory.get("kind", "belief"),
                   "source": str(memory.get("source_uri") or ""),
                   "state": str(memory.get("epistemic_state") or "inferred")}
-        for name in ("source_turn_id", "source_message_hash", "source_modality", "role", "occurred_at", "ingested_at", "excerpt_truncated", "validity_status", "claim_status", "asset_id", "description_model", "description_version", "recorded_source", "history_anchor", "source_anchors", "procedure_context", "procedure_history_anchors", "source_context", "source_history_anchors", "source_evidence_bases", "conversation_context"):
+        for name in ("source_turn_id", "source_message_hash", "source_modality", "assessment_context", "role", "occurred_at", "ingested_at", "excerpt_truncated", "validity_status", "claim_status", "asset_id", "description_model", "description_version", "recorded_source", "history_anchor", "source_anchors", "procedure_context", "procedure_history_anchors", "source_context", "source_history_anchors", "source_evidence_bases", "conversation_context"):
             if memory.get(name) is not None:
                 source[name] = memory[name]
         if memory.get('kind') == 'media_locator':

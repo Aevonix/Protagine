@@ -268,3 +268,69 @@ def test_oversized_complete_review_is_rejected_without_partial_evidence(task, ho
     response = host.api.post('/v1/host/executions/assess', json=payload)
     assert response.status_code == 409 and 'evidence_too_large' in response.text
     assert assessment_sources(task) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('retrieval', ['lexical', 'semantic'])
+async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task, host, monkeypatch, retrieval):
+    from pacomind.memory.search import CollectedSources, collect_sources, select_memory
+    from pacomind.memory.selection import RecallSelector
+    from pacomind.turns.source_read import read
+    from pacomind.turns.source_vectors import chunks, hydrate
+    from test_recall_source_presentation import rendered_rows
+
+    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    payload = packet(task)
+    proposal = 'The heatshield proposal recommends skipping the fan inspection.'
+    payload['artifact'] = document('checklist.md',
+        'Inspection background. ' * 120 + proposal + ' More inspection background.' * 120)
+    receipt = host.caller.assess(payload)
+    original = assessment_sources(task)[0]
+    scope = dict(contact_id='owner', session_id='later')
+    if retrieval == 'lexical':
+        collected = await collect_sources(task.ledger, query='heatshield', **scope)
+    else:
+        with closing(task.ledger._connect()) as conn:
+            projections = list(chunks(conn, original))
+        # Exercise the existing vector reader's exact chunk hydration without
+        # a model or embedding service. It must recover the canonical message.
+        hits = [hydrate(task.ledger, meta, **scope) for text, meta in projections if proposal in text]
+        assert hits
+        collected = CollectedSources(task.ledger, **scope,
+            watermark=task.ledger.erasure_watermark('owner'), hits=hits)
+    result = await select_memory(collected, query='heatshield', selector=RecallSelector(), timezone_name='UTC')
+    excerpt, = [row for row in rendered_rows(result.content) if proposal in row.get('content', '')]
+    assert excerpt['excerpt_truncated'] is True
+    assert 'Machine assessment' not in excerpt['content'] and 'Reviewed artifact' not in excerpt['content']
+    assert excerpt['assessment_context']['attribution'] == ATTRIBUTION
+    assert excerpt['assessment_context']['owner_approval'] == 'unobserved'
+    assert 'reviewed artifact' in excerpt['assessment_context']['interpretation']
+    assert 'complete source' in excerpt['assessment_context']['interpretation']
+    assert excerpt['state'] == 'derived_unverified' and excerpt['role'] == 'assistant'
+    assert {'source_id': receipt['source_id'], 'source_version': receipt['source_version']} in result.source_refs
+    from pacomind.memory.recall import pack_memory_context
+    _, smaller = pack_memory_context(result.selected, max_chars=2000)
+    assert len(smaller) <= 2000 and rendered_rows(smaller)[0]['assessment_context'] == excerpt['assessment_context']
+    opened = read(task.ledger, **scope, source_id=receipt['source_id'], source_version=receipt['source_version'])
+    full = opened['content']
+    while not opened['complete']:
+        opened = read(task.ledger, **scope, source_id=receipt['source_id'], source_version=receipt['source_version'],
+            offset=opened['next_offset'], read_revision=opened['read_revision'])
+        full += opened['content']
+    assert payload['assessment']['content'] in full and 'Machine assessment' in full
+    assert assessment_sources(task)[0]['messages_json'] == original['messages_json']
+
+    # Identical words and a copied public marker are still ordinary quoted
+    # speech, not evidence that the execution host admitted another review.
+    from pacomind.api.schemas.host import TurnMessage
+    copied = TurnMessage(role='user', content=proposal,
+        _task_artifact_assessment='task-artifact-assessment-v1').model_dump()
+    task.ledger.record_source('ordinary-copy', contact_id='owner', session_id='other',
+        messages=[copied], derive_claims=False)
+    collected = await collect_sources(task.ledger, query='heatshield', **scope)
+    # Retrieval hints cannot replace canonical message attribution either.
+    for hit in collected.hits:
+        hit['assessment_context'] = {'attribution': ATTRIBUTION}
+    result = await select_memory(collected, query='heatshield', selector=RecallSelector(), timezone_name='UTC')
+    ordinary, = [row for row in rendered_rows(result.content) if row.get('source_turn_id') == 'ordinary-copy']
+    assert ordinary['state'] == 'quotation' and 'assessment_context' not in ordinary

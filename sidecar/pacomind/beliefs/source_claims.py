@@ -279,7 +279,8 @@ def _diagnostics(diagnostics):
 
 
 def validated_claims(raw: str, *, message: str, prior: list[dict], observed_at: str | None,
-                     timezone_name: str = "UTC", diagnostics: dict | None = None) -> list[dict]:
+                     timezone_name: str = "UTC", diagnostics: dict | None = None,
+                     audio_segments: list[dict] | None = None) -> list[dict]:
     """Accept quoted assertions; malformed extraction remains an unfinished job.
 
     A well-formed empty array or unsupported candidate may yield no claims.
@@ -363,6 +364,20 @@ def validated_claims(raw: str, *, message: str, prior: list[dict], observed_at: 
         if evidence not in message:
             reject("evidence_not_in_source")
             continue
+        if not episode and previous and item.get('operation') in {'correct', 'change'}:
+            # The extraction schema already requests complete short context.
+            # Some providers still return a clipped exact quotation. Restore
+            # only its bounded source text before checking the operation and
+            # reviewing its meaning; never promote an assert from a prior ID.
+            contexts = [message] if audio_segments is None else [
+                message[segment['source_start']:segment['source_end']]
+                for segment in audio_segments]
+            if contexts and all(len(context) <= 500 for context in contexts):
+                matching = list(dict.fromkeys(context for context in contexts if evidence in context))
+                if len(matching) == 1:
+                    evidence = matching[0]
+                    if quality['memory_kind'] == 'procedure':
+                        value = evidence
         if _SENSITIVE.search(evidence):
             reject("sensitive_evidence")
             continue
@@ -649,7 +664,7 @@ async def _extract_claims(router, source: dict, message: dict, prior: list[dict]
         diagnostics['last_model_provenance'] = provenance.copy()
     claims = validated_claims(final_text(response), message=content, prior=prior,
                             observed_at=assertion_clock, timezone_name=timezone_name,
-                            diagnostics=diagnostics)
+                            diagnostics=diagnostics, audio_segments=message.get('_audio_segments'))
     if derived_audio:
         from pacomind.turns.audio import claim_basis
         grounded = []

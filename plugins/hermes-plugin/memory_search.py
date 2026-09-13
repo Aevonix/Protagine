@@ -59,8 +59,10 @@ def handle(args, scope, client, request_memory, context):
         text = json.dumps({**result, 'pacomind_memory_search_v1': True,
             'evidence_basis': 'recalled_excerpt', 'full_source_opened': False,
             'guidance': 'Search returns selected evidence excerpts. Preserve their speaker, time and corrections. '
-                        'Open a returned source_id and source_version with the memory source reader '
-                        'to inspect the retained original; search does not re-inspect its underlying subject.'},
+                        'Use source_refs[].source_id and source_version with the memory source reader '
+                        'to inspect the retained original. For an explicit owner forget request, select '
+                        'source_refs[].source_id values. A display_id labels an excerpt, not a separate '
+                        'source or a read/forget selector. Search does not re-inspect its underlying subject.'},
             ensure_ascii=False)
         if time.monotonic() >= deadline:
             raise TimeoutError('canonical_memory_search_deadline')

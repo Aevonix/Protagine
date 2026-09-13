@@ -130,6 +130,83 @@ def source_event_time(expression: str | None, *, observed_at: str | None, timezo
     return {**result, "status": "unresolved"}
 
 
+_WEEKDAYS = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+_DEADLINE_DAY = r'(?P<day>' + _MONTH_DATE + r'|\d{4}-\d{2}-\d{2}|today|tomorrow|' + '|'.join(_WEEKDAYS) + ')'
+_DEADLINE_CLOCK = r'(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<meridiem>am|pm)?'
+_DEADLINE_PART = r'(?:\s+(?P<part>morning|afternoon|evening))?'
+_DEADLINE_FORMS = tuple(re.compile(pattern, re.I) for pattern in (
+    _DEADLINE_CLOCK + r'\s+(?:on\s+)?' + _DEADLINE_DAY + _DEADLINE_PART,
+    _DEADLINE_DAY + _DEADLINE_PART + r'\s+(?:at\s+)?' + _DEADLINE_CLOCK))
+_UNRESOLVED_RELATIVE_DEADLINE = re.compile(
+    r'\b(?:was|were|had|last|previous|ago|yesterday|earlier|before|'
+    r'happened|occurred|departed|arrived|left|attended|missed|finished|ended|'
+    r'not|cancelled|canceled|if|unless|maybe|might|or)\b', re.I)
+_DEADLINE_ASSERTION = (r'\b(?:is|are|starts?|begins?|departs?|leaves?|due|scheduled|will be)'
+                       r'\s+(?:(?:at|on|for)\s+)?')
+
+
+def source_deadline_time(expression: str, *, observed_at: str | None, timezone_name="UTC",
+                         evidence: str | None = None) -> dict:
+    """Interpret a selected deadline operand without changing event memories.
+
+    An ordinary clock may accompany an explicit date, today or tomorrow. In a
+    deadline read, a bare weekday means its next distinct occurrence after the
+    report's local day. Same-day weekdays are ambiguous between this and next
+    week and stay unresolved. Neither ingestion nor the current clock is used.
+    """
+    result = source_event_time(expression, observed_at=observed_at, timezone_name=timezone_name)
+    if result['status'] != 'unresolved':
+        return result
+    match = next((m for pattern in _DEADLINE_FORMS if (m := pattern.fullmatch(expression.strip()))), None)
+    if match is None or not (match['meridiem'] or match['minute']):
+        return result
+    hour, minute = int(match['hour']), int(match['minute'] or 0)
+    meridiem = (match['meridiem'] or '').lower()
+    if (minute > 59 or (meridiem and not 1 <= hour <= 12) or (not meridiem and hour > 23)):
+        return result
+    if meridiem:
+        hour = hour % 12 + (12 if meridiem == 'pm' else 0)
+    part = (match['part'] or '').lower()
+    if part and ((part == 'morning') != (hour < 12)):
+        return result
+    zone, day = ZoneInfo(timezone_name), match['day'].lower()
+    basis = None
+    if day in {*_WEEKDAYS, 'today', 'tomorrow'}:
+        # A trimmed event operand cannot hide a past report, cancellation or
+        # condition in its full selected quotation. Ambiguous prose remains a
+        # readable claim but cannot establish this forward interpretation.
+        if (not evidence or expression not in evidence
+                or _UNRESOLVED_RELATIVE_DEADLINE.search(evidence)
+                or not re.search(_DEADLINE_ASSERTION + re.escape(expression), evidence, re.I)):
+            return result
+    if day in _WEEKDAYS:
+        reported = utc_timestamp(observed_at)
+        if reported is None:
+            return result
+        local = reported.astimezone(zone)
+        distance = (_WEEKDAYS.index(day) - local.weekday()) % 7
+        if not distance:
+            return result
+        date = local.date() + timedelta(days=distance)
+        basis = {'rule': 'next_distinct_weekday_from_source_occurrence',
+                 'observed_at': observed_at, 'timezone_name': timezone_name}
+    else:
+        parsed = parse_source_date(day, observed_at=observed_at, timezone_name=timezone_name)
+        if parsed is None:
+            return result
+        date = utc_timestamp(parsed).astimezone(zone).date()
+        if day in {'today', 'tomorrow'}:
+            basis = {'rule': 'relative_day_from_source_occurrence',
+                     'observed_at': observed_at, 'timezone_name': timezone_name}
+    naive = datetime(date.year, date.month, date.day, hour, minute)
+    aware = naive.replace(tzinfo=zone)
+    if (aware.utcoffset() != aware.replace(fold=1).utcoffset()
+            or aware.astimezone(UTC).astimezone(zone).replace(tzinfo=None) != naive):
+        return result
+    return {'expression': expression, 'status': 'resolved', 'precision': 'instant',
+            'at': aware.astimezone(UTC).isoformat(), **({'basis': basis} if basis else {})}
+
+
 @dataclass(frozen=True)
 class MemoryTimeQuery:
     mode: str = "current"

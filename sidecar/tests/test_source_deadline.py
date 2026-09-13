@@ -180,3 +180,165 @@ async def test_deadline_uses_existing_scoped_read_authority(deadline_app, secret
                            headers={'Authorization': 'Bearer ' + secret}) as client:
         result = await client.post('/v1/host/memory/sources/deadline', json={**original, **changes})
         assert result.status_code == code, result.text
+
+
+@pytest.mark.asyncio
+async def test_deadline_reads_complete_grounded_event_expression_without_reextracting(deadline_app):
+    app, ledger = deadline_app
+    text = 'My appointment is 09:30 on 8 October 2026.'
+    ledger.record_source('appointment', contact_id='contact-a', session_id='reported',
+        messages=[{'role': 'user', 'content': text}], occurred_at='2026-10-04T12:00:00Z',
+        derive_claims=True)
+    model = Model({text: claim(text, '09:30', predicate='appointment time',
+        event_at_text='09:30 on 8 October 2026')})
+    projection = SourceClaimProjection(ledger)
+    assert await projection.process_one(model)
+    with closing(ledger._connect()) as db:
+        stored = dict(db.execute('SELECT * FROM source_claims WHERE turn_id=?', ('appointment',)).fetchone())
+    data = json.loads(stored['data_json'])
+    assert data['value'] == '09:30' and data['event_time']['precision'] == 'instant'
+    bound = dict(contact_id='contact-a', session_id='later', claim_id=stored['id'],
+        timezone_name='America/New_York',
+        **ledger.source_references(['appointment'], contact_id='contact-a', session_id='later')[0])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
+                           headers={'Authorization': 'Bearer read'}) as client:
+        response = await client.post('/v1/host/memory/sources/deadline', json=bound)
+    assert response.status_code == 200
+    result = response.json()
+    assert result['status'] == 'current'
+    assert result['deadline_at'] == '2026-10-08T13:30:00+00:00'
+    assert result['deadline_time']['expression'] == '09:30 on 8 October 2026'
+    with closing(ledger._connect()) as db:
+        assert dict(db.execute('SELECT * FROM source_claims WHERE id=?', (stored['id'],)).fetchone()) == stored
+    assert len(model.calls) == 2  # Existing extraction/review only, no replay on read.
+
+
+async def appointment(ledger, identifier, text, value, event, *, occurred='2026-10-04T23:30:00Z'):
+    ledger.record_source(identifier, contact_id='contact-a', session_id='report-'+identifier,
+        messages=[{'role': 'user', 'content': text}], occurred_at=occurred, derive_claims=True)
+    model = Model({text: claim(text, value, predicate='appointment time', event_at_text=event)})
+    assert await SourceClaimProjection(ledger).process_one(model)
+    with closing(ledger._connect()) as db:
+        row = db.execute('SELECT id FROM source_claims WHERE turn_id=?', (identifier,)).fetchone()
+    return dict(contact_id='contact-a', session_id='later', claim_id=row[0], timezone_name='America/New_York',
+        **ledger.source_references([identifier], contact_id='contact-a', session_id='later')[0])
+
+
+@pytest.mark.asyncio
+async def test_ordinary_weekday_uses_report_local_day_and_retained_full_expression(deadline_app):
+    _, ledger = deadline_app
+    quote = 'No, I told you my appointment is 9:30am Monday morning.'
+    bound = await appointment(ledger, 'weekday', quote, '9:30am', '9:30am Monday morning')
+    projection = SourceClaimProjection(ledger)
+    with closing(ledger._connect()) as db:
+        before = dict(db.execute('SELECT * FROM source_claims WHERE id=?', (bound['claim_id'],)).fetchone())
+        data = json.loads(before['data_json'])
+        assert data['event_time'] == {'expression': '9:30am Monday morning', 'status': 'unresolved'}
+        # A later import cannot silently shift this source-relative date.
+        db.execute("UPDATE turn_sources SET ingested_at='2040-01-01T00:00:00Z' WHERE turn_id='weekday'")
+        db.commit()
+    result = projection.deadline(**bound)
+    assert result['status'] == 'current' and result['deadline_at'] == '2026-10-05T13:30:00+00:00'
+    assert result['value'] == '9:30am' and result['evidence'] == quote
+    assert result['deadline_time']['basis'] == {
+        'rule': 'next_distinct_weekday_from_source_occurrence',
+        'observed_at': '2026-10-04T23:30:00+00:00', 'timezone_name': 'America/New_York'}
+    # The same report occurred on Monday in Tokyo. This/next Monday is then
+    # ambiguous; never shift it seven days merely to produce a future instant.
+    local_monday = projection.deadline(**{**bound, 'timezone_name': 'Asia/Tokyo'})
+    assert local_monday['status'] == 'unresolved' and 'deadline_at' not in local_monday
+    reopened = SourceClaimProjection(TurnIdempotencyLedger(ledger.db_path))
+    assert reopened.deadline(**bound) == result
+    with closing(ledger._connect()) as db:
+        assert dict(db.execute('SELECT * FROM source_claims WHERE id=?', (bound['claim_id'],)).fetchone()) == before
+    ledger.append_source_annotation(contact_id='contact-a', session_id='later', annotation_id='withdraw',
+        source_id=bound['source_id'], source_version=bound['source_version'], excerpt='appointment',
+        correction='This appointment was cancelled.', author_principal='operator')
+    assert reopened.deadline(**bound)['status'] == 'unavailable'
+
+
+@pytest.mark.asyncio
+async def test_same_clock_with_different_grounded_days_is_a_deadline_conflict(deadline_app):
+    _, ledger = deadline_app
+    bound = await appointment(ledger, 'monday', 'My appointment is 9:30am Monday.', '9:30am', '9:30am Monday')
+    await appointment(ledger, 'tuesday', 'My appointment is 9:30am Tuesday.', '9:30am', '9:30am Tuesday')
+    result = SourceClaimProjection(ledger).deadline(**bound)
+    assert result['status'] == 'unresolved' and result['reason'] == 'conflicting_claims'
+    assert 'deadline_at' not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('quote,value,event', [
+    ('My appointment was 9:30am Monday, last week.', '9:30am', '9:30am Monday'),
+    ('My appointment took place 9:30am Monday.', '9:30am', '9:30am Monday'),
+    ('My appointment is not 9:30am Monday.', '9:30am', '9:30am Monday'),
+    ('My appointment is 9:30pm Monday morning.', '9:30pm', '9:30pm Monday morning'),
+    ('My appointment is 9:30am next Monday.', '9:30am', '9:30am next Monday'),
+    ('My appointment is 9:30am Monday or Tuesday.', '9:30am', '9:30am Monday'),
+    # Separate event operands in the same quotation do not authorize joining
+    # this claim's clock to another appointment's date.
+    ('My appointment is 9:30am. The delivery is 8am Monday.', '9:30am', '8am Monday'),
+    ('My appointment is 9:30am Monday.', '9:30am', 'Monday'),
+])
+async def test_relative_deadline_never_hides_history_or_borrows_another_event(deadline_app, quote, value, event):
+    _, ledger = deadline_app
+    bound = await appointment(ledger, 'unresolved', quote, value, event)
+    result = SourceClaimProjection(ledger).deadline(**bound)
+    assert result['status'] == 'unresolved' and 'deadline_at' not in result
+
+
+@pytest.mark.parametrize('expression,occurred,zone,expected', [
+    ('tomorrow at 9:30am', '2026-10-04T00:30:00Z', 'America/New_York', '2026-10-04T13:30:00+00:00'),
+    ('9:30am on 8 October 2026', None, 'Asia/Tokyo', '2026-10-08T00:30:00+00:00'),
+    ('12pm on October 8, 2026', None, 'UTC', '2026-10-08T12:00:00+00:00'),
+    ('12am on 2026-10-08', None, 'UTC', '2026-10-08T00:00:00+00:00'),
+    ('1:30am Sunday', '2026-10-28T12:00:00Z', 'America/New_York', None),
+    ('2:30am Sunday', '2026-03-05T12:00:00Z', 'America/New_York', None),
+    ('9:30am Monday', None, 'UTC', None),
+])
+def test_deadline_clock_forms_keep_absolute_relative_and_dst_precision(expression, occurred, zone, expected):
+    from pacomind.beliefs.source_time import source_deadline_time, source_event_time
+    result = source_deadline_time(expression, observed_at=occurred, timezone_name=zone,
+                                  evidence='My appointment is '+expression+'.')
+    if expected:
+        assert result['status'] == 'resolved' and result['precision'] == 'instant' and result['at'] == expected
+    else:
+        assert result['status'] == 'unresolved'
+    # Deadline interpretation never retroactively rewrites the parser used
+    # for past event memories, extraction or state validity.
+    assert source_event_time(expression, observed_at=occurred, timezone_name=zone)['status'] == 'unresolved'
+
+
+@pytest.mark.asyncio
+async def test_deadline_clock_frame_reuses_contact_and_agent_settings_with_explicit_override(source_app, tmp_path, monkeypatch):
+    from pacomind.api.routers import host
+    from pacomind.contacts.config import ContactsConfig
+    from pacomind.contacts.store import SQLiteContactStore
+    store = SQLiteContactStore(config=ContactsConfig(sqlite_path=':memory:'))
+    await store.connect()
+    try:
+        contact = await store.create(display_name='Appointment owner', trust_tier='trusted')
+        monkeypatch.setattr(host, '_contacts_store', store)
+        monkeypatch.setenv('PACOMIND_AGENT_TIMEZONE', 'America/New_York')
+        keys = tmp_path/'clock-frame-keyring.json'
+        _write_keyring(keys, [_principal(principal='clock-reader', secret='read',
+            viewer=contact.contact_id, scopes=['memory:read'])])
+        source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keys))
+        ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
+        bound = await add_deadline(ledger, 'clock-frame', '9:30am on 8 October 2026', contact=contact.contact_id)
+        bound.pop('timezone_name')
+        async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://fixture',
+                               headers={'Authorization': 'Bearer read'}) as client:
+            agent = (await client.post('/v1/host/memory/sources/deadline', json={**bound, 'timezone_name': None})).json()
+            assert agent['timezone_name'] == 'America/New_York' and agent['timezone_basis'] == 'communication_frame'
+            assert agent['deadline_at'] == '2026-10-08T13:30:00+00:00'
+            await store.set_timezone(contact.contact_id, 'Europe/London')
+            local = (await client.post('/v1/host/memory/sources/deadline', json=bound)).json()
+            assert local['timezone_name'] == 'Europe/London' and local['timezone_basis'] == 'communication_frame'
+            assert local['deadline_at'] == '2026-10-08T08:30:00+00:00'
+            explicit = (await client.post('/v1/host/memory/sources/deadline',
+                json={**bound, 'timezone_name': 'Asia/Tokyo'})).json()
+            assert explicit['timezone_name'] == 'Asia/Tokyo' and explicit['timezone_basis'] == 'caller_override'
+            assert explicit['deadline_at'] == '2026-10-08T00:30:00+00:00'
+    finally:
+        await store.close()

@@ -17,7 +17,11 @@ def handle(args, scope, client):
         response = client.post('/v1/host/memory/sources/forget', timeout=3,
             json={'contact_id': scope.contact_id, 'source_ids': list(dict.fromkeys(ids))})
         if response.status_code in {409, 422}:
-            return json.dumps({'source_erased': False, 'error': 'The selected sources are unavailable or ambiguous; inspect their provenance'})
+            return json.dumps({'source_erased': False, 'error':
+                'No sources were removed by this request. At least one selected source is unavailable '
+                'or ambiguous. Select canonical source_id values from supplied provenance: '
+                'source_refs[].source_id in search results or sources[].source_id in automatic recall; '
+                'display_id labels an excerpt and is not a source selector.'})
         response.raise_for_status()
         return json.dumps(response.json())
     except Exception:

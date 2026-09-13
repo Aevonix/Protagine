@@ -122,10 +122,13 @@ class NativeReminders:
 
     @staticmethod
     def _view(job, current=None):
+        binding = json.loads(job['prompt'])
         return {key: job.get(key) for key in ('id', 'state', 'enabled', 'next_run_at',
             'last_status', 'last_delivery_error', 'last_delivery_unverified', 'deliver')} | {
             'job_id': job['id'], 'current_deadline': current,
-            'binding_id': json.loads(job['prompt'])['binding_id'],
+            'binding_id': binding['binding_id'],
+            'timezone_name': binding['timezone_name'],
+            'timezone_basis': binding.get('timezone_basis', 'caller_override'),
             'delivery_confirmation': 'not_checked',
             'note': 'Scheduling or rendering does not confirm delivery. Native cron retains the delivery result.'}
 
@@ -165,16 +168,22 @@ class NativeReminders:
                 supplied = self.request_memory.supplied_snapshot(scope) if self.request_memory else []
                 if ref not in (supplied or []):
                     raise ValueError('Use a source revision supplied in this turn; recall it first')
-                from hermes_cli.config import load_config
+                from hermes_time import get_timezone
                 from tools.cronjob_job_args import _origin_from_env
-                config = load_config() or {}
-                zone = config.get('timezone') or 'UTC'
+                configured_zone = get_timezone()
+                zone = configured_zone.key if configured_zone is not None else None
                 binding = dict(kind=KIND, contact_id=self.owner, session_id=scope.session_id,
                     source_id=args['source_id'], source_version=args['source_version'],
                     claim_id=args['claim_id'], timezone_name=zone, lead_seconds=lead)
                 current = self._current(binding, scope)
                 if current.get('status') != 'current':
                     return encoded({'error': 'This source does not provide a current precise deadline', 'deadline': current})
+                # Freeze the resolved communication frame, including when the
+                # native profile delegates to its server-local default. Missing
+                # profile configuration is not an instruction to use UTC.
+                from zoneinfo import ZoneInfo
+                binding['timezone_name'] = ZoneInfo(current['timezone_name']).key
+                binding['timezone_basis'] = current['timezone_basis']
                 identity = hashlib.sha256(encoded([self.owner, current['root_claim_id'], lead]).encode()).hexdigest()
                 binding['binding_id'] = identity
                 previous = next((job for job, record in self._bindings()

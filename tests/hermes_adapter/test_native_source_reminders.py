@@ -115,9 +115,14 @@ class LocalAPI(BaseHTTPRequestHandler):
 server=ThreadingHTTPServer(('127.0.0.1',0),LocalAPI)
 thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
 url='http://127.0.0.1:'+str(server.server_address[1])
-(home/'config.yaml').write_text(json.dumps({'timezone':'UTC','plugins':{'enabled':[],
+(home/'config.yaml').write_text(json.dumps({'timezone':'','plugins':{'enabled':[],
     'pacomind':{'url':url,'api_key':'fixture-key','owner_contact_id':'owner',
                'turn_outbox_path':str(outbox.path)}}}))
+os.environ['PACOMIND_AGENT_TIMEZONE']='America/New_York'
+from hermes_time import reset_cache
+reset_cache()
+expected_zone=os.environ.get('HERMES_TIMEZONE') or 'America/New_York'
+expected_zone_basis='caller_override' if os.environ.get('HERMES_TIMEZONE') else 'communication_frame'
 scope=NS(valid_participant=True,authority_lane='owner',contact_id='owner',platform='telegram',
     session_id='owner-conversation',task_id='owner-task',turn_id='owner-turn',sender_id='owner-user',
     user_message='Keep track of the workshop access deadline.',resolution_status='resolved')
@@ -158,6 +163,11 @@ try:
     selected=repeated[0]; job_id=selected['job_id']; binding_id=selected['binding_id']
     assert all(row['job_id']==job_id for row in repeated),repeated
     managed=jobs.get_job(job_id)
+    binding=json.loads(managed['prompt'])
+    assert binding['timezone_name']==expected_zone,binding
+    assert binding['timezone_basis']==expected_zone_basis,binding
+    assert selected['timezone_name']==expected_zone,selected
+    assert selected['current_deadline']['timezone_name']==expected_zone,selected
     assert managed['no_agent'] and managed['repeat']['times']==1
     assert managed['schedule']['run_at']==original_date,managed
     assert managed['deliver']=='origin' and managed['origin']['chat_id']=='owner-chat',managed
@@ -283,7 +293,8 @@ finally:
 '''
 
 
-def test_native_source_deadline_correction_and_forgetting(tmp_path):
+@pytest.mark.parametrize('timezone_override', ['', 'Asia/Tokyo'])
+def test_native_source_deadline_correction_and_forgetting(tmp_path, timezone_override):
     python = os.environ.get('PROTAGINE_HERMES_TEST_PYTHON')
     if not python:
         if importlib.util.find_spec('hermes_cli') is None:
@@ -305,6 +316,8 @@ def test_native_source_deadline_correction_and_forgetting(tmp_path):
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
         PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
+    if timezone_override:
+        env['HERMES_TIMEZONE'] = timezone_override
     env['PYTHONPATH'] = os.pathsep.join(path for path in (native,str(selected_packages),
         os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH','')) if path)
     result = subprocess.run([python, '-I', '-B', '-c', PROBE, str(root/'sidecar'),

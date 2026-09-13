@@ -154,6 +154,54 @@ filtered=carry(stale)
 assert 'east entrance' not in json.dumps(filtered),filtered
 assert next(r for r in filtered['messages'] if r.get('tool_call_id')==stale['tool_call_id'])!=stale
 assert 'error' in open_original(misattributed)
+# A display excerpt is not a fifth canonical source. Exercise the actual
+# search -> native forget -> scoped API interaction with a mixed batch.
+current={'session':'selector-reader','task':'selector-task','turn':'selector-turn'}
+question='Forget the spectrometer storage source and its retained answer copies.'
+row={'role':'user','content':question}
+invoke_hook('pre_llm_call',session_id=current['session'],task_id=current['task'],turn_id=current['turn'],
+    platform='cli',sender_id='',user_message=question,conversation_history=[row])
+native_db.create_session(current['session'],'cli')
+row['_row_id']=native_db.append_message(current['session'],'user',question)
+messages=[row]
+apply_llm_request_middleware({'messages':messages},session_id=current['session'],
+    task_id=current['task'],turn_id=current['turn'])
+selected=seed('search-spectrometer','Spectrometer storage needs the violet foam case.')
+unrelated=seed('independent-meter','The independent meter uses a cotton cover.')
+searched=search('Spectrometer storage')
+assert searched['source_refs']==[selected],searched
+entry=json.JSONDecoder().raw_decode(next(line[2:] for line in searched['content'].splitlines()
+    if line.startswith('- ')))[0]
+display=entry.get('display_id',entry.get('id'))
+assert display.startswith('source-excerpt:') and display != selected['source_id'],entry
+carry(dict(dispatch.last_result))
+def forget(ids,call):
+    return dispatch({'source_ids':ids},**current,call=call,tool='pacomind_memory_forget')
+watermark=ledger.erasure_watermark('person')
+rejected=forget([selected['source_id'],display],'reject-display')
+assert rejected['source_erased'] is False,rejected
+assert ledger.erasure_watermark('person')==watermark
+assert ledger.source_references([selected['source_id'],unrelated['source_id']],
+    contact_id='person',session_id=current['session'])==[selected,unrelated]
+# Retain first baseline evidence before checking the repaired presentation.
+print(json.dumps({'mixed_display_batch_rejected':rejected,'watermark_unchanged':True}),flush=True)
+assert 'source_refs[].source_id' in rejected['error'],rejected
+assert 'No sources were removed' in rejected['error'],rejected
+assert 'id' not in entry and entry['display_id']==display,entry
+assert 'source_refs' in searched['guidance'] and 'display_id' in searched['guidance']
+forget_schema=next(s for s in pacomind_hermes._TOOL_SCHEMAS if s['name']=='pacomind_memory_forget')
+assert 'source_refs' in forget_schema['parameters']['properties']['source_ids']['description']
+# A foreign canonical source remains unavailable, including in a mixed batch.
+ledger.record_source('foreign-spectrometer',contact_id='other',session_id='elsewhere',
+    messages=[{'role':'user','content':'Spectrometer private coordinates.'}],derive_claims=False)
+assert forget([selected['source_id'],'foreign-spectrometer'],'reject-foreign')['source_erased'] is False
+assert ledger.erasure_watermark('person')==watermark
+assert ledger.source_references([selected['source_id']],contact_id='person',session_id=current['session'])==[selected]
+# A deliberate exact selection succeeds without auto-mapping or dropping IDs.
+assert forget([selected['source_id']],'erase-canonical')['source_erased'] is True
+assert ledger.source_references([selected['source_id']],contact_id='person',session_id=current['session'])==[]
+assert ledger.source_references([unrelated['source_id']],contact_id='person',session_id=current['session'])==[unrelated]
+assert ledger.source_references(['foreign-spectrometer'],contact_id='other',session_id='elsewhere')
 client.chat.completions.create.assert_not_called()
 '''
     probe = probe.replace(old, check + '\n' + old)
