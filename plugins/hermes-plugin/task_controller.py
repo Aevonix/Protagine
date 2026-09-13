@@ -325,7 +325,7 @@ class NativeTasks:
                 for row in self.handoffs.recent(contact_id=self.owner):
                     self.sources.authorize_control(row['source'], scope)
                     items.append(self._metadata(row))
-                roles = self.adapter.config.extra.get('task_model_roles') if self.adapter is not None else None
+                roles = self.adapter.configured_task_model_roles() if self.adapter is not None else None
                 return json.dumps({'items': items, 'view': 'retained_associations',
                     'complete_running_inventory': False,
                     'configured_model_roles': sorted(key for key in roles
