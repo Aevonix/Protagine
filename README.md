@@ -1,5 +1,11 @@
 # PacoMind
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/branding/pacomind-primary-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/branding/pacomind-primary-light.svg">
+  <img alt="PacoMind" src="docs/branding/pacomind-primary-light.svg" width="440">
+</picture>
+
 **PACO: Persistent Autonomous Cognitive Orchestration**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -186,6 +192,14 @@ python -m pytest -q tests pacomind
 Deployment validation also needs real inference, attributable sources, work
 across sessions and recovery with the actual configuration. Keep private data,
 credentials and deployment configuration out of public commits and examples.
+
+## Branding
+
+PacoMind is a project from [Aevonix Research](https://aevonix.com).
+The [PacoMind logo kit](https://aevonix.com/brand/current/pacomind-logos.zip)
+includes SVG, PDF and PNG artwork. See the
+[brand guide](https://aevonix.com/branding) for colors, spacing and usage,
+or the [repository asset notes](docs/branding/README.md) for the files used here.
 
 ## License
 
