@@ -48,6 +48,22 @@ def finish_native_turn(**kwargs):
         active['handoffs'].observe_terminal(active['id'], kwargs)
 
 
+def execution_experience(**kwargs):
+    """Prospective task purpose from the bound admission, never hook prose."""
+    active = ACTIVE.get()
+    if (active is None or kwargs.get('parent_session_id')
+            or kwargs.get('platform') != active['adapter'].platform.value
+            or not active.get('native')
+            or any(kwargs.get(key) != value for key, value in active['native'].items())):
+        return None
+    row = active['handoffs'].control(active['id'], require_task_grant=True)
+    purpose = row['source'].get('task_experience')
+    if purpose not in {'operational', 'qualification'}:
+        return None
+    return {'task_id': row['id'], 'purpose': purpose,
+            'origin_platform': row['source'].get('origin', {}).get('platform', 'unknown')}
+
+
 def bound_task_contact(platform, sender, session_id):
     """Return the source-checked native participant, never create a task handle.
 

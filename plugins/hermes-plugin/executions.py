@@ -37,7 +37,7 @@ class ExecutionObserver:
         except Exception:
             logger.debug("Execution observation unavailable; liveness will become unknown")
 
-    def start(self, scope, *, review_parent=None, input_refs=None, **kwargs):
+    def start(self, scope, *, review_parent=None, input_refs=None, task_experience=None, **kwargs):
         turn_id = str(kwargs.get("turn_id") or "")
         session_id = str(kwargs.get("session_id") or "")
         if not turn_id or not session_id:
@@ -73,6 +73,8 @@ class ExecutionObserver:
                 # The caller supplies only a source-checked root input. A child
                 # has a narrower assignment; its parent's request is not it.
                 payload['input_refs'] = input_refs
+                if task_experience is not None:
+                    payload['task_experience'] = task_experience
             self._records[turn_id] = payload
             self._current_sessions[turn_id] = session_id
             while len(self._records) > 2048:

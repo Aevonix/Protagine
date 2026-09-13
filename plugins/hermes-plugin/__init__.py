@@ -2486,7 +2486,9 @@ def register(ctx: Any) -> None:
             execution_inputs, _ = supplied_input.parents()
         if execution_observer is not None:
             execution_observer.start(scope, review_parent=parent if review else None,
-                                     input_refs=execution_inputs, **kwargs)
+                                     input_refs=execution_inputs,
+                                     task_experience=native_tasks.execution_experience(**kwargs)
+                                         if native_tasks is not None else None, **kwargs)
         return native_context
 
     def post_llm_call(**kwargs: Any) -> None:
