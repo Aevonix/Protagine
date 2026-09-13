@@ -91,14 +91,26 @@ def respond(request):
   carrier=supplied.register_update(update,validate=lambda:granted,observe=observe)
   assert supplied.register_update(update,validate=lambda:False)==carrier
   assert supplied.parents()[0]==root_input,'Accepted update prematurely became consumed input'
-  assert parent.steer(carrier)
+  steer=carrier
+  if scenario in {'gateway_envelope','gateway_extra_text'}:
+   from contextlib import nullcontext
+   from gateway.config import Platform
+   from gateway.platforms.event import MessageEvent
+   from gateway.run import GatewayRunner
+   from gateway.session import SessionSource
+   event=MessageEvent(text=carrier,source=SessionSource(platform=Platform.WHATSAPP,
+    chat_id='fixture-chat',user_id='fixture-owner',profile=None),message_id='update-message')
+   steer=GatewayRunner._steer_text_with_origin(
+    NS(_profile_scope_for_source=lambda source:nullcontext()),carrier,event)
+   if scenario=='gateway_extra_text':steer+='\nUnregistered unrelated instruction.'
+  assert parent.steer(steer)
   if scenario=='erased':ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
   if scenario=='revoked':granted=False
   message={'role':'assistant','content':None,'tool_calls':[{'id':'read-root','type':'function',
    'function':{'name':'tool_call','arguments':json.dumps({'name':'pacomind_memory_read_source',
     'arguments':root_ref})}}]};finish='tool_calls'
  else:
-  if scenario in {'erased','revoked','receipt_failure','ownership_failure'} or (scenario=='erased_after_visibility' and step==3):
+  if scenario in {'erased','revoked','receipt_failure','ownership_failure','gateway_extra_text'} or (scenario=='erased_after_visibility' and step==3):
    assert instruction not in text and carrier not in text and body.get('tools',[])==[],body
    assert supplied.failure and supplied.result is None
    message={'role':'assistant','content':'The task source is unavailable.'}
@@ -110,7 +122,7 @@ def respond(request):
    else:
     assert carrier in text,body
    assert root_input[0] in supplied.parents()[0] and change_input[0] in supplied.parents()[0]
-   if scenario=='normal':
+   if scenario in {'normal','gateway_envelope'}:
     import sqlite3
     with sqlite3.connect(home/'outbox.db') as stored:
      reservations=[json.loads(row[0]) for row in stored.execute(
@@ -167,16 +179,16 @@ try:
  with transport_input(contact_id='owner',platform='cli',input_refs=root_input,source_refs=[root_ref]) as supplied:
   result=parent.run_conversation('Perform the admitted checklist task.',persist_user_message=original)
   assert len(bodies)==(4 if scenario=='joined_child' else 3 if scenario=='erased_after_visibility' else 2),bodies
-  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility','ownership_failure'}:
+  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility','ownership_failure','gateway_extra_text'}:
    assert supplied.result is None and supplied.failure
-   if scenario=='ownership_failure':
+   if scenario in {'ownership_failure','gateway_extra_text'}:
     assert supplied.failure['reason']=='source_update_ownership_unavailable'
     assert supplied.parents()[0]==root_input,'Failed ownership admitted update parents'
   else:
    assert supplied.result and change_input[0] in supplied.result['input_refs'],supplied.result
    assert change_ref in supplied.result['source_refs'],supplied.result
 finally:parent.close()
-if scenario=='normal':
+if scenario in {'normal','gateway_envelope'}:
  import asyncio, sqlite3
  from pacomind_hermes.client import TurnOutbox, PacoMindClient
  from pacomind_hermes.native_owned_copies import NativeOwnedCopies
@@ -210,7 +222,8 @@ print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
 
 
 @pytest.mark.parametrize('scenario', ['normal', 'summary', 'erased', 'revoked', 'receipt_failure',
-                                      'erased_after_visibility', 'joined_child', 'ownership_failure'])
+                                      'erased_after_visibility', 'joined_child', 'ownership_failure',
+                                      'gateway_envelope', 'gateway_extra_text'])
 def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, scenario):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified Hermes release for native qualification')
