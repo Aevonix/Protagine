@@ -48,7 +48,15 @@ def register(ctx):
             pass
         # 2) Scope the clock to its owning turn: native api_content is replayed.
         try:
-            context = provider._turn_clock_context()
+            from agent.memory_provider import is_trivial_prompt
+
+            message = kwargs.get("user_message")
+            # Hermes deliberately skips memory prefetch on these turns. Keep
+            # its optimization while supplying the same bounded clock frames.
+            context = provider._turn_clock_context(
+                session_id=str(kwargs.get("session_id", "") or ""),
+                include_temporal=is_trivial_prompt(message if isinstance(message, str) else ""),
+            )
             if context:
                 return {"context": context}
         except Exception:

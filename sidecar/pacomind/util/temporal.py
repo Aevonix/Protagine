@@ -331,13 +331,20 @@ def hours_since(ts, ref: Optional[datetime] = None) -> Optional[float]:
 
 def describe_now(agent_tz: Optional[str] = None,
                  contact_tz: Optional[str] = None,
-                 contact_label: str = "their") -> str:
-    """One-line 'now' anchor, optionally with the contact's local time too."""
+                 contact_label: str = "the contact", *,
+                 override_tz: Optional[str] = None) -> str:
+    """One instant in explicitly labeled frames, without inferring location."""
     atz = agent_tz or agent_timezone()
-    a_local = now_in(atz)
-    line = f"{format_clock(a_local)} — {part_of_day(a_local)} (your local time, {atz})"
-    if contact_tz and is_valid_timezone(contact_tz) and contact_tz != atz:
-        c_local = now_in(contact_tz)
-        poss = contact_label if contact_label.endswith("s") else f"{contact_label}'s"
-        line += f"\nFor {poss} side it is {format_clock(c_local)} — {part_of_day(c_local)} ({contact_tz})."
-    return line
+    captured = now_utc()
+    def clock(tz):
+        return to_zone(captured, tz).isoformat(timespec="seconds")
+    lines = [f"Captured UTC: {clock('UTC')}.",
+             f"Agent reference ({atz}): {clock(atz)}."]
+    if is_valid_timezone(contact_tz):
+        lines.append(f"Recorded timezone for {contact_label} ({contact_tz}): {clock(contact_tz)}.")
+        lines.append("A recorded timezone is not evidence of the contact's current location.")
+    else:
+        lines.append("Contact timezone: not recorded. Current location: unknown.")
+    if is_valid_timezone(override_tz):
+        lines.append(f"Communication override ({override_tz}): {clock(override_tz)}.")
+    return "\n".join(lines)

@@ -915,7 +915,7 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
     # -- Clock scoped to the owning user turn (pre_llm_call hook) --------------
 
     def _current_time_line(self) -> str:
-        """Local, no-network current date/time in the agent's home timezone."""
+        """Local clock in the configured runtime reference timezone, else UTC."""
         from datetime import datetime, timezone as _tz
         try:
             from zoneinfo import ZoneInfo
@@ -931,13 +931,28 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
         hm = now.strftime("%I:%M %p").lstrip("0")
         return f"{now.strftime('%A, %B %d, %Y')}, {hm} {now.strftime('%Z') or 'UTC'}"
 
-    def _turn_clock_context(self) -> str:
+    def _turn_clock_context(self, *, session_id: str = "", include_temporal: bool = False) -> str:
         """A retained clock describes its original turn, never all later turns."""
         line = self._current_time_line()
         if not line:
             return ""
+        temporal = ""
+        if include_temporal:
+            # Use the same per-turn identity and owner-only path as prefetch.
+            # A greeting from a guest must not read the owner's temporal brief.
+            try:
+                contact_id = self._prefetch_contact(session_id)
+                if contact_id and contact_id == self._contact_id:
+                    # Native invokes this hook before on_turn_start, so the
+                    # provider's stored gap still belongs to the prior turn.
+                    temporal = self._fresh_temporal_block_sync(
+                        contact_id=contact_id, include_turn_gap=False,
+                    ) + "\n"
+            except Exception as exc:
+                logger.debug("PacoMind turn clock frames unavailable: %s", exc)
         return (
-            f"Clock captured for this user turn: {line}. "
+            f"Clock captured for this user turn: {line} (runtime reference, not the contact's location).\n"
+            + temporal +
             "This clock applies only to this turn; on later turns it is historical. "
             "Use the latest turn's clock for relative dates, not earlier 'now' or 'today' "
             "notes or the conversation-start date. Keep source event and observation "
@@ -1067,9 +1082,8 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
         return block
 
     def _local_temporal_block(self, *, include_turn_gap=True):
-        now = _tdt.now().astimezone()
-        lines = [f"Now: {now.strftime('%A %Y-%m-%d %H:%M %Z')} (host clock; sidecar temporal brief unavailable)."]
-        lines.append("^ This is the authoritative CURRENT date/time — this is NOW. Ignore any 'Conversation started' date in your system prompt.")
+        lines = [f"Runtime reference clock: {self._current_time_line()}."]
+        lines.append("Contact timezone and current location are unavailable in this context. This clock belongs to the turn that captured it; a retained copy is historical.")
         block = "## Current Time [priority 100]\n" + "\n".join(lines)
         return self._with_turn_gap(block) if include_turn_gap else block
 
@@ -1238,21 +1252,21 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
                 self._projection_ready_contacts.discard(contact_id)
         return ready
 
-    def _fresh_temporal_block_sync(self, *, contact_id: Optional[str] = None):
+    def _fresh_temporal_block_sync(self, *, contact_id: Optional[str] = None, include_turn_gap=True):
         contact_id = contact_id or self._prefetch_contact()
         if not contact_id:
-            return self._local_temporal_block()
+            return self._local_temporal_block(include_turn_gap=include_turn_gap)
         # Guest temporal context stays local-clock only. The assembled P8
         # projection may contain a scoped temporal section, but the legacy
         # temporal endpoint has no atomic request policy and must never be a
         # guest fallback.
         if contact_id != self._contact_id:
-            return self._local_temporal_block()
+            return self._local_temporal_block(include_turn_gap=include_turn_gap)
         ts, cached = self._temporal_cache
         if cached and (_ttime.monotonic() - ts) < self._TEMPORAL_TTL_SECS and (
                 not self._prefetch_turn_contact_enabled()
                 or contact_id == self._temporal_cache_contact):
-            return self._with_turn_gap(cached)
+            return self._with_turn_gap(cached) if include_turn_gap else cached
         block = ""
         try:
             with httpx.Client(timeout=2.5) as client:
@@ -1272,7 +1286,7 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
             block = self._local_temporal_block(include_turn_gap=False)
         self._temporal_cache = (_ttime.monotonic(), block)
         self._temporal_cache_contact = contact_id
-        return self._with_turn_gap(block)
+        return self._with_turn_gap(block) if include_turn_gap else block
 
     def _with_fresh_temporal_sync(
         self, context, *, contact_id: Optional[str] = None,
