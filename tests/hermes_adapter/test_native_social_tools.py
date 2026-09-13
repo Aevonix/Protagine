@@ -112,10 +112,15 @@ from model_tools import handle_function_call
 manager=get_plugin_manager();manager.discover_and_load()
 loaded=manager._plugins['pacomind'];assert loaded.enabled,loaded.error
 assert {'pacomind_contacts','pacomind_followup','pacomind_judgments','pacomind_commitment_work'} <= set(loaded.tools_registered)
+from hermes_state import SessionDB
+native_db=SessionDB(home/'state.db')
 
 def start(session,text,*,platform='cli',sender=''):
  history=[{'role':'user','content':text}]
  invoke_hook('pre_llm_call',session_id=session,task_id=session,turn_id='turn-'+session,platform=platform,sender_id=sender,user_message=text,conversation_history=history)
+ # Native turn-start persistence precedes subsequent request/tool dispatch.
+ native_db.create_session(session,platform)
+ history[-1]['_row_id']=native_db.append_message(session,'user',text)
  return history
 
 def tool(session,name,args):
@@ -174,6 +179,8 @@ history=start('owner-retained',continued)
 from agent.turn_context import compose_user_api_content
 packet='[pacomind-recall-v1 '+json.dumps({'contact_id':owner.contact_id,'watermark':0,'sources':[ref]})+']\n'+retained_text+'\n[/pacomind-recall-v1]'
 history[-1]['api_content']=compose_user_api_content(continued,packet,'')
+assert native_db.set_message_api_content('owner-retained',history[-1]['_row_id'],
+ continued,history[-1]['api_content'])==1
 sent=apply_llm_request_middleware({'messages':[{'role':'user','content':history[-1]['api_content']}]},
     session_id='owner-retained',task_id='owner-retained',turn_id='turn-owner-retained').payload
 sent_user=[row for row in sent['messages'] if row['role']=='user']
@@ -438,6 +445,7 @@ assert actual_child['parent_execution_id']==items['contact-owner']['execution_id
 api.portal.call(comms._conn.close)
 api.__exit__(None,None,None)
 asyncio.run(contacts.close())
+native_db.close()
 print(json.dumps({'native_tools_registered':True,'first_turn_capture_claim_wait':True,'canonical_refs_match':True,
                   'owner_identity_correction':True,'appraisal_inspect':True,'guest_restricted':True,
                   'concurrent_owner_commitment':True,'next_operation_identity_correction':True,'inherited_child_correction':True,
