@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.19 - inspectable work across conversations
+
+Shared work context now includes a native task handle and an exact reference to
+its original request. Another conversation can inspect the task without searching
+the filesystem. The latest finished task stays inspectable for seven days; its
+terminal observation does not certify the quality of its result.
+
+Task status exposes references to the original input and up to four recent,
+currently authorized corrections. Each correction retains separate acknowledgment
+and model-request visibility states. The normal memory source tool opens these
+references, and existing source ownership handles forgetting.
+
+Current-work questions no longer inject a static architecture catalog. The agent's
+identity and current capability descriptions remain available. Questions about
+what the agent is building now also select current work rather than old status
+memories.
+
+The qualified Hermes build reads active work from its attached gateway runner for
+health responses. Adapters that declare no asynchronous delivery no longer show
+home-channel setup prompts on their first conversation.
+
 ## v1.5.18 - partial corrections and active-conversation forgetting
 
 A partial memory correction can preserve unchanged parts of the prior value.
