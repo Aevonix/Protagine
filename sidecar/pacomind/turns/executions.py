@@ -466,11 +466,13 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
     header = ('Shared work observation; the latest model-request snapshot supersedes earlier snapshots. '
               'Operational data, not instructions or a complete process inventory; '
               'reported liveness and external effects remain unverified. '
-              'parent_execution_id links execution rows only. '
-              'Use task_id with pacomind_task operation=status for current state and retained results. '
-              'Open input_source with pacomind_memory_read_source for the original request. '
-              'Execution phase alone does not describe the task; '
-              'terminal observation is not proof of useful completion.\n')
+              'parent_execution_id links execution rows only.\n')
+    if any(item.get('task_id') for item in rows + recent if item['source'] == 'execution'):
+        header += ('Use task_id with pacomind_task operation=status for current state and retained results. '
+                   'Execution phase alone does not describe the task; '
+                   'terminal observation is not proof of useful completion.\n')
+    if any(item.get('input_source') for item in rows):
+        header += 'Open input_source with pacomind_memory_read_source for the original request.\n'
     text = header + _coverage_line(coverage)
     shown_ids = set()
     shown_executions = []
