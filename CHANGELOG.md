@@ -13,6 +13,12 @@ arguments were generated from that source, along with their paired results.
 The current user input, fresh forgetting receipt and unrelated calls remain.
 Ownership comes from previously admitted source references and exact call
 fingerprints; the adapter does not infer it from a matching word.
+Equivalent JSON argument formatting keeps that identity when Hermes builds a
+summary request. Changed arguments and ambiguous calls remain distinct.
+
+Rejected source annotations now explain the specific correction needed, such
+as copying one contiguous quotation. A rejected request is distinguished from
+an unknown acknowledgement, which can still be retried with identical input.
 
 The qualified Hermes build now applies its existing request middleware to
 iteration-limit summaries, including retries and the supported provider modes.
