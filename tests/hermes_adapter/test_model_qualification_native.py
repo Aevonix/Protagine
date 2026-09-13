@@ -359,6 +359,89 @@ def test_spawn_failure_without_child_removes_state_and_allows_later_case(tmp_pat
     asyncio.run(attempt())
 
 
+@pytest.mark.parametrize('failure', ['before_constructor', 'constructor', 'close'])
+def test_real_worker_distinguishes_no_acquisition_from_unconfirmed_cleanup(tmp_path, failure):
+    import asyncio
+    import venv
+    from pacomind.qualification import native
+    from pacomind.qualification.cases import EVALUATORS
+    from pacomind.qualification.runner import evaluate
+
+    # The actual worker runs in a real owned subprocess. Minimal native modules
+    # control the failure boundary; their effect log proves which calls occurred.
+    runtime = tmp_path/'native-python'
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(runtime)
+    site = runtime/f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
+    source = tmp_path/'native-source'
+    source.mkdir()
+    (site/'selected-native.pth').write_text(str(source)+'\n')
+    events = tmp_path/'effects.jsonl'
+    record = ('import json\nfrom pathlib import Path\n'
+        f'FAILURE={failure!r}\nEVENTS=Path({str(events)!r})\n'
+        'def record(value):\n'
+        '    with EVENTS.open("a") as stream: stream.write(json.dumps(value)+"\\n")\n')
+    modules = {
+        'hermes_cli/__init__.py': '', 'agent/__init__.py': '',
+        'hermes_cli/config.py': record + '''
+def load_config():
+    record('load_config')
+    if FAILURE == 'before_constructor': raise ValueError('Controlled invalid configuration')
+    return {'model': {'default': 'native-fixture'}}
+''',
+        'hermes_cli/runtime_provider.py': 'def resolve_runtime_provider(**kwargs): return {}\n',
+        'hermes_constants.py': 'def resolve_reasoning_config(*args): return {}\n',
+        'run_agent.py': record + '''
+class AIAgent:
+    def __init__(self, **kwargs):
+        record('constructor_entered')
+        self.model = kwargs['model']
+        if FAILURE == 'constructor': raise RuntimeError('Controlled partial constructor failure')
+    def run_conversation(self, *args, **kwargs):
+        record('run_conversation')
+        return {'completed': True, 'final_response': '{"blue":"drawer 4","silver":null}'}
+    def close(self):
+        record('close_entered')
+        if FAILURE == 'close': raise RuntimeError('Controlled close failure')
+''',
+    }
+    for name, content in modules.items():
+        path = source/name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(content)
+    dist = site/'hermes_agent-0.1.dist-info'
+    dist.mkdir()
+    (dist/'METADATA').write_text('Name: hermes-agent\nVersion: 0.1\n')
+    (dist/'top_level.txt').write_text('run_agent\nhermes_constants\nagent\nhermes_cli\n')
+    config, recipe = configuration(configured(tmp_path, 'http://127.0.0.1:9/v1'),
+        'fixture', hermes_python=runtime/'bin/python')
+    case = native.cases(['chat'], deadline_seconds=5)[0]
+    output = tmp_path/'worker-run'
+    asyncio.run(evaluate(output, recipe, [case, replace(case, id='later')],
+        {'native_cli': native_cli}, EVALUATORS, lambda _: native_context(config, recipe)))
+    row = read(output/'attempts'/case.id/'result.json')
+    observed = row['observations'][0]
+    assert row['outcome'] == 'error'
+    assert observed['process_exited'] and observed['owned_worker_stopped']
+    assert not observed['agent_close_returned'] and not observed['forced_termination']
+    effects = [json.loads(line) for line in events.read_text().splitlines()]
+    if failure == 'before_constructor':
+        assert observed['agent_construction_started'] is False
+        assert observed['error_type'] == 'ValueError'
+        assert effects == ['load_config', 'load_config']
+        for name in (case.id, 'later'):
+            result = read(output/'attempts'/name/'result.json')
+            assert result['cleanup'] == 'state_directory_removed'
+            assert result['output'] is None
+            assert not list((output/'attempts'/name).glob('state-*'))
+    else:
+        assert observed['agent_construction_started'] is True
+        assert row['cleanup'] == 'state_directory_retained'
+        assert Path(row['retained_state_dir']).is_dir()
+        assert not (output/'attempts/later/started.json').exists()
+        assert effects == (['load_config', 'constructor_entered'] if failure == 'constructor'
+            else ['load_config', 'constructor_entered', 'run_conversation', 'close_entered'])
+
+
 def test_selected_runtime_identity_tracks_dependency_bytes_and_blocks_changed_resume(tmp_path):
     import asyncio
     import venv

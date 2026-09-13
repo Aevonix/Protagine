@@ -545,7 +545,8 @@ def extraction_timeout_seconds(router):
 
 def projection_timeout_seconds(router):
     """One owned lease and outer bound cover extraction plus admission review."""
-    return extraction_timeout_seconds(router) + _role_timeout_seconds(router, 'judging')
+    return extraction_timeout_seconds(router) + _role_timeout_seconds(
+        router, 'judging', task='source_claim_review')
 
 
 async def _review_claims(router, payload, claims, *, tier, functions, diagnostics):
@@ -556,10 +557,10 @@ async def _review_claims(router, payload, claims, *, tier, functions, diagnostic
                   {'role': 'user', 'content': json.dumps({**payload, 'proposals': [
                       {'index': index, 'claim': claim} for index, claim in enumerate(claims)]},
                       ensure_ascii=False, sort_keys=True)}],
-        force_tier=tier, context={'task': 'source_claim_review', 'function_role': 'judging',
+        force_tier=tier, context={'task': 'source_claim_review',
             'max_output_tokens': 1400, 'allow_fallback': functions,
             'response_schema': review_response_schema(len(claims))}),
-        timeout=_role_timeout_seconds(router, 'judging'))
+        timeout=_role_timeout_seconds(router, 'judging', task='source_claim_review'))
     provenance = {
         'function_role': getattr(response, 'function_role', '') or 'judging',
         'config_revision': getattr(response, 'config_revision', '') or 'unknown',

@@ -28,6 +28,8 @@ REPORT = ('The quartz archive comparison is recorded in this report: '
     'Inspect this report: “The camera recorded a visit at ' + STAMP + '.”',
     "Inspect this report: 'The camera recorded a visit at " + STAMP + ".'",
     'Inspect this report: "The camera recorded a visit on 18 September 2026."',
+    'Inspect this report: "The camera recorded a visit at 1:30 PM on 18 September 2026."',
+    'Inspect this report: "The camera recorded a visit at 17:15 EST on 18 September 2026."',
 ])
 def test_supplied_report_dates_do_not_filter_observation_time(evidence):
     query = interpret_time_query(evidence, now=NOW)
@@ -102,6 +104,22 @@ def test_ambiguous_clock_query_does_not_fall_back_to_current_memory():
         now=NOW, timezone_name='America/New_York')
     assert query.mode == 'unresolved_time'
     assert not query.accepts_claim({'valid_from': '2026-01-01T00:00:00+00:00'})
+
+
+@pytest.mark.parametrize('expression', [
+    '1:30 PM on 18 September 2026',
+    '17:15 EST on 18 September 2026',
+    '17:15 America/New_York on 18 September 2026',
+])
+@pytest.mark.parametrize('quoted', [False, True])
+def test_unsupported_clock_retains_whole_operand_without_widening(expression, quoted):
+    operand = json.dumps(expression) if quoted else expression
+    for request in ['Where was my office as of ', 'What did the camera record at ']:
+        query = interpret_time_query(request + operand + '?', now=NOW)
+        assert query.mode == 'unresolved_time'
+        assert query.expression == expression
+        assert query.start is None and query.end is None
+        assert not query.accepts_claim({'valid_from': '2026-01-01T00:00:00+00:00'})
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ def verify_tools(endpoint, model, key, *, extra_body=None):
     tool = {'type':'function', 'function':{'name':'pacomind_setup_echo',
         'description':'Return the supplied neutral setup token; no action is executed.',
         'parameters':{'type':'object','properties':{'token':{'type':'string'}},'required':['token']}}}
-    response = httpx.post(endpoint+'/chat/completions', headers={'Authorization':'Bearer '+key},
+    response = httpx.post(endpoint.rstrip('/')+'/chat/completions', headers={'Authorization':'Bearer '+key},
         json={'model':model,'messages':[{'role':'user','content':'Call pacomind_setup_echo with token pacomind-ready.'}],
               'tools':[tool],'tool_choice':{'type':'function','function':{'name':'pacomind_setup_echo'}},
               'max_tokens':256, **(extra_body or {})}, timeout=60, trust_env=False)

@@ -56,6 +56,9 @@ def _model_configuration(path):
             raise ValueError('Host model configuration is too large')
         configuration = json.loads(raw)
         LLMRouter(tiers={}).configure(configuration)
+        for binding in configuration.get('modelPool', {}).values():
+            if 'extraBody' in binding and not isinstance(binding['extraBody'], dict):
+                raise ValueError('modelPool extraBody must be a JSON object')
     except (ValueError, TypeError, AttributeError):
         # Parser/schema errors can contain user-supplied values, including keys.
         raise ValueError('Invalid --model-config: provide a valid JSON host-model configuration') from None

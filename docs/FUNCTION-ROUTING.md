@@ -36,6 +36,11 @@ of machines or parameter count. `functionRoles` chooses ordered candidates and
 requirements. Names express deployment roles, not hardware identifiers.
 
 Optional `taskRoles` maps a supported task name to an existing function role.
+`source_claim_review` defaults to `judging` and can be assigned independently of
+other judgment tasks. Mapping it to `extraction` uses that role's candidates and
+deadline for memory admission review, including the worker's outer time bound.
+The claim records the role and binding actually used. Changing this mapping does
+not change the global judging or planning roles.
 For example, `"taskRoles": {"source_claim_extraction": "reasoning"}` sends source
 memory formation through reasoning while ToM and appraisals retain
 their existing selection. Capability hints, outer extraction budgets and actual

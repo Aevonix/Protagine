@@ -94,6 +94,7 @@ class ObservedRouter:
         started = time.monotonic()
         observation = {'boundary': 'router_complete', 'input_sha256': digest(messages),
                        'role': (kwargs.get('context') or {}).get('function_role'),
+                       'task': (kwargs.get('context') or {}).get('task'),
                        # Retain the legacy arm label; it was never a support-role override.
                        'requested_binding': self._requested_binding, 'selected_binding': None,
                        'requested_binding_semantics': 'qualification_candidate',

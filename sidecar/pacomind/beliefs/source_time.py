@@ -18,8 +18,12 @@ _MONTH_DATE = (r"(?:" + _MONTH + r"\s+\d{1,2},?\s+\d{4}|"
 _TIME_ON_DATE = re.compile(
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
     r"(?:\s+(?P<utc>UTC))?\s+on\s+(?P<date>" + _MONTH_DATE + r")", re.I)
-# Consume the whole clock/date operand before its embedded calendar date.
-_EXPLICIT_DATE = _TIME_ON_DATE.pattern + "|" + _DATE + "|" + _MONTH_DATE
+# Recognize a clock-shaped operand even when its meridiem/zone is unsupported.
+# Parsing remains limited to _TIME_ON_DATE; never reduce a rejected clock to
+# its embedded calendar date or discard a quoted operand as ordinary evidence.
+_CLOCK_DATE_OPERAND = (r"\b\d{1,2}:\d{2}(?::\d{2})?"
+    r"(?:\s+[a-z][a-z0-9_./+:-]{0,63}){0,2}\s+on\s+" + _MONTH_DATE)
+_EXPLICIT_DATE = _CLOCK_DATE_OPERAND + "|" + _DATE + "|" + _MONTH_DATE
 _EVENT = re.compile(r"\b(footage|camera|observed|spotted|seen|saw|happened|recorded|arrived|visited)\b", re.I)
 
 

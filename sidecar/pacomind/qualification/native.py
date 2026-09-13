@@ -182,12 +182,17 @@ async def native_cli(inputs, context):
                 result = read(result_path) if result_path.exists() else {}
             except (ValueError, OSError):
                 result = {}
-            # Exit alone does not prove cooperative native cleanup.
-            clean = result.get('worker_stopped') is True and result.get('agent_close_returned') is True
+            # A stopped child can explicitly prove that agent acquisition never
+            # began. Once construction starts, only a returned close is proof;
+            # a failed constructor may already have acquired resources.
+            clean = result.get('worker_stopped') is True and (
+                result.get('agent_close_returned') is True
+                or result.get('agent_construction_started') is False)
             observed.update(native_stage=result.get('stage', 'no_result'),
                 hard_interrupt_requested=result.get('hard_interrupt_requested', False),
                 owned_worker_stopped=result.get('worker_stopped', False),
                 agent_close_returned=result.get('agent_close_returned', False),
+                agent_construction_started=result.get('agent_construction_started'),
                 error_type=type(spawn_error).__name__ if no_child else result.get('error_type'),
                 configured_model=result.get('model'))
             observed['native_turn'] = result.get('turn')

@@ -84,6 +84,26 @@ async def test_real_memory_consumer_and_frozen_independent_outcomes(tmp_path, ca
 
 
 @pytest.mark.asyncio
+async def test_review_reports_its_actual_role_when_it_shares_extraction(tmp_path):
+    class SharedProcessor(Processor):
+        async def complete(self, messages, **kwargs):
+            response = await super().complete(messages, **kwargs)
+            if kwargs['context']['task'] == 'source_claim_review':
+                response.function_role = 'extraction'
+                response.binding = 'candidate'
+            return response
+
+    observations = []
+    context = RunContext(SharedProcessor(), tmp_path, observations)
+    observed = await source_memory(deepcopy(CASES[1].inputs), context)
+    assert all(memory_outcomes(observed, CASES[1].oracle).values())
+    assert observed['effects']['supporting_roles'] == ['extraction']
+    assert observed['effects']['supporting_tasks'] == ['source_claim_review']
+    reviews = [row for row in observations if row.get('task') == 'source_claim_review']
+    assert len(reviews) == 2 and all(row['role'] == 'extraction' for row in reviews)
+
+
+@pytest.mark.asyncio
 async def test_empty_formation_cannot_pass_on_raw_quotation_recall(tmp_path):
     case = CASES[0]
     observed = await source_memory(deepcopy(case.inputs), RunContext(Processor(reject_useful=True), tmp_path, []))

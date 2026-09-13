@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.3 - memory review routing and model setup corrections
+
+Source admission review uses the configurable `source_claim_review` task, which
+defaults to judging. Its selected role controls both the model and deadline;
+other judging and planning tasks keep their own bindings. Memory qualification
+records the actual review role and task.
+
+Guided setup rejects non-object `modelPool.extraBody` values before requests or
+instance writes. Tool probes accept base URLs ending in `/v1/` without introducing
+a double slash, while preserving supplied request overrides.
+
+Historical queries retain unsupported clock prefixes as unresolved operands
+instead of silently widening them to a calendar day. Supported UTC and local
+clocks and calendar-day queries retain their existing behavior. The native model
+suite removes isolated state after a confirmed failure before agent construction;
+constructor failures and unconfirmed cleanup still stop later cases.
+
+Phase 1 validation remains open. These fixes do not establish broader model
+quality or complete ordinary-use acceptance.
+
 ## v1.5.2 - native model checks and explicit setup roles
 
 The model validation suite can run an isolated Hermes chat conversation with a

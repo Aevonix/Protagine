@@ -58,6 +58,10 @@ fallbacks. Local inference supports normal operation without a cloud model.
 The model qualification suite measures role-specific quality and latency;
 automatic fleet enrollment and selection from those measurements remain planned.
 
+Memory extraction and admission review have separate task mappings. A deployment
+can select their models and deadlines without changing the planning or judging
+roles used elsewhere. Qualification records which role actually reviewed a memory.
+
 **Deployment details stay private.** The guided setup attaches to an existing
 Hermes profile. Identity, credentials, contact records, model addresses and device
 settings stay outside the public repository. Voice systems, cameras, phones and
@@ -96,7 +100,7 @@ Install the current tagged release:
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.2 https://github.com/Aevonix/PacoMind.git
+git clone --depth 1 --branch v1.5.3 https://github.com/Aevonix/PacoMind.git
 python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```

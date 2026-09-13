@@ -49,6 +49,52 @@ async def test_actual_role_request_uses_configured_outer_deadline(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_memory_review_task_override_uses_selected_binding_and_deadline(monkeypatch):
+    text = 'My office is in Alder.'
+    bounds = []
+    original_wait_for = asyncio.wait_for
+
+    async def observe_wait_for(awaitable, timeout):
+        if getattr(getattr(awaitable, 'cr_code', None), 'co_name', '') == 'complete':
+            bounds.append(timeout)
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, 'wait_for', observe_wait_for)
+
+    def answer(payload):
+        if 'proposals' in json.loads(payload['messages'][1]['content']):
+            return json.dumps({'0': {'keep': True, 'reason': 'Reported office location.'}})
+        return json.dumps([claim(text, 'Alder')])
+
+    with endpoint(content=answer) as (url, requests):
+        cfg = config(url, url, timeoutSeconds=60, deadlineSeconds=60)
+        cfg['functionRoles']['extraction']['candidates'] = ['interactive']
+        cfg['functionRoles']['judging'] = ['deliberate']
+        cfg['modelPool']['interactive']['maxTokens'] = 2200
+        cfg['taskRoles'] = {'source_claim_extraction': 'extraction',
+                            'source_claim_review': 'extraction'}
+        r = router(cfg)
+        rows, _ = await extract_claims(r, {'occurred_at': None}, {'role': 'user', 'content': text}, [])
+        assert len(rows) == 1
+        assert [call['payload']['model'] for call in requests] == ['fast-neutral', 'fast-neutral']
+        assert [call['payload']['max_tokens'] for call in requests] == [2200, 1400]
+        assert bounds == [65, 65]
+        assert projection_timeout_seconds(r) == 130
+        review = rows[0]['admission_review']['model_provenance']
+        assert review['function_role'] == 'extraction' and review['binding'] == 'interactive'
+        # Only this task changes selection. Other judgment and planning callers
+        # retain their declared model, and configuration reload restores defaults.
+        assert r.routing_status()['roles']['judging'] == ['deliberate']
+        assert r.routing_status()['roles']['planning'] == ['deliberate', 'interactive']
+        cfg['taskRoles'].pop('source_claim_review')
+        r.configure(cfg)
+        assert projection_timeout_seconds(r) == 250
+        rows, _ = await extract_claims(r, {'occurred_at': None}, {'role': 'user', 'content': text}, [])
+        assert requests[-1]['payload']['model'] == 'strong-neutral'
+        assert rows[0]['admission_review']['model_provenance']['function_role'] == 'judging'
+
+
+@pytest.mark.asyncio
 async def test_long_multi_message_job_renews_after_role_reload(tmp_path, monkeypatch):
     from pacomind.beliefs import source_projection as module
     clock = [1000.0]

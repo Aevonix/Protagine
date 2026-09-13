@@ -233,6 +233,36 @@ def test_invalid_model_configuration_precedes_probe_and_any_wizard_write(
     assert 'fixture-secret-invalid-candidate' not in result.out + result.err
 
 
+@pytest.mark.parametrize('extra_body', [[], ['fixture-secret-invalid-body'], '', 0, False, None])
+def test_nonobject_model_pool_overrides_fail_before_probe_or_attachment(
+        args, supplied_model_config, extra_body, monkeypatch, capsys):
+    # Validate every declared model, including a non-planning binding that setup
+    # would not otherwise exercise before saving the private configuration.
+    supplied_model_config['modelPool']['extract']['extraBody'] = extra_body
+    path = Path(args.model_config)
+    path.write_text(json.dumps(supplied_model_config))
+    original = path.read_bytes()
+    monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Malformed overrides reached inference'))
+    monkeypatch.setattr(httpx, 'get', lambda *a, **k: pytest.fail('Malformed overrides reached discovery'))
+    assert setup.run_init(None, args) == 1
+    assert not Path(args.hermes_home).exists()
+    assert path.read_bytes() == original
+    result = capsys.readouterr()
+    assert 'Invalid --model-config' in result.out + result.err
+    assert 'fixture-secret-invalid-body' not in result.out + result.err
+
+
+@pytest.mark.parametrize('override', ['omitted', {}])
+def test_model_pool_without_request_overrides_remains_valid(args, supplied_model_config, override):
+    binding = supplied_model_config['modelPool']['extract']
+    if override == 'omitted':
+        binding.pop('extraBody')
+    else:
+        binding['extraBody'] = override
+    Path(args.model_config).write_text(json.dumps(supplied_model_config))
+    assert setup_hermes._model_configuration(args.model_config) == supplied_model_config
+
+
 @pytest.mark.parametrize('mode', ['local_work', 'native_reviews'])
 def test_supplied_configuration_requires_its_own_planning_role_before_attachment(
         args, supplied_model_config, mode, monkeypatch):
@@ -246,14 +276,16 @@ def test_supplied_configuration_requires_its_own_planning_role_before_attachment
     assert json.loads(Path(args.model_config).read_text()) == supplied_model_config
 
 
+@pytest.mark.parametrize('trailing_slash', ['', '/'])
 def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
-        args, supplied_model_config, monkeypatch):
+        args, supplied_model_config, monkeypatch, trailing_slash):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
     from pacomind import setup_local_work
 
     recipe = {'temperature': 0.35, 'chat_template_kwargs': {'enable_thinking': False}}
     requests = []
+    paths = []
 
     class Endpoint(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -262,6 +294,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             requests.append(body)
+            paths.append(self.path)
             status = 200
             if 'tools' in body:
                 if any(body.get(key) != value for key, value in recipe.items()):
@@ -271,6 +304,8 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
                         'name': 'pacomind_setup_echo', 'arguments': '{"token":"pacomind-ready"}'}}]}}]}
             else:
                 response = {'choices': [{'message': {'content': 'OK'}}]}
+            if self.path != '/v1/chat/completions':
+                status, response = 404, {'error': 'unknown API route'}
             raw = json.dumps(response).encode()
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
@@ -284,7 +319,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
     try:
         # The ordinary fixture substitutes HTTP; this case uses a real owned endpoint.
         monkeypatch.setattr(httpx, 'post', httpx._api.post)
-        args.model_url = f'http://127.0.0.1:{server.server_port}/v1'
+        args.model_url = f'http://127.0.0.1:{server.server_port}/v1'+trailing_slash
         binding = supplied_model_config['modelPool']['deliberate']
         binding.update(baseUrl=args.model_url, extraBody=recipe)
         Path(args.model_config).write_text(json.dumps(supplied_model_config))
@@ -295,6 +330,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
         args.model_config = None
         assert setup.run_init(None, args) == 0
         assert install.call_count == 2
+        assert paths == ['/v1/chat/completions'] * 3
         probes = [body for body in requests if 'tools' in body]
         assert len(probes) == 2
         for body in probes:

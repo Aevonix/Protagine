@@ -1,7 +1,7 @@
 """Finite cases using actual memory formation and scoped lexical recollection.
 
-The candidate serves extraction. The configured judging role is a supporting
-consumer dependency, recorded by the runner; no role is silently rebound here.
+The candidate serves extraction. Source review is a supporting task, using
+its configured role; the runner records it without silently rebinding it.
 These are not native conversation or base-Hermes comparison results.
 """
 from contextlib import closing
@@ -62,15 +62,19 @@ async def source_memory(inputs, context):
                    for row in db.execute('SELECT * FROM turn_sources ORDER BY turn_id')]
     recall = _recollect(reopened, inputs['query'], contact=inputs['contact_id'],
         session=inputs['recall_session'], now=inputs['now'], max_chars=inputs['max_chars'])
+    review_roles = sorted({row['role'] for row in context.observations
+        if row.get('task') == 'source_claim_review' and row.get('role')})
     effects = {'recorded_source_ids': recorded, 'process_invocations': process_calls,
                'reopened_source_versions_equal': refs_before == refs_after,
                'source_references': refs_after, 'recall_session': inputs['recall_session'],
-               'supporting_roles': ['judging'],
+               'supporting_roles': review_roles,
+               'supporting_tasks': ['source_claim_review'],
                'boundary': 'canonical_source_formation_and_lexical_recollection',
                'native_request_and_answer': 'not_exercised',
                'semantic_embedding_and_reranking': 'not_exercised'}
     context.observe({'boundary': effects['boundary'], 'sources_recorded': len(recorded),
-                     'projection_invocations': process_calls, 'supporting_roles': ['judging']})
+                     'projection_invocations': process_calls, 'supporting_roles': review_roles,
+                     'supporting_tasks': ['source_claim_review']})
     return {'output': {'sources': sources, 'claims': claims,
                        'jobs': reopened.status(inputs['contact_id']), 'recall': recall}, 'effects': effects}
 
