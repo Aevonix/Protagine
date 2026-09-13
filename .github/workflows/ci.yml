@@ -7,9 +7,15 @@ on:
     branches: [main]
 
 jobs:
-  hermes-adapter:
+  hermes-adapter-partition:
+    name: hermes-adapter (${{ matrix.group }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [native, integration]
     env:
+      QUALIFICATION_GROUP: ${{ matrix.group }}
       PACOMIND_TEST_HERMES_PATH: ${{ github.workspace }}/.qualification/hermes
       HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
       PROTAGINE_HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
@@ -39,10 +45,28 @@ jobs:
       - name: Qualify built artifacts and profile isolation
         run: |
           export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
-          python -m pytest tests/hermes_adapter -q --junitxml=hermes-adapter-results.xml
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          group = os.environ['QUALIFICATION_GROUP']
+          # Each matrix job has its own checkout, builds and native install.
+          # Include both default pytest filename patterns so new tests cannot
+          # silently fall outside the two complementary groups.
+          files = sorted(path for path in Path('tests/hermes_adapter').rglob('*.py')
+                         if path.name.startswith('test_') or path.name.endswith('_test.py'))
+          selected = [str(path) for path in files
+                      if path.name.startswith('test_native_') == (group == 'native')]
+          assert group in ('native', 'integration') and selected
+          Path(f'hermes-adapter-inventory-{group}.json').write_text(json.dumps(selected, indent=2) + '\n')
+          subprocess.run([sys.executable, '-m', 'pytest', *selected, '-q', '--durations=0',
+                          f'--junitxml=hermes-adapter-results-{group}.xml'], check=True)
+          PY
+      - name: Require native qualification witnesses
+        if: matrix.group == 'native'
+        run: |
           python - <<'PY'
           import xml.etree.ElementTree as ET
-          collected = list(ET.parse('hermes-adapter-results.xml').iter('testcase'))
+          collected = list(ET.parse('hermes-adapter-results-native.xml').iter('testcase'))
           for module, name, expected in (
               ('test_native_task_channels', 'test_native_task_channels', 1),
               ('test_native_review_boundary', 'test_native_executor_read_only_review', 2),
@@ -57,14 +81,39 @@ jobs:
               assert not any(case.find(outcome) is not None for case in cases for outcome in ('skipped', 'failure', 'error')), \
                   f'{name} must run and pass'
           PY
-          python -m pytest hostworker/tests -q
-          python -m pytest benchmarks/source_recall/test_harness.py -q
+      - name: Qualify host worker and recall harness
+        if: matrix.group == 'integration'
+        run: |
+          export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
+          python -m pytest hostworker/tests -q --durations=0 --junitxml=hostworker-results.xml
+          python -m pytest benchmarks/source_recall/test_harness.py -q --durations=0 --junitxml=source-recall-results.xml
       - name: Qualify native original-memory observations
+        if: matrix.group == 'native'
         env:
           PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
         run: |
           python -c "from hermes_state import SessionDB; assert all(callable(getattr(SessionDB, name, None)) for name in ('redact_message_payloads', 'message_redaction_snapshot'))"
-          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py -q
+          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py -q --durations=0 --junitxml=native-memory-results.xml
+      - name: Retain test inventory and durations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-adapter-${{ matrix.group }}-results
+          path: |
+            hermes-adapter-inventory-*.json
+            *-results*.xml
+
+  # Preserve the existing required check name. Both isolated test jobs must
+  # succeed; a failed, cancelled or skipped partition cannot satisfy it.
+  hermes-adapter:
+    if: always()
+    needs: hermes-adapter-partition
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both adapter partitions
+        env:
+          PARTITION_RESULT: ${{ needs.hermes-adapter-partition.result }}
+        run: test "$PARTITION_RESULT" = success
 
   python:
     runs-on: ubuntu-latest
