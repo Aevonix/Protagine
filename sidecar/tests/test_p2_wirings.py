@@ -1,5 +1,4 @@
-"""P2 wirings: connector-backed calendar briefing sections and
-self-referential-query grounding in context assembly."""
+"""Connector-backed calendar sections and runtime context composition."""
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -87,28 +86,31 @@ async def _client():
         yield c
 
 
-async def test_context_assemble_self_knowledge_section(monkeypatch):
-    import pacomind.identity_bootstrap.self_query as sq
-    monkeypatch.setattr(sq, "build_self_context_from_corpus",
-                        lambda: "## PacoMind architecture\n7 layers")
-
+async def test_context_assemble_omits_static_architecture_preserves_identity():
     async with _client() as c:
         ctx = {"session_id": "s1", "contact_id": "c1"}
+        health = await c.get("/v1/host/health")
+        assert health.status_code == 200
         r = await c.post("/v1/host/context/assemble", json={
             "identity": {"host_id": "test"}, "context": ctx,
             "incoming_message": {"role": "user",
                                  "content": "what are your capabilities and architecture?"},
         })
         assert r.status_code == 200
-        ids = [s["id"] for s in r.json()["sections"]]
-        assert "pacomind-self-knowledge" in ids
+        sections = {s["id"]: s["body"] for s in r.json()["sections"]}
+        assert "pacomind-self-knowledge" not in sections
+        assert sections["pacomind-identity"]
 
         r2 = await c.post("/v1/host/context/assemble", json={
             "identity": {"host_id": "test"}, "context": ctx,
             "incoming_message": {"role": "user",
-                                 "content": "remind me to water the plants"},
+                                 "content": "What are you working on?"},
         })
-        assert "pacomind-self-knowledge" not in [s["id"] for s in r2.json()["sections"]]
+        assert r2.status_code == 200
+        later = {s["id"]: s["body"] for s in r2.json()["sections"]}
+        assert "pacomind-self-knowledge" not in later
+        assert later["pacomind-identity"] == sections["pacomind-identity"]
+        assert (await c.get("/v1/host/health")).json()["capabilities"] == health.json()["capabilities"]
 
 
 # --- connector config: env-first, secrets-store fallback ---------------------
