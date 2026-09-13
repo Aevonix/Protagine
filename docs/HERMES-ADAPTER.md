@@ -412,6 +412,29 @@ Hermes general and memory loaders. Native-loader tests require Hermes and
 are explicitly skipped when it is absent. No live sidecar, model endpoint,
 production profile, or channel is contacted.
 
+### Qualification image receipts
+
+A host admitting a task with `experience="qualification"` can set
+`request_image_receipts=True` on `TaskHandoffs.admit`. The opt-in is immutable;
+ordinary tasks and an existing admission cannot gain it. It does not enable
+global request dumps, grant tools or change model requests.
+
+The existing scoped native memory boundary records the filtered raw request
+immediately before its streaming or non-streaming provider callback. Receipts
+live in that task's gateway session metadata under
+`pacomind_task_request_image_receipts`. They bind the handoff and exact native
+session/task/turn, and retain inline image SHA-256 hashes, byte counts, media
+types and structural positions. Prompt text, image bytes, URLs and credentials
+are not retained. Remote image URLs are reported as unavailable rather than
+fetched for this observation.
+
+Capture allows at most 32 requests, 8 images and 2 MiB of decoded image bytes per
+request, and 64 KiB of stored receipt metadata. Structural, decoding and capture
+limits are explicit. A missing or incomplete receipt cannot establish complete
+coverage. A matching hash proves only that those image bytes were present at
+this filtered callback boundary; network transmission, provider acceptance and
+model perception remain unobserved.
+
 ## Opening retained task results
 
 `pacomind_memory_read_source` accepts `view="observations"` for an exact recalled
