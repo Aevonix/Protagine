@@ -337,7 +337,10 @@ class ToolObservations:
                 original_input, input_row = (native_input(scope, args['call_id'], record,
                     result_message_id=native['message_id'], result_content=content)
                     if args.get('include_input', False) else (None, None))
-                origins = capture_instruction(scope, self.client)
+                ownership = self.request_memory.ownership
+                origins = capture_instruction(scope, self.client,
+                    retain_origin=(lambda source_id: ownership.retain_origin(scope, source_id,
+                        canonical_user_message=scope.user_message)) if ownership is not None else None)
                 if len(origins) != 1:
                     raise ValueError('The exact current owner instruction must be retained first')
                 source_id = 'native-observation:' + hashlib.sha256(json.dumps(native, sort_keys=True,
@@ -350,7 +353,6 @@ class ToolObservations:
                         'sources': references}}
                 if original_input is not None:
                     payload['observation']['input'] = original_input
-                ownership = self.request_memory.ownership
                 if ownership is not None:
                     # Bind exact native rows before enqueue can publish or a
                     # concurrent erasure page can purge the canonical payload.
@@ -360,7 +362,6 @@ class ToolObservations:
                     if not ownership.retain_origin(scope, source_id, messages=origin_rows,
                             row_only_ids=[input_row['_row_id']] if input_row is not None else ()):
                         raise ValueError('Native observation ownership is unavailable; no observation was queued')
-                    ownership.retain_origin(scope, origin_id)
                 with self._lock:
                     current = self._turns.get(key, {}).get(args['call_id'])
                     if current is None or context.get('api_request_id') not in current['visible']:
