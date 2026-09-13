@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`75f6ea6e50841b5d003e046432fdbba0060b20ac`](https://github.com/Kurcide/hermes-agent/commit/75f6ea6e50841b5d003e046432fdbba0060b20ac),
+`e27761866126a0bcc846ca5796ab0185a9dd76b1`](https://github.com/Kurcide/hermes-agent/commit/e27761866126a0bcc846ca5796ab0185a9dd76b1),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/75f6ea6e50841b5d003e046432fdbba0060b20ac/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/e27761866126a0bcc846ca5796ab0185a9dd76b1/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -75,6 +75,9 @@ can enable it in the selected Hermes profile after selecting this build.
 
 The build also adds selective native payload redaction with exact preimages,
 native writer leases, FTS updates, replay markers and gateway cache eviction.
+The adapter verifies ownership and selects payloads in one read transaction.
+The writer checks that session's message watermark in its mutation transaction,
+so a late appended answer requires a fresh selection before cleanup can finish.
 `on_native_turn_settled` runs after native persistence and lease release;
 `on_gateway_turn_settled` runs after the outer gateway lease release in the
 owning profile. These hooks let an adapter finish a forget requested during a
