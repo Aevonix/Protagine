@@ -73,7 +73,7 @@ def test_outbox_v1_migration_and_redaction(ledger, tmp_path):
     path = tmp_path / "host.sqlite3"
     _create_database(path, [_CURRENT_SCHEMA, _PENDING_INDEX], application_id=_APPLICATION_ID, user_version=1)
     outbox = module.TurnOutbox(path)
-    assert outbox.prepare()["user_version"] == 2
+    assert outbox.prepare()["user_version"] == 3
     messages = source(ledger)
     survivor = {"role": "user", "content": "The bicycle is blue."}
     outbox.enqueue("turn-a", queued("turn-a", messages))

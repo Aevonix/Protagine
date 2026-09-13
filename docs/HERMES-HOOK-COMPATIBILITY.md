@@ -8,18 +8,18 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`6c33542693e12b1e9df9fea774fb57216a767788`](https://github.com/Kurcide/hermes-agent/commit/6c33542693e12b1e9df9fea774fb57216a767788),
+`218dad993564d57977f07b5d6bffd6a88d10e32f`](https://github.com/Kurcide/hermes-agent/commit/218dad993564d57977f07b5d6bffd6a88d10e32f),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/6c33542693e12b1e9df9fea774fb57216a767788/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/218dad993564d57977f07b5d6bffd6a88d10e32f/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
 The callback change adapts [upstream PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763),
 specifically [source commit
 `b9c112c83b60b91e918341cbb587a6a913d9d9eb`](https://github.com/NousResearch/hermes-agent/commit/b9c112c83b60b91e918341cbb587a6a913d9d9eb).
-The three production files match that proposal, and the original contributor's
-authorship is preserved. The fork retains two synchronized regression tests.
+The callback correction preserves the original contributor's authorship and
+retains two synchronized regression tests.
 
 | Runtime file | Purpose |
 | --- | --- |
@@ -73,7 +73,44 @@ cost a prefix-cache miss. The installer does not enable this setting or alter
 an existing deployment. A deployment that needs immediate curated corrections
 can enable it in the selected Hermes profile after selecting this build.
 
+The build also adds selective native payload redaction with exact preimages,
+native writer leases, FTS updates, replay markers and gateway cache eviction.
+The adapter verifies ownership and selects payloads in one read transaction.
+The writer checks that session's message watermark in its mutation transaction,
+so a late appended answer requires a fresh selection before cleanup can finish.
+`on_native_turn_settled` runs after native persistence and lease release;
+`on_gateway_turn_settled` runs after the outer gateway lease release in the
+owning profile. These hooks let an adapter finish a forget requested during a
+turn. They do not discover source ownership or create an erasure scheduler.
+PacoMind supplies that lineage through its existing source and outbox machinery.
+The adapter's [storage contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
+lists the supported copies and remaining limits.
+
+Request middleware receives `native_user_message`, the exact persisted user row
+at Hermes's validated current-turn index, and `original_user_message`, the
+separate original admission. Compression can clone rows and persist an internal
+task wrapper. The adapter uses the native descriptor for storage ownership and
+keeps the original admission for canonical memory. Missing or changed native
+rows produce no descriptor; the request middleware still runs. Post-tool
+compression also updates the current-turn index through Hermes's existing
+reanchor path, as other compression paths already do.
+Live history repair also preserves separate durable user rows. After a crash,
+merging those rows in place discarded the resumed input's storage coordinate.
+Provider requests still use Hermes's existing merge of the API copy when needed.
+
 ## What is qualified
+
+The durable-row repair passed 65 affected native checks, two unchanged private
+crash-resume cases and three unchanged public transported-input cases.
+
+The current-row interface and post-tool index correction passed ten focused
+native checks. Three installed-adapter cases use the actual compression commit
+with controlled summary output: session rotation, a transported task during
+rotation, and in-place compaction. All preserve recalled context, delegated
+results, canonical input references and the real pre-compression checkpoint.
+Separate native-storage cases verify that old and new row ownership survives
+compaction and that partial erasure distinguishes canonical input from its
+native wrapper. These checks use controlled responses, not model-quality scores.
 
 The two existing compatibility changes were reapplied to the 0.21.2 release
 without conflicts. Their affected native suites passed 275 checks in a native-only

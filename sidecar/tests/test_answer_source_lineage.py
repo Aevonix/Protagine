@@ -1,4 +1,5 @@
 """Source erasure follows recorded native answer inputs, not generated wording."""
+import importlib
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ import pytest
 from pacomind.turns import TurnIdempotencyLedger
 from pacomind.turns.idempotency import canonical_turn_digest
 from test_turn_source_evidence import source_app
-from test_hermes_turn_outbox import _load_client, _load_plugin, _Context, _Client, _Response
+from test_hermes_turn_outbox import _load_client, _load_plugin, _Context, _Client, _Response, _record_origin_storage
 
 
 def stored(ledger):
@@ -145,8 +146,20 @@ async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_
 
 def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, monkeypatch):
     module = _load_plugin('answer_lineage_native')
+    origins = _record_origin_storage(module, monkeypatch)
     ref = {'source_id': 'origin', 'source_version': 'a' * 64}
     forged = {'source_id': 'forged', 'source_version': 'f' * 64}
+    # This sidecar-only fixture has no Hermes database. Isolate that storage
+    # boundary, but verify what the actual hook/request path asks it to retain.
+    # test_native_owned_copies qualifies real native persistence and failures.
+    retained = []
+    def retain(self, scope, sources):
+        assert scope.valid_participant and scope.contact_id == 'cid-owner'
+        assert self.memory.native_anchor(scope)['content'] == user
+        retained.append((scope.session_id, sources))
+        return True
+    ownership = importlib.import_module(module.__name__ + '.native_owned_copies')
+    monkeypatch.setattr(ownership.NativeOwnedCopies, 'retain', retain)
     def packet(refs):
         return '[pacomind-recall-v1 ' + json.dumps({'contact_id': 'cid-owner', 'watermark': 0, 'sources': refs}) + ']\nEvidence\n[/pacomind-recall-v1]'
     class Client(_Client):
@@ -178,7 +191,9 @@ def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, 
     # The request has no tools, so the adapter adds its factual capability
     # note. The user's evidence bytes and attributed capture remain intact.
     assert [row for row in result['request']['messages'] if row['role'] == 'user'] == request['messages']
+    assert retained == [('fresh', [ref])]
     context.hooks['post_llm_call'](**kwargs, conversation_history=history, assistant_response='A useful paraphrase.', model='fixture')
+    assert origins[-1][-1] == user
     assert Client.instances[-1].synced[-1]['assistant_source_refs'] == [ref]
 
 

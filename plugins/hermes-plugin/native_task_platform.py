@@ -360,9 +360,11 @@ class NativeTaskAdapter(BasePlatformAdapter):
         # restart, including the steering text appended to that tool result.
         # Reconstruct consumed task state at the existing channel boundary;
         # never resend /steer or promote a merely pending update.
-        return ('\n\nPreviously consumed updates for this same continuing task, in accepted order. '
+        context = ('\n\nPreviously consumed updates for this same continuing task, in accepted order. '
                 'Retain these constraints while continuing; this is state restoration, not a new '
                 'delivery or a request to repeat completed actions.\n' + '\n'.join(carriers))
+        supplied.register_restored_context(carriers, context)
+        return context
 
     async def steer(self, identity, update_id):
         async with self._control_lock:

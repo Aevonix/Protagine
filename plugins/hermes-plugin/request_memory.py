@@ -507,8 +507,10 @@ class RequestMemory:
 
     def __init__(self, client, outbox):
         self.client, self.outbox = client, outbox
+        self.ownership = None
         self._lock = threading.Lock()
         self._aliases = OrderedDict()
+        self._native_anchors = OrderedDict()
         self._supplied = {}
         self._requests_seen = set()
         self._read_receipts = {}
@@ -622,6 +624,11 @@ class RequestMemory:
         with self._lock:
             if key not in self._requests_seen or not tool_call_id:
                 return False
+        if self.ownership is not None and not self.ownership.retain(scope, result['source_refs']):
+            return False
+        with self._lock:
+            if key not in self._requests_seen or not tool_call_id:
+                return False
             self._read_receipts[key][tool_call_id] = {
                 'text': text, 'watermark': result['watermark'], 'evidence_kind': evidence_kind,
                 'sources': copy.deepcopy(result['source_refs'])}
@@ -644,7 +651,66 @@ class RequestMemory:
                 self._read_receipts[key][tool_call_id]['document_read'] = {
                     field: result[field] for field in ('source_id', 'source_version', 'read_revision', 'offset')
                 } | {field: result['document'][field] for field in ('asset_hash', 'page')}
-            return True
+        return True
+
+    def native_anchor(self, scope):
+        """The native-observed current row, including its persisted row ID."""
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            observed = self._native_anchors.get(key)
+            if observed is not None:
+                current, persisted_input = observed
+                if current is None:
+                    return None  # The host explicitly could not identify its current native row.
+                # Native voice/task turns can send a wrapper while persisting
+                # the original human input. Keep the later-stamped native ID,
+                # but validate ownership against that trusted persisted input.
+                return {**current, 'content':copy.deepcopy(persisted_input)}
+            value = self._aliases.get(key)
+            current = value[1] if value else None
+            return dict(current) if isinstance(current, dict) and current.get('role') == 'user' else None
+
+    def observe_native_anchor(self, scope, messages, *, user_message=None):
+        """Storage ownership for actual child/cron input, never owner testimony."""
+        if scope is None or not scope.valid_participant or not messages:
+            return
+        current = messages[-1]
+        if (not isinstance(current, dict) or current.get('role') != 'user'
+                or user_message is None):
+            return
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            # The native hook supplies its persistence override separately from
+            # the API-facing row. Retain the row reference until turn-start
+            # persistence stamps _row_id; request aliases remain independent.
+            self._native_anchors[key] = current, copy.deepcopy(user_message)
+            self._native_anchors.move_to_end(key)
+            while len(self._native_anchors) > 32:
+                self._native_anchors.popitem(last=False)
+
+    def observe_native_message(self, scope, message):
+        """Refresh storage identity from the host's indexed, persisted turn row.
+
+        Compression can clone the row without retaining the original persistence
+        override. Its actual stored content is not a new owner statement.
+        """
+        if scope is None or not scope.valid_participant:
+            return
+        valid = (isinstance(message, dict) and message.get('role') == 'user'
+                 and type(message.get('_row_id')) is int and message['_row_id'] > 0
+                 and 'content' in message)
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            self._native_anchors[key] = ((copy.deepcopy(message), copy.deepcopy(message['content']))
+                                         if valid else (None, None))
+            self._native_anchors.move_to_end(key)
+            while len(self._native_anchors) > 32:
+                self._native_anchors.popitem(last=False)
+
+    def release_native_anchor(self, scope):
+        if scope is not None:
+            with self._lock:
+                self._native_anchors.pop((scope.contact_id, scope.task_id, scope.turn_id), None)
 
     def supplied_snapshot(self, scope):
         """Copy actual supplied lineage without ending the native turn.
@@ -870,6 +936,14 @@ class RequestMemory:
                     'source': 'pacomind', 'freshness_retryable': False,
                     'reason': 'source_update_unavailable'}
             filtered = _restore_source_updates(original_request, filtered, updates)
+            visible = [entry for entry in updates
+                if any(entry['carrier'] in text for text in _request_texts(filtered))]
+            if (self.ownership is not None and visible
+                    and not self.ownership.retain_updates(scope, visible, filtered)):
+                supplied_input.block_update_ownership()
+                return {'request':withheld_request(filtered, failure=supplied_input.failure),
+                    'source':'pacomind', 'freshness_retryable':False,
+                    'reason':'source_update_ownership_unavailable'}
             supplied_input.admit_updates(scope, filtered, updates)
         if operational and not (fresh and observed and operational['contact_id'] == contact
                                 and operational['watermark'] == watermark):
@@ -915,6 +989,26 @@ class RequestMemory:
                             supplied[(ref['source_id'], ref['source_version'])] = ref
                 except (ValueError, KeyError, TypeError):
                     continue
+            if self.ownership is not None and supplied and not self.ownership.retain(scope, list(supplied.values())):
+                # Native middleware intentionally fails open on exceptions.
+                # Return its existing reduced request explicitly instead: the
+                # ordinary input survives, recalled/read sources do not leave.
+                filtered = filter_request(request, contact_id=contact, watermark=watermark,
+                    rules=rules, fresh=False, aliases=aliases, current_content=current_content,
+                    current_input=current_input, read_receipts=read_receipts)
+                filtered = _recombine_current_suffix(filtered, repair)
+                if operational:
+                    from .request_work import replace_context
+                    filtered = replace_context(filtered,
+                        'Current shared work withheld because source ownership could not be retained.')
+                return {'request':filtered, 'source':'pacomind', 'freshness_retryable':False,
+                        'reason':'native_source_ownership_unavailable'}
+            # A correction owns its typed carrier and later answer, not the
+            # earlier independent tool work in the original input's span.
+            for entry in updates:
+                if entry['admitted']:
+                    for ref in entry['update'].source_refs:
+                        supplied[(ref['source_id'], ref['source_version'])] = ref
             with self._lock:
                 if observed_key in self._supplied:
                     self._supplied[observed_key].update(supplied)

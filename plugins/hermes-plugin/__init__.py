@@ -2374,6 +2374,9 @@ def register(ctx: Any) -> None:
     turn_writer_platforms = boundary.turn_writer_platforms
     turn_outbox = boundary.turn_outbox
     request_memory = RequestMemory(client, turn_outbox)
+    from .native_owned_copies import NativeOwnedCopies
+    native_owned = NativeOwnedCopies(request_memory, _TRANSPORT_SCOPES)
+    request_memory.ownership = native_owned
     from .transport_media import TransportMedia
     transport_media = TransportMedia()
     tool_observations = ToolObservations(client, turn_outbox, request_memory)
@@ -2461,6 +2464,8 @@ def register(ctx: Any) -> None:
             supplied_input.bind(scope, str(kwargs.get('parent_session_id') or ''))
         native_context = (native_drafts.bind(scope, work_coordinator, kwargs)
                           if native_drafts is not None else None)
+        request_memory.observe_native_anchor(scope, kwargs.get('conversation_history') or [],
+            user_message=kwargs.get('user_message'))
         if native_drafts is None or not native_drafts.worker:
             request_memory.observe(scope, kwargs.get('conversation_history') or [],
                 user_message=(None if review or kwargs.get('parent_session_id')
@@ -2503,8 +2508,10 @@ def register(ctx: Any) -> None:
         supplied_input = input_provenance.current()
         input_allowed = check_supplied_input(scope)
         tool_observations.finish(scope)
+        native_origin = request_memory.native_anchor(scope) if scope is not None else None
         supplied_sources = request_memory.finish(task_id=str(kwargs.get('task_id') or ''),
             turn_id=str(kwargs.get('turn_id') or ''), contact_id=scope.contact_id if scope else None)
+        request_memory.release_native_anchor(scope)
         from .evidence import native_work_capture_excluded
         if (not input_allowed or scope is None or not scope.valid_participant or scope.platform == "background_review"
                 or native_work_capture_excluded()
@@ -2574,6 +2581,14 @@ def register(ctx: Any) -> None:
             payload["occurred_at"] = str(kwargs["occurred_at"])
         if kwargs.get("timezone"):
             payload["timezone_name"] = str(kwargs["timezone"])
+        if not native_owned.retain_origin(scope, stable_turn_id, canonical_user_message=payload.get('user_message'), messages=(
+            ([native_origin] if payload.get('user_message') else []) +
+            [row for row in (kwargs.get('conversation_history') or [])[-1:]
+             if isinstance(row, dict) and row.get('role') == 'assistant' and type(row.get('_row_id')) is int])):
+            # Finalization already persisted the safe native reply. Do not
+            # publish an unbound canonical copy if its exact origin is lost.
+            logger.warning('Native conversation capture withheld: source ownership unavailable')
+            return None
         try:
             receipt = turn_outbox.enqueue(stable_turn_id, payload, capture_ordinary=True)
         except TurnOutboxConflict:
@@ -2887,6 +2902,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook('on_kanban_dispatch_tick', native_followups.reconcile)
     def observe_gateway(**kwargs):
         transport_media.observe(**kwargs)
+        native_owned.observe_gateway(**kwargs)
         if native_tasks is not None:
             return native_tasks.observe_gateway(**kwargs)
     ctx.register_hook('pre_gateway_dispatch', observe_gateway)
@@ -2947,6 +2963,10 @@ def register(ctx: Any) -> None:
             pre_llm_call(**native, model=kwargs.get('model'))
             scope = _TRANSPORT_SCOPES.for_execution(session_id=native['session_id'],
                 task_id=native['task_id'], turn_id=native['turn_id'])
+        if 'native_user_message' in kwargs:
+            # This comes from Hermes's guarded current-turn index and exact
+            # native row read, not the API request or a last-user heuristic.
+            request_memory.observe_native_message(scope, kwargs['native_user_message'])
         _REVIEW_PARENT_SCOPE.set(scope if scope is not None and scope.valid_participant else None)
         review_parent_memory.set(request_memory.snapshot_review_parent(scope))
         from .review_evidence import capture
@@ -2979,6 +2999,11 @@ def register(ctx: Any) -> None:
         VALID_HOOKS = ()
     if 'on_detached_turn_end' in VALID_HOOKS:
         ctx.register_hook('on_detached_turn_end', detached_turn_end)
+    if 'on_native_turn_settled' in VALID_HOOKS:
+        ctx.register_hook('on_native_turn_settled', native_owned.native_settled)
+    if 'on_gateway_turn_settled' in VALID_HOOKS:
+        ctx.register_hook('on_gateway_turn_settled', native_owned.gateway_settled)
+        ctx.register_hook('on_kanban_dispatch_tick', native_owned.idle)
     from .completed_reports import CompletedReports
     ctx.register_hook('kanban_task_completed', CompletedReports(
         client, turn_outbox, _TRANSPORT_SCOPES, request_memory, _TOOL_EXECUTION_CONTEXT.get,

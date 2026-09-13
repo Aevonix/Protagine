@@ -125,6 +125,8 @@ from model_tools import handle_function_call
 from pacomind_memory.provider import PacoMindMemoryProvider
 from gateway.session_context import set_session_vars
 from tools import kanban_tools
+from hermes_state import SessionDB
+native_db=SessionDB(home/'state.db')
 db=kb.connect(board='default')
 tid=os.environ['HERMES_KANBAN_TASK'];task=kb.get_task(db,tid);assert task
 pm=get_plugin_manager();pm.discover_and_load()
@@ -192,6 +194,10 @@ messages=[{'role':'user','content':prompt}]
 invoke_hook('pre_llm_call',session_id='worker-session',task_id='agent-task',turn_id='agent-turn',
  platform='cli',sender_id='',user_message=prompt,conversation_history=messages)
 messages[0]['api_content']=compose_user_api_content(prompt,recalled,'')
+# The real worker persists its current native row before request dispatch.
+native_db.create_session('worker-session','cli')
+messages[0]['_row_id']=native_db.append_message('worker-session','user',prompt,
+ api_content=messages[0]['api_content'])
 request=apply_llm_request_middleware({'messages':[{'role':'user','content':messages[0]['api_content']}]},
  session_id='worker-session',task_id='agent-task',turn_id='agent-turn',api_request_id='request-one').payload
 assert 'report-parent' in json.dumps(request)
@@ -309,6 +315,7 @@ with ledger._connect() as conn:assert not conn.execute('SELECT 1 FROM turn_sourc
 assert kb.latest_run(db,tid).summary==report
 provider._prefetch_thread.join(timeout=2) if provider._prefetch_thread else None
 db.close()
+native_db.close()
 print('native completion context, source-only report, scoped recall and dependent erasure verified')
 '''
 

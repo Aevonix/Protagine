@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -47,6 +48,23 @@ def _load_plugin(name="pacomind_hermes_turn_outbox_plugin_test"):
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _record_origin_storage(module, monkeypatch):
+    """Explicit native-storage boundary for sidecar-only hook fixtures.
+
+    These tests have no Hermes transcript store. Real row retention and its
+    publication failure path are exercised in test_native_owned_copies.
+    """
+    calls = []
+    def retain(self, scope, source_id, *, messages=None, row_only_ids=(), canonical_user_message=None):
+        assert scope.valid_participant and scope.session_id and source_id
+        assert isinstance(messages, list)
+        calls.append((scope.contact_id, scope.session_id, source_id, messages, canonical_user_message))
+        return True
+    ownership = importlib.import_module(module.__name__ + '.native_owned_copies')
+    monkeypatch.setattr(ownership.NativeOwnedCopies, 'retain_origin', retain)
+    return calls
 
 
 def _payload(assistant="delivered reply"):
@@ -95,7 +113,7 @@ _PENDING_INDEX = (
     "ON turn_outbox(state, lease_expires_at, created_at, turn_id)"
 )
 _APPLICATION_ID = 1_129_270_361  # big-endian ASCII ``COLY``
-_USER_VERSION = 2
+_USER_VERSION = 3
 
 
 def _create_database(path: Path, statements: list[str], *, application_id=0,
@@ -763,6 +781,7 @@ def test_writer_records_guard_replacement_that_pinned_hermes_delivers(
     tmp_path, monkeypatch,
 ):
     module = _load_plugin()
+    _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
     module.PacoMindClient = _Client
     monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")
@@ -822,6 +841,7 @@ def test_pacomind_outage_never_withholds_safe_reply_after_durable_enqueue(
     tmp_path, monkeypatch,
 ):
     module = _load_plugin("pacomind_hermes_turn_outbox_outage_plugin_test")
+    _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
     module.PacoMindClient = _Client
     monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")
@@ -859,6 +879,7 @@ def test_post_turn_drains_recovered_backlog_when_budget_remains(
     tmp_path, monkeypatch,
 ):
     module = _load_plugin("pacomind_hermes_post_turn_backlog_drain_test")
+    _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
     module.PacoMindClient = _Client
     monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")

@@ -4,7 +4,7 @@ import json
 from urllib.parse import quote
 
 
-def capture_instruction(scope, client):
+def capture_instruction(scope, client, *, retain_origin=None):
     versions = {}
     # Capture a direct owner instruction now when it is the first turn
     # of the task. Ordinary completion still captures the complete turn;
@@ -12,6 +12,8 @@ def capture_instruction(scope, client):
     if scope.platform not in {'cron', 'subagent', 'background_review'} and scope.user_message.strip():
         material = [scope.contact_id, scope.session_id, scope.turn_id, scope.user_message]
         source_id = 'task-instruction:' + hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+        if retain_origin is not None and retain_origin(source_id) is not True:
+            raise ValueError('Native instruction ownership is unavailable; no instruction was published')
         accepted = client.sync_turn(session_id=scope.session_id, contact_id=scope.contact_id,
             turn_id=source_id, user_message=scope.user_message, source_only=True,
             instruction_only=True,

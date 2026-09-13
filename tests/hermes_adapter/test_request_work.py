@@ -115,6 +115,7 @@ def complete_other_work():
 writer=threading.Thread(target=complete_other_work,daemon=True); writer.start()
 
 from run_agent import AIAgent
+from hermes_state import SessionDB
 import run_agent
 # 0.21.0 binds eager aliases; 0.21.1 calls the defining modules directly.
 OPENAI_TARGET = 'run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
@@ -165,7 +166,7 @@ try:
             patch.object(manager,'prefetch_all',wraps=manager.prefetch_all) as prefetch:
         agent=AIAgent(api_key='fixture',base_url='http://127.0.0.1:1/v1',provider='openai',
             model='fixture/model',quiet_mode=True,skip_context_files=True,skip_memory=True,
-            platform=platform,enabled_toolsets=['file'],max_iterations=4)
+            platform=platform,enabled_toolsets=['file'],max_iterations=4,session_db=SessionDB(home/'state.db'))
         agent._user_id='+15550007160' if platform=='sms' else ''
         agent._cached_system_prompt='Stable neutral identity.'
         agent._use_prompt_caching=False; agent.compression_enabled=False; agent.save_trajectories=False

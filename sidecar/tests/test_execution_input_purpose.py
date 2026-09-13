@@ -1,4 +1,5 @@
 """Canonical input gives a scoped request meaning to a live execution record."""
+import importlib
 import json
 import sqlite3
 
@@ -30,6 +31,18 @@ def bind(store, refs, *, name='root', person='owner', session='native-session'):
 @pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])
 def test_registered_hooks_api_and_request_inject_admitted_input_not_task_wrapper(handoff, monkeypatch, shape):
     h = handoff
+    # Native transcript persistence is outside this sidecar API fixture. Keep
+    # its storage boundary explicit and assert the independent observer's
+    # actual input/sources; real storage success/failure has native tests.
+    retained = []
+    observer_input = {'role':'user', 'content':'What are you doing?'}
+    def retain(self, scope, sources):
+        assert scope.valid_participant and scope.contact_id == 'owner'
+        assert self.memory.native_anchor(scope) == observer_input
+        retained.append((scope.session_id, sources))
+        return True
+    ownership = importlib.import_module(h.module.__name__ + '.native_owned_copies')
+    monkeypatch.setattr(ownership.NativeOwnedCopies, 'retain', retain)
     monkeypatch.setenv('PACOMIND_OWNER_CONTACT_ID', 'owner')
     h.api.app.include_router(executions.router)
     ctx = _Context({**h.ctx.config['plugins']['pacomind'], 'execution_registry_enabled': True,
@@ -49,7 +62,7 @@ def test_registered_hooks_api_and_request_inject_admitted_input_not_task_wrapper
             'session_id': 'observer', 'projection': 'request'}).json()
         assert original not in legacy['text'] and 'input_provenance' not in legacy
         ctx.hooks['pre_llm_call'](session_id='observer', task_id='observer-task', turn_id='observer-turn',
-            platform='cli', sender_id='', user_message='What are you doing?', conversation_history=[])
+            platform='cli', sender_id='', user_message=observer_input['content'], conversation_history=[observer_input])
         # The observer is independent of the supplied-input scope. Its source
         # validity is intentionally not inherited from the first task.
     payload = {'messages': [{'role': 'user', 'content': 'What are you doing?'}]}
@@ -61,10 +74,13 @@ def test_registered_hooks_api_and_request_inject_admitted_input_not_task_wrapper
         session_id='observer', task_id='observer-task', turn_id='observer-turn',
         api_mode='anthropic_messages' if shape == 'anthropic' else '')['request']
     assert original in json.dumps(request) and wrapper not in json.dumps(request)
+    assert retained == [('observer', h.ledger.source_references(
+        ['original-input'], contact_id='owner', session_id='observer'))]
     ctx.hooks['post_llm_call'](session_id='observer', task_id='observer-task', turn_id='observer-turn',
         user_message='What are you doing?', assistant_response='I am inspecting the requested lamp record.',
         platform='cli', model='controlled')
     receipt = h.outbox.snapshot()[0]
+    assert h.origin_storage[-1][-1] == observer_input['content']
     assert receipt['state'] == 'delivered', receipt
     assert receipt['payload']['assistant_source_refs'] == h.ledger.source_references(
         ['original-input'], contact_id='owner', session_id='observer')

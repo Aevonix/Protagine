@@ -19,6 +19,7 @@ import time
 from types import SimpleNamespace
 
 sys.path.insert(0, sys.argv[1])
+if sys.argv[2]:sys.path.insert(1, sys.argv[2])
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(mode=0o700)
 Path(os.environ["HERMES_BUNDLED_PLUGINS"]).mkdir()
@@ -41,6 +42,8 @@ from agent.conversation_compression import (
 )
 from pacomind_hermes.client import TurnOutbox
 from pacomind_hermes import evidence
+from hermes_state import SessionDB
+native_db=SessionDB(home/'state.db')
 
 plugins = get_plugin_manager()
 plugins.discover_and_load()
@@ -50,6 +53,16 @@ manager = MemoryManager()
 manager.add_provider(provider)
 manager.initialize_all("session-a", hermes_home=str(home))
 assert manager.supports_pre_compress_checkpoint(2)
+
+def persisted_turn(session, task, turn, text, reply):
+    current={'role':'user','content':text}
+    plugins.invoke_hook('pre_llm_call',session_id=session,task_id=task,turn_id=turn,
+        platform='cli',sender_id='',user_message=text,conversation_history=[current])
+    native_db.create_session(session,'cli')
+    current['_row_id']=native_db.append_message(session,'user',text)
+    answer={'role':'assistant','content':reply}
+    answer['_row_id']=native_db.append_message(session,'assistant',reply)
+    return [current,answer]
 
 fact = "ordinary text " * 250 + "The hydrofoil leaves Friday at nine."
 raw = [
@@ -79,8 +92,8 @@ manager.on_pre_compress(raw, evidence_messages=stored, require_checkpoint=True)
 assert len(TurnOutbox(path).snapshot()) == 1
 
 # Ordinary completed turns use the existing writer and retain their full text.
-plugins.invoke_hook("pre_llm_call", session_id="session-a", task_id="task-a", turn_id="ordinary-a", platform="cli", sender_id="", user_message=fact)
-plugins.invoke_hook("post_llm_call", session_id="session-a", task_id="task-a", turn_id="ordinary-a", platform="cli", user_message=fact, assistant_response="Full reply", conversation_history=[], model="processor-a")
+ordinary_history=persisted_turn('session-a','task-a','ordinary-a',fact,'Full reply')
+plugins.invoke_hook("post_llm_call", session_id="session-a", task_id="task-a", turn_id="ordinary-a", platform="cli", user_message=fact, assistant_response="Full reply", conversation_history=ordinary_history, model="processor-a")
 rows = TurnOutbox(path).snapshot()
 ordinary = [row for row in rows if "checkpoint_messages" not in row["payload"]]
 assert len(ordinary) == 1 and ordinary[0]["payload"]["user_message"] == fact
@@ -191,8 +204,8 @@ image_path = home / "neutral.png"
 image_path.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4v8AAAAASUVORK5CYII="))
 parts, skipped = build_native_content_parts("Remember this image", [str(image_path)])
 assert not skipped and any(part["type"] == "image_url" for part in parts)
-plugins.invoke_hook("pre_llm_call", session_id="session-image", task_id="task-image", turn_id="image-a", platform="cli", sender_id="", user_message=parts)
-plugins.invoke_hook("post_llm_call", session_id="session-image", task_id="task-image", turn_id="image-a", platform="cli", user_message=parts, assistant_response="Image received", conversation_history=[], model="processor-a")
+image_history=persisted_turn('session-image','task-image','image-a',parts,'Image received')
+plugins.invoke_hook("post_llm_call", session_id="session-image", task_id="task-image", turn_id="image-a", platform="cli", user_message=parts, assistant_response="Image received", conversation_history=image_history, model="processor-a")
 image_rows = [row for row in TurnOutbox(path).snapshot() if row["turn_id"] == "image-a"]
 assert len(image_rows) == 1 and image_rows[0]["payload"]["user_message"] == parts
 assert "base64," not in image_rows[0]["payload"].get("summary", "")
@@ -213,12 +226,11 @@ outbox.apply_erasure_page("test-owner", page)
 evidence.PacoMindClient.get = lambda *a, **kw: httpx.Response(
     200, json=page, request=httpx.Request("GET", "http://test"))
 wire_before = len(wire)
-plugins.invoke_hook("pre_llm_call", session_id="session-survivor", task_id="task-survivor",
-    turn_id="new-answer", platform="cli", sender_id="", user_message=question)
+survivor_history=persisted_turn('session-survivor','task-survivor','new-answer',question,safe_reply)
 def finish_survivor():
     plugins.invoke_hook("post_llm_call", session_id="session-survivor", task_id="task-survivor",
         turn_id="new-answer", platform="cli", user_message=question,
-        assistant_response=safe_reply, conversation_history=[], model="processor-a")
+        assistant_response=safe_reply, conversation_history=survivor_history, model="processor-a")
 finish_survivor()
 survivor, = [row for row in outbox.snapshot() if row["payload"].get("session_id") == "session-survivor"]
 assert survivor["state"] == "delivered" and survivor["attempts"] == 1
@@ -270,7 +282,7 @@ def test_native_checkpoint_and_full_turn_capture(artifacts, tmp_path):
         "PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY": "owner_system",
     })
     result = subprocess.run(
-        [sys.executable, "-I", "-c", PROBE, str(artifacts[3])],
+        [sys.executable, "-I", "-c", PROBE, str(artifacts[3]),os.environ.get('PACOMIND_TEST_HERMES_PATH','')],
         cwd=tmp_path, env=env, text=True, capture_output=True, timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr

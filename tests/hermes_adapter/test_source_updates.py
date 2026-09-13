@@ -15,6 +15,7 @@ import copy, json, os, socket, sys, time
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1]); sys.path.insert(1,sys.argv[2])
+if sys.argv[4]:sys.path.insert(2,sys.argv[4])
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
@@ -56,6 +57,14 @@ root_input=[{'source_id':'root-source','input_message_hash':source_message_hash(
 change_input=[{'source_id':'change-source','input_message_hash':source_message_hash(
  'email-input',{'role':'user','content':instruction})}]
 scenario=sys.argv[3];bodies=[];observations=[];granted=True;carrier=change_ref=None
+if scenario=='ownership_failure':
+ from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ retain=NativeOwnedCopies._retain_anchor
+ def fail_update_write(self,*args,**kwargs):
+  if kwargs.get('carrier_hash'):
+   raise OSError('Controlled update ownership write failure')
+  return retain(self,*args,**kwargs)
+ NativeOwnedCopies._retain_anchor=fail_update_write
 def observe(value):
  observations.append(copy.deepcopy(value))
  return scenario!='receipt_failure'
@@ -82,14 +91,26 @@ def respond(request):
   carrier=supplied.register_update(update,validate=lambda:granted,observe=observe)
   assert supplied.register_update(update,validate=lambda:False)==carrier
   assert supplied.parents()[0]==root_input,'Accepted update prematurely became consumed input'
-  assert parent.steer(carrier)
+  steer=carrier
+  if scenario in {'gateway_envelope','gateway_extra_text'}:
+   from contextlib import nullcontext
+   from gateway.config import Platform
+   from gateway.platforms.event import MessageEvent
+   from gateway.run import GatewayRunner
+   from gateway.session import SessionSource
+   event=MessageEvent(text=carrier,source=SessionSource(platform=Platform.WHATSAPP,
+    chat_id='fixture-chat',user_id='fixture-owner',profile=None),message_id='update-message')
+   steer=GatewayRunner._steer_text_with_origin(
+    NS(_profile_scope_for_source=lambda source:nullcontext()),carrier,event)
+   if scenario=='gateway_extra_text':steer+='\nUnregistered unrelated instruction.'
+  assert parent.steer(steer)
   if scenario=='erased':ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
   if scenario=='revoked':granted=False
   message={'role':'assistant','content':None,'tool_calls':[{'id':'read-root','type':'function',
    'function':{'name':'tool_call','arguments':json.dumps({'name':'pacomind_memory_read_source',
     'arguments':root_ref})}}]};finish='tool_calls'
  else:
-  if scenario in {'erased','revoked','receipt_failure'} or (scenario=='erased_after_visibility' and step==3):
+  if scenario in {'erased','revoked','receipt_failure','ownership_failure','gateway_extra_text'} or (scenario=='erased_after_visibility' and step==3):
    assert instruction not in text and carrier not in text and body.get('tools',[])==[],body
    assert supplied.failure and supplied.result is None
    message={'role':'assistant','content':'The task source is unavailable.'}
@@ -101,6 +122,14 @@ def respond(request):
    else:
     assert carrier in text,body
    assert root_input[0] in supplied.parents()[0] and change_input[0] in supplied.parents()[0]
+   if scenario in {'normal','gateway_envelope'}:
+    import sqlite3
+    with sqlite3.connect(home/'outbox.db') as stored:
+     reservations=[json.loads(row[0]) for row in stored.execute(
+      'SELECT metadata_json FROM native_source_ownership') if 'update_carrier_hash' in row[0]]
+    assert len(reservations)==1 and reservations[0]['sources']==[change_ref]
+    assert reservations[0]['input_refs']==change_input
+    assert instruction not in json.dumps(reservations),'Ownership retained a plaintext copy'
    assert any(row['stage']=='native_request_visible' for row in observations),observations
    assert all(row['boundary'] in {'hermes_request_middleware','relay_before_next_call'} for row in observations)
    assert all('instruction' not in row and row['update_id']=='change-one' for row in observations)
@@ -140,20 +169,51 @@ declare_stateless_channel()
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
 from run_agent import AIAgent
+from hermes_state import SessionDB
 parent=AIAgent(api_key='fixture',base_url='http://model.fixture/v1',provider='custom',model='fixture',
  quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',
- max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['pacomind','delegation'])
+ max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['pacomind','delegation'],
+ session_db=SessionDB(home/'state.db'))
 parent.save_trajectories=False
 try:
  with transport_input(contact_id='owner',platform='cli',input_refs=root_input,source_refs=[root_ref]) as supplied:
   result=parent.run_conversation('Perform the admitted checklist task.',persist_user_message=original)
   assert len(bodies)==(4 if scenario=='joined_child' else 3 if scenario=='erased_after_visibility' else 2),bodies
-  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility'}:
+  if scenario in {'erased','revoked','receipt_failure','erased_after_visibility','ownership_failure','gateway_extra_text'}:
    assert supplied.result is None and supplied.failure
+   if scenario in {'ownership_failure','gateway_extra_text'}:
+    assert supplied.failure['reason']=='source_update_ownership_unavailable'
+    assert supplied.parents()[0]==root_input,'Failed ownership admitted update parents'
   else:
    assert supplied.result and change_input[0] in supplied.result['input_refs'],supplied.result
    assert change_ref in supplied.result['source_refs'],supplied.result
 finally:parent.close()
+if scenario in {'normal','gateway_envelope'}:
+ import asyncio, sqlite3
+ from pacomind_hermes.client import TurnOutbox, PacoMindClient
+ from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ with SessionDB(home/'state.db') as native:
+  session=parent.session_id
+  before={row['id']:dict(row) for row in native._conn.execute(
+   'SELECT * FROM messages WHERE session_id=? ORDER BY id',(session,))}
+  original_id=next(key for key,row in before.items() if row['role']=='user' and row['content']==original)
+  carrier_id=next(key for key,row in before.items() if row['display_kind']=='steer')
+  final_id=max(key for key,row in before.items() if row['role']=='assistant')
+  assert carrier in before[carrier_id]['content'] and 'ORANGE-472' in before[final_id]['content']
+  unrelated_id=native.append_message(session,'user','Unrelated next task stays intact.')
+  unrelated=dict(native._conn.execute('SELECT * FROM messages WHERE id=?',(unrelated_id,)).fetchone())
+ ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
+ owned=NativeOwnedCopies(NS(outbox=TurnOutbox(home/'outbox.db'),client=PacoMindClient('http://fixture',key)),None)
+ erased=asyncio.run(owned.reconcile(contact='owner'))
+ with SessionDB(home/'state.db') as native:
+  after={row['id']:dict(row) for row in native._conn.execute(
+   'SELECT * FROM messages WHERE session_id=? ORDER BY id',(session,))}
+  assert after[carrier_id]['content']=='[Content removed.]',('steering carrier survived',carrier_id,erased)
+  assert after[final_id]['content']=='[Content removed.]',('dependent final survived',final_id,erased)
+  assert after[original_id]['content']==before[original_id]['content']==original
+  assert all(after[key]==row for key,row in before.items() if key<carrier_id)
+  assert after[unrelated_id]==unrelated
+  assert not native._conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'ORANGE'").fetchall()
 assert current() is None
 print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
  'controlled_reported_model':'fixture-reported','observation_stages':[r['stage'] for r in observations],
@@ -162,7 +222,8 @@ print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
 
 
 @pytest.mark.parametrize('scenario', ['normal', 'summary', 'erased', 'revoked', 'receipt_failure',
-                                      'erased_after_visibility', 'joined_child'])
+                                      'erased_after_visibility', 'joined_child', 'ownership_failure',
+                                      'gateway_envelope', 'gateway_extra_text'])
 def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, scenario):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified Hermes release for native qualification')
@@ -174,7 +235,8 @@ def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, sc
         PACOMIND_MEMORY_TURN_WRITER='disabled', PACOMIND_GUARD_CHAT_MODE='off',
         PACOMIND_RECALL_RERANK='off', PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         OPENAI_API_KEY='fixture', OPENAI_BASE_URL='http://model.fixture/v1', LITELLM_LOCAL_MODEL_COST_MAP='True')
-    run_python('-I', '-c', PROBE, artifacts[3], ROOT/'sidecar', scenario, cwd=tmp_path, env=env)
+    run_python('-I', '-c', PROBE, artifacts[3], ROOT/'sidecar', scenario,
+        os.environ.get('PACOMIND_TEST_HERMES_PATH',''), cwd=tmp_path, env=env)
 
 
 REGISTRATION = r'''
@@ -204,6 +266,13 @@ with transport_input(contact_id='owner',platform='test-platform',input_refs=base
  wrong=copy.copy(scope);wrong.session_id='unrelated-session'
  assert first.request_updates(wrong,body)==[]
  entries=first.request_updates(scope,body);assert len(entries)==1
+ replay='Previously observed task context.\n'+carrier
+ first.register_restored_context([carrier],replay)
+ assert entries[0]['restored_context']==replay and not entries[0]['admitted']
+ assert first.parents()==(base,[]),'Registering restoration asserted consumption'
+ try:first.register_restored_context(['unregistered-carrier'],'unregistered-carrier')
+ except ValueError:pass
+ else:raise AssertionError('An unregistered carrier became restored task context')
  assert first.check_updates(scope,entries,fresh=True,rules=[])
  assert first.parents()==(base,[])
  first.admit_updates(scope,body,entries)

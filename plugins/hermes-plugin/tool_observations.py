@@ -187,15 +187,19 @@ def native_input(scope, call_id, expected, *, result_message_id, result_content)
     from hermes_state import _default_db_path
     path = _default_db_path().resolve()
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=.25)) as db:
-        rows = db.execute('''SELECT c.value FROM messages m,
+        db.row_factory = sqlite3.Row
+        rows = db.execute('''SELECT m.*,c.value FROM messages m,
             json_each(CASE WHEN json_valid(m.tool_calls) THEN m.tool_calls ELSE '[]' END) c
             WHERE m.session_id=? AND m.role='assistant' AND m.active=1 AND m.id<?
               AND json_extract(c.value,'$.id')=? LIMIT 2''',
             (scope.session_id, result_message_id, call_id)).fetchall()
     if len(rows) != 1:
         raise ValueError('A unique original native call is required to include its input')
+    row = rows[0]
+    if len(json.loads(row['tool_calls'])) != 1:
+        raise ValueError('Original input shares a native row with other calls; retain this result without input')
     try:
-        call = json.loads(rows[0][0])['function']
+        call = json.loads(row['value'])['function']
         name, arguments = call['name'], call['arguments']
         arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
         if name == 'tool_call':
@@ -213,7 +217,12 @@ def native_input(scope, call_id, expected, *, result_message_id, result_content)
         raise ValueError('The original executed input is unavailable') from exc
     if len(encoded.encode()) + len(result_content.encode()) > MAX_BYTES:
         raise ValueError('Original input and result exceed the combined 16 KiB retention budget; no input was saved')
-    return {'arguments': arguments, 'arguments_sha256': digest}
+    from hermes_state import SessionDB
+    if not callable(getattr(SessionDB, 'message_redaction_snapshot', None)):
+        raise ValueError('Original input retention requires native snapshot support; retain the result without input')
+    return {'arguments': arguments, 'arguments_sha256': digest}, {
+        '_row_id':row['id'], 'role':'assistant', 'content':SessionDB._decode_content(row['content']),
+        '_native_payload_sha256':SessionDB.message_redaction_snapshot(row)['sha256']}
 
 
 class ToolObservations:
@@ -325,10 +334,13 @@ class ToolObservations:
             else:
                 record['visible_name'] = record['visible'][context['api_request_id']]
                 content, native = native_original(scope, args['call_id'], record)
-                original_input = (native_input(scope, args['call_id'], record,
+                original_input, input_row = (native_input(scope, args['call_id'], record,
                     result_message_id=native['message_id'], result_content=content)
-                    if args.get('include_input', False) else None)
-                origins = capture_instruction(scope, self.client)
+                    if args.get('include_input', False) else (None, None))
+                ownership = self.request_memory.ownership
+                origins = capture_instruction(scope, self.client,
+                    retain_origin=(lambda source_id: ownership.retain_origin(scope, source_id,
+                        canonical_user_message=scope.user_message)) if ownership is not None else None)
                 if len(origins) != 1:
                     raise ValueError('The exact current owner instruction must be retained first')
                 source_id = 'native-observation:' + hashlib.sha256(json.dumps(native, sort_keys=True,
@@ -341,6 +353,15 @@ class ToolObservations:
                         'sources': references}}
                 if original_input is not None:
                     payload['observation']['input'] = original_input
+                if ownership is not None:
+                    # Bind exact native rows before enqueue can publish or a
+                    # concurrent erasure page can purge the canonical payload.
+                    origin_rows = [{'role':'tool', 'content':content, '_row_id':native['message_id']}]
+                    if input_row is not None:
+                        origin_rows.append(input_row)
+                    if not ownership.retain_origin(scope, source_id, messages=origin_rows,
+                            row_only_ids=[input_row['_row_id']] if input_row is not None else ()):
+                        raise ValueError('Native observation ownership is unavailable; no observation was queued')
                 with self._lock:
                     current = self._turns.get(key, {}).get(args['call_id'])
                     if current is None or context.get('api_request_id') not in current['visible']:
