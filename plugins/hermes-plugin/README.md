@@ -101,7 +101,7 @@ attempting network delivery. These settings and the explicit local `fsync`
 establish configuration readiness; they are not a physical power-loss test, so
 the attestation always reports `physical_power_loss_verified=false`.
 
-Gateway image originals use the same canonical media store even when Hermes
+Image-only gateway messages use the same canonical media store even when Hermes
 prepares a text-only vision description. The pre-dispatch hook records actual
 attachment metadata; the native turn must match its sender, channel and provider
 message before cached image bytes are read. Paths written in chat are never
@@ -112,7 +112,12 @@ normalization, so corrections and forgetting still cover the original history.
 This path accepts up to eight attachment references and 4 MiB of original PNG,
 JPEG or WebP bytes per turn, within the existing 8 MiB turn envelope limit.
 Missing, changed, oversized or unsupported originals receive an explicit
-unavailable disposition. The existing `turns:write` permission covers its typed
+unavailable disposition. Mixed media events keep their existing ingestion path;
+this image carrier cannot replace native audio, document or video blocks.
+Already-inline native originals are referenced without duplicating their bytes.
+If differing native pixels plus the original would exceed the existing turn
+budget, the existing native ingestion path is preserved.
+The existing `turns:write` permission covers its typed
 route; no new credential or service is required. The receipt identifies each
 attachment and reports whether its original was actually retained. An older
 receiver cannot acknowledge caption-only storage as this capability. Existing

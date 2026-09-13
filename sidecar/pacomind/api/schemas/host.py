@@ -469,12 +469,13 @@ class TransportImageInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     ordinal: int = Field(ge=0, le=7, strict=True)
     data_url: Optional[str] = Field(default=None, max_length=5592424)
+    native_block_index: Optional[int] = Field(default=None, ge=0, le=32, strict=True)
     unavailable: Optional[Literal['original_unavailable']] = None
 
     @model_validator(mode='after')
     def exact_original(self):
-        if (self.data_url is None) == (self.unavailable is None):
-            raise ValueError('supply original bytes or an unavailable disposition')
+        if sum(value is not None for value in (self.data_url, self.native_block_index, self.unavailable)) != 1:
+            raise ValueError('supply original bytes, their native block index, or an unavailable disposition')
         if self.data_url is not None and not self.data_url.startswith('data:image/'):
             raise ValueError('transport images require inline bytes, not paths or URLs')
         return self
@@ -531,6 +532,15 @@ class TurnSyncRequest(BaseModel):
                 or self.sender.platform != self.transport_media.platform or self.checkpoint_messages is not None
                 or not self.context.turn_id):
             raise ValueError('transport media requires a matching direct sender and identified native input')
+        if self.transport_media is not None and isinstance(self.user_message.content, list) and any(
+                not isinstance(block, dict) or block.get('type') not in {'text', 'input_text', 'output_text', 'image_url', 'input_image'}
+                for block in self.user_message.content):
+            raise ValueError('transport image normalization cannot replace mixed native media')
+        if self.transport_media is not None:
+            from pacomind.turns.transport_media import native_image_url
+            for image in self.transport_media.images:
+                if image.native_block_index is not None:
+                    native_image_url(self.user_message.content, image.native_block_index)
         if self.checkpoint_messages is not None:
             if self.sender is not None or self.user_message is not None or self.assistant_message is not None:
                 raise ValueError("checkpoint cannot also represent an ordinary turn")

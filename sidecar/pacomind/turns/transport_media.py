@@ -5,6 +5,20 @@ from contextlib import closing
 from .idempotency import source_message_hash
 
 
+def native_image_url(content, index):
+    if not isinstance(content, list) or not 0 <= index < len(content):
+        raise ValueError('native image block is unavailable')
+    block = content[index]
+    if not isinstance(block, dict) or block.get('type') not in {'image_url', 'input_image'}:
+        raise ValueError('native block is not an image')
+    value = block.get('image_url')
+    if isinstance(value, dict) and block['type'] == 'image_url':
+        value = value.get('url')
+    if not isinstance(value, str) or not value.startswith('data:image/'):
+        raise ValueError('native block must contain original inline bytes')
+    return value
+
+
 def apply(messages, media, *, session_id):
     result = []
     for message in messages:
@@ -15,8 +29,10 @@ def apply(messages, media, *, session_id):
         attachments = []
         for image in media.images:
             attachments.append({'ordinal': image.ordinal, 'block_index': len(blocks)})
-            blocks.append({'type': 'image_url', 'image_url': {'url': image.data_url}}
-                          if image.data_url else {'type': 'image_unretained', 'reason': image.unavailable})
+            url = (native_image_url(message['content'], image.native_block_index)
+                   if image.native_block_index is not None else image.data_url)
+            blocks.append({'type': 'image_url', 'image_url': {'url': url}}
+                          if url else {'type': 'image_unretained', 'reason': image.unavailable})
         native = message['content']
         # The old prepared text is retained as runtime interpretation, never
         # indexed/extracted as the person's words. No caller-supplied hash wins.

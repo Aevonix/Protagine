@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import importlib
 import json
+import random
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,7 +66,10 @@ def capture(transport, mode='text'):
 @pytest.mark.parametrize('mode', ['text', 'native'])
 async def test_ingress_native_canonical_read_and_forget(transport, source_app, tmp_path, mode):
     body = capture(transport, mode)
-    assert base64.b64decode(body['transport_media']['images'][0]['data_url'].split(',', 1)[1]) == image_bytes()
+    selected = body['transport_media']['images'][0]
+    data_url = (body['user_message']['content'][selected['native_block_index']]['image_url']['url']
+                if 'native_block_index' in selected else selected['data_url'])
+    assert base64.b64decode(data_url.split(',', 1)[1]) == image_bytes()
     native_hash = source_message_hash(transport.scope.session_id, body['user_message'])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as api:
         first = await api.put('/v2/host/turns/source-media/transport/media-turn', json=body)
@@ -151,6 +156,60 @@ def test_generic_cache_suffix_preserves_actual_original_codec(transport):
     transport.event.media_urls = [str(renamed)]
     body = capture(transport)
     assert body['transport_media']['images'][0]['data_url'].startswith('data:image/png;base64,')
+
+
+@pytest.mark.asyncio
+async def test_large_native_image_retains_once_within_existing_limit(transport, source_app):
+    from PIL import Image
+    output = io.BytesIO()
+    Image.frombytes('RGB', (1024, 1080), random.Random(42).randbytes(1024 * 1080 * 3)).save(output, format='PNG')
+    data = output.getvalue()
+    assert 3 * 1024 * 1024 < len(data) < 4 * 1024 * 1024
+    transport.image.write_bytes(data)
+    native = message(data)['content']
+    transport.carrier.observe(event=transport.event)
+    transport.carrier.bind(transport.scope, {'user_message': native, 'conversation_history': [
+        {'role': 'user', 'content': native, 'platform_message_id': transport.event.message_id}]})
+    media = transport.carrier.for_turn(transport.scope)
+    assert media['images'] == [{'ordinal': 0, 'native_block_index': 1}]
+    body = {'identity': {'host_id': 'hermes'}, 'context': {'session_id': 'native-session', 'contact_id': 'person',
+        'turn_id': 'large-image'}, 'sender': {'platform': 'whatsapp', 'user_id': 'fixture-sender'},
+        'user_message': {'role': 'user', 'content': native}, 'transport_media': media}
+    TurnSyncRequest.model_validate(body)
+    client = _load_client()
+    queued = client.TurnOutbox(transport.image.parents[2] / 'large-outbox.sqlite3').enqueue('large-image', {
+        'session_id': 'native-session', 'contact_id': 'person', 'turn_id': 'large-image',
+        'sender': body['sender'], 'user_message': native, 'transport_media': media}, capture_ordinary=True)
+    assert queued['state'] == 'pending'
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as api:
+        response = await api.put('/v2/host/turns/source-media/transport/large-image', json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()['transport_media']['all_originals_retained'] is True
+    assert response.json()['transport_media']['attachments'][0]['asset_hash'] == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize('selector', [0, 9])
+def test_native_reference_requires_an_actual_inline_image(transport, selector):
+    body = capture(transport, 'native')
+    body['transport_media']['images'][0] = {'ordinal': 0, 'native_block_index': selector}
+    with pytest.raises(ValueError):
+        TurnSyncRequest.model_validate(body)
+
+
+def test_mixed_transport_media_preserves_existing_path(transport, monkeypatch):
+    transport.event.media_urls.append(str(transport.image.with_suffix('.wav')))
+    transport.event.media_types.append('audio/wav')
+    def forbidden(*args): raise AssertionError('mixed input entered image normalization')
+    monkeypatch.setattr(transport.module, '_read_image', forbidden)
+    assert capture(transport)['transport_media'] is None
+
+
+@pytest.mark.parametrize('kind', ['input_audio', 'input_document', 'input_video', 'audio_transcript'])
+def test_server_does_not_discard_native_non_image_blocks(transport, kind):
+    body = capture(transport, 'native')
+    body['user_message']['content'].append({'type': kind, 'fixture': 'retained through its existing media path'})
+    with pytest.raises(ValueError, match='cannot replace mixed native media'):
+        TurnSyncRequest.model_validate(body)
 
 
 @pytest.mark.asyncio

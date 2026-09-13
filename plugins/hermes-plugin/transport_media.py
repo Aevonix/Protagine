@@ -8,6 +8,7 @@ from collections import OrderedDict
 import base64
 import copy
 import io
+import json
 import os
 from pathlib import Path
 import threading
@@ -37,6 +38,18 @@ def _image_metadata(path):
         return _fingerprint(Path(path).stat())
     except OSError:
         return None
+
+
+def _inline_index(content, data_url):
+    for index, block in enumerate(content if isinstance(content, list) else []):
+        if not isinstance(block, dict):
+            continue
+        value = block.get('image_url')
+        if block.get('type') == 'image_url' and isinstance(value, dict):
+            value = value.get('url')
+        if block.get('type') in {'image_url', 'input_image'} and value == data_url:
+            return index
+    return None
 
 
 def _read_image(path, remaining, observed):
@@ -84,7 +97,9 @@ class TransportMedia:
             return
         images = [(i, path, _image_metadata(path)) for i, path in enumerate(paths) if isinstance(path, str)
                   and len(path) <= 4096 and i < len(types) and str(types[i]).startswith('image/')]
-        if not images:
+        # This carrier owns image-only input. Preserve the existing path for
+        # mixed audio/document/video events, including their paired transcripts.
+        if not images or len(images) != len(paths):
             return
         with self._lock:
             now = time.monotonic()
@@ -121,11 +136,19 @@ class TransportMedia:
                 try:
                     data_url, size = _read_image(path, remaining, observed)
                     remaining -= size
-                    images.append({'ordinal': ordinal, 'data_url': data_url})
+                    index = _inline_index(kwargs.get('user_message'), data_url)
+                    images.append({'ordinal': ordinal, **({'native_block_index': index} if index is not None
+                                                          else {'data_url': data_url})})
                 except (ImportError, OSError, ValueError):
                     images.append({'ordinal': ordinal, 'unavailable': 'original_unavailable'})
             envelope = {'platform': platform, 'provider_message_id': message_id,
                         'caption': entry[1], 'images': images}
+            # A provider may transform pixels. If retaining both versions would
+            # overflow the existing envelope, preserve native ingestion rather
+            # than dropping the complete turn. Reserve room for its response.
+            if (isinstance(kwargs.get('user_message'), list) and len(json.dumps(
+                    [kwargs['user_message'], envelope], ensure_ascii=True).encode()) > 7 * 1024 * 1024):
+                return
             with self._lock:
                 self._bound[native] = (time.monotonic(), envelope)
                 while len(self._bound) > 16:
