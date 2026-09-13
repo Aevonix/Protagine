@@ -253,6 +253,13 @@ with transport_input(contact_id='owner',platform='test-platform',input_refs=base
  wrong=copy.copy(scope);wrong.session_id='unrelated-session'
  assert first.request_updates(wrong,body)==[]
  entries=first.request_updates(scope,body);assert len(entries)==1
+ replay='Previously observed task context.\n'+carrier
+ first.register_restored_context([carrier],replay)
+ assert entries[0]['restored_context']==replay and not entries[0]['admitted']
+ assert first.parents()==(base,[]),'Registering restoration asserted consumption'
+ try:first.register_restored_context(['unregistered-carrier'],'unregistered-carrier')
+ except ValueError:pass
+ else:raise AssertionError('An unregistered carrier became restored task context')
  assert first.check_updates(scope,entries,fresh=True,rules=[])
  assert first.parents()==(base,[])
  first.admit_updates(scope,body,entries)

@@ -151,6 +151,25 @@ class SuppliedInput:
                 'validate': validate, 'observe': observe, 'admitted': False}
             return carrier
 
+    def register_restored_context(self, carriers, context):
+        """Bind native task replay to existing registrations without admitting it.
+
+        The adapter supplies the exact context it generated from previously
+        observed updates. This transient string never enters ownership storage.
+        Current authorization and request visibility are still checked later.
+        """
+        with self._lock:
+            if (self._closed or self._blocked or not isinstance(context, str)
+                    or not isinstance(carriers, list) or not carriers
+                    or any(not isinstance(carrier, str) for carrier in carriers)):
+                raise ValueError('An active registered update context is required')
+            selected = set(carriers)
+            entries = [entry for entry in self._updates.values() if entry['carrier'] in selected]
+            if len(entries) != len(selected) or any(carrier not in context for carrier in selected):
+                raise ValueError('Restored context must contain its exact registered carriers')
+            for entry in entries:
+                entry['restored_context'] = context
+
     def request_updates(self, scope, request):
         """Select only registered carriers and already dependent input."""
         with self._lock:
