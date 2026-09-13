@@ -107,11 +107,21 @@ with patch(OPENAI_TARGET,return_value=client), patch(TOOLS_TARGET + '.get_tool_d
     agent.session_id='later'; agent._current_turn_id='review-turn'
     def dispatch(args,*,session='later',task='review-task',turn='review-turn',call='operator-call'):
         agent.session_id=session; agent._current_turn_id=turn
+        if call=='operator-call':
+            dispatch.serial=getattr(dispatch,'serial',0)+1
+            call=call+'-'+str(dispatch.serial)
         results=[]
         explicit_call=NS(tool_calls=[NS(id=call,function=NS(
             name='pacomind_memory_annotate',arguments=json.dumps(args)))])
+        # The native loop persists the assistant call before dispatch. This
+        # fixture calls dispatch directly, so reproduce that storage boundary.
+        dispatch.last_native_row=native_db.append_message(session,'assistant',None,tool_calls=[{
+            'id':call,'type':'function','function':{
+                'name':explicit_call.tool_calls[0].function.name,'arguments':json.dumps(args)}}])
         agent._execute_tool_calls_sequential(explicit_call,results,effective_task_id=task)
         assert len(results)==1,results
+        native_db.append_message(session,'tool',results[0]['content'],
+            tool_call_id=call,tool_name='pacomind_memory_annotate')
         # Hermes may append its existing repeated-error guidance to tool text.
         return json.JSONDecoder().raw_decode(results[0]['content'])[0]
     args={**ref,'excerpt':'Verification occurred at 09:14.','correction':correction}

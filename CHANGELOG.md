@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.17 - forgetting source annotations
+
+Memory annotations now retain their exact creating Hermes tool call. Forgetting
+an annotation can remove its arguments, derived replies and tracked recalled
+copies while preserving independent facts before the call. An identical retry
+after a lost acknowledgement keeps the first creating call as its origin.
+
+The annotation tool requires its own tool-call batch. If its native origin
+cannot be identified, it reports that it submitted nothing. An uncertain server
+response remains unconfirmed. Historical records with missing origins remain
+pending; this release does not infer ownership or declare those records erased.
+
 ## v1.5.16 - corrected deadlines and clearer memory sources
 
 Reminders now use the complete event expression retained with a memory claim.

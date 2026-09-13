@@ -81,6 +81,17 @@ call identity but removing its arguments. A row shared with other tool calls
 cannot be retained this way; the tool returns an error and can retain the result
 without input instead. This optional capability requires the native snapshot API.
 
+Source annotations bind their exact creating assistant call and full native
+payload digest before submission. The accepted receipt supplies the distinct
+canonical message hash. Cleanup starts at that call, preserving preceding human
+input and parent-source rows while removing the call arguments and subsequent
+derived output up to the next user turn. The first call binding survives a lost
+acknowledgement and an identical retry with a different call ID. A shared call
+row is rejected before submission. A malformed receipt remains unconfirmed and
+does not trigger another submission. Historical missing origins and lost
+acknowledgements without a later receipt binding remain pending; this does not
+add an automatic annotation recovery worker.
+
 Canonical erasure events and pending native ownership commit with the existing
 feed cursor. Reconciliation verifies each anchor, selects its owned turn span
 and derives native payload preimages in one SQLite read transaction. The native

@@ -177,10 +177,10 @@ def native_original(scope, call_id, expected):
     return content, native
 
 
-def native_input(scope, call_id, expected, *, result_message_id, result_content):
+def native_input(scope, call_id, expected, *, result_message_id=None, result_content=''):
     """Recover the executed arguments from the exact native call, not its label.
 
-    Completion already witnessed the argument hash at dispatch. The persisted
+    Dispatch or completion witnessed the argument hash. The persisted
     assistant call supplies the values only if they still match that witness.
     A request-side retelling or a different same-tool call supplies no input.
     """
@@ -190,9 +190,9 @@ def native_input(scope, call_id, expected, *, result_message_id, result_content)
         db.row_factory = sqlite3.Row
         rows = db.execute('''SELECT m.*,c.value FROM messages m,
             json_each(CASE WHEN json_valid(m.tool_calls) THEN m.tool_calls ELSE '[]' END) c
-            WHERE m.session_id=? AND m.role='assistant' AND m.active=1 AND m.id<?
+            WHERE m.session_id=? AND m.role='assistant' AND m.active=1 AND (? IS NULL OR m.id<?)
               AND json_extract(c.value,'$.id')=? LIMIT 2''',
-            (scope.session_id, result_message_id, call_id)).fetchall()
+            (scope.session_id, result_message_id, result_message_id, call_id)).fetchall()
     if len(rows) != 1:
         raise ValueError('A unique original native call is required to include its input')
     row = rows[0]

@@ -280,13 +280,13 @@ class NativeOwnedCopies:
                     if not isinstance(message, dict):
                         raise ValueError('native_source_origin_unavailable')
                     if type(message.get('_row_id')) is int:
-                        original = db.execute('SELECT id,role,content FROM messages WHERE session_id=? AND id=?',
+                        original = db.execute('SELECT * FROM messages WHERE session_id=? AND id=?',
                             (scope.session_id, message['_row_id'])).fetchone()
                     elif message.get('role') == 'user':
                         # Some native callers omit _row_id from the hook copy.
                         # The observed current input can bind only the newest
                         # user row, never every historical hash match.
-                        original = db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
+                        original = db.execute("SELECT * FROM messages WHERE session_id=? "
                             "AND role='user' ORDER BY id DESC LIMIT 1", (scope.session_id,)).fetchone()
                     else:
                         raise ValueError('native_source_origin_unavailable')
@@ -304,6 +304,11 @@ class NativeOwnedCopies:
                     binding = {'mode':'payload', 'source_hash':source_digest}
                     if source_digest != digest:
                         binding['native_hash'] = digest
+                    if '_native_payload_sha256' in message:
+                        snapshot = SessionDB.message_redaction_snapshot(original)
+                        if snapshot['sha256'] != message['_native_payload_sha256']:
+                            raise ValueError('native_source_origin_changed')
+                        binding['row_sha256'] = snapshot['sha256']
                     anchors[str(original['id'])] = binding
             if not anchors:
                 return False
@@ -336,6 +341,45 @@ class NativeOwnedCopies:
             return bool(anchors)
         except Exception as error:
             logger.warning('Native source location unavailable (%s)', type(error).__name__)
+            return False
+
+    def bind_annotation_origin(self, scope, annotation_id, receipt):
+        """Join a trusted annotation receipt to its first exact native call.
+
+        Server-authored annotation JSON differs from native tool arguments.
+        Keep both identities; never assign the preceding human row to it.
+        """
+        try:
+            if (not isinstance(receipt, dict) or receipt.get('accepted') is not True
+                    or not isinstance(receipt.get('source_id'), str)
+                    or not re.fullmatch(r'source-annotation:[0-9a-f]{64}', receipt['source_id'])
+                    or not isinstance(receipt.get('source_message_hash'), str)
+                    or not re.fullmatch(r'[0-9a-f]{64}', receipt['source_message_hash'])):
+                raise ValueError('native_annotation_receipt_unavailable')
+            identity = 'origin:' + receipt['source_id']
+            with closing(self.outbox._connect()) as db, db:
+                db.execute('BEGIN IMMEDIATE')
+                pending = db.execute('SELECT metadata_json FROM native_source_ownership '
+                    'WHERE ownership_id=? AND contact_id=? AND session_id=?',
+                    ('origin:' + annotation_id, scope.contact_id, scope.session_id)).fetchone()
+                if pending is None:
+                    raise ValueError('native_source_origin_unobserved')
+                metadata = json.loads(pending[0])
+                if metadata.get('kind') != 'origin' or len(metadata.get('anchors', {})) != 1:
+                    raise ValueError('native_source_origin_unobserved')
+                for anchor in metadata['anchors'].values():
+                    if not anchor.get('row_sha256'):
+                        raise ValueError('native_source_origin_unobserved')
+                    anchor['native_hash'] = anchor.get('native_hash', anchor['source_hash'])
+                    anchor['source_hash'] = receipt['source_message_hash']
+                db.execute('INSERT OR IGNORE INTO native_source_ownership VALUES (?,?,?,?,?)',
+                    (identity, scope.contact_id, scope.session_id, receipt['source_id'], _json(metadata)))
+                db.execute('DELETE FROM native_source_ownership WHERE ownership_id=?',
+                    ('origin:' + annotation_id,))
+            self.outbox._fsync_storage()
+            return True
+        except Exception as error:
+            logger.warning('Native annotation ownership unavailable (%s)', type(error).__name__)
             return False
 
     def observe_gateway(self, **kwargs):

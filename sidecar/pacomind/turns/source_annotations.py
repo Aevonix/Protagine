@@ -83,7 +83,8 @@ def append(ledger, *, contact_id, session_id, annotation_id, source_id, source_v
             conn.execute('INSERT INTO source_annotations VALUES (?,?,?,?,?)',
                 (annotation_source, source_id, source_version, json.dumps(matched), request_digest))
         return {'accepted': True, 'created': prior is None, 'source_id': annotation_source,
-                'source_version': canonical_turn_digest(annotation_messages), 'target': target}
+                'source_version': canonical_turn_digest(annotation_messages), 'target': target,
+                'source_message_hash': source_message_hash(session_id, annotation_messages[0])}
 
 
 def source_ids(row):

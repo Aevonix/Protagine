@@ -4,7 +4,7 @@ import json
 import re
 
 
-def handle(args, scope, client, request_memory):
+def handle(args, scope, client, request_memory, context=None):
     if (scope is None or not scope.valid_participant
             or scope.authority_lane not in {'owner', 'system'}
             or not scope.task_id or not scope.turn_id):
@@ -22,6 +22,18 @@ def handle(args, scope, client, request_memory):
     identity = json.dumps([scope.contact_id, scope.session_id, scope.turn_id, args],
                           sort_keys=True, separators=(',', ':'), ensure_ascii=False)
     annotation_id = 'native-annotation:' + hashlib.sha256(identity.encode()).hexdigest()
+    ownership = request_memory.ownership
+    try:
+        from .tool_observations import native_input, _arguments_hash
+        _, original = native_input(scope, (context or {}).get('tool_call_id'), {
+            'name':'pacomind_memory_annotate', 'arguments_sha256':_arguments_hash(args)})
+        # Keep the first creating call before a possibly lost acknowledgement.
+        # Retries in this turn reuse the request ID and its durable anchor.
+        if ownership is None or not ownership.retain_origin(scope, annotation_id, messages=[original]):
+            raise ValueError('Native annotation origin unavailable')
+    except Exception:
+        return json.dumps({'accepted': False, 'error':
+            'The exact native annotation call is unavailable, shares a row, or exceeds the 16 KiB retention limit; no annotation was submitted'})
     try:
         response = client.post('/v1/host/memory/sources/annotations', timeout=3,
             json={**args, 'annotation_id': annotation_id, 'contact_id': scope.contact_id,
@@ -30,7 +42,14 @@ def handle(args, scope, client, request_memory):
             return json.dumps({'error': 'The source annotation was rejected; inspect current scoped evidence',
                                'accepted': False, 'status_code': response.status_code})
         response.raise_for_status()
-        return json.dumps(response.json())
+        receipt = response.json()
+        if (not isinstance(receipt, dict) or receipt.get('target') != ref
+                or type(receipt.get('created')) is not bool
+                or not isinstance(receipt.get('source_version'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', receipt['source_version'])
+                or not ownership.bind_annotation_origin(scope, annotation_id, receipt)):
+            raise ValueError('Native annotation receipt binding unavailable')
+        return json.dumps(receipt)
     except Exception:
         # The server may have committed before the acknowledgement was lost.
         # Retrying the identical arguments in this turn reuses the same ID.
