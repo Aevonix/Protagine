@@ -74,8 +74,11 @@ cannot be retained this way; the tool returns an error and can retain the result
 without input instead. This optional capability requires the native snapshot API.
 
 Canonical erasure events and pending native ownership commit with the existing
-feed cursor. Reconciliation verifies each anchor, selects its owned turn span,
-and asks the native writer to check exact payload preimages and writer leases.
+feed cursor. Reconciliation verifies each anchor, selects its owned turn span
+and derives native payload preimages in one SQLite read transaction. The native
+writer checks those preimages, writer leases and that snapshot's latest message
+ID inside its mutation transaction. An answer appended after selection leaves
+cleanup pending for a fresh selection, instead of stranding that late copy.
 Native row IDs, routing and tool-call pairing remain intact. Owned tool results,
 reasoning and assistant answers lose their payloads and FTS entries. A recalled
 copy attached to independent human input clears only that row's `api_content`.

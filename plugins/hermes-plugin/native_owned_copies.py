@@ -133,6 +133,9 @@ class NativeOwnedCopies:
                 # this optional input-retention capability can be unavailable.
                 with SessionDB(self._path()) as native:
                     for snapshot in native.get_message_redaction_snapshot(scope.session_id, list(row_only_ids)):
+                        observed = next(message for message in messages if message.get('_row_id') == snapshot['id'])
+                        if snapshot['sha256'] != observed.get('_native_payload_sha256'):
+                            raise ValueError('native_source_origin_changed')
                         binding = anchors[str(snapshot['id'])]
                         binding.update(row_only=True, row_sha256=snapshot['sha256'])
             metadata = {'kind':'origin', 'native_db':str(self._path()), 'anchors':anchors}
@@ -240,7 +243,7 @@ class NativeOwnedCopies:
     def _span(db, session, anchor):
         end = db.execute("SELECT MIN(id) FROM messages WHERE session_id=? AND role='user' AND id>?",
                          (session, anchor)).fetchone()[0]
-        rows = db.execute('SELECT id,role,api_content FROM messages WHERE session_id=? AND id>=? '
+        rows = db.execute('SELECT * FROM messages WHERE session_id=? AND id>=? '
                           'AND (? IS NULL OR id<?) ORDER BY id LIMIT 513', (session, anchor, end, end)).fetchall()
         if len(rows) > 512:
             raise ValueError('native_source_span_exceeds_batch')
@@ -269,42 +272,41 @@ class NativeOwnedCopies:
                                if value['source_hash'] in rule['message_hashes']}
                     if not anchors:
                         raise ValueError('native_source_partial_origin_unobserved')
-                if anchors:
-                    meta = {**meta, 'anchors':anchors}
-                    self._save(row, meta)
-            if not anchors:
-                from hermes_state import SessionDB
-                matches = {}
-                with closing(self._native_read(native.db_path)) as db:
-                    for original in db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
-                                               "AND role IN ('user','assistant','tool')", (session,)):
-                        message = {'role': original['role'],
-                                   'content': SessionDB._decode_content(original['content'])}
-                        digest = source_message_hash(session, message)
-                        # Metadata-only observations are not native transcript
-                        # messages merely because both have an empty body.
-                        if message['content'] and digest in rule['message_hashes']:
-                            if digest in matches:
-                                raise ValueError('native_source_origin_ambiguous')
-                            matches[digest] = original['id']
-                            anchors[original['id']] = {'mode':'payload', 'source_hash':digest}
-                if not anchors:
-                    raise ValueError('native_source_origin_unobserved')
-                meta = {**meta, 'anchors':anchors}
-                self._save(row, meta)
-        modes, replay = {}, {}
+        modes, replay, payloads = {}, {}, {}
         previous = {item['id']:item for item in meta.get('selection', [])}
         with closing(self._native_read(native.db_path)) as db:
             from hermes_state import SessionDB
+            # Anchor validation, span expansion and native payload digests must
+            # describe one SQLite snapshot. The writer separately checks this
+            # watermark under its own mutation transaction before erasing.
+            db.execute('BEGIN')
+            message_watermark = db.execute('SELECT coalesce(MAX(id),0) FROM messages WHERE session_id=?',
+                                            (session,)).fetchone()[0]
+            if not anchors:
+                matches = {}
+                for original in db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
+                                           "AND role IN ('user','assistant','tool')", (session,)):
+                    message = {'role': original['role'],
+                               'content': SessionDB._decode_content(original['content'])}
+                    digest = source_message_hash(session, message)
+                    # Metadata-only observations are not native transcript
+                    # messages merely because both have an empty body.
+                    if message['content'] and digest in rule['message_hashes']:
+                        if digest in matches:
+                            raise ValueError('native_source_origin_ambiguous')
+                        matches[digest] = original['id']
+                        anchors[original['id']] = {'mode':'payload', 'source_hash':digest}
+                if not anchors:
+                    raise ValueError('native_source_origin_unobserved')
             for anchor, binding in anchors.items():
-                actual = db.execute('SELECT role,content,display_metadata FROM messages WHERE session_id=? AND id=?',
+                actual = db.execute('SELECT * FROM messages WHERE session_id=? AND id=?',
                                     (session, anchor)).fetchone()
                 if actual is None:
                     raise ValueError('native_source_anchor_missing')
                 digest = source_message_hash(session, {'role':actual['role'],
                     'content':SessionDB._decode_content(actual['content'])})
                 row_changed = (binding.get('row_sha256') is not None and
-                    native.get_message_redaction_snapshot(session, [anchor])[0]['sha256'] != binding['row_sha256'])
+                    native.message_redaction_snapshot(actual)['sha256'] != binding['row_sha256'])
                 if digest != binding['source_hash'] or row_changed:
                     prior = previous.get(anchor)
                     markers = json.loads(actual['display_metadata'] or '{}')
@@ -322,21 +324,21 @@ class NativeOwnedCopies:
                     # Native validates the full already-redacted row against
                     # this original preimage before accepting the replay.
                     replay[anchor] = prior
-                span = [{'id':anchor}] if binding.get('row_only') else self._span(db, session, anchor)
+                span = [actual] if binding.get('row_only') else self._span(db, session, anchor)
                 for item in span:
+                    payloads[item['id']] = item
                     selected_mode = binding['mode'] if item['id'] == anchor else 'payload'
                     # A canonical origin is stronger ownership than an API-only
                     # recall copy attached to an otherwise unrelated user row.
                     if modes.get(item['id']) != 'payload':
                         modes[item['id']] = selected_mode
-        selected = []
-        for mode in ('payload', 'api_content'):
-            ids = sorted(key for key, value in modes.items() if value == mode)
-            if ids:
-                selected.extend(native.get_message_redaction_snapshot(session, ids, mode=mode))
+            selected = [native.message_redaction_snapshot(payloads[key], mode=mode)
+                for mode in ('payload', 'api_content')
+                for key in sorted(key for key, value in modes.items() if value == mode)]
         selected = [replay.get(item['id'], item) for item in selected]
         if selected:
-            self._save(row, {**meta, 'selection':selected})
+            self._save(row, {**meta, 'anchors':anchors, 'selection':selected,
+                             'selection_message_watermark':message_watermark})
         return selected
 
     def _contacts(self):
@@ -387,16 +389,19 @@ class NativeOwnedCopies:
                         elif gateway is None:
                             if not standalone:
                                 raise ValueError('native_gateway_reconciliation_required')
-                            receipt = native.redact_message_payloads(row['session_id'], selected)
+                            receipt = native.redact_message_payloads(row['session_id'], selected,
+                                expected_message_watermark=row['metadata']['selection_message_watermark'])
                         else:
                             # A retired conversation can use another retained
                             # routing key in the same profile; the native door
                             # validates the exact DB and evicts all owned aliases.
                             keys = family_keys or sorted({entry['session_key'] for entry in routes})
                             if keys:
-                                receipt = await gateway.redact_native_message_payloads(keys[0], row['session_id'], selected)
+                                receipt = await gateway.redact_native_message_payloads(keys[0], row['session_id'], selected,
+                                    expected_message_watermark=row['metadata']['selection_message_watermark'])
                             elif standalone:
-                                receipt = native.redact_message_payloads(row['session_id'], selected)
+                                receipt = native.redact_message_payloads(row['session_id'], selected,
+                                    expected_message_watermark=row['metadata']['selection_message_watermark'])
                             else:
                                 raise ValueError('native_erasure_routing_unavailable')
                         if receipt.get('status') == 'redacted':

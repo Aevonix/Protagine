@@ -488,3 +488,36 @@ def test_exact_origin_replays_only_fully_redacted_native_marker(native_runtime, 
     result = settle(rt)
     assert result['status'] == ('pending' if changed else 'settled')
     assert rows(rt)[rt.original] == before
+
+
+@pytest.mark.parametrize('change', ['late_answer', 'anchor_edit'])
+def test_changed_native_turn_between_selection_and_writer_stays_pending(native_runtime, monkeypatch, change):
+    rt = native_runtime
+    current = begin_read(rt)
+    rt.db.append_message('reader', 'assistant', 'Initial forgettoken answer.')
+    save = rt.owned._save
+    changed = []
+    def intervene(row, metadata):
+        save(row, metadata)
+        if row['metadata']['kind'] != 'supplied' or 'selection' not in metadata or changed:
+            return
+        changed.append(True)
+        if change == 'late_answer':
+            # The native writer has finished before erasure acquires its own
+            # lease. Its final row was absent from the earlier snapshot.
+            rt.db.append_message('reader','assistant','Late forgettoken final answer.')
+        else:
+            rt.db._execute_write(lambda db: db.execute('UPDATE messages SET content=? WHERE id=?',
+                ('Preserve this newly edited unrelated request.', current['_row_id'])))
+    monkeypatch.setattr(rt.owned, '_save', intervene)
+    erase(rt)
+    first = settle(rt)
+    assert changed and first['status'] == 'pending'
+    assert any(row['metadata']['kind']=='supplied' for row in rt.owned._rows())
+    assert rt.db.search_messages('forgettoken', include_inactive=True)
+    if change == 'late_answer':
+        assert settle(rt)['status'] == 'settled'
+        assert not rt.db.search_messages('forgettoken', include_inactive=True)
+    else:
+        assert settle(rt)['status'] == 'pending'
+        assert rows(rt)[current['_row_id']]['content'] == 'Preserve this newly edited unrelated request.'

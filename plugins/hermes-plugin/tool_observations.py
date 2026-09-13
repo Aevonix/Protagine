@@ -187,17 +187,19 @@ def native_input(scope, call_id, expected, *, result_message_id, result_content)
     from hermes_state import _default_db_path
     path = _default_db_path().resolve()
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=.25)) as db:
-        rows = db.execute('''SELECT c.value,m.id,m.content,m.tool_calls FROM messages m,
+        db.row_factory = sqlite3.Row
+        rows = db.execute('''SELECT m.*,c.value FROM messages m,
             json_each(CASE WHEN json_valid(m.tool_calls) THEN m.tool_calls ELSE '[]' END) c
             WHERE m.session_id=? AND m.role='assistant' AND m.active=1 AND m.id<?
               AND json_extract(c.value,'$.id')=? LIMIT 2''',
             (scope.session_id, result_message_id, call_id)).fetchall()
     if len(rows) != 1:
         raise ValueError('A unique original native call is required to include its input')
-    if len(json.loads(rows[0][3])) != 1:
+    row = rows[0]
+    if len(json.loads(row['tool_calls'])) != 1:
         raise ValueError('Original input shares a native row with other calls; retain this result without input')
     try:
-        call = json.loads(rows[0][0])['function']
+        call = json.loads(row['value'])['function']
         name, arguments = call['name'], call['arguments']
         arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
         if name == 'tool_call':
@@ -216,8 +218,11 @@ def native_input(scope, call_id, expected, *, result_message_id, result_content)
     if len(encoded.encode()) + len(result_content.encode()) > MAX_BYTES:
         raise ValueError('Original input and result exceed the combined 16 KiB retention budget; no input was saved')
     from hermes_state import SessionDB
+    if not callable(getattr(SessionDB, 'message_redaction_snapshot', None)):
+        raise ValueError('Original input retention requires native snapshot support; retain the result without input')
     return {'arguments': arguments, 'arguments_sha256': digest}, {
-        '_row_id':rows[0][1], 'role':'assistant', 'content':SessionDB._decode_content(rows[0][2])}
+        '_row_id':row['id'], 'role':'assistant', 'content':SessionDB._decode_content(row['content']),
+        '_native_payload_sha256':SessionDB.message_redaction_snapshot(row)['sha256']}
 
 
 class ToolObservations:

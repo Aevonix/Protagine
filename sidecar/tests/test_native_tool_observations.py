@@ -685,6 +685,28 @@ def test_input_retention_withholds_shared_assistant_call_row(native):
     assert n.db.get_messages('native-session')[1]['tool_calls'] == calls
 
 
+def test_input_changed_after_observation_cannot_gain_new_ownership(native, monkeypatch):
+    n = native
+    if not hasattr(n.db, 'message_redaction_snapshot'):
+        pytest.skip('selected native runtime lacks snapshot formatter')
+    n.complete(arguments={'recipe':'observed-original-input'})
+    n.request()
+    module = importlib.import_module(n.plugin.__name__ + '.tool_observations')
+    read = module.native_input
+    def intervene(*args, **kwargs):
+        original, row = read(*args, **kwargs)
+        changed = [{'id':'call-1','type':'function','function':{
+            'name':'fixture_observe','arguments':'{"keep":"new-unrelated-input"}'}}]
+        n.db._execute_write(lambda db: db.execute('UPDATE messages SET tool_calls=? WHERE id=?',
+                                                  (json.dumps(changed), row['_row_id'])))
+        return original, row
+    monkeypatch.setattr(module, 'native_input', intervene)
+    result = n.retain(include_input=True)
+    assert not result['accepted'] and 'ownership is unavailable' in result['error']
+    assert not [row for row in n.outbox.snapshot() if row['turn_id'].startswith('native-observation:')]
+    assert 'new-unrelated-input' in json.dumps(n.db.get_messages('native-session'))
+
+
 def test_erased_origin_cannot_be_restored_by_pending_delivery(native):
     n = native
     n.complete()
