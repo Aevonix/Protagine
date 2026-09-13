@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.6 - named image recall and uncertain message outcomes
+
+Asking about a retained image by its supplied name or filename now brings back
+the exact reference needed to open the original, even while its caption is
+pending or unavailable. Matching images keep their separate references when a
+name is ambiguous. The existing audience checks, corrections, forgetting and
+context limits apply. A reference identifies an attachment; its contents still
+need to be read. Passage relevance scoring remains unchanged.
+
+If an owner-message acknowledgement is lost after submission, the native tool
+reports an unknown outcome and preserves the existing delivery identity. A
+missing acknowledgement no longer claims that no message was sent. The result
+calls for reconciling that delivery before any new send; it adds no automatic
+retry. Pre-submission checks and normal receipt handling remain unchanged.
+
 ## v1.5.5 - original attachment and executed recipe evidence
 
 Image-only gateway turns retain their actual cached attachment originals through

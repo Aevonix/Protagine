@@ -89,6 +89,11 @@ class RecallSelector:
         # after every text hit can exclude it from the bounded reranker before
         # relevance is assessed. Fuse its rank independently; it still shares
         # the same reranker, abstention threshold and final context budget.
+        # Exact names locate admitted originals even when no passage contains
+        # their visual answer. They share the final budget, not the calibrated
+        # answer-passage cutoff. No generic lexical hit receives this treatment.
+        locators = [row for row in quotations if row.get("kind") == "media_locator"]
+        quotations = [row for row in quotations if row.get("kind") != "media_locator"]
         media = [row for row in quotations if row.get("kind") == "media_description"]
         text = [row for row in quotations if row.get("kind") != "media_description"]
         # Confidence in a belief and certainty that words were quoted are not
@@ -108,7 +113,7 @@ class RecallSelector:
         # its abstention decisions and substantive order, then place only exact
         # unqualified request repeats after the remaining evidence.
         ranked.sort(key=repeats_request)
-        return pack_memory_context(ranked, limit=limit, max_chars=max_chars)
+        return pack_memory_context(locators + ranked, limit=limit, max_chars=max_chars)
 
     async def rerank(
         self,

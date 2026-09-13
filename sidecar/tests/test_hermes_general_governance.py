@@ -809,6 +809,42 @@ def test_model_cannot_select_contact_viewer_or_credentials(runtime, override):
     assert mediator.intents == []
 
 
+def test_owner_message_lost_ack_preserves_unknown_and_same_delivery(runtime, monkeypatch):
+    _module, context, _client, _mediator = runtime
+    mediator = _OwnerMessageMediator.instances[-1]
+    _pre(context, session="s-owner", task="t-owner", turn="turn-owner",
+         platform="sms", sender="+15550001")
+    call = dict(session="s-owner", task="t-owner", turn="turn-owner", call="message-ack")
+    args = {"recipient": "Approved guest", "message": "The requested report is ready."}
+    original_submit = mediator.submit
+    receipts = {}
+
+    def accepted_then_timeout(intent):
+        receipt = original_submit(intent)
+        if intent.delivery_id not in receipts:
+            receipts[intent.delivery_id] = receipt
+            raise TimeoutError("acknowledgement lost after provider acceptance")
+        return receipts[intent.delivery_id]
+
+    monkeypatch.setattr(mediator, "submit", accepted_then_timeout)
+    unknown = _json(_tool(context, "pacomind_send_message", args, **call))
+    assert unknown["status"] == "unknown"
+    assert unknown["effect_performed"] is None
+    assert unknown["delivery_id"] == mediator.requests[0]["delivery_id"]
+    assert unknown["delivery_id"] in receipts
+
+    # Native replay carries the same identity into the existing admission
+    # route. This does not introduce an automatic or model-authored retry.
+    reconciled = _json(_tool(context, "pacomind_send_message", args, **call))
+    assert reconciled == receipts[unknown["delivery_id"]]
+    assert mediator.requests[0] == mediator.requests[1]
+    assert len(receipts) == 1
+    conflict = _json(_tool(context, "pacomind_send_message",
+        {**args, "message": "Changed bytes."}, **call))
+    assert conflict["status"] == "conflict" and conflict["effect_performed"] is False
+    assert len(mediator.requests) == 2
+
+
 def test_owner_message_tool_is_text_owner_only_retry_stable_and_pii_safe(runtime):
     module, context, _client, _mediator = runtime
     owner_mediator = _OwnerMessageMediator.instances[-1]

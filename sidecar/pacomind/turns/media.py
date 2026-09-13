@@ -579,3 +579,73 @@ class SourceMedia:
                     'occurred_at': source['occurred_at'], 'content': row['description'],
                     'relevance': 1 / (61 + len(candidates))})
         return candidates
+
+
+    def named_locators(self, query, hits, *, contact_id, session_id):
+        """Project named originals from current source links, without a caption.
+
+        A supplied label locates an attachment; it does not answer a question
+        about its pixels. Only admitted images on the same source message can
+        qualify. Literal paths and text-only filename mentions admit nothing.
+        Candidate discovery still uses the existing bounded source search.
+        """
+        from .audio import source_text
+        from .idempotency import canonical_turn_digest, source_message_hash
+        from .media_names import matching_names
+        if not contact_id or not query.strip():
+            return []
+        candidates, seen = [], set()
+        with closing(self.ledger._connect()) as conn:
+            for hit in hits:
+                identifier, message_hash = hit.get('turn_id'), hit.get('source_message_hash')
+                if not identifier or not message_hash:
+                    continue
+                source = conn.execute('''SELECT * FROM turn_sources WHERE turn_id=? AND contact_id=?
+                    AND (scope='person' OR session_id=?) AND NOT EXISTS
+                    (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=turn_id)''',
+                    (identifier, contact_id, session_id)).fetchone()
+                if source is None:
+                    continue
+                messages = json.loads(source['messages_json'])
+                message = next((message for message in messages
+                    if source_message_hash(source['session_id'], message) == message_hash), None)
+                if message is None:
+                    continue
+                names = matching_names(query, source_text(message.get('content')))
+                if not names:
+                    continue
+                links = conn.execute('''SELECT l.block_index,m.asset_hash,m.mime_type,m.status
+                    FROM source_media_links l JOIN source_media m ON m.asset_hash=l.asset_hash
+                    WHERE l.turn_id=? AND l.message_hash=? AND m.status!='orphan'
+                    AND m.mime_type IN ('image/png','image/jpeg','image/webp')
+                    ORDER BY l.block_index''', (identifier, message_hash)).fetchall()
+                for link in links:
+                    blocks = message.get('content')
+                    if not isinstance(blocks, list) or not 0 <= link['block_index'] < len(blocks):
+                        continue
+                    block = blocks[link['block_index']]
+                    if not isinstance(block, dict) or block.get('type') != 'image' or block.get('asset_id') != 'sha256:' + link['asset_hash']:
+                        continue
+                    key = (identifier, message_hash, link['block_index'], link['asset_hash'])
+                    if key in seen or not self.store._original_path(link['asset_hash'], link['mime_type']).is_file():
+                        continue
+                    seen.add(key)
+                    candidates.append({'id': 'media-locator:' + hashlib.sha256(
+                        json.dumps(key).encode()).hexdigest(), 'kind': 'media_locator',
+                        'source_uri': 'turn:' + identifier, 'source_turn_id': identifier,
+                        'source_message_hash': message_hash, 'role': message['role'],
+                        'scope': source['scope'], 'contact_id': contact_id, 'session_id': source['session_id'],
+                        'occurred_at': source['occurred_at'], 'ingested_at': source['ingested_at'],
+                        'epistemic_state': 'retained_attachment_locator', 'atomic_evidence': True,
+                        'matched_names': names, 'attachment_index': link['block_index'],
+                        'mime_type': link['mime_type'], 'caption_status': link['status'],
+                        'source_read': {'source_id': identifier, 'source_version': canonical_turn_digest(messages),
+                            'view': 'image', 'asset_hash': link['asset_hash']},
+                        'content': 'Named retained original. This locator does not establish what the image shows; '
+                            'open source_read to inspect the original. Multiple matching attachments remain distinct.'})
+        # This count describes discovered candidates, never a global uniqueness
+        # claim. Keep it even if the shared context budget omits a sibling.
+        for candidate in candidates:
+            candidate['matching_attachment_candidates'] = sum(bool(set(candidate['matched_names']).intersection(
+                other['matched_names'])) for other in candidates)
+        return candidates
