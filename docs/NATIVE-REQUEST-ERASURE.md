@@ -95,6 +95,11 @@ finish during a sidecar outage; discovery of newer events remains unconfirmed.
 An incomplete feed page also remains pending, with its cursor retained for the
 next existing callback. It does not report complete cleanup after one partial page.
 
+Completed ordinary turns publish a canonical memory copy only after exact native
+origin retention succeeds. Failure logs the skipped capture and preserves the
+reply already persisted by Hermes; it does not create an unbound memory copy or
+an empty origin record.
+
 Failed ownership retention withholds the affected source-read result or recall
 from the model request and preserves ordinary current input. The response or
 middleware result reports the failure. This does not make a cross-store atomicity

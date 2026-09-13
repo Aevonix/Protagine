@@ -10,7 +10,7 @@ import pytest
 from pacomind.turns import TurnIdempotencyLedger
 from pacomind.turns.idempotency import canonical_turn_digest
 from test_turn_source_evidence import source_app
-from test_hermes_turn_outbox import _load_client, _load_plugin, _Context, _Client, _Response
+from test_hermes_turn_outbox import _load_client, _load_plugin, _Context, _Client, _Response, _record_origin_storage
 
 
 def stored(ledger):
@@ -146,6 +146,7 @@ async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_
 
 def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, monkeypatch):
     module = _load_plugin('answer_lineage_native')
+    _record_origin_storage(module, monkeypatch)
     ref = {'source_id': 'origin', 'source_version': 'a' * 64}
     forged = {'source_id': 'forged', 'source_version': 'f' * 64}
     # This sidecar-only fixture has no Hermes database. Isolate that storage

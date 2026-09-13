@@ -6,7 +6,7 @@ import importlib
 import pytest
 
 from pacomind.turns import TurnIdempotencyLedger
-from test_hermes_turn_outbox import _Client, _Context, _load_plugin
+from test_hermes_turn_outbox import _Client, _Context, _load_plugin, _record_origin_storage
 
 
 QUESTION = "Can you recover the workshop details I asked you to forget?"
@@ -17,6 +17,7 @@ SAFE_ANSWER = "Those details are unavailable. Please provide them again."
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     module = _load_plugin("pacomind_hermes_survivor_delivery_test")
+    _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
     monkeypatch.setattr(module, "PacoMindClient", _Client)
     monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from test_hermes_turn_outbox import _load_plugin
+from test_hermes_turn_outbox import _load_plugin, _Context, _Client
 from test_native_request_erasure import freshness_response
 from pacomind.turns import TurnIdempotencyLedger
 
@@ -82,6 +82,54 @@ def erase(rt):
 
 def settle(rt):
     return rt.owned.native_settled(session_id='reader', task_id='reader', turn_id='read-turn', platform='cli')
+
+
+@pytest.mark.parametrize('storage_available', [True, False])
+def test_post_hook_publishes_only_after_exact_native_origin_retention(native_runtime, monkeypatch, storage_available):
+    rt = native_runtime
+    monkeypatch.setattr(rt.plugin, 'PacoMindClient', _Client)
+    monkeypatch.setenv('PACOMIND_GENERAL_PLUGIN_ACTIVE', '1')
+    monkeypatch.setenv('PACOMIND_MEMORY_WORKER_TOOLS', '0')
+    monkeypatch.setenv('PACOMIND_MEMORY_TURN_WRITER', 'disabled')
+    context = _Context(rt.outbox.path)
+    rt.plugin.register(context)
+    client = _Client.instances[-1]
+    current = {'role':'user', 'content':'Keep the maintenance receipt.'}
+    kwargs = dict(session_id='reader', task_id='capture-task', turn_id='capture-turn',
+                  platform='sms', sender_id='fixture', user_message=current['content'])
+    context.hooks['pre_llm_call'](**kwargs, conversation_history=[current])
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    answer = {'role':'assistant', 'content':'The maintenance receipt is ready.'}
+    answer['_row_id'] = rt.db.append_message('reader', 'assistant', answer['content'])
+    before = rt.db.get_messages('reader')
+    if not storage_available:
+        def unavailable(*args, **kwargs):
+            raise OSError('Fixture native ownership storage unavailable')
+        monkeypatch.setattr(rt.module.NativeOwnedCopies, '_native_read', unavailable)
+    assert context.hooks['post_llm_call'](**kwargs, conversation_history=[current, answer],
+        assistant_response=answer['content'], model='fixture') is None
+    # Observation cannot suppress or rewrite the already persisted safe reply.
+    assert rt.db.get_messages('reader') == before
+    assert len(client.synced) == int(storage_available)
+    captured = rt.outbox.snapshot()
+    assert len(captured) == int(storage_available)
+    if storage_available:
+        assert captured[0]['payload']['assistant_message'] == answer['content']
+        with closing(rt.outbox._connect()) as db:
+            metadata = json.loads(db.execute("SELECT metadata_json FROM native_source_ownership "
+                "WHERE ownership_id=?", ('origin:' + captured[0]['turn_id'],)).fetchone()[0])
+        assert set(metadata['anchors']) == {str(current['_row_id']), str(answer['_row_id'])}
+
+
+def test_unavailable_origin_leaves_no_empty_binding_before_exact_retry(native_runtime):
+    rt = native_runtime
+    assert not rt.owned.retain_origin(rt.scope, 'capture-source', messages=[])
+    assert not rt.owned._rows()
+    current = {'role':'user', 'content':'Keep the exact maintenance input.'}
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    assert rt.owned.retain_origin(rt.scope, 'capture-source', messages=[current])
+    row, = rt.owned._rows()
+    assert set(row['metadata']['anchors']) == {str(current['_row_id'])}
 
 
 @pytest.mark.parametrize('capture', [False, True])
@@ -183,7 +231,8 @@ def test_unaffected_ownership_does_not_hide_later_pending_erasure(native_runtime
 
 def test_shared_outbox_uses_origin_and_reader_profile_locations(native_runtime, tmp_path, monkeypatch):
     rt = native_runtime
-    rt.owned.retain_origin(rt.scope.__class__(**{**vars(rt.scope), 'session_id':'original'}), 'original-source')
+    assert rt.owned.retain_origin(rt.scope.__class__(**{**vars(rt.scope), 'session_id':'original'}),
+        'original-source', messages=[{'role':'user', 'content':rt.fact, '_row_id':rt.original}])
     root_path = rt.db.db_path
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'helper-profile'))
     helper = rt.state.SessionDB(rt.owned._path())

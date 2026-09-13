@@ -2581,10 +2581,14 @@ def register(ctx: Any) -> None:
             payload["occurred_at"] = str(kwargs["occurred_at"])
         if kwargs.get("timezone"):
             payload["timezone_name"] = str(kwargs["timezone"])
-        native_owned.retain_origin(scope, stable_turn_id, messages=(
+        if not native_owned.retain_origin(scope, stable_turn_id, messages=(
             ([native_origin] if payload.get('user_message') else []) +
             [row for row in (kwargs.get('conversation_history') or [])[-1:]
-             if isinstance(row, dict) and row.get('role') == 'assistant' and type(row.get('_row_id')) is int]))
+             if isinstance(row, dict) and row.get('role') == 'assistant' and type(row.get('_row_id')) is int])):
+            # Finalization already persisted the safe native reply. Do not
+            # publish an unbound canonical copy if its exact origin is lost.
+            logger.warning('Native conversation capture withheld: source ownership unavailable')
+            return None
         try:
             receipt = turn_outbox.enqueue(stable_turn_id, payload, capture_ordinary=True)
         except TurnOutboxConflict:

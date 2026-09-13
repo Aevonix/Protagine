@@ -126,6 +126,8 @@ class NativeOwnedCopies:
                             'role':original['role'], 'content':SessionDB._decode_content(original['content'])}) != digest):
                         raise ValueError('native_source_origin_changed')
                     anchors[str(original['id'])] = {'mode':'payload', 'source_hash':digest}
+            if not anchors:
+                return False
             if row_only_ids:
                 # A sole original tool-call row owns only that exact row. Its
                 # arguments require a full native preimage, not an empty

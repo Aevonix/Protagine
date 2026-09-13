@@ -19,6 +19,7 @@ import threading
 import time
 
 import pytest
+from test_hermes_turn_outbox import _record_origin_storage
 
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "hermes-plugin"
@@ -240,6 +241,7 @@ class _Context:
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
     module = _load_plugin()
+    _record_origin_storage(module, monkeypatch)
     holders: dict[str, object] = {}
     _Mediator.instances.clear()
     _OwnerMessageMediator.instances.clear()
@@ -1754,6 +1756,7 @@ def test_turn_writer_platform_allowlist_is_attested_and_skips_before_enqueue(
     monkeypatch, tmp_path,
 ):
     module = _load_plugin("pacomind_hermes_turn_writer_platform_allowlist_test")
+    _record_origin_storage(module, monkeypatch)
     holders: dict[str, _Client] = {}
 
     class Client(_Client):

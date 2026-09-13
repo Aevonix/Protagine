@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from test_hermes_turn_outbox import _record_origin_storage
 
 
 _PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "hermes-plugin"
@@ -92,6 +93,7 @@ class _Context:
 @pytest.fixture
 def plugin(monkeypatch, tmp_path):
     module = _load_plugin()
+    _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
     module.PacoMindClient = _Client
     monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")
