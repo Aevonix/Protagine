@@ -143,13 +143,21 @@ class NativeOwnedCopies:
                 # arguments require a full native preimage, not an empty
                 # assistant-content hash. Older native service remains usable;
                 # this optional input-retention capability can be unavailable.
+                observations = [anchors[str(message['_row_id'])] for message in messages
+                    if message.get('role') == 'tool' and message.get('_row_id') not in row_only_ids]
+                if len(observations) != 1:
+                    raise ValueError('native_source_origin_unavailable')
                 with SessionDB(self._path()) as native:
                     for snapshot in native.get_message_redaction_snapshot(scope.session_id, list(row_only_ids)):
                         observed = next(message for message in messages if message.get('_row_id') == snapshot['id'])
                         if snapshot['sha256'] != observed.get('_native_payload_sha256'):
                             raise ValueError('native_source_origin_changed')
                         binding = anchors[str(snapshot['id'])]
-                        binding.update(row_only=True, row_sha256=snapshot['sha256'])
+                        # Canonical capture embeds this call's input in its one
+                        # tool observation, not a separate assistant message.
+                        binding.update(row_only=True, row_sha256=snapshot['sha256'],
+                            native_hash=binding.get('native_hash', binding['source_hash']),
+                            source_hash=observations[0]['source_hash'])
             metadata = {'kind':'origin', 'native_db':str(self._path()), 'anchors':anchors}
             with closing(self.outbox._connect()) as db, db:
                 db.execute('INSERT OR IGNORE INTO native_source_ownership VALUES (?,?,?,?,?)',
@@ -221,9 +229,25 @@ class NativeOwnedCopies:
         row['metadata'] = merged
         self.outbox._fsync_storage()
 
-    def _remove(self, row):
+    def _remove(self, row, origin=None):
         with closing(self.outbox._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM native_source_ownership WHERE ownership_id=?', (row['ownership_id'],))
+            if origin is not None:
+                # A later whole erase can run before an earlier partial erase
+                # in hashed row order. Keep their exact shared anchors until
+                # every retained rule settles, including across process retry.
+                stored = db.execute('SELECT rules_json FROM turn_erasures WHERE contact_id=?',
+                                    (row['contact_id'],)).fetchone()
+                rules = [rule for rule in json.loads(stored[0]) if
+                    rule.get('source_turn_id', rule['turn_id']) == origin['turn_id']] if stored else []
+                pending = {value[0] for value in db.execute(
+                    "SELECT json_extract(metadata_json,'$.sequence') FROM native_source_ownership "
+                    "WHERE contact_id=? AND ownership_id LIKE 'erasure:%'", (row['contact_id'],))}
+                if (any(rule.get('whole_source', True) for rule in rules)
+                        and not any(rule['sequence'] in pending for rule in rules)):
+                    db.execute('DELETE FROM native_source_ownership WHERE ownership_id=?',
+                               (origin['ownership_id'],))
         self.outbox._fsync_storage()
 
     def _location(self, row, owner_rows, origin=None):
@@ -417,7 +441,7 @@ class NativeOwnedCopies:
                             else:
                                 raise ValueError('native_erasure_routing_unavailable')
                         if receipt.get('status') == 'redacted':
-                            self._remove(row)
+                            self._remove(row, origin)
                             result['redacted_rows'] += len(receipt['redacted_ids'])
                             full_ids = {item['id'] for item in selected if item['mode'] == 'payload'}
                             for linked in owner_rows:
@@ -427,11 +451,6 @@ class NativeOwnedCopies:
                                         and linked['metadata']['anchor_id'] in full_ids):
                                     self._remove(linked)
                                     removed.add(linked['ownership_id'])
-                            if row['metadata']['kind'] == 'erasure':
-                                rule = next(value for value in rules if value['sequence'] == row['metadata']['sequence'])
-                                if rule.get('whole_source', True):
-                                    if origin is not None:
-                                        self._remove(origin)
                         else:
                             result['pending'] += 1
                     except Exception as error:

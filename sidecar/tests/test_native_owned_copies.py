@@ -523,6 +523,78 @@ def test_partial_canonical_answer_erasure_preserves_its_exact_user_origin(native
     assert not rt.db.search_messages('forgettoken', include_inactive=True)
 
 
+@pytest.mark.parametrize('prior_erasures', [0, 2])
+def test_partial_and_whole_erasure_share_origin_until_both_settle(native_runtime, prior_erasures):
+    rt = native_runtime
+    # Two prior real events make the hashed pending-row order place the later
+    # whole erasure before the partial one, without changing processing order.
+    for index in range(prior_erasures):
+        text = 'Previous removed item ' + str(index)
+        rt.db.append_message('original', 'user', text)
+        rt.ledger.record_source('previous-' + str(index), contact_id='owner', session_id='original',
+            messages=[{'role':'user', 'content':text}], derive_claims=False)
+        rt.ledger.erase_sources(contact_id='owner', turn_ids=['previous-' + str(index)])
+    assert settle(rt)['status'] == 'settled'
+    current = {'role':'user', 'content':'Use the exact orchard source.'}
+    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    answer = {'role':'assistant', 'content':'The orchard badge is forgettoken violet.'}
+    answer['_row_id'] = rt.db.append_message('reader', 'assistant', answer['content'])
+    assert rt.owned.retain_origin(rt.scope, 'overlapping-reader', messages=[current, answer])
+    rt.ledger.record_source('overlapping-reader', contact_id='owner', session_id='reader', messages=[
+        {'role':'user', 'content':current['content']},
+        {'role':'assistant', 'content':answer['content'], '_supplied_sources':[rt.ref]}], derive_claims=False)
+    kept = rt.db.append_message('reader', 'user', 'Keep this separate calendar request.')
+    before = rows(rt)[kept]
+    erase(rt)
+    rt.ledger.erase_sources(contact_id='owner', turn_ids=['overlapping-reader'])
+    rt.owned._feed('owner')
+    _, rules = rt.outbox.erasure_state('owner')
+    paired = {r['sequence']:r for r in rules if r['source_turn_id']=='overlapping-reader'}
+    ordered = [paired[row['metadata']['sequence']]['whole_source'] for row in rt.owned._rows(actionable=True)
+               if row['metadata'].get('sequence') in paired]
+    assert ordered == ([False, True] if prior_erasures == 0 else [True, False])
+    assert settle(rt)['status'] == 'settled'
+    rt.owned = rt.module.NativeOwnedCopies(rt.memory, rt.scopes)
+    assert settle(rt)['status'] == 'settled'
+    assert not rt.owned._rows()
+    after = rows(rt)
+    assert after[current['_row_id']]['content'] == '[Content removed.]'
+    assert after[answer['_row_id']]['content'] == '[Content removed.]'
+    assert after[kept] == before
+
+
+def test_cascaded_tool_observation_erases_its_exact_call_input(native_runtime):
+    rt = native_runtime
+    user = rt.db.append_message('reader', 'user', 'Inspect the orchard observation; keep this question.')
+    call = {'id':'orchard-call', 'type':'function',
+            'function':{'name':'inspect_record', 'arguments':'{"label":"forgettoken input"}'}}
+    input_id = rt.db.append_message('reader', 'assistant', None, tool_calls=[call])
+    tool = {'role':'tool', 'content':'The inspected orchard badge is violet.'}
+    tool['_row_id'] = rt.db.append_message('reader', 'tool', tool['content'], tool_call_id='orchard-call')
+    expected = rt.db.get_message_redaction_snapshot('reader', [input_id])[0]
+    input_row = {'role':'assistant', 'content':None, '_row_id':input_id,
+                 '_native_payload_sha256':expected['sha256']}
+    assert rt.owned.retain_origin(rt.scope, 'observation-with-input', messages=[tool, input_row],
+                                 row_only_ids=[input_id])
+    rt.ledger.record_source('observation-with-input', contact_id='owner', session_id='reader', messages=[
+        {'role':'tool', 'content':tool['content'], '_native_tool_observation':'native-tool-observation-v1',
+         '_observation_sources':[rt.ref]}], derive_claims=False)
+    answer = rt.db.append_message('reader', 'assistant', 'The observation says violet.')
+    kept = rt.db.append_message('reader', 'user', 'Keep the unrelated meeting task.')
+    before = rows(rt)
+    erase(rt)
+    partial = next(r for r in rt.ledger.erasure_feed('owner')['events']
+                   if r['source_turn_id']=='observation-with-input')
+    assert not partial['whole_source']
+    assert settle(rt)['status'] == 'settled'
+    after = rows(rt)
+    assert after[user] == before[user] and after[kept] == before[kept]
+    assert after[tool['_row_id']]['content'] == '[Content removed.]'
+    assert after[answer]['content'] == '[Content removed.]'
+    assert json.loads(after[input_id]['tool_calls'])[0]['function']['arguments'] == '{}'
+    assert not rt.db.search_messages('forgettoken', include_inactive=True)
+
+
 def test_incomplete_feed_cannot_report_settled_before_next_existing_callback(native_runtime, monkeypatch):
     rt = native_runtime
     other = rt.db.append_message('reader', 'user', 'Second purgefixture record.')
