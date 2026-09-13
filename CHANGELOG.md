@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.15 - task reviews as learning evidence
+
+An execution host can submit a retained review of a completed operational task
+through the existing execution API. The review carries its artifact, original
+inputs and source references into the existing judgment worker. It remains an
+attributed machine assessment. Task timing and owner approval stay unchanged.
+Corrections and forgetting invalidate the dependent judgment. See
+[self judgments](docs/SELF-JUDGMENTS.md) for the host integration.
+
+Starting the local sidecar now detaches its input from the setup terminal, so
+setup can return while the service keeps running. The setup guide uses the
+README's release commands to avoid a separate stale version pin.
+
+Useful judgment formation and subsequent decisions still require observation
+with the deployment's selected model.
+
 ## v1.5.14 - reminders that follow corrected memory
 
 The `pacomind_reminder` plugin tool schedules an existing recalled deadline through

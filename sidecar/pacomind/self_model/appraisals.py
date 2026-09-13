@@ -190,7 +190,8 @@ def enqueue(conn, turn_id, contact_id, messages, *, scope, runtime_observation=F
     # Task lifecycle is evidence about execution, not the requesting person's
     # behavior, trustworthiness or blame. Only the judgment worker consumes it.
     if (runtime_observation and len(messages) == 1
-            and messages[0].get('_task_execution_outcome') == 'task-execution-outcome-v1'):
+            and (messages[0].get('_task_execution_outcome') == 'task-execution-outcome-v1'
+                 or messages[0].get('_task_artifact_assessment') == 'task-artifact-assessment-v1')):
         return
     if contact_id and scope == 'person' and any(
             m.get('role') == 'user' or runtime_observation and

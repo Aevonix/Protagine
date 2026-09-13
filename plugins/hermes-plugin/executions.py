@@ -37,6 +37,18 @@ class ExecutionObserver:
         except Exception:
             logger.debug("Execution observation unavailable; liveness will become unknown")
 
+    def assess(self, payload):
+        """Explicit host/evaluator admission of an already performed review.
+
+        This is not a model tool or lifecycle callback. The caller supplies
+        exact retained task, source and document receipts; no regrading occurs.
+        Unlike best-effort telemetry, admission errors reach the evaluator.
+        """
+        response = self.client.post('/v1/host/executions/assess', json=payload,
+            timeout=5, _deadline_monotonic=time.monotonic()+5)
+        response.raise_for_status()
+        return response.json()
+
     def start(self, scope, *, review_parent=None, input_refs=None, task_experience=None, **kwargs):
         turn_id = str(kwargs.get("turn_id") or "")
         session_id = str(kwargs.get("session_id") or "")

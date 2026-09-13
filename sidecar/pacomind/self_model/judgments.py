@@ -143,6 +143,10 @@ def initialize(conn):
 def _attribution(message):
     if message.get('role') == 'user':
         return 'owner_statement_not_independently_verified'
+    if (message.get('role') == 'assistant'
+            and message.get('_task_artifact_assessment') == 'task-artifact-assessment-v1'):
+        from .task_assessments import ATTRIBUTION
+        return ATTRIBUTION
     if (message.get('role') == 'assistant' and
             message.get('_native_runtime_observation') == 'native-runtime-observation-v1'):
         return 'runtime_recorded_execution_metadata_not_output_verification'
@@ -248,6 +252,10 @@ class SelfJudgments:
                         source_message_hash(source['session_id'], m) == ref['message_hash']), None)
         if message is None:
             return False
+        if message.get('_task_artifact_assessment') == 'task-artifact-assessment-v1':
+            from .task_assessments import supported
+            return supported(conn, message=message, source_id=ref['turn_id'],
+                contact_id=self.owner_id, session_id=source['session_id'])
         if _attribution(message) == 'runtime_recorded_execution_metadata_not_output_verification':
             if message.get('_task_execution_outcome') == 'task-execution-outcome-v1':
                 from pacomind.turns.source_annotations import inputs_unannotated
@@ -366,6 +374,8 @@ class SelfJudgments:
                          f"Supporting source handles: {', '.join(e['handle'][:18] for e in row['support'])}; "
                          f"contrary: {', '.join(e['handle'][:18] for e in row['contrary']) or 'none cited'}. "
                          f"Source turn:{row['source_turn_id']}; supersedes:{row['supersedes']}.")
+            if row.get('premise_basis') == 'host_reported_machine_assessment_unverified':
+                line += ' Basis: attributed machine assessment, not verified quality; owner approval unobserved.'
             if len('\n'.join(lines)) + len(line) + 1 <= 2400:
                 lines.append(line)
                 if source_ids is not None:
@@ -474,7 +484,7 @@ class SelfJudgments:
                 if not content.strip():
                     continue
                 message_hash = source_message_hash(job['session_id'], message)
-                if (attribution == 'runtime_recorded_execution_metadata_not_output_verification'
+                if (attribution != 'owner_statement_not_independently_verified'
                         and not self._supported(conn, {'turn_id': job['turn_id'], 'message_hash': message_hash})):
                     continue
                 premises = self._premises(conn, job['turn_id'], message_hash)
@@ -640,6 +650,9 @@ class SelfJudgments:
             stored['update_interval_seconds'] = _interval()
             stored['premise_basis'] = ('owner_reconsideration' if job.get('reconsider_revision_id')
                 else 'retained_reviewed_claim_or_runtime_observation')
+            if any(e['attribution'] == 'host_reported_machine_assessment_unverified'
+                   for e in payload['evidence'] + payload['previous_evidence']):
+                stored['premise_basis'] = 'host_reported_machine_assessment_unverified'
             evidence = {e['handle']: e for e in payload['evidence'] + payload['previous_evidence']}
             for field in ('support', 'contrary'):
                 stored[field] = [{k: evidence[handle][k] for k in ('handle', 'turn_id', 'message_hash')} for handle in result[field]]
@@ -686,6 +699,13 @@ class SelfJudgments:
                 return True
             payload, previous, heads = prepared
             system = SYSTEM
+            if any(e['attribution'] == 'host_reported_machine_assessment_unverified'
+                   for e in payload['evidence'] + payload['previous_evidence']):
+                system += ('\nMachine assessments are attributed and fallible. The host binds the received '
+                    'artifact bytes to this task; it does not independently verify their origin or the '
+                    'review findings. Retain specific limitations and unknown owner approval. Do not '
+                    'turn this review into general competence, owner sentiment or verified quality. '
+                    'Abstain if no useful bounded judgment is supported.')
             if any(e['attribution'] == 'runtime_recorded_execution_metadata_not_output_verification'
                    for e in payload['evidence'] + payload['previous_evidence']):
                 system += ('\nRuntime observations establish only their listed execution outcomes and timing, '

@@ -8,18 +8,10 @@ PacoMind does not patch or download Hermes, models, containers or machine servic
 
 Phase 1 is in development and validation.
 
-Use Git to fetch the current tagged release, then install its matching packages
-in a private Python environment. No source edits are needed. The environment may
-be shared with Hermes; the commands below keep an existing Hermes installation
-intact:
-
-```bash
-python3.12 -m venv "$HOME/.local/share/pacomind/venv"
-source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.9 https://github.com/Aevonix/PacoMind.git
-python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
-pacomind init --hermes-python /path/to/hermes/.venv/bin/python
-```
+Follow the [Get started commands](../README.md#get-started) to fetch the current
+tagged release and install its matching packages in a private Python environment.
+No source edits are needed. The environment may be shared with Hermes; those
+commands keep an existing Hermes installation intact.
 
 Use a Python version supported above. Replace the interpreter placeholder with
 the Python from the Hermes runtime you actually run. Keeping both PacoMind

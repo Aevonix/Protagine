@@ -1489,6 +1489,7 @@ def _cmd_start_daemon(host: str, port: int, force: bool) -> None:
          "pacomind.server:app",
          "--host", host,
          "--port", str(port)],
+        stdin=subprocess.DEVNULL,
         stdout=open(log_path, "a"),
         stderr=subprocess.STDOUT,
         start_new_session=True,

@@ -128,6 +128,81 @@ classification. Controlled tests must retain that limitation rather than claim
 ordinary-use learning. This connection does not prove a later useful opinion or
 independently evaluate task output.
 
+### Machine assessments of task artifacts
+
+A host evaluator can explicitly admit an already performed machine review via
+`POST /v1/host/executions/assess`. This uses the existing execution API: scoped
+`turns:write`, an exact owner person grant, and the same authenticated principal
+that recorded the execution. The execution must be terminal and prospectively
+classified operational. This operation does not run a review, change task
+timestamps or forecasts, or reopen its previous judgment disposition.
+
+The host supplies the exact execution/task/session/turn IDs, original admitted
+`input_refs`, current `runtime_source_ref`, and the complete `source_refs` that
+were recorded with the task output. It supplies UTF-8 documents as objects with
+`name`, `content` and `sha256`: one `artifact`, one `assessment`, and optionally
+up to four `context_documents`. The complete rendered evidence must fit the
+existing 16,000-character judgment budget; excess evidence is rejected, not
+silently clipped. `assessed_at` is the reported timestamp with a timezone;
+`reviewer_identity` and `reviewer_model` remain `unknown` when not recorded.
+
+The server verifies the received document hashes and source revisions. The
+artifact-to-run association remains the authenticated host's report, not an
+independent server-side file check. The source identifies the review as an
+unverified machine assessment; owner approval stays unobserved. It cannot grant
+permission, establish a global quality grade or change a contact appraisal.
+
+The existing host caller is `pacomind_hermes.executions.ExecutionObserver.assess`.
+After a real evaluator finishes, it can submit the retained first assessment
+using its existing scoped client; no model tool or extra review worker is added:
+
+```python
+import json
+from pacomind_hermes.executions import ExecutionObserver
+
+# Read the exact completed association through the existing task store.
+handoff, _ = native_tasks.handoffs.resolve(task_id)
+output = handoff["response"]["source_dependencies"]
+# runtime_source is the current source-reader receipt for this execution's
+# task-execution source. Its typed facts retain the originally registered
+# session/turn IDs even if native compression later rotated the session.
+facts = json.loads(runtime_source["content"])["messages"][0]["_task_execution_facts"]
+payload = {
+    "execution_id": facts["execution_id"],
+    "task_id": handoff["id"],
+    "contact_id": handoff["source"]["contact_id"],
+    "session_id": facts["session_id"],
+    "turn_id": facts["turn_id"],
+    "input_refs": handoff["source"]["input_refs"],
+    "runtime_source_ref": {key: runtime_source[key] for key in ("source_id", "source_version")},
+    "source_refs": output["source_refs"],
+    "artifact": retained_artifact_document,
+    "assessment": retained_first_review_document,
+    "context_documents": retained_review_context_documents,
+    "assessed_at": retained_review_timestamp,
+    "reviewer_identity": recorded_reviewer_identity_or_unknown,
+    "reviewer_model": recorded_reviewer_model_or_unknown,
+}
+receipt = ExecutionObserver(scoped_client).assess(payload)
+```
+
+This same explicit call supports a finite operator import of a preserved review
+and future ordinary host evaluations. It is not called merely because a task
+finished: a real assessment must exist, and qualification tasks remain excluded.
+Admission errors propagate to the evaluator. Exact replay returns the existing
+source; altered metadata under the same execution/artifact/review identity is
+rejected. The first review is never regraded or rewritten by this operation.
+
+The existing source ledger retains the complete assessment as attributed
+assistant text, so normal source reading and exact source annotations work.
+This differs from metadata-only lifecycle telemetry: the assessment is actual
+review evidence and receives the ordinary source index. Original input, supplied
+context, runtime-source or assessment correction withholds its supported view;
+erasure removes the dependent source and judgment through existing lineage.
+The normal worker may abstain. Any resulting view states its machine-assessment
+basis and unknown owner approval in relevant owner-turn context. Useful behavior
+still requires observation in a later actual decision.
+
 Newly attached internal native reviews can also contribute a runtime observation
 when the existing review observer reads an ended crash, timeout, spawn failure
 or exhausted execution from the owned native ledger. This is prospective: old
