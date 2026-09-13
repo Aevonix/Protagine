@@ -201,6 +201,12 @@ class NativeTasks:
         if active is not None and active['adapter'] is self.adapter:
             return finish_native_turn(**kwargs)
 
+    def execution_experience(self, **kwargs):
+        from .native_task_platform import ACTIVE, execution_experience
+        active = ACTIVE.get()
+        if active is not None and active['adapter'] is self.adapter:
+            return execution_experience(**kwargs)
+
     def native_scope_fields(self, **kwargs):
         """Project the retained real sender into this exact native task turn.
 
@@ -325,7 +331,7 @@ class NativeTasks:
                 for row in self.handoffs.recent(contact_id=self.owner):
                     self.sources.authorize_control(row['source'], scope)
                     items.append(self._metadata(row))
-                roles = self.adapter.config.extra.get('task_model_roles') if self.adapter is not None else None
+                roles = self.adapter.configured_task_model_roles() if self.adapter is not None else None
                 return json.dumps({'items': items, 'view': 'retained_associations',
                     'complete_running_inventory': False,
                     'configured_model_roles': sorted(key for key in roles
@@ -343,8 +349,16 @@ class NativeTasks:
                     request_fields.append(args['model_role'])
                 request_id = hashlib.sha256(json.dumps(request_fields,
                     sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                origin = source.get('origin') or {}
+                # Local owner permissions do not establish ordinary use.
+                # Operators classify purpose through trusted admit() instead.
+                ordinary = (scope.authority_lane == 'owner'
+                    and getattr(scope, 'resolution_status', '') == 'resolved'
+                    and origin.get('platform') == getattr(scope, 'platform', '')
+                    and origin.get('platform') not in getattr(self.sources, 'attested_system_platforms', {'cli'}))
                 row = self.handoffs.admit(request_id=request_id, request=args['request'],
-                    source_input=source, model_role=selected)
+                    source_input=source, model_role=selected,
+                    experience='operational' if ordinary else None)
                 identity = row['id']
                 observed = self._call('submit', identity)
                 return json.dumps({'task_id': identity, 'accepted': True, 'executor': 'native_hermes',

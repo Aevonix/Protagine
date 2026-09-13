@@ -53,6 +53,8 @@ keyring.chmod(0o600)
     'model': {'provider': 'custom', 'default': 'fixture-model', 'base_url': 'http://model.fixture/v1'},
     'providers': {'task-interactive': {
         'base_url': 'http://model.fixture/v1', 'api_key': 'fixture-task-model-key'}},
+    'platforms': {'pacomind_task': {'extra': {'task_model_roles': {
+        'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}}}},
     'auxiliary': {'title_generation': {'enabled': False}},
     'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4}, 'toolsets': ['pacomind'],
     'display': {'platforms': {'pacomind_task': {'streaming': False, 'tool_progress': 'off'}}},
@@ -241,8 +243,6 @@ import tools.tirith_security
 tools.tirith_security.ensure_installed = lambda **kwargs: False
 config = GatewayConfig(sessions_dir=home/'sessions', loop_watchdog=False)
 platform_config = PlatformConfig(enabled=True, typing_indicator=False, gateway_restart_notification=False)
-platform_config.extra['task_model_roles'] = {
-    'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}
 config.platforms = {Platform('pacomind_task'): platform_config}
 runner = GatewayRunner(config)
 adapter = platform_registry.create_adapter('pacomind_task', platform_config)

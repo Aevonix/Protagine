@@ -103,6 +103,31 @@ Source erasure removes dependent judgment prose and topic text, including
 superseded history. Opaque head tombstones prevent an older view from reviving.
 Fresh retained evidence can establish a new view later.
 
+With reflection enabled, prospectively classified operational native tasks also
+contribute terminal observations through the existing execution registry. Both
+completion and failure can be considered. The record retains the attempted
+request's source handles, origin, lifecycle, duration and available request
+metadata. A completed turn does not establish correct output, useful work,
+external effects or owner approval. These facts support limited process
+judgments; they do not enqueue relationship appraisals.
+
+Runtime facts remain canonical metadata with empty recall text. The judgment
+worker renders them when needed, and a source handle can open the record. They
+create no lexical or vector memory chunks. Input corrections invalidate support;
+erasure follows the existing source lineage. Replayed observations retain the
+first record without another judgment job. The usual update rate and owner
+correction controls remain in force.
+
+Ordinary resolved owner-channel task submissions are classified operational.
+Trusted in-process admissions can explicitly declare operational or qualification
+purpose. Local operator permissions alone do not establish that distinction;
+unclassified admissions and old records remain excluded. Purpose is not a
+model-facing tool argument. A qualification deliberately admitted through an
+identical ordinary owner-channel path is indistinguishable without trusted
+classification. Controlled tests must retain that limitation rather than claim
+ordinary-use learning. This connection does not prove a later useful opinion or
+independently evaluate task output.
+
 Newly attached internal native reviews can also contribute a runtime observation
 when the existing review observer reads an ended crash, timeout, spawn failure
 or exhausted execution from the owned native ledger. This is prospective: old

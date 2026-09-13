@@ -47,6 +47,8 @@ class ExecutionRegistry:
     def observe(self, value: dict, *, principal_id: str, contact_id: str) -> dict:
         from pacomind.self_model.execution_forecasts import safe_reconcile
         safe_reconcile(self, contact_id)
+        from pacomind.self_model.execution_outcomes import reconcile
+        reconcile(self, contact_id)
         now = self.clock()
         immutable = (principal_id, contact_id, value["session_id"], value["turn_id"], value["parent_execution_id"], value["platform"])
         with closing(self.ledger._connect()) as conn, conn:
@@ -86,6 +88,16 @@ class ExecutionRegistry:
                     # References expire with these operational observations.
                     # Source text remains only in the canonical source store.
                     metadata['input_refs'] = inputs
+            experience = value.get('task_experience')
+            if experience is not None:
+                if previous:
+                    if metadata.get('task_experience') != experience:
+                        raise ValueError('execution_experience_binding_conflict')
+                elif (not metadata['start_observed'] or not inputs or value['parent_execution_id']
+                      or value['platform'] in {'cron', 'background_review', 'subagent'}):
+                    raise ValueError('prospective_root_task_experience_required')
+                else:
+                    metadata['task_experience'] = experience
             conn.execute('INSERT OR REPLACE INTO execution_runtime_observations VALUES (?,?)',
                          (value['execution_id'], json.dumps(metadata, separators=(',', ':'))))
             # Metadata is operational and bounded in time, not another memory archive.
@@ -93,6 +105,8 @@ class ExecutionRegistry:
             conn.execute('DELETE FROM execution_runtime_observations WHERE execution_id NOT IN (SELECT execution_id FROM execution_observations)')
         from pacomind.self_model.execution_forecasts import safe_observe
         forecast = safe_observe(self, value['execution_id'], contact_id)
+        from pacomind.self_model.execution_outcomes import safe_observe as observe_outcome
+        observe_outcome(self, value['execution_id'], contact_id)
         return {"accepted": True, "lease_seconds": 120, **({'forecast': forecast} if forecast else {})}
 
     def view(self, *, contact_id: str, owner: bool = False, session_id: str = "", limit: int = 20,
@@ -100,6 +114,8 @@ class ExecutionRegistry:
         if owner:
             from pacomind.self_model.execution_forecasts import safe_reconcile
             safe_reconcile(self, contact_id)
+            from pacomind.self_model.execution_outcomes import reconcile
+            reconcile(self, contact_id)
         now = self.clock()
         clauses = ["state='observed'", "last_observed_at >= ?"]
         args: list = [now - 7 * 86400]

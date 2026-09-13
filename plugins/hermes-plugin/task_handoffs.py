@@ -51,7 +51,14 @@ class TaskHandoffs:
                 source_json TEXT NOT NULL, created REAL NOT NULL,
                 dispatch_json TEXT, observations_json TEXT NOT NULL DEFAULT '{}')''')
 
-    def admit(self, *, request_id, request, source_input, model_role=None):
+    def admit(self, *, request_id, request, source_input, model_role=None, experience=None):
+        """Retain task purpose when the trusted caller knows it prospectively.
+
+        Operator work can pass operational; evaluation runs pass qualification.
+        Neither is a correctness claim. An evaluation deliberately admitted as
+        an ordinary owner-channel request is indistinguishable at this boundary;
+        qualify through this in-process option when that distinction is needed.
+        """
         if (not isinstance(request_id, str) or not request_id or len(request_id) > 256
                 or any(ord(char) < 32 for char in request_id)):
             raise self._error('A bounded stable identifier is required')
@@ -66,6 +73,13 @@ class TaskHandoffs:
         # authenticated channel. Caller-supplied provenance is not authority.
         resolved = self._resolve_source(source_input)
         source = self._source_record(resolved)
+        # Trusted transport/operator admission only, never a model tool field.
+        # Unclassified and old tasks stay unclassified. This describes purpose,
+        # not correctness, owner endorsement of output, or permission to act.
+        if experience is not None:
+            if not isinstance(experience, str) or experience not in {'operational', 'qualification'}:
+                raise self._error('A known task experience purpose is required')
+            source['task_experience'] = experience
         payload = json.dumps(source, sort_keys=True, separators=(',', ':'))
         immutable = {key: value for key, value in source.items() if key != 'watermark'}
         identity_fields = [request_id, request, immutable]

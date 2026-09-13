@@ -37,6 +37,13 @@ class ExecutionInputReference(BaseModel):
     input_message_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class ExecutionTaskExperience(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    task_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+    purpose: Literal['operational', 'qualification']
+    origin_platform: str = Field(min_length=1, max_length=64, pattern=r'^[a-z0-9_.-]+$')
+
+
 class ExecutionObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     execution_id: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -52,6 +59,7 @@ class ExecutionObservation(BaseModel):
     runtime: ExecutionRuntimeObservation | None = None
     # Exact already-admitted human inputs, never native task wrappers or titles.
     input_refs: list[ExecutionInputReference] | None = Field(default=None, min_length=1, max_length=64)
+    task_experience: ExecutionTaskExperience | None = None
 
 
 def authorized_viewer(request: Request, contact_id: str, *, scope: str) -> tuple[str, bool]:

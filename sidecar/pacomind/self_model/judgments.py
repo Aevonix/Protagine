@@ -102,6 +102,10 @@ def _topic_key(topic):
 
 
 def _text(message):
+    if (message.get('_task_execution_outcome') == 'task-execution-outcome-v1'
+            and isinstance(message.get('_task_execution_facts'), dict)):
+        from .execution_outcomes import evidence_text
+        return evidence_text(message['_task_execution_facts'])
     content = message.get('content')
     if isinstance(content, list):
         content = '\n'.join(p.get('text', '') for p in content if p.get('type') in {'text', 'input_text'})
@@ -245,6 +249,12 @@ class SelfJudgments:
         if message is None:
             return False
         if _attribution(message) == 'runtime_recorded_execution_metadata_not_output_verification':
+            if message.get('_task_execution_outcome') == 'task-execution-outcome-v1':
+                from pacomind.turns.source_annotations import inputs_unannotated
+                # A correction changes the attempted work's interpretation
+                # without rewriting the original request or runtime receipt.
+                return bool(message.get('_supplied_inputs')) and inputs_unannotated(
+                    self.ledger, message['_supplied_inputs'])
             return True
         expected = ref.get('premise_claim_ids') or [p['claim_id'] for p in ref.get('admitted_premises', [])]
         current = {p['claim_id'] for p in self._premises(conn, ref['turn_id'], ref['message_hash'])}
@@ -464,6 +474,9 @@ class SelfJudgments:
                 if not content.strip():
                     continue
                 message_hash = source_message_hash(job['session_id'], message)
+                if (attribution == 'runtime_recorded_execution_metadata_not_output_verification'
+                        and not self._supported(conn, {'turn_id': job['turn_id'], 'message_hash': message_hash})):
+                    continue
                 premises = self._premises(conn, job['turn_id'], message_hash)
                 if (attribution == 'owner_statement_not_independently_verified' and
                         not job.get('reconsider_revision_id') and not premises):

@@ -95,6 +95,15 @@ override. Resubmitting the same captured request under a changed mapping reports
 the conflicting binding instead of silently launching a replacement. No model
 call is needed for role selection, and this adds no executor or routing proxy.
 
+Role listing and new selections read the selected profile's current
+`platforms.<platform>.extra` settings through Hermes' existing read-only loader.
+Updating that file does not require reconstructing the adapter or restarting the
+gateway. Removing an explicit role makes a new request for that name unavailable;
+it does not fall through to the default. Removing the default leaves new tasks
+without an explicit role on Hermes' ordinary route. An explicit accepted snapshot and
+an existing session override retain their selected provider/model. This does not
+add fleet discovery or change the runtime's provider failure handling.
+
 A request describing a time limit is still natural-language instruction. This
 field does not enforce per-task time or iteration budgets; the native gateway's
 configured execution limits and existing stop control remain in force.

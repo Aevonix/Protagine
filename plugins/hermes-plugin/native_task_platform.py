@@ -48,6 +48,22 @@ def finish_native_turn(**kwargs):
         active['handoffs'].observe_terminal(active['id'], kwargs)
 
 
+def execution_experience(**kwargs):
+    """Prospective task purpose from the bound admission, never hook prose."""
+    active = ACTIVE.get()
+    if (active is None or kwargs.get('parent_session_id')
+            or kwargs.get('platform') != active['adapter'].platform.value
+            or not active.get('native')
+            or any(kwargs.get(key) != value for key, value in active['native'].items())):
+        return None
+    row = active['handoffs'].control(active['id'], require_task_grant=True)
+    purpose = row['source'].get('task_experience')
+    if purpose not in {'operational', 'qualification'}:
+        return None
+    return {'task_id': row['id'], 'purpose': purpose,
+            'origin_platform': row['source'].get('origin', {}).get('platform', 'unknown')}
+
+
 def bound_task_contact(platform, sender, session_id):
     """Return the source-checked native participant, never create a task handle.
 
@@ -143,9 +159,26 @@ class NativeTaskAdapter(BasePlatformAdapter):
         await asyncio.to_thread(resolve, chat_id)
         return {'name': 'Accepted background work', 'type': 'dm'}
 
+    def _task_role_config(self):
+        """Read only role settings from the selected profile for new work."""
+        from hermes_cli.config import load_config_readonly
+        platforms = load_config_readonly().get('platforms', {})
+        if not isinstance(platforms, dict):
+            raise self._error('Native task platform configuration is invalid')
+        platform = platforms.get(self.platform.value, {})
+        if not isinstance(platform, dict) or not isinstance(platform.get('extra', {}), dict):
+            raise self._error('Native task role configuration is invalid')
+        return platform.get('extra', {})
+
+    def configured_task_model_roles(self):
+        roles = self._task_role_config().get('task_model_roles', {})
+        if not isinstance(roles, dict):
+            raise self._error('Native task model roles are invalid')
+        return roles
+
     def _task_model_role(self, retained=None):
         """One explicit native projection; credentials remain native-owned."""
-        selected = retained if retained is not None else self.config.extra.get('task_model_role')
+        selected = retained if retained is not None else self._task_role_config().get('task_model_role')
         if selected is None:
             return None
         if (not isinstance(selected, dict) or set(selected) != {'role', 'provider', 'model'}
@@ -164,7 +197,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
 
     def select_task_model_role(self, role):
         """Resolve a named task role from the profile, before durable admission."""
-        roles = self.config.extra.get('task_model_roles')
+        roles = self.configured_task_model_roles()
         if (not isinstance(role, str) or not role.strip() or len(role) > 256
                 or not isinstance(roles, dict) or role not in roles):
             raise self._error('The requested task model role is not configured')

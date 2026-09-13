@@ -8,7 +8,7 @@ from conftest import run_python
 
 
 PROBE = r'''
-import asyncio, json, socket, sys
+import asyncio, copy, json, socket, sys
 from pathlib import Path
 from types import SimpleNamespace
 sys.path[:0] = [sys.argv[1], *([sys.argv[2]] if sys.argv[2] else [])]
@@ -24,9 +24,9 @@ from pacomind_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
 from pacomind_hermes.native_task_platform import NativeTaskAdapter, TASK_ROLE_METADATA
 
 home = Path('profile').absolute(); home.mkdir(exist_ok=True)
-(home/'config.yaml').write_text(json.dumps({'providers': {
+providers = {
     'fast': {'base_url':'http://unused-fast/v1','api_key':'fixture-fast-key'},
-    'deep': {'base_url':'http://unused-deep/v1','api_key':'fixture-deep-key'}}}))
+    'deep': {'base_url':'http://unused-deep/v1','api_key':'fixture-deep-key'}}
 outbox = TurnOutbox(Path('outbox.sqlite3').absolute()); outbox.prepare()
 source = {'version':1,'principal':'hermes:cli','source_session_id':'owner-turn',
     'input_refs':[{'source_id':'input','input_message_hash':'a'*64}],
@@ -40,6 +40,12 @@ controller.handoffs = TaskHandoffs(controller.database,
 coding = {'role':'coding','provider':'fast','model':'fast-one'}
 reasoning = {'role':'reasoning','provider':'deep','model':'deep-one'}
 extra = {'task_model_role':reasoning, 'task_model_roles':{'coding':coding,'reasoning':reasoning}}
+def publish(selected):
+    pending = home/'config.pending'
+    pending.write_text(json.dumps({'providers': providers,
+        'platforms': {'api_server': {'extra': selected}}}))
+    pending.replace(home/'config.yaml')
+publish(extra)
 config = GatewayConfig(sessions_dir=home/'sessions')
 store = SessionStore(config.sessions_dir, config)
 scope = SimpleNamespace(valid_participant=True,contact_id='owner',authority_lane='owner')
@@ -70,8 +76,18 @@ async def main():
     assert store.get_session_metadata(key,TASK_ROLE_METADATA) == coding
     row = controller.handoffs.get(result['task_id'])
     assert row['model_role'] == coding and 'fixture-fast-key' not in json.dumps(row)
+    # An on-disk profile change reaches this SAME adapter, not a mutated startup object.
+    replacement = {'role':'coding','provider':'replacement','model':'deep-two'}
+    providers['replacement'] = {'base_url':'http://unused-new/v1','api_key':'fixture-new-key'}
+    changed = copy.deepcopy(extra)
+    changed['task_model_roles']['coding'] = replacement
+    changed['task_model_roles']['planning'] = {'role':'planning','provider':'deep','model':'plan-one'}
+    changed['task_model_role'] = {'role':'reasoning','provider':'replacement','model':'default-two'}
+    publish(changed)
+    assert adapter.config.extra['task_model_roles']['coding'] == coding
+    inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
+    assert inventory['configured_model_roles'] == ['coding','planning','reasoning'], inventory
     # Same captured request/name cannot silently become different work after a rebind.
-    extra['task_model_roles']['coding'] = {'role':'coding','provider':'deep','model':'deep-two'}
     rebound = json.loads(await asyncio.to_thread(controller.handle,
         {'operation':'submit','request':'Check the supplied source','model_role':'coding'},scope))
     assert 'cannot be rebound' in rebound['error'] and len(events) == 1
@@ -81,13 +97,39 @@ async def main():
         {'operation':'submit','request':'Check a different source','model_role':'coding'},scope))
     second_key = adapter._event_session_key(events[-1])
     assert second['accepted'] and second_key != key
-    assert store.get_model_override(second_key) == {'provider':'deep','model':'deep-two'}
-    # Existing callers without a role retain the profile default.
+    assert store.get_model_override(second_key) == {'provider':'replacement','model':'deep-two'}
+    assert controller.handoffs.get(second['task_id'])['model_role'] == replacement
+    assert controller.handoffs.get(result['task_id'])['model_role'] == coding
+    # New callers without a role use the current profile default at native selection.
     default = json.loads(await asyncio.to_thread(controller.handle,
         {'operation':'submit','request':'Plan another task'},scope))
     assert default['accepted'] and 'model_role' not in default
     assert store.get_model_override(adapter._event_session_key(events[-1])) == {
-        'provider':'deep','model':'deep-one'}
+        'provider':'replacement','model':'default-two'}
+    # Removed or invalid explicit mappings cannot fall through to that default.
+    unchanged_count, unchanged_events = controller.handoffs.count(), len(events)
+    del changed['task_model_roles']['coding']
+    publish(changed)
+    inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
+    assert inventory['configured_model_roles'] == ['planning','reasoning'], inventory
+    for invalid in (changed['task_model_roles'], None, [],
+                    {'coding': {'role':'coding','provider':'missing','model':'x'}},
+                    {'coding': {'role':'different','provider':'deep','model':'x'}}):
+        changed['task_model_roles'] = invalid
+        publish(changed)
+        failed = json.loads(await asyncio.to_thread(controller.handle,
+            {'operation':'submit','request':'Do not use the default','model_role':'coding'},scope))
+        assert 'error' in failed and controller.handoffs.count() == unchanged_count, failed
+        assert len(events) == unchanged_events
+    assert store.get_model_override(key) == {'provider':'fast','model':'fast-one'}
+    # Removing the map and default does not resurrect their startup values.
+    publish({})
+    inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
+    assert inventory['configured_model_roles'] == [], inventory
+    unconfigured = json.loads(await asyncio.to_thread(controller.handle,
+        {'operation':'submit','request':'Use the ordinary native route'},scope))
+    assert unconfigured['accepted']
+    assert store.get_model_override(adapter._event_session_key(events[-1])) is None
     # Admission persisted before a native session existed. Reopening uses its snapshot.
     held = controller.handoffs.admit(request_id='held',request='Inspect another file',
         source_input=source,model_role=coding)
