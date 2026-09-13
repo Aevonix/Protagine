@@ -325,7 +325,7 @@ def test_changed_anchor_is_pending_without_erasing_new_unrelated_content(native_
                'native_source_anchor_changed' for row in rt.owned._rows())
 
 
-def test_unknown_historical_location_remains_observably_pending(native_runtime):
+def test_unknown_historical_location_remains_observably_pending(native_runtime, caplog):
     rt = native_runtime
     rt.ledger.record_source('unknown-native-source', contact_id='owner', session_id='old-helper-session',
         messages=[{'role':'user','content':'A source from an unobserved historical helper.'}], derive_claims=False)
@@ -334,6 +334,10 @@ def test_unknown_historical_location_remains_observably_pending(native_runtime):
     assert result['status'] == 'pending' and result['pending'] == 1
     assert any(row['session_id']=='old-helper-session' and row['metadata'].get('pending_reason') ==
                'native_source_location_unobserved' for row in rt.owned._rows())
+    assert settle(rt)['pending'] == 1
+    notices = [record for record in caplog.records
+               if record.getMessage() == 'Native owned-copy erasure pending (native_source_location_unobserved)']
+    assert len(notices) == 1
 
 
 @pytest.mark.parametrize('platform', ['subagent', 'cron'])

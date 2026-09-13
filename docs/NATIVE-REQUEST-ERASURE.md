@@ -81,8 +81,10 @@ finish during a sidecar outage; discovery of newer events remains unconfirmed.
 The outbox schema advances to version 3 without copying source content. Every
 process sharing that outbox must select the updated adapter before reopening it,
 including separately pinned voice and helper clients. An older adapter cannot
-reopen this schema. Recovery must retain the version 3 reader and native writer;
-restoring an old database would restore erased data and is not a rollback path.
+reopen this schema. Recovery must retain the version 3 reader. If the selected
+Hermes build lacks the native writer hooks, storage cleanup remains pending
+until that interface returns; ordinary request filtering still applies.
+Restoring an old database would restore erased data and is not a rollback path.
 
 The new tests exercise real native SQLite/FTS, captured and capture-disabled
 readers, preserved human input, late answers, replay, changed anchors, separate

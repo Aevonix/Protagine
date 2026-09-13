@@ -333,11 +333,12 @@ class NativeOwnedCopies:
                         result['pending'] += 1
                         reason = str(error) if (type(error) is ValueError
                             and re.fullmatch(r'native_[a-z_]{1,80}', str(error))) else type(error).__name__
-                        try:
-                            self._save(row, {**row['metadata'], 'pending_reason':reason})
-                        except Exception:
-                            pass  # The original durable ownership still requires reconciliation.
-                        logger.warning('Native owned-copy erasure pending (%s)', reason)
+                        if row['metadata'].get('pending_reason') != reason:
+                            try:
+                                self._save(row, {**row['metadata'], 'pending_reason':reason})
+                            except Exception:
+                                pass  # The original durable ownership still requires reconciliation.
+                            logger.warning('Native owned-copy erasure pending (%s)', reason)
                     finally:
                         if native is not None:
                             native.close()
