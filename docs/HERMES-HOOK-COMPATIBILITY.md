@@ -1,4 +1,4 @@
-# Hermes callback compatibility
+# Hermes runtime compatibility
 
 PacoMind's optional [concurrent background tasks](NATIVE-TASK-CHANNELS.md) require
 healthy overlapping plugin callbacks to retain each invocation's context and
@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`37fc68b45c2351957a7fa262978b0f1174b1bd44`](https://github.com/Kurcide/hermes-agent/commit/37fc68b45c2351957a7fa262978b0f1174b1bd44),
+`6c33542693e12b1e9df9fea774fb57216a767788`](https://github.com/Kurcide/hermes-agent/commit/6c33542693e12b1e9df9fea774fb57216a767788),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/37fc68b45c2351957a7fa262978b0f1174b1bd44/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/6c33542693e12b1e9df9fea774fb57216a767788/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -59,6 +59,20 @@ tools. It can now return its findings to the parent. The actual claimed
 worker still must complete or block its own card before ending. The change
 reuses Hermes' existing delegation ContextVar; it adds no setting or hook.
 
+The build adds an optional `memory.refresh_on_turn` setting, default false.
+When enabled, Hermes checks its curated MEMORY.md and USER.md snapshots at each
+user turn. Changed rendered memory triggers the existing prompt rebuild.
+Unchanged resident turns retain the cached prompt and do not rerun plugin
+renderers. A reconstructed conversation refreshes once, since its saved prompt
+can contain an older snapshot than the current files. Tool iterations within
+the same turn retain their prepared prompt. This applies to native curated
+files; PacoMind's existing per-turn source recollection remains separate.
+
+The native rebuild also refreshes its other prompt sections. Changed bytes can
+cost a prefix-cache miss. The installer does not enable this setting or alter
+an existing deployment. A deployment that needs immediate curated corrections
+can enable it in the selected Hermes profile after selecting this build.
+
 ## What is qualified
 
 The two existing compatibility changes were reapplied to the 0.21.2 release
@@ -73,6 +87,14 @@ responses and the actual native Kanban store and completion tools. The
 unmodified qualified base fails both delegated-return cases; the correction
 passes them while retaining actual worker completion and blocking. These
 checks establish the runtime stop boundary, not useful model completion.
+
+The curated-memory change passed 153 affected native checks. Two parameterized
+invariants exercise actual file writes, prompt restoration, plugin rendering,
+the native turn prologue and outgoing message assembly. Corrections and deletions
+reach the next turn; unchanged turns do not rebuild; history and task identity
+remain intact. Four correction/restore cases fail on the previous build. These
+checks use controlled requests without inference and do not establish correct
+model interpretation of dates or useful recall in an ordinary conversation.
 
 The following callback and timeout counts describe their earlier qualification;
 the retained behavior is rechecked on the current native candidate above.
@@ -140,6 +162,10 @@ final output transforms alone do not establish failed or interrupted completion.
 Also retain the delegated-return and actual-worker completion regressions.
 Remove the stop-gate adjustment when an upstream release satisfies both
 using its own dispatcher/delegation ownership boundary.
+
+Remove the curated-memory extension when upstream provides equivalent opt-in
+freshness for resident and restored sessions. Retain its correction, deletion
+and unchanged-prompt checks; avoid restoring unconditional prompt rebuilding.
 
 Keep the regression tests and upstream attribution after removing the fork
 selection. Do not carry an old dispatcher diff over a newer implementation

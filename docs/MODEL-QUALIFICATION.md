@@ -39,6 +39,24 @@ Each case makes one existing-router completion call, with a 60-second case deadl
 
 These are narrow checks, not a broad intelligence benchmark. Independent expected fields are frozen separately from model input. Cases and supporting consumers can add artifact, ledger, input-exposure and answer checks without supplying those oracles to the model. An evaluation model judge is not required; the existing memory admission judge remains part of the consumer being tested.
 
+Three direct vision cases send packaged PNG pixels through the same completion router:
+
+| Case | Visible evidence and independent checks |
+| --- | --- |
+| `vision.spatial-arrangement` | Colored shapes, their image quadrants and an arrow's direction |
+| `vision.legible-labels` | Three large four-character labels, read in their actual top-to-bottom order |
+| `vision.covered-and-unknown` | A visible label, plus unknown covered text, owner and capture time |
+
+```sh
+pacomind models evaluate visual --config /private/model-config.json --roles vision --output /private/results/vision-01
+```
+
+`visual` is an example existing binding name. Each case requires its `supportsVision` declaration, makes one completion call with no fallback, and permits 768 output tokens within a 60-second case deadline and 16 KiB result bound. A text-only candidate is recorded as unsupported before a request; another image-capable binding cannot earn it a pass. An image capability declaration or HTTP success alone does not pass the visual field checks. Exact image-bearing inputs, case/oracle hashes, returned text, actual selected binding, reported model identity and available usage remain in the existing result records.
+
+A non-JSON answer fails the declared output format. That parser failure alone is not a separately observed visual hallucination; inspect the retained answer before attributing its cause. Semantic field failures remain distinct from missing or malformed output.
+
+The fixtures are neutral generated diagrams with large fixed-font labels. They do not test dense photographs, tiny text, arbitrary OCR, video, native image tools, canonical media retention, automatic recollection or physical camera delivery. Their public, fixed cases are useful for a small role comparison, not an unseen general-vision benchmark or proof against an endpoint that falsely claims image support. Keep the default text/memory cases and native chat suite separate. The fixture generator is `sidecar/tests/fixtures/generate_qualification_vision.py`; expected fields are specified separately from it.
+
 Memory checks report unexercised behavior as unknown: absent promoted claims do not demonstrate their grounding, and junk sources skipped after an earlier processing failure do not demonstrate useful abstention. An observed junk promotion fails even if another source was skipped. A case without junk inputs omits that inapplicable check.
 
 Memory case version 4 matches finite, independently specified complete representations across subject, subject identity, relation, value, source and category. A value may omit a noun already represented by its relation when the oracle explicitly permits that equivalent form. A wrong subject or negated relation cannot pass merely because its value contains the expected phrase. Selected correction cards must also match their retained claims. These are declared case contracts, not a universal semantic-equivalence classifier; inspect the bounded completion evidence when an unlisted representation fails. Previous cases and reports retain their original grades. Changed evaluator identities prevent treating a measurement correction as a model gain.

@@ -145,6 +145,48 @@ async def test_pair_carries_current_owner_annotation_and_erasure(tmp_path, monke
     assert (await packet(ledger, hits)).content == ''
 
 
+@pytest.mark.asyncio
+async def test_corrected_conversation_renders_attributed_data_without_nested_json_strings(tmp_path, monkeypatch):
+    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    ledger = TurnIdempotencyLedger(tmp_path/'source.db')
+    request = 'Which laboratory schedule says "May 14"?\nI thought the date had changed.'
+    response = 'I used "May 13" from the old laboratory notes.\nThat explanation was wrong.'
+    correction = 'The owner reported May 14 as a proposed move date, not a completed transfer.'
+    hits = seed(ledger, request=request, response=response)
+    ref = ledger.source_references(['reply'], **SCOPE)[0]
+    ledger.append_source_annotation(**SCOPE, annotation_id='date-note', **ref,
+        excerpt=response, correction=correction, author_principal='person')
+
+    result = await packet(ledger, hits)
+    row, = result.selected
+    stored = copy.deepcopy(row)
+    rendered, = [json.loads(line[2:]) for line in result.content.splitlines() if line.startswith('- ')]
+    evidence = rendered['content']
+    expected = json.loads(row['content'])
+    expected['original']['content'] = json.loads(expected['original']['content'])
+    assert evidence == expected
+    pair = evidence['original']['content']
+    assert pair['input']['quote'] == request and pair['input']['role'] == 'user'
+    assert pair['response']['quote'] == response and pair['response']['role'] == 'assistant'
+    assert pair['input']['source_version'] == pair['response']['source_version'] == ref['source_version']
+    note, = evidence['corrections']
+    assert note['target'] == ref and note['excerpt'] == response
+    assert note['correction'] == correction and note['author_principal'] == 'person'
+    assert note['source_id'].startswith('source-annotation:') and note['recorded_at']
+    assert 'not independent verification' in pair['interpretation']
+    assert 'conflicting corrections remain unresolved' in evidence['interpretation']
+    assert rendered['state'] == 'correction_evidence'
+    assert len(json.dumps(evidence, ensure_ascii=False)) < len(json.dumps(row['content'], ensure_ascii=False))
+    assert row == stored
+    # The same complete packet fits exactly; reducing its budget must not
+    # quietly separate the old answer from its correction.
+    assert pack_memory_context([row], max_chars=len(result.content))[1] == result.content
+    bounded, small = pack_memory_context([row], max_chars=len(result.content)-1)
+    assert len(small) < len(result.content)
+    assert not bounded or bounded[0]['conversation_context'] == 'full_source_required'
+    assert correction not in small and 'old laboratory notes' not in small
+
+
 @pytest.mark.parametrize('change', ['partial-erasure', 'changed-revision', 'cross-person', 'session-checkpoint'])
 def test_missing_changed_or_unattested_input_cannot_become_paired_evidence(tmp_path, change):
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')

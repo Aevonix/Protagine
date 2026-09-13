@@ -4,6 +4,13 @@ This provider mounts PacoMind as a context sidecar without changing Hermes core.
 It binds every real-channel turn to the transport sender resolved by PacoMind and
 keeps the host's custom voice/phone/intercom path independent.
 
+Current clock context answers what time it is now. A scheduled event's date,
+time and destination must remain attached to evidence for that event. The
+provider asks the agent to check current evidence before stating a dated plan
+and to keep unrelated itineraries out of clock answers. Automatic recollection
+and the general plugin's memory search/source tools already supply that evidence.
+These instructions guide responses; they do not guarantee correct event binding.
+
 ## Configuration
 
 ```yaml

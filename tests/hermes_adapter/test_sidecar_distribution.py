@@ -18,6 +18,9 @@ def test_sidecar_wheel_contains_product_without_embedded_tests(tmp_path):
                      "intelligence/components/tool_learner.py",
                      "intelligence/synthesis/insight_deliverer.py"):
             assert "pacomind/" + name in names
+        for name in ("vision-arrangement.png", "vision-labels.png", "vision-covered-label.png"):
+            member = "pacomind/qualification/fixtures/" + name
+            assert archive.read(member) == (ROOT / "sidecar" / member).read_bytes()
     installed = tmp_path / "installed"
     run_python("-m", "pip", "install", "--no-deps", "--no-index", "--target", installed,
                wheel, cwd=tmp_path)
@@ -26,5 +29,7 @@ def test_sidecar_wheel_contains_product_without_embedded_tests(tmp_path):
     run_python("-c", "from pacomind.briefings.aggregators import CalendarAggregator; "
                "from pacomind.events.bus import EventBus; "
                "from pacomind.intelligence.components.tool_learner import ToolLearner; "
-               "from pacomind.intelligence.synthesis.insight_deliverer import InsightDeliverer",
+               "from pacomind.intelligence.synthesis.insight_deliverer import InsightDeliverer; "
+               "from pacomind.qualification.cases import select_cases; "
+               "assert len(select_cases(['vision'])) == 3",
                cwd=tmp_path, env=env)
