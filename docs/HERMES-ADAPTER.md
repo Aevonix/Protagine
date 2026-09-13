@@ -287,8 +287,8 @@ markers cannot establish these dependencies; historical unlinked paraphrases are
 not reconstructed. Other transports need to forward the same structured references
 before their answer copies have this guarantee.
 
-The host outbox migrates its existing v1 database transactionally to v2 with a
-separate contact-bound erasure watermark. Canonical turn/checkpoint delivery
+The host outbox retains a separate contact-bound erasure watermark.
+Canonical turn/checkpoint delivery
 fetches `/v1/host/memory/sources/erasures` before PUT. A missing endpoint, outage,
 incomplete page or server history behind the host cursor holds replay. The host
 purges both pending payloads and delivered receipts, preserving unrelated pending
@@ -304,12 +304,16 @@ outbox delivery callbacks must use `PacoMindClient.sync_turn(..., outbox=outbox)
 to participate in reconciliation.
 
 Partial erasure events retain exact message hashes under opaque event IDs in the
-existing cursor sequence. Predecessor readers still filter those message copies
-without treating surviving user sources as wholly deleted. Downgrading preserves
-completed erasures, but predecessor writers do not record new answer dependencies.
+existing cursor sequence without treating surviving user sources as wholly deleted.
+The qualified native runtime also provides selective transcript erasure. The
+adapter records authentic source-read and recall ownership, then uses the native
+writer after turn settlement to remove source payloads and linked answers from
+SQLite/FTS. Independent human input survives removal of its recalled `api_content`.
+See [native owned-copy reconciliation](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
+for profile selection, pending states and deployment constraints.
 
-This is scoped source erasure, not a claim of global forgetting. Persisted native
-Hermes transcripts and `api_content` bytes, backups, prior graph records without source lineage,
+This is scoped source erasure, not a claim of global forgetting. Unlinked native
+transcripts and compaction summaries, backups, prior graph records without source lineage,
 legacy shared facts, ToM, commitments, and other old derivative stores need their
 own erasure adapters. Offline hosts retain bytes until reconnecting; filesystem
 snapshots and physical-media remnants are outside this logical-delete contract.

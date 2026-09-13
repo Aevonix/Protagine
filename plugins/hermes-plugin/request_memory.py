@@ -507,8 +507,10 @@ class RequestMemory:
 
     def __init__(self, client, outbox):
         self.client, self.outbox = client, outbox
+        self.ownership = None
         self._lock = threading.Lock()
         self._aliases = OrderedDict()
+        self._native_anchors = OrderedDict()
         self._supplied = {}
         self._requests_seen = set()
         self._read_receipts = {}
@@ -644,7 +646,39 @@ class RequestMemory:
                 self._read_receipts[key][tool_call_id]['document_read'] = {
                     field: result[field] for field in ('source_id', 'source_version', 'read_revision', 'offset')
                 } | {field: result['document'][field] for field in ('asset_hash', 'page')}
-            return True
+        if self.ownership is not None:
+            self.ownership.retain(scope, result['source_refs'])
+        return True
+
+    def native_anchor(self, scope):
+        """The native-observed current row, including its persisted row ID."""
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            value = self._aliases.get(key)
+            current = value[1] if value else None
+            if current is None:
+                current = self._native_anchors.get(key)
+            return dict(current) if isinstance(current, dict) and current.get('role') == 'user' else None
+
+    def observe_native_anchor(self, scope, messages, *, user_message=None):
+        """Storage ownership for actual child/cron input, never owner testimony."""
+        if scope is None or not scope.valid_participant or not messages:
+            return
+        current = messages[-1]
+        if (not isinstance(current, dict) or current.get('role') != 'user'
+                or user_message is None or current.get('content') != user_message):
+            return
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            self._native_anchors[key] = current
+            self._native_anchors.move_to_end(key)
+            while len(self._native_anchors) > 32:
+                self._native_anchors.popitem(last=False)
+
+    def release_native_anchor(self, scope):
+        if scope is not None:
+            with self._lock:
+                self._native_anchors.pop((scope.contact_id, scope.task_id, scope.turn_id), None)
 
     def supplied_snapshot(self, scope):
         """Copy actual supplied lineage without ending the native turn.
@@ -919,6 +953,8 @@ class RequestMemory:
                 if observed_key in self._supplied:
                     self._supplied[observed_key].update(supplied)
                     self._requests_seen.add(observed_key)
+            if self.ownership is not None and supplied:
+                self.ownership.retain(scope, list(supplied.values()))
         return {'request': filtered, 'source': 'pacomind',
                 'freshness_retryable': freshness_retryable and not fresh,
                 'reason': 'source_erasure_checked' if fresh else 'source_erasure_unavailable'}

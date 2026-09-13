@@ -680,7 +680,16 @@ class TurnOutbox:
     """
 
     _APPLICATION_ID = 1_129_270_361  # big-endian ASCII ``COLY``
-    _USER_VERSION = 2
+    _USER_VERSION = 3
+    _NATIVE_OWNERSHIP_SCHEMA = """
+        CREATE TABLE native_source_ownership (
+            ownership_id TEXT PRIMARY KEY,
+            contact_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+    """
     _ERASURE_SCHEMA = """
         CREATE TABLE turn_erasures (
             contact_id TEXT PRIMARY KEY,
@@ -767,7 +776,8 @@ class TurnOutbox:
         )
 
     @classmethod
-    def _expected_objects(cls, *, predecessor: bool, legacy: bool = False) -> tuple[tuple[Any, ...], ...]:
+    def _expected_objects(cls, *, predecessor: bool, legacy: bool = False,
+                          native_ownership: bool = True) -> tuple[tuple[Any, ...], ...]:
         table_sql = cls._PREDECESSOR_SCHEMA if predecessor else cls._SCHEMA
         objects: list[tuple[Any, ...]] = [
             ("index", "sqlite_autoindex_turn_outbox_1", "turn_outbox", None),
@@ -783,6 +793,11 @@ class TurnOutbox:
                 ("index", "sqlite_autoindex_turn_erasures_1", "turn_erasures", None),
                 ("table", "turn_erasures", "turn_erasures", cls._ERASURE_SCHEMA),
             ])
+            if native_ownership:
+                objects.extend([
+                    ("index", "sqlite_autoindex_native_source_ownership_1", "native_source_ownership", None),
+                    ("table", "native_source_ownership", "native_source_ownership", cls._NATIVE_OWNERSHIP_SCHEMA),
+                ])
         return tuple(sorted(objects, key=lambda row: (row[0], row[1])))
 
     @classmethod
@@ -933,6 +948,10 @@ class TurnOutbox:
             if (application_id, user_version) in ((0, 0), (cls._APPLICATION_ID, 1)):
                 return "version_one"
             return "unknown"
+        if (cls._objects_match(objects, cls._expected_objects(predecessor=False, native_ownership=False))
+                and cls._table_columns(connection) == cls._CURRENT_COLUMNS
+                and (application_id, user_version) in ((0, 0), (cls._APPLICATION_ID, 2))):
+            return "version_two"
         if cls._objects_match(
             objects, cls._expected_objects(predecessor=False),
         ) and cls._table_columns(connection) == cls._CURRENT_COLUMNS:
@@ -968,15 +987,20 @@ class TurnOutbox:
                 )
                 connection.execute(cls._PENDING_INDEX)
                 mutated = True
-            elif state in {"unversioned_current", "version_one"}:
+            elif state in {"unversioned_current", "version_one", "version_two"}:
                 mutated = True
             elif state != "current":
                 raise PrivateSQLitePathError(
                     "private SQLite schema is unknown or malformed"
                 )
             if mutated:
-                if state != "unversioned_current":
+                if state in {"empty", "predecessor", "version_one"}:
                     connection.execute(cls._ERASURE_SCHEMA)
+                if state != "unversioned_current":
+                    connection.execute(cls._NATIVE_OWNERSHIP_SCHEMA)
+                    for retained in connection.execute('SELECT contact_id,rules_json FROM turn_erasures').fetchall():
+                        for rule in json.loads(retained[1]):
+                            cls._retain_native_erasure(connection, retained[0], rule)
                 connection.execute(f"PRAGMA application_id={cls._APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version={cls._USER_VERSION}")
             cls._validate_current_schema(connection)
@@ -1286,6 +1310,7 @@ class TurnOutbox:
                 if not isinstance(rule["session_id"], str) or not isinstance(rule["turn_id"], str) or not isinstance(rule["message_hashes"], list) or any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in rule["message_hashes"]):
                     raise ValueError("invalid erasure rule")
                 by_id[rule["turn_id"]] = dict(rule)
+                self._retain_native_erasure(connection, contact_id, rule)
             rules = list(by_id.values())
             # Purge delivered receipts too: they still contain original content.
             rows = connection.execute("SELECT turn_id,payload_json,state FROM turn_outbox").fetchall()
@@ -1309,6 +1334,16 @@ class TurnOutbox:
         finally:
             connection.close()
         self._fsync_storage()
+
+    @staticmethod
+    def _retain_native_erasure(connection, contact_id, rule):
+        # The feed cursor and pending native cleanup commit together. This is
+        # ownership bookkeeping, never a delivery or canonical source payload.
+        identity = 'erasure:' + hashlib.sha256(json.dumps(
+            [contact_id, rule['sequence']], separators=(',', ':')).encode()).hexdigest()
+        connection.execute('''INSERT OR IGNORE INTO native_source_ownership
+            VALUES (?,?,?,?,?)''', (identity, contact_id, rule['session_id'], rule['turn_id'],
+            json.dumps({'kind': 'erasure', 'sequence': rule['sequence']}, separators=(',', ':'))))
 
     def erasure_state(self, contact_id: str, *, deadline_monotonic: float | None = None) -> tuple[int, list[dict[str, Any]]]:
         """Read the same durable rules used to prevent forgotten turn replay."""

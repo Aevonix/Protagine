@@ -8,18 +8,18 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`6c33542693e12b1e9df9fea774fb57216a767788`](https://github.com/Kurcide/hermes-agent/commit/6c33542693e12b1e9df9fea774fb57216a767788),
+`75f6ea6e50841b5d003e046432fdbba0060b20ac`](https://github.com/Kurcide/hermes-agent/commit/75f6ea6e50841b5d003e046432fdbba0060b20ac),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/6c33542693e12b1e9df9fea774fb57216a767788/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/75f6ea6e50841b5d003e046432fdbba0060b20ac/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
 The callback change adapts [upstream PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763),
 specifically [source commit
 `b9c112c83b60b91e918341cbb587a6a913d9d9eb`](https://github.com/NousResearch/hermes-agent/commit/b9c112c83b60b91e918341cbb587a6a913d9d9eb).
-The three production files match that proposal, and the original contributor's
-authorship is preserved. The fork retains two synchronized regression tests.
+The callback correction preserves the original contributor's authorship and
+retains two synchronized regression tests.
 
 | Runtime file | Purpose |
 | --- | --- |
@@ -72,6 +72,16 @@ The native rebuild also refreshes its other prompt sections. Changed bytes can
 cost a prefix-cache miss. The installer does not enable this setting or alter
 an existing deployment. A deployment that needs immediate curated corrections
 can enable it in the selected Hermes profile after selecting this build.
+
+The build also adds selective native payload redaction with exact preimages,
+native writer leases, FTS updates, replay markers and gateway cache eviction.
+`on_native_turn_settled` runs after native persistence and lease release;
+`on_gateway_turn_settled` runs after the outer gateway lease release in the
+owning profile. These hooks let an adapter finish a forget requested during a
+turn. They do not discover source ownership or create an erasure scheduler.
+PacoMind supplies that lineage through its existing source and outbox machinery.
+The adapter's [storage contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
+lists the supported copies and remaining limits.
 
 ## What is qualified
 

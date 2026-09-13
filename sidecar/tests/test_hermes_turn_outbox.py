@@ -95,7 +95,7 @@ _PENDING_INDEX = (
     "ON turn_outbox(state, lease_expires_at, created_at, turn_id)"
 )
 _APPLICATION_ID = 1_129_270_361  # big-endian ASCII ``COLY``
-_USER_VERSION = 2
+_USER_VERSION = 3
 
 
 def _create_database(path: Path, statements: list[str], *, application_id=0,

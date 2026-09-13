@@ -20,7 +20,7 @@ jobs:
           # Explicit qualification build; latest unmodified upstream is checked
           # separately by hermes-upstream.yml. See the compatibility note.
           repository: Kurcide/hermes-agent
-          ref: 6c33542693e12b1e9df9fea774fb57216a767788
+          ref: 75f6ea6e50841b5d003e046432fdbba0060b20ac
           path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -62,8 +62,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
         run: |
-          python -c "import hermes_state"
-          python -m pytest sidecar/tests/test_native_tool_observations.py -q
+          python -c "from hermes_state import SessionDB; assert callable(getattr(SessionDB, 'redact_message_payloads', None))"
+          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py -q
 
   python:
     runs-on: ubuntu-latest

@@ -43,14 +43,54 @@ source and outbox tombstones remain unchanged.
   Already retained deletion hashes still apply. The middleware returns a reduced
   request instead of raising into Hermes' fail-open middleware behavior.
 
-This closes an exact replay boundary, not all of P3. Native transcript content,
-stored `api_content`, inactive compression generations, trajectory files and
-backups are not rewritten. A later resume is filtered again. Arbitrary assistant
+The request filter closes an exact replay boundary; it does not rewrite stored
+transcripts. The separate native writer integration below removes owned copies.
+Arbitrary assistant
 paraphrases, summaries without retained packet markers, tools containing copied
 arguments, static identity files and unlinked historical notes have no invented
 lineage. Memory from another contact requires that contact's erasure scope; a
-relationship to that contact is not itself source ownership. Storage redaction
-needs a supported native row-level operation with real dependency information.
+relationship to that contact is not itself source ownership.
+
+## Native owned-copy reconciliation
+
+The qualified Hermes build supplies a selective native writer and two settled
+turn hooks. Authentic source reads and actually supplied recall record their
+source revisions, native database location and current input anchor in one
+metadata-only table in the existing outbox. This also works when ordinary CLI
+capture is disabled. It does not create a canonical copy of the CLI answer.
+Ordinary canonical capture records its native database location before enqueue,
+so profiles sharing an outbox can find the actual source transcript.
+
+Canonical erasure events and pending native ownership commit with the existing
+feed cursor. Reconciliation verifies each anchor, selects its owned turn span,
+and asks the native writer to check exact payload preimages and writer leases.
+Native row IDs, routing and tool-call pairing remain intact. Owned tool results,
+reasoning and assistant answers lose their payloads and FTS entries. A recalled
+copy attached to independent human input clears only that row's `api_content`.
+This is conservative turn dependency, not proof that every answer word used the
+forgotten source.
+
+An active writer leaves the operation pending. The standalone settled hook or
+the gateway's post-release hook retries after persistence; the existing gateway
+idle tick can retry retained work. Each attempt expands the verified turn again,
+including a final answer written after the first attempt. Gateway erasure also
+evicts the affected agent cache. Changed anchors and unknown historical profile
+locations stay pending with a retained reason. Previously retained erasures can
+finish during a sidecar outage; discovery of newer events remains unconfirmed.
+
+The outbox schema advances to version 3 without copying source content. Every
+process sharing that outbox must select the updated adapter before reopening it,
+including separately pinned voice and helper clients. An older adapter cannot
+reopen this schema. Recovery must retain the version 3 reader and native writer;
+restoring an old database would restore erased data and is not a rollback path.
+
+The new tests exercise real native SQLite/FTS, captured and capture-disabled
+readers, preserved human input, late answers, replay, changed anchors, separate
+profile databases and the actual gateway writer/cache boundary. They use
+synthetic sources and controlled calls, not live model observations. Unknown
+historical reads, untracked compaction summaries or forks, trajectory files,
+request dumps and backups still need explicit ownership and cleanup. Do not
+report global forgetting from completion of this bounded storage operation.
 
 ## Native history retrieval
 
@@ -80,8 +120,9 @@ evidence. Unavailable storage, incomplete erasure freshness or an unresolved
 native turn returns an explicit failure rather than an empty successful result
 or an unchecked fallback.
 
-This is logical non-recollection of known sources, not physical deletion.
-Raw native SQLite/FTS history, communication summaries, archived prompts, logs,
+History filtering itself is logical non-recollection of known sources. The
+native writer above separately erases selected owned SQLite/FTS payloads.
+Unlinked history, communication summaries, archived prompts, logs,
 backups and previously unlinked paraphrases remain outside this projection.
 It does not revoke arbitrary owner shell/file access or make a claim about
 bytes already sent to a model. Do not report complete forgetting until the
