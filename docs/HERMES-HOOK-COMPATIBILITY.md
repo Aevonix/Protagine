@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`e27761866126a0bcc846ca5796ab0185a9dd76b1`](https://github.com/Kurcide/hermes-agent/commit/e27761866126a0bcc846ca5796ab0185a9dd76b1),
+`3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf`](https://github.com/Kurcide/hermes-agent/commit/3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/e27761866126a0bcc846ca5796ab0185a9dd76b1/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/3454fd7b5e5b18ec60038ad7c0e1a83a2c4cf9cf/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -86,7 +86,25 @@ PacoMind supplies that lineage through its existing source and outbox machinery.
 The adapter's [storage contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
 lists the supported copies and remaining limits.
 
+Request middleware receives `native_user_message`, the exact persisted user row
+at Hermes's validated current-turn index, and `original_user_message`, the
+separate original admission. Compression can clone rows and persist an internal
+task wrapper. The adapter uses the native descriptor for storage ownership and
+keeps the original admission for canonical memory. Missing or changed native
+rows produce no descriptor; the request middleware still runs. Post-tool
+compression also updates the current-turn index through Hermes's existing
+reanchor path, as other compression paths already do.
+
 ## What is qualified
+
+The current-row interface and post-tool index correction passed ten focused
+native checks. Three installed-adapter cases use the actual compression commit
+with controlled summary output: session rotation, a transported task during
+rotation, and in-place compaction. All preserve recalled context, delegated
+results, canonical input references and the real pre-compression checkpoint.
+Separate native-storage cases verify that old and new row ownership survives
+compaction and that partial erasure distinguishes canonical input from its
+native wrapper. These checks use controlled responses, not model-quality scores.
 
 The two existing compatibility changes were reapplied to the 0.21.2 release
 without conflicts. Their affected native suites passed 275 checks in a native-only
