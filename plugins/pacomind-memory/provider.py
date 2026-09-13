@@ -550,9 +550,13 @@ _GENERAL_PLUGIN_SYSTEM_PROMPT = (
     "for or invent a contact override. Direct tool calls are available only "
     "on the configured owner/system lane; guest turns use the scoped assembled "
     "context. Context may be withheld when participant "
-    "or scoped-projection authority is unavailable. When evaluating temporal "
-    "claims, prefer the host's current time over stored event timestamps, and "
-    "state when data may be stale."
+    "or scoped-projection authority is unavailable. The host clock establishes "
+    "now; an event's scheduled time comes from evidence for that event. Keep its "
+    "date, time and destination together; another event's time is not a correction. "
+    "Check current recalled evidence or available memory search/source tools "
+    "before stating a dated plan. If evidence is missing or conflicting, say so. "
+    "Only volunteer a dated plan when it is relevant and supported; a clock "
+    "question does not call for an itinerary."
 )
 
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.7 - dated memory guidance and vision role checks
+
+Memory guidance separates the current clock from an event's scheduled time.
+It asks the agent to keep each event's date, time and destination together,
+check current evidence before stating a dated plan, and avoid adding an
+itinerary to an unrelated clock answer. This changes the existing provider
+instructions; it does not establish reliable temporal reasoning by a model.
+
+The [native qualification target](docs/HERMES-HOOK-COMPATIBILITY.md) now includes
+the optional `memory.refresh_on_turn` setting. Changed curated memory refreshes
+through Hermes' existing prompt boundary; unchanged resident turns retain
+their cached prompt. The setting remains off by default, and the installer
+does not change an existing runtime or profile. File freshness does not prevent
+a model from mixing facts about different events.
+
+The [model suite](docs/MODEL-QUALIFICATION.md) adds three packaged image cases
+for spatial arrangement, large labels and unknown information. They use the
+existing completion router and retain strict output-format and field grades.
+These cases do not establish native image recollection, dense-image quality,
+camera delivery or broad model qualification. Phase 1 validation remains open.
+
 ## v1.5.6 - named image recall and uncertain message outcomes
 
 Asking about a retained image by its supplied name or filename now brings back
