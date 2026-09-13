@@ -57,6 +57,7 @@ from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
 assert get_plugin_manager()._plugins['pacomind'].enabled
 from run_agent import AIAgent
+from hermes_state import SessionDB
 from agent import relay_runtime
 from pacomind_hermes.native_scope import attested_cli_contact
 import pacomind_hermes,run_agent
@@ -75,7 +76,8 @@ def answer(**kwargs):
 client.chat.completions.create.side_effect=answer
 with patch(openai_target,return_value=client),patch(tools_target+'.get_tool_definitions',return_value=[]),patch(tools_target+'.check_toolset_requirements',return_value={}):
     agent=AIAgent(api_key='neutral',base_url='http://127.0.0.1:1/v1',provider='openai',model='neutral/model',
-        quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',max_iterations=1)
+        quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',max_iterations=1,
+        session_db=SessionDB(home/'state.db'))
     agent._use_prompt_caching=False;agent.save_trajectories=False;agent.compression_enabled=False
     provider=agent._memory_manager.get_provider('pacomind')
     assert provider is not None

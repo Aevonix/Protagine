@@ -15,6 +15,7 @@ import copy, json, os, socket, sys, time
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1]); sys.path.insert(1,sys.argv[2])
+if sys.argv[4]:sys.path.insert(2,sys.argv[4])
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
@@ -140,9 +141,11 @@ declare_stateless_channel()
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
 from run_agent import AIAgent
+from hermes_state import SessionDB
 parent=AIAgent(api_key='fixture',base_url='http://model.fixture/v1',provider='custom',model='fixture',
  quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',
- max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['pacomind','delegation'])
+ max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['pacomind','delegation'],
+ session_db=SessionDB(home/'state.db'))
 parent.save_trajectories=False
 try:
  with transport_input(contact_id='owner',platform='cli',input_refs=root_input,source_refs=[root_ref]) as supplied:
@@ -174,7 +177,8 @@ def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, sc
         PACOMIND_MEMORY_TURN_WRITER='disabled', PACOMIND_GUARD_CHAT_MODE='off',
         PACOMIND_RECALL_RERANK='off', PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         OPENAI_API_KEY='fixture', OPENAI_BASE_URL='http://model.fixture/v1', LITELLM_LOCAL_MODEL_COST_MAP='True')
-    run_python('-I', '-c', PROBE, artifacts[3], ROOT/'sidecar', scenario, cwd=tmp_path, env=env)
+    run_python('-I', '-c', PROBE, artifacts[3], ROOT/'sidecar', scenario,
+        os.environ.get('PACOMIND_TEST_HERMES_PATH',''), cwd=tmp_path, env=env)
 
 
 REGISTRATION = r'''

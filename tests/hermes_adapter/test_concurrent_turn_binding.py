@@ -107,6 +107,7 @@ from plugins.memory import load_memory_provider
 from agent.memory_manager import MemoryManager
 from gateway.session_context import set_session_vars,clear_session_vars
 from run_agent import AIAgent
+from hermes_state import SessionDB
 import run_agent
 openai_target='run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
 tools_target='run_agent' if 'get_tool_definitions' in vars(run_agent) else 'model_tools'
@@ -135,7 +136,8 @@ try:
         for index in range(2):
             agent=AIAgent(api_key='fixture',base_url='http://127.0.0.1:1/v1',provider='openai',model='fixture/model',
                 quiet_mode=True,skip_context_files=True,skip_memory=True,platform='sms',enabled_toolsets=['file'],
-                max_iterations=3,session_id='simultaneous-session-'+str(index))
+                max_iterations=3,session_id='simultaneous-session-'+str(index),
+                session_db=SessionDB(home/'state.db'))
             agent._user_id='+1555000716'+str(index)
             agent._cached_system_prompt='Neutral identity.'; agent._use_prompt_caching=False
             agent.compression_enabled=False; agent.save_trajectories=False

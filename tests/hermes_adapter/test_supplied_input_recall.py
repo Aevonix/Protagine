@@ -200,12 +200,14 @@ assert 'PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY' not in os.environ
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
 from run_agent import AIAgent
+from hermes_state import SessionDB
 from pacomind_hermes.input_provenance import supplied_input, transport_input
 from pacomind_hermes import TurnOutbox
 def agent(platform='cli'):
  value=AIAgent(api_key='fixture',base_url='http://model.fixture/v1',provider='custom',
   model='fixture-model',quiet_mode=True,skip_context_files=True,skip_memory=False,
-  platform=platform,max_iterations=5,enabled_toolsets=['pacomind','delegation'])
+  platform=platform,max_iterations=5,enabled_toolsets=['pacomind','delegation'],
+  session_db=SessionDB(home/'state.db'))
  value.save_trajectories=False
  return value
 if scenario in ('initial_timeout','initial_remote_protocol','initial_http_503'):
