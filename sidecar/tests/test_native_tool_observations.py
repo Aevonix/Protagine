@@ -135,8 +135,11 @@ def native(source_app, monkeypatch, tmp_path, request):
                                            timestamp=1789149600.0)
             messages.append({'role':'tool','tool_call_id':call_id,'content':value})
             return message_id
-        def retain(call_id='call-1', request_id='api-2', reason='Use the recorded synchronization outcome later.'):
+        def retain(call_id='call-1', request_id='api-2', reason='Use the recorded synchronization outcome later.',
+                   include_input=None):
             args = {'call_id':call_id, 'reason':reason}
+            if include_input is not None:
+                args['include_input'] = include_input
             return json.loads(native_middleware.run_tool_execution_middleware(**call_context, api_request_id=request_id,
                 tool_name='pacomind_memory_retain_observation', tool_call_id='retention-call', args=args,
                 next_call=lambda selected: context.tools['pacomind_memory_retain_observation']['handler'](selected)))
@@ -183,6 +186,84 @@ def test_actual_native_original_roundtrips_into_automatic_recall(native):
     assert 'Use the recorded synchronization outcome later.' not in packet['body']
     assert n.retain(reason='A different retry reason')['source_id'] == result['source_id']
     assert len([row for row in n.outbox.snapshot() if row['turn_id']==result['source_id']]) == 1
+
+
+def test_recipe_original_inputs_and_final_result_open_through_native_reader(native):
+    from hermes_cli import middleware as native_middleware
+    n = native
+    arguments = {'workflow': {'seed': 42, 'steps': 12, 'sampler': 'fixture'},
+                 'output': 'copper-export.png'}
+    workflow = '{"status":"queued","run_id":"copper-fixture"}'
+    final = '{"run_id":"copper-fixture","status":"complete","bytes":2400}'
+    n.complete('workflow', workflow, 'fixture_workflow', arguments)
+    n.complete('final', final, 'fixture_status', {'run_id': 'copper-fixture'})
+    n.request()
+    stored = n.retain('workflow', include_input=True,
+        reason='Reuse the original workflow parameters with its separately retained final result.')
+    completed = n.retain('final')
+    assert stored['source_recorded'] and stored['input_included'], n.diagnostics(stored)
+    assert completed['source_recorded'] and completed['input_included'] is False
+    payload = next(row['payload'] for row in n.outbox.snapshot() if row['turn_id'] == stored['source_id'])
+    origin = payload['observation']['origin']
+    # Actual native canonical search supplies references to the current reader.
+    # Merely having a persistence receipt cannot open a source.
+    n.request('read-start')
+    def opened(selector, call_id, tool='pacomind_memory_read_source'):
+        args = dict(selector)
+        value = native_middleware.run_tool_execution_middleware(**n.scope, api_request_id='read-start',
+            tool_name=tool, tool_call_id=call_id, args=args,
+            next_call=lambda args: n.context.tools[tool]['handler'](args))
+        result = json.loads(value)
+        assert 'error' not in result, result
+        n.messages.append({'role': 'tool', 'tool_call_id': call_id, 'content': value})
+        n.request('read-start')  # Consume the authentic opening receipt.
+        return result
+    search = opened({'query': 'copper synchronization', 'limit': 20}, 'search', 'pacomind_memory_search')
+    assert origin in search['source_refs']
+    directory = opened({**origin, 'view': 'observations'}, 'directory')
+    entries = json.loads(directory['content'])['observations']
+    recipe = next(e for e in entries if e['source_id'] == stored['source_id'])
+    outcome = next(e for e in entries if e['source_id'] == completed['source_id'])
+    assert recipe['input_available'] and not outcome['input_available']
+    ref = {k: recipe[k] for k in ('source_id', 'source_version')}
+    original = opened(ref, 'recipe-read')
+    assert original['complete']
+    message = json.loads(original['content'])['messages'][0]
+    assert message['content'] == workflow
+    assert message['provenance']['input']['arguments'] == arguments
+    assert message['provenance']['selection']['author'] == 'model'
+    result = opened({k: outcome[k] for k in ('source_id', 'source_version')}, 'outcome-read')
+    assert json.loads(result['content'])['messages'][0]['content'] == final
+    # A different nomination cannot rewrite the first selected input choice.
+    assert n.retain('workflow', include_input=False)['input_included'] is True
+    n.ledger.erase_sources(contact_id='cid-owner', turn_ids=[origin['source_id']])
+    checked = n.request('after-erase').payload
+    reopened = next(row for row in checked['messages'] if row.get('tool_call_id') == 'recipe-read')
+    assert 'withheld' in reopened['content'] and 'copper-export.png' not in reopened['content']
+
+
+@pytest.mark.parametrize('fault', ['changed_native_input', 'missing_native_input', 'over_budget'])
+def test_recipe_missing_changed_or_oversized_input_does_not_invent_evidence(native, fault):
+    n = native
+    arguments = {'command': 'x' * 16384} if fault == 'over_budget' else {'command': 'inspect copper'}
+    n.complete(arguments=arguments)
+    n.request()
+    if fault != 'over_budget':
+        with sqlite3.connect(n.db.db_path) as db:
+            if fault == 'missing_native_input':
+                db.execute("DELETE FROM messages WHERE session_id='native-session' AND role='assistant'")
+            else:
+                call = copy.deepcopy(n.messages[1]['tool_calls'])
+                call[0]['function']['arguments'] = json.dumps({'command': 'a different operation'})
+                db.execute("UPDATE messages SET tool_calls=? WHERE session_id='native-session' AND role='assistant'",
+                           (json.dumps(call),))
+    failed = n.retain(include_input=True)
+    assert failed['accepted'] is False and not failed['source_recorded'], failed
+    assert not n.outbox.snapshot()
+    result_only = n.retain()
+    assert result_only['source_recorded'] and result_only['input_included'] is False, n.diagnostics(result_only)
+    payload = n.outbox.snapshot()[0]['payload']['observation']
+    assert payload['content'] == RESULT and 'input' not in payload
 
 
 @pytest.mark.parametrize('native', ['kanban', 'qualification-readonly'], indirect=True)
@@ -249,12 +330,13 @@ def test_completed_native_task_remains_ineligible_without_an_active_claim(native
     assert not n.outbox.snapshot()
 
 
-def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexecution(native):
+@pytest.mark.parametrize('include_input', [False, True])
+def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexecution(native, include_input):
     n = native
     n.complete()
     n.request()
     n.clients[0].outage = True
-    first = n.retain()
+    first = n.retain(include_input=include_input)
     assert first['state']=='pending' and not first['source_recorded']
     diagnostic = json.loads(n.diagnostics(first))
     assert any(row['turn_id'] == first['source_id'] and row['state'] == 'pending'
@@ -265,6 +347,7 @@ def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexe
         **stored, outbox=n.outbox, timeout_seconds=timeout_seconds), limit=16, timeout_seconds=.25)
     receipt = n.retain()
     assert receipt['source_recorded'], n.diagnostics(receipt)
+    assert receipt['input_included'] is include_input
     assert 'files_written' in n.recall()['body']
     assert n.db._conn.execute("SELECT count(*) FROM messages WHERE role='tool'").fetchone()[0] == 1
 
@@ -365,6 +448,7 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
     call = {'id': 'deferred-original', 'type': 'function',
             'function': {'name': 'tool_call', 'arguments': json.dumps(wrapper)}}
     n.messages.append({'role': 'assistant', 'content': None, 'tool_calls': [call]})
+    # The actual executor flushes this assistant call before its tool result.
     assistant = SimpleNamespace(tool_calls=[SimpleNamespace(id=call['id'], type='function',
         function=SimpleNamespace(**call['function']))])
     try:
@@ -415,7 +499,7 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
         assert not [item for item in n.outbox.snapshot() if item['turn_id'].startswith('native-observation:')]
         request = n.request(**request_options).payload
         assert '"call_id": "deferred-original"' in str(request)
-        receipt = n.retain('deferred-original')
+        receipt = n.retain('deferred-original', include_input=True)
         assert receipt['accepted'] and receipt['source_recorded'], n.diagnostics(receipt)
         assert receipt['selected_call']['message_id'] == row['id']
         assert receipt['selected_call']['tool_name'] == 'fixture_observe'
@@ -424,6 +508,7 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
         # This transport correction must not weaken the existing erase dependency.
         observation = next(item['payload']['observation'] for item in n.outbox.snapshot()
                            if item['turn_id'] == receipt['source_id'])
+        assert observation['input']['arguments'] == arguments
         n.ledger.erase_sources(contact_id='cid-owner', turn_ids=[observation['origin']['source_id']])
         again = n.retain('deferred-original')
         assert again['state'] == 'erased' and not again['source_recorded']
@@ -466,7 +551,7 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     assert all(row['tool_name'] == 'terminal' and row['arguments_truncated'] is False for row in candidates)
 
     # A wrong nomination remains the exact selected original, visibly identified.
-    receipt = n.retain('earlier-call', reason='Retain the detailed inspection outcome.')
+    receipt = n.retain('earlier-call', reason='Retain the detailed inspection outcome.', include_input=True)
     assert receipt['source_recorded'], n.diagnostics(receipt)
     selected = receipt['selected_call']
     assert selected == {'tool_call_id': 'earlier-call', 'tool_name': 'terminal',
@@ -477,6 +562,7 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     observation = row['payload']['observation']
     assert observation['content'] == 'first-status'
     assert observation['native']['tool_call_id'] == 'earlier-call'
+    assert observation['input']['arguments'] == earlier
     assert 'arguments_preview' not in observation['native']  # Persisted source contract is unchanged.
     assert n.retain('earlier-call', reason='Another retelling')['selected_call'] == selected
 

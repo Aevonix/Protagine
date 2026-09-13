@@ -27,6 +27,25 @@ request that made the nomination. It then reads that call's original message
 from Hermes. The model cannot supply the original text, identity, timestamp or
 hash through the nomination arguments.
 
+For recipe reuse, the ordinary agent can set `include_input=true` when the
+selected call's executed arguments contain necessary workflow or configuration
+values. The adapter recovers the original native assistant call by session and
+call ID, then compares its arguments with the hash witnessed at execution. It
+does not copy a rewritten request, expand a truncated preview, or read unrelated
+calls. Missing, changed or oversized inputs reject that nomination; no richer
+recipe is invented. Input and result together must fit the existing 16 KiB
+budget. Result-only retention remains available by default.
+
+Retain the actual workflow/config call while it is eligible, and a separate
+final-result call when necessary. Both can be discovered through the existing
+owner instruction's `observations` source view. Each entry reports
+`input_available`; opening the original source exposes the retained arguments
+and their hash beside the unchanged tool result. A result excerpt alone does
+not expose those inputs or establish a complete recipe. A command pointing to
+an external configuration file also does not retain that file's contents: its
+actual read result must be selected if needed. Never include credentials or
+other secrets from tool arguments. The nomination reason stays model-authored.
+
 For an original invoked through Hermes' deferred `tool_call`, the adapter uses
 the native single-local-call normalization to match the underlying executed tool
 and arguments. The SDK wrapper and native result keep the same call ID. Ambiguous
@@ -45,11 +64,12 @@ sources supplied when the call executed. Existing source erasure removes its
 dependent observation and queued retries. The existing outbox handles delivery
 recovery. `state=pending` or an unconfirmed result does not mean that canonical
 memory has saved the observation. A repeated nomination uses the same source
-and the first nomination's reason.
+and the first nomination's reason and input choice.
 
 The receipt identifies the selected original by its tool name, call ID, native
 message ID and result hash, alongside the same execution-argument preview. It
-does not claim that the model's reason accurately describes that result. These
+also reports whether input was included. It does not claim that the model's
+reason accurately describes that result. These
 display labels do not change the stored original or its source identity.
 
 Later recall uses the same scoped lexical and semantic source retrieval and
