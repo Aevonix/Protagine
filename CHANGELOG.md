@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5.4 - explicit turn clocks and numeric timezone offsets
+
+Clock context identifies UTC, the agent's reference timezone and a contact's
+recorded timezone separately. A recorded timezone does not establish current
+location, and fallback settings are no longer presented as contact records.
+Retained clock context is labeled historical.
+
+Bare greetings receive the existing bounded owner clock brief through the
+Hermes lifecycle hook, even when Hermes skips semantic memory prefetch. Guest
+and unknown senders retain the runtime clock. Ordinary turns use their existing
+prefetch path without duplicating the brief. No Hermes patch or service is added.
+
+Source-time queries accept explicit numeric offsets in full English clock/date
+expressions. Quoted and unquoted operands retain their complete time and offset;
+malformed offsets stay unresolved. ISO offsets keep their existing behavior.
+
+These repairs correct clock context and date parsing. They do not establish
+reliable itinerary inference or complete Phase 1 memory validation.
+
 ## v1.5.3 - memory review routing and model setup corrections
 
 Source admission review uses the configurable `source_claim_review` task, which

@@ -87,3 +87,89 @@ def test_native_clock_annotation_remains_historical_on_later_turns(artifacts, tm
     result = run_python('-I', '-B', '-c', PROBE, artifacts[3],
         os.environ.get('HERMES_TEST_SOURCE', ''), cwd=tmp_path, env=env)
     assert '"two_turn_api_replay": true' in result.stdout
+
+
+GREETING_PROBE = r'''
+import json, os, socket, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+if sys.argv[2]:sys.path.insert(0,sys.argv[2])
+import httpx
+from plugins.memory import load_memory_provider
+from hermes_cli.plugins import invoke_hook
+from agent.memory_manager import MemoryManager
+from agent.turn_context import _memory_turn_start_and_prefetch, compose_user_api_content
+from gateway.session_context import set_session_vars, clear_session_vars
+home=Path(os.environ['HERMES_HOME']);home.mkdir(exist_ok=True)
+(home/'config.yaml').write_text('plugins: {enabled: []}\nmemory: {provider: pacomind-memory}\n')
+requests=[]
+def respond(self,request):
+ assert request.url.host=='clock.fixture',str(request.url)
+ requests.append((request.url.path,dict(request.url.params)))
+ if request.url.path=='/v1/host/contacts/resolve':
+  cid={'owner-handle':'owner','guest-handle':'guest'}.get(request.url.params['address'])
+  return httpx.Response(200,json={'contact_id':cid} if cid else {})
+ if request.url.path=='/v1/host/context/temporal':
+  assert request.url.params['contact_id']=='owner'
+  return httpx.Response(200,json={'title':'Current Time','body':
+   'Captured UTC: 2030-07-12T00:00:01+00:00. '
+   'Agent reference (UTC). Recorded timezone for Robin (Asia/Tokyo). '
+   'A recorded timezone is not evidence of current location.'})
+ raise AssertionError('Greeting must not search memory: '+str(request.url))
+httpx.HTTPTransport.handle_request=respond
+def no_network(*a,**kw):raise AssertionError('No network in native clock qualification')
+socket.socket.connect=no_network;socket.create_connection=no_network
+provider=load_memory_provider('pacomind-memory',register_skills=False)
+provider._configure({'url':'http://clock.fixture','api_key':'fixture-key',
+ 'contact_id':'owner','turn_writer':'disabled'})
+provider._current_time_line=lambda:'2030-07-11T23:59:59+00:00'
+manager=MemoryManager();manager.add_provider(provider)
+manager.initialize_all('clock-greeting',platform='whatsapp')
+agent=SimpleNamespace(_memory_manager=manager,session_id='clock-greeting',_user_turn_count=1)
+for sender in ('owner-handle','guest-handle','unknown-handle'):
+ tokens=set_session_vars(platform='whatsapp',user_id=sender,chat_id='thread-'+sender)
+ try:
+  provider._prev_turn_gap_secs=3600  # hook runs before on_turn_start resets this
+  results=invoke_hook('pre_llm_call',session_id=agent.session_id,platform='whatsapp',
+   sender_id=sender,user_message='Hey')
+  note=next(r['context'] for r in results if isinstance(r,dict) and r.get('context'))
+  memory=_memory_turn_start_and_prefetch(agent,'Hey')
+  assert memory=='',memory
+  content=compose_user_api_content('Hey',memory,note)
+  assert 'Clock captured for this user turn:' in content
+  assert 'on later turns it is historical' in content
+  assert 'Gap before current turn:' not in content,content
+  assert ('Recorded timezone for Robin' in content)==(sender=='owner-handle'),content
+  if sender=='owner-handle':
+   assert '2030-07-12T00:00:01+00:00' in content
+   assert '2030-07-11T23:59:59+00:00' not in content,content
+ finally:clear_session_vars(tokens)
+assert sum(path=='/v1/host/context/temporal' for path,_ in requests)==1,requests
+# Nontrivial turns use native prefetch for temporal context; the hook does not
+# duplicate that section or initiate another temporal request.
+tokens=set_session_vars(platform='whatsapp',user_id='owner-handle',chat_id='thread-owner')
+try:
+ results=invoke_hook('pre_llm_call',session_id=agent.session_id,platform='whatsapp',
+  sender_id='owner-handle',user_message='Review the archive location and its source.')
+ note=next(r['context'] for r in results if isinstance(r,dict) and r.get('context'))
+ assert 'Recorded timezone for Robin' not in note
+finally:clear_session_vars(tokens)
+assert sum(path=='/v1/host/context/temporal' for path,_ in requests)==1,requests
+print(json.dumps({'native_greeting_clock':True,'semantic_prefetch_skipped':True,
+ 'guest_and_unknown_exclude_owner_frames':True,'old_turn_gap_excluded':True,
+ 'temporal_requests':1,'model_calls':0}))
+'''
+
+
+def test_native_greetings_get_scoped_clock_without_memory_search(artifacts, tmp_path):
+    if not os.environ.get('PROTAGINE_HERMES_TEST_PYTHON') and importlib.util.find_spec('hermes_cli') is None:
+        pytest.skip('Use qualified Hermes interpreter for native integration')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG') if key in os.environ}
+    env.update(HERMES_HOME=str(tmp_path/'hermes'), PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),
+        HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),
+        HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
+        PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
+    result = run_python('-I', '-B', '-c', GREETING_PROBE, artifacts[3],
+        os.environ.get('HERMES_TEST_SOURCE', ''), cwd=tmp_path, env=env)
+    assert '"native_greeting_clock": true' in result.stdout

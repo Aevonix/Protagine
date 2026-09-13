@@ -658,7 +658,7 @@ def test_temporal_block_guest_uses_local_clock_only(provider_mod, monkeypatch):
     p = _make_provider(provider_mod, fake, monkeypatch)
     monkeypatch.setattr(p, "_turn_contact", lambda: "cid-turn")
     block = p._fresh_temporal_block_sync()
-    assert "host clock" in block
+    assert "Runtime reference clock" in block
     temporal = [r for r in fake.requests if r["url"].endswith(_TEMPORAL[1])]
     assert temporal == []
     monkeypatch.setattr(p, "_turn_contact", lambda: "cid-other")
@@ -698,7 +698,7 @@ def test_reused_provider_refreshes_turn_gap_without_refetching_contact_clock(
     assert "Gap before current turn: 7s." in second
     assert "1h 00m" not in second
     assert second.count("Gap before current turn:") == 1
-    assert (clock_body or "host clock") in second and "Remember the archive location." in second
+    assert (clock_body or "Runtime reference clock") in second and "Remember the archive location." in second
     assert len([r for r in fake.requests if r["url"].endswith(_TEMPORAL[1])]) == 1
 
 
@@ -775,7 +775,7 @@ def test_internal_lane_without_explicit_owner_authority_stays_local_only(
     provider = _make_provider(provider_mod, fake, monkeypatch)
 
     assert provider.prefetch("hello", session_id="s1") == ""
-    assert "host clock" in provider._fresh_temporal_block_sync()
+    assert "Runtime reference clock" in provider._fresh_temporal_block_sync()
     denied = json.loads(provider.handle_tool_call(
         "pacomind_get_facts", {},
     ))
@@ -837,7 +837,7 @@ def test_guest_preflight_failure_never_calls_assemble(
 
     result = provider.prefetch("hello", session_id="s1")
     assert "owner-secret" not in result
-    assert "host clock" in result
+    assert "Runtime reference clock" in result
     assert _assemble_calls(fake) == []
 
 
@@ -861,7 +861,7 @@ def test_guest_context_requires_preflight_atomic_policy_and_response_attestation
 
     result = provider.prefetch("hello", session_id="s1")
     assert "guest-safe" in result
-    assert "host clock" in result
+    assert "Runtime reference clock" in result
     call = _assemble_calls(fake)[0]
     assert call["json"]["context"]["contact_id"] == "cid-guest"
     assert call["json"]["projection_policy"] == "scoped_viewer_required"
@@ -893,7 +893,7 @@ def test_guest_assemble_response_viewer_mismatch_is_withheld(
 
     result = provider.prefetch("hello", session_id="s1")
     assert "owner-secret" not in result
-    assert "host clock" in result
+    assert "Runtime reference clock" in result
 
 
 def test_two_concurrent_senders_never_share_context(

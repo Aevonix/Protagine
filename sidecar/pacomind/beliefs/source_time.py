@@ -17,12 +17,14 @@ _MONTH_DATE = (r"(?:" + _MONTH + r"\s+\d{1,2},?\s+\d{4}|"
                r"\d{1,2}\s+" + _MONTH + r"\s+\d{4})")
 _TIME_ON_DATE = re.compile(
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
-    r"(?:\s+(?P<utc>UTC))?\s+on\s+(?P<date>" + _MONTH_DATE + r")", re.I)
+    r"(?:\s+(?P<utc>UTC)|\s*(?P<offset>[+-]\d{2}:\d{2}))?"
+    r"\s+on\s+(?P<date>" + _MONTH_DATE + r")", re.I)
 # Recognize a clock-shaped operand even when its meridiem/zone is unsupported.
 # Parsing remains limited to _TIME_ON_DATE; never reduce a rejected clock to
 # its embedded calendar date or discard a quoted operand as ordinary evidence.
 _CLOCK_DATE_OPERAND = (r"\b\d{1,2}:\d{2}(?::\d{2})?"
-    r"(?:\s+[a-z][a-z0-9_./+:-]{0,63}){0,2}\s+on\s+" + _MONTH_DATE)
+    r"(?:\s+[a-z][a-z0-9_./+:-]{0,63}|\s*[+-][a-z0-9_./+:-]{1,63}){0,2}"
+    r"\s+on\s+" + _MONTH_DATE)
 _EXPLICIT_DATE = _CLOCK_DATE_OPERAND + "|" + _DATE + "|" + _MONTH_DATE
 _EVENT = re.compile(r"\b(footage|camera|observed|spotted|seen|saw|happened|recorded|arrived|visited)\b", re.I)
 
@@ -40,8 +42,8 @@ def utc_timestamp(value: str | None) -> datetime | None:
 def _english_source_date(value: str, zone) -> datetime | None:
     """Literal full-month dates, optionally preceded by a 24-hour clock.
 
-    An explicit UTC clock overrides the profile zone. An unqualified clock
-    uses it, but cannot resolve a repeated or nonexistent local time.
+    UTC or a numeric HH:MM offset overrides the profile zone. An unqualified
+    clock uses it, but cannot resolve a repeated or nonexistent local time.
     """
     clock = _TIME_ON_DATE.fullmatch(value)
     date_text = clock['date'] if clock else value
@@ -60,6 +62,13 @@ def _english_source_date(value: str, zone) -> datetime | None:
                      int(clock['minute']) if clock else 0,
                      int(clock['second'] or 0) if clock else 0)
     selected_zone = UTC if clock and clock['utc'] else zone
+    if clock and clock['offset']:
+        offset = clock['offset']
+        hours, minutes = map(int, offset[1:].split(':'))
+        if hours > 23 or minutes > 59:
+            return None
+        delta = timedelta(hours=hours, minutes=minutes)
+        selected_zone = timezone(-delta if offset[0] == '-' else delta)
     aware = naive.replace(tzinfo=selected_zone)
     if clock and (aware.utcoffset() != aware.replace(fold=1).utcoffset()
                   or aware.astimezone(UTC).astimezone(selected_zone).replace(tzinfo=None) != naive):
