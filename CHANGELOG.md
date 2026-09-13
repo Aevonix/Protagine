@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.13 - preserve transcript housekeeping during forgetting
+
+Forgetting a source now leaves Hermes session housekeeping rows intact while
+removing the related conversation payloads. Previously, cleanup could replace
+an empty housekeeping row and clear its display ordering and identity. The
+original user question, linked answers and tool results keep their existing
+erasure rules.
+
 ## v1.5.12 - bounded image request receipts
 
 An explicitly opted-in qualification task can retain bounded image hashes in

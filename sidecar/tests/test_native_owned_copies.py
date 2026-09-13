@@ -392,6 +392,14 @@ def test_actual_gateway_settled_callback_erases_and_evicts_owned_cache(native_ru
     gateway._turn_leases = SessionTurnLeaseRegistry()
     current = begin_read(rt)
     rt.db.append_message('reader', 'assistant', 'Cached forgettoken answer.')
+    # The real gateway appends this housekeeping row after a fresh turn. It
+    # belongs to transcript bookkeeping, not the source-derived answer span.
+    store.append_to_transcript('reader', {'role':'session_meta', 'tools':[],
+        'model':'fixture', 'platform':'pacomind_task', 'timestamp':123.0})
+    rt.db.get_messages('reader', include_compacted=True)
+    metadata_before, = [row for row in rows(rt).values() if row['role'] == 'session_meta']
+    assert metadata_before['content'] is None
+    assert metadata_before['display_identity'] and metadata_before['display_order']
     agent = SimpleNamespace(session_id='reader', _session_messages=[{'content':'Cached forgettoken'}],
                             _db_flush_scan_prefix=[{'content':'Cached forgettoken'}], release_clients=lambda: None)
     gateway._agent_cache = {'route:reader':(agent, 'signature', 1, 'reader')}
@@ -419,6 +427,7 @@ def test_actual_gateway_settled_callback_erases_and_evicts_owned_cache(native_ru
     asyncio.run(scenario())
     assert not gateway._agent_cache
     assert agent._session_messages == [] and agent._db_flush_scan_prefix is None
+    assert rows(rt)[metadata_before['id']] == metadata_before
     assert not rt.db.search_messages('forgettoken', include_inactive=True)
     assert rt.db.get_messages('reader')[0]['content'] == current['content']
     assert not rt.owned._rows()

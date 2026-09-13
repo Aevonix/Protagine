@@ -367,8 +367,10 @@ class NativeOwnedCopies:
     def _span(db, session, anchor):
         end = db.execute("SELECT MIN(id) FROM messages WHERE session_id=? AND role='user' AND id>?",
                          (session, anchor)).fetchone()[0]
+        # Gateway housekeeping is not source-derived conversation payload.
         rows = db.execute('SELECT * FROM messages WHERE session_id=? AND id>=? '
-                          'AND (? IS NULL OR id<?) ORDER BY id LIMIT 513', (session, anchor, end, end)).fetchall()
+                          "AND role!='session_meta' AND (? IS NULL OR id<?) ORDER BY id LIMIT 513",
+                          (session, anchor, end, end)).fetchall()
         if len(rows) > 512:
             raise ValueError('native_source_span_exceeds_batch')
         return rows
