@@ -8,6 +8,11 @@ check current evidence before stating a dated plan, and avoid adding an
 itinerary to an unrelated clock answer. This changes the existing provider
 instructions; it does not establish reliable temporal reasoning by a model.
 
+Corrected conversations now render as structured evidence instead of nested
+escaped JSON strings. The original messages, speaker roles, source versions,
+dates and attributed corrections remain together under the same context budget.
+Source records and memory ranking are unchanged.
+
 The [native qualification target](docs/HERMES-HOOK-COMPATIBILITY.md) now includes
 the optional `memory.refresh_on_turn` setting. Changed curated memory refreshes
 through Hermes' existing prompt boundary; unchanged resident turns retain
