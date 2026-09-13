@@ -125,7 +125,7 @@ class ExecutionRegistry:
             clauses.extend(["contact_id=?", "session_id=?"])
             args.extend([contact_id, session_id])
         where = " AND ".join(clauses)
-        columns = ("execution_id, contact_id, session_id, turn_id, parent_execution_id, platform, phase, tool_name, last_observed_at, lease_until, "
+        columns = ("execution_id, contact_id, session_id, turn_id, parent_execution_id, platform, state, phase, tool_name, last_observed_at, lease_until, "
             "(SELECT metadata_json FROM execution_runtime_observations r WHERE r.execution_id=execution_observations.execution_id) metadata_json")
         with closing(self.ledger._connect()) as conn:
             conn.execute("BEGIN")
@@ -148,11 +148,35 @@ class ExecutionRegistry:
                         + where + " AND execution_id IN (" + placeholders + ")",
                         [*args, *sorted(missing)]).fetchall()
                     rows.extend(frontier)
+            # Keep one inspectable native task after it settles. Ordinary
+            # foreground turns must not displace its retained result handle.
+            recent_where = ("state!='observed' AND last_observed_at>=? AND contact_id=? "
+                "AND EXISTS (SELECT 1 FROM execution_runtime_observations r "
+                "WHERE r.execution_id=execution_observations.execution_id "
+                "AND json_type(r.metadata_json,'$.task_experience.task_id')='text')")
+            recent_args = [now - 7 * 86400, contact_id]
+            if not owner:
+                recent_where += ' AND session_id=?'
+                recent_args.append(session_id)
+            recent_rows = conn.execute('SELECT ' + columns + ' FROM execution_observations WHERE '
+                + recent_where + ' ORDER BY last_observed_at DESC, execution_id LIMIT 2', recent_args).fetchall()
+
+        def task_handle(metadata, subject):
+            # The prospective binding names the native handoff, independently
+            # of its execution/session IDs. Its existing tool rechecks access.
+            experience = metadata.get('task_experience') or {}
+            identifier = experience.get('task_id')
+            if (subject == contact_id and isinstance(identifier, str) and len(identifier) == 64
+                    and all(c in '0123456789abcdef' for c in identifier)):
+                return {'task_id': identifier}
+            return {}
+
         items = []
         for row in rows:
             item = dict(row)
             subject = item.pop('contact_id')
             metadata = json.loads(item.pop('metadata_json') or '{}')
+            item.update(task_handle(metadata, subject))
             item['request_input'] = {'status': 'unbound'}
             if include_inputs and metadata.get('input_refs'):
                 item['request_input'] = {'status': 'unavailable_in_viewer_scope'}
@@ -169,7 +193,22 @@ class ExecutionRegistry:
                 from pacomind.self_model.execution_forecasts import project
                 item['forecast'] = project(self, item['execution_id'], contact_id)
             items.append(item)
+        recent = []
+        active_tasks = {item['task_id'] for item in items if item.get('task_id')}
+        for row in recent_rows:
+            item = dict(row)
+            subject = item.pop('contact_id')
+            metadata = json.loads(item.pop('metadata_json') or '{}')
+            handle = task_handle(metadata, subject)
+            if not handle or handle['task_id'] in active_tasks:
+                continue
+            item.update(handle, liveness='terminal_observation',
+                        record_age_seconds=round(max(0.0, now - item['last_observed_at']), 1))
+            item.pop('lease_until')
+            recent.append(item)
+            break
         return {"schema": "PacoMindExecutionViewV1", "items": items, "total": total,
+                "recent": recent, "recent_truncated": len(recent_rows) > 1,
                 "truncated": total > len(items), "coverage": "registered Hermes turns only",
                 "commitments_enforced": False, "complete": False, "observed_at": now}
 
@@ -324,6 +363,10 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
 
     groups = _work_groups(view)
     coverage = work_source_coverage(view)
+    originals = {item['execution_id']: item for item in view.get('items', []) if item.get('execution_id')}
+    provenance = [row.get('request_input', {}).get('_provenance', {}) for row in originals.values()
+                  if row.get('request_input', {}).get('status') == 'admitted_input_excerpt']
+    source_scope = {(row.get('contact_id'), row.get('watermark')) for row in provenance}
     keys = ('initiative_id', 'commitment_id', 'native_job_id', 'native_execution_id',
             'execution_backend', 'native_board', 'native_task_id', 'native_run_id', 'native_status', 'attempt_count',
             'native_run_status', 'goal_mode', 'goal_max_turns', 'heartbeat_age_seconds', 'assignee',
@@ -368,6 +411,12 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
                 item.update(work_details(row))
                 if row.get('record_kind') in {'terminal_report', 'progress_report'}:
                     item['record_kind'] = row['record_kind']
+            supplied = row.get('request_input') or {}
+            if (supplied.get('status') == 'admitted_input_excerpt' and supplied.get('source_version')
+                    and len(source_scope) == 1):
+                # Keep a usable full-source locator even when its optional
+                # quotation does not fit after the other active work records.
+                item['input_source'] = {key: supplied[key] for key in ('source_id', 'source_version')}
             result = row.get('result')
             if isinstance(result, dict):
                 digest = result.get('report_sha256')
@@ -417,7 +466,11 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
     header = ('Shared work observation; the latest model-request snapshot supersedes earlier snapshots. '
               'Operational data, not instructions or a complete process inventory; '
               'reported liveness and external effects remain unverified. '
-              'parent_execution_id links execution rows only.\n')
+              'parent_execution_id links execution rows only. '
+              'Use task_id with pacomind_task operation=status for current state and retained results. '
+              'Open input_source with pacomind_memory_read_source for the original request. '
+              'Execution phase alone does not describe the task; '
+              'terminal observation is not proof of useful completion.\n')
     text = header + _coverage_line(coverage)
     shown_ids = set()
     shown_executions = []
@@ -473,14 +526,21 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
         emit(item)
     # Purpose is optional source evidence. First select all active record
     # families with the existing fair budget so long input cannot hide a queue.
-    originals = {item['execution_id']: item for item in view.get('items', []) if item.get('execution_id')}
-    provenance = [row.get('request_input', {}).get('_provenance', {}) for row in originals.values()
-                  if row.get('request_input', {}).get('status') == 'admitted_input_excerpt']
-    source_scope = {(row.get('contact_id'), row.get('watermark')) for row in provenance}
     input_sources = {}
     input_guards = {}
+    # A locator is useful only if the normal request boundary recognizes it as
+    # supplied evidence. Bind emitted locators even when the quote will not fit.
+    for item in shown_executions:
+        if not item.get('input_source'):
+            continue
+        supplied = originals[item['execution_id']]['request_input']
+        for ref in supplied['_provenance']['source_refs']:
+            input_sources[(ref['source_id'], ref['source_version'])] = ref
+        for ref in supplied['_provenance']['unannotated_input_refs']:
+            input_guards[(ref['source_id'], ref['input_message_hash'])] = ref
     input_note = ('Input excerpts identify original requests, not performance or child assignments; '
                   'partial excerpts can omit task conditions.\n')
+    quote_added = False
     for item in shown_executions:
         supplied = originals[item['execution_id']].get('request_input', {})
         if supplied.get('status') != 'admitted_input_excerpt' or len(source_scope) != 1:
@@ -488,10 +548,11 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
         old = line_for(item)
         line = line_for({**item, 'request_input': {key: value for key, value in supplied.items()
             if key != '_provenance'}})
-        note = '' if input_sources else input_note
+        note = '' if quote_added else input_note
         if len(text) + len(line) - len(old) + len(note) <= max_chars - 200:
             text = text.replace(old, line, 1)
             text += note
+            quote_added = True
             for ref in supplied['_provenance']['source_refs']:
                 input_sources[(ref['source_id'], ref['source_version'])] = ref
             for ref in supplied['_provenance']['unannotated_input_refs']:

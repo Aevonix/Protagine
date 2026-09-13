@@ -76,6 +76,8 @@ def input_excerpt(ledger, *, contact_id, session_id, refs, max_chars=240):
     return {'status': 'admitted_input_excerpt', 'excerpt': text[:max_chars],
         'partial': len(text) > max_chars or len(refs) > 1,
         'input_count': len(refs), 'source_id': selected['source_id'],
+        'source_version': next(ref['source_version'] for ref in versions
+                               if ref['source_id'] == selected['source_id']),
         'input_message_hash': selected['input_message_hash'],
         '_provenance': {'contact_id': contact_id, 'watermark': watermark, 'source_refs': versions,
                         'unannotated_input_refs': [dict(ref) for ref in refs]}}
