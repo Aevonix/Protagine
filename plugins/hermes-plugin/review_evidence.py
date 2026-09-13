@@ -12,7 +12,7 @@ import json
 _CURRENT = ContextVar('pacomind_native_review_evidence', default=None)
 
 
-def capture(scope, request):
+def capture(scope, request, *, durable=False):
     """Remember bounded references from this participant's actual request."""
     _CURRENT.set(None)
     if (scope is None or not scope.valid_participant
@@ -61,6 +61,14 @@ def capture(scope, request):
         _CURRENT.set({'version': 1, 'source': 'native_request_tool_results',
             'session_id': scope.session_id, 'turn_id': scope.turn_id,
             'failures': list(failures.values())[-16:]})
+        if durable:
+            # Optional best-effort observation must never disrupt the request.
+            try:
+                from .review_experience import retain
+                retain(scope, messages[-256:], list(failures.values())[-16:])
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning('Ordinary skill failure observation unavailable', exc_info=False)
 
 
 def current():
