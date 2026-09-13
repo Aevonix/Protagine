@@ -2948,7 +2948,8 @@ def register(ctx: Any) -> None:
         _REVIEW_PARENT_SCOPE.set(scope if scope is not None and scope.valid_participant else None)
         review_parent_memory.set(request_memory.snapshot_review_parent(scope))
         from .review_evidence import capture
-        capture(scope, kwargs.get('request'))
+        capture(scope, kwargs.get('request'),
+                durable=(config.get('native_reviews') or {}).get('enabled') is True)
         return None  # No provider request changes.
     ctx.register_middleware("llm_request", capture_review_parent)
     ctx.register_middleware('llm_request', reconcile_request)

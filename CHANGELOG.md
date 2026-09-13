@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.9 - ordinary skill failures across sessions
+
+When native reviews are enabled, recurring tool failures associated with a viewed
+skill can now survive short conversations and process restarts in Hermes' existing
+skill ledger. Two distinct ordinary owner turns can supply one bounded review
+batch. Entries retain source references, observed skill hashes and error classes;
+the original transcript stays in its existing store. Replayed results and
+previously consumed observations do not create new review batches.
+
+This supplies evidence to an existing review consumer. It does not assume a
+skill caused a failure, modify a skill, or establish useful learning. CLI and
+system work are excluded. Exact skill ownership, evaluation and adoption remain
+with the native runtime.
+
 ## v1.5.8 - model roles for accepted background tasks
 
 The existing `pacomind_task` tool accepts an optional profile-declared
