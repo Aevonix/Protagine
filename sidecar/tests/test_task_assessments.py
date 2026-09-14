@@ -418,6 +418,71 @@ def test_exact_membership_cannot_omit_the_immutable_execution_input(task, host):
     assert not assessment_sources(task)
 
 
+def test_read_complete_assessments_preserves_attribution_and_has_no_effect(task, host):
+    payload = packet(task)
+    first = host.caller.assess(payload)
+    other = copy.deepcopy(payload)
+    other['assessment'] = document('second-review.txt', 'The artifact is acceptable in my opinion.')
+    second = host.caller.assess(other)
+    before = snapshot(task)
+    page = host.api.post('/v1/host/executions/assessments/read', json={
+        'contact_id':'owner', 'limit':1}).json()
+    assert page['next_offset'] == 1 and page['sources_current']
+    last = host.api.post('/v1/host/executions/assessments/read', json={
+        'contact_id':'owner', 'offset':page['next_offset']}).json()
+    rows = page['assessments'] + last['assessments']
+    assert {r['source_id'] for r in rows} == {first['source_id'], second['source_id']}
+    assert {r['task_id'] for r in rows} == {payload['task_id']}
+    assert {r['execution_id'] for r in rows} == {payload['execution_id']}
+    for row in rows:
+        original = next(r for r in assessment_sources(task) if r['turn_id'] == row['source_id'])
+        assert row['content'] == json.loads(original['messages_json'])[0]['content']
+        assert row['complete'] and row['attribution'] == ATTRIBUTION
+        assert row['owner_approval'] == 'unobserved' and 'failure' not in row and 'passed' not in row
+    assert snapshot(task) == before
+    assert required_scope('POST', '/v1/host/executions/assessments/read') == 'context:read'
+
+
+@pytest.mark.parametrize('change', ['scope', 'guest', 'anonymous', 'legacy'])
+def test_assessment_read_requires_scoped_owner(task, host, change):
+    host.caller.assess(packet(task))
+    values = vars(host.authority[0]).copy()
+    if change == 'scope': values['scopes'] = frozenset({'turns:write'})
+    elif change == 'guest': values.update(viewer_person_id='guest', person_ids=frozenset({'guest'}))
+    else: values[change] = True
+    host.authority[0] = RequestAuthority(**values)
+    result = host.api.post('/v1/host/executions/assessments/read', json={
+        'contact_id':'guest' if change == 'guest' else 'owner'})
+    assert result.status_code == 403
+
+
+@pytest.mark.parametrize('change', ['unknown-version', 'input-corrected', 'review-corrected',
+                                  'erased', 'own-projection-erased', 'own-attribution-invalid'])
+def test_assessment_read_rechecks_exact_source_support(task, host, change):
+    payload = packet(task)
+    receipt = host.caller.assess(payload)
+    ref = {key:receipt[key] for key in ('source_id', 'source_version')}
+    if change == 'unknown-version': ref['source_version'] = 'f'*64
+    elif change == 'erased': task.ledger.erase_sources(contact_id='owner', turn_ids=[receipt['source_id']])
+    elif change.startswith('own-'):
+        with closing(task.ledger._connect()) as conn, conn:
+            if change == 'own-projection-erased':
+                conn.execute('INSERT INTO source_projection_erasures VALUES (?,?)',
+                             (receipt['source_id'], 'erased-projection-premise'))
+            else:
+                conn.execute('INSERT INTO source_attribution_invalidations VALUES (?,?,?)',
+                             (receipt['source_id'], 'corrected-attribution-premise', 'correction-one'))
+    else:
+        target = ref if change == 'review-corrected' else task.source['source_refs'][0]
+        task.ledger.append_source_annotation(contact_id='owner', session_id='later',
+            annotation_id='read-correction', **target,
+            excerpt=payload['assessment']['content'] if change == 'review-corrected' else task.message['content'],
+            correction='The interpretation needs revision.', author_principal='owner')
+    result = host.api.post('/v1/host/executions/assessments/read', json={
+        'contact_id':'owner', 'source_refs':[ref]}).json()
+    assert not result['sources_current'] and not result['assessments']
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retrieval', ['lexical', 'semantic'])
 async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task, host, monkeypatch, retrieval):

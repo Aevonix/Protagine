@@ -80,6 +80,51 @@ def supported(conn, *, message, source_id, contact_id, session_id):
         input_refs=message['_supplied_inputs'])
 
 
+def read_assessments(registry, *, contact_id, source_refs=(), offset=0, limit=16):
+    """Complete current review bundles, not inferred failure labels or verdicts.
+
+    The second line is the JSON facts frame written by _render, not reviewer
+    prose. Reading its task identity avoids another projection or migration.
+    Exact-ref reads also provide the existing consumer's freshness boundary.
+    """
+    expected = {ref['source_id']: ref['source_version'] for ref in source_refs}
+    with closing(registry.ledger._connect()) as conn:
+        clauses, args = ["contact_id=?", "scope='person'",
+            "json_extract(messages_json,'$[0]._task_artifact_assessment')=?",
+            "NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=turn_sources.turn_id)",
+            "NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=turn_sources.turn_id)"], [contact_id, VERSION]
+        if expected:
+            clauses.append('turn_id IN (SELECT value FROM json_each(?))')
+            args.append(json.dumps(list(expected)))
+        rows = conn.execute('SELECT turn_id,session_id,messages_json FROM turn_sources WHERE '
+            + ' AND '.join(clauses) + ' ORDER BY ingested_at DESC,turn_id LIMIT ? OFFSET ?',
+            [*args, len(expected) if expected else limit, 0 if expected else offset]).fetchall()
+        records = []
+        for row in rows:
+            messages = json.loads(row['messages_json'])
+            if len(messages) != 1:
+                continue
+            message = messages[0]
+            version = canonical_turn_digest(messages)
+            if ((expected and expected.get(row['turn_id']) != version)
+                    or not supported(conn, message=message, source_id=row['turn_id'],
+                                     contact_id=contact_id, session_id=row['session_id'])):
+                continue
+            # This is an internal source format, never a parser for findings.
+            facts = json.loads(message['content'].split('\n', 2)[1])
+            if facts.get('version') != VERSION:
+                continue
+            records.append({'source_id': row['turn_id'], 'source_version': version,
+                **{key: facts[key] for key in ('task_id', 'execution_id', 'assessed_at',
+                                               'reviewer_identity', 'reviewer_model')},
+                'attribution': ATTRIBUTION, 'owner_approval': 'unobserved',
+                'content': message['content'], 'complete': True})
+    return {'assessments': records,
+        'sources_current': not expected or expected == {
+            row['source_id']: row['source_version'] for row in records},
+        'next_offset': offset + len(rows) if not expected and len(rows) == limit else None}
+
+
 def _render(facts, documents):
     return ('The execution host reports this machine assessment of one exact task artifact. '
         'It is fallible review evidence, not an owner statement, independent factual verification '

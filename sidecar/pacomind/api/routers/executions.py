@@ -93,6 +93,14 @@ class ExecutionAssessment(BaseModel):
     context_documents: list[AssessmentDocument] = Field(default_factory=list, max_length=4)
 
 
+class AssessmentRead(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    contact_id: str = Field(min_length=1, max_length=256)
+    source_refs: list[SourceReference] = Field(default_factory=list, max_length=16)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=16, ge=1, le=16)
+
+
 def authorized_viewer(request: Request, contact_id: str, *, scope: str) -> tuple[str, bool]:
     authority = request_authority(request)
     # Legacy body-selected identity is deliberately not sufficient for this new
@@ -124,6 +132,16 @@ def assess(body: ExecutionAssessment, request: Request):
             principal_id=request_authority(request).principal_id, contact_id=person)
     except ValueError as exc:
         raise HTTPException(409, detail={'code': str(exc)}) from exc
+
+
+@router.post('/assessments/read')
+def assessments(body: AssessmentRead, request: Request):
+    person, owner = authorized_viewer(request, body.contact_id, scope='context:read')
+    if not owner:
+        raise HTTPException(403, detail={'code': 'owner_task_assessment_required'})
+    from pacomind.self_model.task_assessments import read_assessments
+    return read_assessments(registry(), contact_id=person, offset=body.offset, limit=body.limit,
+        source_refs=[ref.model_dump() for ref in body.source_refs])
 
 
 @router.get("")
