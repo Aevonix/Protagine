@@ -133,7 +133,7 @@ Start a fresh Hermes session, provide a harmless fact and ask for it in another
 session. Check the remembered source as well as the answer. The minimum profile
 provides memory and work observation; background execution needs configuration.
 
-The current qualification target is Hermes 0.21.2. Some concurrent task, review
+The current qualification target is Hermes 0.21.3. Some concurrent task, review
 and source-reminder interfaces use the [documented compatibility build](docs/HERMES-HOOK-COMPATIBILITY.md).
 Setup does not patch Hermes core or restart a running gateway. The
 [setup guide](docs/LOCAL-HERMES-SETUP.md) covers services, profile attachment,

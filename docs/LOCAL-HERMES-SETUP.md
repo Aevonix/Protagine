@@ -1,6 +1,6 @@
 # Create or attach a private Hermes agent
 
-The current qualification target uses Hermes **0.21.2**
+The current qualification target uses Hermes **0.21.3**
 ([qualification build](HERMES-HOOK-COMPATIBILITY.md)), Python 3.12, and one local
 OpenAI-compatible chat endpoint. Install Hermes separately using its
 [native installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
