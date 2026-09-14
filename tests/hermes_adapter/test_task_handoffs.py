@@ -91,6 +91,10 @@ def legacy_adoption():
             (identity, 'request-α', 'Inspect the café calibration notes.', encoded, 123.0))
     row = admitted({**s, 'watermark':999})
     assert row['id'] == identity and row['created'] == 123.0 and row['source'] == s
+    assert store().get_by_request_id('request-α') == row
+    assert store().get_by_request_id('unseen-request') is None
+    fails(lambda: store().get_by_request_id(''), 'bounded stable identifier')
+    fails(lambda: store().get_by_request_id('invalid\nrequest'), 'bounded stable identifier')
     assert store().pending() == [identity]
     with database() as db:
         assert db.execute('SELECT source_json FROM native_voice_handoffs').fetchone()[0] == encoded

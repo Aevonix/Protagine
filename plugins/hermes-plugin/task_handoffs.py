@@ -151,6 +151,15 @@ class TaskHandoffs:
             result[key] = json.loads(result.pop(key + '_json') or 'null')
         return result
 
+    def get_by_request_id(self, request_id):
+        """Read a retained admission; callers must still revalidate its source."""
+        if (not isinstance(request_id, str) or not request_id or len(request_id) > 256
+                or any(ord(char) < 32 for char in request_id)):
+            raise self._error('A bounded stable identifier is required')
+        with self._database() as db:
+            row = db.execute('SELECT id FROM native_voice_handoffs WHERE request_id=?', (request_id,)).fetchone()
+        return self.get(row['id']) if row else None
+
     def control(self, identity, *, principal=None, require_task_grant=False):
         """Resolve retained ownership without requiring still-readable source content."""
         row = self.get(identity)
