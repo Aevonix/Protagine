@@ -538,12 +538,11 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
     input_note = ('Input excerpts identify original requests, not performance or child assignments; '
                   'partial excerpts can omit task conditions.\n')
     quote_added = False
-    for item in priority:
-        emit(item)
     # A known native task needs its actual request before idle/unknown readers
     # consume the remaining budget. Its already selected locator owns the same
     # source guards; avoid repeating hashes in the optional human-readable quote.
     for item in priority:
+        emit(item)
         if (id(item) not in shown_ids or not item.get('task_id')
                 or not item.get('input_source') or 'request_input' in item):
             continue
@@ -612,6 +611,8 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
         text += 'Additional operational records omitted.\n'
     return {'schema': 'PacoMindRequestWorkV1', 'observed_at': time.time(),
             'text': text, 'truncated': truncated, 'work_sources': coverage,
+            'native_task_ids': list(dict.fromkeys(item['task_id'] for item in shown_executions
+                if item.get('platform') == 'pacomind_task' and item.get('task_id'))),
             'complete': False, **({'input_provenance': {
                 'contact_id': next(iter(source_scope))[0], 'watermark': next(iter(source_scope))[1],
                 'source_refs': list(input_sources.values()),

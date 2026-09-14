@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.22 - current task revisions across conversations
+
+A foreground owner conversation can receive the latest accepted revision of a
+shown native task alongside its original purpose. The revision carries separate
+acknowledgment and model-request visibility flags; neither proves the requested
+behavior was applied. Original and correction sources must pass the existing
+owner, currentness, annotation and erasure checks before dispatch.
+
+One revision shares the existing 4000-character, eight-record context budget.
+Conversations without a revision retain the full work view. Enrolled voice inputs
+reuse canonical source resolution when their exact input hashes still need a
+source revision. Optional owner lookups share the existing request deadline.
+
+Native request and enrolled voice fixtures qualify these boundaries. Accurate
+foreground answers and physical-channel behavior still require observation.
+
 ## v1.5.21 - task context and ordinary failure reviews
 
 Shared work context keeps the latest native task inspectable after its turn ends.

@@ -125,7 +125,8 @@ def assess(body: ExecutionAssessment, request: Request):
 
 @router.get("")
 async def active(request: Request, contact_id: str, session_id: str = "", limit: int = Query(20, ge=1, le=100),
-                 projection: Literal['full', 'request'] = 'full', input_context: bool = False):
+                 projection: Literal['full', 'request'] = 'full', input_context: bool = False,
+                 reserve_chars: int = Query(0, ge=0, le=1200)):
     person, owner = authorized_viewer(request, contact_id, scope="context:read")
     if projection == 'request' and not owner:
         raise HTTPException(403, detail='owner_work_context_required')
@@ -137,7 +138,13 @@ async def active(request: Request, contact_id: str, session_id: str = "", limit:
     view = await with_queue_work(view, owner=owner, limit=limit)
     if projection == 'request':
         from pacomind.turns.executions import request_work_context
-        return request_work_context(view, limit=limit, session_id=session_id)
+        result = request_work_context(view, limit=limit, session_id=session_id)
+        if reserve_chars:
+            # One scoped read supplies both choices. The adapter uses the
+            # smaller view only when an authorized local task revision exists.
+            result['reserved'] = request_work_context(view, limit=max(1, limit-1),
+                max_chars=4000-reserve_chars, session_id=session_id)
+        return result
     return view
 
 

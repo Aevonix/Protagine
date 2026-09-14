@@ -20,6 +20,14 @@ sys.path.insert(0, sys.argv[1]); sys.path.insert(1, sys.argv[2])
 if sys.argv[3]: sys.path.append(sys.argv[3])
 platform=sys.argv[4]
 scenario=sys.argv[5]
+erased_source=sys.argv[6]
+if scenario == 'task_revision':
+    # Setup owns a contact-store thread before the native-loop finally block.
+    # Preserve its real exception instead of waiting for that thread at exit.
+    def setup_failure(kind,error,tb):
+        import traceback
+        traceback.print_exception(kind,error,tb);sys.stderr.flush();os._exit(1)
+    sys.excepthook=setup_failure
 if os.environ.get('PACOMIND_TEST_HERMES_PATH'):
     sys.path.insert(2, os.environ['PACOMIND_TEST_HERMES_PATH'])
 import httpx
@@ -32,7 +40,7 @@ from pacomind.contacts.store import SQLiteContactStore
 from pacomind.initiatives.store import InitiativeStore
 from pacomind.turns import get_turn_idempotency_ledger
 
-home=Path(os.environ['HERMES_HOME']); home.mkdir()
+home=Path(os.environ['HERMES_HOME']); home.mkdir(mode=0o700)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 state=Path(os.environ['PACOMIND_STATE_DIR']); state.mkdir()
 contacts=SQLiteContactStore(ContactsConfig(sqlite_path=str(state/'contacts.db')))
@@ -56,7 +64,7 @@ fact='My neutral orchard badge is cobalt-716.'
 ledger=get_turn_idempotency_ledger(state)
 ledger.record_source('neutral-source', contact_id=owner, session_id='earlier-session',
     messages=[{'role':'user','content':fact}], derive_claims=False)
-if scenario == 'task_source':
+if scenario in {'task_source', 'task_revision'}:
     from pacomind.turns.executions import ExecutionRegistry
     from pacomind.turns.idempotency import source_message_hash
     task_text = 'Repair the neutral sample report and preserve its original inputs. ' * 8
@@ -64,14 +72,17 @@ if scenario == 'task_source':
     ledger.record_source('task-original', contact_id=owner, session_id='native-task',
         messages=[task_message], derive_claims=False)
     task_ref, = ledger.source_references(['task-original'], contact_id=owner, session_id='observer')
-    assert ExecutionRegistry(ledger).observe({
+    def observe_task(task_identity):
+      assert ExecutionRegistry(ledger).observe({
         'execution_id':'b'*64, 'session_id':'native-task', 'turn_id':'native-task-turn',
         'parent_execution_id':'', 'platform':'pacomind_task', 'state':'observed',
         'phase':'turn', 'tool_name':'', 'sequence':1,
         'input_refs':[{'source_id':'task-original',
             'input_message_hash':source_message_hash('native-task', task_message)}],
-        'task_experience':{'task_id':'a'*64, 'purpose':'qualification', 'origin_platform':'cli'}},
+        'task_experience':{'task_id':task_identity, 'purpose':'qualification', 'origin_platform':'cli'}},
         principal_id='neutral-native', contact_id=owner)['accepted']
+    if scenario == 'task_source':
+        observe_task('a'*64)
     original_queue_view = executions.with_queue_work
     async def crowded_view(view, **kwargs):
         view = await original_queue_view(view, **kwargs)
@@ -117,9 +128,34 @@ def local_only(self,address):
     assert isinstance(address,tuple) and address[:2]==('127.0.0.1',port), address
     return original_connect(self,address)
 socket.socket.connect=local_only
+if scenario == 'task_revision':
+    from pacomind_hermes.client import PacoMindClient, TurnOutbox
+    from pacomind_hermes.task_controller import NativeTasks
+    (home/'state').mkdir(mode=0o700)
+    controller=NativeTasks(PacoMindClient(url=base),
+        TurnOutbox(home/'state/pacomind-turn-outbox.sqlite3'),owner)
+    def source_input(identity,session,message,platform='cli',sender=''):
+        ref,=ledger.source_references([identity],contact_id=owner,session_id='observer')
+        return {'version':1,'principal':'hermes:'+platform,'contact_id':owner,
+            'source_session_id':session,'watermark':0,'source_refs':[ref],
+            'input_refs':[{'source_id':identity,'input_message_hash':source_message_hash(session,message)}],
+            'origin':{'platform':platform,'authority_gateway':platform,'sender_id':sender,
+                'session_id':session,'turn_id':session+':turn'}}
+    original=source_input('task-original','native-task',task_message)
+    task=controller.handoffs.admit(request_id='neutral-task-revision',request=task_text,
+        source_input=original,experience='qualification')
+    observe_task(task['id'])
+    revision_text='Also identify the offending task_id in every invalid duration error; keep valid output unchanged.'
+    revision_message={'role':'user','content':revision_text}
+    ledger.record_source('task-revision',contact_id=owner,session_id='other-owner-conversation',
+        messages=[revision_message],derive_claims=False)
+    revision_source=source_input('task-revision','other-owner-conversation',revision_message,'sms','+15550007160')
+    revision=controller.handoffs.admit_update(task['id'],instruction=revision_text,
+        source_input=revision_source,principal='hermes:sms')
 (home/'config.yaml').write_text(json.dumps({
     'plugins':{'enabled':['pacomind'],'pacomind':{'owner_contact_id':owner,'url':base,
-        'attested_system_platforms':['cli'],'turn_writer_platforms':[]}},
+        'attested_system_platforms':['cli'],'turn_writer_platforms':[],
+        **({'native_tasks':{'enabled':True}} if scenario=='task_revision' else {})}},
     'memory':{'provider':'pacomind-memory','config':{'contact_id':owner,'url':base}}}))
 
 from hermes_cli.plugins import get_plugin_manager
@@ -175,10 +211,27 @@ def answer(**kwargs):
     block=work_block(kwargs)
     refreshes=[row for row in wire if row[1]=='/v1/host/executions'
                and row[2].get('projection')=='request']
-    assert f'Current request session: {json.dumps(refreshes[-1][2]["session_id"])}.' in block, block
+    if scenario != 'task_revision' or index < 3:
+        assert f'Current request session: {json.dumps(refreshes[-1][2]["session_id"])}.' in block, block
     full_reads=[row for row in wire if row[1]=='/v1/host/context/assemble']
     assert len(full_reads)==1 and full_reads[0][3]==200, wire
-    assert fact in json.dumps(kwargs['messages']), kwargs['messages']
+    if scenario != 'task_revision' or index < 3:
+        assert fact in json.dumps(kwargs['messages']), kwargs['messages']
+    if scenario == 'task_revision':
+        if index <= 2:
+            if index==1:
+                release_writer.set(); assert writer_done.wait(10) and not errors,errors
+                controller.handoffs.observe_update(task['id'],revision['id'],
+                    {'stage':'native_request_visible','session_id':'native-task','task_id':'native-turn'})
+            else:
+                ledger.erase_sources(contact_id=owner,turn_ids=[erased_source])
+            call=NS(id='revision-read-'+str(index),type='function',function=NS(
+                name='read_file',arguments=json.dumps({'path':str(fixture)})))
+            return NS(choices=[NS(message=NS(content='',tool_calls=[call]),finish_reason='tool_calls')],
+                      model='fixture/model',usage=None)
+        assert index==3
+        return NS(choices=[NS(message=NS(content='NATIVE_WORK_REFRESH_OK',tool_calls=None),finish_reason='stop')],
+                  model='fixture/model',usage=None)
     if scenario == 'task_source':
         task_row, = [json.loads(line) for line in block.splitlines()
                      if line.startswith('{') and json.loads(line).get('task_id') == 'a'*64]
@@ -241,13 +294,28 @@ try:
         assert marker not in json.dumps(transcript), transcript
         assert any(row.get('role')=='user' and row.get('content')==user_message for row in transcript)
         native_tools=[row for row in transcript if row.get('role')=='tool']
-        assert len(native_tools)==(1 if scenario=='task_source' else 2), native_tools
-        if scenario == 'task_source':
+        if scenario != 'task_revision':
+            assert len(native_tools)==(1 if scenario=='task_source' else 2), native_tools
+        else:
+            # Assertions outside the SDK callback cannot become provider retries.
+            for index,request in enumerate(requests[:2]):
+                block=work_block(request)
+                assert task_text[:240] in block,block
+                assert revision_text in block,block
+                rows=[json.loads(line) for line in block.splitlines() if line.startswith('{')]
+                update,=[row['latest_accepted_update'] for row in rows if 'latest_accepted_update' in row]
+                assert update['native_request_visible'] is (index==1),update
+                assert update['behavior_applied']=='unobserved',update
+                assert len(block) <= 4200
+            assert revision_text not in json.dumps(requests[2]['messages']),requests[2]['messages']
+        if scenario in {'task_source','task_revision'}:
             import sqlite3
             with sqlite3.connect(home/'state/pacomind-turn-outbox.sqlite3') as db:
                 owned=[json.loads(row[0]) for row in db.execute(
                     'SELECT metadata_json FROM native_source_ownership WHERE session_id=?', (agent.session_id,))]
             assert any(task_ref in row.get('sources',[]) for row in owned), owned
+            if scenario == 'task_revision':
+                assert any(revision_source['source_refs'][0] in row.get('sources',[]) for row in owned),owned
         else:
             assert 'NEUTRAL_TOOL_CONTENT_716' in native_tools[0]['content'], native_tools
         # Native read_file may deduplicate the second unchanged read. Its
@@ -256,11 +324,12 @@ try:
                     or json.loads(native_tools[1]['content']).get('status')=='unchanged'), native_tools
         for request in requests:
             sent_tools=[row for row in request['messages'] if row.get('role')=='tool']
-            assert all(any(row['content']==native['content'] and row['tool_call_id']==native['tool_call_id']
+            assert scenario=='task_revision' or all(any(row['content']==native['content'] and row['tool_call_id']==native['tool_call_id']
                            for native in native_tools) for row in sent_tools), sent_tools
         agent.close()
     refreshes=[row for row in wire if row[1]=='/v1/host/executions' and row[2].get('projection')=='request']
-    assert [row[3] for row in refreshes]==([200,200] if scenario=='task_source' else [200,200,503]), wire
+    assert [row[3] for row in refreshes]==([200,200] if scenario=='task_source' else
+        [200,200,200] if scenario=='task_revision' else [200,200,503]), wire
     assert all(row[2].get('contact_id')==owner and row[2].get('limit')=='8' and row[2].get('session_id') for row in refreshes)
     assert store.get(work.id).result_metadata['report_sha256']==report_hash
     assert len([row for row in wire if row[0]=='POST' and row[1].endswith('/complete')])==1
@@ -271,14 +340,15 @@ finally:
 assert not server_thread.is_alive() and not writer.is_alive() and not errors, errors
 print(json.dumps({'native_single_turn':True,'actual_http_and_ledger':True,
     'concurrent_completion_visible':True,'memory_prefetches':1,'model_requests':len(requests),
-    'unavailable_replaces_work':scenario=='completion','native_transcript_unchanged':True,
+    'unavailable_replaces_work':scenario=='completion','native_transcript_unchanged':scenario!='task_revision',
     'source_excerpt_and_reader_owned':scenario=='task_source',
     'controlled_inference_and_writer':True,'platform':platform}))
 '''
 
 
-@pytest.mark.parametrize('platform,scenario', [('sms','completion'), ('cli','completion'), ('sms','task_source')])
-def test_native_turn_refreshes_shared_work_between_model_calls(artifacts, tmp_path, platform, scenario):
+@pytest.mark.parametrize('platform,scenario,erased_source', [('sms','completion',''), ('cli','completion',''),
+    ('sms','task_source',''), ('sms','task_revision','task-revision'), ('sms','task_revision','task-original')])
+def test_native_turn_refreshes_shared_work_between_model_calls(artifacts, tmp_path, platform, scenario, erased_source):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes to exercise actual native model requests')
     env={key:os.environ[key] for key in ('PATH','HOME','TMPDIR','LANG','PACOMIND_TEST_HERMES_PATH') if key in os.environ}
@@ -289,5 +359,5 @@ def test_native_turn_refreshes_shared_work_between_model_calls(artifacts, tmp_pa
         PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY='owner_system', PACOMIND_GUARD_CHAT_MODE='off',
         PACOMIND_OWNER_CONTACT_ID='owner', PACOMIND_SKIP_DOTENV='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
     result=run_python('-I','-c',PROBE,artifacts[3],ROOT/'sidecar',
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),platform,scenario,cwd=tmp_path,env=env)
+        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),platform,scenario,erased_source,cwd=tmp_path,env=env)
     assert json.loads(result.stdout.splitlines()[-1])['concurrent_completion_visible']

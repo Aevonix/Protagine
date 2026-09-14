@@ -4,6 +4,8 @@ Only trusted native transport scopes enter ``capture`` and ``authorize_control``
 Stored source envelopes are provenance, never model-supplied credentials. The
 existing canonical ledger and turn outbox own source freshness and forgetting.
 """
+from contextlib import contextmanager
+from contextvars import ContextVar
 import time
 
 from .client import redact_source_payload, source_input_erased, source_message_hash
@@ -14,6 +16,18 @@ from .task_handoffs import TaskHandoffError
 
 _NON_DIRECT = frozenset({'cron', 'subagent', 'background_review', 'pacomind_task'})
 _ORIGIN_FIELDS = ('platform', 'authority_gateway', 'sender_id', 'session_id', 'turn_id')
+_OWNER_DEADLINE = ContextVar('pacomind_task_owner_deadline', default=None)
+
+
+@contextmanager
+def owner_lookup_deadline(deadline):
+    """Bound existing owner lookups for optional request context only."""
+    current_deadline = _OWNER_DEADLINE.get()
+    token = _OWNER_DEADLINE.set(min(deadline, current_deadline) if current_deadline else deadline)
+    try:
+        yield
+    finally:
+        _OWNER_DEADLINE.reset(token)
 
 
 def _parents(original, additional, digest):
@@ -50,9 +64,13 @@ class NativeTaskSources:
         if not origin['sender_id'] or gateway in self.attested_system_platforms:
             raise TaskHandoffError('Current task owner binding is unavailable')
         try:
+            deadline = min(time.monotonic() + .5, _OWNER_DEADLINE.get() or float('inf'))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Optional task context deadline expired')
             response = self.client.get('/v1/host/contacts/resolve', params={
                 'gateway': gateway, 'address': origin['sender_id'], 'create': 'false'},
-                timeout=.5, _deadline_monotonic=time.monotonic() + .5)
+                timeout=remaining, _deadline_monotonic=deadline)
             response.raise_for_status()
             contact = response.json().get('contact_id')
         except Exception:
