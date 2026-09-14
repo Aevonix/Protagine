@@ -26,7 +26,7 @@ jobs:
           # Explicit qualification build; latest unmodified upstream is checked
           # separately by hermes-upstream.yml. See the compatibility note.
           repository: Kurcide/hermes-agent
-          ref: 7fb5bba89217665bab121aee73be68bdd489279d
+          ref: e10be9649b6770e9c2655dfc15c9da83acc2393a
           path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -41,7 +41,7 @@ jobs:
         run: |
           python -m pip install -e ".[test,native-memory]"
           python -m pip install -e ./.qualification/hermes
-          python -m pip install './sidecar[lancedb,video]'
+          python -m pip install './sidecar[lancedb,video]' 'pytest-asyncio>=0.23'
       - name: Qualify built artifacts and profile isolation
         run: |
           export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
@@ -93,7 +93,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
         run: |
           python -c "from hermes_state import SessionDB; assert all(callable(getattr(SessionDB, name, None)) for name in ('redact_message_payloads', 'message_redaction_snapshot'))"
-          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py -q --durations=0 --junitxml=native-memory-results.xml
+          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py sidecar/tests/test_task_execution_judgments.py -q --durations=0 --junitxml=native-memory-results.xml
       - name: Retain test inventory and durations
         if: always()
         uses: actions/upload-artifact@v4

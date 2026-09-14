@@ -66,8 +66,10 @@ resolved independently. Derived task turns and subagents cannot manufacture
 new ordinary instructions through this tool.
 
 Shared work context exposes the active task handle and a source reference for
-its original request. The latest finished task remains inspectable for seven
-days. Use `status` for retained results and `pacomind_memory_read_source` for
+its original request, including tasks without a learning classification. A long
+model or tool call can make liveness unknown; the open task remains inspectable
+before older results. The latest finished task remains inspectable for seven
+days while its original input remains readable. Use `status` for retained results and `pacomind_memory_read_source` for
 original inputs or correction references returned by status. A correction can
 be accepted while still waiting to reach the working model. Request visibility
 records that delivery stage; the result still needs inspection to establish

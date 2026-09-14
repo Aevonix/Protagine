@@ -54,7 +54,11 @@ def finish_native_turn(**kwargs):
 
 
 def execution_experience(**kwargs):
-    """Prospective task purpose from the bound admission, never hook prose."""
+    """Bound task identity and its known purpose, never hook prose.
+
+    Every admitted task needs a cross-session handle. Missing classification
+    remains unclassified and is ineligible for operational learning.
+    """
     active = ACTIVE.get()
     if (active is None or kwargs.get('parent_session_id')
             or kwargs.get('platform') != active['adapter'].platform.value
@@ -63,7 +67,9 @@ def execution_experience(**kwargs):
         return None
     row = active['handoffs'].control(active['id'], require_task_grant=True)
     purpose = row['source'].get('task_experience')
-    if purpose not in {'operational', 'qualification'}:
+    if purpose is None:
+        purpose = 'unclassified'
+    if purpose not in {'operational', 'qualification', 'unclassified'}:
         return None
     return {'task_id': row['id'], 'purpose': purpose,
             'origin_platform': row['source'].get('origin', {}).get('platform', 'unknown')}

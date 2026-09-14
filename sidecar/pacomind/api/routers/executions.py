@@ -41,7 +41,7 @@ class ExecutionInputReference(BaseModel):
 class ExecutionTaskExperience(BaseModel):
     model_config = ConfigDict(extra='forbid')
     task_id: str = Field(pattern=r'^[a-f0-9]{64}$')
-    purpose: Literal['operational', 'qualification']
+    purpose: Literal['operational', 'qualification', 'unclassified']
     origin_platform: str = Field(min_length=1, max_length=64, pattern=r'^[a-z0-9_.-]+$')
 
 

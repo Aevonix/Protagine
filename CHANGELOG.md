@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.25 - shared task visibility across conversations
+
+Every source-bound native task keeps an inspectable task ID even when its
+admission has no learning classification. Unclassified tasks remain excluded
+from operational learning. An open task whose latest callback has expired
+stays visible before older results, with its liveness explicitly unknown.
+Erased task inputs no longer leave a completed status target in shared context.
+
+The qualified Hermes build adds optional `agent.image_input_mode:
+native_if_supported`. It sends original images to a capable current model and
+retains the configured auxiliary route for models with false or unknown vision
+capability. The default mode and existing deployments remain unchanged.
+
+Validation covers native admission, cross-session work selection, quiet calls,
+source erasure and separation from operational learning. These checks do not
+establish answer quality or completion of the unified-agent goal.
+
 ## v1.5.24 - native reasoning qualification and direct tool visibility
 
 The native model suite now offers a file-reading reasoning case. It requires
