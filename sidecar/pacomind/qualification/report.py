@@ -67,6 +67,17 @@ def compare(left, right):
             'same_suite': before['suite_sha256'] == after['suite_sha256']}
 
 
+def _check_text(checks):
+    if not checks:
+        return 'not recorded'
+    groups = []
+    for label, value in (('pass', True), ('fail', False), ('unknown', None)):
+        names = sorted(name for name, observed in checks.items() if observed is value)
+        if names:
+            groups.append(f"{label}: {', '.join(names)}")
+    return '; '.join(groups)
+
+
 def markdown(report):
     if report['kind'] == 'comparison':
         lines = ['# Recipe comparison', '', report['basis'], '',
@@ -84,4 +95,17 @@ def markdown(report):
         for group in report['groups']:
             lines.append(f"| {group['role']} | {group['boundary']} | {group['declared']} | {group['outcomes']} | "
                 f"{group['primary_passes']} | {group['duration_by_outcome']} |")
+    datasets = [('Before case checks', report['before']), ('After case checks', report['after'])] \
+        if report['kind'] == 'comparison' else [('Case checks', report)]
+    for title, dataset in datasets:
+        lines.extend(['', f'## {title}', '',
+            'Checks describe the listed case only. Unknown and unrecorded checks do not pass. '
+            'Primary attribution remains separate from the observed checks.', '',
+            '| Case | Role | Boundary | Outcome | Primary | Checks |',
+            '| --- | --- | --- | --- | --- | --- |'])
+        for row in dataset['cases']:
+            cells = (row['case_id'], row['role'], row['boundary'], row['outcome'],
+                     row.get('primary_outcome', 'unverified'), _check_text(row.get('checks')))
+            lines.append('| ' + ' | '.join(str(cell).replace('|', '\\|').replace('\n', ' ')
+                                         for cell in cells) + ' |')
     return '\n'.join(lines) + '\n'

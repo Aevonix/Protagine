@@ -11,7 +11,7 @@ import pytest
 from pacomind.qualification.cases import role_completion, json_fields
 from pacomind.qualification.records import CaseSpec, encode, read, write_once
 from pacomind.qualification.runner import evaluate
-from pacomind.qualification.report import summarize, compare
+from pacomind.qualification.report import summarize, compare, markdown
 
 RECIPE = {'binding': 'candidate', 'declared': {'supports_tools': False}, 'returned_model': None}
 CASE = CaseSpec(id='neutral', version='1', role='chat', boundary='role_completion',
@@ -191,6 +191,42 @@ async def test_report_separates_setup_durations_from_completed_calls(tmp_path):
     assert set(group['duration_by_outcome']) == {'pass','unsupported','setup_error'}
     assert all(value['samples'] == 1 for value in group['duration_by_outcome'].values())
     assert 'elapsed_ms_median' not in group
+
+
+@pytest.mark.asyncio
+async def test_markdown_keeps_useful_effect_grounding_and_unknown_checks_separate(tmp_path):
+    async def observed_effect(inputs, context):
+        return {'output': {'artifact': True, 'grounding': inputs['grounding'], 'playback': None}}
+
+    def evaluate_effect(observed, oracle):
+        return observed['output']
+
+    case = replace(CASE, boundary='native_hermes', consumer='effect', evaluator='effect_checks',
+                   inputs={'grounding': False})
+    await evaluate(tmp_path/'before', RECIPE, [case], {'effect': observed_effect},
+                   {'effect_checks': evaluate_effect}, lambda _: Router())
+    before = summarize(tmp_path/'before')
+    rendered = markdown(before)
+    assert '| neutral | chat | native_hermes | fail | unverified |' in rendered
+    assert 'pass: artifact; fail: grounding; unknown: playback' in rendered
+    assert before['cases'][0]['checks'] == {'artifact': True, 'grounding': False, 'playback': None}
+
+    await evaluate(tmp_path/'after', RECIPE, [replace(case, inputs={'grounding': True})],
+                   {'effect': observed_effect}, {'effect_checks': evaluate_effect}, lambda _: Router())
+    comparison = compare(tmp_path/'before', tmp_path/'after')
+    compared = markdown(comparison)
+    assert comparison['cases'][0]['comparable'] is False  # Different supplied evidence, not a gain.
+    assert '## Before case checks' in compared and '## After case checks' in compared
+    assert 'pass: artifact; fail: grounding; unknown: playback' in compared
+    assert 'pass: artifact, grounding; unknown: playback' in compared
+    assert compared.count('| neutral | chat | native_hermes | fail | unverified |') == 2
+
+
+@pytest.mark.asyncio
+async def test_markdown_does_not_invent_checks_for_unexecuted_cases(tmp_path):
+    await run(tmp_path/'run', cases=[replace(CASE, consumer='missing')])
+    assert '| neutral | chat | role_completion | setup_error | unverified | not recorded |' \
+        in markdown(summarize(tmp_path/'run'))
 
 
 @pytest.mark.asyncio
