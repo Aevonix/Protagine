@@ -8,12 +8,32 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`27d1366d64daa6069b74d1ba71f04212d60df7c5`](https://github.com/Kurcide/hermes-agent/commit/27d1366d64daa6069b74d1ba71f04212d60df7c5),
+`7fb5bba89217665bab121aee73be68bdd489279d`](https://github.com/Kurcide/hermes-agent/commit/7fb5bba89217665bab121aee73be68bdd489279d),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/27d1366d64daa6069b74d1ba71f04212d60df7c5/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/7fb5bba89217665bab121aee73be68bdd489279d/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
+
+This build accepts `tools.tool_search.eager`, an optional list of exact tool
+names whose full schemas should remain visible. A name only takes effect when
+that tool is already admitted and available in the session. Other tools retain
+normal discovery, and execution still uses native validation and middleware.
+The default list is empty. For frequent memory and shared-task operations, a
+deployment can select:
+
+```yaml
+tools:
+  tool_search:
+    eager: [pacomind_memory_read_source, pacomind_task]
+```
+
+Merge this into the existing tools configuration. PacoMind's installer does not
+replace that configuration or change the Hermes runtime. More direct schemas
+increase the initial request size; measure the full task before adopting a
+larger list. Native tests cover direct and deferred execution, middleware,
+unavailable tools and session scope. Production latency remains a separate
+measurement.
 
 The callback change adapts [upstream PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763),
 specifically [source commit

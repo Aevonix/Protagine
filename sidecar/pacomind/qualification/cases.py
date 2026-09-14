@@ -11,6 +11,18 @@ async def role_completion(inputs, context):
     return {'output': response.content, 'effects': {}}
 
 
+def _exact_value(actual, expected):
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _exact_value(actual[key], value) for key, value in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _exact_value(left, right) for left, right in zip(actual, expected))
+    return actual == expected
+
+
 def json_fields(observed, oracle):
     """Exact independently specified fields, not a model judging itself."""
     output = observed.get('output')
@@ -29,7 +41,7 @@ def json_fields(observed, oracle):
         except (KeyError, IndexError, TypeError):
             checks[item['name']] = False
         else:
-            checks[item['name']] = type(current) is type(item['equals']) and current == item['equals']
+            checks[item['name']] = _exact_value(current, item['equals'])
     return checks
 
 

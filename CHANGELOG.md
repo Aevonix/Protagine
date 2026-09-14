@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.24 - native reasoning qualification and direct tool visibility
+
+The native model suite now offers a file-reading reasoning case. It requires
+opening original records and a correction through Hermes, applying the corrected
+rule and giving a grounded decision. A correct answer without the reads fails,
+as do attempted file mutations and invented execution claims. Nested JSON
+comparisons preserve types, including integer versus boolean.
+
+The qualified Hermes interface supports an optional list of admitted tools to
+show directly. This keeps selected memory or task schemas available without a
+discovery round while leaving other tools deferred. Existing tool permissions
+and middleware still apply. The installer preserves the deployment's selection;
+this release does not claim a measured production latency improvement.
+
 ## v1.5.23 - simpler source reads and reasoning handoffs
 
 The native source reader can reuse the exact revision already supplied to the

@@ -17,7 +17,7 @@ from pacomind.qualification.records import read
 
 
 @contextmanager
-def endpoint(*, blocked=False, unavailable=False):
+def endpoint(*, blocked=False, unavailable=False, respond=None):
     entered, release = threading.Event(), threading.Event()
     requests = []
 
@@ -45,6 +45,9 @@ def endpoint(*, blocked=False, unavailable=False):
                 return
             if blocked:
                 release.wait(20)
+            message = respond(data) if respond else {
+                'role': 'assistant', 'content': '{"blue":"drawer 4","silver":null}'}
+            finish = 'tool_calls' if message.get('tool_calls') else 'stop'
             try:
                 if data.get('stream'):
                     self.send_response(200)
@@ -52,17 +55,18 @@ def endpoint(*, blocked=False, unavailable=False):
                     self.end_headers()
                     chunk = {'id': 'native-controlled', 'object': 'chat.completion.chunk',
                         'created': 1, 'model': 'native-fixture', 'choices': [{'index': 0,
-                        'delta': {'role': 'assistant', 'content': '{"blue":"drawer 4","silver":null}'},
+                        'delta': {**message, **({'tool_calls': [dict(call, index=index)
+                            for index, call in enumerate(message['tool_calls'])]} if message.get('tool_calls') else {})},
                         'finish_reason': None}]}
                     self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
-                    chunk['choices'] = [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
+                    chunk['choices'] = [{'index': 0, 'delta': {}, 'finish_reason': finish}]
                     self.wfile.write(('data: '+json.dumps(chunk)+'\n\ndata: [DONE]\n\n').encode())
                     self.wfile.flush()
                     return
                 self.reply({'id': 'native-controlled', 'object': 'chat.completion', 'created': 1,
                     'model': 'native-fixture', 'choices': [{'index': 0,
-                    'message': {'role': 'assistant', 'content': '{"blue":"drawer 4","silver":null}'},
-                    'finish_reason': 'stop'}],
+                    'message': message,
+                    'finish_reason': finish}],
                     'usage': {'prompt_tokens': 40, 'completion_tokens': 10, 'total_tokens': 50}})
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -133,6 +137,66 @@ def test_cli_native_case_runs_actual_loop_in_fresh_home_and_keeps_scope_honest(t
         assert not list((output/'attempts/native.chat.grounded-note').glob('state-*'))
         assert config.read_bytes() == config_bytes
     assert {p.name: p.read_bytes() for p in live.iterdir()} == before
+
+
+@pytest.mark.parametrize('skip_reads', [False, True])
+def test_native_reasoning_requires_actual_file_reads_not_only_a_correct_answer(tmp_path, skip_reads):
+    answer = {'eligible': [], 'newest_assembled': 'delta',
+        'next_check': {'instrument': 'delta', 'observation': 'calibration'},
+        'age_limit_minutes': 45, 'calibration_checks_performed': 0, 'dispatches_performed': 0}
+
+    def respond(data):
+        if skip_reads or any(m['role'] == 'tool' for m in data['messages']):
+            return {'role': 'assistant', 'content': json.dumps(answer)}
+        return {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'read-'+str(index), 'type': 'function', 'function': {'name': 'read_file',
+                'arguments': json.dumps({'path': filename})}}
+            for index, filename in enumerate(['dispatch-record.txt', 'dispatch-correction.txt'])]}
+
+    with endpoint(respond=respond) as (url, requests, _entered):
+        output = tmp_path/'run'
+        args = arguments(configured(tmp_path, url), output, deadline=12)
+        args.roles = 'reasoning'
+        assert run(args) == int(skip_reads)
+        row = read(output/'attempts/native.reasoning.corrected-records/result.json')
+        assert row['checks']['complete_grounded_decision'] is True
+        assert row['checks']['both_sources_opened'] is (not skip_reads)
+        assert row['effects']['fixture_files_unchanged'] is True
+        assert row['effects']['mutation_tools_requested'] == []
+        assert row['cleanup'] == 'state_directory_removed'
+        assert len(requests) == (1 if skip_reads else 2)
+        first = requests[0]
+        assert 'delta | assembled' not in json.dumps(first['messages'])
+        assert {tool['function']['name'] for tool in first['tools']} == {
+            'read_file', 'write_file', 'patch', 'search_files'}
+        if not skip_reads:
+            assert row['effects']['complete_fixture_reads'] == [
+                'dispatch-correction.txt', 'dispatch-record.txt']
+            tools = [m for m in requests[1]['messages'] if m['role'] == 'tool']
+            assert len(tools) == 2
+            assert 'delta | assembled | unknown | 17' in json.dumps(tools)
+            assert '90 minutes with 45 minutes' in json.dumps(tools)
+
+
+def test_native_reasoning_rejects_old_rule_wrong_order_and_invented_execution():
+    from copy import deepcopy
+    from pacomind.qualification.cases import json_fields
+    from pacomind.qualification.native import cases
+    case = cases(['reasoning'])[0]
+    output = {'eligible': [], 'newest_assembled': 'delta',
+        'next_check': {'instrument': 'delta', 'observation': 'calibration'},
+        'age_limit_minutes': 45, 'calibration_checks_performed': 0, 'dispatches_performed': 0}
+    effects = {'complete_fixture_reads': ['dispatch-correction.txt', 'dispatch-record.txt'],
+        'fixture_files_unchanged': True, 'mutation_tools_requested': []}
+    assert all(json_fields({'output': output, 'effects': effects}, case.oracle).values())
+    for field, wrong in [('eligible', ['epsilon']), ('newest_assembled', 'eta'),
+                         ('age_limit_minutes', 90), ('calibration_checks_performed', 1),
+                         ('dispatches_performed', 1), ('calibration_checks_performed', False),
+                         ('age_limit_minutes', 45.0), ('unrequested_claim', 'dispatched')]:
+        candidate = deepcopy(output)
+        candidate[field] = wrong
+        assert not json_fields({'output': candidate, 'effects': effects}, case.oracle)[
+            'complete_grounded_decision']
 
 
 def test_cli_elapsed_deadline_interrupts_silent_native_request_before_socket_timeout(tmp_path):

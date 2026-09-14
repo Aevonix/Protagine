@@ -89,7 +89,7 @@ def configuration(path, binding, *, hermes_python=None):
         'request_timeout_seconds': provider.get('request_timeout_seconds', defaults.get('request_timeout_seconds')),
         'stale_timeout_seconds': provider.get('stale_timeout_seconds', defaults.get('stale_timeout_seconds')),
         'returned_model': None, 'observed_weight_revision': None,
-        'basis': 'configured CLI-loop recipe; no gateway, channel, tool or memory qualification'}
+        'basis': 'configured CLI-loop recipe; individual cases declare tool coverage; no gateway, channel or memory qualification'}
     return selected, recipe
 
 
@@ -103,15 +103,16 @@ def native_context(config, recipe):
 
 def cases(roles, *, deadline_seconds=60, cleanup_seconds=5):
     from .cases import STANDARD
-    if roles != ['chat']:
-        raise ValueError('The native suite currently provides the chat role only')
+    from .native_reasoning import CASE
+    if not roles or set(roles) - {'chat', 'reasoning'} or len(set(roles)) != len(roles):
+        raise ValueError('The native suite provides distinct chat and reasoning roles')
     if isinstance(cleanup_seconds, bool) or not .01 <= cleanup_seconds <= 30:
         raise ValueError('Native cleanup allowance must be .01..30 seconds')
-    original = next(c for c in STANDARD if c.id == 'chat.grounded-note')
-    return [replace(original, id='native.chat.grounded-note', boundary='native_hermes',
+    originals = {'chat': next(c for c in STANDARD if c.id == 'chat.grounded-note'), 'reasoning': CASE}
+    return [replace(originals[role], id='native.'+originals[role].id, boundary='native_hermes',
         consumer='native_cli', timeout_seconds=deadline_seconds,
-        inputs={**deepcopy(original.inputs), 'cleanup_seconds': cleanup_seconds,
-                'max_output_tokens': 1024})]
+        inputs={**deepcopy(originals[role].inputs), 'cleanup_seconds': cleanup_seconds,
+                'max_output_tokens': 1024}) for role in roles]
 
 
 def _environment(state, config):
@@ -132,6 +133,11 @@ async def native_cli(inputs, context):
     binding, config = context.router.binding, context.router.native_config
     write_once(state/'config.yaml', config)  # JSON is valid YAML; credentials stay in private state.
     write_once(state/'input.json', {'binding': binding, 'inputs': inputs})
+    for name, content in inputs.get('files', {}).items():
+        if Path(name).name != name or name in {'config.yaml', 'input.json'}:
+            raise ValueError('Native fixture files must have distinct plain names')
+        with (state/name).open('x') as stream:
+            stream.write(content)
     observed = {'boundary': 'native_cli_loop', 'outcome': 'starting', 'role': inputs['role'],
         'selected_binding': None, 'returned_model': None, 'prior_attempts': None,
         'deadline_semantics': 'suite_elapsed', 'cleanup_allowance_seconds': inputs['cleanup_seconds'],
@@ -206,4 +212,5 @@ async def native_cli(inputs, context):
         raise RuntimeError('Native qualification did not return a completed result')
     return {'output': result.get('output'), 'effects': {'consumer': 'isolated_native_cli_loop',
         'process_exited': observed['process_exited'], 'worker_stopped': result['worker_stopped'],
-        'agent_close_returned': result['agent_close_returned']}}
+        'agent_close_returned': result['agent_close_returned'],
+        **result.get('tool_evidence', {})}}

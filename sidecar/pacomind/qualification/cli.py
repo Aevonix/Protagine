@@ -16,7 +16,7 @@ def add_parser(sub):
         item.add_argument('--hermes-python', type=Path,
                           help='Native suite interpreter; defaults to the configured instance.hermes_python')
         if command == 'evaluate':
-            item.add_argument('--roles', help='Default: chat,extraction; native suite: chat')
+            item.add_argument('--roles', help='Default: chat,extraction; native suite: chat (also supports reasoning)')
             item.add_argument('--deadline-seconds', type=float,
                               help='Predeclared elapsed deadline for the native case (default 60)')
             item.add_argument('--cleanup-seconds', type=float,
