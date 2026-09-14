@@ -72,7 +72,9 @@ def test_native_task_survives_other_readers_before_during_and_after_work(with_in
     if with_input:
         worker['request_input'] = {
             'status': 'admitted_input_excerpt', 'source_id': 'original-task',
-            'source_version': 'b' * 64, 'content': 'Build the timing report.',
+            'source_version': 'b' * 64,
+            'excerpt': ('Repair the sample report and preserve its original inputs. ' * 5)[:240],
+            'partial': True, 'input_count': 1, 'input_message_hash': 'c' * 64,
             '_provenance': {'contact_id': 'owner', 'watermark': 0,
                 'source_refs': [{'source_id': 'original-task', 'source_version': 'b' * 64}],
                 'unannotated_input_refs': [{'source_id': 'original-task', 'input_message_hash': 'c' * 64}]}}
@@ -117,6 +119,9 @@ def test_native_task_survives_other_readers_before_during_and_after_work(with_in
     assert view == before
     if with_input:
         assert task['input_source'] == {'source_id': 'original-task', 'source_version': 'b' * 64}
+        assert task['request_input'] == {key: worker['request_input'][key]
+                                        for key in ('excerpt', 'partial', 'input_count')}
+        assert result['text'].count('b' * 64) == 1
         assert result['input_provenance']['source_refs'] == worker['request_input']['_provenance']['source_refs']
 
 

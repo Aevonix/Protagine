@@ -479,7 +479,7 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
               'reported liveness and external effects remain unverified. '
               'parent_execution_id links execution rows only.\n')
     if any(item.get('task_id') for item in rows + recent if item['source'] == 'execution'):
-        header += ('Use task_id with pacomind_task operation=status for current state and retained results. '
+        header += ('Use task_id with pacomind_task operation=status for current state, accepted updates and retained results. '
                    'Execution phase alone does not describe the task; '
                    'terminal observation is not proof of useful completion.\n')
     if any(item.get('input_source') for item in rows):
@@ -535,10 +535,31 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
             if row['source'] == 'execution' and row.get('execution_id'):
                 shown_executions.append(row)
 
-    for item in priority + rows:
+    input_note = ('Input excerpts identify original requests, not performance or child assignments; '
+                  'partial excerpts can omit task conditions.\n')
+    quote_added = False
+    for item in priority:
         emit(item)
-    # Purpose is optional source evidence. First select all active record
-    # families with the existing fair budget so long input cannot hide a queue.
+    # A known native task needs its actual request before idle/unknown readers
+    # consume the remaining budget. Its already selected locator owns the same
+    # source guards; avoid repeating hashes in the optional human-readable quote.
+    for item in priority:
+        if (id(item) not in shown_ids or not item.get('task_id')
+                or not item.get('input_source') or 'request_input' in item):
+            continue
+        supplied = originals[item['execution_id']]['request_input']
+        compact = {key: supplied[key] for key in ('excerpt', 'partial', 'input_count')}
+        old = line_for(item)
+        line = line_for({**item, 'request_input': compact})
+        note = '' if quote_added else input_note
+        if len(text) + len(line) - len(old) + len(note) <= max_chars - 200:
+            text = text.replace(old, line, 1) + note
+            item['request_input'] = compact
+            quote_added = True
+    for item in rows:
+        emit(item)
+    # Remaining optional excerpts follow reader selection; non-task input must
+    # not hide the other active record families within the shared budget.
     input_sources = {}
     input_guards = {}
     # A locator is useful only if the normal request boundary recognizes it as
@@ -551,10 +572,9 @@ def request_work_context(view: dict, *, limit: int = 8, max_chars: int = 4000,
             input_sources[(ref['source_id'], ref['source_version'])] = ref
         for ref in supplied['_provenance']['unannotated_input_refs']:
             input_guards[(ref['source_id'], ref['input_message_hash'])] = ref
-    input_note = ('Input excerpts identify original requests, not performance or child assignments; '
-                  'partial excerpts can omit task conditions.\n')
-    quote_added = False
     for item in shown_executions:
+        if 'request_input' in item:
+            continue
         supplied = originals[item['execution_id']].get('request_input', {})
         if supplied.get('status') != 'admitted_input_excerpt' or len(source_scope) != 1:
             continue
