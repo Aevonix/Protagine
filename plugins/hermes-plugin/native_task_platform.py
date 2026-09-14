@@ -745,6 +745,12 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 self._submitting.discard(event.source.chat_id)
         return super().set_message_handler(correlated)
 
+    @staticmethod
+    def extract_local_files(content):
+        # This adapter retains text; leave bare artifact locators in the result
+        # instead of inferring attachments it cannot upload.
+        return [], content
+
     async def send(self, chat_id, content, reply_to=None, metadata=None, **kwargs):
         try:
             if CONTROL.get() == chat_id:

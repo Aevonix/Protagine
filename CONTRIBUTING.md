@@ -107,7 +107,7 @@ layers solely to preserve historical names.
 ## Release flow
 
 1. Bump the synchronized versions in `pyproject.toml` and `sidecar/pyproject.toml`, including the `hermes` extra, and the two adapter manifests under `plugins/hermes-plugin` and `plugins/pacomind-memory`. The release workflow also builds and publishes `pacomind-hostworker`; if its packaged contents changed, bump `hostworker/pyproject.toml` and the source version fallback in `hostworker/pacomind_hostworker/__init__.py` before tagging. Do not publish changed hostworker bytes under an existing version.
-2. Add an entry at the top of `CHANGELOG.md` (`## vX.Y.Z: title`, prose + bullets)
+2. Add an entry at the top of `CHANGELOG.md` (`## vX.Y.Z - title`, prose + bullets)
 3. Commit and tag: `git tag vX.Y.Z && git push --tags`
 4. CI (`.github/workflows/release.yml`) publishes to PyPI, pushes the Docker
    image to GHCR (`ghcr.io/aevonix/pacomind`), and creates the GitHub release
