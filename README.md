@@ -83,7 +83,9 @@ integration boundaries.
 **Phase 1 is in development and validation.** The memory integration, source
 readers, shared task controls, contact preferences, model roles and guided setup
 are implemented. Limited trials have shown useful automatic recall and awareness
-of work in other sessions.
+of work in other sessions. Corrections queued during a task's final answer
+now continue into its next turn; controlled native gateway checks cover
+this handoff. Consistent completion with live models still needs validation.
 
 Reliability is unfinished. Models still add unsupported claims, delegated tasks
 can stall, and consistent behavior across physical channels needs more evidence.
