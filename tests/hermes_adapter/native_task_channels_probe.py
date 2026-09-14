@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+from unittest.mock import AsyncMock
 
 installed, sidecar, native, dependencies = sys.argv[1:]
 sys.path[:0] = [installed, sidecar, *([native] if native else [])]
@@ -25,6 +26,9 @@ from pacomind.turns import get_turn_idempotency_ledger
 
 home = Path(os.environ['HERMES_HOME'])
 home.mkdir(mode=0o700)
+artifact = home/'task-artifact.md'
+artifact.write_text('The completed task artifact.\n')
+beta_reply = f'TASK_BETA saved its result at {artifact}, with its own retained source.'
 state = Path(os.environ['PACOMIND_STATE_DIR'])
 state.mkdir(mode=0o700)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
@@ -182,7 +186,7 @@ def respond(request):
                 if steer_delivery == 'next_turn':
                     return answer(body, 'Initial alpha answer completed before the queued correction.')
                 return tool(body, 'pacomind_memory_read_source', row['source']['source_refs'][0])
-            return answer(body, 'TASK_BETA completed with its own retained source.')
+            return answer(body, beta_reply)
         text = json.dumps(body['messages'])
         assert update_text in text and 'pacomind-task-update-v1' in text, text
         updates = adapter.handoffs.updates(row['id'])
@@ -309,6 +313,7 @@ config.platforms = {Platform('pacomind_task'): platform_config}
 runner = GatewayRunner(config)
 adapter = platform_registry.create_adapter('pacomind_task', platform_config)
 assert adapter is not None
+adapter.send_document = AsyncMock(wraps=adapter.send_document)
 runner.adapters[adapter.platform] = adapter
 runner.delivery_router.adapters = runner.adapters
 runner._wire_adapter_handlers(adapter)
@@ -387,7 +392,9 @@ async def exercise():
         release['beta'].set()
         await wait_for(lambda: bool(adapter.handoffs.get(task_ids['beta'])['response']), 'unrelated task retained result')
         beta = adapter.handoffs.get(task_ids['beta'])
-        assert beta['response']['text'] == 'TASK_BETA completed with its own retained source.'
+        # Actual native response delivery must retain an existing bare artifact
+        # locator: this adapter stores text and cannot upload inferred documents.
+        assert beta['response']['text'] == beta_reply, beta['response']
         assert beta['response']['source_dependencies']['input_refs'] == source_parents['beta']
         retained = beta['response']['source_dependencies']
         with ledger._connect() as db:
@@ -485,6 +492,7 @@ async def exercise():
         inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_ERASED')), 12)
         assert inspected == 'FG_STATUS_ERASED_ACK', inspected
         assert adapter.handoffs.get(task_ids['beta'])['response'] == beta['response']
+        adapter.send_document.assert_not_awaited()
         print(json.dumps({'cross_channel_native_tasks': True, 'steer_delivery': steer_delivery, 'separate_native_roots': 2,
             'queued_update_source_read_in_another_owner_conversation': True,
             'status_flags_track_native_request_visibility': True, 'erased_status_refs_withheld': True,
