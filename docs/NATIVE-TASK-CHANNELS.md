@@ -97,6 +97,14 @@ Submitting `model_role: coding` selects that declared role; omitting it keeps
 the task default. The caller cannot supply a provider URL, credential or arbitrary
 model. Select a role for its measured suitability to the task, not its size.
 
+Private transport adapters can use `pacomind_hermes.task_model_roles` to read
+`configured_task_model_roles(platform_name)` and resolve
+`select_task_model_role(role, platform_name)` through the same implementation.
+The platform defaults to `pacomind_task`. These functions perform no admission,
+authorization or model call. The authenticated transport must retain the returned
+snapshot through `TaskHandoffs.admit(model_role=...)` with a stable source/request
+identity. A retry must not change that identity to evade a conflicting binding.
+
 An explicitly selected role/provider/model snapshot is retained with acceptance
 and then projected into the native session's existing model override. An omitted
 role keeps the existing default selection at native admission. New tasks can use a

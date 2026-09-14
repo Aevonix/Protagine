@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.26 - shared task-role selection for private transports
+
+Private channel adapters can reuse the native gateway’s existing profile role
+resolver when admitting new work. The resolver reads current named roles, checks
+the native provider and returns a credential-free role/provider/model snapshot.
+Gateway task selection uses the same implementation. Defaults, in-flight task
+bindings and configured provider behavior are unchanged.
+
+The actual native task fixture covers transport reads, profile rebinding,
+removed roles and retained task processors. Model suitability and latency still
+require measurements on the deployment’s chosen processors.
+
 ## v1.5.25 - shared task visibility across conversations
 
 Every source-bound native task keeps an inspectable task ID even when its
