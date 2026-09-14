@@ -241,6 +241,8 @@ async def evaluate(directory, recipe, cases, consumers, evaluators, router_facto
             result = {'schema': SCHEMA, 'run_id': manifest['id'], 'case_id': case.id,
                       'case_sha256': record['sha256'], 'attempt': 1, 'evidence_mode': evidence_mode,
                       'outcome': 'interrupted', 'primary_outcome': 'unverified', 'checks': {},
+                      'primary_outcome_definition': ('Requested-binding attribution without fallback; separate from case checks. '
+                          'Unverified attribution does not mean source reads or answer checks were skipped.'),
                       'observations': [], 'output': None, 'effects': {}, 'elapsed_ms': None,
                       'qualification_routing': {'scope': ('isolated_hermes_profile' if case.boundary == 'native_hermes'
                                                          else 'isolated_router_copy'),
