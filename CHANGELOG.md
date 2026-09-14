@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.31 - source attribution checks and retained task admissions
+
+Native model qualification now includes a coding case that distinguishes the
+interpreter launching a process from the interpreter selected by its current
+configuration. It also checks current source against stale documentation.
+Actual file reads and final claim correctness are graded independently: reading
+the right files cannot pass an incorrect answer. The case uses generic fixtures
+and the existing qualification runner; it does not rank models globally or
+establish production fitness.
+
+Task adapters can look up an existing admission by its exact request ID before
+forwarding a trusted purpose. This supports preserving the original purpose,
+including an unclassified one, when a request is replayed. The lookup does not
+create work or bypass existing source, owner and model-role checks.
+
 ## v1.5.30 - task corrections and outcome measurement
 
 A correction queued while a task is producing its final answer now retains
