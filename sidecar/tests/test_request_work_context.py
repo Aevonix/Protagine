@@ -2,6 +2,7 @@
 import copy
 import importlib
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -27,6 +28,150 @@ def response(text='A neutral task is running.'):
     return httpx.Response(200, request=httpx.Request('GET', 'http://localhost/v1/host/executions'),
         json={'schema': 'PacoMindRequestWorkV1', 'observed_at': 1234.5,
               'text': text, 'truncated': False})
+
+
+def test_task_revision_requires_current_owner_and_never_falls_back(module, tmp_path):
+    controller_module = importlib.import_module(module.__package__ + '.task_controller')
+    revoked = set()
+    sources = SimpleNamespace(resolve_source=lambda value, dependencies=None: value,
+        resolve_owner=lambda value, **kwargs: None if value['principal'] in revoked else value['contact_id'],
+        actor_contact=lambda actor: actor.contact_id)
+    controller = controller_module.NativeTasks(SimpleNamespace(), SimpleNamespace(path=tmp_path/'outbox', erasure_watermark=lambda *a,**k:0),
+        'owner', sources=sources)
+    def source(name):
+        return {'version':1, 'principal':name, 'source_session_id':name, 'contact_id':'owner',
+            'watermark':0, 'source_refs':[{'source_id':name,'source_version':'b'*64}],
+            'input_refs':[{'source_id':name,'input_message_hash':'c'*64}]}
+    task = controller.handoffs.admit(request_id='task', request='Original task', source_input=source('original'))
+    controller.handoffs.admit_update(task['id'], instruction='Earlier revision',
+        source_input=source('earlier'), principal='earlier')
+    latest = controller.handoffs.admit_update(task['id'], instruction='Current revision',
+        source_input=source('latest'), principal='latest')
+    read = lambda actor: controller.request_revision(actor, [task['id']], deadline_monotonic=time.monotonic()+1)
+    assert read(SimpleNamespace(contact_id='guest')) is None
+    assert read(scope())['instruction'] == 'Current revision'
+    revoked.add('latest')
+    assert read(scope()) is None
+    revoked.clear()
+    with controller.database() as db:
+        db.execute("UPDATE native_voice_updates SET instruction='' WHERE id=?", (latest['id'],))
+    assert read(scope()) is None
+
+
+def test_missing_voice_revision_pins_use_existing_exact_input_resolver(module, tmp_path):
+    controller_module = importlib.import_module(module.__package__ + '.task_controller')
+    calls = []
+    refs = [{'source_id':name, 'source_version':'b'*64} for name in ('original','revision')]
+    def post(path, **kwargs):
+        calls.append((path, kwargs))
+        return httpx.Response(200, request=httpx.Request('POST','http://localhost'+path),
+            json={'complete':True, 'sources_current':False, 'input_source_refs':refs})
+    outbox = SimpleNamespace(path=tmp_path/'outbox', erasure_state=lambda *a,**k:(0,[]), erasure_watermark=lambda *a,**k:0)
+    sources = SimpleNamespace(resolve_source=lambda value, dependencies=None: value,
+        resolve_owner=lambda value, **kwargs:value['contact_id'], actor_contact=lambda actor:actor.contact_id)
+    controller = controller_module.NativeTasks(SimpleNamespace(post=post), outbox, 'owner', sources=sources)
+    def source(name):
+        return {'version':1,'principal':name,'source_session_id':name,'contact_id':'owner',
+            'watermark':0,'source_refs':[],
+            'input_refs':[{'source_id':name,'input_message_hash':'c'*64}]}
+    task=controller.handoffs.admit(request_id='voice-task',request='Original task',source_input=source('original'))
+    controller.handoffs.admit_update(task['id'],instruction='Voice correction',
+        source_input=source('revision'),principal='revision')
+    found=controller.request_revision(scope(),[task['id']],deadline_monotonic=time.monotonic()+1)
+    assert found['source_refs']==refs
+    assert len(calls)==1 and calls[0][0]=='/v1/host/memory/sources/erasures'
+    assert calls[0][1]['json']['source_refs']==[]
+    assert {r['source_id'] for r in calls[0][1]['json']['unannotated_input_refs']}=={'original','revision'}
+    refs.pop()
+    assert controller.request_revision(scope(),[task['id']],deadline_monotonic=time.monotonic()+1) is None
+
+
+def test_no_revision_keeps_full_context_and_text_cannot_nominate_task(module):
+    calls=[]
+    native=SimpleNamespace(request_revision=lambda *a,**k:calls.append(a) or None)
+    full=response('Original task purpose plus other current work.')
+    refresh=module.RequestWork(SimpleNamespace(get=lambda *a,**k:full),native)
+    request={'messages':[{'role':'user','content':'Inspect task '+('a'*64)}]}
+    actual,_=refresh.prepare(request,scope())
+    assert not calls
+    assert 'Original task purpose plus other current work.' in json.dumps(actual)
+    value=full.json();value['native_task_ids']=['a'*64]
+    value['reserved']={'text':'Shorter context'}
+    full=httpx.Response(200,request=full.request,json=value)
+    actual,_=refresh.prepare(request,scope())
+    assert len(calls)==1 and 'Shorter context' not in json.dumps(actual)
+
+
+def test_optional_owner_lookups_share_deadline_and_restore_normal_control(module):
+    sources_module = importlib.import_module(module.__package__ + '.task_sources')
+    calls = []
+    def get(path, **kwargs):
+        calls.append(kwargs)
+        return httpx.Response(200, request=httpx.Request('GET', 'http://localhost'+path),
+                              json={'contact_id':'owner'})
+    sources = sources_module.NativeTaskSources(SimpleNamespace(get=get), None, 'owner')
+    origin = {'platform':'sms', 'authority_gateway':'sms', 'sender_id':'neutral-owner'}
+    deadline = time.monotonic() + .05
+    with sources_module.owner_lookup_deadline(deadline):
+        assert sources._owner(origin) == 'owner'
+        assert calls[-1]['_deadline_monotonic'] == deadline
+        assert 0 < calls[-1]['timeout'] <= .05
+    with sources_module.owner_lookup_deadline(time.monotonic()-1):
+        with pytest.raises(sources_module.TaskHandoffError):
+            sources._owner(origin)
+    assert len(calls) == 1
+    assert sources._owner(origin) == 'owner'
+    assert calls[-1]['timeout'] > .4
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+def test_crowded_current_task_preserves_purpose_and_revision_within_existing_budget(module, terminal):
+    from test_work_ancestry_projection import concurrent_view, execution
+    task = execution(2, age=8)
+    task.update(task_id='a'*64, platform='pacomind_task')
+    original = {'source_id':'original-task', 'source_version':'b'*64}
+    original_input = {'source_id':'original-task', 'input_message_hash':'c'*64}
+    purpose = ('Repair the input-validation defect without changing valid output. ' * 5)[:240]
+    task['request_input'] = {'status':'admitted_input_excerpt', **original,
+        'excerpt':purpose, 'partial':True, 'input_count':1,
+        'input_message_hash':'c'*64, '_provenance':{'contact_id':'owner','watermark':3,
+            'source_refs':[original], 'unannotated_input_refs':[original_input]}}
+    view = concurrent_view()
+    view['items'] = [execution(1, session='observer'), task, *view['items'][2:]]
+    previous = execution(40, age=20)
+    previous.update(task_id='d'*64, platform='pacomind_task', phase='ended', state='completed')
+    view['recent'] = [previous]
+    if terminal:
+        view['items'].remove(task)
+        task.update(phase='ended', state='completed')
+        # A settled registry row has no fresh original-input excerpt.
+        task.pop('request_input')
+        view['recent'] = [task]
+    full = request_work_context(view, session_id='observer')
+    full['reserved'] = request_work_context(view, session_id='observer', max_chars=3360, limit=7)
+    revision = {'task_id':'a'*64, 'instruction':'Identify the offending task_id in duration errors.',
+        'update':{'update_id':'e'*64, 'accepted':True, 'native_control_acknowledged':True,
+            'middleware_visible':False, 'native_request_visible':False,
+            'provider_delivery':'unobserved','behavior_applied':'unobserved'},
+        'contact_id':'owner','watermark':3,'source_refs':[original,
+            {'source_id':'revision','source_version':'f'*64}],
+        'unannotated_input_refs':[original_input,
+            {'source_id':'revision','input_message_hash':'0'*64}]}
+    refresh = module.RequestWork(None, SimpleNamespace(request_revision=lambda *a,**k:revision))
+    result = refresh._revision(full, scope(), time.monotonic()+1)
+    assert revision['instruction'] in result['text']
+    assert len(result['text']) <= 4000
+    assert len([line for line in result['text'].splitlines()
+                if line.startswith('{') and '"source": "native_kanban_coverage"' not in line]) <= 8
+    assert result['input_provenance']['source_refs'] == revision['source_refs']
+    assert result['input_provenance']['unannotated_input_refs'] == revision['unannotated_input_refs']
+    assert result['input_provenance']['watermark'] == 3
+    if not terminal:
+        assert len(full['text']) + 640 > 4000
+        assert purpose in result['text']
+        # The already-qualified small-budget locator remains available.
+        compact = request_work_context({'items':[task]}, session_id='observer', max_chars=1800)
+        assert 'a'*64 in compact['native_task_ids'] and len(compact['text']) <= 1800
 
 
 @pytest.mark.parametrize('payload', [

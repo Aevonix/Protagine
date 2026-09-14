@@ -2378,7 +2378,7 @@ def register(ctx: Any) -> None:
         attested_system_platforms=attested_system_platforms)
         if isinstance(task_config, dict) and task_config.get('enabled') is True else None)
     native_memory = NativeMemoryRequests(request_memory)
-    request_work = RequestWork(client)
+    request_work = RequestWork(client, native_tasks)
     execution_observer = (
         ExecutionObserver(client)
         if config.get("execution_registry_enabled") is True else None

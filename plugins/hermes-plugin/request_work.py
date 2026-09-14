@@ -70,8 +70,57 @@ def replace_context(request, text=None, *, api_mode='', marker='pacomind-work-re
 
 
 class RequestWork:
-    def __init__(self, client):
+    def __init__(self, client, native_tasks=None):
         self.client = client
+        self.native_tasks = native_tasks
+
+    def _revision(self, value, scope, deadline):
+        """Join only a locally retained revision of an actually shown task."""
+        if self.native_tasks is None or not value.get('native_task_ids'):
+            return value
+        revision = self.native_tasks.request_revision(scope, value['native_task_ids'],
+            deadline_monotonic=deadline)
+        if revision is None or time.monotonic() > deadline:
+            return value
+        instruction = revision['instruction']
+        def line(length):
+            update = {**revision['update'], 'excerpt': instruction[:length],
+                      'partial': length < len(instruction)}
+            return json.dumps({'task_id': revision['task_id'],
+                'latest_accepted_update': update}, ensure_ascii=True).replace(
+                    _CLOSE, r'\u005b/pacomind-work-request-v1\u005d') + '\n'
+        length = min(240, len(instruction))
+        while length and len(line(length)) > 640:
+            length -= 1
+        if not length:
+            return value
+        addition = line(length)
+        # Reserve one of the existing eight records only when a revision is
+        # present. With no update the normal full projection stays unchanged.
+        selected = value.get('reserved')
+        if (not isinstance(selected, dict) or selected.get('schema') != 'PacoMindRequestWorkV1'
+                or revision['task_id'] not in selected.get('native_task_ids', [])
+                or not isinstance(selected.get('text'), str)
+                or len(selected['text']) + len(addition) > 4000):
+            return value
+        supplied = selected.get('input_provenance')
+        if supplied is None:
+            # A retained task can have no current excerpt. Its exact original
+            # and update parents still pass the same dispatch-time checks.
+            supplied = {key: revision[key] for key in ('contact_id', 'watermark',
+                'source_refs', 'unannotated_input_refs')}
+        if (not isinstance(supplied, dict) or supplied.get('contact_id') != scope.contact_id
+                or revision['contact_id'] != scope.contact_id
+                or type(supplied.get('watermark')) is not int
+                or supplied['watermark'] < revision['watermark']):
+            return value
+        # Preserve the fresh view's watermark. Older admission watermarks do
+        # not replace it; the existing dispatch check validates every parent.
+        supplied = dict(supplied)
+        for key in ('source_refs', 'unannotated_input_refs'):
+            refs = [*supplied[key], *revision[key]]
+            supplied[key] = list({json.dumps(ref, sort_keys=True): ref for ref in refs}.values())
+        return {**selected, 'text': selected['text'] + addition, 'input_provenance': supplied}
 
     def __call__(self, request, scope, *, api_mode=''):
         return self.prepare(request, scope, api_mode=api_mode)[0]
@@ -97,7 +146,8 @@ class RequestWork:
         try:
             response = self.client.get("/v1/host/executions",
                 params={'contact_id': scope.contact_id, 'session_id': scope.session_id,
-                        'limit': 8, 'projection': 'request', 'input_context': True},
+                        'limit': 8, 'projection': 'request', 'input_context': True,
+                        **({'reserve_chars': 640} if self.native_tasks is not None else {})},
                 timeout=.25, _deadline_monotonic=deadline)
             response.raise_for_status()
             value = response.json()
@@ -108,6 +158,7 @@ class RequestWork:
                     or type(observed) not in (int, float) or not math.isfinite(observed)
                     or time.monotonic() > deadline):
                 raise ValueError('Invalid or late operational view')
+            value = self._revision(value, scope, deadline)
             text = identity + f"Observed at {observed:.3f}.\n" + value['text']
             supplied = value.get('input_provenance')
             if supplied is not None:

@@ -12,10 +12,11 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 from .client import PrivateSQLitePath
 from .task_handoffs import TaskHandoffError, TaskHandoffs, erase_task_handoffs
-from .task_sources import NativeTaskSources
+from .task_sources import NativeTaskSources, owner_lookup_deadline
 
 
 TOOL_SCHEMA = {
@@ -65,6 +66,7 @@ class NativeTasks:
         self.handoffs = TaskHandoffs(self.database, self.sources.resolve_source, self.sources.resolve_owner,
             error_type=error_type, reply_effect=reply_effect)
         self.owner = owner_contact_id
+        self.client, self.outbox = client, outbox
         self.adapter_type = adapter_type
         self.adapter_resolver = adapter_resolver
         self.adapter = None
@@ -315,6 +317,79 @@ class NativeTasks:
             return {**result, 'status': 'done', 'delivery': 'unobserved'}
         stopped = TaskHandoffs.stop_view(row)
         return {**result, **(stopped or {'status': 'unknown', 'reason': 'native_liveness_unobserved'})}
+
+    def request_revision(self, scope, task_ids, *, deadline_monotonic):
+        """Read one accepted update locally; the request boundary checks its sources.
+
+        Current owner/grant resolvers are unchanged. This does not ask the
+        native runtime for status, resolve source prose or dispatch a callback.
+        """
+        from .input_provenance import _refs
+        if (getattr(scope, 'contact_id', None) != self.owner
+                or not isinstance(task_ids, list) or len(task_ids) > 8
+                or any(not isinstance(value, str) or len(value) != 64
+                    or any(c not in '0123456789abcdef' for c in value) for value in task_ids)):
+            return None
+        try:
+            for identity in task_ids:
+                row = self.handoffs.get(identity)
+                updates = self.handoffs.updates(identity)
+                if not updates:
+                    continue
+                update = updates[-1]
+                # A missing latest update never promotes an older revision.
+                with owner_lookup_deadline(deadline_monotonic):
+                    if (not update['instruction'] or self.sources.actor_contact(scope) != self.owner
+                            or self.sources.resolve_owner(row['source'], require_task_grant=True) != self.owner
+                            or self.sources.resolve_owner(update['source'], require_task_grant=True) != self.owner):
+                        return None
+                if time.monotonic() > deadline_monotonic:
+                    return None
+                parents = [row['source'], row['dependencies'] or {}, update['source']]
+                def merged(name, digest):
+                    values = [ref for source in parents for ref in source.get(name, [])]
+                    return (_refs(list({json.dumps(ref, sort_keys=True): ref for ref in values}.values()), digest)
+                            if values else [])
+                refs = merged('source_refs', 'source_version')
+                inputs = merged('input_refs', 'input_message_hash')
+                if not inputs:
+                    return None
+                missing = {ref['source_id'] for ref in inputs} - {ref['source_id'] for ref in refs}
+                if missing:
+                    # Enrolled speech may retain exact input hashes before it
+                    # has source revisions. Reuse the canonical resolver only
+                    # for those missing pins; do not derive a revision from text.
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    after, _ = self.outbox.erasure_state(self.owner,
+                        deadline_monotonic=deadline_monotonic)
+                    response = self.client.post('/v1/host/memory/sources/erasures',
+                        json={'contact_id': self.owner, 'session_id': scope.session_id,
+                            'after': after, 'source_refs': refs, 'unannotated_input_refs': inputs},
+                        timeout=remaining, _deadline_monotonic=deadline_monotonic)
+                    response.raise_for_status()
+                    page = response.json()
+                    resolved = _refs(page.get('input_source_refs'), 'source_version')
+                    if (page.get('complete') is not True
+                            or {ref['source_id'] for ref in resolved} != {ref['source_id'] for ref in inputs}
+                            or time.monotonic() > deadline_monotonic):
+                        return None
+                    refs = [*refs, *(ref for ref in resolved if ref['source_id'] in missing)]
+                view = self.handoffs.update_view(update)
+                return {'task_id': identity, 'instruction': update['instruction'],
+                    'update': {key: view[key] for key in ('update_id', 'accepted',
+                        'native_control_acknowledged', 'middleware_visible', 'native_request_visible',
+                        'provider_delivery', 'behavior_applied')},
+                    'contact_id': self.owner,
+                    'watermark': max(row['source']['watermark'], update['source']['watermark'],
+                        self.outbox.erasure_watermark(self.owner, deadline_monotonic=deadline_monotonic)),
+                    'source_refs': refs, 'unannotated_input_refs': inputs}
+        except Exception:
+            # Request-only context is optional; source or authority uncertainty
+            # must not interrupt the native conversation or expose old text.
+            return None
+        return None
 
     def handle(self, args, scope):
         identity = None
