@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.33 - retain artifact locators in task replies
+
+Native task replies retain bare local file paths so callers can locate their
+completed artifacts. The text-retaining task adapter no longer extracts these
+paths as attachments it cannot upload.
+
+- Explicit `MEDIA:` handling remains unchanged.
+- Controlled native gateway tests verify exact reply retention and no inferred
+  document upload through the existing handoff store.
+
 ## v1.5.32 - Hermes 0.21.3 compatibility
 
 Guided installation and adapter refresh accept the qualified Hermes 0.21.3
