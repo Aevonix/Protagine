@@ -1,5 +1,6 @@
 """One isolated Hermes CLI-loop attempt, launched only by qualification.native."""
 import json
+from contextlib import ExitStack
 from pathlib import Path
 import signal
 import sys
@@ -42,7 +43,7 @@ def tool_evidence(response, files, state):
             'native_tool_calls': [name for name, _ in calls.values()]}
 
 
-def main():
+def main(prepare=None):
     request = json.loads(Path(sys.argv[1]).read_text())
     state = Path(sys.argv[1]).parent
     stop = threading.Event()
@@ -62,6 +63,7 @@ def main():
 
     def run():
         agent = None
+        resources = ExitStack()
         try:
             from hermes_cli.config import load_config
             from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -80,6 +82,8 @@ def main():
                 reasoning_config=resolve_reasoning_config(config, model),
                 service_tier=config.get('agent', {}).get('service_tier'),
                 fallback_model=None, save_trajectories=False)
+            # Operator-supplied fixtures remain alive through native close.
+            observer = resources.enter_context(prepare(request, state, arguments, config)) if prepare else None
             result.update(stage='constructing', agent_construction_started=True)
             agent = AIAgent(**arguments)
             owned['agent'] = agent
@@ -97,7 +101,9 @@ def main():
                 for k in ('failed', 'interrupted', 'partial'))
             result['stage'] = 'interrupted' if stop.is_set() else 'returned' if complete else 'incomplete'
             result['output'] = response.get('final_response')
-            if file_case:
+            if observer is not None:
+                result['tool_evidence'] = observer(agent, response)
+            elif file_case:
                 result['tool_evidence'] = tool_evidence(response, request['inputs']['files'], state)
         except BaseException as exc:
             result.update(stage='interrupted' if stop.is_set() else 'error', error_type=type(exc).__name__)
@@ -108,6 +114,10 @@ def main():
                     result['agent_close_returned'] = True
                 except BaseException as exc:
                     result['close_error_type'] = type(exc).__name__
+            try:
+                resources.close()
+            except BaseException as exc:
+                result.update(stage='error', fixture_close_error_type=type(exc).__name__)
 
     worker = threading.Thread(target=run, name='native-qualification', daemon=True)
     worker.start()

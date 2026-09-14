@@ -609,3 +609,56 @@ async def _incomplete_native_stop_retains_state_and_does_not_start_later_case(tm
     assert len(spawned) == 1
     assert (output/'attempts/native.chat.grounded-note/result.json').read_bytes() == first
     assert not (output/'attempts/later/started.json').exists()
+
+
+def test_trusted_fixture_worker_reuses_owned_native_child(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from pacomind.qualification.runner import RunContext
+    worker = tmp_path/'fixture_worker.py'
+    worker.write_text('''import json,sys
+from pathlib import Path
+state=Path(sys.argv[1]).parent
+result={'stage':'returned','worker_stopped':True,'agent_construction_started':False,
+ 'agent_close_returned':True,'output':'fixture-only','tool_evidence':{'fixture_observed':True}}
+(state/'native-result.json').write_text(json.dumps(result))
+''')
+    state=tmp_path/'state';state.mkdir()
+    router=SimpleNamespace(binding='fixture',native_config={'providers':{}},hermes_python=sys.executable)
+    observations=[];context=RunContext(router,state,observations)
+    observed=asyncio.run(native_cli({'role':'chat','cleanup_seconds':1},context,worker=worker))
+    assert observed['output']=='fixture-only' and observed['effects']['fixture_observed'] is True
+    assert context.state_cleanup_safe and observations[0]['process_exited']
+
+
+@pytest.mark.parametrize('construction_error',[False,True])
+def test_trusted_fixture_lives_until_native_close(tmp_path,monkeypatch,construction_error):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from pacomind.qualification import native_worker
+    events=[]
+    class Agent:
+        model='fixture'
+        def __init__(self,**kwargs):
+            assert events==['fixture-enter']
+            if construction_error:raise ValueError('Fixture construction failure')
+        def run_conversation(self,*args,**kwargs):return {'completed':True,'final_response':'fixture-only'}
+        def close(self):events.append('agent-close')
+    @contextmanager
+    def prepare(request,state,arguments,config):
+        events.append('fixture-enter')
+        try:yield lambda agent,response:{'fixture_observed':True}
+        finally:events.append('fixture-exit')
+    monkeypatch.setitem(sys.modules,'hermes_cli.config',SimpleNamespace(load_config=lambda:{'model':{'default':'fixture'}}))
+    monkeypatch.setitem(sys.modules,'hermes_cli.runtime_provider',SimpleNamespace(resolve_runtime_provider=lambda **kwargs:{}))
+    monkeypatch.setitem(sys.modules,'hermes_constants',SimpleNamespace(resolve_reasoning_config=lambda *args:None))
+    monkeypatch.setitem(sys.modules,'run_agent',SimpleNamespace(AIAgent=Agent))
+    path=tmp_path/'input.json';path.write_text(json.dumps({'binding':'fixture',
+        'inputs':{'max_output_tokens':1,'messages':[{'role':'user','content':'Fixture'}]}}))
+    monkeypatch.setattr(sys,'argv',['fixture',str(path)])
+    monkeypatch.setattr(native_worker.signal,'signal',lambda *args:None)
+    assert native_worker.main(prepare=prepare)==int(construction_error)
+    assert events==(['fixture-enter','fixture-exit'] if construction_error else
+                    ['fixture-enter','agent-close','fixture-exit'])
+    result=read(tmp_path/'native-result.json')
+    assert result['worker_stopped'] and result['agent_close_returned'] is not construction_error

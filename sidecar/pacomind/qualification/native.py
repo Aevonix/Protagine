@@ -127,7 +127,7 @@ def _environment(state, config):
     return env
 
 
-async def native_cli(inputs, context):
+async def native_cli(inputs, context, *, worker=None):
     """Cancel only our child; its SIGTERM handler calls its agent's hard_interrupt."""
     state = context.state_dir
     binding, config = context.router.binding, context.router.native_config
@@ -149,7 +149,7 @@ async def native_cli(inputs, context):
         log_path.chmod(0o600)
         context.state_cleanup_safe = False
         spawning = asyncio.create_task(asyncio.create_subprocess_exec(context.router.hermes_python, '-I', '-B',
-            str(Path(__file__).with_name('native_worker.py')), str(state/'input.json'),
+            str(worker or Path(__file__).with_name('native_worker.py')), str(state/'input.json'),
             cwd=state, env=_environment(state, config), stdout=log, stderr=log))
         proc = None
         try:
