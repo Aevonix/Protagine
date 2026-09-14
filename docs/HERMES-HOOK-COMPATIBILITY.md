@@ -8,12 +8,19 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`9b0bead09a36f69cedc24c981c8d917d59471b3e`](https://github.com/Kurcide/hermes-agent/commit/9b0bead09a36f69cedc24c981c8d917d59471b3e),
-based on [Hermes v0.21.2,
-`939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/9b0bead09a36f69cedc24c981c8d917d59471b3e/LICENSE).
+`84c7d76a24795cf30a85a5c36e257eb760d0bdf0`](https://github.com/Kurcide/hermes-agent/commit/84c7d76a24795cf30a85a5c36e257eb760d0bdf0),
+based on [Hermes v0.21.3, tag `v2026.9.14`,
+`345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d),
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/84c7d76a24795cf30a85a5c36e257eb760d0bdf0/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
+
+The 0.21.3 build retains upstream streaming, summary request construction,
+SQLite connection handling and gateway failure propagation alongside the local
+interfaces. Length-continuation fragments stop accumulating when an accepted
+tool-call/result round begins a new text segment. Pure text continuations still
+join, and transcript/tool evidence remains intact. The gateway's batch lease
+acquisition also binds tokens to the concrete lease required by upstream.
 
 This build accepts `tools.tool_search.eager`, an optional list of exact tool
 names whose full schemas should remain visible. A name only takes effect when

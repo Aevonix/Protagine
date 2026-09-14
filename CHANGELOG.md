@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.32 - Hermes 0.21.3 compatibility
+
+Guided installation and adapter refresh accept the qualified Hermes 0.21.3
+runtime. Public CI selects the compatibility build based on upstream
+`v2026.9.14`, including the existing PacoMind interfaces and a correction that
+keeps length-continuation text within its own segment across tool rounds.
+
+Native first-attempt outcome measurement now distinguishes Hermes's initial
+blocked creation event from a later intervention. An ordinary completed first
+attempt can retain its measured outcome; real blocking, cancellation and manual
+completion remain separately counted. Qualification uses controlled native
+execution without live inference or changes to model policy.
+
 ## v1.5.31 - source attribution checks and retained task admissions
 
 Native model qualification now includes a coding case that distinguishes the

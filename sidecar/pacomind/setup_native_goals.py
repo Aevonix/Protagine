@@ -97,7 +97,7 @@ def prepare(config, home, *, native_env, observer_env, local_work=False, draft_b
 
 def describe(details):
     print('Native goals enabled for existing Hermes profile '+details['profile']+'.')
-    print('Kanban availability is profile-wide in Hermes; saved channel tool lists and participant authority are retained.')
+    print('Native task tools are enabled for CLI; saved channel tool lists and participant authority are retained.')
     print('Observed boards: '+', '.join(details['boards'])+' ('+details['coverage']+').')
     print('Goal completion: '+details['goal_judge']+'. Existing native fallback rules still apply.')
     print('The selected Hermes gateway is required. PacoMind does not start or restart it; use its existing lifecycle.')

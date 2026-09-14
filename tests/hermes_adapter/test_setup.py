@@ -144,10 +144,10 @@ if enabled:
 actual=load_config()
 assert kanban_tools._check_kanban_mode() is enabled
 selected=_get_platform_tools(actual,'cli')
-assert 'file' in selected and 'kanban' in selected,selected
-# Native recovers Kanban across platforms, then applies its profile-wide gate.
+assert 'file' in selected and ('kanban' in selected) is enabled,selected
+# Native 0.21.3 preserves explicit platform tool choices when CLI opts in.
 assert actual['platform_toolsets']['telegram']==['web']
-assert _get_platform_tools(actual,'telegram')=={'web','kanban'}
+assert _get_platform_tools(actual,'telegram')=={'web'}
 schemas=registry.get_definitions({'kanban_create'},quiet=True)
 assert bool(schemas) is enabled
 if enabled:

@@ -77,6 +77,8 @@ def readback(identifier,value):
 
 first=proposal('Inspect local fixture metadata')
 started=worker.work(first.id)
+_,attached_snapshot=task_snapshot(first.id,'owner',started['native_work'],review=True)
+assert attached_snapshot['before_first_attempt_intervention'] is None,attached_snapshot
 first_history=history(started['native_work']);assert len(first_history['forecasts'])==1,started
 prediction=first_history['forecasts'][0]
 outcome_id=prediction['detail']['forecast_id']+':first-outcome'
@@ -216,7 +218,7 @@ for before_claim in (False,True):
  with kb.connect(board='default') as db:
   task_id=paused['native_work']['native_task_id']
   if not before_claim:kb.claim_task(db,task_id)
-  assert kb.block_task(db,task_id,kind='needs_input')
+  assert kb.block_task(db,task_id,kind='needs_input',reason='initial_status')
   assert kb.promote_task(db,task_id,actor='fixture')[0]
   resumed=kb.claim_task(db,task_id)
   assert kb.complete_task(db,task_id,summary='The resumed review completed.',expected_run_id=resumed.current_run_id,fire_lifecycle_hook=False)
