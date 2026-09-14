@@ -3,9 +3,19 @@
 The existing ``native_voice_*`` table names are a compatibility contract, not
 an execution platform. Hermes still owns execution; this store creates none.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 import time
+
+
+def _utc_timestamp(value):
+    if type(value) not in (int, float) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 class TaskHandoffError(ValueError):
@@ -325,13 +335,17 @@ class TaskHandoffs:
         visible = any(update['observations'].get(stage) for stage in
                       ('native_control_acknowledged', 'middleware_visible', 'native_request_visible'))
         return {'update_id': update['id'], 'accepted': True,
+            'accepted_at': update.get('created'),
+            'accepted_at_utc': _utc_timestamp(update.get('created')),
             'dispatch_unknown': update['dispatch'] is not None and not visible,
             'dispatch_started': update['dispatch'] is not None,
             'native_control_acknowledged': bool(update['observations'].get('native_control_acknowledged')),
             'middleware_visible': bool(update['observations'].get('middleware_visible')),
             'native_request_visible': bool(update['observations'].get('native_request_visible')),
             'provider_delivery': 'unobserved', 'behavior_applied': 'unobserved',
-            'observations': update['observations']}
+            'observations': {stage: {**value,
+                'observed_at_utc': _utc_timestamp(value.get('observed_at'))}
+                for stage, value in update['observations'].items()}}
 
     def request_stop(self, identity, *, principal=None):
         self.control(identity, principal=principal)
@@ -432,7 +446,14 @@ class TaskHandoffs:
             refs.extend(current['source_refs'])
             watermark = min(watermark, current['watermark'])
         refs = list({json.dumps(ref, sort_keys=True): ref for ref in refs}.values())
+        accepted = _utc_timestamp(row.get('created'))
+        now = time.time()
         return row, original, {'input_source_refs': original['source_refs'],
+            'accepted_at': row.get('created'), 'accepted_at_utc': accepted,
+            # Handoff age includes queued, suspended and completed time. It is
+            # never an execution duration or evidence that a worker is alive.
+            'age_since_acceptance_seconds': round(now-row['created'], 3)
+                if accepted is not None and now >= row['created'] else None,
             'updates': inspected, 'updates_complete': complete,
             'source_refs': refs, 'watermark': watermark}
 
