@@ -179,6 +179,12 @@ try:
         result=json.loads(stage_skill_change({'operations':cases[scenario]}))
         assert result['success'] is False and not result.get('staged'),result
         assert approval.list_pending(approval.SKILLS)==before
+    elif scenario=='create_only':
+        assert json.loads(skills_tool.skill_view(name,preprocess=False)).get('success',True)
+        result=json.loads(stage_skill_change({'operations':[operation],'_pacomind_review_create_only':True}))
+        assert result['success'] is False and not result.get('staged'),result
+        assert 'existing skills have not been implicated' in result['error']
+        assert approval.list_pending(approval.SKILLS)==before
     else:
         assert json.loads(skills_tool.skill_view(name,preprocess=False)).get('success',True)
         if scenario=='legacy_edit': operation={**operation,'action':'edit'}
@@ -200,7 +206,7 @@ print(json.dumps({'passed':True,'scenario':scenario}))
 
 @pytest.mark.parametrize('scenario', ['malformed_string','encoded_array','empty','nonobject',
                                     'missing_action','missing_name','too_many','mixed_delete',
-                                    'legacy','legacy_edit','batch','batch_default_name'])
+                                    'legacy','legacy_edit','batch','batch_default_name','create_only'])
 def test_native_review_batch_shape_before_staging(artifacts,tmp_path,scenario):
     native=os.environ.get('PACOMIND_TEST_HERMES_PATH','')
     if not native and importlib.util.find_spec('hermes_cli') is None:
@@ -292,6 +298,7 @@ assert not target.parent.exists() and manager._find_skill(name) is None
 token=provenance.set_current_write_origin('background_review')
 try:
     arguments={'operations':[operation]} if scenario=='batch' else dict(operation)
+    if scenario=='create_only':arguments['_pacomind_review_create_only']=True
     arguments['_pacomind_review_base_absent']=False
     staged=json.loads(stage_skill_change(arguments));assert staged['staged'],staged
 finally:provenance.reset_current_write_origin(token)
@@ -350,7 +357,7 @@ elif scenario=='owner_after_intent':
     assert not any(row['action']=='rollback' for row in ledger.list_entries())
 else:
     result=evaluate_pending(pid,name,oracle,oracle_id='creation-v1')
-    expected={'activate':'activated','batch':'activated','transfer':'rolled_back',
+    expected={'activate':'activated','batch':'activated','create_only':'activated','transfer':'rolled_back',
               'owner_changed':'changed_elsewhere','owner_extra_file':'rolled_back',
               'preexisting_owner':'stale_proposal','concurrent_owner':'changed_elsewhere',
               'not_improved':'not_improved'}[scenario]
@@ -377,7 +384,7 @@ print(json.dumps({'passed':True,'scenario':scenario,'model_calls':0,'live_effect
 '''
 
 
-@pytest.mark.parametrize('scenario', ['activate','batch','transfer','owner_changed','owner_extra_file',
+@pytest.mark.parametrize('scenario', ['activate','batch','create_only','transfer','owner_changed','owner_extra_file',
                                     'preexisting_owner','concurrent_owner','owner_after_intent',
                                     'not_improved','interrupted'])
 def test_native_new_skill_creation_and_owned_rollback(artifacts,tmp_path,scenario):
