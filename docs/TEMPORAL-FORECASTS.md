@@ -10,7 +10,50 @@ omits raw shadow decisions and private outcome/configuration records.
 
 A prospective native internal-review attachment issues a task-turnaround forecast when expectations are enabled. Independent native lifecycle readback records the outcome. The next review of the same registered action uses a bounded estimate learned from those receipts. The estimate includes queue delay; native execution time is recorded separately. Completion establishes elapsed time, not answer quality. The native task ledger alone does not identify the actual serving processor. Registered request callbacks retain provider-reported model labels; missing callbacks remain unknown.
 
-Forecast revisions preserve previous probabilities and horizons. Only the latest pending revision enters current context; original forecasts drive calibration, preventing repeated revisions from inflating its sample count. Explicit outcome corrections remain append-only. Missing coverage is unresolved, and paused, cancelled or unavailable work is censored. Historical causal-edge survival remains a self-consistency diagnostic and is excluded from predictive scores.
+An explicitly selected review can also measure one binary event: its first
+native attempt completes within 480 seconds of attachment, including queue
+delay. This does not assess the report's accuracy. Ordinary reviews are not
+enrolled by an upgrade or by enabling expectations. Before attachment, a
+finite measurement can place `probability_forecast` in the existing initiative
+context: `event: native-first-attempt-within-480s-v1`, a named `cohort`, and an
+`expires_at` UTC epoch. Attachment copies that selection into existing
+`native_work.outcome_learning` metadata. Expired selections and already-bound
+tasks cannot acquire a retrospective probability. Selection changes no task
+authority, scheduling, retries or notifications.
+
+The event, existing planning role recipe, native task configuration and
+registered action identify comparable samples. A changed recipe starts a
+separate statistical cohort. Opening a new finite enrollment window preserves
+learning from earlier comparable outcomes; its label and expiry are audit
+metadata. The original probability freezes at attachment:
+`(4 * 0.7 + prior successes) / (4 + prior resolved outcomes)`, using at most
+50 earlier original forecasts and their latest available outcome correction.
+The four-observation prior limits early movement; the result is not yet
+calibrated. The same record freezes a constant 0.7 baseline. Readback reports
+paired Brier scores and an always-completes baseline, with no suggestion enabled.
+The selected recipe is configuration attribution, not proof of the eventual
+processor or a global model ranking. Owner work projection includes only the
+role and configuration revision; the sanitized full recipe stays in the ledger.
+
+Independent terminal execution failures count even when no provider model
+label was observed. A later successful retry cannot replace the first failure.
+A completed first attempt after the deadline is a negative outcome. Native
+pause, cancellation or intervention is censored, including a pause before any
+attempt that is later resumed. Pending or missing observations stay unresolved;
+a slow task alone is not a failure receipt. Both failures and exclusions remain
+visible. Erased evidence stops contributing to future estimates.
+
+For prospective evaluation, freeze the selection and source versions before
+enrolling the next eight genuinely needed reviews of one registered class, or
+until 72 hours elapse, whichever comes first. Do not create tasks to fill the
+cohort. Compare untouched candidate and baseline probabilities on the same
+resolved first-attempt outcomes, reporting unresolved and censored counts,
+recipe changes and model-attribution gaps separately. Eight outcomes can expose
+a defect or an unhelpful estimate; they cannot establish broad calibration or
+general forecasting ability. This recipe measures usefulness; it is not a
+decision gate. No live predictive benefit is established by the offline tests.
+
+Forecast revisions preserve previous probabilities and horizons. Only the latest pending revision enters current context; original forecasts drive calibration, preventing repeated revisions from inflating its sample count. Explicit outcome corrections remain append-only. Missing coverage is unresolved, and paused, cancelled or unavailable work is censored. A terminal first-attempt task failure can settle its binary event before the horizon; a negative reply-absence claim still requires coverage through its horizon. Historical causal-edge survival remains a self-consistency diagnostic and is excluded from predictive scores.
 
 Reply waits start their response clock from a retained transport receipt. A provider-linked reply can precede a delayed acknowledgment. Exact contact and parent-message references resolve the wait; a reply does not fulfill its parent obligation. Quiet hours and availability use named timezones and actual UTC instants. Changes to source evidence cancel stale waits before native preparation.
 

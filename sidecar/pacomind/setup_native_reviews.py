@@ -29,6 +29,7 @@ def worker_configuration(state, manifest, owner):
         'tools': {'tool_search': {'enabled': False}},
         'plugins': {'enabled': ['pacomind'], 'pacomind': {'native_reviews': {
             'worker': True, 'source_home': manifest['hermes_home'], 'owner_contact_id': owner,
+            'routing_policy': policy,
             'log_directory': str(Path(manifest.get('operational_log_directory') or
                                      Path(state)/'service').resolve())}}},
         'memory': {'memory_enabled': False, 'user_profile_enabled': False},
@@ -57,7 +58,9 @@ def configure(state, *, install=False):
     candidate, policy = worker_configuration(state, manifest, owner)
     if worker.exists():
         existing = yaml.safe_load((worker/'config.yaml').read_bytes())
-        if plugin_settings(existing).get('native_reviews') != candidate['plugins']['pacomind']['native_reviews']:
+        def ownership(value):
+            return {k: v for k, v in value.items() if k != 'routing_policy'}
+        if ownership(plugin_settings(existing).get('native_reviews', {})) != ownership(candidate['plugins']['pacomind']['native_reviews']):
             raise ValueError('review_profile_owned_by_another_instance')
     elif not install:
         raise ValueError('managed_review_profile_missing')

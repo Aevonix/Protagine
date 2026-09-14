@@ -525,7 +525,7 @@ class ExpectationStore:
             raise ValueError("forecast must precede its horizon and follow its origin")
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
             raise ValueError("forecast probability must be between 0 and 1")
-        if domain not in {"task_duration", "expected_reply"} or source_kind not in _OUTCOME_SOURCE_KINDS:
+        if domain not in {"task_duration", "task_outcome", "expected_reply"} or source_kind not in _OUTCOME_SOURCE_KINDS:
             raise ValueError("unsupported forecast domain/source")
         if not method or not cohort or not expectation or not subject:
             raise ValueError("forecast method, cohort, question and subject required")
@@ -595,7 +595,10 @@ class ExpectationStore:
     ) -> Dict[str, Any]:
         """Append independent evidence (or its explicit correction), then score.
 
-        A negative observation requires coverage through the forecast horizon.
+        A negative absence observation requires coverage through the horizon.
+        For task_outcome/task_receipt, False instead asserts an independently
+        observed terminal failure of the defined attempt, which settles early.
+        Callers must not use that contract for a pending or merely slow task.
         Censored/unavailable work is not a miss. Corrections append evidence;
         original forecast values and prior outcome payloads remain inspectable.
         """
@@ -651,7 +654,10 @@ class ExpectationStore:
                     # after an event that arrived late at the ledger.
                     eligible = status == "observed" and row["created_at"] <= observed
                     if value is False:
-                        eligible = eligible and coverage is not None and coverage >= row["horizon"]
+                        # A terminal first-attempt failure settles a task outcome
+                        # immediately. An absence claim still needs horizon coverage.
+                        terminal_task = row['domain'] == 'task_outcome' and source_kind == 'task_receipt'
+                        eligible = eligible and (terminal_task or coverage is not None and coverage >= row["horizon"])
                     result = "unresolved" if not eligible else "hit" if value and observed <= row["horizon"] else "miss"
                     self._conn.execute("UPDATE predictions SET outcome=?,resolved_at=?,outcome_observation_id=?,outcome_observed_at=?,outcome_evidence_refs=?,resolution_digest=? WHERE prediction_id=?", (result, recorded, receipt_ref, observed, _canonical(list(refs)), digest, row["prediction_id"]))
                 self._conn.commit()
@@ -659,6 +665,39 @@ class ExpectationStore:
                 self._conn.rollback()
                 raise
         return {**payload, "disposition": "recorded"}
+
+    def estimate_task_probability(self, *, cohort, subject_person_id, now,
+                                  evidence_is_current, prior=.7):
+        """Fixed-event estimate from earlier original outcomes, including failures.
+
+        The caller's cohort binds the event and selected role recipe. Actual
+        response labels are attribution, not a success-only sampling filter.
+        """
+        stamp = _event_epoch(now, 'now')
+        if type(prior) not in (int, float) or not math.isfinite(prior) or not 0 <= prior <= 1:
+            raise ValueError('invalid probability prior')
+        with self._lock:
+            rows = self._conn.execute('''SELECT p.*,o.payload FROM forecast_revisions f
+                JOIN predictions p USING(prediction_id)
+                JOIN forecast_outcomes o ON o.forecast_id=f.forecast_id
+                WHERE f.revision=1 AND p.domain='task_outcome' AND p.cohort=?
+                AND p.subject_person_id=? AND p.viewer_scope='owner'
+                AND o.revision=(SELECT MAX(x.revision) FROM forecast_outcomes x
+                    WHERE x.forecast_id=f.forecast_id AND x.recorded_at<?)
+                AND o.recorded_at<? ORDER BY o.recorded_at DESC LIMIT 50''',
+                (cohort, subject_person_id, stamp, stamp)).fetchall()
+        values, receipts = [], []
+        for row in rows:
+            outcome = json.loads(row['payload'])
+            if (outcome['status'] != 'observed' or outcome['observed_at'] < row['created_at']
+                    or not evidence_is_current(self._row(row), outcome)):
+                continue
+            values.append(bool(outcome['value'] and outcome['observed_at'] <= row['horizon']))
+            receipts.append(outcome['receipt_ref'])
+        return {'probability': (4 * prior + sum(values)) / (4 + len(values)),
+                'baseline_probability': prior, 'sample_n': len(values),
+                'success_n': sum(values), 'evidence_refs': receipts, 'as_of': stamp,
+                'method': 'first-attempt-bernoulli-prior4-v1', 'calibrated': False}
 
     def estimate_duration(
         self, *, domain: str, cohort: str, subject_person_id: str,

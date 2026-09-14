@@ -53,6 +53,11 @@ def bind_native_turn(**kwargs):
 def finish_native_turn(**kwargs):
     active = ACTIVE.get()
     if active is not None and kwargs.get('platform') == active['adapter'].platform.value:
+        supplied = active.get('supplied')
+        failure = supplied.failure if supplied is not None else None
+        if failure is not None:
+            kwargs = {**kwargs, 'completed': False, 'failed': True,
+                      'failure_reason': failure['reason'], 'failure_retryable': failure['retryable']}
         active['handoffs'].observe_terminal(active['id'], kwargs)
 
 

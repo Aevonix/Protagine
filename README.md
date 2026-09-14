@@ -83,7 +83,9 @@ integration boundaries.
 **Phase 1 is in development and validation.** The memory integration, source
 readers, shared task controls, contact preferences, model roles and guided setup
 are implemented. Limited trials have shown useful automatic recall and awareness
-of work in other sessions.
+of work in other sessions. Corrections queued during a task's final answer
+now continue into its next turn; controlled native gateway checks cover
+this handoff. Consistent completion with live models still needs validation.
 
 Reliability is unfinished. Models still add unsupported claims, delegated tasks
 can stall, and consistent behavior across physical channels needs more evidence.
@@ -91,6 +93,11 @@ Complete forgetting across transcripts, unlinked copies and backups is unfinishe
 Automatic persistent opinions are experimental and disabled by default. Useful
 background initiative and autonomous self-improvement still need complete
 demonstrations in ordinary use.
+
+Internal-review probability measurement is experimental and disabled by
+default. Explicitly enrolled reviews can measure first-attempt completion
+against a frozen baseline. Live predictive benefit has not been demonstrated.
+See [task forecasts](docs/TEMPORAL-FORECASTS.md) for its scope and limitations.
 
 Until Phase 1 is validated, development releases may change interfaces and
 storage layouts. The [known gaps](docs/KNOWN-GAPS.md) and
@@ -107,7 +114,7 @@ Install the current tagged release:
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.29 https://github.com/Aevonix/PacoMind.git
+git clone --depth 1 --branch v1.5.30 https://github.com/Aevonix/PacoMind.git
 python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```

@@ -81,6 +81,7 @@ task_ids = {}
 expected_failure_turn = None
 source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
+steer_delivery = os.environ.get('PACOMIND_TEST_STEER_DELIVERY', 'tool_batch')
 update_text = 'Keep the alpha comparison scoped to the violet notes and label the result ORANGE-472.'
 
 
@@ -178,6 +179,8 @@ def respond(request):
             held[name].set()
             assert release[name].wait(35), 'Held ' + name + ' request was never released'
             if name == 'alpha':
+                if steer_delivery == 'next_turn':
+                    return answer(body, 'Initial alpha answer completed before the queued correction.')
                 return tool(body, 'pacomind_memory_read_source', row['source']['source_refs'][0])
             return answer(body, 'TASK_BETA completed with its own retained source.')
         text = json.dumps(body['messages'])
@@ -193,6 +196,8 @@ def respond(request):
             'native_turn': active.get('native')}
         assert turn.logical_llm_calls, 'The independent task bypassed native Relay execution'
         assert updates[0]['source']['input_refs'][0] in supplied.parents()[0]
+        if steer_delivery == 'next_turn':
+            assert len(supplied._bound) == 2, 'Late /steer did not enter a new native turn'
         assert updates[0]['source']['input_refs'][0] in row['dependencies']['input_refs']
         held['alpha_next'].set()
         assert release['alpha_next'].wait(35), 'The stopped alpha provider request was never released'
@@ -480,7 +485,7 @@ async def exercise():
         inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_ERASED')), 12)
         assert inspected == 'FG_STATUS_ERASED_ACK', inspected
         assert adapter.handoffs.get(task_ids['beta'])['response'] == beta['response']
-        print(json.dumps({'cross_channel_native_tasks': True, 'separate_native_roots': 2,
+        print(json.dumps({'cross_channel_native_tasks': True, 'steer_delivery': steer_delivery, 'separate_native_roots': 2,
             'queued_update_source_read_in_another_owner_conversation': True,
             'status_flags_track_native_request_visibility': True, 'erased_status_refs_withheld': True,
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,
@@ -507,6 +512,37 @@ async def exercise():
 
 try:
     asyncio.run(exercise())
+    if steer_delivery == 'next_turn':
+        from types import SimpleNamespace
+        from hermes_state import SessionDB
+        from pacomind_hermes.client import TurnOutbox, PacoMindClient
+        from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+        session = adapter.handoffs.get(task_ids['alpha'])['native_session_id']
+        with SessionDB(home/'state.db') as native:
+            before = {row['id']:dict(row) for row in native._conn.execute(
+                'SELECT * FROM messages WHERE session_id=? ORDER BY id', (session,))}
+            carrier_id = next(key for key,row in before.items()
+                if row['role'] == 'user' and update_text in row['content'])
+            assert before[carrier_id]['display_kind'] is None, 'Fixture used mid-tool steering'
+            unrelated_id = native.append_message(session, 'user', 'An unrelated later task remains intact.')
+            unrelated = dict(native._conn.execute('SELECT * FROM messages WHERE id=?', (unrelated_id,)).fetchone())
+        owned = NativeOwnedCopies(SimpleNamespace(outbox=TurnOutbox(home/'outbox.db'),
+            client=PacoMindClient('http://fixture', secret)), None)
+        reservations = owned._rows(owner)
+        copies = [row for row in reservations if row['metadata'].get('anchor_id') == carrier_id]
+        updates = [row for row in copies if row['metadata'].get('update_carrier_hash')]
+        assert len(updates) == 1 and updates[0]['metadata']['payload_anchor'], copies
+        assert all(not row['metadata'].get('payload_anchor') for row in copies
+            if not row['metadata'].get('update_carrier_hash')), 'Recall and steering ownership merged'
+        erased = asyncio.run(owned.reconcile(contact=owner, gateway=runner))
+        with SessionDB(home/'state.db') as native:
+            after = {row['id']:dict(row) for row in native._conn.execute(
+                'SELECT * FROM messages WHERE session_id=? ORDER BY id', (session,))}
+        assert after[carrier_id]['content'] == '[Content removed.]', erased
+        assert all(after[key] == row for key,row in before.items() if key < carrier_id)
+        assert after[unrelated_id] == unrelated
+        print(json.dumps({'late_steer_exact_payload_erased': True,
+                          'earlier_task_and_unrelated_later_input_retained': True}))
 finally:
     api.__exit__(None, None, None)
     asyncio.run(contacts.close())
