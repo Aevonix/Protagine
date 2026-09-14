@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.28 - recurring failure evidence and readable model checks
+
+Ordinary tool failures can be grouped across turns even when different skills
+were viewed. Each execution counts once, and previously reviewed observations
+remain consumed. Viewed skills stay attached as context without being blamed
+for the failure. Deployment review consumers can reuse this grouping in the
+existing learning path.
+
+Model qualification reports now show each case's named pass, fail and unknown
+checks alongside its role, consumer boundary and primary-model attribution.
+Comparisons retain both sets of checks and their original grades. A useful
+artifact no longer hides an answer-grounding failure in the Markdown summary.
+
+These changes improve evidence selection and reporting. They do not establish
+a successful autonomous repair or change model roles, prompts or evaluation
+criteria. Hermes remains on the same qualified 0.21.2 interface.
+
 ## v1.5.27 - retained task failure and explicit continuation
 
 A failed native background turn now retains its settled failure separately from

@@ -61,8 +61,9 @@ An embedding model change can replace an index without replacing the evidence.
 **Models are replaceable processors.** Named roles select models for interaction,
 reasoning, extraction, judging, vision and other functions, with configured
 fallbacks. Local inference supports normal operation without a cloud model.
-The model qualification suite measures role-specific quality and latency;
-automatic fleet enrollment and selection from those measurements remain planned.
+The model qualification suite records quality and latency for each tested role.
+Its reports separate useful results from grounding failures and unknown outcomes.
+Automatic fleet enrollment and selection from those measurements remain planned.
 
 Memory extraction and admission review have separate task mappings. A deployment
 can select their models and deadlines without changing the planning or judging
@@ -106,7 +107,7 @@ Install the current tagged release:
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.27 https://github.com/Aevonix/PacoMind.git
+git clone --depth 1 --branch v1.5.28 https://github.com/Aevonix/PacoMind.git
 python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```

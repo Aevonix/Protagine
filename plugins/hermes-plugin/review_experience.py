@@ -143,3 +143,62 @@ def next_batch(entries, skill=None, skill_sha256=None):
                 'skill_sha256': skill_sha256, 'observation_ids': ids,
                 'failure_sha256': fingerprint(ids), 'observations': selected}
     return None
+
+
+def next_tool_batch(entries):
+    """Group recurring tool outcomes independently of previously viewed skills.
+
+    A skill view is context, not evidence that it caused a later tool failure.
+    Keep those references for diagnosis without choosing a skill to change.
+    Existing ledger observations and claims remain the only durable records.
+    """
+    rows = [row for row in reversed(entries)
+            if row.get('action') in {ACTION, UNATTRIBUTED_ACTION}]
+    consumed = {identifier for row in entries if row.get('action') == 'ordinary_skill_review'
+                for identifier in row.get('evidence', {}).get('observation_ids', [])}
+
+    def occurrence(value):
+        return tuple(value[key] for key in ('contact_id', 'session_id', 'turn_id',
+                     'tool_call_id', 'request_visible_result_sha256'))
+
+    # Several skill views can reference one execution. A prior claim of any
+    # reference consumes that execution, including another view recorded later.
+    consumed_calls = {occurrence(row['evidence']) for row in rows
+                      if row['evidence'].get('observation_id') in consumed}
+    groups = {}
+    for row in rows:
+        value = row['evidence']
+        identity = occurrence(value)
+        if identity in consumed_calls:
+            continue
+        exact = value['request_visible_result_sha256'] if value['error_class'] == 'tool_returned_error' else ''
+        key = value['contact_id'], value['tool_name'], value['error_class'], exact
+        values = groups.setdefault(key, {})
+        if identity not in values:
+            observation = {k: v for k, v in value.items()
+                           if k not in {'skill_call_id', 'skill_sha256', 'attribution'}}
+            values[identity] = {'observation': {**observation, 'skill_views': []}, 'ids': set()}
+        current = values[identity]
+        current['ids'].add(value['observation_id'])
+        if row.get('skill') is not None:
+            view = {'skill': row['skill'], 'skill_call_id': value['skill_call_id'],
+                    'skill_sha256': value['skill_sha256']}
+            if view not in current['observation']['skill_views']:
+                current['observation']['skill_views'].append(view)
+    for values in groups.values():
+        turns = {}
+        for value in values.values():
+            observation = value['observation']
+            turns.setdefault((observation['session_id'], observation['turn_id']), observation)
+        selected = list(turns.values())[:16]
+        if len(selected) < 2:
+            continue
+        selected_turns = {(row['session_id'], row['turn_id']) for row in selected}
+        identifiers = sorted({identifier for value in values.values()
+            if (value['observation']['session_id'], value['observation']['turn_id']) in selected_turns
+            for identifier in value['ids']})
+        return {'version': 1, 'source': 'ordinary_native_failure_batch', 'skill': None,
+                'attribution': 'unassigned', 'skill_sha256': None,
+                'observation_ids': identifiers, 'failure_sha256': fingerprint(identifiers),
+                'observations': selected}
+    return None
