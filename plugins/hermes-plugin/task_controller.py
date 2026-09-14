@@ -23,7 +23,7 @@ TOOL_SCHEMA = {
     'name': 'pacomind_task',
     'description': (
         'Run an accepted task in the background while this conversation continues. '
-        'Submit a bounded request; inspect, steer or stop the returned task_id from '
+        'Submit a bounded request; inspect, steer, stop or resume the returned task_id from '
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
         'Status includes original-input and recent authorized update source references; '
@@ -32,17 +32,21 @@ TOOL_SCHEMA = {
         'List also reports profile-declared model role names for task submission. '
         'Answer routine questions directly. For difficult reasoning or evidence synthesis, '
         'use a suitable declared model role and keep the conversation responsive while it works. '
+        'Resume a failed or interrupted task using the native_turn_id just observed in status '
+        'as expected_turn_id; the same task and conversation continue. '
         'Use native delegation for child work within a task.'),
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {
-            'operation': {'type': 'string', 'enum': ['submit', 'status', 'steer', 'stop', 'list']},
+            'operation': {'type': 'string', 'enum': ['submit', 'status', 'steer', 'stop', 'resume', 'list']},
             'request': {'type': 'string', 'minLength': 1, 'maxLength': 32768},
             'model_role': {'type': 'string', 'minLength': 1, 'maxLength': 256,
                 'description': 'Optional for submit: a task role declared in this profile, '
                     'such as coding or reasoning. Omit to use the configured task default. '
                     'Choose for the work, not merely because it runs in the background.'},
             'task_id': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+            'expected_turn_id': {'type': 'string', 'minLength': 1, 'maxLength': 512,
+                'description': 'Required for resume: the exact native_turn_id observed in task status.'},
         },
         'required': ['operation'],
     },
@@ -146,7 +150,8 @@ class NativeTasks:
         from .native_task_platform import NativeTaskAdapter
         from gateway.platforms.event import MessageEvent
         if (not isinstance(payload, dict) or set(payload) not in (
-                {'handoff_id'}, {'handoff_id', 'action'}, {'handoff_id', 'action', 'update_id'})):
+                {'handoff_id'}, {'handoff_id', 'action'}, {'handoff_id', 'action', 'update_id'},
+                {'handoff_id', 'action', 'expected_turn_id'})):
             raise TaskHandoffError('An exact retained task callback is required')
         adapter = self.adapter
         if adapter is None:
@@ -208,6 +213,12 @@ class NativeTasks:
         if active is not None and active['adapter'] is self.adapter:
             return finish_native_turn(**kwargs)
 
+    def settle_native_turn(self, **kwargs):
+        from .native_task_platform import ACTIVE, settle_native_turn
+        active = ACTIVE.get()
+        if active is not None and active['adapter'] is self.adapter:
+            return settle_native_turn(**kwargs)
+
     def execution_experience(self, **kwargs):
         from .native_task_platform import ACTIVE, execution_experience
         active = ACTIVE.get()
@@ -245,7 +256,7 @@ class NativeTasks:
             raise TaskHandoffError('The native task source identity is invalid')
         return fields
 
-    def _call(self, action, identity, *, update_id=None):
+    def _call(self, action, identity, *, update_id=None, expected_turn_id=None):
         adapter = self.adapter
         if (adapter is None or adapter.loop is None or not adapter.loop.is_running()
                 or adapter.dispatch_context is None):
@@ -261,6 +272,8 @@ class NativeTasks:
         payload = {'handoff_id': identity, 'action': action}
         if update_id is not None:
             payload['update_id'] = update_id
+        if expected_turn_id is not None:
+            payload['expected_turn_id'] = expected_turn_id
         # This is an independent root. Copy the connected gateway/profile
         # context, not the foreground tool's managed Relay callback ancestry.
         # Its owner and source lineage come from the retained handoff instead.
@@ -318,7 +331,8 @@ class NativeTasks:
         if row['response']:
             return {**result, 'status': 'done', 'delivery': 'unobserved'}
         stopped = TaskHandoffs.stop_view(row)
-        return {**result, **(stopped or {'status': 'unknown', 'reason': 'native_liveness_unobserved'})}
+        return {**result, **(stopped or TaskHandoffs.failure_view(row)
+                            or {'status': 'unknown', 'reason': 'native_liveness_unobserved'})}
 
     def request_revision(self, scope, task_ids, *, deadline_monotonic):
         """Read one accepted update locally; the request boundary checks its sources.
@@ -401,10 +415,12 @@ class NativeTasks:
                 raise TaskHandoffError('An attested owner conversation is required')
             operation = args.get('operation')
             expected = {'operation'} | ({'request'} if operation == 'submit' else
-                {'task_id', 'request'} if operation == 'steer' else {'task_id'} if operation in {'status', 'stop'} else set())
+                {'task_id', 'request'} if operation == 'steer' else
+                {'task_id', 'expected_turn_id'} if operation == 'resume' else
+                {'task_id'} if operation in {'status', 'stop'} else set())
             if operation == 'submit' and 'model_role' in args:
                 expected.add('model_role')
-            if set(args) != expected or operation not in {'submit', 'status', 'steer', 'stop', 'list'}:
+            if set(args) != expected or operation not in {'submit', 'status', 'steer', 'stop', 'resume', 'list'}:
                 raise TaskHandoffError('Use one task operation with its exact fields')
             if operation == 'list':
                 items = []
@@ -448,6 +464,10 @@ class NativeTasks:
             identity = args['task_id']
             row = self.handoffs.get(identity)
             self.sources.authorize_control(row['source'], scope)
+            if operation == 'resume':
+                observed = self._call('resume', identity, expected_turn_id=args['expected_turn_id'])
+                return json.dumps({**self._metadata(self.handoffs.control(identity)),
+                    'native_observation': observed, 'callback_observed': observed is not None})
             if operation == 'stop':
                 retained = self.handoffs.request_stop(identity)
                 if retained['response']:

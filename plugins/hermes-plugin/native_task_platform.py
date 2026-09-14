@@ -56,6 +56,17 @@ def finish_native_turn(**kwargs):
         active['handoffs'].observe_terminal(active['id'], kwargs)
 
 
+def settle_native_turn(**kwargs):
+    """Retain typed early failures that never reached on_session_end."""
+    active = ACTIVE.get()
+    outcome = kwargs.get('outcome')
+    if (active is not None and kwargs.get('platform') == active['adapter'].platform.value
+            and isinstance(outcome, dict) and outcome.get('failed') is True):
+        native = {key: kwargs.get(key) for key in ('session_id', 'task_id', 'turn_id')}
+        active['handoffs'].observe_terminal(active['id'], {**outcome, **native},
+                                           basis='native_on_native_turn_settled')
+
+
 def execution_experience(**kwargs):
     """Bound task identity and its known purpose, never hook prose.
 
@@ -389,6 +400,9 @@ class NativeTaskAdapter(BasePlatformAdapter):
             return {**result, 'status': 'done', 'result': row['response']['text'],
                     'source_dependencies': row['response']['source_dependencies'],
                     'delivery': {'retained': True, 'playback': 'unobserved'}}
+        failed = self.handoffs.failure_view(row)
+        if failed:
+            return {**result, **failed}
         source = self.build_source(chat_id=identity, chat_type='dm',
             user_id=resolved['contact_id'], message_id=identity)
         store = getattr(self, '_session_store', None)
@@ -423,6 +437,56 @@ class NativeTaskAdapter(BasePlatformAdapter):
     async def stop(self, identity):
         async with self._control_lock:
             return await self._stop(identity)
+
+    async def resume(self, identity, expected_turn_id):
+        if (not isinstance(expected_turn_id, str) or not expected_turn_id
+                or len(expected_turn_id) > 512):
+            raise self._error('Resume requires the observed native turn identity')
+        async with self._control_lock:
+            row = await asyncio.to_thread(self.handoffs.control, identity, require_task_grant=True)
+            result = {'handoff_id': identity, 'resume_requested': False,
+                      **{key: row[key] for key in ('native_session_id', 'native_task_id', 'native_turn_id')}}
+            if row['stop'] or row['response']:
+                return {**result, 'reason': 'task_stopped_or_completed'}
+            if row['native_turn_id'] != expected_turn_id or not row['native_session_id']:
+                return {**result, 'reason': 'native_generation_changed', 'replayed': True}
+            row, resolved = await asyncio.to_thread(self.handoffs.resolve, identity)
+            source = self.build_source(chat_id=identity, chat_type='dm',
+                user_id=resolved['contact_id'], message_id='resume:' + expected_turn_id)
+            event = MessageEvent(text='', source=source, message_type=MessageType.TEXT,
+                internal=True, allow_gateway_control=False,
+                metadata={'pacomind_task_resume_expected_turn_id': expected_turn_id})
+            key = self._event_session_key(event)
+            store = getattr(self, '_session_store', None)
+            entry = await asyncio.to_thread(store.lookup_by_session_key, key) if store is not None else None
+            if entry is None or entry.session_id != row['native_session_id']:
+                raise self._error('The retained native task session is unavailable')
+            self._check_native_origin(entry, source, key)
+            task = self._session_tasks.get(key)
+            if (identity in self._submitting or entry.active_turn_token
+                    or (task is not None and not task.done())):
+                return {**result, 'reason': 'native_turn_already_active', 'replayed': True}
+            # A suspended native session resets on next access. Never replace
+            # this retained task's conversation to make a resume appear to work.
+            if entry.suspended or not (entry.resume_pending or self.handoffs.failure_view(row)):
+                return {**result, 'reason': 'native_session_not_resumable'}
+            self._submitting.add(identity)
+            try:
+                current = await asyncio.to_thread(self.handoffs.control, identity, require_task_grant=True)
+                await asyncio.to_thread(self.handoffs.resolve, identity)
+                if current['stop'] or current['response'] or current['native_turn_id'] != expected_turn_id:
+                    return {**result, 'reason': 'native_generation_or_control_changed', 'replayed': True}
+                if not entry.resume_pending:
+                    if not await asyncio.to_thread(store.mark_resume_pending, key, reason='owner_resume'):
+                        raise self._error('The retained native task could not be marked resumable')
+                # Existing adapter admission, leases and startup recovery own the
+                # continuation. No new executor, replayed request or tool effects.
+                await self.handle_message(event)
+                return {**result, 'resume_requested': event._gateway_accepted,
+                        'native_admitted': event._gateway_accepted}
+            finally:
+                if not event._gateway_accepted:
+                    self._submitting.discard(identity)
 
     async def _stop(self, identity):
         row = await asyncio.to_thread(self.handoffs.control, identity)
@@ -531,6 +595,9 @@ class NativeTaskAdapter(BasePlatformAdapter):
         return await self.dispatch_native_event(payload)
 
     async def dispatch_native_event(self, payload):
+        if (set(payload) == {'handoff_id', 'action', 'expected_turn_id'}
+                and payload.get('action') == 'resume'):
+            return await self.resume(payload['handoff_id'], payload['expected_turn_id'])
         if set(payload) == {'handoff_id', 'action', 'update_id'} and payload.get('action') == 'steer':
             return await self.steer(payload['handoff_id'], payload['update_id'])
         if set(payload) not in ({'handoff_id'}, {'handoff_id', 'action'}):
@@ -591,6 +658,9 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 owned = await asyncio.to_thread(self.handoffs.control, event.source.chat_id)
                 if event.source.user_id != owned['source']['contact_id'] or event.source.platform != self.platform:
                     raise self._error('Native task participant does not match its owner')
+                expected_resume = (event.metadata or {}).get('pacomind_task_resume_expected_turn_id')
+                if expected_resume is not None and expected_resume != owned['native_turn_id']:
+                    return None  # Another admitted turn won before this queued resume entered.
                 if (CONTROL.get() == owned['id'] and event.allow_gateway_control
                         and (event.text == '/stop' or (CONTROL_UPDATE.get() and event.text.startswith('/steer ')))):
                     return await handler(event)
@@ -647,7 +717,15 @@ class NativeTaskAdapter(BasePlatformAdapter):
                                 await asyncio.to_thread(self.handoffs.resolve_update, row['id'], update['id'])
                             self._register_update(supplied, update)
                     response = await handler(event)
-                    if (await asyncio.to_thread(self.handoffs.get, row['id']))['stop']:
+                    settled = await asyncio.to_thread(self.handoffs.get, row['id'])
+                    if settled['stop']:
+                        return None
+                    if self.handoffs.failure_view(settled):
+                        # A failed native result is an execution observation,
+                        # not an answer with a source receipt. Preserve history
+                        # and the original request without promoting reset advice.
+                        await asyncio.to_thread(self.handoffs.retain_notice, row['id'],
+                            'The task turn failed. Its original request and conversation are retained.')
                         return None
                     if supplied.result is not None:
                         await asyncio.to_thread(self.handoffs.complete_source, row['id'], supplied.result)

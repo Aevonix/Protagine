@@ -140,6 +140,36 @@ def supplied_model_config(args, tmp_path):
     return configuration
 
 
+def test_installer_exposes_admitted_task_control_preserving_search_options_and_aliases(args, monkeypatch):
+    home = Path(args.hermes_home); home.mkdir(mode=0o700)
+    (home/'config.yaml').write_text('''
+tools: &tools
+  terminal: {timeout: 90}
+  tool_search: &search
+    enabled: off
+    activation_threshold: 99
+    defer: [session_search]
+    eager: &eager [another_plugin_tool]
+other_tools: *tools
+other_search: *search
+other_eager: *eager
+''')
+    original = yaml.safe_load((home/'config.yaml').read_text())
+    assert setup.run_init(None, args) == 0
+    configured = yaml.safe_load((home/'config.yaml').read_text())
+    assert configured['tools']['tool_search'] == {
+        **original['tools']['tool_search'], 'eager': ['another_plugin_tool', 'pacomind_task']}
+    assert configured['tools']['terminal'] == original['tools']['terminal']
+    for name in ('other_tools', 'other_search', 'other_eager'):
+        assert configured[name] == original[name]
+    assert configured['plugins']['pacomind']['enabled_action_tools'] == []
+    assert configured['plugins']['pacomind']['enabled_message_tools'] == []
+    before = (home/'config.yaml').read_bytes()
+    monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Existing setup made inference'))
+    assert setup.run_init(None, args) == 0
+    assert (home/'config.yaml').read_bytes() == before
+
+
 @pytest.mark.parametrize('background', ['none', 'native_goals', 'local_work_and_goals'])
 def test_wizard_preserves_full_model_configuration_and_existing_chat(
         args, supplied_model_config, background, monkeypatch, capsys, caplog):
@@ -902,6 +932,25 @@ def test_explicit_refresh_preserves_state_and_worker_and_is_idempotent(args, mon
     assert list(state.glob('adapter-previous-*'))==backups
     assert (state/'instance.json').read_bytes()==manifest_before
     assert (state/'instance.json').stat().st_mtime_ns==mtime
+
+
+def test_explicit_refresh_adds_task_visibility_once_without_changing_tool_authority(args, monkeypatch):
+    assert setup.run_init(None, args) == 0
+    path = Path(args.hermes_home)/'config.yaml'
+    config = yaml.safe_load(path.read_text())
+    config['tools'] = {'tool_search': {'enabled': 'auto', 'eager': ['other_tool'], 'defer': []}}
+    path.write_text(yaml.safe_dump(config))
+    original = path.read_bytes()
+    args.refresh_adapter = True
+    monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Refresh made inference'))
+    assert setup.run_init(None, args) == 0
+    expected = yaml.safe_load(original)
+    expected['tools']['tool_search']['eager'].append('pacomind_task')
+    assert yaml.safe_load(path.read_text()) == expected
+    assert any(p.read_bytes() == original for p in path.parent.glob('.config.yaml.pacomind-backup-*'))
+    updated, mtime = path.read_bytes(), path.stat().st_mtime_ns
+    assert setup.run_init(None, args) == 0
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == (updated, mtime)
 
 
 def test_explicit_refresh_aligns_old_spill_allowance_without_changing_adapter(args, monkeypatch, capsys):

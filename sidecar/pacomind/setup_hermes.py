@@ -47,6 +47,24 @@ def _json(value):
     return json.dumps(value, indent=2, ensure_ascii=False) + '\n'
 
 
+def _expose_task_control(config):
+    """Expose an already admitted task schema without changing native policy."""
+    tools = config.get('tools', {})
+    if not isinstance(tools, dict):
+        raise ValueError('Hermes tools settings must be a YAML mapping')
+    search = tools.get('tool_search', {})
+    if not isinstance(search, dict):
+        raise ValueError('Hermes tools.tool_search settings must be a YAML mapping')
+    eager = search.get('eager', [])
+    if not isinstance(eager, list) or any(not isinstance(name, str) for name in eager):
+        raise ValueError('Hermes tools.tool_search.eager must be a list of tool names')
+    if 'pacomind_task' in eager:
+        return False
+    # Detach all touched branches from unrelated YAML aliases.
+    config['tools'] = {**tools, 'tool_search': {**search, 'eager': [*eager, 'pacomind_task']}}
+    return True
+
+
 def _model_configuration(path):
     """Validate without discovery and retain the complete private host config."""
     from .router.router import LLMRouter
@@ -510,7 +528,8 @@ def refresh_adapter(state, args):
             raise ValueError('The recorded draft worker belongs to another instance')
         _validate_hermes_binding(config)
         aligned = _align_hermes_memory_spill(config)
-        if aligned:
+        eager = config_path == config_paths[0] and _expose_task_control(config)
+        if aligned or eager:
             updates.append((config_path, config_before, yaml.safe_dump(config, sort_keys=False,
                                                                       allow_unicode=True).encode()))
             if aligned:
@@ -845,6 +864,7 @@ def run(root_dir=None, args=None):
                 raise ValueError('Hermes plugins.enabled must be a list')
             if 'pacomind' not in enabled:
                 enabled.append('pacomind')
+            _expose_task_control(candidate)
             candidate.setdefault('compression', {})['checkpoint_required'] = True
             if fresh_model:
                 candidate['model'] = {'provider': 'custom', 'default': model, 'base_url': endpoint}

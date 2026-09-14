@@ -437,6 +437,17 @@ model perception remain unobserved.
 
 ## Opening retained task results
 
+For a failed background task, `pacomind_task` with `operation="status"` exposes
+the observed native failure separately from a retained answer when the runtime
+supplies a settled-turn outcome. It preserves the original input references.
+To continue a failed or interrupted task, call `operation="resume"` with its
+`task_id` and the status response's exact `native_turn_id` as `expected_turn_id`.
+Resume revalidates current ownership, task permission, source availability and
+the original native session. Stale or repeated requests cannot admit another
+turn for that observed generation; stopped, completed and suspended sessions
+are declined. The continuation retains the same session, model selection and
+prior tool results. Native admission is not completion.
+
 `pacomind_memory_read_source` accepts `view="observations"` for an exact recalled
 instruction. It lists four retained original tool references per page. Open
 relevant references with `view="source"` to read what the tools actually returned.

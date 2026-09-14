@@ -8,7 +8,7 @@ from conftest import run_python
 
 
 PROBE = r'''
-import json, socket, sys
+import asyncio, json, socket, sys
 from pathlib import Path
 sys.path[:0] = [sys.argv[1], *([sys.argv[2]] if sys.argv[2] else [])]
 if sys.argv[3]: sys.path.append(sys.argv[3])
@@ -30,8 +30,14 @@ source = {'version':1, 'principal':'hermes:cli', 'source_session_id':'ordinary',
     'contact_id':'owner', 'watermark':0,
     'origin':{'platform':'cli','authority_gateway':'cli','sender_id':'local',
               'session_id':'ordinary','turn_id':'original-turn'}}
-controller.handoffs = TaskHandoffs(controller.database, lambda value, dependencies=None: dict(value),
-    lambda value, require_task_grant: 'owner')
+readable, granted = True, True
+def resolve_source(value, dependencies=None):
+    if not readable: raise TaskHandoffError('Source erased')
+    return dict(value)
+def resolve_owner(value, require_task_grant):
+    if require_task_grant and not granted: raise TaskHandoffError('Task grant revoked')
+    return 'owner'
+controller.handoffs = TaskHandoffs(controller.database, resolve_source, resolve_owner)
 row = controller.handoffs.admit(request_id='original', request='Inspect local notes', source_input=source)
 config = PlatformConfig(enabled=True)
 # Built-in platform keeps this focused check independent of plugin discovery.
@@ -47,11 +53,13 @@ token = ACTIVE.set(active)
 try:
     assert controller.bind_native_turn(**native) is None
     assert controller.finish_native_turn(**native, interrupted=True) is None
+    assert controller.settle_native_turn(**native, outcome={'failed': True}) is None
     assert controller.handoffs.get(row['id'])['native_session_id'] is None
     assert controller.handoffs.get(row['id'])['terminal'] is None
     # The foreign transport can still call the generic exports itself.
     assert bind_native_turn(**native)['context'] == foreign.delivery_context
     assert controller.finish_native_turn(**native, interrupted=True) is None
+    assert controller.settle_native_turn(**native, outcome={'failed': True}) is None
     assert controller.handoffs.get(row['id'])['terminal'] is None
     finish_native_turn(**native, interrupted=True)
     assert controller.handoffs.get(row['id'])['terminal']['turn_id'] == 'turn'
@@ -69,9 +77,34 @@ try:
         try: controller.native_scope_fields(**{**successor, **mismatch})
         except TaskHandoffError: pass
         else: raise AssertionError('A different native origin acquired this task source')
-    controller.finish_native_turn(**successor, interrupted=True)
-    assert controller.handoffs.get(row['id'])['terminal']['turn_id'] == 'successor'
+    # An old runtime has no outcome argument; it cannot create a failure
+    # receipt. A late failure from the prior generation is also ignored.
+    controller.settle_native_turn(**successor)
+    controller.settle_native_turn(**native, outcome={'failed': True, 'failure_reason': 'timeout'})
+    assert controller.handoffs.get(row['id'])['terminal'] is None
+    controller.settle_native_turn(**successor, outcome={
+        'completed': False, 'failed': True, 'failure_reason': 'timeout', 'failure_retryable': True})
+    failed = controller.handoffs.get(row['id'])
+    assert NativeTasks._metadata(failed)['status'] == 'failed'
+    assert failed['terminal']['turn_id'] == 'successor' and failed['response'] is None
+    # The next real native binding clears the failed receipt, preserving the
+    # same original source while admitting a new turn identity.
+    restarted = {**successor, 'turn_id': 'resumed-turn'}
+    controller.bind_native_turn(**restarted)
+    assert controller.handoffs.get(row['id'])['terminal'] is None
+    controller.settle_native_turn(**successor, outcome={'failed': True})
+    assert controller.handoffs.get(row['id'])['terminal'] is None
+    controller.finish_native_turn(**restarted, interrupted=True)
+    assert controller.handoffs.get(row['id'])['terminal']['turn_id'] == 'resumed-turn'
 finally: ACTIVE.reset(token)
+before = controller.handoffs.get(row['id'])
+for reason in ('Source erased', 'Task grant revoked'):
+    readable, granted = reason != 'Source erased', reason != 'Task grant revoked'
+    try: asyncio.run(owned.resume(row['id'], before['native_turn_id']))
+    except TaskHandoffError as error: assert str(error) == reason, str(error)
+    else: raise AssertionError('Resume ignored current source/owner policy')
+    assert controller.handoffs.get(row['id']) == before
+readable = granted = True
 assert owned.authorization_is_upstream is False and foreign.authorization_is_upstream is False
 assert owned.verify_http_event_request('Bearer anything')[0] is False
 print(json.dumps({'mixed_adapter_hooks':True}))

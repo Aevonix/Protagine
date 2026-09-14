@@ -353,18 +353,31 @@ class TaskHandoffs:
             db.execute('UPDATE native_voice_handoffs SET stop_json=? WHERE id=?',
                        (json.dumps(value, sort_keys=True), identity))
 
-    def observe_terminal(self, identity, native):
+    def observe_terminal(self, identity, native, *, basis='native_on_session_end'):
         fields = ('session_id', 'task_id', 'turn_id')
         if any(not isinstance(native.get(key), str) or not native[key] for key in fields):
             return
         value = {key: native[key] for key in fields}
         value.update({key: native.get(key) is True for key in ('completed', 'failed', 'interrupted')})
-        value.update(observed_at=time.time(), basis='native_on_session_end',
+        value.update(observed_at=time.time(), basis=basis,
                      turn_exit_reason=str(native.get('turn_exit_reason') or '')[:256])
+        if isinstance(native.get('failure_reason'), str):
+            value['failure_reason'] = native['failure_reason'][:256]
+        if isinstance(native.get('failure_retryable'), bool):
+            value['failure_retryable'] = native['failure_retryable']
         with self._database() as db:
             db.execute('UPDATE native_voice_handoffs SET terminal_json=? WHERE id=? '
                 'AND native_session_id=? AND native_task_id=? AND native_turn_id=?',
                 (json.dumps(value, sort_keys=True), identity, *(native[key] for key in fields)))
+
+    @staticmethod
+    def failure_view(row):
+        terminal = row.get('terminal')
+        if (row.get('response') or not terminal or terminal.get('failed') is not True
+                or any(not terminal.get(key) or terminal[key] != row.get('native_' + key)
+                       for key in ('session_id', 'task_id', 'turn_id'))):
+            return None
+        return {'status': 'failed', 'failure': terminal}
 
     @staticmethod
     def stop_view(row):
