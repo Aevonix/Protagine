@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.6.0 - task assessments in skill evaluation
+
+The Hermes adapter can select complete reviews of distinct operational tasks
+and pass a proposed procedure to an operator-selected evaluator. The existing
+native proposal, evaluation and rollback mechanisms retain the change history.
+
+- A scoped API returns current assessment sources with their full attribution
+  and supporting evidence. Corrections and erasure invalidate affected reviews.
+- Multiple reviews of one task cannot be counted as separate experience. The
+  reviewer considers recurrence; selection does not declare a failure.
+- An unavailable later audit does not hold up another pending candidate.
+- The qualified Hermes 0.21.3 interface build reports nonzero coding-kernel
+  exits as errors. Setup documentation now names the current qualified version.
+
+The assessment consumer is an integration entry point. Guided setup does not
+install its periodic learning cadence, and no automatic adoption is enabled.
+This release does not establish useful autonomous learning in a deployment.
+
 ## v1.5.34 - exact message membership for artifact assessments
 
 Task artifact assessments can supply optional message membership for their
