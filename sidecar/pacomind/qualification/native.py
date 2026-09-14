@@ -104,11 +104,13 @@ def native_context(config, recipe):
 def cases(roles, *, deadline_seconds=60, cleanup_seconds=5):
     from .cases import STANDARD
     from .native_reasoning import CASE
-    if not roles or set(roles) - {'chat', 'reasoning'} or len(set(roles)) != len(roles):
-        raise ValueError('The native suite provides distinct chat and reasoning roles')
+    from .native_coding import CASE as CODING_CASE
+    if not roles or set(roles) - {'chat', 'reasoning', 'coding'} or len(set(roles)) != len(roles):
+        raise ValueError('The native suite provides distinct chat, reasoning and coding roles')
     if isinstance(cleanup_seconds, bool) or not .01 <= cleanup_seconds <= 30:
         raise ValueError('Native cleanup allowance must be .01..30 seconds')
-    originals = {'chat': next(c for c in STANDARD if c.id == 'chat.grounded-note'), 'reasoning': CASE}
+    originals = {'chat': next(c for c in STANDARD if c.id == 'chat.grounded-note'),
+                 'reasoning': CASE, 'coding': CODING_CASE}
     return [replace(originals[role], id='native.'+originals[role].id, boundary='native_hermes',
         consumer='native_cli', timeout_seconds=deadline_seconds,
         inputs={**deepcopy(originals[role].inputs), 'cleanup_seconds': cleanup_seconds,

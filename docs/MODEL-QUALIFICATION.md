@@ -102,6 +102,18 @@ pacomind models evaluate local-reasoning --suite native --config /private/hermes
 
 The case enables Hermes' file toolset and allows up to six iterations, starting with a 1024-token output limit. Native truncation recovery can increase that limit; the suite still enforces the declared elapsed deadline. It does not enable shell, browser, memory, deployed plugins or channels. Records reach the processor through actual file-tool reads rather than being placed in its initial prompt. This is a small public fixture for comparing a configured recipe's tool use and grounded reasoning. It is not a general reasoning benchmark or a test of PacoMind's production source ledger. Run the chat and reasoning roles separately when they require different elapsed budgets.
 
+`--roles coding` selects `native.coding.source-attribution` through the same
+file-tool consumer. Four small files describe a launcher, a measurement-child
+selector, current configuration and a stale setup note. The independent oracle
+checks the two interpreter paths, exact source citations, precedence over the
+old note and unknown runtime results. Complete source reads and final claim
+correctness are separate checks: reading every file cannot pass a wrong answer,
+and a correct answer without the reads also fails. Extra unsupported output
+fields fail the complete-answer check. This tests static source attribution,
+not code execution, free-form engineering reports or deployed memory/context.
+Use the existing native command with `--roles coding` and a declared deadline;
+no model-specific prompt or automatic routing restriction is installed.
+
 Named providers retain the shared `providers.custom` timeout defaults and native per-model precedence. Runtime inspection hashes the actual source and data bytes of the selected Hermes distribution's declared modules, including editable installations; a provider-resolution change therefore changes the recipe used for resume. This requires an inspectable Hermes distribution inventory and excludes bytecode caches and third-party dependency identity. A confirmed process-creation failure removes its unused temporary state. Unconfirmed cleanup after a process starts still retains that state and prevents further attempts in the run.
 
 The suite uses `hermes_python` from the `instance.json` selected by the supplied config's PacoMind plugin. Use `--hermes-python /path/to/hermes/.venv/bin/python` when evaluating another installed runtime or a config without that instance binding. Runtime source identity is inspected with that interpreter, and a missing runtime becomes a recorded setup error. PacoMind and Hermes can keep separate Python environments; the owned worker needs only the selected Hermes installation.
