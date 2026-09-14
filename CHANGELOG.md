@@ -14,6 +14,8 @@ rollback path. Without an evaluator, proposals remain pending.
 - Due reply reviews use the existing bounded native worker. It reads current
   wait, parent and source state, then reports without sending or fulfilling the
   parent commitment. A reply or cancellation invalidates stale review decisions.
+- Task status exposes acceptance and update times in UTC and age since
+  acceptance, distinct from execution duration. Unknown age remains unknown.
 
 Controlled native tests exercise these paths, including fresh installation and
 regression rollback. Useful autonomous improvement and physical message delivery
