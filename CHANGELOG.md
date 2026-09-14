@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.29 - shared lifetime for native qualification fixtures
+
+Trusted qualification consumers can prepare fixtures and collect evidence
+through the existing native worker. Fixture resources stay available through
+agent construction, execution and close. Consumers reuse the same child
+process, cancellation and cleanup path; preparation and fixture cleanup
+failures remain failed attempts.
+
+Controlled tests cover alternate worker dispatch and fixture lifetime on
+successful runs and constructor failures. These checks establish qualification
+plumbing. They do not demonstrate improved model behavior or automatic
+production learning.
+
 ## v1.5.28 - recurring failure evidence and readable model checks
 
 Ordinary tool failures can be grouped across turns even when different skills
