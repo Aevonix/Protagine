@@ -116,3 +116,56 @@ def test_retained_native_ledger_records_survive_fresh_collector(monkeypatch,tmp_
     fresh=importlib.util.module_from_spec(spec);spec.loader.exec_module(fresh)
     fresh.retain(*observed('b'))
     assert len(read())==2 and fresh.next_batch(read(),'artifact-sanitization',SHA)
+
+
+def test_tool_recurrence_survives_different_skill_contexts():
+    rows = entries('first')
+    rows[0]['skill'] = 'unrelated-playbook'
+    scope, messages, errors = observed('second')
+    messages = [m for m in messages if m.get('tool_call_id') != 'view-second']
+    name, evidence = experience.observations(scope, messages, errors)[0]
+    rows.insert(0, {'action': experience.UNATTRIBUTED_ACTION, 'skill': name, 'evidence': evidence})
+    assert experience.next_batch(rows) is None
+    assert experience.next_batch(rows, 'artifact-sanitization', SHA) is None
+    before = json.dumps(rows, sort_keys=True)
+    batch = experience.next_tool_batch(rows)
+    assert batch['skill'] is None and batch['attribution'] == 'unassigned'
+    by_session = {row['session_id']: row for row in batch['observations']}
+    assert by_session['first']['skill_views'] == [{'skill': 'unrelated-playbook',
+        'skill_call_id': 'view-first', 'skill_sha256': SHA}]
+    assert by_session['second']['skill_views'] == []
+    assert {row['observation_id'] for row in batch['observations']} == set(batch['observation_ids'])
+    assert json.dumps(rows, sort_keys=True) == before
+
+
+def test_multiple_skill_views_are_one_tool_execution_and_one_consumable_batch():
+    rows = entries('first', 'second')
+    duplicate = json.loads(json.dumps(rows[-1]))
+    duplicate['skill'] = 'another-viewed-playbook'
+    duplicate['evidence'].update(skill_call_id='another-view', observation_id='another-reference')
+    rows.append(duplicate)
+    batch = experience.next_tool_batch(rows)
+    assert len(batch['observations']) == 2 and len(batch['observation_ids']) == 3
+    assert len(next(row for row in batch['observations']
+                    if row['session_id'] == 'first')['skill_views']) == 2
+    assert experience.next_tool_batch([rows[-1], rows[-2]]) is None
+    assert experience.next_tool_batch([{'action': 'ordinary_skill_review', 'evidence': batch}, *rows]) is None
+    # A skill-specific review has already consumed this execution. Its other
+    # skill view must not make the same call look new to the generic selector.
+    claim = {'action': 'ordinary_skill_review', 'evidence': {
+        'observation_ids': [rows[-2]['evidence']['observation_id']]}}
+    assert experience.next_tool_batch([claim, *rows]) is None
+
+
+def test_tool_recurrence_keeps_distinct_turns_people_and_failure_classes():
+    assert experience.next_tool_batch(entries('first', 'first')) is None
+    for key, value in [('contact_id', 'another-owner'), ('tool_name', 'another-tool'),
+                       ('request_visible_result_sha256', '0' * 64)]:
+        rows = entries('first', 'second')
+        rows[0]['evidence'][key] = value
+        assert experience.next_tool_batch(rows) is None
+    rows = entries('first', 'second')
+    for row in rows:
+        row['evidence']['error_class'] = 'kernel_timeout_state_lost'
+    rows[0]['evidence']['request_visible_result_sha256'] = '0' * 64
+    assert len(experience.next_tool_batch(rows)['observations']) == 2
