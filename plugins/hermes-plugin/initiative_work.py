@@ -44,7 +44,7 @@ class NativeReviews:
         if self.terminal(value):
             return self.on_terminal(identifier, value, kb, connect)
         home = kb.kanban_home().resolve()
-        expected_profile = 'pacomind-reviews' if self.creator == 'pacomind-initiative' else 'default'
+        expected_profile = 'pacomind-reviews'
         if (value['execution'] != {'native_board': 'default', 'worker_profile': expected_profile,
                                    'source_home_id': hashlib.sha256(str(home).encode()).hexdigest()}
                 or kb.kanban_db_path(board='default').resolve() != home/'kanban.db'):
@@ -139,16 +139,14 @@ class NativeReviews:
         # steward. Follow-ups keep their existing reconciliation contract.
         if kwargs.get('dry_run') or kwargs.get('board') != 'default' or os.environ.get('HERMES_KANBAN_TASK'):
             return
+        if self.creator == 'pacomind-followup' and self.config.get('enabled') is not True:
+            return
         query = '?contact_id='+quote(self.owner, safe='')
         if self.creator == 'pacomind-initiative' and self.config.get('enabled') is True:
             query += '&discover=true'
         result = request(self.client, self.root+query)
         for item in result['items']:
-            try:
-                self.work(item.get('id') or item['wait_id'])
-            except ValueError as error:
-                if str(error) != 'readonly_followup_worker_unqualified':
-                    raise
+            self.work(item.get('id') or item['wait_id'])
 
 
 class NativeFollowups(NativeReviews):
@@ -163,10 +161,8 @@ class NativeFollowups(NativeReviews):
     creator = 'pacomind-followup'
 
     def worker_profile(self, home):
-        # This path previously shared the unrestricted default-profile review
-        # worker. Keep terminal reconciliation, but do not dispatch outreach
-        # reviews until bounded reports are integrated with the existing outbox.
-        raise ValueError('readonly_followup_worker_unqualified')
+        from .review_worker import refresh_profile
+        return refresh_profile(self.config, home, self.owner)
 
     @staticmethod
     def terminal(value):
@@ -176,7 +172,7 @@ class NativeFollowups(NativeReviews):
         if value.get('native_terminal_observed'):
             return value
         home = kb.kanban_home().resolve()
-        if (value['execution'] != {'native_board': 'default', 'worker_profile': 'default',
+        if (value['execution'] != {'native_board': 'default', 'worker_profile': 'pacomind-reviews',
                                    'source_home_id': hashlib.sha256(str(home).encode()).hexdigest()}
                 or kb.kanban_db_path(board='default').resolve() != home/'kanban.db'):
             raise ValueError('selected_native_followup_home_required')

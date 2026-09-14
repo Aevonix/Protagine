@@ -31,7 +31,8 @@ from pacomind.initiatives.store import InitiativeStore
 from pacomind.turns.local_work import local_work_view
 from pacomind_hermes.initiative_work import NativeReviews
 root=Path(os.environ['HERMES_HOME']);root.mkdir()
-(root/'config.yaml').write_text('plugins: {enabled: [], pacomind: {owner_contact_id: owner}}\n')
+(root/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[], 'pacomind':{
+ 'owner_contact_id':'owner', 'native_reviews':{'client_factory_file':str(root/'private-client.py')}}}}))
 state=Path(os.environ['PACOMIND_STATE_DIR']);state.mkdir()
 shutil.copytree(sys.argv[2],state/'adapter/pacomind_hermes')
 for name in ('catalog.py','contract.py'):
@@ -45,8 +46,9 @@ routing={'provider':'vllm','models':{},'modelPool':{'planning-fixture':{
 (state/'.pacomind-llm-config.json').write_text(json.dumps(routing))
 from pacomind.setup_native_reviews import configure
 configure(state,install=True)
-review_config={'enabled':True,'instance_dir':str(state)}
+review_config={'enabled':True,'instance_dir':str(state),'client_factory_file':str(root/'private-client.py')}
 import yaml
+assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['pacomind']['native_reviews']==review_config
 selected=yaml.safe_load((root/'profiles/pacomind-reviews/config.yaml').read_text())
 assert selected['model']['default']=='replaceable-planning-model' and 'max_tokens' not in selected['model']
 store=InitiativeStore(state);host._initiative_store=store;host._task_queue=None

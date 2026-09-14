@@ -53,6 +53,8 @@ def configure(state, *, install=False):
     owner = plugin['owner_contact_id']
     worker = home/'profiles'/PROFILE
     binding = {'enabled': True, 'instance_dir': str(state)}
+    if (plugin.get('native_reviews') or {}).get('client_factory_file'):
+        binding['client_factory_file'] = plugin['native_reviews']['client_factory_file']
     if not install and plugin.get('native_reviews') != binding:
         raise ValueError('managed_review_profile_not_installed')
     candidate, policy = worker_configuration(state, manifest, owner)
