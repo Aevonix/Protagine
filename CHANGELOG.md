@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.5.26 - shared task-role selection for private transports
+## v1.5.26 - task-role selection and native image capture
 
 Private channel adapters can reuse the native gateway’s existing profile role
 resolver when admitting new work. The resolver reads current named roles, checks
@@ -11,6 +11,11 @@ bindings and configured provider behavior are unchanged.
 The actual native task fixture covers transport reads, profile rebinding,
 removed roles and retained task processors. Model suitability and latency still
 require measurements on the deployment’s chosen processors.
+
+The qualified Hermes build fixes source anchoring for image-bearing turns,
+whose stored transcript uses text and image markers. Integration checks now
+exercise native persistence, request observation and the canonical outbox for
+both text and image inputs, including unavailable ownership storage.
 
 ## v1.5.25 - shared task visibility across conversations
 

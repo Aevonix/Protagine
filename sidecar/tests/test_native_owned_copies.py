@@ -249,20 +249,35 @@ def test_owned_call_removal_updates_native_joined_user_repair(native_runtime):
 
 
 @pytest.mark.parametrize('storage_available', [True, False])
-def test_post_hook_publishes_only_after_exact_native_origin_retention(native_runtime, monkeypatch, storage_available):
+@pytest.mark.parametrize('image_input', [False, True])
+def test_post_hook_publishes_only_after_exact_native_origin_retention(native_runtime, monkeypatch, storage_available, image_input):
     rt = native_runtime
     monkeypatch.setattr(rt.plugin, 'PacoMindClient', _Client)
     monkeypatch.setenv('PACOMIND_GENERAL_PLUGIN_ACTIVE', '1')
     monkeypatch.setenv('PACOMIND_MEMORY_WORKER_TOOLS', '0')
     monkeypatch.setenv('PACOMIND_MEMORY_TURN_WRITER', 'disabled')
-    context = _Context(rt.outbox.path)
+    class NativeContext(_Context):
+        def register_middleware(self, name, fn):
+            if name == 'llm_request':
+                self.requests.append(fn)
+            super().register_middleware(name, fn)
+    context = NativeContext(rt.outbox.path)
+    context.requests = []
     rt.plugin.register(context)
     client = _Client.instances[-1]
     current = {'role':'user', 'content':'Keep the maintenance receipt.'}
+    if image_input:
+        current['content'] = [{'type':'text', 'text':current['content']},
+            {'type':'image_url', 'image_url':{'url':'asset://receipt-image'}}]
     kwargs = dict(session_id='reader', task_id='capture-task', turn_id='capture-turn',
                   platform='sms', sender_id='fixture', user_message=current['content'])
     context.hooks['pre_llm_call'](**kwargs, conversation_history=[current])
-    current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
+    from agent.session_persistence import _db_flush_row, _db_flush_write
+    from agent.turn_api_request import _native_user_message
+    agent = SimpleNamespace(_session_db=rt.db, session_id='reader')
+    _db_flush_write(agent, [_db_flush_row(agent, current, True)], [current])
+    descriptor = _native_user_message(agent, [current], 0, current['content'], current['content'])
+    context.requests[0](**kwargs, request={'messages':[current]}, native_user_message=descriptor)
     answer = {'role':'assistant', 'content':'The maintenance receipt is ready.'}
     answer['_row_id'] = rt.db.append_message('reader', 'assistant', answer['content'])
     before = rt.db.get_messages('reader')
@@ -279,6 +294,7 @@ def test_post_hook_publishes_only_after_exact_native_origin_retention(native_run
     assert len(captured) == int(storage_available)
     if storage_available:
         assert captured[0]['payload']['assistant_message'] == answer['content']
+        assert captured[0]['payload']['user_message'] == current['content']
         with closing(rt.outbox._connect()) as db:
             metadata = json.loads(db.execute("SELECT metadata_json FROM native_source_ownership "
                 "WHERE ownership_id=?", ('origin:' + captured[0]['turn_id'],)).fetchone()[0])

@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`e10be9649b6770e9c2655dfc15c9da83acc2393a`](https://github.com/Kurcide/hermes-agent/commit/e10be9649b6770e9c2655dfc15c9da83acc2393a),
+`a012d62efabceb5ac5f725c1867d959974edc3ee`](https://github.com/Kurcide/hermes-agent/commit/a012d62efabceb5ac5f725c1867d959974edc3ee),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/e10be9649b6770e9c2655dfc15c9da83acc2393a/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/a012d62efabceb5ac5f725c1867d959974edc3ee/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -43,6 +43,10 @@ provider's capability merely because they share a model alias. The existing
 `auto`, `native` and `text` modes and default remain unchanged. This is an
 opt-in native interface; PacoMind does not select it during installation.
 Media ownership and generated-caption provenance keep their existing paths.
+The current-turn source descriptor validates the exact addressed native row
+against Hermes's stored image-to-text projection. This keeps image-bearing
+turns eligible for canonical capture without replacing their original payload
+or treating transcript image markers as pixel identity.
 Native boundary tests establish routing and original-byte preservation, not
 visual factual accuracy or production latency.
 
