@@ -562,7 +562,7 @@ def test_actual_gateway_settled_callback_erases_and_evicts_owned_cache(native_ru
             return set()
         def _peek_session_state(self, key):
             return None
-        def _spawn_release_thread(self, target, args, name, *, inline_fallback):
+        def _spawn_release_thread(self, target, args, name, *, inline_fallback, session_key=None):
             target(*args)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = rt.db

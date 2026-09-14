@@ -37,7 +37,7 @@ shutil.copytree(sys.argv[2],state/'adapter/pacomind_hermes')
 for name in ('catalog.py','contract.py'):
  shutil.copyfile(Path(sys.argv[2]).parents[1]/'hostworker/pacomind_hostworker'/name,state/'adapter/pacomind_hermes/pacomind_hostworker'/name)
 (state/'instance.json').write_text(json.dumps({'version':1,'profile':'local','hermes_home':str(root),
- 'hermes_python':sys.executable,'sidecar_python':sys.executable,'sidecar_module_root':sys.argv[1],
+ 'hermes_python':sys.executable,'sidecar_python':sys.argv[5],'sidecar_module_root':sys.argv[1],
  'adapter_binding':{'mode':'private-directory'}}))
 routing={'provider':'vllm','models':{},'modelPool':{'planning-fixture':{
  'model':'replaceable-planning-model','baseUrl':'http://127.0.0.1:9/v1','supportsTools':True}},
@@ -203,7 +203,7 @@ def test_actual_native_initiative_handoff_and_reconciliation(tmp_path, judgments
         env['PACOMIND_SELF_JUDGMENTS_ENABLED'] = '1'
     result = subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
         str(root/'plugins/hermes-plugin'),os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
-        os.environ.get('PROTAGINE_HERMES_TEST_SOURCE','')],
+        os.environ.get('PROTAGINE_HERMES_TEST_SOURCE',''),sys.executable],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode == 0,result.stdout+result.stderr
     assert '"independent_cycles_one_task": true' in result.stdout

@@ -1,5 +1,5 @@
 name: pacomind-memory
-version: 1.5.31
+version: 1.5.32
 description: |
   Native Hermes memory provider for participant-scoped recollection and current
   commitments, preferences and self state. Retrieves source evidence through the

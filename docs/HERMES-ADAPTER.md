@@ -334,8 +334,8 @@ change and qualify the deployment's actual channels and recovery before moving
 that deployment. The scheduled result catches upstream drift; it does not
 establish production readiness or automatically upgrade a running agent.
 
-The qualification target is the [Hermes 0.21.2 compatibility build](HERMES-HOOK-COMPATIBILITY.md),
-based on tag `v2026.9.11`, commit `939e45c91d751fadd94dcd1b873ac3cb44846213`,
+The qualification target is the [Hermes 0.21.3 compatibility build](HERMES-HOOK-COMPATIBILITY.md),
+based on tag `v2026.9.14`, commit `345cd2b057a452236de401d3534b8502a7465e8d`,
 tested on Python 3.12. The adapter uses Hermes' native task and skill modules.
 Retained older-runtime fallbacks are outside this qualification target. The package
 allows Python 3.11 through 3.13; those other interpreters are not yet qualified.
@@ -344,8 +344,9 @@ releases are unqualified until the native-loader checks pass against them.
 Hermes is installed separately; this package does not select or upgrade it.
 
 The additional native provider-call memory boundary is qualified on Hermes
-0.21.1 with NeMo Relay 0.8.3 and the Linux 0.21.2 qualification environment
-with NeMo Relay 0.8.4. Upstream frozen environments can select another version;
+0.21.1 with NeMo Relay 0.8.3, the Linux 0.21.2 qualification environment
+with NeMo Relay 0.8.4, and the frozen Linux 0.21.3 environment with Relay 0.8.3.
+Upstream frozen environments can select another version;
 qualify that actual interpreter before switching a deployment. Install it with
 `python -m pip install 'pacomind-hermes[native-memory]'`; the supported Hermes
 release also declares this Relay dependency. CI installs that extra explicitly.

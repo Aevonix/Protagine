@@ -240,8 +240,12 @@ def task_snapshot(identifier, contact_id, native, *, review=False, followup=Fals
                     "SELECT 1 FROM task_events e WHERE e.task_id=r.task_id AND e.run_id=r.id AND e.kind='claimed') AS claimed "
                     'FROM task_runs r WHERE r.task_id=? ORDER BY r.id LIMIT 1', (task['id'],)).fetchone()
                 state['first_attempt'] = dict(first) if first else None
+                # Hermes 0.21.3 records an initial blocked status during creation;
+                # that staging event predates attachment and is not an intervention.
                 intervention = db.execute("SELECT id,kind,created_at FROM task_events WHERE task_id=? "
                     "AND kind IN ('blocked','block_loop_detected','dependency_wait','archived','review_requested') "
+                    "AND NOT (kind='blocked' AND json_extract(payload,'$.reason') IS 'initial_status' "
+                    "AND json_extract(payload,'$.status') IS 'blocked') "
                     "AND id < COALESCE((SELECT MIN(id) FROM task_events WHERE task_id=? AND kind='claimed'),"
                     "9223372036854775807) ORDER BY id LIMIT 1", (task['id'], task['id'])).fetchone()
                 state['before_first_attempt_intervention'] = dict(intervention) if intervention else None
