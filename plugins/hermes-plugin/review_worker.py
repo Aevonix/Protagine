@@ -26,7 +26,7 @@ def validate_profile(config, home, owner):
             or config.get('plugins', {}).get('enabled') != ['pacomind']
             or config.get('kanban', {}).get('dispatch_in_gateway') is not False
             or config.get('mcp_servers')
-            or set(lane) != {'worker', 'source_home', 'owner_contact_id', 'log_directory'}
+            or set(lane) - {'routing_policy'} != {'worker', 'source_home', 'owner_contact_id', 'log_directory'}
             or lane.get('worker') is not True or lane.get('source_home') != str(home)
             or lane.get('owner_contact_id') != owner
             or not isinstance(lane.get('log_directory'), str)

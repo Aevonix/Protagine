@@ -234,6 +234,25 @@ def task_snapshot(identifier, contact_id, native, *, review=False, followup=Fals
             }
             latest = db.execute('SELECT * FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
                                 (task['id'],)).fetchone()
+            if review:
+                # The first attempt remains the outcome even after a successful retry.
+                first = db.execute('SELECT r.id,r.started_at,r.ended_at,r.outcome,EXISTS('
+                    "SELECT 1 FROM task_events e WHERE e.task_id=r.task_id AND e.run_id=r.id AND e.kind='claimed') AS claimed "
+                    'FROM task_runs r WHERE r.task_id=? ORDER BY r.id LIMIT 1', (task['id'],)).fetchone()
+                state['first_attempt'] = dict(first) if first else None
+                intervention = db.execute("SELECT id,kind,created_at FROM task_events WHERE task_id=? "
+                    "AND kind IN ('blocked','block_loop_detected','dependency_wait','archived','review_requested') "
+                    "AND id < COALESCE((SELECT MIN(id) FROM task_events WHERE task_id=? AND kind='claimed'),"
+                    "9223372036854775807) ORDER BY id LIMIT 1", (task['id'], task['id'])).fetchone()
+                state['before_first_attempt_intervention'] = dict(intervention) if intervention else None
+                import yaml
+                from pacomind.util.instance import plugin_settings
+                try:
+                    configuration = yaml.safe_load((home/'profiles'/profile/'config.yaml').read_text())
+                    policy = plugin_settings(configuration).get('native_reviews', {}).get('routing_policy')
+                except (OSError, ValueError, TypeError, yaml.YAMLError):
+                    policy = None
+                state['outcome_role_recipe'] = policy if isinstance(policy, dict) else None
             gave_up = bool(latest and db.execute("SELECT 1 FROM task_events WHERE task_id=? "
                 "AND kind='gave_up' AND created_at>=? LIMIT 1", (task['id'], latest['started_at'])).fetchone())
             state.update(contract_sha256=hashlib.sha256((task['body'] or '').encode()).hexdigest(),

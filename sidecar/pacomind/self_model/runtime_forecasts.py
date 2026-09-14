@@ -20,6 +20,8 @@ from .expectations import expectations_enabled
 logger = logging.getLogger(__name__)
 VERSION = 'native-task-forecast-v1'
 DECISION_VERSION = 'native-task-inspection-shadow-v1'
+OUTCOME_VERSION = 'native-first-attempt-within-480s-v1'
+OUTCOME_PRIOR = .7
 
 
 def _digest(value):
@@ -282,13 +284,138 @@ def project(review, native, state, owner, *, now=None):
             'forecast_inspection_lateness_seconds':max(0.,prediction['horizon']-ended),
             'prior_inspection_lateness_seconds':max(0.,prior_horizon-ended),
             'counterfactual_horizon_comparison':True,'projection_added_status_calls':0}
+    result['task_outcome'] = task_outcome('project', review, native, state, owner)
+    return result
+
+
+def task_outcome(operation, review, native, state, owner):
+    """One fixed-event probability alongside the existing duration observation.
+
+    A native completed first attempt is a lifecycle outcome, not an assessed
+    artifact. Model failures remain failures even without a response-model
+    label. No probability authorizes polling, retry, outreach or escalation.
+    """
+    parts = _parts(review, native, state, owner)
+    if parts is None:
+        return {'status': 'disabled_or_unselected'}
+    store, ledger, selection, identity, duration_id = parts
+    fid = duration_id + ':first-outcome'
+    history = store.forecast_history(fid)
+    stamp = time.time()
+    if operation == 'attach' and not history['forecasts']:
+        enrollment = selection.get('probability') or {}
+        expires = enrollment.get('expires_at')
+        if (enrollment.get('event') != OUTCOME_VERSION
+                or not isinstance(enrollment.get('cohort'), str) or not 1 <= len(enrollment['cohort']) <= 128
+                or type(expires) not in (int,float) or not math.isfinite(expires) or expires <= stamp):
+            return {'status': 'not_selected'}
+        recipe = state.get('outcome_role_recipe') or {}
+        duration = store.forecast_history(duration_id)['forecasts']
+        if (state.get('status') != 'blocked' or state.get('attempt_count') != 0 or not duration
+                or recipe.get('role') != 'planning' or not recipe.get('configuration_revision')):
+            return {'status': 'no_prospective_forecast'}
+        bound = datetime.fromisoformat(selection['bound_at']).timestamp()
+        origin = math.floor(bound)
+        if origin + 480 <= stamp:
+            return {'status': 'no_prospective_forecast'}
+        conditions = {'event': OUTCOME_VERSION, 'role_recipe': recipe,
+            'configuration': state['forecast_configuration'],
+            'registered_action': review['review']['action'], 'baseline_probability': OUTCOME_PRIOR,
+            'selection': enrollment}
+        # A finite enrollment window labels the measurement, not the predictor.
+        cohort = 'native-outcome:' + _digest({k:v for k,v in conditions.items() if k != 'selection'})
+        def current(prediction, outcome):
+            return (_current(ledger, prediction.evidence_refs, prediction.detail['source_versions'], owner)
+                    and _current(ledger, outcome['evidence_refs'], outcome['source_versions'], owner))
+        estimate = store.estimate_task_probability(cohort=cohort, subject_person_id=owner,
+            now=stamp, evidence_is_current=current, prior=OUTCOME_PRIOR)
+        first = duration[0]
+        store.issue_forecast(forecast_id=fid, subject='task:'+native['native_task_id'],
+            domain='task_outcome', expectation='The first native review attempt completes within 480 seconds of attachment',
+            confidence=estimate['probability'], horizon=origin+480, origin_at=origin,
+            # Native times have one-second precision. The verified no-runs
+            # attachment establishes ordering before promotion in this second.
+            issued_at=math.floor(stamp), evidence_refs=first['evidence_refs'],
+            source_versions=first['detail']['source_versions'], source_kind='task_receipt',
+            cohort=cohort, method=estimate['method'],
+            model_provenance={'requested_role':recipe['role'], 'served_model':None,
+                'capabilities':recipe, 'fallback':'Hermes native policy; actual route not yet observed'},
+            subject_person_id=owner, viewer_scope='owner', shareability='owner_private',
+            conditions={**conditions, 'estimate':estimate, 'issued_at_exact':stamp,
+                        'timestamp_precision_seconds':1})
+        history = store.forecast_history(fid)
+    if not history['forecasts']:
+        return {'status':'no_prospective_forecast'}
+    prediction = history['forecasts'][0]
+    if not _current(ledger, prediction['evidence_refs'], prediction['detail']['source_versions'], owner):
+        return {'status':'source_unavailable'}
+    if operation == 'observe' and not history['outcomes']:
+        attempt = state.get('first_attempt') or {}
+        ended = attempt.get('ended_at')
+        outcome = attempt.get('outcome')
+        # Native manual completion can synthesize a run without executing one.
+        known = bool(attempt.get('claimed')) and outcome in {'completed','crashed','timed_out','spawn_failed','gave_up'}
+        intervention = state.get('before_first_attempt_intervention')
+        status = None
+        if intervention and prediction['created_at'] <= intervention['created_at'] <= stamp:
+            ended = intervention['created_at']
+            status, value, reason = 'censored', None, 'cancelled' if intervention['kind'] == 'archived' else 'intervened'
+        elif type(ended) in (int,float) and math.isfinite(ended) and prediction['created_at'] <= ended <= stamp:
+            status = 'observed' if known else 'censored'
+            value = outcome == 'completed' if known else None
+            reason = '' if known else 'intervened'
+        elif state.get('status') in {'cancelled','archived'} and not attempt:
+            observation = state.get('duration_observation') or {}
+            ended = observation.get('ended_at')
+            if type(ended) not in (int,float) or not prediction['created_at'] <= ended <= stamp:
+                return {'status':'pending', 'forecast_id':fid}
+            status, value, reason = 'censored', None, 'cancelled'
+        if status:
+            from .runtime_models import summarize
+            processor = summarize(ledger, owner, native, attempt.get('id')) if attempt else {}
+            source_id = 'native-outcome:'+_digest({'identity':identity,'first_attempt':attempt})
+            versions, facts = _retain(ledger, source_id=source_id, owner=owner, native=native,
+                occurred_at=ended, dependencies=processor.get('source_versions'),
+                facts={'version':VERSION, 'kind':'first_attempt_outcome',
+                    'identity':identity, 'first_attempt':attempt, 'observed_at':ended,
+                    'before_first_attempt_intervention':intervention,
+                    'status':status, 'value':value, 'reason':reason, 'processor_observation':processor,
+                    'configured_recipe':prediction['detail']['conditions']['role_recipe'],
+                    'quality_evaluated':False})
+            versions = {**versions, **facts.get('processor_observation', {}).get('source_versions', {})}
+            store.record_forecast_outcome(forecast_id=fid, receipt_ref=_reference(source_id),
+                evidence_refs=list(versions), source_versions=versions, source_kind='task_receipt',
+                observed_at=facts['observed_at'], status=facts['status'], value=facts['value'],
+                reason=facts['reason'], subject_person_id=owner, viewer_scope='owner', shareability='owner_private')
+            history = store.forecast_history(fid)
+            prediction = history['forecasts'][0]
+    latest = history['outcomes'][-1] if history['outcomes'] else None
+    if latest and not _current(ledger, latest['evidence_refs'], latest['source_versions'], owner):
+        return {'status':'source_unavailable'}
+    conditions = prediction['detail']['conditions']
+    result = {'status':latest['status'] if latest else 'pending', 'forecast_id':fid,
+        'event':OUTCOME_VERSION, 'probability':prediction['confidence'],
+        'baseline_probability':conditions['baseline_probability'], 'horizon':prediction['horizon'],
+        'sample_n':conditions['estimate']['sample_n'],
+        'role':conditions['role_recipe']['role'],
+        'configuration_revision':conditions['role_recipe']['configuration_revision'],
+        'calibrated':False, 'suggestion_enabled':False, 'quality_evaluated':False}
+    if latest and prediction['outcome'] in {'hit','miss'}:
+        value = int(prediction['outcome'] == 'hit')
+        result['comparison'] = {'observed_binary':value, 'scoring_rule':'brier',
+            'forecast_brier':(prediction['confidence']-value)**2,
+            'baseline_brier':(conditions['baseline_probability']-value)**2,
+            'always_completes_brier':(1-value)**2, 'receipt_ref':latest['receipt_ref']}
     return result
 
 
 def safe(operation, review, native, state, owner):
     """A forecast observer failure is visible but cannot stall accepted work."""
     try:
-        return operation(review,native,state,owner)
+        result = operation(review,native,state,owner)
+        if operation in (attach, observe):
+            result['task_outcome'] = task_outcome(operation.__name__, review, native, state, owner)
+        return result
     except SourceErased:
         return {'status':'source_unavailable'}
     except Exception as error:

@@ -203,6 +203,10 @@ class NativeInitiativeWork:
             # replay, so installing the observer does not mine old failures.
             if prospective:
                 binding['outcome_learning'] = {'version': 'native-runtime-observation-v1', 'bound_at': now}
+                # Optional per-review measurement selection, supplied before
+                # attachment. General expectation enablement does not enroll it.
+                if isinstance(context.get('probability_forecast'), dict):
+                    binding['outcome_learning']['probability'] = context['probability_forecast']
             context['native_review'] = binding
             db.execute("UPDATE initiatives SET context=?,status='assigned',assigned_agent_id=?,assigned_at=? WHERE id=?",
                        (encoded(context), PREFIX+native['native_task_id'], now, identifier))
