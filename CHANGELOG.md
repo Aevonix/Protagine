@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.7.0 - ordinary skill learning and due reply reviews
+
+Guided setup can schedule ordinary skill review through Hermes' existing cron.
+Repeated tool failures retain their original evidence. An explicitly scoped
+evaluator can qualify a proposed skill through the existing adoption, audit and
+rollback path. Without an evaluator, proposals remain pending.
+
+- The public adapter owns the reusable review implementation; deployments supply
+  their configuration and optional evaluator.
+- Native tool failures and externally supplied task assessments retain distinct
+  source types. Neither is automatically treated as proof of useful learning.
+- Due reply reviews use the existing bounded native worker. It reads current
+  wait, parent and source state, then reports without sending or fulfilling the
+  parent commitment. A reply or cancellation invalidates stale review decisions.
+
+Controlled native tests exercise these paths, including fresh installation and
+regression rollback. Useful autonomous improvement and physical message delivery
+still require observed deployment outcomes.
+
 ## v1.6.0 - task assessments in skill evaluation
 
 The Hermes adapter can select complete reviews of distinct operational tasks
