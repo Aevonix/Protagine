@@ -107,11 +107,11 @@ gateway running. It uses the current `planning` role and native review ledger;
 setup adds no profile, service or separate review store. Without an evaluator,
 review produces pending proposals. To permit qualified application, explicitly
 select a private evaluator declaration with `--skill-review-evaluator PATH` and
-set its `allow_apply` authority. This declaration binding currently measures
-proposals grounded in explicit task assessments; tool-failure proposals retain
-their native observation ancestry and await operator-selected evaluation.
-A configured evaluator does not establish that any proposal has passed its checks.
-The evaluator scope and measured-update
+set its `allow_apply` authority. For captured tool failures, the declaration must
+also select their tool/error signatures in `native_failures`; unmatched failures
+remain proposals. Native observation ancestry is preserved through measurement,
+application and later audits. A configured evaluator does not establish that any
+proposal has passed its checks. The evaluator scope and measured-update
 contract are described in [the adapter guide](HERMES-ADAPTER.md).
 
 The opt-in also enables the existing passive tool-failure capture in ordinary

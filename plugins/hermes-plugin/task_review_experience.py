@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 SOURCE = 'ordinary_task_assessment_batch'
+NATIVE_SOURCE = 'ordinary_native_failure_batch'
 ATTRIBUTION = 'host_reported_machine_assessment_unverified'
 
 
@@ -22,7 +23,7 @@ def declaration(path):
     """Read operator-selected scope, callable and frozen inputs, without inference."""
     path = Path(path).resolve(strict=True)
     value = json.loads(path.read_bytes())
-    if (set(value) != {'id', 'scope', 'oracle', 'oracle_id', 'environment', 'allow_apply'}
+    if (set(value) - {'native_failures'} != {'id', 'scope', 'oracle', 'oracle_id', 'environment', 'allow_apply'}
             or not all(isinstance(value[k], str) and value[k].strip()
                        for k in ('id', 'scope', 'oracle', 'oracle_id'))
             or type(value['allow_apply']) is not bool or not isinstance(value['environment'], dict)
@@ -30,6 +31,15 @@ def declaration(path):
                    or k in {'HOME', 'home', 'CODEX_HOME'} or not isinstance(v, str)
                    for k, v in value['environment'].items())):
         raise ValueError('Invalid operator task-review evaluator declaration')
+    selectors = value.get('native_failures', [])
+    if (not isinstance(selectors, list) or any(
+            not isinstance(row, dict) or set(row) - {'result_sha256'} != {'tool_name', 'error_class'}
+            or not all(isinstance(row.get(k), str) and row[k].strip() for k in ('tool_name', 'error_class'))
+            or ('result_sha256' in row and (not isinstance(row['result_sha256'], str)
+                or len(row['result_sha256']) != 64 or any(c not in '0123456789abcdef' for c in row['result_sha256'])))
+            or (row.get('error_class') == 'tool_returned_error' and 'result_sha256' not in row)
+            for row in selectors)):
+        raise ValueError('Native failure scope must select exact tool/error signatures')
     module, function = value['oracle'].split(':')
     if not module or not function:
         raise ValueError('Select an existing evaluator module:function')
@@ -86,11 +96,17 @@ def selected_batch(entries, evaluator, connection, owner):
 
 
 def receipt(batch):
+    if batch.get('source') == NATIVE_SOURCE:
+        return {key: batch[key] for key in ('version', 'source', 'skill', 'attribution',
+            'skill_sha256', 'observations', 'observation_ids', 'failure_sha256',
+            'native_execution_id', 'evaluator')}
     return {key: batch[key] for key in ('source', 'source_refs', 'task_ids',
         'execution_ids', 'observation_ids', 'failure_sha256', 'evaluator')}
 
 
 def recheck(batch, connection, owner):
+    if batch.get('source') == NATIVE_SOURCE:
+        return recheck_native(batch, connection, owner)
     page = read(connection, owner, refs=batch['source_refs'])
     expected = {(r['source_id'], r['source_version']) for r in batch['source_refs']}
     actual = {(r['source_id'], r['source_version']) for r in page['assessments']}
@@ -99,6 +115,42 @@ def recheck(batch, connection, owner):
             or {r['execution_id'] for r in page['assessments']} != set(batch['execution_ids'])):
         raise ValueError('Task-review evidence is no longer current')
     return page['assessments']
+
+
+def native_binding(batch, evaluator):
+    """Only the operator's exact tool-failure scope can select this oracle."""
+    if evaluator is None or batch.get('source') != NATIVE_SOURCE or batch.get('attribution') != 'unassigned':
+        return None
+    selectors = evaluator['value'].get('native_failures', [])
+    if batch.get('observations') and all(any(
+            row['tool_name'] == selected['tool_name'] and row['error_class'] == selected['error_class']
+            and ('result_sha256' not in selected
+                 or row['request_visible_result_sha256'] == selected['result_sha256'])
+            for selected in selectors) for row in batch['observations']):
+        return evaluator['binding']
+    return None
+
+
+def recheck_native(batch, connection, owner):
+    from tools import skill_ledger
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import load_config
+    from .review_experience import ACTION, UNATTRIBUTED_ACTION, next_tool_batch, diagnostic_context
+    entries = skill_ledger.list_entries()
+    expected = receipt(batch)
+    claim = any(row.get('action') == 'ordinary_skill_review' and row.get('skill') is None
+        and row.get('evidence', {}).get('status') == 'claimed'
+        and all(row['evidence'].get(key) == value for key, value in expected.items()) for row in entries)
+    original = [row for row in entries if row.get('action') in {ACTION, UNATTRIBUTED_ACTION}
+        and row.get('evidence', {}).get('observation_id') in batch['observation_ids']]
+    canonical = next_tool_batch(original)
+    if (not claim or canonical is None or canonical != {
+            key: value for key, value in batch.items() if key not in {'native_execution_id', 'evaluator'}}):
+        raise ValueError('Native review no longer matches its claimed original observations')
+    config = load_config().get('plugins', {}).get('pacomind', {})
+    if config.get('owner_contact_id') != owner:
+        raise ValueError('Native review evidence belongs to another participant')
+    return diagnostic_context(canonical, Path(get_hermes_home()), config, connection=connection)
 
 
 def evaluate_once(evaluator, connection, owner):
@@ -111,10 +163,16 @@ def evaluate_once(evaluator, connection, owner):
         raise ValueError('Task-review evaluator declaration changed')
     entries = skill_ledger.list_entries()
     oracle_id = evaluator['value']['oracle_id']
+    def scoped_evidence(batch):
+        return (batch and batch.get('evaluator') == evaluator['binding']
+            and (batch.get('source') == SOURCE or
+                 native_binding(batch, evaluator) == evaluator['binding']))
     def bound_oracle(batch):
         def oracle(text, *, phase):
             if declaration(evaluator['path'])['binding'] != evaluator['binding']:
                 raise ValueError('Task-review evaluator changed during evaluation')
+            if not scoped_evidence(batch):
+                raise ValueError('Review evidence is outside the selected evaluator scope')
             recheck(batch, connection, owner)
             module, function = evaluator['value']['oracle'].split(':')
             fn = getattr(importlib.import_module(module), function)
@@ -127,6 +185,8 @@ def evaluate_once(evaluator, connection, owner):
                     if value is None: os.environ.pop(key, None)
                     else: os.environ[key] = value
             recheck(batch, connection, owner)
+            if batch['source'] == NATIVE_SOURCE:
+                return {**measured, 'native_failure_evidence': receipt(batch)}
             return {**measured, 'task_assessment_evidence': receipt(batch),
                     'assessment_attribution': ATTRIBUTION, 'owner_approval': 'unobserved'}
         return oracle
@@ -147,9 +207,10 @@ def evaluate_once(evaluator, connection, owner):
         skill = row.get('skill')
         if skill in seen: continue
         seen.add(skill)
-        batch = value.get('baseline', {}).get('task_assessment_evidence')
-        if (row['id'] in terminal or not batch or value.get('oracle_id') != oracle_id
-                or batch.get('evaluator') != evaluator['binding'] or not evaluator['value']['allow_apply']):
+        baseline = value.get('baseline', {})
+        batch = baseline.get('task_assessment_evidence') or baseline.get('native_failure_evidence')
+        if (row['id'] in terminal or not scoped_evidence(batch) or value.get('oracle_id') != oracle_id
+                or not evaluator['value']['allow_apply']):
             continue
         eligible.append((last_audit.get(row['id'], len(entries)), row, batch))
     if eligible:
@@ -166,9 +227,9 @@ def evaluate_once(evaluator, connection, owner):
         if audited['status'] not in {'activated', 'unavailable'}: return audited
     for pending in write_approval.list_pending(write_approval.SKILLS):
         payload = pending.get('payload', {})
-        batch = payload.get('_pacomind_task_assessment_batch')
-        if (pending.get('origin') != 'background_review' or not batch
-                or batch.get('evaluator') != evaluator['binding']):
+        batch = payload.get('_pacomind_task_assessment_batch') or payload.get('_pacomind_native_failure_batch')
+        if (pending.get('origin') != 'background_review' or not scoped_evidence(batch)
+                or (payload.get('_pacomind_task_assessment_batch') and payload.get('_pacomind_native_failure_batch'))):
             continue
         operation = editable_operation(payload, allow_create=True)
         if not operation or operation['action'] != 'create':

@@ -84,6 +84,11 @@ async def review_once(native_home, native_source, native, configuration, destina
             return evaluated
         return {'status':'idle','reason':'selected_skill_unavailable' if selected is None
                 else 'no_unreviewed_recurring_ordinary_failure'}
+    if batch.get('source') == 'ordinary_native_failure_batch' and evaluator is not None:
+        from pacomind_hermes import task_review_experience as experience
+        binding = experience.native_binding(batch, evaluator)
+        if binding is not None:
+            batch = {**batch, 'evaluator': binding, 'native_execution_id': native['id']}
     if skill is not None:
         token = skill_provenance.set_current_write_origin('background_review')
         try:
@@ -104,7 +109,8 @@ async def review_once(native_home, native_source, native, configuration, destina
     receipt = {'status':'claimed','native_execution_id':native['id'],
                'failure_sha256':batch['failure_sha256'],
                'observation_ids':batch['observation_ids']}
-    if batch.get('source') == 'ordinary_task_assessment_batch':
+    if (batch.get('source') == 'ordinary_task_assessment_batch'
+            or batch.get('evaluator') is not None):
         receipt.update(experience.receipt(batch))
     claim = skill_ledger.append_entry('ordinary_skill_review',skill,actor='curator',evidence=receipt)
     if not claim or skill_ledger.get_entry(claim) is None:
@@ -157,6 +163,7 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
     task_id = 'cron:'+native['job_id']+':'+native['id']
     failure_hash = evidence['failure_sha256']
     semantic = evidence.get('source') == 'ordinary_task_assessment_batch'
+    native_evaluated = evidence.get('source') == 'ordinary_native_failure_batch' and evidence.get('evaluator') is not None
     ordinary = semantic or evidence.get('source') == 'ordinary_native_failure_batch'
     unattributed = ordinary and evidence.get('attribution') == 'unattributed'
     unassigned = ordinary and evidence.get('attribution') == 'unassigned'
@@ -175,6 +182,14 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
         if not claim or {row['source_id']:row for row in retained} != {
                 row['source_id']:row for row in evidence['observations']}:
             raise ValueError('Task review requires its claimed current assessment sources')
+    elif native_evaluated:
+        from pacomind_hermes import task_review_experience as experience
+        if skill is not None:
+            raise ValueError('Native failure evaluation requires an unassigned tool batch')
+        expected = experience.receipt(evidence)
+        if expected['native_execution_id'] != native['id']:
+            raise ValueError('Native failure review belongs to another claimed execution')
+        diagnostic_context = experience.recheck(evidence, connection, owner)
     elif create_only:
         if skill is not None:
             raise ValueError('An unattributed failure cannot select an existing skill')
@@ -214,12 +229,14 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
                 or not skill_provenance.is_background_review()
                 or kwargs.get('tool_name') != 'skill_manage'):
             return None
-        args = kwargs.get('args') or {}
+        args = {key: value for key, value in (kwargs.get('args') or {}).items()
+                if key not in {'_pacomind_task_assessment_batch', '_pacomind_native_failure_batch'}}
         if selected_operation(args) is None:
-            return {'args': {**args, '_pacomind_review_create_only': True}} if create_only else None
+            return {'args': {**args, **({'_pacomind_review_create_only': True} if create_only else {})}}
         return {'args': {**args, **({'_pacomind_review_create_only': True} if create_only else {}),
             **(proposal_context or {}), failure_key: failure_hash, execution_key: native['id'],
             **({'_pacomind_task_assessment_batch': expected} if semantic else {}),
+            **({'_pacomind_native_failure_batch': expected} if native_evaluated else {}),
             **({'_pacomind_review_observation_ids': evidence['observation_ids']} if ordinary else {})}}
 
     context = PluginContext(PluginManifest(name='pacomind-ordinary-skill-review'), manager)
@@ -295,7 +312,9 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
         review_scope = (('Task assessment sources do not establish a causal playbook. '
             + ('Stay within this operator-declared evaluation scope: '+evidence['evaluator']['scope']+'. '
                if evidence.get('evaluator') else 'This review may only stage a proposal; no evaluator is selected. ')
-            if semantic else 'The recorded skill views do not establish a causal playbook. ' if unassigned else
+            if semantic else 'The recorded skill views do not establish a causal playbook. '
+            + ('Stay within this operator-declared evaluation scope: '+evidence['evaluator']['scope']+'. '
+               if native_evaluated else '') if unassigned else
             'No skill view is recorded for the selected failures. ') + 'Propose at most one useful new main skill '
             'through skill_manage(create), or propose no change. Do not edit existing skills, invent their use, '
             'attempt code repair or treat a recommendation as an applied improvement.' if create_only else

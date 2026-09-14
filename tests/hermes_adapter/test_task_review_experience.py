@@ -110,6 +110,25 @@ def test_evaluator_uses_existing_local_callable_and_does_not_grant_application(e
     assert 'artifacts' not in evaluator['value']
 
 
+def test_native_scope_requires_explicit_signature_and_generic_error_result(evaluator):
+    batch={'source':experience.NATIVE_SOURCE,'attribution':'unassigned','observations':[
+        {'tool_name':'read_file','error_class':'tool_returned_error','request_visible_result_sha256':'a'*64}]}
+    assert experience.native_binding(batch,evaluator) is None
+    value={**evaluator['value'],'native_failures':[{'tool_name':'read_file','error_class':'tool_returned_error'}]}
+    path=Path(evaluator['path']);path.write_text(json.dumps(value))
+    with pytest.raises(ValueError,match='exact tool/error'):
+        experience.declaration(path)
+    value['native_failures'][0]['result_sha256']='a'*64
+    path.write_text(json.dumps(value));selected=experience.declaration(path)
+    assert experience.native_binding(batch,selected)==selected['binding']
+    for key,replacement in [('tool_name','write_file'),('error_class','other_error'),
+                            ('request_visible_result_sha256','b'*64)]:
+        changed=deepcopy(batch);changed['observations'][0][key]=replacement
+        assert experience.native_binding(changed,selected) is None
+    changed=deepcopy(batch);changed['attribution']='assigned'
+    assert experience.native_binding(changed,selected) is None
+
+
 NATIVE = r'''
 import json,os,socket,sys
 from pathlib import Path
