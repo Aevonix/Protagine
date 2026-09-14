@@ -199,6 +199,78 @@ def test_native_reasoning_rejects_old_rule_wrong_order_and_invented_execution():
             'complete_grounded_decision']
 
 
+def coding_answer():
+    return {'parent_interpreter': '/opt/agent/native/bin/python',
+        'measurement_interpreter': '/opt/agent/analysis-v2/bin/python',
+        'same_interpreter': False,
+        'parent_source': {'file': 'launch.sh', 'line': 2},
+        'child_selection_source': {'file': 'cycle.py', 'line': 4},
+        'child_configuration_source': {'file': 'service.json', 'line': 2},
+        'old_setup_matches_current': False, 'measurement_executed_in_this_task': False,
+        'last_measurement_passed': None}
+
+
+@pytest.mark.parametrize('mode', ['correct', 'wrong_after_reads', 'correct_without_reads'])
+def test_native_coding_separates_returned_sources_from_claim_correctness(tmp_path, mode):
+    from pacomind.qualification.native import cases
+    case = cases(['coding'])[0]
+    assert case.id == 'native.coding.source-attribution' and case.role == 'coding'
+    answer = coding_answer()
+    if mode == 'wrong_after_reads':
+        answer['measurement_interpreter'] = '/opt/agent/current/analysis-v1/bin/python'
+
+    def respond(data):
+        if mode == 'correct_without_reads' or any(m['role'] == 'tool' for m in data['messages']):
+            return {'role': 'assistant', 'content': json.dumps(answer)}
+        return {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'read-'+str(index), 'type': 'function', 'function': {'name': 'read_file',
+                'arguments': json.dumps({'path': filename})}}
+            for index, filename in enumerate(case.inputs['files'])]}
+
+    with endpoint(respond=respond) as (url, requests, _entered):
+        output = tmp_path/'run'
+        args = arguments(configured(tmp_path, url), output, deadline=12)
+        args.roles = 'coding'
+        assert run(args) == int(mode != 'correct')
+        row = read(output/'attempts'/case.id/'result.json')
+        assert row['checks']['complete_grounded_attribution'] is (mode != 'wrong_after_reads')
+        assert row['checks']['all_sources_opened'] is (mode != 'correct_without_reads')
+        assert row['checks']['original_files_preserved'] is True
+        assert row['checks']['no_mutation_tools'] is True
+        assert row['primary_outcome'] == 'unverified'
+        assert row['cleanup'] == 'state_directory_removed'
+        assert len(requests) == (1 if mode == 'correct_without_reads' else 2)
+        # The authoritative values arrive through native tools, not the prompt.
+        assert '/opt/agent/analysis-v2/bin/python' not in json.dumps(requests[0]['messages'])
+        if mode != 'correct_without_reads':
+            assert row['effects']['complete_fixture_reads'] == sorted(case.inputs['files'])
+            tool_results = [m for m in requests[1]['messages'] if m['role'] == 'tool']
+            assert len(tool_results) == 4
+            assert '/opt/agent/analysis-v2/bin/python' in json.dumps(tool_results)
+
+
+@pytest.mark.parametrize('change', [
+    {'parent_interpreter': '/opt/agent/analysis-v2/bin/python',
+     'measurement_interpreter': '/opt/agent/native/bin/python'},
+    {'measurement_interpreter': '/opt/agent/current/analysis-v1/bin/python'},
+    {'measurement_interpreter': '/opt/agent/analysis-v1/bin/python'},
+    {'child_configuration_source': {'file': 'old-setup.md', 'line': 3}},
+    {'last_measurement_passed': True},
+    {'measurement_executed_in_this_task': True},
+    {'additional_claim': 'Both interpreters were executed and verified'},
+])
+def test_native_coding_rejects_invented_paths_and_claims_despite_complete_reads(change):
+    from pacomind.qualification.cases import json_fields
+    from pacomind.qualification.native import cases
+    case = cases(['coding'])[0]
+    effects = {'complete_fixture_reads': sorted(case.inputs['files']),
+               'fixture_files_unchanged': True, 'mutation_tools_requested': []}
+    assert all(json_fields({'output': coding_answer(), 'effects': effects}, case.oracle).values())
+    checks = json_fields({'output': {**coding_answer(), **change}, 'effects': effects}, case.oracle)
+    assert checks['all_sources_opened'] is True
+    assert checks['complete_grounded_attribution'] is False
+
+
 def test_cli_elapsed_deadline_interrupts_silent_native_request_before_socket_timeout(tmp_path):
     with endpoint(blocked=True) as (url, requests, entered):
         output = tmp_path/'run'
