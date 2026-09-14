@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.34 - exact message membership for artifact assessments
+
+Task artifact assessments can supply optional message membership for their
+source references. Valid membership lets a review proceed when a correction
+affects only an unrelated message in the same source. Relevant corrections and
+erasures still withhold assessments through the existing source checks.
+
+- Membership is checked against current source messages and the execution's
+  admitted inputs.
+- Requests without membership retain the existing source-wide checks.
+
 ## v1.5.33 - retain artifact locators in task replies
 
 Native task replies retain bare local file paths so callers can locate their

@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from pacomind.api.authority import request_authority, resolve_request_person
 from pacomind.turns.executions import registry
-from pacomind.api.schemas.host import SourceReference
+from pacomind.api.schemas.host import SourceAnnotationCheck, SourceReference
 
 router = APIRouter(prefix="/v1/host/executions", tags=["executions"])
 
@@ -82,6 +82,9 @@ class ExecutionAssessment(BaseModel):
     # Preserve the complete recorded output lineage, as ordinary turn capture
     # does; the canonical source envelope retains its existing 8 MiB bound.
     source_refs: list[SourceReference] = Field(min_length=1)
+    # Exact host-observed message membership, using the ordinary source reader
+    # contract. Omitted sources retain the conservative whole-source check.
+    annotation_checks: list[SourceAnnotationCheck] = Field(default_factory=list, max_length=512)
     assessed_at: AwareDatetime
     reviewer_identity: str = Field(default='unknown', min_length=1, max_length=256)
     reviewer_model: str = Field(default='unknown', min_length=1, max_length=256)

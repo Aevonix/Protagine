@@ -449,16 +449,20 @@ class TurnIdempotencyLedger:
 
     def source_references(self, turn_ids, *, contact_id, session_id):
         """Structured selected-source revisions, never parsed from generated prose."""
-        refs = []
         with closing(self._connect()) as conn:
-            for turn_id in dict.fromkeys(turn_ids):
-                row = conn.execute('''SELECT messages_json FROM turn_sources WHERE turn_id=?
-                    AND contact_id=? AND (scope='person' OR session_id=?)
-                    AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i
-                        WHERE i.source_id=turn_sources.turn_id)''',
-                    (turn_id, contact_id, session_id)).fetchone()
-                if row:
-                    refs.append({'source_id': turn_id, 'source_version': canonical_turn_digest(json.loads(row[0]))})
+            return self._source_references(conn, turn_ids, contact_id=contact_id, session_id=session_id)
+
+    @staticmethod
+    def _source_references(conn, turn_ids, *, contact_id, session_id):
+        refs = []
+        for turn_id in dict.fromkeys(turn_ids):
+            row = conn.execute('''SELECT messages_json FROM turn_sources WHERE turn_id=?
+                AND contact_id=? AND (scope='person' OR session_id=?)
+                AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i
+                    WHERE i.source_id=turn_sources.turn_id)''',
+                (turn_id, contact_id, session_id)).fetchone()
+            if row:
+                refs.append({'source_id': turn_id, 'source_version': canonical_turn_digest(json.loads(row[0]))})
         return refs
 
     def is_source_erased(self, turn_id: str, contact_id: str | None = None) -> bool:

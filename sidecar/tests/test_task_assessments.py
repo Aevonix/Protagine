@@ -270,6 +270,154 @@ def test_oversized_complete_review_is_rejected_without_partial_evidence(task, ho
     assert assessment_sources(task) == []
 
 
+def recalled_image(task):
+    from pacomind.turns.idempotency import source_message_hash
+    user = {'role': 'user', 'content': [
+        {'type': 'text', 'text': 'What does this controlled workshop image show?'},
+        {'type': 'image', 'asset_id': 'sha256:'+'a'*64, 'mime_type': 'image/jpeg'}]}
+    assistant = {'role': 'assistant', 'content': 'The wall device is a phone displaying six.'}
+    task.ledger.record_source('recalled-image', contact_id='owner', session_id='image-session',
+        messages=[user, assistant], derive_claims=False)
+    ref, = task.ledger.source_references(['recalled-image'], contact_id='owner', session_id='')
+    # This is the existing selection receipt for the separate user-image
+    # message, not membership guessed from the artifact or model prose.
+    check = {'source_refs': [ref], 'message_hashes': {
+        ref['source_id']: [source_message_hash('image-session', user)]}, 'annotation_ids': []}
+    return ref, check, user, assistant
+
+
+def annotate_image(task, ref, *, target='assistant'):
+    return task.ledger.append_source_annotation(contact_id='owner', session_id='review',
+        annotation_id='image-correction-'+target, **ref,
+        excerpt='wall device is a phone' if target == 'assistant' else 'controlled workshop image',
+        correction='That interpretation is not established by the retained image.', author_principal='owner')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('when', ['before-admit', 'before-worker', 'during-worker', 'after-worker'])
+async def test_exact_image_membership_survives_unrelated_assistant_annotation(task, host, when):
+    ref, check, _, _ = recalled_image(task)
+    payload = packet(task)
+    payload['source_refs'].append(ref)
+    payload['annotation_checks'] = [check]
+    state = SelfJudgments(task.ledger, owner_id='owner', clock=task.clock)
+    assert await state.process_one(Processor(decide=lambda _: {'action': 'abstain'}))
+    if when == 'before-admit':
+        annotate_image(task, ref)
+    receipt = host.caller.assess(payload)
+    message = json.loads(assessment_sources(task)[0]['messages_json'])[0]
+    assert ref in message['_supplied_sources']
+    assert message['_assessment_annotation_checks'] == [check]
+    if when == 'before-worker':
+        annotate_image(task, ref)
+    async def during(_):
+        annotate_image(task, ref)
+    assert await state.process_one(Processor(before_return=during if when == 'during-worker' else None))
+    if when == 'after-worker':
+        annotate_image(task, ref)
+    assert state.revisions()
+    assert not host.caller.assess(payload)['created']
+    assert receipt['attribution'] == ATTRIBUTION and receipt['owner_approval'] == 'unobserved'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['annotation', 'erasure'])
+@pytest.mark.parametrize('when', ['before-admit', 'before-worker', 'during-worker', 'after-worker'])
+async def test_actual_selected_message_change_withholds_assessment(task, host, change, when):
+    ref, check, _, _ = recalled_image(task)
+    payload = packet(task)
+    payload['source_refs'].append(ref)
+    payload['annotation_checks'] = [check]
+    annotate_image(task, ref)
+    state = SelfJudgments(task.ledger, owner_id='owner', clock=task.clock)
+    assert await state.process_one(Processor(decide=lambda _: {'action': 'abstain'}))
+    def invalidate():
+        if change == 'annotation':
+            annotate_image(task, ref, target='user')
+        else:
+            task.ledger.erase_sources(contact_id='owner', turn_ids=[ref['source_id']])
+    if when == 'before-admit':
+        invalidate()
+        assert host.api.post('/v1/host/executions/assess', json=payload).status_code == 409
+        assert not assessment_sources(task)
+        return
+    host.caller.assess(payload)
+    if when == 'before-worker':
+        invalidate()
+    async def during(_):
+        invalidate()
+    processor = Processor(before_return=during if when == 'during-worker' else None)
+    assert await state.process_one(processor) is not (change == 'erasure' and when == 'before-worker')
+    if when == 'after-worker':
+        assert state.revisions()
+        invalidate()
+    assert not state.revisions()
+    if when == 'before-worker':
+        assert not processor.requests
+    assert host.api.post('/v1/host/executions/assess', json=payload).status_code == 409
+
+
+@pytest.mark.parametrize('change', ['omitted', 'empty', 'unknown-hash', 'other-source-hash',
+    'wrong-revision', 'extra-source', 'annotated-member', 'supplied-correction'])
+def test_unknown_or_mismatched_membership_cannot_bypass_annotations(task, host, change):
+    from pacomind.turns.idempotency import source_message_hash
+    ref, check, _, assistant = recalled_image(task)
+    payload = packet(task)
+    payload['source_refs'].append(ref)
+    payload['annotation_checks'] = [check]
+    correction = annotate_image(task, ref)
+    hashes = check['message_hashes'][ref['source_id']]
+    if change == 'omitted':
+        payload.pop('annotation_checks')
+    elif change == 'empty':
+        hashes.clear()
+    elif change == 'unknown-hash':
+        hashes[:] = ['f'*64]
+    elif change == 'other-source-hash':
+        hashes[:] = [task.inputs[0]['input_message_hash']]
+    elif change == 'wrong-revision':
+        check['source_refs'] = [{**ref, 'source_version': 'f'*64}]
+    elif change == 'extra-source':
+        check['source_refs'] = [{**ref, 'source_id': 'not-supplied'}]
+        check['message_hashes'] = {'not-supplied': hashes}
+    elif change == 'annotated-member':
+        hashes[:] = [source_message_hash('image-session', assistant)]
+    else:
+        hashes[:] = [source_message_hash('image-session', assistant)]
+        check['annotation_ids'] = [correction['source_id']]
+    response = host.api.post('/v1/host/executions/assess', json=payload)
+    assert response.status_code == 409, response.text
+    assert not assessment_sources(task)
+
+
+def test_empty_annotation_default_preserves_legacy_request_identity(task, host):
+    from pacomind.turns.idempotency import canonical_turn_digest
+    payload = packet(task)
+    host.caller.assess(payload)
+    message = json.loads(assessment_sources(task)[0]['messages_json'])[0]
+    normalized = executions.ExecutionAssessment.model_validate(payload).model_dump(mode='json')
+    normalized.pop('annotation_checks')
+    assert message['_assessment_request_sha256'] == canonical_turn_digest(normalized)
+    assert not host.caller.assess({**payload, 'annotation_checks': []})['created']
+
+
+def test_exact_membership_cannot_omit_the_immutable_execution_input(task, host):
+    from pacomind.turns.idempotency import source_message_hash
+    ref, check, user, assistant = recalled_image(task)
+    task.inputs[:] = [{'source_id': ref['source_id'],
+        'input_message_hash': source_message_hash('image-session', user)}]
+    task.source.update(source_session_id='image-session', source_refs=[ref])
+    payload = packet(task)
+    annotate_image(task, ref, target='user')
+    # The assistant sibling is a real, unannotated member of the correct
+    # revision, but cannot stand in for the actual admitted user input.
+    check['message_hashes'][ref['source_id']] = [source_message_hash('image-session', assistant)]
+    payload['annotation_checks'] = [check]
+    response = host.api.post('/v1/host/executions/assess', json=payload)
+    assert response.status_code == 409, response.text
+    assert not assessment_sources(task)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retrieval', ['lexical', 'semantic'])
 async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task, host, monkeypatch, retrieval):
