@@ -33,6 +33,12 @@ def stage_skill_change(arguments):
     guards still run before staging and when the proposal is eventually applied.
     """
     from tools import skill_manager_tool as manager, write_approval as approval
+    # The worker binds this scope before staging, which returns before native
+    # pre-tool hooks. An unattributed failure cannot justify an existing edit.
+    if arguments.get('_pacomind_review_create_only') is True:
+        selected = editable_operation(arguments, allow_create=True)
+        if selected is None or selected.get('action') != 'create':
+            return json.dumps({'success':False, 'error':'Unattributed review may only propose one new main skill file; existing skills have not been implicated.'})
     try:
         from tools.skill_manager_batch import _BATCH_MAX_OPS
     except ModuleNotFoundError as error:

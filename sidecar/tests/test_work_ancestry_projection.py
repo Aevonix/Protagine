@@ -61,8 +61,8 @@ def concurrent_view():
                             'status': 'completed', 'liveness': 'native_terminal_record'}]}}
 
 
-@pytest.mark.parametrize('with_input', [False, True])
-def test_running_native_task_survives_other_readers_before_and_during_request(with_input):
+@pytest.mark.parametrize('with_input,terminal', [(False, False), (True, False), (False, True)])
+def test_native_task_survives_other_readers_before_during_and_after_work(with_input, terminal):
     # Observed live shape: a foreground conversation, a native coding task,
     # blocked board work and a verbose idle delivery snapshot. The task must
     # remain inspectable within the same budget, even without an input quote.
@@ -72,13 +72,22 @@ def test_running_native_task_survives_other_readers_before_and_during_request(wi
     if with_input:
         worker['request_input'] = {
             'status': 'admitted_input_excerpt', 'source_id': 'original-task',
-            'source_version': 'b' * 64, 'content': 'Build the timing report.',
+            'source_version': 'b' * 64,
+            'excerpt': ('Repair the sample report and preserve its original inputs. ' * 5)[:240],
+            'partial': True, 'input_count': 1, 'input_message_hash': 'c' * 64,
             '_provenance': {'contact_id': 'owner', 'watermark': 0,
                 'source_refs': [{'source_id': 'original-task', 'source_version': 'b' * 64}],
                 'unannotated_input_refs': [{'source_id': 'original-task', 'input_message_hash': 'c' * 64}]}}
     view = concurrent_view()
     view['items'] = [observer, worker] + [execution(n, age=500) for n in range(3, 18)]
     view['total'] = 17
+    if terminal:
+        # A later question must still locate work that stopped at its deadline.
+        # Its terminal observation is neither an active process nor success.
+        view['items'].remove(worker)
+        view['total'] = 16
+        worker.update(state='interrupted', phase='ended', liveness='terminal_observation')
+        view['recent'] = [worker]
     view['local_work']['items'] = [{'initiative_id': 'assigned-draft', 'status': 'assigned',
         'liveness': 'unknown', 'native_execution_id': 'e' * 32, 'native_job_id': 'scheduled-briefing'}]
     view['native_kanban']['items'] = [
@@ -100,14 +109,19 @@ def test_running_native_task_survives_other_readers_before_and_during_request(wi
     result = request_work_context(view, session_id='observer')
     selected = rows(result)
     task, = [row for row in selected if row.get('task_id') == 'a' * 64]
-    assert task['liveness'] == 'recently_observed' and task['phase'] == worker['phase']
+    assert task['liveness'] == worker['liveness'] and task['phase'] == worker['phase']
+    if terminal:
+        assert task['state'] == 'interrupted' and 'terminal_result' not in task
     assert selected[0]['execution_id'] == observer['execution_id']
-    assert result['work_sources']['execution']['total'] == 17
+    assert result['work_sources']['execution']['total'] == view['total']
     assert 'execution=17 active' not in result['text']
     assert len(result['text']) <= 4000 and len(selected) <= 8 and result['truncated']
     assert view == before
     if with_input:
         assert task['input_source'] == {'source_id': 'original-task', 'source_version': 'b' * 64}
+        assert task['request_input'] == {key: worker['request_input'][key]
+                                        for key in ('excerpt', 'partial', 'input_count')}
+        assert result['text'].count('b' * 64) == 1
         assert result['input_provenance']['source_refs'] == worker['request_input']['_provenance']['source_refs']
 
 

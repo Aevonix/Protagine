@@ -1,4 +1,4 @@
-"""Ordinary skill-use failures retained in Hermes' existing skill ledger.
+"""Ordinary tool failures retained in Hermes' existing skill ledger.
 
 Only references, hashes and error classes survive here. The native transcript
 remains the source. This neither reviews a skill nor changes its ownership.
@@ -9,6 +9,7 @@ import threading
 
 _LOCK = threading.Lock()
 ACTION = 'ordinary_skill_failure'
+UNATTRIBUTED_ACTION = 'ordinary_tool_failure'
 
 
 def fingerprint(value):
@@ -63,16 +64,22 @@ def observations(scope, messages, failures):
                 error_class = 'python_list_get_attribute_error'
             elif error.startswith('Cell timed out after ') and 'session kernel was killed' in error:
                 error_class = 'kernel_timeout_state_lost'
-        for name, view in list(viewed.items())[-8:]:
+        for name, view in (list(viewed.items())[-8:] or [(None, {})]):
             evidence = {'version': 1, 'source': 'ordinary_native_tool_failure',
                 'contact_id': scope.contact_id, 'platform': scope.platform,
                 'session_id': scope.session_id, 'turn_id': scope.turn_id,
                 **view, **by_call[call_id], 'error_class': error_class}
             # The native result is one occurrence even if history is replayed
             # by another turn or the process restarts before its next request.
-            evidence['observation_id'] = fingerprint({key: evidence[key] for key in (
-                'contact_id', 'session_id', 'tool_call_id', 'request_visible_result_sha256',
-                'skill_call_id', 'skill_sha256')})
+            keys = ('contact_id', 'session_id', 'tool_call_id', 'request_visible_result_sha256')
+            if name is None:
+                evidence['attribution'] = 'unattributed'
+                # Some providers reuse call IDs on later turns. The actual
+                # native turn distinguishes those occurrences from replay.
+                keys += ('turn_id',)
+            else:
+                keys += ('skill_call_id', 'skill_sha256')
+            evidence['observation_id'] = fingerprint({key: evidence[key] for key in keys})
             result.append((name, evidence))
     return result
 
@@ -84,27 +91,35 @@ def retain(scope, messages, failures):
         return
     with _LOCK:
         known = {row.get('evidence', {}).get('observation_id')
-                 for row in skill_ledger.list_entries() if row.get('action') == ACTION}
+                 for row in skill_ledger.list_entries()
+                 if row.get('action') in {ACTION, UNATTRIBUTED_ACTION}}
         for skill, evidence in rows:
             if evidence['observation_id'] not in known:
-                recorded = skill_ledger.append_entry(ACTION, skill, actor='agent', evidence=evidence)
+                action = ACTION if skill is not None else UNATTRIBUTED_ACTION
+                recorded = skill_ledger.append_entry(action, skill, actor='agent', evidence=evidence)
                 if recorded:
                     known.add(evidence['observation_id'])
 
 
-def next_batch(entries, skill, skill_sha256):
+def next_batch(entries, skill=None, skill_sha256=None):
     """Two actual turns with the same tool failure justify one bounded review.
 
     The existing periodic consumer provides cadence. Receipts make selection
     survive restarts, with no per-session iteration counter or second queue.
     """
+    unattributed = skill is None and skill_sha256 is None
+    if (skill is None) != (skill_sha256 is None):
+        raise ValueError('Select a skill and its observed content hash, or neither')
+    action = UNATTRIBUTED_ACTION if unattributed else ACTION
     consumed = {identifier for row in entries if row.get('action') == 'ordinary_skill_review'
                 for identifier in row.get('evidence', {}).get('observation_ids', [])}
     groups = {}
     for row in reversed(entries):  # Hermes returns newest entries first.
         value = row.get('evidence', {})
-        if (row.get('action') != ACTION or row.get('skill') != skill
+        if (row.get('action') != action or row.get('skill') != skill
                 or value.get('skill_sha256') != skill_sha256
+                or (unattributed and (value.get('attribution') != 'unattributed'
+                                      or 'skill_call_id' in value or 'skill_sha256' in value))
                 or value.get('observation_id') in consumed):
             continue
         # Unknown error classes must recur byte-for-byte; two unrelated errors
@@ -124,6 +139,7 @@ def next_batch(entries, skill, skill_sha256):
         ids = sorted(row['observation_id'] for row in values.values()
                      if (row['session_id'], row['turn_id']) in selected_turns)
         return {'version': 1, 'source': 'ordinary_native_failure_batch', 'skill': skill,
+                **({'attribution': 'unattributed'} if unattributed else {}),
                 'skill_sha256': skill_sha256, 'observation_ids': ids,
                 'failure_sha256': fingerprint(ids), 'observations': selected}
     return None

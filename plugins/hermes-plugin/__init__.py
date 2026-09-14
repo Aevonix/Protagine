@@ -2980,8 +2980,10 @@ def register(ctx: Any) -> None:
         _REVIEW_PARENT_SCOPE.set(scope if scope is not None and scope.valid_participant else None)
         review_parent_memory.set(request_memory.snapshot_review_parent(scope))
         from .review_evidence import capture
+        experience = native_tasks.execution_experience(**kwargs) if native_tasks is not None else None
         capture(scope, kwargs.get('request'),
-                durable=(config.get('native_reviews') or {}).get('enabled') is True)
+                durable=(config.get('native_reviews') or {}).get('enabled') is True
+                    and not (experience and experience.get('purpose') == 'qualification'))
         return None  # No provider request changes.
     ctx.register_middleware("llm_request", capture_review_parent)
     ctx.register_middleware('llm_request', reconcile_request)
