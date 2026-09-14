@@ -92,6 +92,11 @@ Automatic persistent opinions are experimental and disabled by default. Useful
 background initiative and autonomous self-improvement still need complete
 demonstrations in ordinary use.
 
+Internal-review probability measurement is experimental and disabled by
+default. Explicitly enrolled reviews can measure first-attempt completion
+against a frozen baseline. Live predictive benefit has not been demonstrated.
+See [task forecasts](docs/TEMPORAL-FORECASTS.md) for its scope and limitations.
+
 Until Phase 1 is validated, development releases may change interfaces and
 storage layouts. The [known gaps](docs/KNOWN-GAPS.md) and
 [changelog](CHANGELOG.md) describe the current implementation in more detail.
@@ -107,7 +112,7 @@ Install the current tagged release:
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.29 https://github.com/Aevonix/PacoMind.git
+git clone --depth 1 --branch v1.5.30 https://github.com/Aevonix/PacoMind.git
 python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```

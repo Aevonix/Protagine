@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.30 - prospective task-outcome measurement
+
+Selected internal reviews can record a probability that their first native
+attempt completes within 480 seconds of attachment. Measurement is disabled
+by default and requires explicit enrollment in a finite window. Each forecast
+retains its baseline and selected planning role recipe. A successful retry
+cannot replace a failed first attempt; interventions remain separately counted.
+A new measurement window can learn earlier comparable outcomes, while a changed
+role recipe starts a separate statistical cohort.
+
+The 144 focused store, setup and native integration checks passed. They verify
+forecast issuance, independent outcome readback and comparison plumbing.
+Live predictive benefit has not been demonstrated. Probabilities do not change
+task scheduling, retries, notifications or authority.
+
 ## v1.5.29 - shared lifetime for native qualification fixtures
 
 Trusted qualification consumers can prepare fixtures and collect evidence
