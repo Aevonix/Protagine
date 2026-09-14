@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`7fb5bba89217665bab121aee73be68bdd489279d`](https://github.com/Kurcide/hermes-agent/commit/7fb5bba89217665bab121aee73be68bdd489279d),
+`e10be9649b6770e9c2655dfc15c9da83acc2393a`](https://github.com/Kurcide/hermes-agent/commit/e10be9649b6770e9c2655dfc15c9da83acc2393a),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/7fb5bba89217665bab121aee73be68bdd489279d/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/e10be9649b6770e9c2655dfc15c9da83acc2393a/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -34,6 +34,17 @@ increase the initial request size; measure the full task before adopting a
 larger list. Native tests cover direct and deferred execution, middleware,
 unavailable tools and session scope. Production latency remains a separate
 measurement.
+
+This build also accepts `agent.image_input_mode: native_if_supported`. It uses
+the current provider/model's vision capability to attach the original question
+and image directly, retaining the configured auxiliary vision route for false
+or unknown capabilities. An explicit current provider cannot borrow the default
+provider's capability merely because they share a model alias. The existing
+`auto`, `native` and `text` modes and default remain unchanged. This is an
+opt-in native interface; PacoMind does not select it during installation.
+Media ownership and generated-caption provenance keep their existing paths.
+Native boundary tests establish routing and original-byte preservation, not
+visual factual accuracy or production latency.
 
 The callback change adapts [upstream PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763),
 specifically [source commit
