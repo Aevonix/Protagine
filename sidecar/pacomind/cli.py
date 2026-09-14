@@ -58,6 +58,11 @@ def main() -> None:
     init_p.add_argument("--local-work", action="store_true", help="Enable explicitly accepted local drafts through the selected Hermes scheduler")
     init_p.add_argument("--native-goals", action="store_true", help="Opt in to native persistent task tools on the existing Hermes profile; its gateway must be running")
     init_p.add_argument("--native-reviews", action="store_true", help="Opt in to bounded read-only operational reviews using the existing planning role")
+    skill_review = init_p.add_mutually_exclusive_group()
+    skill_review.add_argument("--ordinary-skill-review", dest="ordinary_skill_review", action="store_true", default=None, help="Opt in to scheduled ordinary-skill proposals using the existing planning role")
+    skill_review.add_argument("--no-ordinary-skill-review", dest="ordinary_skill_review", action="store_false", help="Remove this instance's managed ordinary-skill review job")
+    init_p.add_argument("--skill-review-schedule", help="Native recurring schedule for ordinary-skill review (default: 0 */6 * * *)")
+    init_p.add_argument("--skill-review-evaluator", metavar="PATH", help="Optional explicit evaluator declaration for qualified skill application; use an empty value for proposal-only review")
 
     # --- start ---
     start_p = sub.add_parser("start", help="Start the sidecar server")

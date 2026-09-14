@@ -590,6 +590,10 @@ def run(root_dir=None, args=None):
         preferences_only = bool(getattr(args, 'preferences_only', False))
         skills_only = bool(getattr(args, 'skills_only', False))
         preview = bool(getattr(args, 'preview', False))
+        skill_review_requested = any(getattr(args, name, None) is not None for name in (
+            'ordinary_skill_review', 'skill_review_schedule', 'skill_review_evaluator'))
+        if (preferences_only or skills_only) and skill_review_requested:
+            raise ValueError('Ordinary-skill review options require instance setup')
         if preferences_only or skills_only:
             home = setup._resolve_hermes_home(getattr(args, 'hermes_home', None))
             selected_python = None
@@ -651,6 +655,9 @@ def run(root_dir=None, args=None):
                 raise ValueError('This instance belongs to another Hermes home')
             if plugin_settings(config).get('instance_dir') != str(state):
                 raise ValueError('The Hermes binding changed; restore its saved config or select another instance')
+            from .setup_skill_reviews import choices as review_choices
+            skill_review = review_choices(args, ask, existing=manifest.get('ordinary_skill_review'),
+                                           prompt=not getattr(args, 'refresh_adapter', False))
             if getattr(args, 'native_goals', False):
                 from dotenv import dotenv_values
                 from .setup_native_goals import prepare
@@ -680,6 +687,13 @@ def run(root_dir=None, args=None):
                      (plugin_settings(config).get('native_reviews') or {}).get('enabled') is True)):
                 from .setup_native_reviews import configure
                 configure(state, install=True)
+            if skill_review['enabled'] is not None:
+                from .setup_skill_reviews import configure
+                configure(state, **skill_review)
+            elif getattr(args, 'refresh_adapter', False) and (manifest.get('ordinary_skill_review') or {}).get('enabled'):
+                from .setup_skill_reviews import configure
+                retained = manifest['ordinary_skill_review']
+                configure(state, schedule=retained['schedule'], evaluator_path=retained.get('evaluator_path'))
             if receipt_choice is not None:
                 _write_receipt_preference(home, receipt_choice)
             _select_state_environment(state)
@@ -746,16 +760,25 @@ def run(root_dir=None, args=None):
         native_reviews = bool(getattr(args, 'native_reviews', False))
         if not noninteractive and not native_reviews:
             native_reviews = ask('Enable bounded read-only operational reviews? [y/N]', 'N').lower() in {'y','yes'}
-        if supplied_models is not None and (local_work or native_reviews):
+        from .setup_skill_reviews import choices as review_choices
+        skill_review = review_choices(args, ask)
+        ordinary_skill_review = skill_review['enabled'] is True
+        if ordinary_skill_review:
+            if 'pacomind_hermes/ordinary_skill_review.py' not in resources:
+                raise ValueError('Select an adapter with ordinary-skill review before enabling its cadence')
+            from .setup_skill_reviews import _native
+            _native({'hermes_python': str(python), 'hermes_home': str(home)}, state,
+                    'validate', schedule=skill_review['schedule'])
+        if supplied_models is not None and (local_work or native_reviews or ordinary_skill_review):
             from .router.native_policy import planning
             from .setup_local_work import verify_tools
             try:
                 options, _ = asyncio.run(planning(supplied_models))
             except ValueError:
-                raise ValueError('--model-config needs an eligible explicit planning role for local drafts or native reviews') from None
+                raise ValueError('--model-config needs an eligible explicit planning role for local drafts or native reviews, including ordinary-skill review') from None
             verify_tools(options['base_url'], options['model'], options['api_key'],
                          **options['request_overrides'])
-        if native_goals or (supplied_models is None and (local_work or native_reviews)):
+        if native_goals or (supplied_models is None and (local_work or native_reviews or ordinary_skill_review)):
             from .setup_local_work import verify_tools
             verify_tools(endpoint, model, model_key)
         port = int(getattr(args, 'port', 7777))
@@ -829,7 +852,7 @@ def run(root_dir=None, args=None):
             model_configuration = supplied_models if supplied_models is not None else {'provider': 'local', 'baseUrl': endpoint,
                 'apiKey': model_key, 'localHosts': local_hosts,
                 'models': {name: model for name in ('small', 'medium', 'large')}}
-            if supplied_models is None and (local_work or native_reviews):
+            if supplied_models is None and (local_work or native_reviews or ordinary_skill_review):
                 from .setup_local_work import planning_configuration
                 planning_configuration(model_configuration)
             _private_write(staged/'.pacomind-llm-config.json', _json(model_configuration))
@@ -928,6 +951,9 @@ def run(root_dir=None, args=None):
         if native_reviews:
             from .setup_native_reviews import configure
             configure(state, install=True)
+        if ordinary_skill_review:
+            from .setup_skill_reviews import configure
+            configure(state, **skill_review)
         print(f'Private agent configured in {home}; state in {state}.')
         print('Adapter loading: ' + binding['mode'] + ' (canonical artifact bytes verified).')
         print('Canonical memory capture and recollection are configured for new Hermes sessions.')
@@ -939,6 +965,9 @@ def run(root_dir=None, args=None):
         if local_work:
             print('Accepted local drafts use the native Kanban board and dedicated worker profile.')
             print('Keep the selected Hermes gateway running. Its dispatch ticks refresh the planning role for future attempts.')
+        if ordinary_skill_review:
+            print('Ordinary-skill review uses the existing native scheduler and planning role; keep the selected Hermes gateway running.')
+            print('Proposals stay pending unless an explicit evaluator declaration qualifies application.')
         if goal_details is not None:
             from .setup_native_goals import describe
             describe(goal_details)
