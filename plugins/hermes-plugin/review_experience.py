@@ -3,9 +3,12 @@
 Only references, hashes and error classes survive here. The native transcript
 remains the source. This neither reviews a skill nor changes its ownership.
 """
+from contextlib import closing
 import hashlib
 import json
 import threading
+import sqlite3
+from types import SimpleNamespace
 
 _LOCK = threading.Lock()
 ACTION = 'ordinary_skill_failure'
@@ -202,3 +205,98 @@ def next_tool_batch(entries):
                 'observation_ids': identifiers, 'failure_sha256': fingerprint(identifiers),
                 'observations': selected}
     return None
+
+
+def selected_pairs(evidence, native_home, owner):
+    observations = evidence.get('observations', [])
+    if (not owner or not 2 <= len(observations) <= 16
+            or any(row.get('contact_id') != owner for row in observations)):
+        raise ValueError('Current configured owner must own every review occurrence')
+    pairs = []
+    with closing(sqlite3.connect((native_home/'state.db').as_uri()+'?mode=ro', uri=True, timeout=.25)) as db:
+        db.row_factory = sqlite3.Row
+        for observation in observations:
+            session, call_id = observation['session_id'], observation['tool_call_id']
+            rows = db.execute("SELECT id,content,tool_name FROM messages WHERE session_id=? "
+                "AND role='tool' AND tool_call_id=? ORDER BY id LIMIT 17", (session, call_id)).fetchall()
+            matched = [row for row in rows if isinstance(row['content'], str)
+                and hashlib.sha256(row['content'].encode()).hexdigest() == observation['request_visible_result_sha256']]
+            if len(rows) > 16 or len(matched) != 1 or matched[0]['tool_name'] != observation['tool_name']:
+                raise ValueError('Original native tool result is unavailable or ambiguous')
+            row = matched[0]
+            start = db.execute("SELECT MAX(id) FROM messages WHERE session_id=? AND role='user' AND id<?",
+                               (session, row['id'])).fetchone()[0]
+            if start is None:
+                raise ValueError('Original native turn is unavailable')
+            calls = []
+            candidates = db.execute("SELECT id,tool_calls FROM messages WHERE session_id=? "
+                "AND id>? AND id<? AND role='assistant' AND tool_calls IS NOT NULL "
+                "ORDER BY id LIMIT 257", (session, start, row['id'])).fetchall()
+            if len(candidates) > 256:
+                raise ValueError('Original native call window is too large')
+            for candidate in candidates:
+                for call in json.loads(candidate['tool_calls']):
+                    if call.get('id') == call_id and call.get('function', {}).get('name') == observation['tool_name']:
+                        calls.append((candidate['id'], call['function']))
+            if len(calls) != 1:
+                raise ValueError('Original native tool call is unavailable or ambiguous')
+            try:
+                result = json.loads(row['content'])
+            except ValueError:
+                # Classification and bytes were attested by the original
+                # producer and validated against the claimed ledger batch.
+                # Native exception results need not use a JSON envelope.
+                if not observation.get('error_class'):
+                    raise ValueError('Native error classification is unavailable') from None
+                error = row['content']
+            else:
+                if not isinstance(result, dict) or not result.get('error'):
+                    raise ValueError('Original native result does not contain the retained failure')
+                error = result['error']
+            pairs.append({'observation_id': observation['observation_id'],
+                'session_id': session, 'turn_id': observation['turn_id'], 'tool_call_id': call_id,
+                'tool_name': observation['tool_name'], 'native_message_id': row['id'],
+                'native_call_message_id': calls[0][0], 'native_user_message_id': start,
+                'request_visible_result_sha256': observation['request_visible_result_sha256'],
+                'arguments': calls[0][1].get('arguments', '{}'), 'error': error})
+    return pairs
+
+
+def diagnostic_context(evidence, native_home, config, *, memory=None, connection=None):
+    from agent.redact import redact_sensitive_text
+    from pacomind_hermes.client import PacoMindClient, TurnOutbox, turn_outbox_path
+    from pacomind_hermes.native_history import reconcile
+    from hermes_state import _default_db_path
+
+    if _default_db_path().resolve() != (native_home/'state.db').resolve():
+        raise ValueError('Native history reader must use the selected runtime home')
+    owner = str(config.get('owner_contact_id') or '').strip()
+    pairs = selected_pairs(evidence, native_home, owner)
+    # Resolve the exact selected result rows through the existing history read
+    # path. It checks each originating native turn's current source ancestry.
+    payload = {'success': True, 'mode': 'read', 'messages': [
+        {'id': pair['native_message_id'], 'content': json.dumps(pair)} for pair in pairs]}
+    lineage = []
+    def retain_lineage(scope, call_id, text, source):
+        lineage.append(source)
+        return True
+    if memory is None:
+        memory = SimpleNamespace(client=connection or PacoMindClient(url=config.get('url'), api_key=config.get('api_key')),
+            outbox=TurnOutbox(turn_outbox_path(config)), register_source_read=retain_lineage)
+    scope = SimpleNamespace(contact_id=owner, session_id=pairs[0]['session_id'])
+    checked = json.loads(reconcile({}, json.dumps(payload), scope,
+        {'tool_call_id': 'ordinary-review:'+evidence['failure_sha256']}, memory))
+    messages = checked.get('messages', [])
+    if (checked.get('success') is not True or not checked.get('pacomind_native_history_read_v1')
+            or {row['id'] for row in messages} != {pair['native_message_id'] for pair in pairs}):
+        raise ValueError('Current source erasure state excludes the original failure context')
+    for pair in pairs:
+        for field in ('arguments', 'error'):
+            text = pair[field] if isinstance(pair[field], str) else json.dumps(pair[field])
+            text = redact_sensitive_text(text, force=True)
+            pair[field] = text[:4096]
+            if len(text) > 4096:
+                pair[field+'_truncated'] = True
+    return {'source': 'current_native_tool_history', 'occurrences': pairs,
+            'memory_erasure': checked['memory_erasure'],
+            'source_refs': lineage[0]['source_refs'] if lineage else []}

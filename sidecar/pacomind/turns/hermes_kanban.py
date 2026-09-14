@@ -196,7 +196,7 @@ def task_snapshot(identifier, contact_id, native, *, review=False, followup=Fals
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
         task = db.execute('SELECT * FROM tasks WHERE id=?', (native['native_task_id'],)).fetchone()
-        if review:
+        if review or followup:
             profile = 'pacomind-reviews'
             # Preserve historical observations; an unrestricted never-run task
             # cannot be associated through this API after the boundary change.

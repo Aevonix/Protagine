@@ -19,6 +19,7 @@ package=types.ModuleType('pacomind_hermes');package.__path__=[sys.argv[2]];sys.m
 def no_network(*a,**kw):raise AssertionError('No network in native followup qualification')
 socket.socket.connect=no_network
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pacomind.api.authority import RequestAuthority
@@ -74,110 +75,143 @@ def reply(identifier):
     'matches':[{'external_ref':'message:reply-'+identifier,'reply_to_ref':row['outbound_ref'],
                 'receipt_ref':'receipt:reply-'+identifier,'ts':time.time(),'channel':'verified-other-channel','reaction':None}]})
 
-def seed_historical_task(identifier, client=None):
- # A pre-upgrade native association, constructed with real native/HTTP APIs.
- # Current adapters must never recreate this unrestricted worker.
- value=clients[0].get(base+'/'+identifier,params={'contact_id':'owner'}).json()
- review=value['review']
- with kb.connect(board='default') as db:
-  tid=kb.create_task(db,title=review['title'],body=review['body'],assignee='default',
-      created_by='pacomind-followup',tenant='owner',idempotency_key='pacomind-followup:'+identifier,
-      workspace_kind='scratch',initial_status='blocked',goal_mode=True,goal_max_turns=4,
-      max_runtime_seconds=480,max_retries=1)
- response=(client or clients[0]).post(base+'/'+identifier+'/native-task',json={
-     'contact_id':'owner','native_board':'default','native_task_id':tid,'contract_sha256':review['sha256']})
- assert response.status_code==200,response.text
- return tid
+from pacomind_hermes import review_worker
+from pacomind_hermes.review_worker import ReviewWorker,validate_profile
+import yaml
+profile=root/'profiles/pacomind-reviews';profile.mkdir(parents=True)
+lane={'worker':True,'source_home':str(root),'owner_contact_id':'owner','log_directory':str(root/'logs')}
+config={'toolsets':['pacomind_review'],'platform_toolsets':{'cli':['pacomind_review']},
+ 'agent':{'disabled_toolsets':['kanban']},'tools':{'tool_search':{'enabled':False}},
+ 'plugins':{'enabled':['pacomind'],'pacomind':{'native_reviews':lane}},
+ 'kanban':{'dispatch_in_gateway':False},'mcp_servers':{}}
+(profile/'config.yaml').write_text(yaml.safe_dump(config))
+assert validate_profile(config,root,'owner')==lane
+package.register=lambda ctx:review_worker.register_worker(ctx,lane)
+# Profile provisioning is separately qualified. This fixture uses that exact
+# validated bounded profile, real native task claims, and the actual HTTP API.
+def selected_profile(config,home,owner):
+ assert config=={'enabled':True} and home==root and owner=='owner'
+ return 'pacomind-reviews'
+review_worker.refresh_profile=selected_profile
+# Native multiplex dispatch deliberately omits the root's .env from the worker
+# environment. Resolve the selected root scope without replacing the worker's.
+from agent.secret_scope import (build_profile_secret_scope,current_secret_scope,
+    is_multiplex_active,reset_secret_scope,set_multiplex_active,set_secret_scope)
+(root/'.env').write_text('PACOMIND_NATIVE_API_KEY=controlled-root-key\n')
+(profile/'.env').write_text('PACOMIND_NATIVE_API_KEY=controlled-worker-key\n')
+(root/'config.yaml').write_text(yaml.safe_dump({'plugins':{'pacomind':{
+ 'url':'http://sidecar.fixture','api_key':'${PACOMIND_NATIVE_API_KEY}'}}}))
+assert 'PACOMIND_NATIVE_API_KEY' not in os.environ
+multiplex=is_multiplex_active();set_multiplex_active(True)
+worker_scope=build_profile_secret_scope(profile);token=set_secret_scope(worker_scope)
+try:
+ selected=review_worker._selected_client(root,'owner')
+ assert selected._headers().get('Authorization')=='Bearer controlled-root-key'
+ assert current_secret_scope() is worker_scope
+ assert 'PACOMIND_NATIVE_API_KEY' not in os.environ
+finally:
+ reset_secret_scope(token);set_multiplex_active(multiplex)
+review_worker._selected_client=lambda home,owner:clients[0]
+reviews=[NativeFollowups(client,'owner',{'enabled':True}) for client in clients]
 
+def complete_review(identifier,parent,late=None):
+ value=reviews[0].work(identifier)
+ with connect(board='default') as db:
+  task=kb.get_task(db,value['native_task_id'])
+  assert task.assignee=='pacomind-reviews' and task.status=='ready'
+  task=kb.claim_task(db,task.id)
+ previous=dict(os.environ)
+ os.environ.update(HERMES_HOME=str(profile),HERMES_KANBAN_DB=str(root/'kanban.db'),
+  HERMES_KANBAN_TASK=task.id,HERMES_KANBAN_RUN_ID=str(task.current_run_id),
+  HERMES_KANBAN_CLAIM_LOCK=task.claim_lock,HERMES_KANBAN_BOARD='default')
+ try:
+  worker=ReviewWorker(lane)
+  assert worker.before_tool(tool_name='terminal')['action']=='block'
+  observation=json.loads(worker.read({'source':0}))
+  assert observation['review_allowed'] and observation['wait']['wait_id']==identifier,observation
+  assert observation['parent']['id']==parent and observation['parent']['status']=='pending'
+  assert observation['wait']['dispatch_receipt_ref'] is not None
+  source=json.loads(worker.read({'source':1}))
+  assert source['source_id']==observation['sources'][0]['source_id']
+  assert 'Please obtain the task result' in source['content'],source
+  assert 'error' in json.loads(worker.read({'source':40}))
+  binding={'contact_id':'owner','native_board':'default','native_task_id':task.id,
+   'native_run_id':task.current_run_id,'native_claim_lock':'wrong',
+   'contract_sha256':__import__('hashlib').sha256(task.body.encode()).hexdigest(),'source':0}
+  assert clients[0].post(base+'/'+identifier+'/evidence',json=binding).status_code==409
+  if late:late(identifier)
+  result=worker.report({'disposition':'complete','summary':'Current expected reply remains due; keep the parent task open. No message was sent.'})
+  with connect(board='default') as db:
+   finished=kb.get_task(db,task.id)
+   assert finished.status=='done',result
+   if late:assert 'no longer due' in kb.latest_run(db,task.id).summary
+  assert worker.before_tool(tool_name='pacomind_read_work_source')['action']=='block'
+ finally:
+  os.environ.clear();os.environ.update(previous)
+ observed=reviews[1].work(identifier)
+ assert observed['status']=='completed' and observed['native_terminal_observed'],observed
+ assert not observed['effect_authorized'] and not waiting.get(identifier)['followup_receipt_ref']
+ assert store.get(parent)['status']=='pending'
+ return observed
+
+# Two dispatch ticks attach and promote one bounded review, not duplicate work.
 first,parent=register('first')
-def refuse_new(index):
- try:reviews[index].work(first)
- except ValueError as error:assert str(error)=='readonly_followup_worker_unqualified'
- else:raise AssertionError('New unrestricted followup worker was admitted')
-with ThreadPoolExecutor(2) as pool:list(pool.map(refuse_new,range(2)))
+with ThreadPoolExecutor(2) as pool:
+ values=list(pool.map(lambda index:reviews[index].work(first),range(2)))
+assert values[0]['native_task_id']==values[1]['native_task_id']
+complete_review(first,parent)
 for review in reviews:review.reconcile(board='default')
-with kb.connect(board='default') as db:
- assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==0
-task_id=seed_historical_task(first)
-with kb.connect(board='default') as db:
- assert kb.promote_task(db,task_id,actor='historical-fixture',reason='Pre-upgrade ready row')[0]
-for review in reviews:review.reconcile(board='default')
-with kb.connect(board='default') as db:
- task=kb.get_task(db,task_id)
- assert task.status=='blocked' and task.block_kind=='needs_input'
- # Native blocking records a synthetic ended run, without a worker claim.
- assert kb.latest_run(db,task_id).claim_lock is None
+with connect(board='default') as db:
  assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==1
- assert db.execute('SELECT count(*) FROM kanban_notify_subs').fetchone()[0]==0
-# Reply on another verified alias cancels a historical queued task on the existing tick.
-reply(first)
-reviews[1].reconcile(board='default')
-with kb.connect(board='default') as db:
- assert kb.get_task(db,task_id).status=='archived'
- assert kb.latest_run(db,task_id).claim_lock is None
-assert waiting.get(first)['state']=='resolved'
-assert waiting.get(first)['native_terminal_status']=='archived'
-assert store.get(parent)['status']=='pending' # Reply is not task fulfillment.
-assert clients[0].get(base+'/'+first,params={'contact_id':'owner'}).json()['status']=='cancelled'
-assert clients[1].get(base,params={'contact_id':'owner'}).json()['items']==[]
 
-# A historical association whose attachment overlapped a reply remains
-# reconcilable; the new boundary cannot promote it.
-second,_=register('race')
+# Actual reply and explicit cancellation between read and report supersede stale
+# model prose at the normal completion boundary, without fulfilling the parent.
+second,parent=register('reply-during-review')
+assert complete_review(second,parent,reply)['state']=='resolved'
+third,parent=register('cancel-during-review')
+assert complete_review(third,parent,lambda identifier:waiting.cancel(identifier,evidence_ref='owner-cancel'))['state']=='cancelled'
+
+# A reply racing attachment never reaches a runnable task.
+fourth,parent=register('reply-during-attach')
 class ReplyDuringAttach:
  def get(self,*a,**kw):return clients[0].get(*a,**kw)
  def post(self,path,**kw):
-  if path.endswith('/native-task'):reply(second)
+  if path.endswith('/native-task'):reply(fourth)
   return clients[0].post(path,**kw)
-seed_historical_task(second,ReplyDuringAttach())
-raced=reviews[0].work(second)
+raced=NativeFollowups(ReplyDuringAttach(),'owner',{'enabled':True}).work(fourth)
 assert raced['state']=='resolved' and raced['status']=='cancelled',raced
-with kb.connect(board='default') as db:
+with connect(board='default') as db:
  assert kb.get_task(db,raced['native_task_id']).status=='archived'
  assert kb.latest_run(db,raced['native_task_id']) is None
+assert store.get(parent)['status']=='pending'
 
-# A historical lost attachment ACK remains bound after restart, without
-# promoting another unrestricted run.
-third,_=register('lost-ack')
+# Losing an attachment acknowledgement reuses the same native task on retry.
+fifth,parent=register('lost-ack')
 class LostAck:
  def get(self,*a,**kw):return clients[0].get(*a,**kw)
  def post(self,path,**kw):
   result=clients[0].post(path,**kw)
   if path.endswith('/native-task'):raise RuntimeError('lost attachment acknowledgment')
   return result
-try:seed_historical_task(third,LostAck())
+try:NativeFollowups(LostAck(),'owner',{'enabled':True}).work(fifth)
 except RuntimeError:pass
 else:raise AssertionError('missing lost ACK')
-with kb.connect(board='default') as db:
- row=db.execute('SELECT id FROM tasks WHERE idempotency_key=?',('pacomind-followup:'+third,)).fetchone()
- assert kb.get_task(db,row['id']).status=='blocked'
-recovered=reviews[1].work(third)
-with kb.connect(board='default') as db:
- task=kb.get_task(db,recovered['native_task_id']);assert task.status=='blocked'
- assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==3
- assert kb.latest_run(db,task.id) is None
- # An owner closes the historical held task through the existing native API.
- # The adapter must observe this newly terminal state before its dispatch gate.
- assert kb.complete_task(db,task.id,summary='Historical local status reviewed; response remains unknown.',fire_lifecycle_hook=False)
-finished=reviews[0].work(third)
-assert finished['status']=='completed' and finished['state']=='open',finished
-assert finished['native_observation']['completed_run'] and not finished['effect_authorized']
-assert waiting.get(third)['native_terminal_status']=='done'
+complete_review(fifth,parent)
+with connect(board='default') as db:
+ assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==5
+
+# Later source correction invalidates the actual wait; no source is relabeled.
+sixth,parent=register('corrected-during-review')
+def correct(identifier):
+ ref=source_ledger.source_references(['source:corrected-during-review'],contact_id='owner',session_id='owner-turn')[0]
+ source_ledger.append_source_annotation(contact_id='owner',session_id='owner-turn',annotation_id='correction-one',
+  source_id=ref['source_id'],source_version=ref['source_version'],excerpt='Please obtain',
+  correction='This requested response is no longer needed.',author_principal='fixture-native')
+assert complete_review(sixth,parent,correct)['state']=='cancelled'
 assert waiting.due()==[]
-# A correction preserves original text/version but invalidates an old wait's
-# unqualified evidence on ordinary due/read/prepare reconciliation.
-fourth,_=register('corrected')
-original=source_ledger.source_references(['source:corrected'],contact_id='owner',session_id='owner-turn')[0]
-source_ledger.append_source_annotation(contact_id='owner',session_id='owner-turn',annotation_id='correction-one',
-    source_id=original['source_id'],source_version=original['source_version'],excerpt='Please obtain',
-    correction='This requested response is no longer needed.',author_principal='fixture-native')
-corrected=clients[1].get(base+'/'+fourth,params={'contact_id':'owner'}).json()
-assert corrected['state']=='cancelled',corrected
-assert not waiting.preflight(fourth)['review_allowed']
-print(json.dumps({'new_unrestricted_worker_refused':True,'historical_ready_task_held':True,
-                  'reply_cancels_before_run':True,'historical_attachment_race_cancelled':True,
-                  'historical_lost_ack_observed':True,'new_native_terminal_observed':True,
-                  'completion_is_not_send_or_fulfillment':True,'model_calls':0,'network':0}))
+print(json.dumps({'bounded_due_dispatch_and_result':True,'reply_and_cancel_races':True,
+ 'source_correction_rechecked':True,'parent_commitments_preserved':True,
+ 'completion_is_not_send_or_fulfillment':True,'model_calls':0,'network':0}))
 '''
 
 
@@ -200,4 +234,4 @@ def test_actual_native_reply_wait_lifecycle(tmp_path):
         os.environ.get('PROTAGINE_HERMES_TEST_SOURCE','')],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode == 0,result.stdout+result.stderr
-    assert '"new_unrestricted_worker_refused": true' in result.stdout
+    assert '"bounded_due_dispatch_and_result": true' in result.stdout

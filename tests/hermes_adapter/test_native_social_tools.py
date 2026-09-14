@@ -329,8 +329,8 @@ resolver_access.update(allowed=True,available=True)
 write_keys()
 
 # A real provider receipt starts a short fixture expectation; loss of intake
-# coverage never means the recipient ignored it. A new unqualified worker is
-# held; a historical native review remains reconcilable without any send.
+# coverage never means the recipient ignored it. An uninstalled review profile
+# is held; installed bounded reviews cancel on a verified reply without any send.
 from pacomind_hermes.initiative_work import NativeFollowups
 from pacomind.initiatives.temporal_followup import TemporalFollowups
 from hermes_cli import kanban_db as kb
@@ -377,28 +377,22 @@ assert not waiting.preflight(wait)['dispatch_allowed']
 reviews=[NativeFollowups(api,owner.contact_id),NativeFollowups(api,owner.contact_id)]
 def refuse_unqualified(index):
  try:reviews[index].work(wait)
- except ValueError as error:assert str(error)=='readonly_followup_worker_unqualified'
+ except ValueError as error:assert str(error)=='read_only_review_profile_not_installed'
  else:raise AssertionError('New unrestricted followup worker was admitted')
 with ThreadPoolExecutor(2) as pool:
  list(pool.map(refuse_unqualified,range(2)))
 with kb.connect(board='default') as db:
  assert db.execute('SELECT count(*) FROM tasks WHERE idempotency_key=?',('pacomind-followup:'+wait,)).fetchone()[0]==0
-# Seed the pre-upgrade association with real native/HTTP calls; this is not
-# an admission through the newly disabled dispatch path.
-review=api.get(url,params={'contact_id':owner.contact_id}).json()['review']
+# The installed bounded profile can now review the due wait. The actual
+# current dispatch path owns attachment and promotion, not a seeded legacy row.
+reviews=[NativeFollowups(api,owner.contact_id,{'enabled':True}) for _ in range(2)]
+with patch('pacomind_hermes.review_worker.refresh_profile',return_value='pacomind-reviews'):
+ selected=reviews[0].work(wait)
+native_id=selected['native_task_id']
 with kb.connect(board='default') as db:
- native_id=kb.create_task(db,title=review['title'],body=review['body'],assignee='default',
-     created_by='pacomind-followup',tenant=owner.contact_id,idempotency_key='pacomind-followup:'+wait,
-     workspace_kind='scratch',initial_status='blocked')
-association=api.post(url+'/native-task',json={'contact_id':owner.contact_id,'native_board':'default',
-    'native_task_id':native_id,'contract_sha256':review['sha256']})
-assert association.status_code==200,association.text
-with kb.connect(board='default') as db:
- assert kb.promote_task(db,native_id,actor='historical-fixture',reason='Pre-upgrade queued task')[0]
-reviews[0].work(wait)
-with kb.connect(board='default') as db:
- assert kb.get_task(db,native_id).status=='blocked' and kb.get_task(db,native_id).block_kind=='needs_input'
- assert kb.latest_run(db,native_id).claim_lock is None # Native blocked receipt, no worker claim.
+ assert kb.get_task(db,native_id).status=='ready'
+ assert kb.get_task(db,native_id).assignee=='pacomind-reviews'
+ assert kb.latest_run(db,native_id) is None
 reply=event('provider-reply','in',reply_to_ref='provider-original',reply_to_channel='whatsapp')
 reply['channel']='email'
 received=api.post('/v1/host/transport/observe',headers=provider,json=reply)
@@ -407,7 +401,7 @@ assert waiting.get(wait)['state']=='resolved'
 assert waiting.get(wait)['reply']['matches'][0]['provider_reply_to_ref']=='whatsapp:provider-original'
 reviews[0].reconcile(board='default')
 with kb.connect(board='default') as db:
- assert kb.get_task(db,native_id).status=='archived' and kb.latest_run(db,native_id).claim_lock is None
+ assert kb.get_task(db,native_id).status=='archived' and kb.latest_run(db,native_id) is None
 assert store.get(follow_parent['id'])['status']=='pending'
 assert not waiting.preflight(wait)['dispatch_allowed']
 

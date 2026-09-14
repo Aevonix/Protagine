@@ -80,7 +80,7 @@ configuration stays selected. The supplied JSON configures PacoMind's cognition
 roles separately; setup does not map that chat model over the supplied roles.
 Without `--model-config`, the simple wizard configuration is unchanged.
 
-With `--local-work` or `--native-reviews`, supply an explicit tool-capable local
+With `--local-work`, `--native-reviews` or `--ordinary-skill-review`, supply an explicit tool-capable local
 `planning` role. Setup uses it for the native worker and checks its selected
 model's function calling. It preserves the rest of the model pool and role
 settings. `--native-goals` retains the selected Hermes profile's model. These
@@ -91,6 +91,50 @@ The option is only for new instances. Existing instances retain their model
 configuration; edit that private runtime configuration through its normal update
 path. `--model-config` cannot be combined with `--preferences-only` or
 `--skills-only`.
+
+## Scheduled ordinary-skill review
+
+The wizard offers ordinary-skill review separately from operational reviews,
+default off. Opt in on a new or existing instance with:
+
+```bash
+pacomind init --non-interactive --hermes-home "$HOME/.hermes-orion" \
+  --ordinary-skill-review --skill-review-schedule '0 */6 * * *'
+```
+
+This adds one script job to that home's existing Hermes scheduler. Keep its
+gateway running. It uses the current `planning` role and native review ledger;
+setup adds no profile, service or separate review store. Without an evaluator,
+review produces pending proposals. To permit qualified application, explicitly
+select a private evaluator declaration with `--skill-review-evaluator PATH` and
+set its `allow_apply` authority. For captured tool failures, the declaration must
+also select their tool/error signatures in `native_failures`; unmatched failures
+remain proposals. Native observation ancestry is preserved through measurement,
+application and later audits. A configured evaluator does not establish that any
+proposal has passed its checks. The evaluator scope and measured-update
+contract are described in [the adapter guide](HERMES-ADAPTER.md).
+
+The opt-in also enables the existing passive tool-failure capture in ordinary
+resolved owner turns. Matching failures across distinct turns can supply one
+review batch; qualification, system and review turns are excluded. Separately,
+the same consumer can use complete task assessments explicitly submitted by a
+host or evaluator. It does not automatically grade the factual quality of every
+ordinary artifact. Neither a recurring tool error nor a submitted review proves
+that a skill caused it or that a proposal will help.
+
+The default cadence is every six hours. `--skill-review-schedule` accepts a
+recurring native schedule. Existing enabled instances can update the schedule
+or evaluator through the same command; an empty evaluator value (`''`) returns
+to proposal-only review. Omitting all options preserves the existing choice.
+`--refresh-adapter` refreshes an enabled cadence's launcher using the retained
+schedule and evaluator. Upgrades that introduce this feature require refreshing
+an older copied adapter before enabling it.
+
+Use `--no-ordinary-skill-review` to remove only the recorded managed job and its
+unchanged launcher. Other cron jobs remain intact. Setup retains the last job
+identity and configuration in `instance.json`; locally edited managed jobs or
+scripts must be reconciled before setup changes them. A failed activation leaves
+the prepared job paused, and repeating the same enable command retries it.
 
 ## WhatsApp read receipts for a selected profile
 

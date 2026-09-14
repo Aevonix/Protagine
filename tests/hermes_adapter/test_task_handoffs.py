@@ -251,6 +251,17 @@ def status_source_inspection():
     assert [u['update_id'] for u in view['updates']] == [u['id'] for u in updates[-4:]]
     assert not view['updates_complete']
     assert all(not u['native_request_visible'] and 'instruction' not in u for u in view['updates'])
+    assert view['accepted_at'] == row['created'] and view['accepted_at_utc']
+    assert view['age_since_acceptance_seconds'] >= 0
+    # Unknown or future acceptance cannot become a fabricated zero duration.
+    for stamp in (0, float('inf'), row['created']+86400):
+        with database() as db:
+            db.execute('UPDATE native_voice_handoffs SET created=? WHERE id=?', (stamp,row['id']))
+        _, _, unknown = store().inspect_sources(row['id'])
+        assert unknown['age_since_acceptance_seconds'] is None
+        assert unknown['accepted_at_utc'] is None if stamp <= 0 or stamp == float('inf') else unknown['accepted_at_utc']
+    with database() as db:
+        db.execute('UPDATE native_voice_handoffs SET created=? WHERE id=?', (row['created'],row['id']))
     # An owner task does not make a revoked or erased update readable.
     grants['status-update-5'] = False
     erased.add('source-status-update-4')

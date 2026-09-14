@@ -233,11 +233,21 @@ def respond(request):
             if tag == 'STATUS_ERASED':
                 assert not result.get('source_refs') and not result.get('updates'), result
             else:
-                original = adapter.handoffs.get(task_ids['alpha'])['source']['source_refs']
+                from datetime import datetime, timezone
+                retained = adapter.handoffs.get(task_ids['alpha'])
+                original = retained['source']['source_refs']
+                assert result['accepted_at'] == retained['created']
+                assert result['accepted_at_utc'] == datetime.fromtimestamp(retained['created'], timezone.utc).isoformat()
+                assert 0 <= result['age_since_acceptance_seconds'] <= time.time()-retained['created']+.001
                 update = adapter.handoffs.updates(task_ids['alpha'])[0]
                 assert result['input_source_refs'] == original, result
                 assert result['updates_complete'] and len(result['updates']) == 1, result
                 observed = result['updates'][0]
+                assert observed['accepted_at'] == update['created']
+                assert observed['accepted_at_utc'] == datetime.fromtimestamp(update['created'], timezone.utc).isoformat()
+                ack = observed['observations']['native_control_acknowledged']
+                assert ack['observed_at'] == update['observations']['native_control_acknowledged']['observed_at']
+                assert ack['observed_at_utc'] == datetime.fromtimestamp(ack['observed_at'], timezone.utc).isoformat()
                 assert observed['source_refs'] == update['source']['source_refs']
                 assert observed['accepted'] and observed['native_control_acknowledged']
                 assert observed['provider_delivery'] == observed['behavior_applied'] == 'unobserved'

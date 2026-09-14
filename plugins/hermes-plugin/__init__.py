@@ -1862,7 +1862,8 @@ def _plugin_config(ctx: Any) -> dict[str, Any]:
     if isinstance(raw, Mapping):
         plugins = raw.get("plugins")
         if isinstance(plugins, Mapping):
-            return plugin_configuration(raw)
+            from .ordinary_skill_review import plugin_configuration as review_configuration
+            return review_configuration(plugin_configuration(raw))
 
     # Pinned Hermes does not expose config on PluginContext.  Reading its
     # already-existing config is the only fallback; it performs no network or
@@ -1876,7 +1877,8 @@ def _plugin_config(ctx: Any) -> dict[str, Any]:
         if isinstance(memory, Mapping):
             for key, value in memory.items():
                 config.setdefault(key, value)
-        return config
+        from .ordinary_skill_review import plugin_configuration as review_configuration
+        return review_configuration(config)
     except BaseException:
         return {}
 
@@ -2355,7 +2357,7 @@ def register(ctx: Any) -> None:
     client = PacoMindClient(url=url, api_key=api_key)
     work_coordinator = CommitmentCoordinator(client)
     native_reviews = NativeReviews(client, owner_contact_id, config.get('native_reviews'))
-    native_followups = NativeFollowups(client, owner_contact_id)
+    native_followups = NativeFollowups(client, owner_contact_id, config.get('native_reviews'))
     native_config = config.get('native_local_work')
     native_drafts = (NativeDrafts.for_execution(native_config, client, owner_contact_id)
                      if isinstance(native_config, dict) else None)
@@ -2980,9 +2982,11 @@ def register(ctx: Any) -> None:
         _REVIEW_PARENT_SCOPE.set(scope if scope is not None and scope.valid_participant else None)
         review_parent_memory.set(request_memory.snapshot_review_parent(scope))
         from .review_evidence import capture
+        from .ordinary_skill_review import capture_enabled
         experience = native_tasks.execution_experience(**kwargs) if native_tasks is not None else None
         capture(scope, kwargs.get('request'),
-                durable=(config.get('native_reviews') or {}).get('enabled') is True
+                durable=((config.get('native_reviews') or {}).get('enabled') is True
+                         or capture_enabled(config))
                     and not (experience and experience.get('purpose') == 'qualification'))
         return None  # No provider request changes.
     ctx.register_middleware("llm_request", capture_review_parent)

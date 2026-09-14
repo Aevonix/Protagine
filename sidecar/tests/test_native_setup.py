@@ -3,6 +3,8 @@ import json
 import asyncio
 import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,6 +18,161 @@ from dotenv import dotenv_values
 
 from pacomind import setup, setup_hermes
 from pacomind.util.instance import load_environment
+
+
+def _skill_review_native(home, code, *arguments):
+    pytest.importorskip('cron.jobs')
+    result = subprocess.run([sys.executable, '-B', '-c', code, *arguments],
+        env=dict(os.environ, HERMES_HOME=str(home)), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.splitlines()[-1])
+
+
+def _install_skill_review(args, monkeypatch):
+    pytest.importorskip('cron.jobs')
+    from pacomind import setup_local_work
+    monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
+    monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
+    args.ordinary_skill_review = True
+    assert setup.run_init(None, args) == 0
+    state = Path(args.hermes_home)/'pacomind'
+    return state, json.loads((state/'instance.json').read_text())['ordinary_skill_review']
+
+
+def test_ordinary_skill_review_fresh_install_binds_before_activation_and_preserves_other_jobs(args, monkeypatch):
+    from pacomind import setup_skill_reviews
+    home = Path(args.hermes_home)
+    unrelated = _skill_review_native(home, '''
+import json
+from cron.jobs import create_job
+print(json.dumps(create_job(prompt='Keep this unrelated task', schedule='0 1 * * *',
+    name='Unrelated owner job', paused=True)))
+''')
+    original_native = setup_skill_reviews._native
+    def observe(manifest, state, operation, **values):
+        if operation == 'resume':
+            bound = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
+            assert bound == values['expected'] and Path(bound['script']).is_file()
+            job = _skill_review_native(home, 'import json,sys; from cron.jobs import get_job; print(json.dumps(get_job(sys.argv[1])))', bound['job_id'])
+            assert job['enabled'] is False and job['state'] == 'paused'
+        return original_native(manifest, state, operation, **values)
+    monkeypatch.setattr(setup_skill_reviews, '_native', observe)
+    state, binding = _install_skill_review(args, monkeypatch)
+    jobs = _skill_review_native(home, 'import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))')
+    assert len(jobs) == 2
+    retained = _skill_review_native(home, 'import json,sys; from cron.jobs import get_job; print(json.dumps(get_job(sys.argv[1])))', unrelated['id'])
+    assert retained == unrelated
+    job = next(job for job in jobs if job['id'] == binding['job_id'])
+    assert job['enabled'] and job['no_agent'] and job['deliver'] == 'local'
+    assert not any(job.get(key) for key in ('model', 'provider', 'base_url'))
+    assert binding['evaluator_path'] is None and binding['role'] == 'planning'
+    assert not (home/'profiles').exists()
+    assert 'sidecar' not in Path(binding['script']).read_text()
+
+
+def test_ordinary_skill_review_guided_opt_in(args, monkeypatch):
+    from pacomind import setup_local_work
+    pytest.importorskip('cron.jobs')
+    monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
+    monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
+    monkeypatch.setattr(setup_hermes.getpass, 'getpass', lambda *a: '')
+    prompts = []
+    def choose(label, default, noninteractive):
+        prompts.append(label)
+        if label.startswith('Schedule ordinary-skill review'):
+            return 'yes'
+        if label == 'Ordinary-skill review schedule':
+            return '0 4 * * *'
+        if '[Y/n]' in label:
+            return 'no'
+        return default
+    monkeypatch.setattr(setup, '_prompt', choose)
+    args.non_interactive = False
+    assert setup.run_init(None, args) == 0
+    state = Path(args.hermes_home)/'pacomind'
+    binding = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
+    assert binding['enabled'] and binding['schedule'] == '0 4 * * *'
+    assert binding['evaluator_path'] is None
+    assert any(label.startswith('Optional evaluator declaration path') for label in prompts)
+
+
+def test_ordinary_skill_review_existing_upgrade_schedule_disable_and_reenable(args, monkeypatch, tmp_path):
+    state, first = _install_skill_review(args, monkeypatch)
+    models = (state/'.pacomind-llm-config.json').read_bytes()
+    home = Path(args.hermes_home)
+    config = (home/'config.yaml').read_bytes()
+    monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Existing setup called a model'))
+    args.skill_review_schedule = '0 2 * * *'
+    evaluator = tmp_path/'evaluator.json'; evaluator.write_text('{}')
+    args.skill_review_evaluator = str(evaluator)
+    assert setup.run_init(None, args) == 0
+    changed = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
+    assert changed['job_id'] == first['job_id']
+    assert changed['schedule'] == '0 2 * * *' and changed['evaluator_path'] == str(evaluator)
+    args.ordinary_skill_review = False
+    args.skill_review_schedule = args.skill_review_evaluator = None
+    assert setup.run_init(None, args) == 0
+    assert not Path(first['script']).exists()
+    assert _skill_review_native(home, 'import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))') == []
+    assert json.loads((state/'instance.json').read_text())['ordinary_skill_review']['enabled'] is False
+    assert setup.run_init(None, args) == 0
+    args.ordinary_skill_review = True
+    args.skill_review_evaluator = ''
+    assert setup.run_init(None, args) == 0
+    again = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
+    assert again['job_id'] != first['job_id'] and again['evaluator_path'] is None
+    assert (state/'.pacomind-llm-config.json').read_bytes() == models
+    assert (home/'config.yaml').read_bytes() == config
+
+
+@pytest.mark.parametrize('edited', ['script', 'job'])
+def test_ordinary_skill_review_preserves_owner_edits(args, monkeypatch, edited):
+    state, binding = _install_skill_review(args, monkeypatch)
+    if edited == 'script':
+        Path(binding['script']).write_text('# Owner edited this launcher\n')
+    else:
+        _skill_review_native(Path(args.hermes_home), '''
+import json,sys
+from cron.jobs import update_job
+print(json.dumps(update_job(sys.argv[1], {'schedule':'0 3 * * *'})))
+''', binding['job_id'])
+    before = (state/'instance.json').read_bytes()
+    args.ordinary_skill_review = False
+    assert setup.run_init(None, args) == 1
+    assert (state/'instance.json').read_bytes() == before
+    if edited == 'script':
+        assert Path(binding['script']).read_text() == '# Owner edited this launcher\n'
+
+
+def test_ordinary_skill_review_manifest_failure_removes_only_new_paused_job(args, monkeypatch):
+    from pacomind import setup_local_work
+    pytest.importorskip('cron.jobs')
+    monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
+    monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
+    args.ordinary_skill_review = True
+    original_write = setup._atomic_hermes_config_write
+    def fail(path, before, after):
+        if path.name == 'instance.json':
+            raise OSError('Fixture manifest write failure')
+        return original_write(path, before, after)
+    monkeypatch.setattr(setup, '_atomic_hermes_config_write', fail)
+    assert setup.run_init(None, args) == 1
+    home = Path(args.hermes_home)
+    assert _skill_review_native(home, 'import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))') == []
+    assert not list((home/'scripts').glob('pacomind-skill-review-*'))
+    assert 'ordinary_skill_review' not in json.loads((home/'pacomind'/'instance.json').read_text())
+
+
+def test_ordinary_skill_review_invalid_schedule_precedes_attachment(args, monkeypatch):
+    pytest.importorskip('cron.jobs')
+    monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
+    args.ordinary_skill_review = True
+    args.skill_review_schedule = 'not a schedule'
+    assert setup.run_init(None, args) == 1
+    home = Path(args.hermes_home)
+    assert not (home/'pacomind').exists()
+    assert not (home/'plugins').exists()
+    assert not (home/'cron'/'jobs.json').exists()
 
 
 @pytest.fixture(autouse=True)

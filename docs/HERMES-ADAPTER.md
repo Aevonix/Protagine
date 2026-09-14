@@ -826,9 +826,24 @@ observations to the native internal reviewer. Trusted request middleware binds
 that same receipt to `_pacomind_task_assessment_batch` before staging one new
 main skill file. Model-supplied evaluator metadata must be overwritten. This is
 an integration entry point; it adds no scheduler, service or default adoption.
-The public installer's `--native-reviews` option prepares operational read-only
-reviews; it does not install this ordinary skill-review cadence. A deployment
-must connect this entry point to its existing native review or cron caller.
+The public installer's opt-in `--ordinary-skill-review` option connects it to one
+managed script job in the selected home's existing native scheduler, using the
+configured planning role. Its evaluator is optional: omitting it leaves proposals
+pending. [Guided setup](LOCAL-HERMES-SETUP.md#scheduled-ordinary-skill-review)
+documents cadence, explicit evaluator selection, refresh and removal.
+`--native-reviews` separately prepares operational read-only reviews.
+
+The same declaration can explicitly qualify passively captured tool failures
+through an optional `native_failures` list. Each selector contains `tool_name`
+and `error_class`, with optional `result_sha256`. The generic
+`tool_returned_error` class requires the exact retained result SHA-256 so unrelated
+errors cannot inherit that qualification. All selected occurrences must match.
+Omitting these selectors keeps tool-failure proposals pending. The caller binds
+the selected declaration and original claimed native observations outside model
+output in `_pacomind_native_failure_batch`. Before and after measurement it checks
+the original ledger claim, native call/result bytes, participant and existing
+history erasure rules. Measurements retain `native_failure_evidence`; these
+observations never become machine artifact assessments.
 
 `allow_apply: false` leaves the result as a native proposal. With explicit
 operator configuration, `evaluate_once` uses the existing evaluator and native
