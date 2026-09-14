@@ -11,6 +11,14 @@ def handle(args, scope, client, request_memory, context):
     if (scope is None or not scope.valid_participant or not scope.task_id or not scope.turn_id
             or not context.get('tool_call_id')):
         return json.dumps({'error': 'An exact native participant and tool call are required'})
+    supplied = request_memory.supplied_snapshot(scope) or []
+    if isinstance(args, dict) and 'source_version' not in args:
+        versions = {ref['source_version'] for ref in supplied
+                    if ref['source_id'] == args.get('source_id')}
+        if len(versions) != 1:
+            return json.dumps({'error': 'Supply a source ID with one revision already provided to this turn, '
+                               'or the exact supplied source ID and source_version'})
+        args = {**args, 'source_version': next(iter(versions))}
     allowed = {'source_id', 'source_version', 'view', 'claim_id', 'offset', 'read_revision', 'asset_hash', 'page', 'requested_ms'}
     if (not isinstance(args, dict) or set(args) - allowed
             or not isinstance(args.get('source_id'), str) or not 1 <= len(args['source_id']) <= 256
@@ -37,7 +45,6 @@ def handle(args, scope, client, request_memory, context):
             or not video_view and args.get('requested_ms') is not None):
         return json.dumps({'error': 'Video opening requires the original clip hash and clip-relative requested_ms in 0..30000, without a history/page selector'})
     ref = {key: args[key] for key in ('source_id', 'source_version')}
-    supplied = request_memory.supplied_snapshot(scope) or []
     if ref not in supplied:
         error = {'error': 'The source revision must have been supplied to this participant and turn'}
         matching = [candidate for candidate in supplied if candidate['source_version'] == args['source_version']]

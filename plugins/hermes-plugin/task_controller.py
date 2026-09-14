@@ -30,7 +30,9 @@ TOOL_SCHEMA = {
         'open them with pacomind_memory_read_source. Update acknowledgment and request '
         'visibility do not prove that the behavior was applied. '
         'List also reports profile-declared model role names for task submission. '
-        'Use normal conversation for questions and native delegation for child work.'),
+        'Answer routine questions directly. For difficult reasoning or evidence synthesis, '
+        'use a suitable declared model role and keep the conversation responsive while it works. '
+        'Use native delegation for child work within a task.'),
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {

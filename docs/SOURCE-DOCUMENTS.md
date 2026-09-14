@@ -39,7 +39,10 @@ ordinary canonical provenance. Exact original bytes remain available through
 the existing scoped `GET /v1/host/memory/sources/assets/{asset_hash}` endpoint.
 
 After scoped recall supplies an exact source revision, `pacomind_memory_read_source`
-accepts `view: "document"`, its `asset_hash`, and a one-based `page`. The host API
+accepts `view: "document"`, its `asset_hash`, and a one-based `page`. The native
+tool can fill in `source_version` when this turn already supplied exactly one
+revision for the requested `source_id`. It never substitutes a newer revision.
+The host API
 uses the same fields with `source_view: "document"` at
 `POST /v1/host/memory/read`. Source ID, source version and participant/session
 scope are required. Text pages use the existing bounded character pagination;

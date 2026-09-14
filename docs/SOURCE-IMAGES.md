@@ -61,11 +61,13 @@ There is no public static file route. The existing `pacomind_memory_read_source`
 tool accepts `view: "image"` with a supplied `source_id`, `source_version`, and
 `asset_hash` (the 64 hexadecimal characters after `sha256:`). The source
 revision must already have reached this participant's current model request.
+The native tool can use that supplied revision when `source_version` is omitted
+and exactly one revision matches the requested `source_id` in the current turn.
 The tool accepts no file path, URL, participant override or image service.
 Opening another person's source or an asset not in that exact source fails.
 
 Recalled media places its checked canonical `source_id` and `source_version`
-beside the description. Copy those fields together; the `media:` row ID and
+beside the description. Use that source ID; the `media:` row ID and
 `sha256:` asset ID identify different things. This metadata uses the existing
 recall character budget. A mismatched reader request can show up to four
 already-supplied sources matching the requested version, while retaining the

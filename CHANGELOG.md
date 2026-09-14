@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.23 - simpler source reads and reasoning handoffs
+
+The native source reader can reuse the exact revision already supplied to the
+current turn when the caller gives its source ID. Explicit versions, ambiguous
+references, source ownership and page revision checks keep their existing
+meaning. This avoids asking the model to repeat an otherwise redundant hash.
+
+Task guidance now distinguishes routine direct answers from difficult reasoning
+that can use a declared background role while conversation continues. This is
+guidance for the existing task interface, not a new router or an established
+answer-quality improvement.
+
+Validation: native source opening, pagination, annotation, changed identity and
+erasure checks passed, along with existing task controller checks.
+
 ## v1.5.22 - current task revisions across conversations
 
 A foreground owner conversation can receive the latest accepted revision of a

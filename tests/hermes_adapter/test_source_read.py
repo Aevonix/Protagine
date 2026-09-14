@@ -25,11 +25,15 @@ assert long_ref['source_version'] in recalled
 ref=long_ref
 prime('reader','reader-task','reader-turn')
 messages=[{'role':'user','content':compose_user_api_content('',recalled,'')}]
-args=dict(long_ref); pages=[]; count=0
+# The native wrapper used to reject this before the reader ran. The exact
+# revision is already in this turn's supplied recall, so no hash transcription
+# or new source lookup is needed for the first page.
+args={'source_id':long_ref['source_id']}; pages=[]; count=0
 while True:
     opened=dispatch(args,session='reader',task='reader-task',turn='reader-turn',
                     call='source-read-'+str(count),tool='pacomind_memory_read_source')
     assert 'error' not in opened,opened
+    assert opened['source_version']==long_ref['source_version']
     assert opened['reported_at']=='2024-02-03T04:05:06+00:00'
     assert opened['recorded_at']!=opened['reported_at'] and opened['evidence_basis']=='retained_record'
     assert 'does not re-inspect its underlying subject' in opened['guidance']
@@ -44,6 +48,15 @@ while True:
     assert count<8
     args={**long_ref,'offset':opened['next_offset'],'read_revision':opened['read_revision']}
 assert count>1 and json.loads(''.join(pages))['messages'][0]['content']==long_text
+assert 'error' in dispatch({'source_id':'not-supplied'},session='reader',task='reader-task',
+    turn='reader-turn',call='unsupplied-read',tool='pacomind_memory_read_source')
+assert 'error' in dispatch({**long_ref,'source_version':'f'*64},session='reader',task='reader-task',
+    turn='reader-turn',call='wrong-revision-read',tool='pacomind_memory_read_source')
+with patch('pacomind_hermes.request_memory.RequestMemory.supplied_snapshot',
+           return_value=[long_ref,{**long_ref,'source_version':'e'*64}]):
+    ambiguous=dispatch({'source_id':long_ref['source_id']},session='reader',task='reader-task',
+        turn='reader-turn',call='ambiguous-revision-read',tool='pacomind_memory_read_source')
+    assert 'one revision' in ambiguous['error'],ambiguous
 ledger.erase_sources(contact_id='person',turn_ids=['long-native'])
 checked=apply_llm_request_middleware({'messages':messages},session_id='reader',
     task_id='reader-task',turn_id='reader-turn').payload
