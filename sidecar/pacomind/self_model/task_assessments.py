@@ -8,7 +8,7 @@ from contextlib import closing
 import hashlib
 import json
 
-from pacomind.turns.idempotency import canonical_turn_digest, SourceErased
+from pacomind.turns.idempotency import canonical_turn_digest, source_message_hash, SourceErased
 
 VERSION = 'task-artifact-assessment-v1'
 ATTRIBUTION = 'host_reported_machine_assessment_unverified'
@@ -25,17 +25,47 @@ def quotation_metadata(message):
             'Open the complete source before treating it as a review verdict or recommendation.'}}
 
 
-def _current(conn, refs, *, contact_id, session_id):
+def _current(conn, refs, *, contact_id, session_id, annotation_checks=(), input_refs=()):
+    from pacomind.turns.source_annotations import current_candidates_in_connection
+    expected = {(ref['source_id'], ref['source_version']) for ref in refs}
+    membership, candidates = {}, []
+    for check in annotation_checks:
+        # An applicable correction still withholds a current assessment. Exact
+        # membership only distinguishes an unrelated annotated sibling; it is
+        # host-reported provenance, never inferred from the quoted artifact.
+        if check['annotation_ids'] or set(check['message_hashes']) != {
+                ref['source_id'] for ref in check['source_refs']}:
+            return False
+        for ref in check['source_refs']:
+            hashes = check['message_hashes'][ref['source_id']]
+            if not hashes or (ref['source_id'], ref['source_version']) not in expected:
+                return False
+            membership.setdefault(ref['source_id'], set()).update(hashes)
+        candidates.append({'_annotation_source_refs': check['source_refs'],
+            '_annotation_message_hashes': check['message_hashes'], '_annotation_ids': []})
     for ref in refs:
-        row = conn.execute('''SELECT messages_json FROM turn_sources s WHERE turn_id=?
+        row = conn.execute('''SELECT session_id,messages_json FROM turn_sources s WHERE turn_id=?
             AND contact_id=? AND (scope='person' OR session_id=?)
             AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=s.turn_id)
-            AND NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=s.turn_id)
-            AND NOT EXISTS (SELECT 1 FROM source_annotations a WHERE a.target_source_id=s.turn_id)''',
+            AND NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=s.turn_id)''',
             (ref['source_id'], contact_id, session_id)).fetchone()
-        if row is None or canonical_turn_digest(json.loads(row[0])) != ref['source_version']:
+        if row is None or canonical_turn_digest(json.loads(row['messages_json'])) != ref['source_version']:
             return False
-    return True
+        if ref['source_id'] in membership:
+            retained = {source_message_hash(row['session_id'], message)
+                for message in json.loads(row['messages_json'])}
+            if not membership[ref['source_id']] <= retained:
+                return False
+        elif conn.execute('SELECT 1 FROM source_annotations WHERE target_source_id=?',
+                          (ref['source_id'],)).fetchone():
+            return False
+    # A host cannot select an unrelated sibling instead of the execution's
+    # immutable admitted input, even if that sibling is a valid message.
+    if any(ref['source_id'] in membership and ref['input_message_hash'] not in membership[ref['source_id']]
+           for ref in input_refs):
+        return False
+    return len(current_candidates_in_connection(conn, candidates,
+        contact_id=contact_id, session_id=session_id)) == len(candidates)
 
 
 def supported(conn, *, message, source_id, contact_id, session_id):
@@ -45,7 +75,9 @@ def supported(conn, *, message, source_id, contact_id, session_id):
         return False
     if conn.execute('SELECT 1 FROM source_annotations WHERE target_source_id=?', (source_id,)).fetchone():
         return False
-    return _current(conn, message['_supplied_sources'], contact_id=contact_id, session_id=session_id)
+    return _current(conn, message['_supplied_sources'], contact_id=contact_id, session_id=session_id,
+        annotation_checks=message.get('_assessment_annotation_checks', ()),
+        input_refs=message['_supplied_inputs'])
 
 
 def _render(facts, documents):
@@ -74,7 +106,9 @@ def admit(registry, value, *, principal_id, contact_id):
     identity = canonical_turn_digest([principal_id, value['execution_id'],
         value['artifact']['sha256'], value['assessment']['sha256']])
     source_id = 'task-artifact-assessment:' + identity
-    request_digest = canonical_turn_digest(value)
+    # The additive default must not change an already retained legacy request.
+    request_digest = canonical_turn_digest({key: item for key, item in value.items()
+        if key != 'annotation_checks' or item})
     source_session = 'task-artifact-assessment:' + identity
     with closing(ledger._connect()) as conn:
         old = conn.execute('SELECT messages_json FROM turn_sources WHERE turn_id=?', (source_id,)).fetchone()
@@ -109,7 +143,8 @@ def admit(registry, value, *, principal_id, contact_id):
             [*value['source_refs'], value['runtime_source_ref']]}.values())
         input_refs = ledger._resolve_input_dependencies(conn, contact_id, source_session, value['input_refs'])
         refs = list({(ref['source_id'], ref['source_version']): ref for ref in [*refs, *input_refs]}.values())
-        if not _current(conn, refs, contact_id=contact_id, session_id=source_session):
+        if not _current(conn, refs, contact_id=contact_id, session_id=source_session,
+                annotation_checks=value.get('annotation_checks', ()), input_refs=value['input_refs']):
             raise ValueError('task_assessment_source_changed')
         runtime = conn.execute('SELECT messages_json FROM turn_sources WHERE turn_id=?', (runtime_id,)).fetchone()
         runtime_messages = json.loads(runtime[0])
@@ -129,6 +164,8 @@ def admit(registry, value, *, principal_id, contact_id):
     message = {'role': 'assistant', 'content': content, '_task_artifact_assessment': VERSION,
         '_assessment_request_sha256': request_digest, '_supplied_inputs': value['input_refs'],
         '_supplied_sources': refs}
+    if value.get('annotation_checks'):
+        message['_assessment_annotation_checks'] = value['annotation_checks']
     # record_source owns source+queue atomicity and rechecks canonical lineage
     # and erasure. A concurrent annotation is also rechecked by the worker.
     created = ledger.record_source(source_id, contact_id=contact_id, session_id=source_session,

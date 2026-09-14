@@ -275,16 +275,24 @@ def inputs_unannotated(ledger, refs):
 
 def current_candidates(ledger, candidates, *, contact_id, session_id):
     """Do not publish stale evidence after a correction changes during ranking."""
+    if not any(row.get('_annotation_source_refs') for row in candidates):
+        return candidates
+    with closing(ledger._connect()) as conn:
+        return current_candidates_in_connection(conn, candidates, contact_id=contact_id, session_id=session_id)
+
+
+def current_candidates_in_connection(conn, candidates, *, contact_id, session_id):
+    """Apply the same source and annotation checks inside a caller's read."""
+    from .idempotency import TurnIdempotencyLedger
     required = [ref for row in candidates for ref in row.get('_annotation_source_refs', [])]
     if not required:
         return candidates
-    current = {r['source_id']: r['source_version'] for r in ledger.source_references(
-        [r['source_id'] for r in required], contact_id=contact_id, session_id=session_id)}
+    current = {r['source_id']: r['source_version'] for r in TurnIdempotencyLedger._source_references(
+        conn, [r['source_id'] for r in required], contact_id=contact_id, session_id=session_id)}
     notes = {}
-    with closing(ledger._connect()) as conn:
-        for identifier, version in current.items():
-            notes[identifier] = {row[0]: set(json.loads(row[1])) for row in conn.execute('''SELECT annotation_source_id,target_message_hashes_json
-                FROM source_annotations WHERE target_source_id=? AND target_version=?''', (identifier, version))}
+    for identifier, version in current.items():
+        notes[identifier] = {row[0]: set(json.loads(row[1])) for row in conn.execute('''SELECT annotation_source_id,target_message_hashes_json
+            FROM source_annotations WHERE target_source_id=? AND target_version=?''', (identifier, version))}
     return [row for row in candidates if all(current.get(ref['source_id']) == ref['source_version']
             for ref in row.get('_annotation_source_refs', [])) and (
                 not row.get('_annotation_source_refs') or set(row['_annotation_ids']) == set().union(
