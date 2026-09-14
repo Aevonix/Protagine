@@ -81,7 +81,7 @@ def selected_batch(entries, evaluator, connection, owner):
     return {'source': SOURCE, 'attribution': ATTRIBUTION, 'skill': None,
         'observations': records, 'source_refs': refs, 'task_ids': sorted(tasks),
         'execution_ids': sorted(executions), 'observation_ids': ids,
-        'failure_sha256': digest(ids), 'evaluator': evaluator['binding'],
+        'failure_sha256': digest(ids), 'evaluator': evaluator['binding'] if evaluator is not None else None,
         'recurrence': 'not_yet_assessed', 'quality_credit': False}
 
 
