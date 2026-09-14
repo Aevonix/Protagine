@@ -735,11 +735,12 @@ controlled model fixture.
 
 `python -m pacomind_hermes.review_evaluation --skill NAME --pending ID
 --oracle trusted_local_module:function` evaluates one explicitly selected,
-existing curator-owned `SKILL.md` proposal. It accepts native full-content
+curator-owned `SKILL.md` proposal. It accepts native full-content
 edits or exact text patches, including a one-operation native batch. Text
 patches must match their captured original content without ambiguity unless
 native `replace_all` is explicit. Support-file changes, multiple-operation batches,
-new skills and unrelated proposals stay in Hermes' ordinary pending mechanism.
+and unrelated proposals stay in Hermes' ordinary pending mechanism. A selected
+main-file creation uses the genuinely absent skill as its baseline.
 The selected local oracle is trusted operator code, not a model tool or a
 model-selected command. It receives the playbook text and a phase and must bound
 its own task execution. It returns explicit case IDs and boolean outcomes.
@@ -777,6 +778,64 @@ review and exact text patch: its declared task scored 0/2 before, 2/2 with the
 candidate, and 2/2 after activation. An injected evaluator outage restored the
 original bytes through native rollback. This was a neutral fixture, not a live
 recurring skill or an observed spontaneous model regression.
+
+### Learning from completed task assessments
+
+`POST /v1/host/executions/assessments/read` returns complete, attributed assessment
+bundles to the configured owner with `context:read`. Exact source references can
+be checked again before use. Erased, corrected, invalidated or unsupported
+assessments are excluded, including changes to their supporting messages.
+Reviewer text remains an unverified report, not owner consent or a parsed verdict.
+
+`pacomind_hermes.task_review_experience` lets an existing native review caller
+consider two distinct tasks and executions. It retains contrary reviews of the
+same task but never counts them as extra experience. The candidate reviewer must
+decide whether the complete bundles support a recurring problem and a useful
+skill hypothesis. The module does not assess every completed task automatically.
+
+The operator selects an existing local evaluator and its task scope:
+
+```json
+{
+  "id": "source-procedure",
+  "scope": "Reading current supplied source files before stating their behavior",
+  "oracle": "selected_oracle:check",
+  "oracle_id": "frozen-recipe-identifier",
+  "environment": {"PACOMIND_SELECTED_ORACLE_PLAN": "/private/instance/oracle-plan.json"},
+  "allow_apply": false
+}
+```
+
+The oracle owns its frozen inputs and must report actual case outcomes under
+the measured-update contract above. Its scope must fit the proposed change;
+passing unrelated cases does not qualify a skill. In the existing native caller:
+
+```python
+from tools import skill_ledger
+from pacomind_hermes import task_review_experience as experience
+
+evaluator = experience.declaration("/private/instance/task-review-evaluator.json")
+result = experience.evaluate_once(evaluator, scoped_client, owner_contact_id)
+batch = experience.selected_batch(skill_ledger.list_entries(), evaluator,
+                                  scoped_client, owner_contact_id)
+```
+
+When a batch exists, the caller claims its `receipt(batch)` in the existing
+`ordinary_skill_review` ledger, rechecks its sources, and passes its complete
+observations to the native internal reviewer. Trusted request middleware binds
+that same receipt to `_pacomind_task_assessment_batch` before staging one new
+main skill file. Model-supplied evaluator metadata must be overwritten. This is
+an integration entry point; it adds no scheduler, service or default adoption.
+The public installer's `--native-reviews` option prepares operational read-only
+reviews; it does not install this ordinary skill-review cadence. A deployment
+must connect this entry point to its existing native review or cron caller.
+
+`allow_apply: false` leaves the result as a native proposal. With explicit
+operator configuration, `evaluate_once` uses the existing evaluator and native
+rollback. It rechecks sources before and after each measurement and rotates
+later audits using existing ledger order. Later owner edits are preserved.
+An observed candidate or a passing controlled fixture is not evidence that a
+deployment has learned usefully from ordinary production work.
 
 ### Bounded operational reviews
 

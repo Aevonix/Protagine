@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`84c7d76a24795cf30a85a5c36e257eb760d0bdf0`](https://github.com/Kurcide/hermes-agent/commit/84c7d76a24795cf30a85a5c36e257eb760d0bdf0),
+`089a8c22cdf3afb2154619890930d2663e3b9441`](https://github.com/Kurcide/hermes-agent/commit/089a8c22cdf3afb2154619890930d2663e3b9441),
 based on [Hermes v0.21.3, tag `v2026.9.14`,
 `345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/84c7d76a24795cf30a85a5c36e257eb760d0bdf0/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/089a8c22cdf3afb2154619890930d2663e3b9441/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
