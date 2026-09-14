@@ -50,16 +50,53 @@ def test_shared_recurrence_uses_distinct_real_turns_and_current_skill():
     assert experience.next_batch([receipt,*entries('a','b')],'artifact-sanitization',SHA) is None
 
 
-def test_qualification_replay_and_unobserved_skill_are_not_ordinary_experience():
+def test_qualification_and_replayed_old_turn_are_not_ordinary_experience():
     for fields in [{'authority_lane':'system'}, {'platform':'cli'}, {'platform':'cron'},
                    {'authority_lane':'guest'},{'resolution_status':'attested_system'}]:
         assert experience.observations(*observed(**fields))==[]
     scope,messages,errors=observed()
     assert experience.observations(scope,messages+[{'role':'user','content':'Different turn'}],errors)==[]
-    assert experience.observations(scope,[m for m in messages if m.get('tool_call_id')!='view-a'],errors)==[]
     value=experience.observations(scope,messages,errors)[0][1]
     assert value['skill_sha256']==SHA
     assert TEXT not in json.dumps(value) and 'real incident' not in json.dumps(value)
+
+
+def test_unviewed_failure_retains_real_occurrence_without_skill_attribution():
+    rows=[]
+    for session in ('a','b'):
+        scope,messages,errors=observed(session)
+        messages=[m for m in messages if m.get('tool_call_id')!='view-'+session]
+        values=experience.observations(scope,messages,errors)
+        assert len(values)==1
+        name,value=values[0]
+        assert name is None and value['attribution']=='unattributed'
+        assert 'skill_call_id' not in value and 'skill_sha256' not in value
+        rows.insert(0,{'action':'ordinary_tool_failure','skill':None,'evidence':value})
+    assert experience.next_batch(rows[:1]) is None
+    batch=experience.next_batch(rows)
+    assert batch['skill'] is None and batch['skill_sha256'] is None
+    assert batch['attribution']=='unattributed'
+    assert len(batch['observations'])==2 and len(batch['observation_ids'])==2
+    assert {r['session_id'] for r in batch['observations']}=={'a','b'}
+    assert experience.next_batch([rows[0],rows[0]]) is None
+    assert experience.next_batch([{'action':'ordinary_skill_review','evidence':batch},*rows]) is None
+    assert experience.next_batch(rows,'artifact-sanitization',SHA) is None
+    assert experience.next_batch(entries('a','b')) is None
+
+
+def test_unattributed_recurring_call_id_is_distinct_per_native_turn():
+    rows=[]
+    for turn in ('one','two'):
+        scope,messages,errors=observed('same-session',turn)
+        messages=[m for m in messages if m.get('tool_call_id')!='view-same-session']
+        name,value=experience.observations(scope,messages,errors)[0]
+        rows.insert(0,{'action':'ordinary_tool_failure','skill':name,'evidence':value})
+    assert len({row['evidence']['observation_id'] for row in rows})==2
+    assert len(experience.next_batch(rows)['observations'])==2
+    assert experience.next_batch([rows[0],rows[0]]) is None
+    changed=json.loads(json.dumps(rows))
+    changed[0]['evidence']['request_visible_result_sha256']='0'*64
+    assert experience.next_batch(changed) is None
 
 
 def test_retained_native_ledger_records_survive_fresh_collector(monkeypatch,tmp_path):
