@@ -8,10 +8,10 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`a012d62efabceb5ac5f725c1867d959974edc3ee`](https://github.com/Kurcide/hermes-agent/commit/a012d62efabceb5ac5f725c1867d959974edc3ee),
+`9b0bead09a36f69cedc24c981c8d917d59471b3e`](https://github.com/Kurcide/hermes-agent/commit/9b0bead09a36f69cedc24c981c8d917d59471b3e),
 based on [Hermes v0.21.2,
 `939e45c91d751fadd94dcd1b873ac3cb44846213`](https://github.com/NousResearch/hermes-agent/commit/939e45c91d751fadd94dcd1b873ac3cb44846213),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/a012d62efabceb5ac5f725c1867d959974edc3ee/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/9b0bead09a36f69cedc24c981c8d917d59471b3e/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
 
@@ -19,8 +19,9 @@ This build accepts `tools.tool_search.eager`, an optional list of exact tool
 names whose full schemas should remain visible. A name only takes effect when
 that tool is already admitted and available in the session. Other tools retain
 normal discovery, and execution still uses native validation and middleware.
-The default list is empty. For frequent memory and shared-task operations, a
-deployment can select:
+The native default list is empty. PacoMind guided installation and explicit
+adapter refresh append `pacomind_task` while preserving existing names and search
+options. For frequent original-source reads, a deployment can additionally select:
 
 ```yaml
 tools:
@@ -116,7 +117,11 @@ so a late appended answer requires a fresh selection before cleanup can finish.
 `on_native_turn_settled` runs after native persistence and lease release;
 `on_gateway_turn_settled` runs after the outer gateway lease release in the
 owning profile. These hooks let an adapter finish a forget requested during a
-turn. They do not discover source ownership or create an erasure scheduler.
+turn. The native settled hook also supplies bounded completion/failure flags and
+a native failure category for an observed task generation, including early
+provider failures. The gateway startup recovery path retains its existing saved
+model override. These observations support explicit same-session task resume;
+they do not discover source ownership or create an erasure scheduler.
 PacoMind supplies that lineage through its existing source and outbox machinery.
 The adapter's [storage contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
 lists the supported copies and remaining limits.

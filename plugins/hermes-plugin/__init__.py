@@ -3013,6 +3013,8 @@ def register(ctx: Any) -> None:
         ctx.register_hook('on_detached_turn_end', detached_turn_end)
     if 'on_native_turn_settled' in VALID_HOOKS:
         ctx.register_hook('on_native_turn_settled', native_owned.native_settled)
+        if native_tasks is not None:
+            ctx.register_hook('on_native_turn_settled', native_tasks.settle_native_turn)
     if 'on_gateway_turn_settled' in VALID_HOOKS:
         ctx.register_hook('on_gateway_turn_settled', native_owned.gateway_settled)
         ctx.register_hook('on_kanban_dispatch_tick', native_owned.idle)

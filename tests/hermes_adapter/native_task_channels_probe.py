@@ -57,7 +57,7 @@ keyring.chmod(0o600)
     'platforms': {'pacomind_task': {'extra': {'task_model_roles': {
         'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}}}},
     'auxiliary': {'title_generation': {'enabled': False}},
-    'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4}, 'toolsets': ['pacomind'],
+    'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4, 'api_max_retries': 0}, 'toolsets': ['pacomind'],
     'display': {'platforms': {'pacomind_task': {'streaming': False, 'tool_progress': 'off'}}},
     'memory': {'provider': 'pacomind-memory', 'config': {
         'contact_id': owner, 'url': 'http://fixture', 'api_key': secret}},
@@ -73,11 +73,12 @@ for router in (host.router, host.v2_router, executions.router):
 api = TestClient(app)
 api.__enter__()
 ledger = get_turn_idempotency_ledger(state)
-wire, generation, foreground_calls, tool_results = [], {'alpha': [], 'beta': []}, {}, {}
+wire, generation, foreground_calls, tool_results = [], {'alpha': [], 'beta': [], 'failure': []}, {}, {}
 context_reads = []
-held = {name: threading.Event() for name in ('alpha', 'beta', 'alpha_next')}
+held = {name: threading.Event() for name in ('alpha', 'beta', 'alpha_next', 'failure_next')}
 release = {name: threading.Event() for name in held}
 task_ids = {}
+expected_failure_turn = None
 source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
 update_text = 'Keep the alpha comparison scoped to the violet notes and label the result ORANGE-472.'
@@ -104,9 +105,11 @@ def answer(body, text):
 
 
 def tool(body, name, arguments):
+    if name not in {value.get('function', {}).get('name') for value in body.get('tools', [])}:
+        name, arguments = 'tool_call', {'name': name, 'arguments': arguments}
     return message_response(body, {'role': 'assistant', 'content': None, 'tool_calls': [{
-        'id': 'fixture-tool-' + str(next(tool_ids)), 'type': 'function', 'function': {'name': 'tool_call',
-        'arguments': json.dumps({'name': name, 'arguments': arguments})}}]}, 'tool_calls')
+        'id': 'fixture-tool-' + str(next(tool_ids)), 'type': 'function', 'function': {'name': name,
+        'arguments': json.dumps(arguments)}}]}, 'tool_calls')
 
 
 def respond(request):
@@ -134,6 +137,23 @@ def respond(request):
     active = ACTIVE.get()
     if active is not None:
         row = adapter.handoffs.get(active['id'])
+        if 'TASK_FAILURE' in row['request']:
+            generation['failure'].append(body)
+            step = len(generation['failure'])
+            assert step <= 3, 'Exhausted task was dispatched again'
+            assert active['native']['session_id'] == row['native_session_id']
+            if step == 1:
+                return tool(body, 'write_file', {'path': str(home/'retained-effect.txt'),
+                                               'content': 'Completed before the route failed.'})
+            assert (home/'retained-effect.txt').read_text() == 'Completed before the route failed.'
+            if step == 2:
+                raise httpx.ReadTimeout('Controlled unavailable model route', request=request)
+            assert row['native_turn_id'] != expected_failure_turn and row['terminal'] is None
+            assert 'Completed before the route failed.' in json.dumps(body['messages'])
+            assert 'The owner requested continuation of this same task' in json.dumps(body['messages'])
+            held['failure_next'].set()
+            assert release['failure_next'].wait(35), 'Resumed task was never released'
+            return answer(body, 'TASK_FAILURE continued from its retained tool result.')
         name = 'alpha' if 'TASK_ALPHA' in row['request'] else 'beta'
         assert 'TASK_' + name.upper() in row['request'], row
         assert body['model'] == ('fixture-coding-model' if name == 'alpha' else 'fixture-model')
@@ -182,7 +202,8 @@ def respond(request):
     assert body['model'] == 'fixture-model', 'Task model selection escaped into foreground work'
     latest = next(row.get('content') for row in reversed(body['messages']) if row.get('role') == 'user')
     latest = latest if isinstance(latest, str) else json.dumps(latest)
-    tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA',
+    tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'SUBMIT_FAILURE', 'RESUME_FAILURE',
+                                 'RESUME_FAILURE_DUPLICATE', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA',
                                  'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED')
                 if latest.startswith('FG_' + name + ':')), None)
     assert tag is not None, latest
@@ -220,6 +241,9 @@ def respond(request):
         return answer(body, 'FG_' + tag + '_ACK')
     assert step <= 2, (tag, body)
     if step == 1:
+        if tag.startswith('RESUME_'):
+            return tool(body, 'pacomind_task', {'operation': 'resume',
+                'task_id': task_ids['failure'], 'expected_turn_id': expected_failure_turn})
         if tag.startswith('SUBMIT_'):
             name = tag.removeprefix('SUBMIT_')
             return tool(body, 'pacomind_task', {'operation': 'submit',
@@ -230,7 +254,9 @@ def respond(request):
     results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
     tool_results[tag] = results
     assert results and '"error"' not in results[-1], (tag, results)
-    if tag.startswith('SUBMIT_') or tag == 'STEER_ALPHA':
+    if tag.startswith('RESUME_'):
+        assert isinstance(json.loads(results[-1])['native_observation']['resume_requested'], bool), results
+    elif tag.startswith('SUBMIT_') or tag == 'STEER_ALPHA':
         assert '"accepted": true' in results[-1], (tag, results)
     else:
         assert '"stop_requested": true' in results[-1], results
@@ -240,6 +266,8 @@ def respond(request):
 def controlled(self, request):
     try:
         return respond(request)
+    except httpx.ReadTimeout:
+        raise  # Exercise actual SDK classification and native retry exhaustion.
     except BaseException:
         import traceback
         traceback.print_exc()
@@ -300,7 +328,7 @@ async def wait_for(predicate, label, timeout=15):
 
 
 async def exercise():
-    global tearing_down
+    global tearing_down, expected_failure_turn
     runner._running = True
     runner._gateway_loop = asyncio.get_running_loop()
     try:
@@ -371,6 +399,66 @@ async def exercise():
         assert beta['stop'] is None
         assert len(generation['alpha']) == 2 and len(generation['beta']) == 1
         await wait_for(lambda: not adapter._session_tasks, 'native task delivery cleanup')
+        failed_ack = await asyncio.wait_for(runner._handle_message(event('SUBMIT_FAILURE')), 12)
+        assert failed_ack == 'FG_SUBMIT_FAILURE_ACK', failed_ack
+        await wait_for(lambda: any('TASK_FAILURE' in row['request'] and row['notice_json']
+            for row in adapter.handoffs.recent()), 'failed task notice')
+        failed = next(row for row in adapter.handoffs.recent() if 'TASK_FAILURE' in row['request'])
+        await wait_for(lambda: not adapter._session_tasks, 'failed task delivery cleanup')
+        assert failed['terminal'] and failed['terminal']['failed'], failed
+        assert failed['terminal']['failure_reason'] == 'timeout', failed
+        assert failed['terminal']['failure_retryable'] is True, failed
+        assert failed['terminal']['basis'] == 'native_on_native_turn_settled', failed
+        assert failed['response'] is None and failed['dependencies'] is None, failed
+        notice = json.loads(failed['notice_json'])['text']
+        assert '/reset' not in notice and 'source receipt' not in notice
+        status = await adapter.status(failed['id'])
+        assert status['status'] == 'failed' and status['failure'] == failed['terminal'], status
+        assert status['input_source_refs'] == failed['source']['source_refs']
+        # Reopen the retained database as a restarted consumer, without a live
+        # native session store. A failed result remains distinct from an answer.
+        from pacomind_hermes.task_controller import NativeTasks
+        from pacomind_hermes.task_handoffs import TaskHandoffs
+        reopened = TaskHandoffs(adapter.handoffs._database, adapter.handoffs._resolve_source,
+                               adapter.handoffs._resolve_owner)
+        saved = reopened.get(failed['id'])
+        assert saved['source'] == failed['source'] and saved['terminal'] == failed['terminal']
+        assert NativeTasks._metadata(saved)['status'] == 'failed'
+        assert reopened.pending() == [] and len(generation['failure']) == 2
+        # Targeted owner control resumes exactly this task/session. The first
+        # turn already wrote a file; its durable tool result must remain in
+        # history and that operation must never be dispatched again.
+        task_ids['failure'] = failed['id']
+        expected_failure_turn = failed['native_turn_id']
+        original_effect = (home/'retained-effect.txt').stat().st_mtime_ns
+        stale = await adapter.dispatch_native_event({'handoff_id': failed['id'], 'action': 'resume',
+                                                    'expected_turn_id': 'wrong-generation'})
+        assert not stale['resume_requested'] and len(generation['failure']) == 2
+        resumed = await asyncio.wait_for(asyncio.gather(
+            runner._handle_message(event('RESUME_FAILURE', whatsapp=True)),
+            runner._handle_message(event('RESUME_FAILURE_DUPLICATE'))), 15)
+        assert resumed == ['FG_RESUME_FAILURE_ACK', 'FG_RESUME_FAILURE_DUPLICATE_ACK'], resumed
+        assert sum(json.loads(tool_results[tag][-1])['native_observation']['resume_requested']
+                   for tag in ('RESUME_FAILURE', 'RESUME_FAILURE_DUPLICATE')) == 1
+        await wait_for(held['failure_next'].is_set, 'same task resumed at SDK')
+        duplicate = await adapter.dispatch_native_event({'handoff_id': failed['id'], 'action': 'resume',
+                                                        'expected_turn_id': expected_failure_turn})
+        assert not duplicate['resume_requested'] and duplicate['replayed'], duplicate
+        assert len(generation['failure']) == 3
+        continued = adapter.handoffs.get(failed['id'])
+        assert continued['source'] == failed['source']
+        assert continued['native_session_id'] == failed['native_session_id']
+        assert continued['native_task_id'] == failed['native_task_id']
+        release['failure_next'].set()
+        await wait_for(lambda: bool(adapter.handoffs.get(failed['id'])['response']), 'resumed retained result')
+        assert (await adapter.status(failed['id']))['status'] == 'done'
+        assert (home/'retained-effect.txt').stat().st_mtime_ns == original_effect
+        for terminal_id in (failed['id'], alpha['id']):
+            terminal = adapter.handoffs.get(terminal_id)
+            declined = await adapter.dispatch_native_event({'handoff_id': terminal_id, 'action': 'resume',
+                'expected_turn_id': terminal['native_turn_id']})
+            assert not declined['resume_requested'] and declined['reason'] == 'task_stopped_or_completed'
+        assert len(generation['failure']) == 3
         # Exercise the real installed correlated handler, through the native
         # adapter intake, with a mismatched retained owner. This is not an
         # external callback: that boundary is disabled above.
@@ -397,6 +485,10 @@ async def exercise():
             'status_flags_track_native_request_visibility': True, 'erased_status_refs_withheld': True,
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,
             'matching_native_stop_terminal': True, 'late_reply_suppressed': True,
+            'retry_exhaustion_retains_typed_failure_without_answer_receipt': True,
+            'failed_status_survives_database_reopen_without_redispatch': True,
+            'owner_resume_preserves_same_task_session_and_completed_file_effect': True,
+            'stale_duplicate_stopped_completed_resume_does_not_execute': True,
             'native_recollection_uses_canonical_owner': True,
             'external_task_callback_disabled': True, 'wrong_owner_native_entry_rejected': True,
             'unrelated_task_completed': True, 'physical_channels_exercised': False,

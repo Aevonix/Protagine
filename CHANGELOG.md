@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.27 - retained task failure and explicit continuation
+
+A failed native background turn now retains its settled failure separately from
+a completed answer, including failures before the ordinary completion hook.
+Task status exposes that outcome with the original source ownership. An owner
+can resume an eligible failed or interrupted task using its exact observed
+native turn ID. The native gateway rechecks source access, ownership and the
+current generation, retaining the same task, session, model binding and prior
+tool results. Repeated or stale requests cannot start another continuation for
+that generation; stopped, completed and suspended sessions are declined.
+
+The guided Hermes installer and explicit adapter refresh append `pacomind_task`
+to the existing eager tool list, preserving other names, search options and YAML
+aliases. This exposes only an already admitted schema and grants no additional
+authority. Other deferred tools keep their existing discovery behavior.
+
+Controlled native tests cover failed settlement, retained source references,
+resume admission, duplicate prevention and generation changes. Installer tests
+cover preservation and idempotence. These checks do not establish production
+model task completion or recovery from a physical host outage.
+
 ## v1.5.26 - task-role selection and native image capture
 
 Private channel adapters can reuse the native gateway’s existing profile role

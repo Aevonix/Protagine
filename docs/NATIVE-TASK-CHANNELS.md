@@ -57,6 +57,7 @@ attested local platforms keep their existing local owner policy.
 | `status` | `task_id` | Native state, readable retained result, original-input references and up to four recent authorized updates with visibility receipts. |
 | `steer` | `task_id`, `request` | One captured source update and separate native control/request visibility receipts. Visibility does not prove model obedience. |
 | `stop` | `task_id` | Durable stop intent and matching native termination or verified admission/resume suppression when observed. |
+| `resume` | `task_id`, `expected_turn_id` | Explicit continuation of an eligible failed or interrupted native session; the observed turn generation prevents duplicate admission. |
 | `list` | none | Recent owned associations, with an explicit incomplete-running-inventory marker. Use the existing current-work view for the wider activity picture. |
 
 The model cannot supply an owner, arbitrary source envelope or slash command.
