@@ -55,6 +55,17 @@ def test_finished_task_remains_inspectable_after_foreground_turns(store):
     assert not store.view(contact_id='stranger', session_id='elsewhere')['recent']
 
 
+def test_erased_terminal_task_is_not_offered_as_an_actionable_current_task(store):
+    value = task(store)
+    store.observe({**value, 'sequence': 2, 'state': 'completed', 'phase': 'ended'},
+                  principal_id='native-host', contact_id='owner')
+    assert store.view(contact_id='owner', owner=True)['recent']
+    store.ledger.erase_sources(contact_id='owner', turn_ids=['coding-input'])
+    view = store.view(contact_id='owner', owner=True, session_id='later-conversation')
+    assert view['recent'] == []
+    assert 'a' * 64 not in request_work_context(view)['text']
+
+
 def test_task_handles_do_not_cross_contact_source_scope(store):
     task(store, person='guest')
     view = store.view(contact_id='owner', owner=True, session_id='observer')

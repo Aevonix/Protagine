@@ -167,10 +167,32 @@ def test_qualification_and_unclassified_tasks_do_not_enter_learning(task, purpos
     task.registry.view(contact_id='owner', owner=True)
     assert retained(task) == [] and counts(task)['self_judgment_runs'] == 0
     first = task.sent[0]
-    assert (first['task_experience'] or {}).get('purpose') == purpose
+    assert (first['task_experience'] or {}).get('purpose') == (purpose or 'unclassified')
     with pytest.raises(ValueError, match='cannot be rebound'):
         task.controller.handoffs.admit(request_id='first', request='MODEL-GENERATED TASK WRAPPER',
             source_input=task.source, experience='operational')
+
+
+@pytest.mark.parametrize('quiet_seconds', [0, 180])
+def test_unclassified_native_task_keeps_its_handle_across_conversations(task, quiet_seconds):
+    from pacomind.turns.executions import request_work_context
+    from test_execution_registry import observation
+    # Terminal/operator admission supplies no learning classification. Its
+    # native binding is still real and must be available to another session.
+    previous, _ = task.run(purpose='qualification', name='previous')
+    row, fields = task.run(purpose=None, name='current', begin_only=True)
+    task.clock.value += quiet_seconds
+    task.registry.observe(observation('foreground', contact_id='owner'),
+                          principal_id='registered-host', contact_id='owner')
+    view = task.registry.view(contact_id='owner', owner=True, session_id='session-foreground')
+    current = next(item for item in view['items'] if item['session_id'] == fields['session_id'])
+    assert current['task_id'] == row['id']
+    assert task.sent[-1]['task_experience']['purpose'] == 'unclassified'
+    text = request_work_context(view, session_id='session-foreground', limit=2)['text']
+    assert row['id'] in text and '"input_source"' in text
+    assert previous['id'] not in text  # A quiet open task precedes an old result.
+    assert current['liveness'] == ('unknown' if quiet_seconds else 'recently_observed')
+    assert retained(task) == [] and counts(task)['self_judgment_runs'] == 0
 
 
 def test_replay_after_queue_failure_uses_durable_terminal_once(task, monkeypatch):
