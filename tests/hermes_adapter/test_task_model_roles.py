@@ -22,6 +22,7 @@ from pacomind_hermes.client import TurnOutbox
 from pacomind_hermes.task_controller import NativeTasks
 from pacomind_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
 from pacomind_hermes.native_task_platform import NativeTaskAdapter, TASK_ROLE_METADATA
+from pacomind_hermes.task_model_roles import configured_task_model_roles, select_task_model_role
 
 home = Path('profile').absolute(); home.mkdir(exist_ok=True)
 providers = {
@@ -60,6 +61,9 @@ def opened():
     return adapter
 
 async def main():
+    # A private transport uses the same current profile resolver without an adapter.
+    assert configured_task_model_roles("api_server") == {"coding": coding, "reasoning": reasoning}
+    assert select_task_model_role("coding", "api_server") == coding
     adapter = opened(); controller.adapter = adapter
     await adapter.connect()
     inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
@@ -84,6 +88,8 @@ async def main():
     changed['task_model_roles']['planning'] = {'role':'planning','provider':'deep','model':'plan-one'}
     changed['task_model_role'] = {'role':'reasoning','provider':'replacement','model':'default-two'}
     publish(changed)
+    assert select_task_model_role("coding", "api_server") == replacement
+    assert "planning" in configured_task_model_roles("api_server")
     assert adapter.config.extra['task_model_roles']['coding'] == coding
     inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
     assert inventory['configured_model_roles'] == ['coding','planning','reasoning'], inventory
@@ -124,6 +130,13 @@ async def main():
     assert store.get_model_override(key) == {'provider':'fast','model':'fast-one'}
     # Removing the map and default does not resurrect their startup values.
     publish({})
+    assert configured_task_model_roles("api_server") == {}
+    try:
+        select_task_model_role("coding", "api_server")
+    except TaskHandoffError:
+        pass
+    else:
+        raise AssertionError("A transport must not resurrect a removed role")
     inventory = json.loads(await asyncio.to_thread(controller.handle, {'operation':'list'},scope))
     assert inventory['configured_model_roles'] == [], inventory
     unconfigured = json.loads(await asyncio.to_thread(controller.handle,

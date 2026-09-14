@@ -18,6 +18,9 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from .task_handoffs import TaskHandoffError
+from .task_model_roles import (
+    configured_task_model_roles, resolve_task_model_role, select_task_model_role,
+)
 
 
 PLATFORM = 'pacomind_task'
@@ -307,52 +310,14 @@ class NativeTaskAdapter(BasePlatformAdapter):
         await asyncio.to_thread(resolve, chat_id)
         return {'name': 'Accepted background work', 'type': 'dm'}
 
-    def _task_role_config(self):
-        """Read only role settings from the selected profile for new work."""
-        from hermes_cli.config import load_config_readonly
-        platforms = load_config_readonly().get('platforms', {})
-        if not isinstance(platforms, dict):
-            raise self._error('Native task platform configuration is invalid')
-        platform = platforms.get(self.platform.value, {})
-        if not isinstance(platform, dict) or not isinstance(platform.get('extra', {}), dict):
-            raise self._error('Native task role configuration is invalid')
-        return platform.get('extra', {})
-
     def configured_task_model_roles(self):
-        roles = self._task_role_config().get('task_model_roles', {})
-        if not isinstance(roles, dict):
-            raise self._error('Native task model roles are invalid')
-        return roles
+        return configured_task_model_roles(self.platform.value, error_type=self._error)
 
     def _task_model_role(self, retained=None):
-        """One explicit native projection; credentials remain native-owned."""
-        selected = retained if retained is not None else self._task_role_config().get('task_model_role')
-        if selected is None:
-            return None
-        if (not isinstance(selected, dict) or set(selected) != {'role', 'provider', 'model'}
-                or any(not isinstance(value, str) or not value.strip() or len(value) > 256
-                       for value in selected.values())
-                or selected['provider'] in {'auto', 'custom'}):
-            raise self._error('Native task model role is invalid')
-        from hermes_cli.config import load_config_readonly
-        providers = load_config_readonly().get('providers') or {}
-        if not isinstance(providers, dict) or not isinstance(providers.get(selected['provider']), dict):
-            raise self._error('Native task model role provider is unavailable')
-        from hermes_cli.runtime_provider import has_named_custom_provider
-        if not has_named_custom_provider(selected['provider']):
-            raise self._error('Native task model role provider has no enabled native route')
-        return dict(selected)
+        return resolve_task_model_role(self.platform.value, retained, error_type=self._error)
 
     def select_task_model_role(self, role):
-        """Resolve a named task role from the profile, before durable admission."""
-        roles = self.configured_task_model_roles()
-        if (not isinstance(role, str) or not role.strip() or len(role) > 256
-                or not isinstance(roles, dict) or role not in roles):
-            raise self._error('The requested task model role is not configured')
-        selected = roles[role]
-        if not isinstance(selected, dict) or selected.get('role') != role:
-            raise self._error('The configured task model role name does not match')
-        return self._task_model_role(selected)
+        return select_task_model_role(role, self.platform.value, error_type=self._error)
 
     def _check_native_origin(self, entry, source, key):
         origin = entry.origin
