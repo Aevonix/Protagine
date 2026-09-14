@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.21 - task context and ordinary failure reviews
+
+Shared work context keeps the latest native task inspectable after its turn ends.
+An interrupted task retains its actual status and existing result reader. When
+space permits, a compact excerpt of a running task's original request precedes
+idle reports. Source references, partial excerpts and the existing context limit
+remain explicit. Task status also exposes accepted
+updates for a conversation that needs the latest correction.
+
+Ordinary tool failures can now enter the existing Hermes review ledger when no
+skill was viewed. Repeated failures from distinct ordinary turns can justify a
+review without inventing a skill attribution. Qualification tasks stay outside
+that experience stream. A deployment consumer can constrain the resulting review
+to a proposed new skill; this constraint is enforced before proposal staging.
+
+These are source-context and review-path changes. They do not establish useful
+passive learning or completion of the unified-agent goal.
+
 ## v1.5.20 - current tasks and evaluated skill creation
 
 Fresh native tasks retain space in shared work context before idle status reports
