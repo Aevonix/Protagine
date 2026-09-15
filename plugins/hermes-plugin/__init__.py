@@ -47,7 +47,7 @@ from . import source_read
 from . import memory_search
 from .tool_observations import ToolObservations
 from . import input_provenance
-from .task_controller import configured_tasks, TOOL_SCHEMA as _NATIVE_TASK_SCHEMA
+from .task_controller import configured_tasks, TOOL_SCHEMA as _NATIVE_TASK_SCHEMA, FinishTurn as _FinishTurn
 
 from .pacomind_hostworker.catalog import (
     ACTION_MODEL_TOOL_SCHEMAS as _CATALOG_ACTION_MODEL_TOOL_SCHEMAS,
@@ -2838,6 +2838,10 @@ def register(ctx: Any) -> None:
                 return json.dumps({'task_id': args.get('task_id'),
                     'error': 'Task source inspection could not be retained for this turn.'})
         return text
+    def finish_task_handoff(**kwargs):
+        scope = _TRANSPORT_SCOPES.for_execution(session_id=kwargs.get('session_id', ''),
+            task_id=kwargs.get('task_id', ''), turn_id=kwargs.get('turn_id', ''))
+        return native_tasks.finish_handoff(scope=scope, **kwargs)
     def source_forget_handler(args=None, **kwargs):
         context = _TOOL_EXECUTION_CONTEXT.get() or {}
         scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id', ''),
@@ -2926,6 +2930,8 @@ def register(ctx: Any) -> None:
         ctx.register_hook('pre_llm_call', native_tasks.bind_native_turn)
         ctx.register_hook('on_session_end', native_tasks.finish_native_turn)
         ctx.register_hook('on_kanban_dispatch_tick', native_tasks.reconcile_pending)
+        if _FinishTurn is not None:
+            ctx.register_hook('post_tool_batch', finish_task_handoff)
 
     ctx.register_hook("pre_llm_call", pre_llm_call)
     def bind_child(**kwargs):

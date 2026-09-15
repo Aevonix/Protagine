@@ -8,12 +8,21 @@ installer does not patch an existing Hermes checkout or change its selection.
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`089a8c22cdf3afb2154619890930d2663e3b9441`](https://github.com/Kurcide/hermes-agent/commit/089a8c22cdf3afb2154619890930d2663e3b9441),
+`13dc6c542bb62578d9ab6e14b5632d7920a42e89`](https://github.com/Kurcide/hermes-agent/commit/13dc6c542bb62578d9ab6e14b5632d7920a42e89),
 based on [Hermes v0.21.3, tag `v2026.9.14`,
 `345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/089a8c22cdf3afb2154619890930d2663e3b9441/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/13dc6c542bb62578d9ab6e14b5632d7920a42e89/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
+
+This build provides a typed `post_tool_batch` hook for explicit terminal
+handoffs. After a single successful tool result is persisted, a trusted plugin
+can return `hermes_cli.tool_completion.FinishTurn` with its actual call ID and
+receipt text. Hermes persists a runtime-authored response and completes the
+foreground turn through normal delivery without another provider call. Mixed
+batches, errors, interruptions and pending steering retain their existing
+control paths. PacoMind uses this for the optional `pacomind_task` `handoff`
+operation; ordinary `submit` continues to work without the new hook.
 
 The 0.21.3 build retains upstream streaming, summary request construction,
 SQLite connection handling and gateway failure propagation alongside the local

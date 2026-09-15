@@ -86,6 +86,7 @@ expected_failure_turn = None
 source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
 steer_delivery = os.environ.get('PACOMIND_TEST_STEER_DELIVERY', 'tool_batch')
+submission = os.environ.get('PACOMIND_TEST_TASK_SUBMISSION', 'submit')
 update_text = 'Keep the alpha comparison scoped to the violet notes and label the result ORANGE-472.'
 
 
@@ -213,11 +214,20 @@ def respond(request):
     latest = latest if isinstance(latest, str) else json.dumps(latest)
     tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'SUBMIT_FAILURE', 'RESUME_FAILURE',
                                  'RESUME_FAILURE_DUPLICATE', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA',
-                                 'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED')
+                                 'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED', 'HANDOFF_REJECTED')
                 if latest.startswith('FG_' + name + ':')), None)
     assert tag is not None, latest
     foreground_calls[tag] = foreground_calls.get(tag, 0) + 1
     step = foreground_calls[tag]
+    if tag == 'HANDOFF_REJECTED':
+        assert step <= 2
+        if step == 1:
+            return tool(body, 'pacomind_task', {'operation': 'handoff', 'request': ' '})
+        result = json.loads(next(row['content'] for row in reversed(body['messages']) if row.get('role') == 'tool'))
+        assert result['error'] and result['outcome'] == 'unconfirmed' and 'task_id' not in result, result
+        return answer(body, 'The invalid handoff was rejected; the conversation can continue.')
+    if tag == 'SUBMIT_ALPHA' and submission == 'handoff':
+        assert step == 1, 'Successful terminal handoff requested another foreground provider response'
     if tag == 'ORDINARY':
         assert step == 1
         return answer(body, 'The ordinary conversation completed while both tasks stayed active.')
@@ -265,7 +275,7 @@ def respond(request):
                 'task_id': task_ids['failure'], 'expected_turn_id': expected_failure_turn})
         if tag.startswith('SUBMIT_'):
             name = tag.removeprefix('SUBMIT_')
-            return tool(body, 'pacomind_task', {'operation': 'submit',
+            return tool(body, 'pacomind_task', {'operation': submission if name == 'ALPHA' else 'submit',
                 'request': 'TASK_' + name + ': Compare my violet calibration notes and retain the result.',
                 **({'model_role': 'coding'} if name == 'ALPHA' else {})})
         return tool(body, 'pacomind_task', {'operation': 'steer' if tag == 'STEER_ALPHA' else 'stop',
@@ -308,6 +318,10 @@ from hermes_cli.plugins import get_plugin_manager
 manager = get_plugin_manager()
 manager.discover_and_load()
 assert manager._plugins['pacomind'].enabled, manager._plugins['pacomind'].error
+from pacomind_hermes.task_controller import FinishTurn, TOOL_SCHEMA
+assert ('handoff' in TOOL_SCHEMA['parameters']['properties']['operation']['enum']) == (FinishTurn is not None)
+if submission == 'handoff':
+    assert FinishTurn is not None, 'Terminal handoff requires the native post_tool_batch contract'
 from gateway.config import GatewayConfig, PlatformConfig, Platform
 from gateway.platform_registry import platform_registry
 from gateway.run import GatewayRunner
@@ -354,12 +368,19 @@ async def exercise():
     try:
         assert await adapter.connect()
         assert adapter.verify_http_event_request('Bearer untrusted-caller')[0] is False
+        if submission == 'handoff':
+            rejected = await asyncio.wait_for(runner._handle_message(event('HANDOFF_REJECTED')), 12)
+            assert rejected == 'The invalid handoff was rejected; the conversation can continue.', rejected
+            assert foreground_calls['HANDOFF_REJECTED'] == 2 and adapter.handoffs.count() == 0
         # Actual foreground native turns call the registered tool. Neither the
         # test nor the model can supply contact, principal, origin or input refs.
+        alpha_event = event('SUBMIT_ALPHA')
         answers = await asyncio.wait_for(asyncio.gather(
-            runner._handle_message(event('SUBMIT_ALPHA')),
+            runner._handle_message(alpha_event),
             runner._handle_message(event('SUBMIT_BETA'))), 20)
-        assert answers == ['FG_SUBMIT_ALPHA_ACK', 'FG_SUBMIT_BETA_ACK'], answers
+        assert answers[1] == 'FG_SUBMIT_BETA_ACK' and foreground_calls['SUBMIT_BETA'] == 2, answers
+        if submission == 'submit':
+            assert answers[0] == 'FG_SUBMIT_ALPHA_ACK' and foreground_calls['SUBMIT_ALPHA'] == 2, answers
         await wait_for(lambda: held['alpha'].is_set() and held['beta'].is_set(), 'both native roots at SDK')
         rows = adapter.handoffs.recent()
         assert len(rows) == 2, rows
@@ -369,6 +390,27 @@ async def exercise():
             assert row['source']['origin']['platform'] == 'api_server'
             assert row['source']['source_session_id'] != row['native_session_id']
             assert row['response'] is None and row['stop'] is None
+        if submission == 'handoff':
+            assert foreground_calls['SUBMIT_ALPHA'] == 1
+            assert answers[0] == (f"Accepted task `{task_ids['alpha']}`. "
+                'You can inspect or steer it using this task ID.'), answers
+            entry = runner.session_store.get_or_create_session(alpha_event.source, touch_activity=False)
+            messages = runner._session_db._db.get_messages(entry.session_id)
+            results = [json.loads(row['content']) for row in messages if row['role'] == 'tool']
+            assert len(results) == 1 and results[0]['accepted'] is True, results
+            assert results[0]['task_id'] == task_ids['alpha'] and results[0]['delivery'] == 'unobserved'
+            receipts = [row for row in messages if row['role'] == 'assistant' and row['content']]
+            assert len(receipts) == 1 and receipts[0]['content'] == answers[0], receipts
+            receipt = receipts[0]
+            assert receipt['display_kind'] == 'runtime_handoff'
+            provenance = receipt['display_metadata']
+            assert provenance['response_origin'] == 'runtime' and provenance['type'] == 'tool_handoff'
+            assert provenance['session_id'] == entry.session_id and provenance['api_request_id']
+            tool_row = next(row for row in messages if row['role'] == 'tool')
+            assert provenance['tool_call_id'] == tool_row['tool_call_id']
+            assert provenance['tool_name'] == 'tool_call' and tool_row['tool_name'] == 'pacomind_task'
+            # Finishing this foreground turn cannot interrupt its independently owned task.
+            assert held['alpha'].is_set() and not release['alpha'].is_set()
         assert len({tuple(row[key] for key in ('native_session_id', 'native_task_id', 'native_turn_id'))
                     for row in rows}) == 2
         assert source_parents['alpha'] != source_parents['beta']
@@ -504,6 +546,7 @@ async def exercise():
         assert adapter.handoffs.get(task_ids['beta'])['response'] == beta['response']
         adapter.send_document.assert_not_awaited()
         print(json.dumps({'cross_channel_native_tasks': True, 'steer_delivery': steer_delivery, 'separate_native_roots': 2,
+            'submission': submission, 'explicit_handoff_ends_without_another_provider_call': submission == 'handoff',
             'queued_update_source_read_in_another_owner_conversation': True,
             'status_flags_track_native_request_visibility': True, 'erased_status_refs_withheld': True,
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,

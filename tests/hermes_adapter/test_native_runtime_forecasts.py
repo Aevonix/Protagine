@@ -90,6 +90,23 @@ assert 'fixture-private-token' not in json.dumps(original_outcome)
 assert 'base_url' not in json.dumps(original_outcome['detail']['conditions']['role_recipe'])
 assert prediction['detail']['conditions']['estimate']['sample_n']==0
 assert prediction['detail']['model_provenance']['served_model'] is None
+# A queued profile change does not turn the frozen attachment recipe into an
+# observation of the configuration eventually loaded by a worker.
+configuration_path=state/'.pacomind-llm-config.json'
+original_configuration=configuration_path.read_text()
+queued_configuration=json.loads(original_configuration)
+queued_configuration['modelPool']['planning-fixture']['model']='changed-before-first-claim'
+configuration_path.write_text(json.dumps(queued_configuration))
+configure(state)
+native,queued_snapshot=task_snapshot(first.id,'owner',started['native_work'],review=True)
+attachment_revision=original_outcome['detail']['conditions']['role_recipe']['configuration_revision']
+assert queued_snapshot['outcome_role_recipe']['configuration_revision']!=attachment_revision
+original_probability_history=host._expectations.store.forecast_history(outcome_id)
+queued_forecast=runtime_forecasts.task_outcome('project',started,native,queued_snapshot,'owner')
+assert queued_forecast['configuration_revision']==attachment_revision
+assert queued_forecast['configuration_basis']=='attachment_time'
+assert queued_forecast['execution_configuration_observed'] is False
+assert host._expectations.store.forecast_history(outcome_id)==original_probability_history
 with kb.connect(board='default') as db:
  task=kb.claim_task(db,started['native_work']['native_task_id'])
  os.environ.update(HERMES_KANBAN_TASK=task.id,HERMES_KANBAN_RUN_ID=str(task.current_run_id),
@@ -113,6 +130,16 @@ assert abs(fixed['comparison']['forecast_brier']-.09)<1e-10
 assert fixed['comparison']['forecast_brier']==fixed['comparison']['baseline_brier']
 assert fixed['comparison']['always_completes_brier']==0
 assert not fixed['suggestion_enabled'] and not fixed['quality_evaluated']
+assert fixed['configuration_revision']==attachment_revision
+assert fixed['configuration_basis']=='attachment_time' and not fixed['execution_configuration_observed']
+settled_probability_history=host._expectations.store.forecast_history(outcome_id)
+assert settled_probability_history['forecasts'][0]['detail']==original_outcome['detail']
+assert settled_probability_history['forecasts'][0]['detail']['model_provenance']['served_model'] is None
+frozen_material=tuple(host._expectations.store._conn.execute(
+ 'SELECT p.detail,f.material_digest FROM predictions p JOIN forecast_revisions f USING(prediction_id) WHERE f.forecast_id=?',
+ (outcome_id,)).fetchone())
+frozen_outcomes=host._expectations.store._conn.execute(
+ 'SELECT payload FROM forecast_outcomes WHERE forecast_id=? ORDER BY revision',(outcome_id,)).fetchall()
 native,snapshot=task_snapshot(first.id,'owner',started['native_work'],review=True)
 projection=runtime_forecasts.project(started,native,snapshot,'owner')
 assert projection['status']=='shadow' and projection['decision']=='terminal',projection
@@ -125,6 +152,15 @@ changed_snapshot={**snapshot,'forecast_configuration':{'runtime_budget_seconds':
 again=runtime_forecasts.project(started,native,changed_snapshot,'owner')
 assert again['conditions_comparable'] and again['served_model']=='provider-reported-fixture'
 assert first_history['forecasts'][0]['detail']==prediction['detail']
+assert again['task_outcome']==fixed
+assert host._expectations.store.forecast_history(outcome_id)==settled_probability_history
+assert tuple(host._expectations.store._conn.execute(
+ 'SELECT p.detail,f.material_digest FROM predictions p JOIN forecast_revisions f USING(prediction_id) WHERE f.forecast_id=?',
+ (outcome_id,)).fetchone())==frozen_material
+assert host._expectations.store._conn.execute(
+ 'SELECT payload FROM forecast_outcomes WHERE forecast_id=? ORDER BY revision',(outcome_id,)).fetchall()==frozen_outcomes
+configuration_path.write_text(original_configuration)
+configure(state)
 stale=client.post('/v1/host/initiative-work/'+first.id+'/model-observation',json={
  'contact_id':'owner','native_board':'default','native_task_id':task.id,
  'native_run_id':task.current_run_id,'native_claim_lock':task.claim_lock,
@@ -245,7 +281,7 @@ sources.erase_sources(turn_ids=[fixed['comparison']['receipt_ref'].removeprefix(
 selection={**selection,'cohort':'next-fixture-window','expires_at':time.time()+1800}
 after_erasure=worker.work(proposal('A review after an erased probability sample').id)['forecast']['task_outcome']
 assert after_erasure['sample_n']==1 and abs(after_erasure['probability']-.56)<1e-10
-# A different selected recipe starts at the frozen prior, with no old-model votes.
+# A different attachment recipe starts at the frozen prior in its own cohort.
 configuration=json.loads((state/'.pacomind-llm-config.json').read_text())
 configuration['modelPool']['planning-fixture']['model']='another-replaceable-model'
 (state/'.pacomind-llm-config.json').write_text(json.dumps(configuration))
@@ -253,6 +289,7 @@ swapped=worker.work(proposal('A review after a planning-role swap').id)
 swap_forecast=swapped['forecast']['task_outcome']
 assert swap_forecast['sample_n']==0 and swap_forecast['probability']==.7
 assert swap_forecast['configuration_revision']!=fixed['configuration_revision']
+assert swap_forecast['configuration_basis']=='attachment_time' and not swap_forecast['execution_configuration_observed']
 assert 'role_recipe' not in swap_forecast and 'configuration' not in swap_forecast
 # Installing/replaying observation never creates retrospective forecasts.
 assert runtime_forecasts.observe({'native_work':{},'review':{'action':'operational_review'}},started['native_work'],{},'owner')['status']=='disabled_or_unselected'

@@ -12,14 +12,16 @@ import pytest
 from conftest import ROOT, run_python
 
 
-@pytest.mark.parametrize('steer_delivery', ['tool_batch', 'next_turn'])
-def test_native_task_channels(artifacts, tmp_path, steer_delivery):
+@pytest.mark.parametrize('steer_delivery,submission', [
+    ('tool_batch', 'submit'), ('next_turn', 'submit'), ('tool_batch', 'handoff')])
+def test_native_task_channels(artifacts, tmp_path, steer_delivery, submission):
     native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native gateway integration')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'state'),
         PACOMIND_TEST_STEER_DELIVERY=steer_delivery,
+        PACOMIND_TEST_TASK_SUBMISSION=submission,
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), HERMES_DISABLE_TELEMETRY='1',
         HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         PACOMIND_GENERAL_PLUGIN_ACTIVE='1', PACOMIND_MEMORY_WORKER_TOOLS='0',

@@ -26,7 +26,7 @@ jobs:
           # Explicit qualification build; latest unmodified upstream is checked
           # separately by hermes-upstream.yml. See the compatibility note.
           repository: Kurcide/hermes-agent
-          ref: 089a8c22cdf3afb2154619890930d2663e3b9441
+          ref: 13dc6c542bb62578d9ab6e14b5632d7920a42e89
           path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -68,7 +68,7 @@ jobs:
           import xml.etree.ElementTree as ET
           collected = list(ET.parse('hermes-adapter-results-native.xml').iter('testcase'))
           for module, name, expected in (
-              ('test_native_task_channels', 'test_native_task_channels', 2),
+              ('test_native_task_channels', 'test_native_task_channels', 3),
               ('test_native_review_boundary', 'test_native_executor_read_only_review', 2),
               ('test_native_skill_catalog', 'test_native_skill_index_and_view_remain_authoritative', 1),
               ('test_native_skill_updates', 'test_native_skill_updates_reach_running_and_saved_conversations', 2),
