@@ -230,6 +230,48 @@ class ExecutionObserver:
         return policy
 
     @staticmethod
+    def response_metadata(kwargs):
+        """Counts describe Hermes' normalized message, not the provider wire."""
+        result = {}
+        finish = kwargs.get('finish_reason')
+        if (isinstance(finish, str) and 0 < len(finish) <= 64
+                and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in finish)):
+            result['finish_reason'] = finish
+        for key in ('assistant_content_chars', 'assistant_tool_call_count'):
+            value = kwargs.get(key)
+            if type(value) is int and 0 <= value <= 2147483647:
+                result[key] = value
+        for key in ('api_duration', 'first_chunk_at'):
+            value = kwargs.get(key)
+            if type(value) not in (int, float):
+                continue
+            try:
+                if math.isfinite(value) and (value >= 0 if key == 'api_duration' else value > 0):
+                    result[key] = value
+            except OverflowError:
+                pass
+
+        def field(value, name):
+            return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+        message = kwargs.get('assistant_message')
+        # These may contain the same reasoning. Keep separate lengths; never sum them.
+        for source, target in (('reasoning', 'assistant_reasoning_chars'),
+                               ('reasoning_content', 'assistant_reasoning_content_chars')):
+            value = field(message, source)
+            if isinstance(value, str) and len(value) <= 2147483647:
+                result[target] = len(value)
+        details = field(message, 'reasoning_details')
+        if isinstance(details, list) and len(details) <= 2147483647:
+            result['assistant_reasoning_details_count'] = len(details)
+        calls = field(message, 'tool_calls')
+        if isinstance(calls, list) and len(calls) <= 2147483647:
+            names = (field(field(call, 'function'), 'name') for call in calls)
+            result['assistant_invalid_tool_name_count'] = sum(
+                not isinstance(name, str) or not name.strip() for name in names)
+        return result
+
+    @staticmethod
     def runtime_metadata(event, kwargs):
         """Whitelist callback metadata, never request/response content or URLs."""
         result = {'event': event}
@@ -244,6 +286,8 @@ class ExecutionObserver:
                 result[key] = value
         if event == 'start':
             result.update(ExecutionObserver.output_limit_metadata(kwargs))
+        elif event == 'response':
+            result.update(ExecutionObserver.response_metadata(kwargs))
         for key in ('started_at', 'ended_at'):
             value = kwargs.get(key)
             if type(value) in (int, float) and math.isfinite(value) and value > 0:

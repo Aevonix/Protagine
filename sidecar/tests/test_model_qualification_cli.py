@@ -103,4 +103,4 @@ def test_main_installs_model_commands_without_loading_runtime(monkeypatch,capsys
     monkeypatch.setattr('sys.argv',['protagine','models','--help'])
     with pytest.raises(SystemExit) as stop: cli.main()
     assert stop.value.code == 0
-    assert '{inspect,evaluate,compare}' in capsys.readouterr().out
+    assert '{inspect,evaluate,compare,diagnose}' in capsys.readouterr().out

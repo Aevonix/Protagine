@@ -29,9 +29,21 @@ def add_parser(sub):
     item.add_argument('incumbent', type=Path)
     item.add_argument('candidate', type=Path)
     item.add_argument('--json', action='store_true')
+    item = commands.add_parser('diagnose', help='Read retained native model calls; does not invoke a model')
+    item.add_argument('execution_id')
+    item.add_argument('--contact-id', required=True, help='Configured owner contact ID')
+    item.add_argument('--credential-file', required=True, type=Path,
+                      help='Private scoped client JSON containing principal and secret')
+    item.add_argument('--url', help='Sidecar URL; defaults to the existing Protagine URL configuration')
+    item.add_argument('--offset', type=int, default=0)
+    item.add_argument('--limit', type=int, default=20)
+    item.add_argument('--json', action='store_true')
 
 
 def run(args):
+    if args.models_command == 'diagnose':
+        from .diagnostics import diagnose
+        return diagnose(args)
     from .records import read, write_once, publish
     from .report import compare, summarize, markdown
     if args.models_command == 'compare':
