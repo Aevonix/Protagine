@@ -17,11 +17,11 @@ def no_network(*a, **kw): raise AssertionError('Hook ownership has no network de
 socket.socket.connect = no_network
 socket.create_connection = no_network
 from gateway.config import PlatformConfig
-from pacomind_hermes.client import TurnOutbox
-from pacomind_hermes.task_controller import NativeTasks
-from pacomind_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
-from pacomind_hermes.native_task_platform import ACTIVE, NativeTaskAdapter, bind_native_turn, finish_native_turn
-from pacomind_hermes.input_provenance import current
+from protagine_hermes.client import TurnOutbox
+from protagine_hermes.task_controller import NativeTasks
+from protagine_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
+from protagine_hermes.native_task_platform import ACTIVE, NativeTaskAdapter, bind_native_turn, finish_native_turn
+from protagine_hermes.input_provenance import current
 from gateway.platforms.event import MessageEvent
 
 outbox = TurnOutbox(Path('outbox.sqlite3').absolute())
@@ -184,12 +184,12 @@ print(json.dumps({'mixed_adapter_hooks':True}))
 
 
 def test_native_controller_hooks_preserve_transport_and_generation(artifacts, tmp_path):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native adapter integration')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'profile'), HERMES_DISABLE_TELEMETRY='1',
         HERMES_DISABLE_LAZY_INSTALLS='1', PYTHON_DOTENV_DISABLED='1')
     result = run_python('-I', '-c', PROBE, artifacts[3], native,
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), cwd=tmp_path, env=env)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), cwd=tmp_path, env=env)
     assert '"mixed_adapter_hooks": true' in result.stdout

@@ -2,7 +2,7 @@
 
 Covers:
 - IdentityStatusResponse gains trust_tier + node_cert_fingerprint + trust_anchor_verified
-- HostIdentity accepts pacomind_id/node_id/trust_tier
+- HostIdentity accepts protagine_id/node_id/trust_tier
 - The obsolete enriched context endpoint is absent; canonical context has separate behavior tests.
 """
 
@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host as host_mod
+from protagine.api.routers import host as host_mod
 
 
 @asynccontextmanager
@@ -37,24 +37,24 @@ async def _client_with(patches: dict):
             setattr(host_mod, k, v)
 
 
-def test_host_identity_accepts_pacomind_fields():
-    from pacomind.api.schemas.host import HostIdentity
+def test_host_identity_accepts_protagine_fields():
+    from protagine.api.schemas.host import HostIdentity
     ident = HostIdentity(
         host_id="h",
-        pacomind_id="c1",
+        protagine_id="c1",
         node_id="n1",
         node_cert_fingerprint="ab" * 16,
         trust_tier="GENESIS",
     )
-    assert ident.pacomind_id == "c1"
+    assert ident.protagine_id == "c1"
     assert ident.node_id == "n1"
     assert ident.trust_tier == "GENESIS"
 
 
 def test_identity_status_response_has_new_fields():
-    from pacomind.api.schemas.host import IdentityStatusResponse
+    from protagine.api.schemas.host import IdentityStatusResponse
     resp = IdentityStatusResponse(
-        pacomind_id="c1",
+        protagine_id="c1",
         trust_tier="REGULAR",
         trust_anchor_verified=True,
         node_cert_fingerprint="ff" * 16,
@@ -68,22 +68,22 @@ def test_identity_status_response_has_new_fields():
 async def test_identity_status_returns_trust_tier_when_genesis(monkeypatch):
     """When is_genesis() returns True, the router reports trust_tier=GENESIS."""
     key_mgr = SimpleNamespace(public_key_hex=lambda: "deadbeef")
-    chain = SimpleNamespace(pacomind_id="col-1", _key_manager=key_mgr)
+    chain = SimpleNamespace(protagine_id="col-1", _key_manager=key_mgr)
 
     monkeypatch.setattr(
-        "pacomind.chain.identity.is_genesis",
+        "protagine.chain.identity.is_genesis",
         lambda _cid, _pk: True,
     )
     monkeypatch.setattr(
-        "pacomind.chain.identity.get_genesis_manifest",
-        lambda: {"pacomind_id": "col-1"},
+        "protagine.chain.identity.get_genesis_manifest",
+        lambda: {"protagine_id": "col-1"},
     )
     monkeypatch.setattr(
-        "pacomind.chain.node.get_node_info",
+        "protagine.chain.node.get_node_info",
         lambda _sd: {"node_id": "n1", "node_public_key": "pk1"},
     )
     monkeypatch.setattr(
-        "pacomind.chain.node.load_node_certificate",
+        "protagine.chain.node.load_node_certificate",
         lambda _sd: {"signature": "sig", "node_public_key": "pk1"},
     )
 
@@ -103,13 +103,13 @@ async def test_identity_status_returns_trust_tier_when_genesis(monkeypatch):
 async def test_identity_status_null_trust_when_no_anchor(monkeypatch):
     """Without a loaded genesis manifest, trust_tier stays None."""
     key_mgr = SimpleNamespace(public_key_hex=lambda: "deadbeef")
-    chain = SimpleNamespace(pacomind_id="col-1", _key_manager=key_mgr)
+    chain = SimpleNamespace(protagine_id="col-1", _key_manager=key_mgr)
     monkeypatch.setattr(
-        "pacomind.chain.identity.is_genesis",
+        "protagine.chain.identity.is_genesis",
         lambda _cid, _pk: False,
     )
     monkeypatch.setattr(
-        "pacomind.chain.identity.get_genesis_manifest",
+        "protagine.chain.identity.get_genesis_manifest",
         lambda: None,
     )
 

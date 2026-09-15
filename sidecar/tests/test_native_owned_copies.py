@@ -11,7 +11,7 @@ import pytest
 
 from test_hermes_turn_outbox import _load_plugin, _Context, _Client
 from test_native_request_erasure import freshness_response
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.turns import TurnIdempotencyLedger
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def native_runtime(tmp_path, monkeypatch):
     if not hasattr(state.SessionDB, 'redact_message_payloads'):
         pytest.skip('selected native runtime lacks the owned-copy writer extension')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes'))
-    plugin = _load_plugin('pacomind_owned_copy_fixture')
+    plugin = _load_plugin('protagine_owned_copy_fixture')
     module = importlib.import_module(plugin.__name__ + '.native_owned_copies')
     requests = importlib.import_module(plugin.__name__ + '.request_memory')
     outbox = plugin.TurnOutbox(tmp_path / 'outbox.db')
@@ -58,14 +58,14 @@ def begin_read(rt, *, recall=False, admitted_input=True):
     rt.memory.observe_native_anchor(rt.scope, [current], user_message=text)
     rt.memory.observe(rt.scope, [current], user_message=text if admitted_input else None)
     if recall:
-        marker = '[pacomind-recall-v1 ' + json.dumps({'contact_id':'owner', 'watermark':0,
-                 'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+        marker = '[protagine-recall-v1 ' + json.dumps({'contact_id':'owner', 'watermark':0,
+                 'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/protagine-recall-v1]'
         current['api_content'] = text + '\n\n' + marker
     current['_row_id'] = rt.db.append_message('reader', 'user', text, api_content=current.get('api_content'))
     rt.memory({'messages':[{'role':'user', 'content':current.get('api_content', text)}]}, rt.scope)
     if not recall:
         rt.db.append_message('reader', 'assistant', None, tool_calls=[{'id':'source-read',
-            'type':'function', 'function':{'name':'pacomind_source_read', 'arguments':'{}'}}])
+            'type':'function', 'function':{'name':'protagine_source_read', 'arguments':'{}'}}])
         assert rt.memory.register_source_read(rt.scope, 'source-read', rt.fact,
             {'source_refs':[rt.ref], 'watermark':0})
         rt.db.append_message('reader', 'tool', rt.fact, tool_call_id='source-read')
@@ -102,8 +102,8 @@ def test_current_turn_forget_drops_previously_admitted_owned_call_arguments(nati
     current = begin_read(rt, recall=True)
     stale = {'id':'rejected-batch', 'type':'function', 'function':{
         'name':'tool_call', 'arguments':json.dumps({'calls':[
-            {'name':'pacomind_memory_search', 'arguments':{'query':'Orchard forgettoken badge violet'}},
-            {'name':'pacomind_memory_search', 'arguments':{'query':'Earlier orchard label correction'}}]})}}
+            {'name':'protagine_memory_search', 'arguments':{'query':'Orchard forgettoken badge violet'}},
+            {'name':'protagine_memory_search', 'arguments':{'query':'Earlier orchard label correction'}}]})}}
     rt.db.append_message('reader', 'assistant', None, tool_calls=[stale])
     rt.db.append_message('reader', 'tool', '{"error":"multiple_local_tools_not_supported"}',
                          tool_call_id='rejected-batch')
@@ -115,7 +115,7 @@ def test_current_turn_forget_drops_previously_admitted_owned_call_arguments(nati
     before = request()
     assert 'forgettoken' in json.dumps(rt.memory(before, rt.scope)['request'])
     forget = {'id':'forget-now', 'type':'function', 'function':{
-        'name':'tool_call', 'arguments':json.dumps({'name':'pacomind_source_forget',
+        'name':'tool_call', 'arguments':json.dumps({'name':'protagine_source_forget',
             'arguments':{'source_ids':['original-source']}})}}
     fresh = {'id':'fresh-status', 'type':'function', 'function':{
         'name':'task_status', 'arguments':'{"task":"calendar"}'}}
@@ -163,7 +163,7 @@ def test_native_summary_drops_owned_call_with_reserialized_json_arguments(native
     current = begin_read(rt, recall=True)
     summary_call = {'id':'old-search', 'type':'function', 'function':{
         'name':'tool_call', 'arguments':
-            '{"calls": [{"name": "pacomind_memory_search", "arguments": '
+            '{"calls": [{"name": "protagine_memory_search", "arguments": '
             '{"query": "Orchard forgettoken badge violet", "limit": 10}}]}'}}
     normal_call = copy.deepcopy(summary_call)
     normal_call['function']['arguments'] = json.dumps(
@@ -175,7 +175,7 @@ def test_native_summary_drops_owned_call_with_reserialized_json_arguments(native
         {'role':'tool','tool_call_id':'old-search','content':rt.fact}]}, rt.scope)
     erase(rt)
     forget = {'id':'forget-now','type':'function','function':{
-        'name':'pacomind_source_forget','arguments':'{"source_ids":["original-source"]}'}}
+        'name':'protagine_source_forget','arguments':'{"source_ids":["original-source"]}'}}
     receipt = {'role':'tool','tool_call_id':'forget-now','content':json.dumps({
         'source_erased':True,'watermark':1,'host_reconciliation':{'status':'not_observed'}})}
     outgoing = {'messages':[current_input,
@@ -226,8 +226,8 @@ def test_owned_call_removal_updates_native_joined_user_repair(native_runtime):
     current['_row_id'] = rt.db.append_message('reader', 'user', current['content'])
     rt.memory.observe_native_anchor(rt.scope, [earlier,current], user_message=current['content'])
     rt.memory.observe(rt.scope, [earlier,current], user_message=current['content'])
-    current['api_content'] = current['content'] + '\n\n[pacomind-recall-v1 ' + json.dumps({
-        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+    current['api_content'] = current['content'] + '\n\n[protagine-recall-v1 ' + json.dumps({
+        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/protagine-recall-v1]'
     joined = {'role':'user','content':earlier['content'] + '\n\n' + current['content']}
     rt.memory({'messages':[joined]}, rt.scope)
     old = {'id':'old', 'type':'function', 'function':{'name':'tool_call', 'arguments':'{"query":"forgettoken"}'}}
@@ -252,10 +252,10 @@ def test_owned_call_removal_updates_native_joined_user_repair(native_runtime):
 @pytest.mark.parametrize('image_input', [False, True])
 def test_post_hook_publishes_only_after_exact_native_origin_retention(native_runtime, monkeypatch, storage_available, image_input):
     rt = native_runtime
-    monkeypatch.setattr(rt.plugin, 'PacoMindClient', _Client)
-    monkeypatch.setenv('PACOMIND_GENERAL_PLUGIN_ACTIVE', '1')
-    monkeypatch.setenv('PACOMIND_MEMORY_WORKER_TOOLS', '0')
-    monkeypatch.setenv('PACOMIND_MEMORY_TURN_WRITER', 'disabled')
+    monkeypatch.setattr(rt.plugin, 'ProtagineClient', _Client)
+    monkeypatch.setenv('PROTAGINE_GENERAL_PLUGIN_ACTIVE', '1')
+    monkeypatch.setenv('PROTAGINE_MEMORY_WORKER_TOOLS', '0')
+    monkeypatch.setenv('PROTAGINE_MEMORY_TURN_WRITER', 'disabled')
     class NativeContext(_Context):
         def register_middleware(self, name, fn):
             if name == 'llm_request':
@@ -575,7 +575,7 @@ def test_actual_gateway_settled_callback_erases_and_evicts_owned_cache(native_ru
     # The real gateway appends this housekeeping row after a fresh turn. It
     # belongs to transcript bookkeeping, not the source-derived answer span.
     store.append_to_transcript('reader', {'role':'session_meta', 'tools':[],
-        'model':'fixture', 'platform':'pacomind_task', 'timestamp':123.0})
+        'model':'fixture', 'platform':'protagine_task', 'timestamp':123.0})
     rt.db.get_messages('reader', include_compacted=True)
     metadata_before, = [row for row in rows(rt).values() if row['role'] == 'session_meta']
     assert metadata_before['content'] is None
@@ -822,8 +822,8 @@ def test_failed_ownership_write_withholds_recall_and_preserves_ordinary_input(na
     current = {'role':'user', 'content':'Preserve this ordinary new request.'}
     rt.memory.observe_native_anchor(rt.scope, [current], user_message=current['content'])
     rt.memory.observe(rt.scope, [current], user_message=current['content'])
-    current['api_content'] = current['content'] + '\n[pacomind-recall-v1 ' + json.dumps({
-        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+    current['api_content'] = current['content'] + '\n[protagine-recall-v1 ' + json.dumps({
+        'contact_id':'owner','watermark':0,'sources':[rt.ref]}) + ']\n' + rt.fact + '\n[/protagine-recall-v1]'
     current['_row_id'] = rt.db.append_message('reader','user',current['content'],api_content=current['api_content'])
     # The feed works; only the ownership retention transaction fails.
     original_connect = rt.owned._native_read

@@ -9,13 +9,13 @@ import sqlite3
 
 import pytest
 
-from pacomind.tom.visibility import (
+from protagine.tom.visibility import (
     FactCandidateV1,
     FactVisibilityV1,
     ViewerContextV1,
     content_digest,
 )
-from pacomind.tom.visibility_store import (
+from protagine.tom.visibility_store import (
     FactVisibilityStore,
     VisibilityEnvelopeConflictError,
     open_visibility_envelope_store,

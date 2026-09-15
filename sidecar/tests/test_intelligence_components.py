@@ -1,4 +1,4 @@
-"""Tests for pacomind.intelligence.components.
+"""Tests for protagine.intelligence.components.
 
 Covers all 8 intelligence components:
     - ToolLearner
@@ -17,42 +17,42 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pacomind.intelligence.components.tool_learner import (
+from protagine.intelligence.components.tool_learner import (
     ToolLearner,
     ToolPreference,
     ToolUsage,
 )
-from pacomind.intelligence.components.self_reflector import (
+from protagine.intelligence.components.self_reflector import (
     Reflection,
     SelfReflector,
 )
-from pacomind.intelligence.components.task_planner import (
+from protagine.intelligence.components.task_planner import (
     SubTask,
     TaskPlan,
     TaskPlanner,
     TaskPriority,
 )
-from pacomind.intelligence.components.session_continuity import (
+from protagine.intelligence.components.session_continuity import (
     SessionContext,
     SessionContinuity,
 )
-from pacomind.intelligence.components.research_orchestrator import (
+from protagine.intelligence.components.research_orchestrator import (
     ResearchOrchestrator,
     ResearchReport,
     ResearchResult,
     ResearchSource,
     SourceType,
 )
-from pacomind.intelligence.components.preference_learner import (
+from protagine.intelligence.components.preference_learner import (
     Preference,
     PreferenceLearner,
 )
-from pacomind.intelligence.components.anomaly_detector import (
+from protagine.intelligence.components.anomaly_detector import (
     Anomaly,
     AnomalyDetector,
     AnomalyType,
 )
-from pacomind.intelligence.components.initiative_engine import (
+from protagine.intelligence.components.initiative_engine import (
     Initiative,
     InitiativeEngine,
     InitiativeType,
@@ -448,7 +448,7 @@ class TestResearchModels:
         assert result.citations == []
 
     def test_report_construction(self):
-        report = ResearchReport(query="what is pacomind?")
+        report = ResearchReport(query="what is protagine?")
         assert report.results == []
         assert report.synthesized_summary is None
         assert report.confidence == 0.0
@@ -853,7 +853,7 @@ class TestPackageImports:
     """Verify all components are importable from the package."""
 
     def test_all_imports(self):
-        from pacomind.intelligence.components import (
+        from protagine.intelligence.components import (
             ToolLearner,
             ToolUsage,
             ToolPreference,

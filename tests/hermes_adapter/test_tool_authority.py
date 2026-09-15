@@ -16,13 +16,13 @@ sys.path.insert(0, sys.argv[1])
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(mode=0o700)
 Path(os.environ["HERMES_BUNDLED_PLUGINS"]).mkdir()
-(home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["pacomind"], "pacomind": {
+(home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["protagine"], "protagine": {
     "owner_contact_id": "test-owner", "attested_system_platforms": ["cli"],
     "turn_outbox_path": str(home / "turns.sqlite3")}}}))
 def no_network(*a, **kw): raise AssertionError("Qualification may not contact a service")
 socket.socket.connect = no_network
 socket.create_connection = no_network
-import pacomind_hermes
+import protagine_hermes
 class Reply:
     status_code = 200
     def __init__(self, value): self.value = value
@@ -33,15 +33,15 @@ def get(self, path, **kwargs):
         sender = kwargs["params"]["address"]
         return Reply({"contact_id": "test-owner" if sender == "owner" else "test-guest"})
     raise RuntimeError("No central service in qualification")
-pacomind_hermes.PacoMindClient.get = get
-pacomind_hermes.PacoMindClient.post = lambda *a, **kw: Reply({})
+protagine_hermes.ProtagineClient.get = get
+protagine_hermes.ProtagineClient.post = lambda *a, **kw: Reply({})
 from hermes_cli.plugins import get_plugin_manager
 from hermes_cli.lifecycle import invoke_hook
 from hermes_cli.middleware import run_tool_execution_middleware
 manager = get_plugin_manager()
 manager.discover_and_load()
-assert manager._plugins["pacomind"].enabled, manager._plugins["pacomind"].error
-assert Path(pacomind_hermes.__file__).resolve().is_relative_to(Path(sys.argv[1]))
+assert manager._plugins["protagine"].enabled, manager._plugins["protagine"].error
+assert Path(protagine_hermes.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 
 # A registry-backed native file tool passes through Hermes' real dispatcher.
 from model_tools import handle_function_call
@@ -58,8 +58,8 @@ for role in ("owner", "guest"):
 assert len(calls) == 1
 
 # Native middleware fails open on callback exceptions. A lookup failure in
-# PacoMind must still return an explicit denial and reach no downstream handler.
-with patch.object(pacomind_hermes._TRANSPORT_SCOPES, "for_execution", side_effect=RuntimeError("unavailable")):
+# Protagine must still return an explicit denial and reach no downstream handler.
+with patch.object(protagine_hermes._TRANSPORT_SCOPES, "for_execution", side_effect=RuntimeError("unavailable")):
     result = run_tool_execution_middleware("terminal", {}, lambda a: calls.append(a),
                 session_id="owner", task_id="owner", turn_id="owner")
     assert json.loads(result)["status"] == "unavailable"
@@ -72,7 +72,7 @@ import run_agent
 # 0.21.0 binds eager aliases; 0.21.1 calls the defining modules directly.
 OPENAI_TARGET = 'run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
 TOOLS_TARGET = 'run_agent' if 'get_tool_definitions' in vars(run_agent) else 'model_tools'
-tool_names = ("terminal", "read_file", "execute_code", "delegate_task", "session_search", "memory", "pacomind_private_context")
+tool_names = ("terminal", "read_file", "execute_code", "delegate_task", "session_search", "memory", "protagine_private_context")
 defs = [{"type": "function", "function": {"name": name, "description": name,
         "parameters": {"type": "object", "properties": {}}}} for name in tool_names]
 def make_agent(platform="sms", parent=None):
@@ -167,7 +167,7 @@ def test_native_tool_authority_from_installed_wheel(artifacts, tmp_path):
     _, _, _, installed = artifacts
     env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG") if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path / "profile"), HERMES_BUNDLED_PLUGINS=str(tmp_path / "bundled"),
-        PACOMIND_GENERAL_PLUGIN_ACTIVE="1", PACOMIND_MEMORY_WORKER_TOOLS="0", PACOMIND_MEMORY_TURN_WRITER="disabled",
-        PACOMIND_GUARD_CHAT_MODE="off", HERMES_DISABLE_TELEMETRY="1")
+        PROTAGINE_GENERAL_PLUGIN_ACTIVE="1", PROTAGINE_MEMORY_WORKER_TOOLS="0", PROTAGINE_MEMORY_TURN_WRITER="disabled",
+        PROTAGINE_GUARD_CHAT_MODE="off", HERMES_DISABLE_TELEMETRY="1")
     result = run_python("-I", "-c", PROBE, installed, cwd=tmp_path, env=env)
     assert json.loads(result.stdout.splitlines()[-1])["native_dispatch"] is True

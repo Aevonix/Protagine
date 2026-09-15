@@ -12,7 +12,7 @@ acquisition, and behavioral correction:
 import pytest
 from unittest.mock import MagicMock
 
-from pacomind.intelligence.components.initiative_engine import (
+from protagine.intelligence.components.initiative_engine import (
     InitiativeConfig,
     InitiativeEngine,
     InitiativeType,
@@ -153,8 +153,8 @@ class TestCapabilityGapGenerator:
         await engine._load_capability_gaps()
         assert graph.session.calls[0][1]["threshold"] == 3
 
-        # PACOMIND_CAPABILITY_GAP_FAILURES overrides via from_env
-        monkeypatch.setenv("PACOMIND_CAPABILITY_GAP_FAILURES", "7")
+        # PROTAGINE_CAPABILITY_GAP_FAILURES overrides via from_env
+        monkeypatch.setenv("PROTAGINE_CAPABILITY_GAP_FAILURES", "7")
         graph2 = FakeGraphClient(results=[FakeResult(records=[CAPABILITY_RECORD])])
         engine2 = _engine(graph2, config=InitiativeConfig.from_env())
         await engine2._load_capability_gaps()
@@ -347,7 +347,7 @@ class TestEventBusApiUsage:
         """
         import inspect
 
-        from pacomind.skills.executors import data_quality, operational_hygiene
+        from protagine.skills.executors import data_quality, operational_hygiene
 
         for module in (data_quality, operational_hygiene):
             source = inspect.getsource(module)
@@ -360,7 +360,7 @@ class TestEventBusApiUsage:
                 )
 
     def test_event_bus_has_emit_not_publish(self):
-        from pacomind.events.bus import EventBus
+        from protagine.events.bus import EventBus
 
         bus = EventBus()
         assert hasattr(bus, "emit")

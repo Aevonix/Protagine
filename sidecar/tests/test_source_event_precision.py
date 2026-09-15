@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from pacomind.beliefs.source_claims import validated_claims
-from pacomind.beliefs.source_time import parse_source_date, source_event_time
-from pacomind.memory.recall import pack_memory_context, source_candidates
+from protagine.beliefs.source_claims import validated_claims
+from protagine.beliefs.source_time import parse_source_date, source_event_time
+from protagine.memory.recall import pack_memory_context, source_candidates
 from test_source_claim_projection import claim
 
 

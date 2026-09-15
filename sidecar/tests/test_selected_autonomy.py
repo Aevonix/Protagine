@@ -5,33 +5,33 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pacomind.autonomy.config import AutonomyConfig, AutonomyMode
-from pacomind.autonomy.loop import AutonomyLoop
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.intelligence.components.initiative_engine import Initiative, InitiativeType
-from pacomind.self_model.perspective import SelfPerspective
-from pacomind.self_model.store import CompetenceStore, SelfModel
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.autonomy.config import AutonomyConfig, AutonomyMode
+from protagine.autonomy.loop import AutonomyLoop
+from protagine.initiatives.store import InitiativeStore
+from protagine.intelligence.components.initiative_engine import Initiative, InitiativeType
+from protagine.self_model.perspective import SelfPerspective
+from protagine.self_model.store import CompetenceStore, SelfModel
+from protagine.turns import TurnIdempotencyLedger
 
 
 def test_selected_configuration_is_explicit_and_rejects_misspellings(monkeypatch):
-    monkeypatch.setenv('PACOMIND_AUTONOMY_PHASES', 'initiative, execute,telemetry')
-    monkeypatch.setenv('PACOMIND_AUTONOMY_PROPOSALS_ONLY', 'true')
+    monkeypatch.setenv('PROTAGINE_AUTONOMY_PHASES', 'initiative, execute,telemetry')
+    monkeypatch.setenv('PROTAGINE_AUTONOMY_PROPOSALS_ONLY', 'true')
     config = AutonomyConfig.from_env()
     assert config.enabled_phases == ('initiative', 'execute', 'telemetry')
     assert config.proposals_only is True
-    same = AutonomyConfig.from_pacomind_config({'autonomy': {
+    same = AutonomyConfig.from_protagine_config({'autonomy': {
         'enabled_phases': ['initiative', 'execute'], 'proposals_only': True}})
     assert same.enabled_phases == ('initiative', 'execute') and same.proposals_only
     for invalid in ('', 'initiative,,execute', 'intitiative'):
-        monkeypatch.setenv('PACOMIND_AUTONOMY_PHASES', invalid)
+        monkeypatch.setenv('PROTAGINE_AUTONOMY_PHASES', invalid)
         with pytest.raises(ValueError):
             AutonomyLoop(SimpleNamespace(), AutonomyConfig.from_env())
 
 
 @pytest.mark.asyncio
 async def test_real_timer_persists_ranked_proposals_and_restarts_without_dispatch(tmp_path, monkeypatch):
-    from pacomind.identity import resolver
+    from protagine.identity import resolver
     monkeypatch.setattr(resolver, 'get_identity_resolver', lambda: SimpleNamespace(
         owner_identities=AsyncMock(return_value=['fixture-owner'])))
     ledger = TurnIdempotencyLedger(tmp_path / 'sources.db')

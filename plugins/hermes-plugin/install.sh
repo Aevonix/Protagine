@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility launcher for the supported, profile-aware PacoMind installer.
+# Compatibility launcher for the supported, profile-aware Protagine installer.
 set -euo pipefail
 
 args=()
@@ -12,5 +12,5 @@ while [[ $# -gt 0 ]]; do
     *) args+=("$1"); shift ;;
   esac
 done
-exec "${PACOMIND_PYTHON:-python3}" -m pacomind init \
+exec "${PROTAGINE_PYTHON:-python3}" -m protagine init \
   --hermes-home "${HERMES_HOME:-$HOME/.hermes}" "${args[@]}"

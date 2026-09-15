@@ -9,9 +9,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host as host_mod
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
+from protagine.api.routers import host as host_mod
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
 
 # Framework test fixtures only (555-prefix numbers are reserved/non-routable).
 OWNER = "+15550000001"

@@ -1,16 +1,16 @@
 # Runtime logs
 
-`pacomind start` uses Python's `RotatingFileHandler`, with a 20 MiB threshold
+`protagine start` uses Python's `RotatingFileHandler`, with a 20 MiB threshold
 and four numbered archives. A private instance writes
-`<instance>/service/sidecar.log`. `PACOMIND_LOG_PATH`, `PACOMIND_LOG_MAX_BYTES`
-and `PACOMIND_LOG_BACKUPS` select another path, size threshold or archive count
+`<instance>/service/sidecar.log`. `PROTAGINE_LOG_PATH`, `PROTAGINE_LOG_MAX_BYTES`
+and `PROTAGINE_LOG_BACKUPS` select another path, size threshold or archive count
 at process startup. Log files and the writer declaration have mode `0600`.
 
 Managed instance services capture Python stdout and stderr in the same sink.
 Applications that embed the sidecar can call
-`pacomind.runtime_logging.configure_runtime_logging(path, redirect_stdio=True)`
+`protagine.runtime_logging.configure_runtime_logging(path, redirect_stdio=True)`
 before importing the ASGI application. Direct Uvicorn launches can set
-`PACOMIND_RUNTIME_LOGGING=1`; the shipped service template selects this path.
+`PROTAGINE_RUNTIME_LOGGING=1`; the shipped service template selects this path.
 One process owns each log. The handler does not coordinate multiple server
 workers writing the same file.
 

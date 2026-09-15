@@ -23,7 +23,7 @@ def test_passive_capture_uses_current_native_profile_and_tolerates_invalid_manif
         ROOT/'plugins/hermes-plugin/ordinary_skill_review.py')
     review=importlib.util.module_from_spec(spec);spec.loader.exec_module(review)
     profile=tmp_path/'named';profile.mkdir()
-    state=profile/'pacomind';state.mkdir()
+    state=profile/'protagine';state.mkdir()
     monkeypatch.setenv('HERMES_HOME',str(tmp_path/'gateway-root'))
     monkeypatch.setattr(hermes_constants,'get_hermes_home',lambda:profile)
     manifest={'hermes_home':str(profile),'ordinary_skill_review':{'enabled':True}}
@@ -40,7 +40,7 @@ DRIVER = r'''
 import json,os,sqlite3,subprocess,sys,time
 from pathlib import Path
 from hermes_cli.env_loader import load_hermes_dotenv
-home=Path(os.environ['HERMES_HOME']);state=home/'pacomind'
+home=Path(os.environ['HERMES_HOME']);state=home/'protagine'
 load_hermes_dotenv(hermes_home=home)
 import hermes_cli
 assert Path(hermes_cli.__file__).is_relative_to(Path(sys.argv[1]))
@@ -51,9 +51,9 @@ from cron.scheduler import tick,get_running_job_ids
 from tools import skill_ledger,write_approval
 adapter=state/'adapter'
 sys.path.insert(0,str(adapter))
-from pacomind_hermes.client import TurnOutbox
+from protagine_hermes.client import TurnOutbox
 import yaml
-config=yaml.safe_load(before)['plugins']['pacomind']
+config=yaml.safe_load(before)['plugins']['protagine']
 successor=sys.argv[2]=='semantic_successor'
 evaluated=sys.argv[2] in {'native_evaluated','semantic_successor'}
 passive=sys.argv[2] in {'native_tools','native_evaluated'}
@@ -86,10 +86,10 @@ if evaluated:
  declaration=state/'native-failure-evaluator.json'
  declaration.write_text(json.dumps({'id':'controlled-native-failure','scope':'Read complete supplied sources before describing behavior.',
   'oracle':'_fixture_skill_oracle:assess','oracle_id':'controlled-source-procedure-v1','allow_apply':True,
-  'environment':{'PACOMIND_FIXTURE_ORACLE_LOG':str(state/'oracle-measurements.jsonl'),
-                 'PACOMIND_FIXTURE_ORACLE_REGRESSION':str(state/'oracle-regression')},
+  'environment':{'PROTAGINE_FIXTURE_ORACLE_LOG':str(state/'oracle-measurements.jsonl'),
+                 'PROTAGINE_FIXTURE_ORACLE_REGRESSION':str(state/'oracle-regression')},
   'native_failures':selectors}))
- setup_code='from pathlib import Path; import sys; from pacomind.setup_skill_reviews import configure; configure(Path(sys.argv[1]), evaluator_path=sys.argv[2])'
+ setup_code='from pathlib import Path; import sys; from protagine.setup_skill_reviews import configure; configure(Path(sys.argv[1]), evaluator_path=sys.argv[2])'
  upgraded=subprocess.run([manifest['sidecar_python'],'-B','-c',setup_code,str(state),str(declaration)],
   env={**os.environ,'PYTHONPATH':manifest['sidecar_module_root']},capture_output=True,text=True,timeout=30)
  assert upgraded.returncode==0,upgraded.stdout+upgraded.stderr
@@ -101,8 +101,8 @@ script=home/'scripts/unrelated-review-probe.py'
 script.write_text('import json,sys\nfrom pathlib import Path\n'
  +f'sys.path.insert(0,{str(adapter)!r})\n'
  +'from hermes_cli.config import load_config\n'
- +'from pacomind_hermes.ordinary_skill_review import plugin_configuration,run\n'
- +'config=load_config()["plugins"]["pacomind"]\n'
+ +'from protagine_hermes.ordinary_skill_review import plugin_configuration,run\n'
+ +'config=load_config()["plugins"]["protagine"]\n'
  +'assert plugin_configuration(config)==config\n'
  +'assert "cron" not in config.get("attested_system_platforms",["cli"])\n'
  +f'try: run(Path({str(state)!r}))\n'
@@ -133,21 +133,21 @@ if successor:
  assert skill_ledger.get_entry(failed['id'])==failed,'Original failure changed'
 assert len(pending)==1,pending
 payload=pending[0]['payload']
-batch=payload.get('_pacomind_task_assessment_batch')
+batch=payload.get('_protagine_task_assessment_batch')
 if passive:
  assert batch is None,payload
- assert len(payload['_pacomind_review_observation_ids'])==2,payload
+ assert len(payload['_protagine_review_observation_ids'])==2,payload
  if evaluated:
-  batch=payload['_pacomind_native_failure_batch']
+  batch=payload['_protagine_native_failure_batch']
   assert batch['source']=='ordinary_native_failure_batch'
   assert batch['evaluator']['id']=='controlled-native-failure'
   assert set(batch['observation_ids'])=={r['evidence']['observation_id'] for r in failures}
-  assert len(batch['observations'])==2 and batch['native_execution_id']==payload['_pacomind_review_native_execution']
- else:assert '_pacomind_native_failure_batch' not in payload
+  assert len(batch['observations'])==2 and batch['native_execution_id']==payload['_protagine_review_native_execution']
+ else:assert '_protagine_native_failure_batch' not in payload
 else:
  assert batch['task_ids']==['task-1','task-2'],batch
  assert (batch['evaluator'] is not None)==successor,batch
-assert payload['_pacomind_review_create_only'] is True
+assert payload['_protagine_review_create_only'] is True
 assert payload['name']=='neutral-source-handoff'
 assert not (home/'skills/neutral-source-handoff/SKILL.md').exists()
 assert not (home/'skills/illegal-parent-skill/SKILL.md').exists()
@@ -210,8 +210,8 @@ from pathlib import Path
 
 def assess(text, *, phase):
     passed=('Read every supplied source before describing behavior.' in (text or '')
-            and not Path(os.environ['PACOMIND_FIXTURE_ORACLE_REGRESSION']).exists())
-    with Path(os.environ['PACOMIND_FIXTURE_ORACLE_LOG']).open('a') as stream:
+            and not Path(os.environ['PROTAGINE_FIXTURE_ORACLE_REGRESSION']).exists())
+    with Path(os.environ['PROTAGINE_FIXTURE_ORACLE_LOG']).open('a') as stream:
         stream.write(json.dumps({'phase':phase,'passed':passed,
             'text_sha256':hashlib.sha256((text or '').encode()).hexdigest()})+'\\n')
     return {'cases':[{'id':'controlled-source-procedure','passed':passed}]}
@@ -220,7 +220,7 @@ def assess(text, *, phase):
 
 @pytest.mark.parametrize('producer',['semantic','native_tools','native_evaluated','semantic_successor'])
 def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unattested(artifacts, tmp_path,producer):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         pytest.skip('Select the qualified native source')
     output, wheel, _, installed = artifacts
@@ -246,9 +246,9 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
             if not self.path.startswith('/v1/host/'):
                 return
             from dotenv import dotenv_values
-            expected = dotenv_values(home/'.env').get('PACOMIND_NATIVE_API_KEY')
-            configured = yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['pacomind']
-            if configured.get('api_key') != '${PACOMIND_NATIVE_API_KEY}':
+            expected = dotenv_values(home/'.env').get('PROTAGINE_NATIVE_API_KEY')
+            configured = yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['protagine']
+            if configured.get('api_key') != '${PROTAGINE_NATIVE_API_KEY}':
                 raise AssertionError('The installer root credential placeholder changed')
             if not expected or self.headers.get('Authorization') != 'Bearer '+expected:
                 raise AssertionError('Host request did not use the actual installer root credential')
@@ -256,7 +256,7 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
 
         def do_GET(self):
             self.assert_host_authorization()
-            owner=yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['pacomind']['owner_contact_id']
+            owner=yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['protagine']['owner_contact_id']
             self.send({'contact_id':owner,'events':[],'through':0,'head':0,'complete':True})
 
         def do_POST(self):
@@ -269,7 +269,7 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
                     'native_history_matches':[{**ref,'erased':False,'source_refs':[]}
                         for ref in body.get('native_history_refs',[])]});return
             if self.path=='/v1/host/executions/assessments/read':
-                owner=yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['pacomind']['owner_contact_id']
+                owner=yaml.safe_load((home/'config.yaml').read_bytes())['plugins']['protagine']['owner_contact_id']
                 assert body['contact_id']==owner
                 assessment_reads.append(body)
                 rows=[{'source_id':'assessment-'+str(i),'source_version':str(i)*64,
@@ -283,8 +283,8 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
             messages=body.get('messages',[]); full=json.dumps(messages)
             calls=None;answer='A recurring source-reading hypothesis may be useful; no improvement is established.'
             choice=body.get('tool_choice')
-            if isinstance(choice,dict) and choice.get('function',{}).get('name')=='pacomind_setup_echo':
-                name,args='pacomind_setup_echo',{'token':'pacomind-ready'}
+            if isinstance(choice,dict) and choice.get('function',{}).get('name')=='protagine_setup_echo':
+                name,args='protagine_setup_echo',{'token':'protagine-ready'}
             elif 'This is system-generated assessment evidence' in full:
                 attempted=any(call.get('function',{}).get('name')=='skill_manage'
                     and json.loads(call['function']['arguments']).get('name')=='neutral-source-handoff'
@@ -294,8 +294,8 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
                         and 'system_recorded_failed_proposal' not in full else 'Consult complete supplied sources.')
                     name,args='skill_manage',{'action':'create','name':'neutral-source-handoff',
                         'content':'---\nname: neutral-source-handoff\ndescription: '+description+'\n---\nRead every supplied source before describing behavior.\n',
-                            **({'_pacomind_task_assessment_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer in {'semantic','semantic_successor'} else
-                               {'_pacomind_native_failure_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer=='native_evaluated' else {})}
+                            **({'_protagine_task_assessment_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer in {'semantic','semantic_successor'} else
+                               {'_protagine_native_failure_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer=='native_evaluated' else {})}
                 else:name=args=None
             elif ('SYSTEM-GENERATED REVIEW OF DISTINCT OPERATIONAL TASK ASSESSMENTS' in full
                     or 'SYSTEM-GENERATED ASSESSMENT OF RECURRING NATIVE TOOL FAILURES' in full):
@@ -336,14 +336,14 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
     bundled=tmp_path/'bundled';bundled.mkdir()
     env={**os.environ,'HOME':str(tmp_path),'HERMES_HOME':str(home),'HERMES_BUNDLED_PLUGINS':str(bundled),
          'HERMES_BIN':str(python.parent/'hermes'),'HERMES_DISABLE_LAZY_INSTALLS':'1',
-         'HERMES_DISABLE_TELEMETRY':'1','TIRITH_ENABLED':'false','PACOMIND_GUARD_CHAT_MODE':'off',
+         'HERMES_DISABLE_TELEMETRY':'1','TIRITH_ENABLED':'false','PROTAGINE_GUARD_CHAT_MODE':'off',
          'LITELLM_LOCAL_MODEL_COST_MAP':'True','PYTHONDONTWRITEBYTECODE':'1'}
     try:
         install=INSTALL.replace("'--hermes-home', sys.argv[3]", "'--ordinary-skill-review', '--hermes-home', sys.argv[3]")
-        run_python('-I','-c',install,installed,os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
+        run_python('-I','-c',install,installed,os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),
             home,wheel,f'http://127.0.0.1:{server.server_port}/v1',api_port,python,cwd=tmp_path,env=env)
         if producer in {'native_evaluated','semantic_successor'}:
-            (home/'pacomind/adapter/_fixture_skill_oracle.py').write_text(ORACLE)
+            (home/'protagine/adapter/_fixture_skill_oracle.py').write_text(ORACLE)
         api=ThreadingHTTPServer(('127.0.0.1',api_port),ScriptedBoundary)
         api_thread=threading.Thread(target=api.serve_forever,daemon=True);api_thread.start()
         result=subprocess.run([str(python),'-B','-c',DRIVER,native,producer,f'http://127.0.0.1:{server.server_port}/v1'],cwd=tmp_path,env=env,

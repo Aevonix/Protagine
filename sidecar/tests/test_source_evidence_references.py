@@ -4,9 +4,9 @@ import json
 from jsonschema import Draft202012Validator, ValidationError
 import pytest
 
-from pacomind.beliefs.source_claims import claim_response_schema, validated_claims
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.beliefs.source_claims import claim_response_schema, validated_claims
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns import TurnIdempotencyLedger
 from test_source_claim_projection import claim, prepared
 from test_source_claim_review import ReviewedModel, review
 from test_source_claim_subject_basis import rows

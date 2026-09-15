@@ -5,13 +5,13 @@ import json
 from jsonschema import Draft202012Validator
 import pytest
 
-from pacomind.beliefs.source_claims import SourceClaimOutputError, claim_response_schema, validated_claims
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.beliefs.source_time import MemoryTimeQuery
-from pacomind.memory.recall import render_memory_context
-from pacomind.self_model.appraisals import AppraisalStore
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.source_read import read
+from protagine.beliefs.source_claims import SourceClaimOutputError, claim_response_schema, validated_claims
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.beliefs.source_time import MemoryTimeQuery
+from protagine.memory.recall import render_memory_context
+from protagine.self_model.appraisals import AppraisalStore
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.source_read import read
 from test_source_claim_projection import claim, prepared
 from test_source_claim_subject_basis import remove_original, rows
 from test_source_quoted_preferences import add, preference, projection_at
@@ -102,7 +102,7 @@ async def test_unresolved_quoted_condition_reaches_review_recall_and_context(tmp
         assert record['text'] == text and record['sources']
         assert record['status'] == 'statement' and record['governing'] is False
         assert record['applicability']['status'] == 'unresolved'
-        from pacomind.api.routers import social_state
+        from protagine.api.routers import social_state
         monkeypatch.setattr(social_state, 'appraisal_store', lambda: AppraisalStore(reopened.ledger, owner_id='owner'))
         body, refs = social_state.appraisal_context(contact_id='owner', session_id='later', query='tea')
         assert text in body and 'applicability unresolved; source conditions not evaluated' in body and refs

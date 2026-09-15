@@ -1,13 +1,13 @@
 """Context-scoped trust: a trust_scope (e.g. a group chat) grants its members a tier
 that applies ONLY inside the scope. Membership never confers global 1:1 rights — a
 member's contacts row is untouched. This is the generic "trusted in this room, not in
-my DMs" primitive (any agent that embeds PacoMind can use it).
+my DMs" primitive (any agent that embeds Protagine can use it).
 """
 
 import pytest
 
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
 
 
 @pytest.fixture

@@ -195,9 +195,9 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
             if creating:
                 return manager._find_skill(skill) is None and not target.parent.exists()
             return target.is_file() and target.read_bytes() == original
-        if (creating and (payload.get('_pacomind_review_base_absent') is not True or not unchanged())):
+        if (creating and (payload.get('_protagine_review_base_absent') is not True or not unchanged())):
             return {'status': 'stale_proposal'}
-        if not creating and payload.get('_pacomind_review_base_sha256') != original_sha256:
+        if not creating and payload.get('_protagine_review_base_sha256') != original_sha256:
             return {'status': 'stale_proposal'}
         if operation.get('content'):
             candidate_text = operation['content']
@@ -226,7 +226,7 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
                     'before_sha256': original_sha256, 'candidate_sha256': _digest(candidate),
                     **({'change_kind': 'create'} if creating else {}),
                     'baseline': baseline, 'candidate': proposed, 'case_ids': list(old_cases),
-                    'source_evidence': payload.get('_pacomind_review_evidence')}
+                    'source_evidence': payload.get('_protagine_review_evidence')}
         improved = (original != candidate and old_cases.keys() == new_cases.keys() and all(new_cases.values())
                     and sum(new_cases.values()) > sum(old_cases.values()))
         if not improved:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pacomind.feedback import TypeFeedbackStore
+from protagine.feedback import TypeFeedbackStore
 
 
 def test_actioned_boosts_dismissed_decays():

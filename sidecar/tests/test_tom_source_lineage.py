@@ -9,10 +9,10 @@ from types import SimpleNamespace
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.routers import host
-from pacomind.tom.facts import SharedFactsStore
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.idempotency import SourceErased
+from protagine.api.routers import host
+from protagine.tom.facts import SharedFactsStore
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.idempotency import SourceErased
 from test_turn_source_evidence import source_app, envelope, recalled
 
 

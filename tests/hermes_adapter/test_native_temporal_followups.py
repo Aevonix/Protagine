@@ -15,23 +15,23 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0,sys.argv[1])
 if sys.argv[3]:sys.path.append(sys.argv[3])
 if len(sys.argv)>4 and sys.argv[4]:sys.path.insert(0,sys.argv[4])
-package=types.ModuleType('pacomind_hermes');package.__path__=[sys.argv[2]];sys.modules['pacomind_hermes']=package
+package=types.ModuleType('protagine_hermes');package.__path__=[sys.argv[2]];sys.modules['protagine_hermes']=package
 def no_network(*a,**kw):raise AssertionError('No network in native followup qualification')
 socket.socket.connect=no_network
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import temporal_followups,host
-from pacomind.commitments.store import CommitmentStore
-from pacomind.commitments.work import CommitmentWork
-from pacomind.initiatives.temporal_followup import TemporalFollowups
-from pacomind.turns import get_turn_idempotency_ledger
-from pacomind_hermes.initiative_work import NativeFollowups
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import temporal_followups,host
+from protagine.commitments.store import CommitmentStore
+from protagine.commitments.work import CommitmentWork
+from protagine.initiatives.temporal_followup import TemporalFollowups
+from protagine.turns import get_turn_idempotency_ledger
+from protagine_hermes.initiative_work import NativeFollowups
 root=Path(os.environ['HERMES_HOME']);root.mkdir()
 (root/'config.yaml').write_text('plugins: {enabled: []}\n')
-state=Path(os.environ['PACOMIND_STATE_DIR']);state.mkdir()
+state=Path(os.environ['PROTAGINE_STATE_DIR']);state.mkdir()
 store=CommitmentStore(state/'commitments.db');host._commitment_store=store
 waiting=TemporalFollowups(store)
 source_ledger=get_turn_idempotency_ledger(state)
@@ -39,7 +39,7 @@ app=FastAPI()
 @app.middleware('http')
 async def authority(request,next_call):
  person=request.headers.get('fixture-person','owner')
- request.state.pacomind_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
+ request.state.protagine_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
      scopes=frozenset({'turns:write','context:read'}),viewer_person_id=person,person_ids=frozenset({person}),
      audiences=frozenset({'viewer'}),authenticated=True)
  return await next_call(request)
@@ -75,14 +75,14 @@ def reply(identifier):
     'matches':[{'external_ref':'message:reply-'+identifier,'reply_to_ref':row['outbound_ref'],
                 'receipt_ref':'receipt:reply-'+identifier,'ts':time.time(),'channel':'verified-other-channel','reaction':None}]})
 
-from pacomind_hermes import review_worker
-from pacomind_hermes.review_worker import ReviewWorker,validate_profile
+from protagine_hermes import review_worker
+from protagine_hermes.review_worker import ReviewWorker,validate_profile
 import yaml
-profile=root/'profiles/pacomind-reviews';profile.mkdir(parents=True)
+profile=root/'profiles/protagine-reviews';profile.mkdir(parents=True)
 lane={'worker':True,'source_home':str(root),'owner_contact_id':'owner','log_directory':str(root/'logs')}
-config={'toolsets':['pacomind_review'],'platform_toolsets':{'cli':['pacomind_review']},
+config={'toolsets':['protagine_review'],'platform_toolsets':{'cli':['protagine_review']},
  'agent':{'disabled_toolsets':['kanban']},'tools':{'tool_search':{'enabled':False}},
- 'plugins':{'enabled':['pacomind'],'pacomind':{'native_reviews':lane}},
+ 'plugins':{'enabled':['protagine'],'protagine':{'native_reviews':lane}},
  'kanban':{'dispatch_in_gateway':False},'mcp_servers':{}}
 (profile/'config.yaml').write_text(yaml.safe_dump(config))
 assert validate_profile(config,root,'owner')==lane
@@ -91,24 +91,24 @@ package.register=lambda ctx:review_worker.register_worker(ctx,lane)
 # validated bounded profile, real native task claims, and the actual HTTP API.
 def selected_profile(config,home,owner):
  assert config=={'enabled':True} and home==root and owner=='owner'
- return 'pacomind-reviews'
+ return 'protagine-reviews'
 review_worker.refresh_profile=selected_profile
 # Native multiplex dispatch deliberately omits the root's .env from the worker
 # environment. Resolve the selected root scope without replacing the worker's.
 from agent.secret_scope import (build_profile_secret_scope,current_secret_scope,
     is_multiplex_active,reset_secret_scope,set_multiplex_active,set_secret_scope)
-(root/'.env').write_text('PACOMIND_NATIVE_API_KEY=controlled-root-key\n')
-(profile/'.env').write_text('PACOMIND_NATIVE_API_KEY=controlled-worker-key\n')
-(root/'config.yaml').write_text(yaml.safe_dump({'plugins':{'pacomind':{
- 'url':'http://sidecar.fixture','api_key':'${PACOMIND_NATIVE_API_KEY}'}}}))
-assert 'PACOMIND_NATIVE_API_KEY' not in os.environ
+(root/'.env').write_text('PROTAGINE_NATIVE_API_KEY=controlled-root-key\n')
+(profile/'.env').write_text('PROTAGINE_NATIVE_API_KEY=controlled-worker-key\n')
+(root/'config.yaml').write_text(yaml.safe_dump({'plugins':{'protagine':{
+ 'url':'http://sidecar.fixture','api_key':'${PROTAGINE_NATIVE_API_KEY}'}}}))
+assert 'PROTAGINE_NATIVE_API_KEY' not in os.environ
 multiplex=is_multiplex_active();set_multiplex_active(True)
 worker_scope=build_profile_secret_scope(profile);token=set_secret_scope(worker_scope)
 try:
  selected=review_worker._selected_client(root,'owner')
  assert selected._headers().get('Authorization')=='Bearer controlled-root-key'
  assert current_secret_scope() is worker_scope
- assert 'PACOMIND_NATIVE_API_KEY' not in os.environ
+ assert 'PROTAGINE_NATIVE_API_KEY' not in os.environ
 finally:
  reset_secret_scope(token);set_multiplex_active(multiplex)
 review_worker._selected_client=lambda home,owner:clients[0]
@@ -118,7 +118,7 @@ def complete_review(identifier,parent,late=None):
  value=reviews[0].work(identifier)
  with connect(board='default') as db:
   task=kb.get_task(db,value['native_task_id'])
-  assert task.assignee=='pacomind-reviews' and task.status=='ready'
+  assert task.assignee=='protagine-reviews' and task.status=='ready'
   task=kb.claim_task(db,task.id)
  previous=dict(os.environ)
  os.environ.update(HERMES_HOME=str(profile),HERMES_KANBAN_DB=str(root/'kanban.db'),
@@ -145,7 +145,7 @@ def complete_review(identifier,parent,late=None):
    finished=kb.get_task(db,task.id)
    assert finished.status=='done',result
    if late:assert 'no longer due' in kb.latest_run(db,task.id).summary
-  assert worker.before_tool(tool_name='pacomind_read_work_source')['action']=='block'
+  assert worker.before_tool(tool_name='protagine_read_work_source')['action']=='block'
  finally:
   os.environ.clear();os.environ.update(previous)
  observed=reviews[1].work(identifier)
@@ -224,13 +224,13 @@ def test_actual_native_reply_wait_lifecycle(tmp_path):
     root = Path(__file__).resolve().parents[2]
     env = {key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'hermes'),HERMES_KANBAN_HOME=str(tmp_path/'hermes'),
-        PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),PACOMIND_HERMES_WORK_BOARDS='["default"]',
-        PACOMIND_STATE_DIR=str(tmp_path/'state'),PACOMIND_OWNER_CONTACT_ID='owner',
+        PROTAGINE_HERMES_HOME=str(tmp_path/'hermes'),PROTAGINE_HERMES_WORK_BOARDS='["default"]',
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'),PROTAGINE_OWNER_CONTACT_ID='owner',
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1',HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
+        PROTAGINE_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
     result = subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
-        str(root/'plugins/hermes-plugin'),os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
+        str(root/'plugins/hermes-plugin'),os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),
         os.environ.get('PROTAGINE_HERMES_TEST_SOURCE','')],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode == 0,result.stdout+result.stderr

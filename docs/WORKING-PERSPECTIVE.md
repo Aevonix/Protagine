@@ -103,9 +103,9 @@ An existing installation can run attention and durable proposals without waking
 its unrelated legacy maintenance phases:
 
 ```dotenv
-PACOMIND_AUTONOMY_MODE=proactive
-PACOMIND_AUTONOMY_PHASES=initiative,execute,telemetry
-PACOMIND_AUTONOMY_PROPOSALS_ONLY=true
+PROTAGINE_AUTONOMY_MODE=proactive
+PROTAGINE_AUTONOMY_PHASES=initiative,execute,telemetry
+PROTAGINE_AUTONOMY_PROPOSALS_ONLY=true
 ```
 
 The same sidecar timer generates candidates, applies the stored perspective,

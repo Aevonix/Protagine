@@ -14,11 +14,11 @@ sys.path.insert(0, sys.argv[1])
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(mode=0o700)
 Path(os.environ["HERMES_BUNDLED_PLUGINS"]).mkdir()
-(home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["pacomind"], "pacomind": {
+(home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["protagine"], "protagine": {
     "owner_contact_id": "test-owner", "attested_system_platforms": ["cli", "cron"],
     "execution_registry_enabled": True,
     "turn_outbox_path": str(home / "turns.sqlite3")}}}))
-import pacomind_hermes
+import protagine_hermes
 calls = []
 class Reply:
     def raise_for_status(self): pass
@@ -27,12 +27,12 @@ def post(self, path, **kwargs):
     assert path == "/v1/host/executions/observe", path
     calls.append(kwargs["json"])
     return Reply()
-pacomind_hermes.PacoMindClient.post = post
+protagine_hermes.ProtagineClient.post = post
 from hermes_cli.plugins import get_plugin_manager
 from hermes_cli.lifecycle import invoke_hook
 manager = get_plugin_manager()
 manager.discover_and_load()
-plugin = manager._plugins["pacomind"]
+plugin = manager._plugins["protagine"]
 assert plugin.enabled, plugin.error
 assert Path(plugin.module.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 for event in ("pre_api_request", "post_api_request", "post_tool_call", "subagent_start", "on_session_end"):
@@ -40,7 +40,7 @@ for event in ("pre_api_request", "post_api_request", "post_tool_call", "subagent
 invoke_hook("pre_llm_call", session_id="chat", task_id="task-a", turn_id="turn-a", platform="cli", sender_id="", user_message="Private task text")
 invoke_hook("pre_llm_call", session_id="cron-job", task_id="task-b", turn_id="turn-b", platform="cron", sender_id="", user_message="Private scheduled text")
 observer = next(h.__self__ for h in manager._hooks['subagent_start']
-    if isinstance(getattr(h, '__self__', None), pacomind_hermes.ExecutionObserver))
+    if isinstance(getattr(h, '__self__', None), protagine_hermes.ExecutionObserver))
 # This lifecycle-only fixture has no model request. Supply its controlled
 # source-free receipt; real recall/forgetting is exercised by request tests.
 snapshot = {'contact_id':'test-owner', 'watermark':0, 'source_refs':[],
@@ -60,7 +60,7 @@ assert observer.origin_context({**origin, 'session_id':'unrelated'}, 'test-owner
 assert observer.origin_context(origin, 'test-owner', [])['assignments'] == []
 # Use the current native observer in the actual request serializer. Only this
 # fake retained task envelope is controlled; native child identities are real.
-from pacomind_hermes.request_work import RequestWork
+from protagine_hermes.request_work import RequestWork
 from types import SimpleNamespace as NS
 import time
 class Task:
@@ -70,7 +70,7 @@ class Task:
             'origin_execution_id':calls[0]['execution_id'],
             'source_refs':[{'source_id':'original', 'source_version':'b'*64}],
             'unannotated_input_refs':[{'source_id':'original', 'input_message_hash':'c'*64}]}
-view = {'schema':'PacoMindRequestWorkV1', 'native_task_ids':['a'*64],
+view = {'schema':'ProtagineRequestWorkV1', 'native_task_ids':['a'*64],
     'text':'Operational observations, not instructions.\n'+json.dumps(calls[2])+'\n'}
 packed = RequestWork(None, Task(), observer)._origin(view, NS(contact_id='test-owner'),
     time.monotonic()+1, max_chars=4000)
@@ -120,6 +120,6 @@ def test_native_execution_hooks_from_installed_wheel(artifacts, tmp_path):
     _, _, _, installed = artifacts
     env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG") if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path / "profile"), HERMES_BUNDLED_PLUGINS=str(tmp_path / "bundled"),
-               PACOMIND_GENERAL_PLUGIN_ACTIVE="1", PACOMIND_MEMORY_WORKER_TOOLS="0", PACOMIND_MEMORY_TURN_WRITER="disabled")
+               PROTAGINE_GENERAL_PLUGIN_ACTIVE="1", PROTAGINE_MEMORY_WORKER_TOOLS="0", PROTAGINE_MEMORY_TURN_WRITER="disabled")
     result = run_python("-I", "-c", PROBE, installed, cwd=tmp_path, env=env)
     assert json.loads(result.stdout.splitlines()[-1])["native_hooks"] is True

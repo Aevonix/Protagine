@@ -19,14 +19,14 @@ if sys.argv[4]:sys.path.insert(2,sys.argv[4])
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host
-from pacomind.turns import get_turn_idempotency_ledger
-from pacomind_hermes.client import source_message_hash
-from pacomind_hermes.input_provenance import SourceUpdate, transport_input, current
-import pacomind_hermes.client as cm
-import pacomind_hermes.request_memory as rm
-import pacomind_hermes.request_work as rw
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
+from protagine.turns import get_turn_idempotency_ledger
+from protagine_hermes.client import source_message_hash
+from protagine_hermes.input_provenance import SourceUpdate, transport_input, current
+import protagine_hermes.client as cm
+import protagine_hermes.request_memory as rm
+import protagine_hermes.request_work as rw
 # Canonical ASGI work is real, but a cold shared CI host is not a LAN-latency
 # benchmark. Dedicated deadline fixtures retain the ordinary real clocks.
 clock=NS(monotonic=lambda:1000.0,time=time.time,sleep=time.sleep)
@@ -41,12 +41,12 @@ keyring=home/'keys.json';keyring.write_text(json.dumps({'version':1,'principals'
 (home/'config.yaml').write_text(json.dumps({
  'model':{'provider':'custom','default':'fixture','base_url':'http://model.fixture/v1'},
  'auxiliary':{'title_generation':{'enabled':False}},
- 'memory':{'provider':'pacomind-memory','config':{'contact_id':'owner','url':'http://fixture','api_key':key}},
- 'plugins':{'enabled':['pacomind'],'pacomind':{'owner_contact_id':'owner','url':'http://fixture',
+ 'memory':{'provider':'protagine-memory','config':{'contact_id':'owner','url':'http://fixture','api_key':key}},
+ 'plugins':{'enabled':['protagine'],'protagine':{'owner_contact_id':'owner','url':'http://fixture',
   'api_key':key,'attested_system_platforms':['cli'],'turn_outbox_path':str(home/'outbox.db')}}}))
 app=FastAPI();app.add_middleware(ApiKeyMiddleware,keyring_path=str(keyring))
 app.include_router(host.router);app.include_router(host.v2_router);api=TestClient(app)
-ledger=get_turn_idempotency_ledger(os.environ['PACOMIND_STATE_DIR'])
+ledger=get_turn_idempotency_ledger(os.environ['PROTAGINE_STATE_DIR'])
 original='Open the retained storage checklist.'
 instruction='The checklist label must be ORANGE-472.'
 ledger.record_source('root-source',contact_id='owner',session_id='voice-input',
@@ -58,7 +58,7 @@ change_input=[{'source_id':'change-source','input_message_hash':source_message_h
  'email-input',{'role':'user','content':instruction})}]
 scenario=sys.argv[3];bodies=[];observations=[];granted=True;carrier=change_ref=None
 if scenario=='ownership_failure':
- from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ from protagine_hermes.native_owned_copies import NativeOwnedCopies
  retain=NativeOwnedCopies._retain_anchor
  def fail_update_write(self,*args,**kwargs):
   if kwargs.get('carrier_hash'):
@@ -107,7 +107,7 @@ def respond(request):
   if scenario=='erased':ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
   if scenario=='revoked':granted=False
   message={'role':'assistant','content':None,'tool_calls':[{'id':'read-root','type':'function',
-   'function':{'name':'tool_call','arguments':json.dumps({'name':'pacomind_memory_read_source',
+   'function':{'name':'tool_call','arguments':json.dumps({'name':'protagine_memory_read_source',
     'arguments':root_ref})}}]};finish='tool_calls'
  else:
   if scenario in {'erased','revoked','receipt_failure','ownership_failure','gateway_extra_text'} or (scenario=='erased_after_visibility' and step==3):
@@ -139,13 +139,13 @@ def respond(request):
   if scenario=='erased_after_visibility' and step==2:
    ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
    message={'role':'assistant','content':None,'tool_calls':[{'id':'read-again','type':'function',
-    'function':{'name':'tool_call','arguments':json.dumps({'name':'pacomind_memory_read_source',
+    'function':{'name':'tool_call','arguments':json.dumps({'name':'protagine_memory_read_source',
      'arguments':root_ref})}}]};finish='tool_calls'
   if scenario=='joined_child' and step==2:
    message={'role':'assistant','content':None,'tool_calls':[{'id':'delegate','type':'function',
     'function':{'name':'delegate_task','arguments':json.dumps({'tasks':[{
      'goal':'Report the current checklist label using the inherited change source handle.',
-     'context':'Open the inherited evidence if necessary.','toolsets':['pacomind']}]})}}]};finish='tool_calls'
+     'context':'Open the inherited evidence if necessary.','toolsets':['protagine']}]})}}]};finish='tool_calls'
  if body.get('stream'):
   delta={**message}
   if delta.get('tool_calls'):delta['tool_calls']=[{**v,'index':i} for i,v in enumerate(delta['tool_calls'])]
@@ -172,7 +172,7 @@ from run_agent import AIAgent
 from hermes_state import SessionDB
 parent=AIAgent(api_key='fixture',base_url='http://model.fixture/v1',provider='custom',model='fixture',
  quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',
- max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['pacomind','delegation'],
+ max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['protagine','delegation'],
  session_db=SessionDB(home/'state.db'))
 parent.save_trajectories=False
 try:
@@ -190,8 +190,8 @@ try:
 finally:parent.close()
 if scenario in {'normal','gateway_envelope'}:
  import asyncio, sqlite3
- from pacomind_hermes.client import TurnOutbox, PacoMindClient
- from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+ from protagine_hermes.client import TurnOutbox, ProtagineClient
+ from protagine_hermes.native_owned_copies import NativeOwnedCopies
  with SessionDB(home/'state.db') as native:
   session=parent.session_id
   before={row['id']:dict(row) for row in native._conn.execute(
@@ -203,7 +203,7 @@ if scenario in {'normal','gateway_envelope'}:
   unrelated_id=native.append_message(session,'user','Unrelated next task stays intact.')
   unrelated=dict(native._conn.execute('SELECT * FROM messages WHERE id=?',(unrelated_id,)).fetchone())
  ledger.erase_sources(contact_id='owner',turn_ids=['change-source'])
- owned=NativeOwnedCopies(NS(outbox=TurnOutbox(home/'outbox.db'),client=PacoMindClient('http://fixture',key)),None)
+ owned=NativeOwnedCopies(NS(outbox=TurnOutbox(home/'outbox.db'),client=ProtagineClient('http://fixture',key)),None)
  erased=asyncio.run(owned.reconcile(contact='owner'))
  with SessionDB(home/'state.db') as native:
   after={row['id']:dict(row) for row in native._conn.execute(
@@ -228,22 +228,22 @@ def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, sc
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified Hermes release for native qualification')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'pacomind'),
-        PACOMIND_OWNER_CONTACT_ID='owner', HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),
+    env.update(HERMES_HOME=str(tmp_path/'profile'), PROTAGINE_STATE_DIR=str(tmp_path/'protagine'),
+        PROTAGINE_OWNER_CONTACT_ID='owner', HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),
         HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_GENERAL_PLUGIN_ACTIVE='1', PACOMIND_MEMORY_WORKER_TOOLS='0',
-        PACOMIND_MEMORY_TURN_WRITER='disabled', PACOMIND_GUARD_CHAT_MODE='off',
-        PACOMIND_RECALL_RERANK='off', PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
+        PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_WORKER_TOOLS='0',
+        PROTAGINE_MEMORY_TURN_WRITER='disabled', PROTAGINE_GUARD_CHAT_MODE='off',
+        PROTAGINE_RECALL_RERANK='off', PROTAGINE_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         OPENAI_API_KEY='fixture', OPENAI_BASE_URL='http://model.fixture/v1', LITELLM_LOCAL_MODEL_COST_MAP='True')
     run_python('-I', '-c', PROBE, artifacts[3], ROOT/'sidecar', scenario,
-        os.environ.get('PACOMIND_TEST_HERMES_PATH',''), cwd=tmp_path, env=env)
+        os.environ.get('PROTAGINE_TEST_HERMES_PATH',''), cwd=tmp_path, env=env)
 
 
 REGISTRATION = r'''
 import copy,sys
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes.input_provenance import SourceUpdate,transport_input
+from protagine_hermes.input_provenance import SourceUpdate,transport_input
 base=[{'source_id':'root','input_message_hash':'a'*64}]
 parents=[{'source_id':'update-source','input_message_hash':'b'*64}]
 sources=[{'source_id':'update-source','source_version':'c'*64}]
@@ -315,7 +315,7 @@ import sys,threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes.input_provenance import SourceUpdate,transport_input
+from protagine_hermes.input_provenance import SourceUpdate,transport_input
 root=[{'source_id':'root','input_message_hash':'a'*64}]
 parents=[{'source_id':'update','input_message_hash':'b'*64}]
 scope=NS(contact_id='owner',session_id='session',task_id='task',turn_id='turn',
@@ -361,15 +361,15 @@ def test_concurrent_requests_wait_for_durable_update_receipt(artifacts, tmp_path
 WITHHELD_READ_STEERING = r'''
 import copy,json,sys
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes.input_provenance import SourceUpdate
-from pacomind_hermes.request_memory import _restore_source_updates
+from protagine_hermes.input_provenance import SourceUpdate
+from protagine_hermes.request_memory import _restore_source_updates
 from agent.prompt_builder import format_steer_marker
 first=SourceUpdate('one','owner','Use the first checklist.',[
  {'source_id':'first-input','input_message_hash':'a'*64}]).carrier()
 second=SourceUpdate('two','owner','Then use the second checklist.',[
  {'source_id':'second-input','input_message_hash':'b'*64}]).carrier()
 entries=[{'carrier':first},{'carrier':second}]
-source=json.dumps({'pacomind_source_read_v1':True,'text':'Private old source content.'})
+source=json.dumps({'protagine_source_read_v1':True,'text':'Private old source content.'})
 withheld='[Opened source withheld; read again after source freshness is restored.]'
 def restored(value, *, original=None):
  original=original or {'messages':[{'role':'tool','tool_call_id':'read-one','content':value}]}
@@ -382,7 +382,7 @@ actual=restored(value)
 assert actual==withheld+format_steer_marker(second+'\n\n'+first)
 assert 'Private old source content.' not in actual and 'Unregistered trailing prose.' not in actual
 # A quoted carrier or an earlier admitted update cannot manufacture delivery.
-assert restored(json.dumps({'pacomind_source_read_v1':True,'text':format_steer_marker(first)}))==withheld
+assert restored(json.dumps({'protagine_source_read_v1':True,'text':format_steer_marker(first)}))==withheld
 assert restored(source)==withheld
 assert restored(source+format_steer_marker('Unregistered update'))==withheld
 assert restored(source+'\n'+first)==withheld

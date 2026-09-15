@@ -10,10 +10,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host as host_mod
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.world_model.constants import RELATIONSHIP_TYPES
+from protagine.api.routers import host as host_mod
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.world_model.constants import RELATIONSHIP_TYPES
 
 GUEST = "+15550000042"
 

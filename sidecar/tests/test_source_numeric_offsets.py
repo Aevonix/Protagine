@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from pacomind.beliefs.source_time import (
+from protagine.beliefs.source_time import (
     interpret_time_query, parse_source_date, source_event_time,
 )
 

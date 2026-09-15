@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.setup import (
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.setup import (
     _prompt,
     apply_llm_config_fixes,
     build_owner_contact,
@@ -19,7 +19,7 @@ from pacomind.setup import (
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Scripted-defaults env var must not leak into prompt assertions."""
-    monkeypatch.delenv("PACOMIND_INIT_DEFAULTS", raising=False)
+    monkeypatch.delenv("PROTAGINE_INIT_DEFAULTS", raising=False)
 
 
 # ── _prompt with injectable ask ──────────────────────────────────────────────
@@ -135,7 +135,7 @@ def test_apply_llm_config_fixes_noop_for_good_config():
 
 
 def test_write_llm_host_config_persists_fixed_config(tmp_path):
-    path = tmp_path / ".pacomind-llm-config.json"
+    path = tmp_path / ".protagine-llm-config.json"
     cfg = {
         "provider": "openai-compatible",
         "baseUrl": "http://localhost:1234",

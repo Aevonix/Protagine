@@ -29,8 +29,8 @@ from agent.turn_finalizer import _apply_output_hooks
 from agent.relay_runtime import (ConversationLease,NoopRelayRuntime,SESSION_COORDINATOR,current_profile_key)
 from hermes_cli import lifecycle
 from hermes_cli.plugins import get_plugin_manager,PluginContext,PluginManifest
-from pacomind_hermes.transport_media import TransportMedia
-from pacomind_hermes.client import TurnOutbox
+from protagine_hermes.transport_media import TransportMedia
+from protagine_hermes.client import TurnOutbox
 scope=NS(valid_participant=True,platform='whatsapp',sender_id='sender',session_id='session',task_id='task',turn_id='turn')
 agent=NS(session_id='session',platform='whatsapp',model='fixture',_user_id='sender',_persist_disabled=False)
 manager=get_plugin_manager()
@@ -109,7 +109,7 @@ print(json.dumps({'actual_native_hook':True,'actual_bounded_dispatch_and_finaliz
 
 
 def test_selected_native_hook_retains_transport_originals(artifacts, tmp_path):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for actual native hook qualification')
     _, _, _, installed = artifacts

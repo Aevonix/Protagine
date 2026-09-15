@@ -8,48 +8,48 @@ from pathlib import Path
 
 import pytest
 
-import pacomind.backup as backup_module
-from pacomind.backup import (
+import protagine.backup as backup_module
+from protagine.backup import (
     create_full_backup,
     restore_full_backup,
     _scrub_env_file,
     _snapshot_databases,
-    _read_pacomind_id,
+    _read_protagine_id,
     BACKUP_VERSION,
 )
 
 
 @pytest.fixture
-def pacomind_state(tmp_path):
-    """Create a minimal PacoMind state directory for testing."""
+def protagine_state(tmp_path):
+    """Create a minimal Protagine state directory for testing."""
     state = tmp_path / "state"
     state.mkdir()
 
-    (state / "pacomind-id").write_text("test-pacomind-abc123")
+    (state / "protagine-id").write_text("test-protagine-abc123")
 
-    keys = state / "pacomind-keys"
+    keys = state / "protagine-keys"
     keys.mkdir()
     (keys / "private.pem").write_text("FAKE_PRIVATE_KEY")
     (keys / "public.pem").write_text("FAKE_PUBLIC_KEY")
 
     (state / "genesis.json").write_text(json.dumps({"genesis": True}))
 
-    conn = sqlite3.connect(str(state / "pacomind-contacts.db"))
+    conn = sqlite3.connect(str(state / "protagine-contacts.db"))
     conn.execute("CREATE TABLE contacts (id TEXT PRIMARY KEY, name TEXT)")
     conn.execute("INSERT INTO contacts VALUES ('c1', 'Alice')")
     conn.commit()
     conn.close()
 
-    conn = sqlite3.connect(str(state / "pacomind-affect.db"))
+    conn = sqlite3.connect(str(state / "protagine-affect.db"))
     conn.execute("CREATE TABLE affect (id TEXT PRIMARY KEY, mood TEXT)")
     conn.commit()
     conn.close()
 
     (state / ".env").write_text(
-        "PACOMIND_API_KEY=super-secret-key\n"
+        "PROTAGINE_API_KEY=super-secret-key\n"
         "NEO4J_URI=bolt://localhost:7687\n"
         "NEO4J_PASSWORD=neo4j-secret\n"
-        "PACOMIND_SIDECAR_PORT=7777\n"
+        "PROTAGINE_SIDECAR_PORT=7777\n"
     )
 
     return state
@@ -93,17 +93,17 @@ class TestSecretScrubbing:
 
 
 class TestDatabaseSnapshot:
-    def test_snapshots_all_dbs(self, pacomind_state, tmp_path):
+    def test_snapshots_all_dbs(self, protagine_state, tmp_path):
         dest = tmp_path / "db_snap"
-        manifest = _snapshot_databases(pacomind_state, dest)
+        manifest = _snapshot_databases(protagine_state, dest)
         filenames = {m["filename"] for m in manifest}
-        assert "pacomind-contacts.db" in filenames
-        assert "pacomind-affect.db" in filenames
+        assert "protagine-contacts.db" in filenames
+        assert "protagine-affect.db" in filenames
 
-    def test_snapshot_is_consistent_copy(self, pacomind_state, tmp_path):
+    def test_snapshot_is_consistent_copy(self, protagine_state, tmp_path):
         dest = tmp_path / "db_snap"
-        _snapshot_databases(pacomind_state, dest)
-        conn = sqlite3.connect(str(dest / "pacomind-contacts.db"))
+        _snapshot_databases(protagine_state, dest)
+        conn = sqlite3.connect(str(dest / "protagine-contacts.db"))
         cur = conn.execute("SELECT name FROM contacts WHERE id = 'c1'")
         assert cur.fetchone()[0] == "Alice"
         conn.close()
@@ -144,37 +144,37 @@ class TestDatabaseSnapshot:
 
 
 class TestFullCycle:
-    def test_backup_creates_archive(self, pacomind_state, output_dir):
+    def test_backup_creates_archive(self, protagine_state, output_dir):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
         assert archive.exists()
         assert archive.suffix == ".gz"
 
-    def test_restore_recovers_state(self, pacomind_state, output_dir, tmp_path):
+    def test_restore_recovers_state(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
 
         restore_dir = tmp_path / "restored"
         summary = restore_full_backup(archive, restore_dir)
 
-        assert summary["pacomind_id"] == "test-pacomind-abc123"
-        assert "pacomind-contacts.db" in summary["databases"]
-        assert (restore_dir / "pacomind-id").read_text().strip() == "test-pacomind-abc123"
-        assert (restore_dir / "pacomind-keys" / "public.pem").exists()
+        assert summary["protagine_id"] == "test-protagine-abc123"
+        assert "protagine-contacts.db" in summary["databases"]
+        assert (restore_dir / "protagine-id").read_text().strip() == "test-protagine-abc123"
+        assert (restore_dir / "protagine-keys" / "public.pem").exists()
 
-        conn = sqlite3.connect(str(restore_dir / "pacomind-contacts.db"))
+        conn = sqlite3.connect(str(restore_dir / "protagine-contacts.db"))
         cur = conn.execute("SELECT name FROM contacts WHERE id = 'c1'")
         assert cur.fetchone()[0] == "Alice"
         conn.close()
 
     def test_backup_restores_private_governed_action_ledger(
-        self, pacomind_state, output_dir, tmp_path
+        self, protagine_state, output_dir, tmp_path
     ):
-        private = pacomind_state / "governed-actions"
+        private = protagine_state / "governed-actions"
         private.mkdir(mode=0o700)
         private.chmod(0o700)
         ledger = private / "ledger.db"
@@ -186,7 +186,7 @@ class TestFullCycle:
         ledger.chmod(0o600)
 
         archive = create_full_backup(
-            pacomind_state,
+            protagine_state,
             output_dir,
             include_graph=False,
             include_vectors=False,
@@ -203,9 +203,9 @@ class TestFullCycle:
         conn.close()
 
     def test_private_ledger_restore_rejects_linked_parent_without_touching_target(
-        self, pacomind_state, output_dir, tmp_path
+        self, protagine_state, output_dir, tmp_path
     ):
-        private = pacomind_state / "governed-actions"
+        private = protagine_state / "governed-actions"
         private.mkdir(mode=0o700)
         private.chmod(0o700)
         ledger = private / "ledger.db"
@@ -215,7 +215,7 @@ class TestFullCycle:
         conn.close()
         ledger.chmod(0o600)
         archive = create_full_backup(
-            pacomind_state,
+            protagine_state,
             output_dir,
             include_graph=False,
             include_vectors=False,
@@ -236,9 +236,9 @@ class TestFullCycle:
 
     @pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
     def test_private_ledger_restore_rejects_leaf_alias_without_touching_target(
-        self, pacomind_state, output_dir, tmp_path, alias_kind
+        self, protagine_state, output_dir, tmp_path, alias_kind
     ):
-        private = pacomind_state / "governed-actions"
+        private = protagine_state / "governed-actions"
         private.mkdir(mode=0o700)
         private.chmod(0o700)
         ledger = private / "ledger.db"
@@ -248,7 +248,7 @@ class TestFullCycle:
         conn.close()
         ledger.chmod(0o600)
         archive = create_full_backup(
-            pacomind_state,
+            protagine_state,
             output_dir,
             include_graph=False,
             include_vectors=False,
@@ -271,9 +271,9 @@ class TestFullCycle:
         assert victim.read_bytes() == b"do-not-touch"
 
     def test_private_ledger_restore_never_rewinds_existing_evidence(
-        self, pacomind_state, output_dir, tmp_path
+        self, protagine_state, output_dir, tmp_path
     ):
-        private = pacomind_state / "governed-actions"
+        private = protagine_state / "governed-actions"
         private.mkdir(mode=0o700)
         private.chmod(0o700)
         ledger = private / "ledger.db"
@@ -283,7 +283,7 @@ class TestFullCycle:
         conn.close()
         ledger.chmod(0o600)
         archive = create_full_backup(
-            pacomind_state,
+            protagine_state,
             output_dir,
             include_graph=False,
             include_vectors=False,
@@ -297,7 +297,7 @@ class TestFullCycle:
         destination.write_bytes(b"existing-execution-evidence")
         destination.chmod(0o600)
         before = destination.stat()
-        contacts = restore_dir / "pacomind-contacts.db"
+        contacts = restore_dir / "protagine-contacts.db"
         conn = sqlite3.connect(str(contacts))
         conn.execute("CREATE TABLE contacts (id TEXT PRIMARY KEY, name TEXT)")
         conn.execute("INSERT INTO contacts VALUES ('c1', 'Existing State')")
@@ -314,37 +314,37 @@ class TestFullCycle:
         ).fetchone()[0] == "Existing State"
         conn.close()
 
-    def test_restore_rejects_identity_mismatch(self, pacomind_state, output_dir, tmp_path):
+    def test_restore_rejects_identity_mismatch(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
 
         restore_dir = tmp_path / "other"
         restore_dir.mkdir()
-        (restore_dir / "pacomind-id").write_text("different-pacomind-xyz")
+        (restore_dir / "protagine-id").write_text("different-protagine-xyz")
 
         with pytest.raises(ValueError, match="force-identity"):
             restore_full_backup(archive, restore_dir)
 
-    def test_restore_with_force_identity(self, pacomind_state, output_dir, tmp_path):
+    def test_restore_with_force_identity(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
 
         restore_dir = tmp_path / "other"
         restore_dir.mkdir()
-        (restore_dir / "pacomind-id").write_text("different-pacomind-xyz")
+        (restore_dir / "protagine-id").write_text("different-protagine-xyz")
 
         summary = restore_full_backup(
             archive, restore_dir, force_identity=True,
         )
-        assert summary["pacomind_id"] == "test-pacomind-abc123"
+        assert summary["protagine_id"] == "test-protagine-abc123"
 
-    def test_env_file_is_scrubbed_in_backup(self, pacomind_state, output_dir, tmp_path):
+    def test_env_file_is_scrubbed_in_backup(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
 
@@ -354,12 +354,12 @@ class TestFullCycle:
         env_content = (restore_dir / ".env").read_text()
         assert "super-secret-key" not in env_content
         assert "neo4j-secret" not in env_content
-        assert "PACOMIND_API_KEY=<REDACTED>" in env_content
-        assert "PACOMIND_SIDECAR_PORT=7777" in env_content
+        assert "PROTAGINE_API_KEY=<REDACTED>" in env_content
+        assert "PROTAGINE_SIDECAR_PORT=7777" in env_content
 
-    def test_meta_json_in_archive(self, pacomind_state, output_dir, tmp_path):
+    def test_meta_json_in_archive(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             include_graph=False, include_vectors=False,
         )
 
@@ -373,10 +373,10 @@ class TestFullCycle:
 
 
 class TestEncryption:
-    def test_encrypted_backup_restore(self, pacomind_state, output_dir, tmp_path):
+    def test_encrypted_backup_restore(self, protagine_state, output_dir, tmp_path):
         passphrase = b"test-passphrase-123"
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             passphrase=passphrase,
             include_graph=False, include_vectors=False,
         )
@@ -386,12 +386,12 @@ class TestEncryption:
         summary = restore_full_backup(
             archive, restore_dir, passphrase=passphrase,
         )
-        assert summary["pacomind_id"] == "test-pacomind-abc123"
-        assert "pacomind-contacts.db" in summary["databases"]
+        assert summary["protagine_id"] == "test-protagine-abc123"
+        assert "protagine-contacts.db" in summary["databases"]
 
-    def test_wrong_passphrase_fails(self, pacomind_state, output_dir, tmp_path):
+    def test_wrong_passphrase_fails(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             passphrase=b"correct-pass",
             include_graph=False, include_vectors=False,
         )
@@ -402,9 +402,9 @@ class TestEncryption:
                 archive, restore_dir, passphrase=b"wrong-pass",
             )
 
-    def test_encrypted_without_passphrase_fails(self, pacomind_state, output_dir, tmp_path):
+    def test_encrypted_without_passphrase_fails(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
-            pacomind_state, output_dir,
+            protagine_state, output_dir,
             passphrase=b"correct-pass",
             include_graph=False, include_vectors=False,
         )

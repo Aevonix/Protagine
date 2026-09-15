@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from pacomind.tom.arcs import ArcEventV1, ArcStore
-from pacomind.tom.recipient_simulator import (
+from protagine.tom.arcs import ArcEventV1, ArcStore
+from protagine.tom.recipient_simulator import (
     RecipientSimulationRequestV1,
     RecipientSimulator,
 )
-from pacomind.tom.visibility import (
+from protagine.tom.visibility import (
     FactCandidateV1,
     FactVisibilityV1,
     ViewerContextV1,
@@ -58,7 +58,7 @@ def _add_arc(store, person):
 
 
 def test_cross_person_visibility_and_simulation_corpus(tmp_path, monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECIPIENT_SIMULATOR_MODE", "shadow")
+    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
     candidates = (
         _fact("fact:alice", "Alice private launch detail", "alice"),
         _fact("fact:bob", "Bob private health detail", "bob"),

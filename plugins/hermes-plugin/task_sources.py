@@ -14,9 +14,9 @@ from .input_provenance import _refs, current
 from .task_handoffs import TaskHandoffError
 
 
-_NON_DIRECT = frozenset({'cron', 'subagent', 'background_review', 'pacomind_task'})
+_NON_DIRECT = frozenset({'cron', 'subagent', 'background_review', 'protagine_task'})
 _ORIGIN_FIELDS = ('platform', 'authority_gateway', 'sender_id', 'session_id', 'turn_id')
-_OWNER_DEADLINE = ContextVar('pacomind_task_owner_deadline', default=None)
+_OWNER_DEADLINE = ContextVar('protagine_task_owner_deadline', default=None)
 
 
 def is_direct_scope(scope):

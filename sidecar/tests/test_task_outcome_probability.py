@@ -1,7 +1,7 @@
 """Fixed task events use prior evidence and retain failures in proper scores."""
 import pytest
 
-from pacomind.self_model.expectations import ExpectationStore, ExpectationEngine
+from protagine.self_model.expectations import ExpectationStore, ExpectationEngine
 from test_forecast_learning import issue, observed
 
 

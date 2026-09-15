@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 
-_MANAGED_REVIEW = ContextVar('pacomind_managed_skill_review', default=None)
+_MANAGED_REVIEW = ContextVar('protagine_managed_skill_review', default=None)
 
 
 def capture_enabled(config):
@@ -57,8 +57,8 @@ async def review_once(native_home, native_source, native, configuration, destina
                       skill=None, reviewer=None, evaluator=None, connection=None, owner=None,
                       resolve_runtime=None):
     from tools import skill_ledger, skill_manager_tool, skill_provenance
-    from pacomind_hermes.review_experience import next_batch, next_tool_batch
-    from pacomind_hermes import review_successors, task_review_experience as experience
+    from protagine_hermes.review_experience import next_batch, next_tool_batch
+    from protagine_hermes import review_successors, task_review_experience as experience
     selected = skill_manager_tool._find_skill(skill) if skill is not None else None
     entries = skill_ledger.list_entries()
     claimed = next((row for row in entries if row.get('action') == 'ordinary_skill_review'
@@ -69,7 +69,7 @@ async def review_once(native_home, native_source, native, configuration, destina
                 'claim_id': claimed['id'], 'quality_credit': False}
     assessment_client, evaluated = connection, None
     if evaluator is not None:
-        from pacomind_hermes import task_review_experience as experience
+        from protagine_hermes import task_review_experience as experience
         evaluated = experience.evaluate_once(evaluator, assessment_client, owner)
         if evaluated is not None and (evaluated.get('candidate_measured')
                 or evaluated['status'] not in {'activated','proposal_only','unavailable'}):
@@ -88,7 +88,7 @@ async def review_once(native_home, native_source, native, configuration, destina
             skill, text = None, None
     if batch is None:
         if assessment_client is not None:
-            from pacomind_hermes import task_review_experience as experience
+            from protagine_hermes import task_review_experience as experience
             batch = experience.selected_batch(entries, evaluator, assessment_client, owner)
             if batch is not None:
                 skill, text = None, None
@@ -98,7 +98,7 @@ async def review_once(native_home, native_source, native, configuration, destina
         return {'status':'idle','reason':'selected_skill_unavailable' if selected is None
                 else 'no_unreviewed_recurring_ordinary_failure'}
     if batch.get('source') == 'ordinary_native_failure_batch' and evaluator is not None:
-        from pacomind_hermes import task_review_experience as experience
+        from protagine_hermes import task_review_experience as experience
         binding = experience.native_binding(batch, evaluator)
         if binding is not None:
             batch = {**batch, 'evaluator': binding, 'native_execution_id': native['id']}
@@ -164,11 +164,11 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
     from hermes_state import SessionDB
     from run_agent import AIAgent
     from tools import skill_provenance, write_approval, skill_ledger
-    from pacomind_hermes.review import editable_operation
-    from pacomind_hermes.draft_artifacts import write
+    from protagine_hermes.review import editable_operation
+    from protagine_hermes.draft_artifacts import write
 
     plugins = load_config().get('plugins', {})
-    config = plugin_configuration(plugins.get('pacomind', {}))
+    config = plugin_configuration(plugins.get('protagine', {}))
     if ('cron' not in config.get('attested_system_platforms', ['cli'])
             or not config.get('owner_contact_id')
             or 'turn_writer_platforms' not in config
@@ -187,7 +187,7 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
     unassigned = ordinary and evidence.get('attribution') == 'unassigned'
     create_only = semantic or unattributed or unassigned
     if semantic:
-        from pacomind_hermes import task_review_experience as experience
+        from protagine_hermes import task_review_experience as experience
         if skill is not None:
             raise ValueError('Task assessments do not implicate an existing skill')
         expected = experience.receipt(evidence)
@@ -201,7 +201,7 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
                 row['source_id']:row for row in evidence['observations']}:
             raise ValueError('Task review requires its claimed current assessment sources')
     elif native_evaluated:
-        from pacomind_hermes import task_review_experience as experience
+        from protagine_hermes import task_review_experience as experience
         if skill is not None:
             raise ValueError('Native failure evaluation requires an unassigned tool batch')
         expected = experience.receipt(evidence)
@@ -215,7 +215,7 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
             raise ValueError('An unattributed failure cannot select an existing skill')
         # The pipe's existing native execution check proves its caller. Bind
         # this new mode to that caller's actual claim and original occurrences.
-        from pacomind_hermes.review_experience import next_batch, next_tool_batch, ACTION, UNATTRIBUTED_ACTION
+        from protagine_hermes.review_experience import next_batch, next_tool_batch, ACTION, UNATTRIBUTED_ACTION
         entries = skill_ledger.list_entries()
         identifiers = evidence.get('observation_ids', [])
         claim = any(row.get('action') == 'ordinary_skill_review' and row.get('skill') is None
@@ -231,8 +231,8 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
             raise ValueError('Tool review requires its claimed original native failure batch')
     elif not isinstance(skill, str) or not skill.strip():
         raise ValueError('An explicitly selected skill or claimed unassigned batch is required')
-    failure_key = '_pacomind_review_batch_sha256'
-    execution_key = '_pacomind_review_native_execution'
+    failure_key = '_protagine_review_batch_sha256'
+    execution_key = '_protagine_review_native_execution'
 
     def selected_operation(args):
         operation = editable_operation(args, allow_create=True) if create_only else editable_operation(args)
@@ -250,16 +250,16 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
                 or kwargs.get('tool_name') != 'skill_manage'):
             return None
         args = {key: value for key, value in (kwargs.get('args') or {}).items()
-                if key not in {'_pacomind_task_assessment_batch', '_pacomind_native_failure_batch'}}
+                if key not in {'_protagine_task_assessment_batch', '_protagine_native_failure_batch'}}
         if selected_operation(args) is None:
-            return {'args': {**args, **({'_pacomind_review_create_only': True} if create_only else {})}}
-        return {'args': {**args, **({'_pacomind_review_create_only': True} if create_only else {}),
+            return {'args': {**args, **({'_protagine_review_create_only': True} if create_only else {})}}
+        return {'args': {**args, **({'_protagine_review_create_only': True} if create_only else {}),
             **(proposal_context or {}), failure_key: failure_hash, execution_key: native['id'],
-            **({'_pacomind_task_assessment_batch': expected} if semantic else {}),
-            **({'_pacomind_native_failure_batch': expected} if native_evaluated else {}),
-            **({'_pacomind_review_observation_ids': evidence['observation_ids']} if ordinary else {})}}
+            **({'_protagine_task_assessment_batch': expected} if semantic else {}),
+            **({'_protagine_native_failure_batch': expected} if native_evaluated else {}),
+            **({'_protagine_review_observation_ids': evidence['observation_ids']} if ordinary else {})}}
 
-    context = PluginContext(PluginManifest(name='pacomind-ordinary-skill-review'), manager)
+    context = PluginContext(PluginManifest(name='protagine-ordinary-skill-review'), manager)
     handle = context.register_middleware('tool_request', bind_selected_proposal)
     def assessment_only(**kwargs):
         if (parent is not None and kwargs.get('session_id') == parent.session_id
@@ -270,8 +270,8 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
     database = SessionDB()
     try:
         manager.discover_and_load()
-        if not any(context.has_plugin(name) for name in ('pacomind',)):
-            raise ValueError('Installed PacoMind proposal adapter must be active before native review')
+        if not any(context.has_plugin(name) for name in ('protagine',)):
+            raise ValueError('Installed Protagine proposal adapter must be active before native review')
         parent = AIAgent(**runtime_options, platform='cron', session_db=database,
             enabled_toolsets=['skills'], skip_memory=True, skip_background_review=True,
             skip_context_files=True, quiet_mode=True, max_iterations=2,
@@ -390,9 +390,9 @@ def run(instance):
     from hermes_cli.config import load_config
     from hermes_cli.plugins import get_plugin_manager
     from cron.jobs import get_job, parse_schedule
-    from pacomind_hermes.client import PacoMindClient
-    from pacomind_hermes.local_work_runner import active_execution
-    from pacomind_hermes.task_review_experience import declaration
+    from protagine_hermes.client import ProtagineClient
+    from protagine_hermes.local_work_runner import active_execution
+    from protagine_hermes.task_review_experience import declaration
 
     state = Path(instance).resolve(strict=True)
     manifest = json.loads((state/'instance.json').read_bytes())
@@ -402,7 +402,7 @@ def run(instance):
             or home != Path(os.environ.get('HERMES_HOME', '')).resolve()
             or Path(sys.executable).resolve() != Path(manifest['hermes_python']).resolve()):
         raise ValueError('The selected managed native review binding is required')
-    config = load_config().get('plugins', {}).get('pacomind', {})
+    config = load_config().get('plugins', {}).get('protagine', {})
     owner = config.get('owner_contact_id')
     if not owner or Path(config.get('instance_dir', '')).resolve() != state:
         raise ValueError('Managed review requires the selected owner instance')
@@ -423,13 +423,13 @@ def run(instance):
         raise ValueError('The managed native review launcher invocation is required')
     execution = active_execution(home, binding['job_id'])
     native = {'id': execution, 'job_id': binding['job_id'], 'pid': os.getppid(), 'status': 'running'}
-    configuration_path = Path(manifest.get('model_configuration_path') or state/'.pacomind-llm-config.json')
+    configuration_path = Path(manifest.get('model_configuration_path') or state/'.protagine-llm-config.json')
     configuration = json.loads(configuration_path.read_bytes())
     async def resolve_runtime(_configuration):
         environment = {**os.environ, **manifest.get('sidecar_environment', {}),
-            'PACOMIND_SKIP_DOTENV': '1', 'PYTHONPATH': manifest['sidecar_module_root']}
+            'PROTAGINE_SKIP_DOTENV': '1', 'PYTHONPATH': manifest['sidecar_module_root']}
         result = await asyncio.to_thread(subprocess.run,
-            [manifest['sidecar_python'], '-B', '-m', 'pacomind.router.native_policy',
+            [manifest['sidecar_python'], '-B', '-m', 'protagine.router.native_policy',
              '--config', str(configuration_path)], env=environment,
             capture_output=True, text=True, timeout=10)
         if result.returncode:
@@ -441,7 +441,7 @@ def run(instance):
     token = _MANAGED_REVIEW.set({'state': state, 'home': home, 'owner': owner})
     try:
         get_plugin_manager().discover_and_load()
-        connection = PacoMindClient(url=config.get('url'), api_key=config.get('api_key'))
+        connection = ProtagineClient(url=config.get('url'), api_key=config.get('api_key'))
         return asyncio.run(review_once(home, Path(manifest['hermes_python']).parent.parent,
             native, configuration, destination, connection=connection, owner=owner,
             evaluator=selected, resolve_runtime=resolve_runtime))
@@ -455,5 +455,5 @@ if __name__ == '__main__':
     parser.add_argument('--instance', type=Path, required=True)
     os.umask(0o077)
     # run_path launchers must use the same module instance as plugin registration.
-    from pacomind_hermes.ordinary_skill_review import run
+    from protagine_hermes.ordinary_skill_review import run
     print(json.dumps(run(parser.parse_args().instance), sort_keys=True))

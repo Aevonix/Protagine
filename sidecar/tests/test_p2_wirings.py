@@ -7,9 +7,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-import pacomind.api.routers.host as host_mod
-from pacomind.briefings.aggregators import ConnectorCalendarAggregator
-from pacomind.connectors.base import Observation
+import protagine.api.routers.host as host_mod
+from protagine.briefings.aggregators import ConnectorCalendarAggregator
+from protagine.connectors.base import Observation
 
 
 class _FakeCalendarConnector:
@@ -98,8 +98,8 @@ async def test_context_assemble_omits_static_architecture_preserves_identity():
         })
         assert r.status_code == 200
         sections = {s["id"]: s["body"] for s in r.json()["sections"]}
-        assert "pacomind-self-knowledge" not in sections
-        assert sections["pacomind-identity"]
+        assert "protagine-self-knowledge" not in sections
+        assert sections["protagine-identity"]
 
         r2 = await c.post("/v1/host/context/assemble", json={
             "identity": {"host_id": "test"}, "context": ctx,
@@ -108,8 +108,8 @@ async def test_context_assemble_omits_static_architecture_preserves_identity():
         })
         assert r2.status_code == 200
         later = {s["id"]: s["body"] for s in r2.json()["sections"]}
-        assert "pacomind-self-knowledge" not in later
-        assert later["pacomind-identity"] == sections["pacomind-identity"]
+        assert "protagine-self-knowledge" not in later
+        assert later["protagine-identity"] == sections["protagine-identity"]
         assert (await c.get("/v1/host/health")).json()["capabilities"] == health.json()["capabilities"]
 
 
@@ -126,7 +126,7 @@ class _FakeSecretsManager:
 
 
 def test_connector_config_secrets_fallback(monkeypatch):
-    from pacomind.connectors.base import ConnectorConfig
+    from protagine.connectors.base import ConnectorConfig
 
     mgr = _FakeSecretsManager({
         "connector/calendar/ics_url": "https://cal.example/secret.ics",
@@ -134,7 +134,7 @@ def test_connector_config_secrets_fallback(monkeypatch):
         "connector/calendar/max": "10",
     })
     monkeypatch.setattr(host_mod, "_secrets_manager", mgr)
-    monkeypatch.delenv("PACOMIND_CONNECTOR_CALENDAR_ICS_URL", raising=False)
+    monkeypatch.delenv("PROTAGINE_CONNECTOR_CALENDAR_ICS_URL", raising=False)
 
     cfg = ConnectorConfig("calendar")
     assert cfg.get("ICS_URL") == "https://cal.example/secret.ics"
@@ -143,7 +143,7 @@ def test_connector_config_secrets_fallback(monkeypatch):
     assert "connector/calendar/ics_url" in mgr.reads
 
     # env always wins over the secret
-    monkeypatch.setenv("PACOMIND_CONNECTOR_CALENDAR_ICS_URL", "https://env.example/a.ics")
+    monkeypatch.setenv("PROTAGINE_CONNECTOR_CALENDAR_ICS_URL", "https://env.example/a.ics")
     assert cfg.get("ICS_URL") == "https://env.example/a.ics"
 
     # unknown key falls through to the default
@@ -151,21 +151,21 @@ def test_connector_config_secrets_fallback(monkeypatch):
 
 
 def test_connector_config_no_secrets_manager(monkeypatch):
-    from pacomind.connectors.base import ConnectorConfig
+    from protagine.connectors.base import ConnectorConfig
     monkeypatch.setattr(host_mod, "_secrets_manager", None)
-    monkeypatch.delenv("PACOMIND_CONNECTOR_IMAP_HOST", raising=False)
+    monkeypatch.delenv("PROTAGINE_CONNECTOR_IMAP_HOST", raising=False)
     assert ConnectorConfig("imap").get("HOST", "") == ""
 
 
 # --- multi-account connectors -------------------------------------------------
 
 def test_connector_account_namespacing(monkeypatch):
-    from pacomind.connectors.imap_email import IMAPEmailConnector
+    from protagine.connectors.imap_email import IMAPEmailConnector
 
     monkeypatch.setattr(host_mod, "_secrets_manager", None)
     c = IMAPEmailConnector(account="Aevonix!")     # slugged to [a-z0-9_]
     assert c.name == "imap_aevonix"
-    monkeypatch.setenv("PACOMIND_CONNECTOR_IMAP_AEVONIX_HOST", "imap.example.com")
+    monkeypatch.setenv("PROTAGINE_CONNECTOR_IMAP_AEVONIX_HOST", "imap.example.com")
     assert c.config.get("HOST") == "imap.example.com"
 
     # secrets namespace follows the instance name
@@ -175,14 +175,14 @@ def test_connector_account_namespacing(monkeypatch):
 
 
 def test_manager_expands_accounts(monkeypatch):
-    from pacomind.connectors.manager import ConnectorManager
+    from protagine.connectors.manager import ConnectorManager
 
     monkeypatch.setattr(host_mod, "_secrets_manager", None)
     for var in list(__import__("os").environ):
-        if var.startswith("PACOMIND_CONNECTOR_"):
+        if var.startswith("PROTAGINE_CONNECTOR_"):
             monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("PACOMIND_CONNECTOR_IMAP_ACCOUNTS", "aevonix, secondary")
-    monkeypatch.setenv("PACOMIND_CONNECTOR_IMAP_SECONDARY_ENABLED", "false")
+    monkeypatch.setenv("PROTAGINE_CONNECTOR_IMAP_ACCOUNTS", "aevonix, secondary")
+    monkeypatch.setenv("PROTAGINE_CONNECTOR_IMAP_SECONDARY_ENABLED", "false")
 
     m = ConnectorManager()
     m.register_default_connectors()
@@ -195,7 +195,7 @@ def test_manager_expands_accounts(monkeypatch):
 def test_env_backend_get_reads_file(tmp_path, monkeypatch):
     """set() writes the .env file; get() from a FRESH process (no dotenv load)
     must read it back — it used to consult os.environ only and return None."""
-    from pacomind.secrets.backends.env import EnvBackend
+    from protagine.secrets.backends.env import EnvBackend
     b = EnvBackend(env_path=str(tmp_path / ".env"))
     b.set("connector/imap/password", "s3cr3t")
     monkeypatch.delenv("connector/imap/password", raising=False)

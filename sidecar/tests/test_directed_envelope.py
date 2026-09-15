@@ -6,8 +6,8 @@ import asyncio
 import hashlib
 import hmac
 
-from pacomind.directed import DirectedActionService, ScopedTaskStore
-from pacomind.directed.service import report_token_for
+from protagine.directed import DirectedActionService, ScopedTaskStore
+from protagine.directed.service import report_token_for
 
 
 def _service():
@@ -23,8 +23,8 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 
 def test_envelope_unsigned_by_default(monkeypatch):
-    monkeypatch.setenv("PACOMIND_DIRECTED_MODE", "dry_run")
-    monkeypatch.delenv("PACOMIND_DIRECTED_HMAC_KEY", raising=False)
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MODE", "dry_run")
+    monkeypatch.delenv("PROTAGINE_DIRECTED_HMAC_KEY", raising=False)
     svc = _service()
 
     async def run():
@@ -41,8 +41,8 @@ def test_envelope_unsigned_by_default(monkeypatch):
 
 
 def test_envelope_signed_when_key_set(monkeypatch):
-    monkeypatch.setenv("PACOMIND_DIRECTED_MODE", "dry_run")
-    monkeypatch.setenv("PACOMIND_DIRECTED_HMAC_KEY", "test-secret")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MODE", "dry_run")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_HMAC_KEY", "test-secret")
     svc = _service()
 
     async def run():
@@ -65,8 +65,8 @@ def test_envelope_signed_when_key_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_dispatch_cap_binds(monkeypatch):
-    monkeypatch.setenv("PACOMIND_DIRECTED_MODE", "dry_run")
-    monkeypatch.setenv("PACOMIND_DIRECTED_MAX_DISPATCH_PER_DAY", "2")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MODE", "dry_run")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MAX_DISPATCH_PER_DAY", "2")
     svc = _service()
 
     async def run():
@@ -86,8 +86,8 @@ def test_dispatch_cap_binds(monkeypatch):
 
 def test_dispatch_cap_zero_disables(monkeypatch):
     """Flag-off regression lock: cap<=0 restores the uncapped legacy path."""
-    monkeypatch.setenv("PACOMIND_DIRECTED_MODE", "dry_run")
-    monkeypatch.setenv("PACOMIND_DIRECTED_MAX_DISPATCH_PER_DAY", "0")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MODE", "dry_run")
+    monkeypatch.setenv("PROTAGINE_DIRECTED_MAX_DISPATCH_PER_DAY", "0")
     svc = _service()
 
     async def run():

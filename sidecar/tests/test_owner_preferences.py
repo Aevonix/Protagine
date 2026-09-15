@@ -10,7 +10,7 @@ owner-only context section).
 
 import pytest
 
-from pacomind.intelligence.components.preference_learner import PreferenceLearner
+from protagine.intelligence.components.preference_learner import PreferenceLearner
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +92,9 @@ def test_legacy_constructor_still_accepts_graph_positional():
 
 @pytest.mark.asyncio
 async def test_host_endpoints_and_owner_only_surfacing(monkeypatch, tmp_path):
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "owner:test")
-    import pacomind.api.routers.host as host
-    from pacomind.api.schemas.host import (
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner:test")
+    import protagine.api.routers.host as host
+    from protagine.api.schemas.host import (
         ContextAssembleRequest, HostIdentity, HostTurnContext, HostMessage,
     )
 
@@ -129,7 +129,7 @@ async def test_host_endpoints_and_owner_only_surfacing(monkeypatch, tmp_path):
         other_sections = (await host.context_assemble(_req("contact:other"))).sections
 
         def _has_pref(sections):
-            return any(getattr(s, "id", "") == "pacomind-owner-preferences" for s in sections)
+            return any(getattr(s, "id", "") == "protagine-owner-preferences" for s in sections)
 
         assert _has_pref(owner_sections) is True
         # ...and absent for everyone else.

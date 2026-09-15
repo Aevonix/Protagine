@@ -8,14 +8,14 @@ import time
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host, transport, transport_ingress_api
-from pacomind.commitments.store import CommitmentStore
-from pacomind.contacts.comms import CommsLog
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.initiatives.temporal_followup import TemporalFollowups
-from pacomind.turns import TurnIdempotencyLedger, canonical_turn_digest
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host, transport, transport_ingress_api
+from protagine.commitments.store import CommitmentStore
+from protagine.contacts.comms import CommsLog
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.initiatives.temporal_followup import TemporalFollowups
+from protagine.turns import TurnIdempotencyLedger, canonical_turn_digest
 from test_scoped_api_authority import _principal, _write_keyring
 from test_turn_source_evidence import source_app
 

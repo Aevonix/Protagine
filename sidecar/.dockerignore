@@ -5,7 +5,7 @@ __pycache__/
 *.db-wal
 *.db
 .env
-.pacomind-llm-config.json
+.protagine-llm-config.json
 .pytest_cache/
 *.egg-info/
 *.db

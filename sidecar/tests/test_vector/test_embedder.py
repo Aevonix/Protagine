@@ -1,14 +1,14 @@
-"""Tests for pacomind.vector.embedder — embedding providers and factory."""
+"""Tests for protagine.vector.embedder — embedding providers and factory."""
 import pytest
-from pacomind.vector.embedder import (
+from protagine.vector.embedder import (
     CUDAEmbeddingProvider,
     CPUEmbeddingProvider,
     MLXEmbeddingProvider,
     NativeMLXEmbeddingProvider,
     make_provider,
 )
-from pacomind.vector.openai_provider import OpenAIAPIEmbeddingProvider
-from pacomind.vector.config import EmbeddingConfig
+from protagine.vector.openai_provider import OpenAIAPIEmbeddingProvider
+from protagine.vector.config import EmbeddingConfig
 
 
 class TestMakeProvider:

@@ -34,7 +34,7 @@ an explicit binding for every selected session:
       "actor_id": "verified-transport-actor",
       "chat_id": "verified-direct-chat",
       "chat_type": "dm",
-      "contact_id": "existing-pacomind-contact-id",
+      "contact_id": "existing-protagine-contact-id",
       "review_evidence": {
         "kind": "operator_review",
         "reference": "private verified transport binding"
@@ -61,7 +61,7 @@ history unavailable until its attribution can be established.
 ## Preview, review and apply a finite batch
 
 ```sh
-python -m pacomind.turns.hermes_history \
+python -m protagine.turns.hermes_history \
   --database /private/hermes-history-backup.db \
   --mapping /private/history-mapping.json --dry-run
 ```
@@ -73,10 +73,10 @@ each exclusion. After reviewing the mapping and counts, change `reviewed` to
 from a conversation. Apply to the selected instance's explicit state directory:
 
 ```sh
-python -m pacomind.turns.hermes_history \
+python -m protagine.turns.hermes_history \
   --database /private/hermes-history-backup.db \
   --mapping /private/history-mapping.json \
-  --state-dir /private/pacomind-instance --apply --limit 1000
+  --state-dir /private/protagine-instance --apply --limit 1000
 ```
 
 Repeat the same command while `remaining` is nonzero. The limit counts scanned

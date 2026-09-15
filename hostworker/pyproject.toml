@@ -3,23 +3,27 @@ requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pacomind-hostworker"
+name = "protagine-hostworker"
 version = "0.3.0"
-description = "Stateless, stdlib-only core for governed PacoMind host workers"
+description = "Stateless, stdlib-only core for governed Protagine host workers"
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 # Deliberately empty: this distribution is stdlib-only and must never grow a
-# dependency on FastAPI or pacomind (see pacomind_hostworker/contract.py).
+# dependency on FastAPI or protagine (see protagine_hostworker/contract.py).
 dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+[project.urls]
+Homepage = "https://protagine.ai"
+Repository = "https://github.com/Aevonix/Protagine"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pacomind_hostworker*"]
+include = ["protagine_hostworker*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

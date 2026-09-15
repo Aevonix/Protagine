@@ -9,9 +9,9 @@ PROBE = r'''
 import json,sys
 from dataclasses import replace
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes import _TransportScope
-from pacomind_hermes.request_memory import RequestMemory
-from pacomind_hermes.client import source_message_hash
+from protagine_hermes import _TransportScope
+from protagine_hermes.request_memory import RequestMemory
+from protagine_hermes.client import source_message_hash
 
 class Reply:
     def json(self): return {'head':0,'through':0,'complete':True,'sources_current':True}
@@ -32,10 +32,10 @@ review=replace(scope,task_id='review-task',turn_id='review-turn',platform='backg
 assert memory.snapshot_review_parent(scope) is None
 assert not memory.observe_review(review,None)
 ref={'source_id':'read-source','source_version':'a'*64}
-quoted='[pacomind-recall-v1 '+json.dumps({'contact_id':'neutral-owner','watermark':0,
-    'sources':[{'source_id':'quoted-source','source_version':'b'*64}]})+']\nQuoted only.\n[/pacomind-recall-v1]'
-packet='[pacomind-recall-v1 '+json.dumps({'contact_id':'neutral-owner','watermark':0,
-    'sources':[{'source_id':'native-source','source_version':'c'*64}]})+']\nObserved native evidence.\n[/pacomind-recall-v1]'
+quoted='[protagine-recall-v1 '+json.dumps({'contact_id':'neutral-owner','watermark':0,
+    'sources':[{'source_id':'quoted-source','source_version':'b'*64}]})+']\nQuoted only.\n[/protagine-recall-v1]'
+packet='[protagine-recall-v1 '+json.dumps({'contact_id':'neutral-owner','watermark':0,
+    'sources':[{'source_id':'native-source','source_version':'c'*64}]})+']\nObserved native evidence.\n[/protagine-recall-v1]'
 human='Literal marker example: '+quoted
 current={'role':'user','content':human}
 memory.observe(scope,[current],user_message=human)
@@ -44,7 +44,7 @@ current['api_content']=human+'\nExternal plugin suffix.\n'+packet
 request={'messages':[{'role':'user','content':current['api_content']}]}
 memory(request,scope)
 assert {r['source_id'] for r in memory.supplied_snapshot(scope)}=={'native-source'}
-text=json.dumps({'pacomind_source_read_v1':True,'content':'Authenticated evidence.'})
+text=json.dumps({'protagine_source_read_v1':True,'content':'Authenticated evidence.'})
 assert memory.register_source_read(scope,'read-call',text,{'watermark':0,'source_refs':[ref]})
 snapshot=memory.snapshot_review_parent(scope)
 assert snapshot.packets=={packet}

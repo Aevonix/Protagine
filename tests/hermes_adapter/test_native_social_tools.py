@@ -20,15 +20,15 @@ def no_network(*args,**kwargs):raise AssertionError('Native social qualification
 socket.socket.connect=no_network;socket.create_connection=no_network
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host,commitment_work,temporal_followups,social_state,executions,transport,followup_plans
-from pacomind.commitments.store import CommitmentStore
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.comms import CommsLog
-from pacomind.turns import get_turn_idempotency_ledger
-from pacomind.self_model import appraisals
-state=Path(os.environ['PACOMIND_STATE_DIR']);state.mkdir()
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host,commitment_work,temporal_followups,social_state,executions,transport,followup_plans
+from protagine.commitments.store import CommitmentStore
+from protagine.contacts.store import SQLiteContactStore
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.comms import CommsLog
+from protagine.turns import get_turn_idempotency_ledger
+from protagine.self_model import appraisals
+state=Path(os.environ['PROTAGINE_STATE_DIR']);state.mkdir()
 contacts=SQLiteContactStore(ContactsConfig(sqlite_path=str(state/'contacts.db')))
 def close_on_error(kind,value,traceback):
  try:
@@ -49,7 +49,7 @@ async def seed_contacts():
  await contacts.add_handle(colleague.contact_id,'email','fixture@example.invalid',verified=True)
  return owner,colleague,corrected,guest
 owner,colleague,corrected,guest=asyncio.run(seed_contacts())
-os.environ['PACOMIND_OWNER_CONTACT_ID']=owner.contact_id
+os.environ['PROTAGINE_OWNER_CONTACT_ID']=owner.contact_id
 host._contacts_store=contacts
 store=CommitmentStore(state/'commitments.db');host._commitment_store=store
 obligation=store.create(person_id=owner.contact_id,description='Obtain a useful task response')
@@ -82,8 +82,8 @@ api=TestClient(app,headers={'Authorization':'Bearer fixture'});calls=[];resolver
 # A bare TestClient starts a different loop for every request.
 api.__enter__()
 comms=api.portal.call(lambda:CommsLog(str(state/'communications.db')));host._comms_log=comms
-spec=importlib.util.spec_from_file_location('pacomind_hermes',Path(sys.argv[2])/'__init__.py',submodule_search_locations=[sys.argv[2]])
-module=importlib.util.module_from_spec(spec);sys.modules['pacomind_hermes']=module;spec.loader.exec_module(module)
+spec=importlib.util.spec_from_file_location('protagine_hermes',Path(sys.argv[2])/'__init__.py',submodule_search_locations=[sys.argv[2]])
+module=importlib.util.module_from_spec(spec);sys.modules['protagine_hermes']=module;spec.loader.exec_module(module)
 def adapter_method(method):
  def invoke(self,path,**kwargs):
   calls.append((method,path,kwargs.get('json')))
@@ -94,15 +94,15 @@ def adapter_method(method):
   if path=='/v1/host/contacts/resolve':resolver_cost_ms.append((time.monotonic()-began)*1000)
   return response
  return invoke
-for method in ('get','post','put'):setattr(module.PacoMindClient,method,adapter_method(method))
+for method in ('get','post','put'):setattr(module.ProtagineClient,method,adapter_method(method))
 home=Path(os.environ['HERMES_HOME']);home.mkdir();Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 # Minimal installed distribution metadata exposes the same entry point as
 # the public wheel; native discovery/loading/tool middleware remain real.
-installed=home/'fixture-installed';metadata=installed/'pacomind_native_fixture-0.dist-info';metadata.mkdir(parents=True)
-(metadata/'METADATA').write_text('Metadata-Version: 2.1\nName: pacomind-native-fixture\nVersion: 0\n')
-(metadata/'entry_points.txt').write_text('[hermes_agent.plugins]\npacomind = pacomind_hermes\n')
+installed=home/'fixture-installed';metadata=installed/'protagine_native_fixture-0.dist-info';metadata.mkdir(parents=True)
+(metadata/'METADATA').write_text('Metadata-Version: 2.1\nName: protagine-native-fixture\nVersion: 0\n')
+(metadata/'entry_points.txt').write_text('[hermes_agent.plugins]\nprotagine = protagine_hermes\n')
 sys.path.insert(0,str(installed))
-(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['pacomind'],'pacomind':{
+(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['protagine'],'protagine':{
  'owner_contact_id':owner.contact_id,'attested_system_platforms':['cli','cron'],
  'execution_registry_enabled':True,'turn_outbox_path':str(home/'turns.db')}}}))
 from hermes_cli.plugins import get_plugin_manager
@@ -110,8 +110,8 @@ from hermes_cli.lifecycle import invoke_hook
 from hermes_cli.middleware import apply_llm_request_middleware,run_tool_execution_middleware
 from model_tools import handle_function_call
 manager=get_plugin_manager();manager.discover_and_load()
-loaded=manager._plugins['pacomind'];assert loaded.enabled,loaded.error
-assert {'pacomind_contacts','pacomind_followup','pacomind_judgments','pacomind_commitment_work'} <= set(loaded.tools_registered)
+loaded=manager._plugins['protagine'];assert loaded.enabled,loaded.error
+assert {'protagine_contacts','protagine_followup','protagine_judgments','protagine_commitment_work'} <= set(loaded.tools_registered)
 from hermes_state import SessionDB
 native_db=SessionDB(home/'state.db')
 
@@ -128,11 +128,11 @@ def tool(session,name,args):
 
 instruction='Track the reply to this accepted task and keep the reference exact.'
 start('owner-task',instruction)
-claim=tool('owner-task','pacomind_commitment_work',{'commitment_id':obligation['id'],'operation':'claim'})
+claim=tool('owner-task','protagine_commitment_work',{'commitment_id':obligation['id'],'operation':'claim'})
 assert claim['accepted'] and 'claim_id' not in claim,claim
 args={'operation':'expect_reply','commitment_id':obligation['id'],'recipient_id':colleague.contact_id,
       'outbound_ref':'operation:fixture-outbound','expected_after_seconds':60,'expires_at':time.time()+3600}
-registered=tool('owner-task','pacomind_followup',args)
+registered=tool('owner-task','protagine_followup',args)
 assert registered.get('state')=='open',{'result':registered,'calls':calls}
 assert registered['expected_at'] is None and not registered['effect_authorized']
 assert any('/turns/task-instruction/' in path for _,path,_ in calls)
@@ -157,12 +157,12 @@ with ledger._connect() as db:
  assert db.execute('SELECT count(*) FROM appraisal_runs').fetchone()[0]==0
 with store._connect() as db:
  assert db.execute('SELECT count(*) FROM temporal_followups').fetchone()[0]==1
-replayed=tool('owner-task','pacomind_followup',args)
+replayed=tool('owner-task','protagine_followup',args)
 assert replayed.get('wait_id')==wait_id,replayed
 # Arbitrary IDs were not supplied to this request and cannot be smuggled in.
-unseen=tool('owner-task','pacomind_followup',{**args,'source_ids':['invented-source']})
+unseen=tool('owner-task','protagine_followup',{**args,'source_ids':['invented-source']})
 assert 'error' in unseen and not unseen.get('effect_authorized'),unseen
-inspected=tool('owner-task','pacomind_followup',{'operation':'inspect','wait_id':wait_id})
+inspected=tool('owner-task','protagine_followup',{'operation':'inspect','wait_id':wait_id})
 assert inspected['source_refs']==registered['source_refs'],inspected
 
 # A retained source becomes eligible only after the native request middleware
@@ -177,7 +177,7 @@ ref={key:refs[0][key] for key in ('source_id','source_version')}
 continued='Continue waiting using the instruction supplied in this request.'
 history=start('owner-retained',continued)
 from agent.turn_context import compose_user_api_content
-packet='[pacomind-recall-v1 '+json.dumps({'contact_id':owner.contact_id,'watermark':0,'sources':[ref]})+']\n'+retained_text+'\n[/pacomind-recall-v1]'
+packet='[protagine-recall-v1 '+json.dumps({'contact_id':owner.contact_id,'watermark':0,'sources':[ref]})+']\n'+retained_text+'\n[/protagine-recall-v1]'
 history[-1]['api_content']=compose_user_api_content(continued,packet,'')
 assert native_db.set_message_api_content('owner-retained',history[-1]['_row_id'],
  continued,history[-1]['api_content'])==1
@@ -186,21 +186,21 @@ sent=apply_llm_request_middleware({'messages':[{'role':'user','content':history[
 sent_user=[row for row in sent['messages'] if row['role']=='user']
 assert len(sent_user)==1 and sent_user[0]['content'].split('\n\n<memory-context>',1)[0]==continued,sent
 assert packet in sent_user[0]['content'],sent
-assert tool('owner-retained','pacomind_commitment_work',{'operation':'claim','commitment_id':retained_parent['id']})['accepted']
-retained_wait=tool('owner-retained','pacomind_followup',{**args,'commitment_id':retained_parent['id'],
+assert tool('owner-retained','protagine_commitment_work',{'operation':'claim','commitment_id':retained_parent['id']})['accepted']
+retained_wait=tool('owner-retained','protagine_followup',{**args,'commitment_id':retained_parent['id'],
     'outbound_ref':'operation:retained-outbound','source_ids':[ref['source_id']]})
 assert retained_wait.get('source_versions',{}).get(ref['source_id'])==ref['source_version'],retained_wait
 assert len(retained_wait['source_refs'])==2
 
 start('contact-owner','Inspect the exact current identity and correct this handle to the selected person.')
-view=tool('contact-owner','pacomind_contacts',{'operation':'inspect','subject_contact_id':colleague.contact_id})
+view=tool('contact-owner','protagine_contacts',{'operation':'inspect','subject_contact_id':colleague.contact_id})
 assert view.get('contact_id')==colleague.contact_id,view
 change_args={'operation':'correct_identity','gateway':'email','address':'fixture@example.invalid',
              'expected_contact_id':colleague.contact_id,'subject_contact_id':corrected.contact_id}
-changed=tool('contact-owner','pacomind_contacts',change_args)
+changed=tool('contact-owner','protagine_contacts',change_args)
 assert changed.get('contact_id')==corrected.contact_id,changed
 assert changed['authority_granted'] is False
-assert tool('contact-owner','pacomind_contacts',change_args)==changed
+assert tool('contact-owner','protagine_contacts',change_args)==changed
 
 # Correct one exact transport and its selected source while another native
 # request still holds that source. Neither the erasure watermark nor source
@@ -208,7 +208,7 @@ assert tool('contact-owner','pacomind_contacts',change_args)==changed
 source_change={'operation':'correct_identity','gateway':'whatsapp','address':'15550001@s.whatsapp.net',
                'expected_contact_id':owner.contact_id,'subject_contact_id':guest.contact_id,
                'source_ids':[ref['source_id']]}
-source_receipt=tool('contact-owner','pacomind_contacts',source_change)
+source_receipt=tool('contact-owner','protagine_contacts',source_change)
 assert source_receipt.get('source_reconciliation_required') is False,source_receipt
 assert source_receipt['contact_id']==guest.contact_id and not source_receipt['authority_granted']
 assert ledger.erasure_watermark(owner.contact_id)==0
@@ -219,7 +219,7 @@ after_correction=apply_llm_request_middleware(retained_request,session_id='owner
     task_id='owner-retained',turn_id='turn-owner-retained').payload
 assert retained_text not in json.dumps(after_correction) and continued in json.dumps(after_correction),after_correction
 assert ledger.source_references([ref['source_id']],contact_id=guest.contact_id,session_id='guest-voice')==[ref]
-reversed_source=tool('contact-owner','pacomind_contacts',{**source_change,
+reversed_source=tool('contact-owner','protagine_contacts',{**source_change,
     'expected_contact_id':guest.contact_id,'subject_contact_id':owner.contact_id})
 assert reversed_source.get('source_reconciliation_required') is False,reversed_source
 after_reversal=apply_llm_request_middleware(retained_request,session_id='owner-retained',
@@ -244,7 +244,7 @@ class FixtureProcessor:
   return SimpleNamespace(content=json.dumps({'observations':[item],'incident_decisions':[]}),raw=None,model_id='fixture-processor',binding='fixture',config_revision='fixture-r1',model_revision=None)
 appraisal=appraisals.AppraisalStore(ledger,owner_id=owner.contact_id)
 assert asyncio.run(appraisal.process_one(FixtureProcessor()))
-selected=tool('contact-owner','pacomind_judgments',{'operation':'inspect','subject_contact_id':colleague.contact_id})
+selected=tool('contact-owner','protagine_judgments',{'operation':'inspect','subject_contact_id':colleague.contact_id})
 assert selected.get('records') and selected['records'][0]['kind']=='appraisal',selected
 assert selected['sources'][0]['source_id']=='fixture-incident'
 assert selected['authority_changed'] is False
@@ -252,7 +252,7 @@ assert selected['authority_changed'] is False
 # A guest cannot inspect owner contacts, private appraisals or owner waiting.
 before=len(calls)
 start('guest','Show the owner private contact state.',platform='sms',sender='+15550002')
-for name,payload in [('pacomind_contacts',{'operation':'inspect'}),('pacomind_judgments',{'operation':'inspect','subject_contact_id':colleague.contact_id}),('pacomind_followup',{'operation':'inspect','wait_id':wait_id})]:
+for name,payload in [('protagine_contacts',{'operation':'inspect'}),('protagine_judgments',{'operation':'inspect','subject_contact_id':colleague.contact_id}),('protagine_followup',{'operation':'inspect','wait_id':wait_id})]:
  denied=tool('guest',name,payload)
  assert 'error' in denied,denied
  assert 'fixture-incident' not in json.dumps(denied) and wait_id not in json.dumps(denied)
@@ -266,13 +266,13 @@ shared=store.create(person_id=owner.contact_id,description='Inspect the shared f
 start('shared-sms','Inspect the shared fixture.',platform='sms',sender='+15550001')
 start('shared-wa','Inspect the shared fixture.',platform='whatsapp',sender='+15550003')
 with ThreadPoolExecutor(2) as pool:
- raced=list(pool.map(lambda s:tool(s,'pacomind_commitment_work',{'commitment_id':shared['id'],'operation':'claim'}),
+ raced=list(pool.map(lambda s:tool(s,'protagine_commitment_work',{'commitment_id':shared['id'],'operation':'claim'}),
                      ['shared-sms','shared-wa']))
 assert all('accepted' in r for r in raced),raced
 assert sorted(r['accepted'] for r in raced)==[False,True],raced
 winner=next(r['session_id'] for r in raced if r['accepted'])
 loser=next(s for s in ('shared-sms','shared-wa') if s!=winner)
-assert tool(loser,'pacomind_commitment_work',{'commitment_id':shared['id'],'operation':'status'})['session_id']==winner
+assert tool(loser,'protagine_commitment_work',{'commitment_id':shared['id'],'operation':'status'})['session_id']==winner
 invoke_hook('subagent_start',parent_session_id=winner,parent_turn_id='turn-'+winner,child_session_id='shared-child')
 invoke_hook('pre_llm_call',session_id='shared-child',task_id='child-task',turn_id='child-turn',
             parent_session_id=winner,platform='subagent',user_message='Inspect one part')
@@ -300,7 +300,7 @@ for _ in range(5):
     session_id='revoked-sms',task_id='revoked-sms',turn_id='turn-revoked-sms')=='read'
  dispatch_total_ms.append((time.monotonic()-began)*1000)
 dispatch_resolve_cost_ms=resolver_cost_ms[cost_start:]
-changed_owner=tool('contact-owner','pacomind_contacts',{'operation':'correct_identity','gateway':'sms','address':'+15550001',
+changed_owner=tool('contact-owner','protagine_contacts',{'operation':'correct_identity','gateway':'sms','address':'+15550001',
     'expected_contact_id':owner.contact_id,'subject_contact_id':guest.contact_id})
 assert changed_owner.get('contact_id')==guest.contact_id,changed_owner
 for session,task_id,turn_id in [('revoked-sms','revoked-sms','turn-revoked-sms'),
@@ -314,7 +314,7 @@ assert run_tool_execution_middleware('read_file',{},lambda a:'owner cli still wo
     session_id='contact-owner',task_id='contact-owner',turn_id='turn-contact-owner')=='owner cli still works'
 
 # Server-side credential scope revocation and outage are distinguished. The
-# unchanged WhatsApp owner turn must not execute either a native or PacoMind tool.
+# unchanged WhatsApp owner turn must not execute either a native or Protagine tool.
 for allowed,available,reason in [(False,True,'participant_authority_revoked'),
                                 (True,False,'participant_revalidation_unavailable')]:
  resolver_access.update(allowed=allowed,available=available)
@@ -323,7 +323,7 @@ for allowed,available,reason in [(False,True,'participant_authority_revoked'),
  result=run_tool_execution_middleware('read_file',{},lambda a:called.append(a),
     session_id='shared-wa',task_id='shared-wa',turn_id='turn-shared-wa')
  assert not called and json.loads(result)['reason']==reason,result
- denial=tool('shared-wa','pacomind_contacts',{'operation':'inspect'})
+ denial=tool('shared-wa','protagine_contacts',{'operation':'inspect'})
  assert denial['effect_performed'] is False and denial['reason']==reason,denial
 resolver_access.update(allowed=True,available=True)
 write_keys()
@@ -331,13 +331,13 @@ write_keys()
 # A real provider receipt starts a short fixture expectation; loss of intake
 # coverage never means the recipient ignored it. An uninstalled review profile
 # is held; installed bounded reviews cancel on a verified reply without any send.
-from pacomind_hermes.initiative_work import NativeFollowups
-from pacomind.initiatives.temporal_followup import TemporalFollowups
+from protagine_hermes.initiative_work import NativeFollowups
+from protagine.initiatives.temporal_followup import TemporalFollowups
 from hermes_cli import kanban_db as kb
 follow_parent=store.create(person_id=owner.contact_id,description='Obtain the fixture response')
 start('follow-owner','Obtain the response and prepare one followup if needed.')
-assert tool('follow-owner','pacomind_commitment_work',{'operation':'claim','commitment_id':follow_parent['id']})['accepted']
-follow=tool('follow-owner','pacomind_followup',{'operation':'expect_reply','commitment_id':follow_parent['id'],
+assert tool('follow-owner','protagine_commitment_work',{'operation':'claim','commitment_id':follow_parent['id']})['accepted']
+follow=tool('follow-owner','protagine_followup',{'operation':'expect_reply','commitment_id':follow_parent['id'],
     'recipient_id':colleague.contact_id,'outbound_ref':'fixture:accepted-message',
     'expected_after_seconds':.001,'expires_at':time.time()+3600})
 assert follow['state']=='open' and follow['expected_at'] is None,follow
@@ -382,16 +382,16 @@ def refuse_unqualified(index):
 with ThreadPoolExecutor(2) as pool:
  list(pool.map(refuse_unqualified,range(2)))
 with kb.connect(board='default') as db:
- assert db.execute('SELECT count(*) FROM tasks WHERE idempotency_key=?',('pacomind-followup:'+wait,)).fetchone()[0]==0
+ assert db.execute('SELECT count(*) FROM tasks WHERE idempotency_key=?',('protagine-followup:'+wait,)).fetchone()[0]==0
 # The installed bounded profile can now review the due wait. The actual
 # current dispatch path owns attachment and promotion, not a seeded legacy row.
 reviews=[NativeFollowups(api,owner.contact_id,{'enabled':True}) for _ in range(2)]
-with patch('pacomind_hermes.review_worker.refresh_profile',return_value='pacomind-reviews'):
+with patch('protagine_hermes.review_worker.refresh_profile',return_value='protagine-reviews'):
  selected=reviews[0].work(wait)
 native_id=selected['native_task_id']
 with kb.connect(board='default') as db:
  assert kb.get_task(db,native_id).status=='ready'
- assert kb.get_task(db,native_id).assignee=='pacomind-reviews'
+ assert kb.get_task(db,native_id).assignee=='protagine-reviews'
  assert kb.latest_run(db,native_id) is None
 reply=event('provider-reply','in',reply_to_ref='provider-original',reply_to_channel='whatsapp')
 reply['channel']='email'
@@ -456,16 +456,16 @@ def test_actual_native_social_tools(tmp_path):
     python=os.environ.get('PROTAGINE_HERMES_TEST_PYTHON')
     if not python:
         pytest.skip('Use qualified Hermes interpreter for native integration')
-    root=Path(os.environ.get('PACOMIND_SOCIAL_TEST_SOURCE') or Path(__file__).resolve().parents[2])
+    root=Path(os.environ.get('PROTAGINE_SOCIAL_TEST_SOURCE') or Path(__file__).resolve().parents[2])
     env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'hermes'),HERMES_KANBAN_HOME=str(tmp_path/'hermes'),
-        PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),PACOMIND_HERMES_WORK_BOARDS='["default"]',
-        PACOMIND_STATE_DIR=str(tmp_path/'state'),HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),
+        PROTAGINE_HERMES_HOME=str(tmp_path/'hermes'),PROTAGINE_HERMES_WORK_BOARDS='["default"]',
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'),HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),
         HERMES_DISABLE_TELEMETRY='1',HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_GENERAL_PLUGIN_ACTIVE='1',PACOMIND_MEMORY_WORKER_TOOLS='0',PACOMIND_MEMORY_TURN_WRITER='disabled',
-        PACOMIND_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
+        PROTAGINE_GENERAL_PLUGIN_ACTIVE='1',PROTAGINE_MEMORY_WORKER_TOOLS='0',PROTAGINE_MEMORY_TURN_WRITER='disabled',
+        PROTAGINE_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
     result=subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
-        str(root/'plugins/hermes-plugin'),os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
+        str(root/'plugins/hermes-plugin'),os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),
         os.environ.get('PROTAGINE_HERMES_TEST_SOURCE','')],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stdout+result.stderr

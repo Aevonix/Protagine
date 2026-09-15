@@ -8,14 +8,14 @@ from datetime import timedelta
 
 import pytest
 
-import pacomind.self_model.store as store_mod
-from pacomind.self_model.benchmark import (
+import protagine.self_model.store as store_mod
+from protagine.self_model.benchmark import (
     BenchmarkStore, SelfhoodBenchmark, week_window,
 )
-from pacomind.self_model.reconcile import main as reconcile_main
-from pacomind.self_model.store import CompetenceStore
-from pacomind.self_model.store import SelfModel
-from pacomind.self_model.trust import TrustEngine
+from protagine.self_model.reconcile import main as reconcile_main
+from protagine.self_model.store import CompetenceStore
+from protagine.self_model.store import SelfModel
+from protagine.self_model.trust import TrustEngine
 
 
 WEEK = "2026-W26"
@@ -25,7 +25,7 @@ T0 = (START + timedelta(days=1)).timestamp()
 
 def _manifest(**overrides):
     value = {
-        "schema": "pacomind.competence-reconciliation/v1",
+        "schema": "protagine.competence-reconciliation/v1",
         "created_by": "test-operator",
         "reason": "worker callback was policy-skipped, not completed work",
         "provenance": {
@@ -182,7 +182,7 @@ async def test_benchmark_hides_stale_rollup_then_recomputes_exact_correction(
     first = (await bench.compute_week(WEEK))["metrics"]["actions.success"]
     assert first["value"] == 0.5 and first["denominator"] == 2
     assert first["detail"]["metric_definition"] == (
-        "pacomind.actions-success/v2")
+        "protagine.actions-success/v2")
     target = next(e for e in events if e["outcome"] == "success")
     competence.apply_reconciliation(_manifest(event_corrections=[{
         "event_id": target["id"],
@@ -286,13 +286,13 @@ def test_legacy_schema_migrates_additively_and_new_provenance_roundtrips(
     store.record(
         "worker:x", "failure", source="task_queue",
         source_ref="job-17", evidence_status="verified",
-        outcome_contract="pacomind.worker-outcome/v1",
+        outcome_contract="protagine.worker-outcome/v1",
         evidence={"receipt": "sha256:abc"})
     current = store.inspect_events("worker:x", 2, 4)[0]
     assert current["source"] == "task_queue"
     assert current["source_ref"] == "job-17"
     assert current["evidence_status"] == "verified"
-    assert current["outcome_contract"] == "pacomind.worker-outcome/v1"
+    assert current["outcome_contract"] == "protagine.worker-outcome/v1"
     assert current["evidence"] == {"receipt": "sha256:abc"}
     assert store.plan_reconciliation(_manifest(event_corrections=[{
         "event_id": current["id"],

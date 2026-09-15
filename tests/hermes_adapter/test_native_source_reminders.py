@@ -19,31 +19,31 @@ sys.path.insert(0, sys.argv[1])
 if sys.argv[3]: sys.path.append(sys.argv[3])
 if sys.argv[4]: sys.path.insert(0, sys.argv[4])
 sys.path.insert(0,sys.argv[5])
-package=types.ModuleType('pacomind_hermes'); package.__path__=[sys.argv[2]]
-sys.modules['pacomind_hermes']=package
+package=types.ModuleType('protagine_hermes'); package.__path__=[sys.argv[2]]
+sys.modules['protagine_hermes']=package
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import host
-from pacomind.beliefs.source_claims import validated_claims
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns import get_turn_idempotency_ledger
-from pacomind_hermes.reminders import NativeReminders
-from pacomind_hermes.client import TurnOutbox
-from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import host
+from protagine.beliefs.source_claims import validated_claims
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns import get_turn_idempotency_ledger
+from protagine_hermes.reminders import NativeReminders
+from protagine_hermes.client import TurnOutbox
+from protagine_hermes.native_owned_copies import NativeOwnedCopies
 from cron import jobs, scheduler, owned_output
 from cron.scheduler_delivery import _maybe_mirror_cron_delivery
 from gateway.session_context import set_session_vars, clear_session_vars
 from hermes_state_registry import acquire, release_or_close
 import httpx
-import pacomind_memory.provider as selected_provider
-assert Path(selected_provider.__file__).resolve()==Path(sys.argv[2]).parent/'pacomind-memory'/'provider.py'
+import protagine_memory.provider as selected_provider
+assert Path(selected_provider.__file__).resolve()==Path(sys.argv[2]).parent/'protagine-memory'/'provider.py'
 assert Path(owned_output.__file__).resolve()==Path(sys.argv[4])/'cron'/'owned_output.py'
 
 home=Path(os.environ['HERMES_HOME']); home.mkdir(mode=0o700,exist_ok=True)
-state=Path(os.environ['PACOMIND_STATE_DIR']); state.mkdir(exist_ok=True)
+state=Path(os.environ['PROTAGINE_STATE_DIR']); state.mkdir(exist_ok=True)
 ledger=get_turn_idempotency_ledger(state)
-outbox=TurnOutbox(home/'state'/'pacomind-turn-outbox.sqlite3'); outbox.prepare()
+outbox=TurnOutbox(home/'state'/'protagine-turn-outbox.sqlite3'); outbox.prepare()
 db=acquire(home/'state.db')
 db.create_session('owner-conversation',source='cli')
 db.create_session('owner-native',source='telegram',session_key='route:owner')
@@ -87,7 +87,7 @@ def source(identifier, instant, *, prior=None, subject='I'):
 app=FastAPI()
 @app.middleware('http')
 async def authority(request,next_call):
-    request.state.pacomind_authority=RequestAuthority(principal_id='native-fixture',credential_id='fixture',
+    request.state.protagine_authority=RequestAuthority(principal_id='native-fixture',credential_id='fixture',
         scopes=frozenset({'context:read','memory:read','turns:write'}),viewer_person_id='owner',
         person_ids=frozenset({'owner'}),audiences=frozenset({'viewer'}),authenticated=True)
     return await next_call(request)
@@ -116,9 +116,9 @@ server=ThreadingHTTPServer(('127.0.0.1',0),LocalAPI)
 thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()
 url='http://127.0.0.1:'+str(server.server_address[1])
 (home/'config.yaml').write_text(json.dumps({'timezone':'','plugins':{'enabled':[],
-    'pacomind':{'url':url,'api_key':'fixture-key','owner_contact_id':'owner',
+    'protagine':{'url':url,'api_key':'fixture-key','owner_contact_id':'owner',
                'turn_outbox_path':str(outbox.path)}}}))
-os.environ['PACOMIND_AGENT_TIMEZONE']='America/New_York'
+os.environ['PROTAGINE_AGENT_TIMEZONE']='America/New_York'
 from hermes_time import reset_cache
 reset_cache()
 expected_zone=os.environ.get('HERMES_TIMEZONE') or 'America/New_York'
@@ -301,7 +301,7 @@ def test_native_source_deadline_correction_and_forgetting(tmp_path, timezone_ove
             pytest.skip('Use qualified Hermes interpreter for native integration')
         python = sys.executable
     root = Path(__file__).resolve().parents[2]
-    native = os.environ.get('PROTAGINE_HERMES_TEST_SOURCE') or os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native = os.environ.get('PROTAGINE_HERMES_TEST_SOURCE') or os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         selected = importlib.util.find_spec('hermes_cli')
         if selected is None:
@@ -309,19 +309,19 @@ def test_native_source_deadline_correction_and_forgetting(tmp_path, timezone_ove
         native = str(Path(selected.origin).resolve().parents[1])
     selected_packages = tmp_path/'selected-packages'
     selected_packages.mkdir()
-    (selected_packages/'pacomind_memory').symlink_to(root/'plugins/pacomind-memory',target_is_directory=True)
+    (selected_packages/'protagine_memory').symlink_to(root/'plugins/protagine-memory',target_is_directory=True)
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path/'hermes'), PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),
-        PACOMIND_STATE_DIR=str(tmp_path/'state'), PACOMIND_OWNER_CONTACT_ID='owner',
+    env.update(HERMES_HOME=str(tmp_path/'hermes'), PROTAGINE_HERMES_HOME=str(tmp_path/'hermes'),
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'), PROTAGINE_OWNER_CONTACT_ID='owner',
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
+        PROTAGINE_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
     if timezone_override:
         env['HERMES_TIMEZONE'] = timezone_override
     env['PYTHONPATH'] = os.pathsep.join(path for path in (native,str(selected_packages),
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH','')) if path)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH','')) if path)
     result = subprocess.run([python, '-I', '-B', '-c', PROBE, str(root/'sidecar'),
-        str(root/'plugins/hermes-plugin'), os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), native,
+        str(root/'plugins/hermes-plugin'), os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), native,
         str(selected_packages)],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout+result.stderr

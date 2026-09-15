@@ -8,12 +8,12 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
-from pacomind import setup
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.turns import TurnIdempotencyLedger
+from protagine import setup
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.turns import TurnIdempotencyLedger
 from test_native_setup import args, isolated_platform_environment  # Shared isolated wizard fixtures.
 
 
@@ -21,11 +21,11 @@ from test_native_setup import args, isolated_platform_environment  # Shared isol
 def test_enrolled_sender_checked_before_turn_reservation(args, monkeypatch, version):
     args.owner_handle = ['telegram=123456789']
     assert setup.run_init(None, args) == 0
-    state = Path(args.hermes_home)/'pacomind'
+    state = Path(args.hermes_home)/'protagine'
     principal = json.loads((state/'api-keyring.json').read_text())['principals'][0]
     owner = principal['viewer_person_id']
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(state))
-    monkeypatch.setenv('PACOMIND_IDENTITY_SHADOW_CONTACTS', 'false')
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(state))
+    monkeypatch.setenv('PROTAGINE_IDENTITY_SHADOW_CONTACTS', 'false')
     for name in ('_graph', '_presence_store', '_context_provenance', '_telemetry', '_p8_runtime'):
         monkeypatch.setattr(host, name, None)
     ledger = TurnIdempotencyLedger(state/'turn-idempotency.db')

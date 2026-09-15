@@ -2,8 +2,8 @@
 
 import pytest
 
-from pacomind.channels.manifest import ChannelManifest
-from pacomind.channels.store import ChannelStore
+from protagine.channels.manifest import ChannelManifest
+from protagine.channels.store import ChannelStore
 
 
 @pytest.fixture
@@ -159,6 +159,6 @@ class TestAuth:
 
 class TestMigrationIntegration:
     def test_schema_version_tracked(self, store):
-        from pacomind.migrations import applied_versions_sync
+        from protagine.migrations import applied_versions_sync
         versions = applied_versions_sync(store._conn)
         assert "001" in versions

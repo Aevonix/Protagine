@@ -9,9 +9,9 @@ import threading
 
 import pytest
 
-from pacomind.memory.search import collect_sources
-from pacomind.self_model.appraisals import AppraisalStore
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.memory.search import collect_sources
+from protagine.self_model.appraisals import AppraisalStore
+from protagine.turns import TurnIdempotencyLedger
 from test_function_routing import config, endpoint, router
 from test_source_appraisals import Processor, observation, resolved, source, state, view
 

@@ -5,8 +5,8 @@ import hashlib
 
 import pytest
 
-from pacomind.commitments.store import CommitmentStore
-from pacomind.initiatives.temporal_followup import TemporalFollowups, encoded
+from protagine.commitments.store import CommitmentStore
+from protagine.initiatives.temporal_followup import TemporalFollowups, encoded
 
 
 def fixture(tmp_path, **options):

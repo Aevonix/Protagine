@@ -1,6 +1,6 @@
 """L4.4 — kill switch + end-to-end default-inertness.
 
-PACOMIND_TOM2_LEVEL=0 is the single-variable panic path (docs/TOM2-LEVELS.md):
+PROTAGINE_TOM2_LEVEL=0 is the single-variable panic path (docs/TOM2-LEVELS.md):
 rendering stops next turn for every reader and conversation, while the
 egress net stays armed for taints already in the wild. And with EVERY flag
 at its shipped default, the whole leveled system is invisible end to end.
@@ -12,23 +12,23 @@ from types import SimpleNamespace
 
 import pytest
 
-import pacomind.api.routers.host as host
-from pacomind.api.schemas.host import (
+import protagine.api.routers.host as host
+from protagine.api.schemas.host import (
     ContextAssembleRequest, ContextSection, HostIdentity, HostMessage,
     HostTurnContext,
 )
-from pacomind.channels.presence import ConversationPresenceStore
-from pacomind.gate.layers.tom2_epistemic import Tom2EpistemicGuard
-from pacomind.gate.response_guard import GuardMode, ResponseGuard
-from pacomind.gate.taint import TaintRegistry
-from pacomind.proposals import ProposalStore
-from pacomind.tom.approvals import Tom2ApprovalRegistry
-from pacomind.tom.exposure import Tom2ExposureStore
-from pacomind.tom.facts import SharedFactsStore
-from pacomind.tom.levels import (
+from protagine.channels.presence import ConversationPresenceStore
+from protagine.gate.layers.tom2_epistemic import Tom2EpistemicGuard
+from protagine.gate.response_guard import GuardMode, ResponseGuard
+from protagine.gate.taint import TaintRegistry
+from protagine.proposals import ProposalStore
+from protagine.tom.approvals import Tom2ApprovalRegistry
+from protagine.tom.exposure import Tom2ExposureStore
+from protagine.tom.facts import SharedFactsStore
+from protagine.tom.levels import (
     clear_level_cache, resolve_effective_level, set_evidence_probe)
-from pacomind.tom.tom2 import Tom2Store
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.tom.tom2 import Tom2Store
+from protagine.turns import TurnIdempotencyLedger
 
 OWNER = "cid-owner-test"
 READER = "cid-alice"
@@ -37,10 +37,10 @@ CONV = "dm:cid-alice"
 FACT_TEXT = "the launch moved to friday"
 
 _DEFAULT_VARS = (
-    "PACOMIND_TOM2_LEVEL", "PACOMIND_TOM2_MAX_LEVEL", "PACOMIND_TOM2_RISK_CAPS",
-    "PACOMIND_TOM2_CROSS_CONTEXT", "PACOMIND_TOM2_CONTEXT",
-    "PACOMIND_TOM2_L2_APPROVAL", "PACOMIND_GUARD_ENFORCE_CHECKS",
-    "PACOMIND_GUARD_DERIVE_CONTEXT", "PACOMIND_ENV_RISK_GATEWAY_CLASS",
+    "PROTAGINE_TOM2_LEVEL", "PROTAGINE_TOM2_MAX_LEVEL", "PROTAGINE_TOM2_RISK_CAPS",
+    "PROTAGINE_TOM2_CROSS_CONTEXT", "PROTAGINE_TOM2_CONTEXT",
+    "PROTAGINE_TOM2_L2_APPROVAL", "PROTAGINE_GUARD_ENFORCE_CHECKS",
+    "PROTAGINE_GUARD_DERIVE_CONTEXT", "PROTAGINE_ENV_RISK_GATEWAY_CLASS",
 )
 
 
@@ -82,7 +82,7 @@ def _reset():
 
 @pytest.fixture()
 def world(monkeypatch, tmp_path):
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", OWNER)
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     ledger = TurnIdempotencyLedger(tmp_path / "turns.db")
     ledger.record_source("fixture-source", contact_id=READER, session_id="s1",
         messages=[{"role": "user", "content": FACT_TEXT}], derive_claims=False)
@@ -122,15 +122,15 @@ def world(monkeypatch, tmp_path):
 
 
 def _leveled(resp):
-    return [s for s in resp.sections if s.id in ("pacomind-tom2-l1",
-                                                 "pacomind-tom2-l2")]
+    return [s for s in resp.sections if s.id in ("protagine-tom2-l1",
+                                                 "protagine-tom2-l2")]
 
 
 def _arm_level2(monkeypatch):
-    monkeypatch.setenv("PACOMIND_ENV_RISK_GATEWAY_CLASS", "dm:private")
-    monkeypatch.setenv("PACOMIND_TOM2_LEVEL", "2")
-    monkeypatch.setenv("PACOMIND_TOM2_MAX_LEVEL", "2")
-    monkeypatch.setenv("PACOMIND_TOM2_CROSS_CONTEXT", "1")
+    monkeypatch.setenv("PROTAGINE_ENV_RISK_GATEWAY_CLASS", "dm:private")
+    monkeypatch.setenv("PROTAGINE_TOM2_LEVEL", "2")
+    monkeypatch.setenv("PROTAGINE_TOM2_MAX_LEVEL", "2")
+    monkeypatch.setenv("PROTAGINE_TOM2_CROSS_CONTEXT", "1")
     set_evidence_probe(lambda gw: True)
 
 
@@ -178,7 +178,7 @@ async def test_level_zero_kills_all_rendering_next_turn(world, monkeypatch):
     _arm_level2(monkeypatch)
     assert len(_leveled(await host.context_assemble(_req(READER)))) == 2
     # PANIC: one variable, nothing else touched
-    monkeypatch.setenv("PACOMIND_TOM2_LEVEL", "0")
+    monkeypatch.setenv("PROTAGINE_TOM2_LEVEL", "0")
     clear_level_cache()
     resp = await host.context_assemble(_req(READER))
     assert _leveled(resp) == []
@@ -193,8 +193,8 @@ async def test_kill_switch_leaves_the_egress_net_armed(world, monkeypatch):
     until the taint's TTL runs out."""
     _arm_level2(monkeypatch)
     await host.context_assemble(_req(READER))          # registers the taint
-    monkeypatch.setenv("PACOMIND_TOM2_LEVEL", "0")       # kill
-    monkeypatch.delenv("PACOMIND_GUARD_ENFORCE_CHECKS", raising=False)
+    monkeypatch.setenv("PROTAGINE_TOM2_LEVEL", "0")       # kill
+    monkeypatch.delenv("PROTAGINE_GUARD_ENFORCE_CHECKS", raising=False)
     guard = ResponseGuard(
         default_mode=GuardMode.ENFORCE,
         tom2_epistemic=Tom2EpistemicGuard(world.taints,

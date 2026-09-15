@@ -70,7 +70,7 @@ inspection is a complete sandbox.
 
 ## Durable projections
 
-`pacomind-toolsmith.db` gains additive columns and two tables:
+`protagine-toolsmith.db` gains additive columns and two tables:
 
 - `toolsmith_shadow_comparisons`: capture/source/principal plus artifact,
   input, incumbent output, first candidate output, and repeat output digests.
@@ -124,7 +124,7 @@ migration path.
 ## Candidate verification
 
 - Focused Toolsmith/sandbox/authority/Doctor matrix: 146 passed.
-- Full PacoMind matrix with dotenv loading disabled: 2,604 passed, 118 skipped;
+- Full Protagine matrix with dotenv loading disabled: 2,604 passed, 118 skipped;
   the 21 warnings are the existing dependency/deprecation and async-resource
   warnings outside P5.
 - Local policy overhead probe (10,000 iterations): about 46 microseconds for

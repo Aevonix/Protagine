@@ -2,12 +2,12 @@
 
 import pytest
 
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.contacts.config import ContactsConfig
 
 
 async def _set_history(store, cid, first_days_ago, last_days_ago, count):
-    from pacomind.util import temporal as T
+    from protagine.util import temporal as T
     from datetime import timedelta
     now = T.now_utc()
     first = (now - timedelta(days=first_days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -54,8 +54,8 @@ async def test_cadence_overdue_is_relative_to_rhythm():
 
 @pytest.mark.asyncio
 async def test_telemetry_persists_across_instances(tmp_path, monkeypatch):
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
-    from pacomind.telemetry import TelemetryStore
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    from protagine.telemetry import TelemetryStore
 
     t = TelemetryStore()
     await t.touch("last_sync_at")

@@ -41,7 +41,7 @@ def evaluator(tmp_path):
     path = tmp_path/'evaluator.json'
     value = {'id':'existing-procedure-evaluator', 'scope':'Finite source-reading procedure cases',
         'oracle':'selected_oracle:check', 'oracle_id':'frozen-fixture-recipe',
-        'environment':{'PACOMIND_SELECTED_ORACLE_PLAN':'/controlled/frozen-plan.json'}, 'allow_apply':False}
+        'environment':{'PROTAGINE_SELECTED_ORACLE_PLAN':'/controlled/frozen-plan.json'}, 'allow_apply':False}
     path.write_text(json.dumps(value))
     return experience.declaration(path)
 
@@ -141,8 +141,8 @@ def no_network(*a,**kw):raise AssertionError('Controlled native fixture stays of
 socket.socket.connect=no_network;socket.create_connection=no_network
 from tools import skill_ledger,skill_provenance,write_approval,skill_manager_tool
 assert Path(skill_ledger.__file__).resolve().is_relative_to(Path(sys.argv[2]).resolve())
-from pacomind_hermes import task_review_experience as experience
-from pacomind_hermes.review import stage_skill_change
+from protagine_hermes import task_review_experience as experience
+from protagine_hermes.review import stage_skill_change
 class Reader:
  current=True
  def post(self,path,*,json,**kwargs):
@@ -156,13 +156,13 @@ reader.records=[{'source_id':'assessment-'+str(i),'source_version':str(i)*64,
  'attribution':experience.ATTRIBUTION,'owner_approval':'unobserved','content':'Full attributed review '+str(i)} for i in (1,2)]
 path=Path.cwd()/'evaluator.json'
 value={'id':'neutral-evaluator','scope':'Controlled path procedure cases','oracle':'neutral_oracle:check',
- 'oracle_id':'neutral-frozen-recipe','environment':{'PACOMIND_FIXTURE_INPUT':'selected'},'allow_apply':scenario!='proposal_only'}
+ 'oracle_id':'neutral-frozen-recipe','environment':{'PROTAGINE_FIXTURE_INPUT':'selected'},'allow_apply':scenario!='proposal_only'}
 path.write_text(json.dumps(value));evaluator=experience.declaration(path)
 batch=experience.selected_batch([],evaluator,reader,'owner')
 phases=[];regression=False;unavailable_audit=False
 oracle=ModuleType('neutral_oracle')
 def check(text,*,phase):
- assert os.environ['PACOMIND_FIXTURE_INPUT']=='selected'
+ assert os.environ['PROTAGINE_FIXTURE_INPUT']=='selected'
  phases.append((phase,text))
  if unavailable_audit and phase=='post_activation' and 'name: neutral-task-procedure\n' in text:
   raise TimeoutError('Controlled unavailable earlier audit')
@@ -176,14 +176,14 @@ def stage(name):
  token=skill_provenance.set_current_write_origin('background_review')
  try:
   result=json.loads(stage_skill_change({'action':'create','name':name,'content':text,
-   '_pacomind_review_create_only':True,'_pacomind_task_assessment_batch':experience.receipt(batch)}))
+   '_protagine_review_create_only':True,'_protagine_task_assessment_batch':experience.receipt(batch)}))
  finally:skill_provenance.reset_current_write_origin(token)
  assert result['staged'],result
  return result['pending_id'],home/'skills'/name/'SKILL.md',text
 if scenario.startswith('successor_'):
  import asyncio,hashlib
- from pacomind_hermes.ordinary_skill_review import review_once
- from pacomind_hermes import review_successors
+ from protagine_hermes.ordinary_skill_review import review_once
+ from protagine_hermes import review_successors
  calls=[];results=[];directory=home/'review-results';directory.mkdir()
  name='neutral-task-procedure'
  original='---\nname: '+name+'\ndescription: '+('x'*80 if scenario in {
@@ -208,10 +208,10 @@ if scenario.startswith('successor_'):
   content=original if not index or scenario in {'successor_identical','successor_repeat_failure'} else corrected
   if scenario=='successor_repeat_failure' and index:content+='\nA changed draft with the same invalid description.'
   if scenario=='successor_limit' and index:content+='\nrevision'+str(index)
-  arguments={'action':'create','name':name,'content':content,'_pacomind_review_create_only':True,
-   '_pacomind_task_assessment_batch':experience.receipt(evidence),
-   '_pacomind_review_batch_sha256':evidence['failure_sha256'],
-   '_pacomind_review_native_execution':options['native']['id']}
+  arguments={'action':'create','name':name,'content':content,'_protagine_review_create_only':True,
+   '_protagine_task_assessment_batch':experience.receipt(evidence),
+   '_protagine_review_batch_sha256':evidence['failure_sha256'],
+   '_protagine_review_native_execution':options['native']['id']}
   token=skill_provenance.set_current_write_origin('background_review')
   try:result=json.loads(stage_skill_change(arguments))
   finally:skill_provenance.reset_current_write_origin(token)
@@ -274,7 +274,7 @@ if scenario.startswith('successor_'):
   elif scenario=='successor_rejected_before_evaluation':
    assert second['status']=='proposed'
    assert write_approval.discard_pending(write_approval.SKILLS,first['pending_id'])
-   from pacomind_hermes.review_evaluation import evaluate_pending
+   from protagine_hermes.review_evaluation import evaluate_pending
    rejected=evaluate_pending(second['pending_id'],name,oracle.check,oracle_id='neutral-frozen-recipe')
    assert rejected['status']=='proposal_rejected',rejected
    fire('rejected-evaluation')
@@ -324,7 +324,7 @@ else:
   first=result['evaluation_id'];entry=skill_ledger.get_entry(first)
   assert entry['evidence']['baseline']['task_assessment_evidence']==experience.receipt(batch)
   assert entry['evidence']['candidate']['owner_approval']=='unobserved'
-  assert os.environ.get('PACOMIND_FIXTURE_INPUT') is None
+  assert os.environ.get('PROTAGINE_FIXTURE_INPUT') is None
   if scenario in {'audit_rotation','audit_unavailable_pending'}:
    unavailable_audit=scenario=='audit_unavailable_pending'
    second_pending,second_target,second_text=stage('neutral-other-procedure')
@@ -366,7 +366,7 @@ def test_actual_native_task_candidate_evaluation_and_later_audit(artifacts,tmp_p
     import os
     from conftest import run_python
     from test_native_current_work import environment
-    native=os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native=os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         pytest.skip('Select qualified native source for task-review evaluation')
     installed=artifacts[3]

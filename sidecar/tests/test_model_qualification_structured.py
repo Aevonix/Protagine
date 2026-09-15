@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.qualification.cases import json_fields, select_cases
-from pacomind.qualification.cli import run
-from pacomind.qualification.records import read
-from pacomind.qualification.structured_cases import CASES
+from protagine.qualification.cases import json_fields, select_cases
+from protagine.qualification.cli import run
+from protagine.qualification.records import read
+from protagine.qualification.structured_cases import CASES
 from test_function_routing import config, endpoint
 
 

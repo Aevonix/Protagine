@@ -1,8 +1,8 @@
 """A conversation can locate its native work without searching the filesystem."""
 import json
 
-from pacomind.turns.executions import request_work_context
-from pacomind.turns.source_read import read
+from protagine.turns.executions import request_work_context
+from protagine.turns.source_read import read
 from test_execution_input_purpose import admitted
 from test_execution_registry import observation, store
 
@@ -30,11 +30,11 @@ def test_live_task_has_usable_handle_and_reopenable_original_input(store):
     context = request_work_context(view, session_id='other-conversation')['text']
     assert '"task_id": "' + 'a' * 64 + '"' in context
     assert '"input_source"' in context
-    assert 'pacomind_memory_read_source' in context
+    assert 'protagine_memory_read_source' in context
     assert 'terminal observation is not proof of useful completion' in context
     # Work observations also reach workers without owner task controls.
     # The owning adapter supplies available actions, not this shared data view.
-    assert 'Use task_id with pacomind_task' not in context
+    assert 'Use task_id with protagine_task' not in context
     # The task handle comes from its admitted metadata, not a session or turn ID.
     assert value['execution_id'] != row['task_id']
 
@@ -89,7 +89,7 @@ def test_active_attempt_does_not_advertise_its_prior_terminal_as_current_result(
 
 
 def test_present_building_question_uses_current_work_without_dropping_history():
-    from pacomind.memory.selection import current_work_query
+    from protagine.memory.selection import current_work_query
     assert current_work_query('What are you building for me right now, and what changed with my latest correction? Keep it short.')
     assert current_work_query('What are you developing currently?')
     assert not current_work_query('What are you building right now compared with last week?')

@@ -7,9 +7,9 @@ Their stored contents remain available through `/v1/host/briefings`. Scoped memo
 citations and current work context continue through the existing assembly path.
 
 Hermes 0.21.1 applies `hooks.output_spill` to external memory-provider output.
-Its default 10,000-character head/tail preview can cut a PacoMind source envelope
+Its default 10,000-character head/tail preview can cut a Protagine source envelope
 or remove the middle of an original/correction bundle. Guided attachment and
-explicit `pacomind init --refresh-adapter` align `hooks.output_spill.max_chars` to
+explicit `protagine init --refresh-adapter` align `hooks.output_spill.max_chars` to
 65,536 characters, retaining an existing larger cap or disabled spill setting.
 The original configuration is backed up and an adjustment is printed during
 refresh. The managed draft profile receives the same alignment at creation,
@@ -24,8 +24,8 @@ size their own transfer allowance. The aggregate of optional context sections
 has no universal size bound. A native MemoryManager regression verifies a complete envelope
 larger than the old default survives the installed configuration unchanged.
 
-`pacomind-hermes` packages the existing general adapter and memory provider for
-installation into the Python environment that runs Hermes. The PacoMind sidecar
+`protagine-hermes` packages the existing general adapter and memory provider for
+installation into the Python environment that runs Hermes. The Protagine sidecar
 is a separate service. The adapter does not install the sidecar, a context
 engine, a worker daemon, or operating-system services.
 
@@ -40,36 +40,36 @@ Install the resulting wheel with the Python interpreter that runs Hermes.
 Use a build directory containing only the wheel for the selected source revision:
 
 ```sh
-python -m pip install dist/pacomind_hermes-*.whl
+python -m pip install dist/protagine_hermes-*.whl
 ```
 
-The wheel exposes `pacomind` through `hermes_agent.plugins` and `pacomind-memory`
-through `hermes_agent.memory_providers`. Only the canonical `pacomind_hermes` and
-`pacomind_memory` packages are shipped. It maps the source files in
-`plugins/hermes-plugin/` and `plugins/pacomind-memory/` to importable packages.
-Only `catalog.py` and `contract.py` from `hostworker/pacomind_hostworker/` are
+The wheel exposes `protagine` through `hermes_agent.plugins` and `protagine-memory`
+through `hermes_agent.memory_providers`. Only the canonical `protagine_hermes` and
+`protagine_memory` packages are shipped. It maps the source files in
+`plugins/hermes-plugin/` and `plugins/protagine-memory/` to importable packages.
+Only `catalog.py` and `contract.py` from `hostworker/protagine_hostworker/` are
 included in the adapter's private catalog package. The source installer forwards
 to the guided, profile-aware installer.
 
 ## Bundled skills
 
-The adapter wheel includes `pacomind-deep-research` for cited investigations and
-decision reports, and `pacomind-skill-creator` for creating useful, concise Hermes
+The adapter wheel includes `protagine-deep-research` for cited investigations and
+decision reports, and `protagine-skill-creator` for creating useful, concise Hermes
 skills. Both use the deployment's available tools without selecting a model or
-provider. New guided `pacomind init` attachments install them into the selected
+provider. New guided `protagine init` attachments install them into the selected
 profile's native skill catalog.
 
 For an existing Hermes profile, install or explicitly refresh the bundled copy
 without instance setup, inference or configuration changes:
 
 ```sh
-pacomind init --skills-only --hermes-home /path/to/selected/hermes-home
+protagine init --skills-only --hermes-home /path/to/selected/hermes-home
 ```
 
-The command reads the installed `pacomind-hermes` distribution. Use
-`--adapter-wheel /path/to/pacomind_hermes-VERSION-py3-none-any.whl` to select an
-exact built artifact instead. For each packaged `pacomind-*` skill it writes
-`skills/<name>/SKILL.md` and its local `.pacomind-owned.json` hash record,
+The command reads the installed `protagine-hermes` distribution. Use
+`--adapter-wheel /path/to/protagine_hermes-VERSION-py3-none-any.whl` to select an
+exact built artifact instead. For each packaged `protagine-*` skill it writes
+`skills/<name>/SKILL.md` and its local `.protagine-owned.json` hash record,
 retaining previous bytes in local backups on refresh. An unowned
 destination or modified bundled copy is preserved and reported as a conflict.
 Move a customized skill directory aside and give it a different name/path before
@@ -77,11 +77,11 @@ installing the bundled revision. Other skills are untouched. An adapter refresh 
 not replace the profile's skill; run `--skills-only` explicitly for that update.
 
 Hermes advertises the name and short description in its compact skill index;
-`skills_list` discovers it and `skill_view(name="pacomind-deep-research")` loads
+`skills_list` discovers it and `skill_view(name="protagine-deep-research")` loads
 the full instructions on demand. The installer does not inject the body into
 every prompt or enable otherwise disabled skill tools.
 
-With this adapter version active, PacoMind refreshes skill discovery in ongoing
+With this adapter version active, Protagine refreshes skill discovery in ongoing
 conversations. Before a model request it checks the current native skill
 locations and disabled state, hashes changed files including instruction bodies,
 and invalidates the native index/list caches when their inputs change. This
@@ -93,23 +93,23 @@ tool result clears that skill's reload notice. Full bodies still arrive only
 through native skill loading.
 
 Native loading can preprocess templates, so returned instructions need not
-equal the raw file bytes. A new successful native load after PacoMind observed
+equal the raw file bytes. A new successful native load after Protagine observed
 the same unchanged file version also settles the notice. A restored transformed
-copy without that observation requires one reload; PacoMind does not execute
+copy without that observation requires one reload; Protagine does not execute
 template commands to compare it.
 
 Refresh requires `skill_view` to be available directly or named in Hermes'
 current deferred-tool catalog. The default native configuration exposes skill
 tools directly. Explicit deferral works with full or names-only catalogs; a
 group-only or omitted catalog cannot establish an individual tool's availability,
-so PacoMind does not infer access or announce reloads from those summaries.
+so Protagine does not infer access or announce reloads from those summaries.
 
 Hermes' original session prompt and historical tool results remain stored
 unchanged. Current discovery notices explicitly supersede their stale skill
 information; no global conversation rewrite or new chat is required. Selecting
 this adapter code initially still uses the normal runtime activation lifecycle.
 Afterward, skill file changes require no process restart. Installing skills alone
-does not enable PacoMind in an otherwise native-only profile; that profile retains
+does not enable Protagine in an otherwise native-only profile; that profile retains
 Hermes' own cache behavior. The installer never restarts a process.
 
 Built-artifact tests exercise native discovery and deliver the loaded skill
@@ -120,29 +120,29 @@ instruction delivery, not research quality on a particular model.
 
 Installing the wheel makes the adapters discoverable. It does not change a
 Hermes profile, select a memory provider, or enable tools. Activation requires
-the existing general-adapter configuration, `plugins.enabled: [pacomind]`, and
-`memory.provider: pacomind-memory` in the selected private profile. Preserve
+the existing general-adapter configuration, `plugins.enabled: [protagine]`, and
+`memory.provider: protagine-memory` in the selected private profile. Preserve
 other enabled plugins when editing that list. These two durable selections make
 the general plugin the canonical writer and keep the memory provider read-only,
 including cold native workers that do not inherit launcher environment flags.
-An explicit `plugins.disabled: [pacomind]` or an enabled list excluding `pacomind`
+An explicit `plugins.disabled: [protagine]` or an enabled list excluding `protagine`
 takes precedence over inherited flags. A contradictory configured provider
-`turn_writer: enabled` is rejected; native `pacomind-memory.json` settings retain
+`turn_writer: enabled` is rejected; native `protagine-memory.json` settings retain
 their precedence over legacy `memory.config`.
 
 Older embedded profiles without this paired selection still require the existing
 coexistence settings in the Hermes process environment:
 
 ```sh
-PACOMIND_GENERAL_PLUGIN_ACTIVE=1
-PACOMIND_MEMORY_WORKER_TOOLS=0
-PACOMIND_MEMORY_TURN_WRITER=disabled
+PROTAGINE_GENERAL_PLUGIN_ACTIVE=1
+PROTAGINE_MEMORY_WORKER_TOOLS=0
+PROTAGINE_MEMORY_TURN_WRITER=disabled
 ```
 
 Configure the sidecar URL and contact through native `hermes memory setup`
-and matching `plugins.pacomind` configuration, and supply `PACOMIND_API_KEY` privately.
+and matching `plugins.protagine` configuration, and supply `PROTAGINE_API_KEY` privately.
 Native setup stores non-secret fields in the selected profile's
-`pacomind-memory.json`, which overrides inline `memory.config`. The
+`protagine-memory.json`, which overrides inline `memory.config`. The
 general adapter needs a private writable turn outbox and verified participant
 bindings. Consequential tools retain their existing mediator requirements.
 This packaging change does not provision those dependencies.
@@ -154,14 +154,14 @@ override a same-name directory plugin. Remove or archive obsolete plugin
 directories only as part of an intentional profile migration.
 
 When the memory provider is selected, native CLI discovery exposes
-`hermes pacomind-memory status`, `goals`, `context`, and `sync`. These commands
+`hermes protagine-memory status`, `goals`, `context`, and `sync`. These commands
 resolve the same selected profile settings and credentials as the provider;
 explicit URL/contact arguments remain available. The Typer app remains available
 to existing callers.
 
 Profile settings and handoff files stay scoped to the selected Hermes home.
 The provider remains attached through a sidecar startup outage and retries on
-later requests. Use `pacomind init` for guided attachment and explicit refresh of a managed
+later requests. Use `protagine init` for guided attachment and explicit refresh of a managed
 installation. Packaging alone does not establish production readiness.
 
 ## Durable source capture
@@ -202,7 +202,7 @@ engine.
 ## Already captured host input
 
 From 1.0.32, a host that has already admitted the human input can wrap the
-existing native conversation in `pacomind_hermes.input_provenance.supplied_input`.
+existing native conversation in `protagine_hermes.input_provenance.supplied_input`.
 The host validates its participant, source hashes and current revisions first.
 The native participant resolver and tool authority remain authoritative; the
 supplied contact does not grant capabilities.
@@ -223,7 +223,7 @@ The context exposes the durably queued result's dependencies for the host to
 revalidate before delayed delivery or further effects. It does not confirm
 backend delivery or reconstruct unlinked historical paraphrases. See the
 [supplied-input contract](../plugins/hermes-plugin/SUPPLIED-INPUT.md), also
-included as `pacomind_hermes/SUPPLIED-INPUT.md` in the adapter package.
+included as `protagine_hermes/SUPPLIED-INPUT.md` in the adapter package.
 
 Hosts can also register [source-bound updates during native work](NATIVE-SOURCE-UPDATES.md)
 on this same input context. Registration, request visibility and behavioral
@@ -232,8 +232,8 @@ application are separate; native task execution stays with Hermes.
 ## Source erasure and replay
 
 `POST /v1/host/memory/sources/forget` accepts an authenticated contact and 1 to
-100 canonical source IDs. The existing MCP server exposes `pacomind_forget_sources`.
-The native plugin exposes `pacomind_memory_forget` for explicit owner requests in
+100 canonical source IDs. The existing MCP server exposes `protagine_forget_sources`.
+The native plugin exposes `protagine_memory_forget` for explicit owner requests in
 an attested interactive turn. It accepts source IDs from canonical recalled
 provenance, including older sessions; legacy graph memory IDs are not source IDs.
 Native Hermes committed memory removes also attempt an exact, session-bound
@@ -300,7 +300,7 @@ Ordinary answers carrying source references also use a dedicated route, preventi
 a predecessor backend from silently accepting an answer while discarding its links.
 Erased IDs cannot be enqueued again after
 reconciliation. This is not a model-generation counter. Generic caller-provided
-outbox delivery callbacks must use `PacoMindClient.sync_turn(..., outbox=outbox)`
+outbox delivery callbacks must use `ProtagineClient.sync_turn(..., outbox=outbox)`
 to participate in reconciliation.
 
 Partial erasure events retain exact message hashes under opaque event IDs in the
@@ -348,13 +348,13 @@ The additional native provider-call memory boundary is qualified on Hermes
 with NeMo Relay 0.8.4, and the frozen Linux 0.21.3 environment with Relay 0.8.3.
 Upstream frozen environments can select another version;
 qualify that actual interpreter before switching a deployment. Install it with
-`python -m pip install 'pacomind-hermes[native-memory]'`; the supported Hermes
+`python -m pip install 'protagine-hermes[native-memory]'`; the supported Hermes
 release also declares this Relay dependency. CI installs that extra explicitly.
 Missing scope-local Relay capabilities leave the ordinary adapter active and
 emit a warning when the native boundary cannot be registered.
 
 Hermes's maximum-iteration summary rebuilds historical `api_content` and bypasses
-`llm_request` and ordinary API observers. PacoMind binds its existing authenticated
+`llm_request` and ordinary API observers. Protagine binds its existing authenticated
 source-validity and erasure filter to that native turn's scoped Relay execution
 contract. The SDK receives filtered history for the summary, including its
 empty-answer retry. A one-use digest avoids repeating the ordinary request
@@ -376,7 +376,7 @@ This is provider-input coverage on those dispatch paths, not erasure of native
 transcript files, Relay exports, arbitrary paraphrases, or calls outside them.
 
 Hermes 0.21.1 wraps provider recollection in a note calling it authoritative
-reference data. PacoMind's supported `llm_request` middleware replaces that outer
+reference data. Protagine's supported `llm_request` middleware replaces that outer
 note only in an observed, current, source-stamped native memory suffix. It keeps
 the person’s input, quoted source bytes, source revisions and erasure checks
 unchanged. Recollection retains its speaker, time and factual, reported,
@@ -394,7 +394,7 @@ same evidence framing and source lineage when the two input forms differ.
 System/developer instructions and Responses instructions may document the generic
 `<memory-context>` fence. That markup alone is not a recalled packet there, even
 when the example omits a closing tag. Exact forgotten source copies and explicit
-PacoMind lineage packets still reconcile in these fields. Legacy untagged fenced
+Protagine lineage packets still reconcile in these fields. Legacy untagged fenced
 instruction text is preserved unless it is an exact erased source or observed
 alias; substring and paraphrase erasure are not promised. Native automatic
 recollection continues to reconcile in its appended user-content boundary.
@@ -423,7 +423,7 @@ global request dumps, grant tools or change model requests.
 The existing scoped native memory boundary records the filtered raw request
 immediately before its streaming or non-streaming provider callback. Receipts
 live in that task's gateway session metadata under
-`pacomind_task_request_image_receipts`. They bind the handoff and exact native
+`protagine_task_request_image_receipts`. They bind the handoff and exact native
 session/task/turn, and retain inline image SHA-256 hashes, byte counts, media
 types and structural positions. Prompt text, image bytes, URLs and credentials
 are not retained. Remote image URLs are reported as unavailable rather than
@@ -446,7 +446,7 @@ is neither a start time nor a worker heartbeat. A retained result reports
 the assertions unverified and external effects unobserved. The result's source
 dependencies identify its inputs, without verifying the report's claims.
 
-For a failed background task, `pacomind_task` with `operation="status"` exposes
+For a failed background task, `protagine_task` with `operation="status"` exposes
 the observed native failure separately from a retained answer when the runtime
 supplies a settled-turn outcome. It preserves the original input references.
 To continue a failed or interrupted task, call `operation="resume"` with its
@@ -457,7 +457,7 @@ turn for that observed generation; stopped, completed and suspended sessions
 are declined. The continuation retains the same session, model selection and
 prior tool results. Native admission is not completion.
 
-`pacomind_memory_read_source` accepts `view="observations"` for an exact recalled
+`protagine_memory_read_source` accepts `view="observations"` for an exact recalled
 instruction. It lists four retained original tool references per page. Open
 relevant references with `view="source"` to read what the tools actually returned.
 Selection reasons are model-authored navigation hints and may be wrong.
@@ -492,7 +492,7 @@ participant invalidation; corrected recall content can consequently differ.
 ## Shared execution observations
 
 On the [current qualification build](HERMES-HOOK-COMPATIBILITY.md), set
-`plugins.pacomind.execution_registry_enabled: true` to
+`plugins.protagine.execution_registry_enabled: true` to
 publish native turn, API, tool and delegated-child lifecycle observations.
 This is opt-in for a current attachment. The adapter credential must already
 have scoped `turns:write` and exact person grants; `context:read` grants access
@@ -501,7 +501,7 @@ for this new surface. To observe trusted agent cron fires, include `cron` in
 the existing `attested_system_platforms` configuration; it is not enabled by
 the adapter's default `cli` binding. No network call is made during registration.
 
-PacoMind stores only execution IDs, participant/session linkage, channel, phase,
+Protagine stores only execution IDs, participant/session linkage, channel, phase,
 tool name and observation times in the existing `turn-idempotency.db`. It does
 not copy prompts, tool arguments/results or task descriptions. Each hook has a
 400 ms network deadline and failures do not stop a turn. Ordinary use supplies
@@ -545,9 +545,9 @@ or unreadable ledgers are explicitly unavailable, and `complete` is always
 false for the combined work view.
 
 The same owner view reads native Kanban tasks, including general `goal_mode`
-work, without dispatching or reconciling them. `PACOMIND_HERMES_WORK_BOARDS` can
+work, without dispatching or reconciling them. `PROTAGINE_HERMES_WORK_BOARDS` can
 select up to eight board slugs as a JSON list, for example
-`["default","pacomind-drafts"]`. Without that setting it follows only the
+`["default","protagine-drafts"]`. Without that setting it follows only the
 selected home's native current board (`HERMES_KANBAN_BOARD`, then
 `kanban/current`, then `default`), including Hermes' lowercase normalization.
 It does not enumerate other boards. Profile
@@ -607,7 +607,7 @@ native task and session history remain under their existing retention policy.
 Queued delivery is not proof of central availability, and a reported result is
 not independent verification that its claimed effects occurred.
 
-An optional private `PACOMIND_WORKER_STATUS_PATHS` environment value maps neutral
+An optional private `PROTAGINE_WORKER_STATUS_PATHS` environment value maps neutral
 worker labels to local JSON heartbeat paths, for example
 `{"Local transport":"/private/runtime/transport-heartbeat.json"}`. It is unset
 by default. The same owner API and context join expose these as separate
@@ -672,13 +672,13 @@ authority at native `tool_execution` middleware. Resolved owner turns and
 explicitly configured local system platforms retain native tools and existing
 Hermes toolset, approval and guardrail checks. Guests cannot directly invoke
 shell, files, network, devices, coding, delegation, native memory/session tools,
-or unknown plugin/MCP tools. The exact PacoMind tools keep their existing scoped
+or unknown plugin/MCP tools. The exact Protagine tools keep their existing scoped
 read checks and action mediators. No arbitrary tool prefix or relationship
 score grants access.
 
 A native-tool request from a guest returns `requires_authorization`, with no
 effect and no approval created. The response directs the agent to an enabled
-PacoMind action request or the owner. It does not invent an approval request or
+Protagine action request or the owner. It does not invent an approval request or
 permit a raw tool after conversational consent. Broader guest capabilities
 require a scoped mediated interface; this packet supplies none automatically.
 
@@ -697,7 +697,7 @@ is loaded. It does not sandbox trusted installed plugin code, remove private
 facts already present in old transcripts/system prompts, or replace the
 deployment's channel admission, secret isolation and consent policy. Native
 owner tools retain their existing consent behavior; they are not converted to
-PacoMind intents by this gate. Qualify both owner and guest messages before
+Protagine intents by this gate. Qualify both owner and guest messages before
 enabling a public channel.
 
 ## Native post-turn review
@@ -741,7 +741,7 @@ controlled model fixture.
 
 ### Measured skill updates
 
-`python -m pacomind_hermes.review_evaluation --skill NAME --pending ID
+`python -m protagine_hermes.review_evaluation --skill NAME --pending ID
 --oracle trusted_local_module:function` evaluates one explicitly selected,
 curator-owned `SKILL.md` proposal. It accepts native full-content
 edits or exact text patches, including a one-operation native batch. Text
@@ -795,7 +795,7 @@ be checked again before use. Erased, corrected, invalidated or unsupported
 assessments are excluded, including changes to their supporting messages.
 Reviewer text remains an unverified report, not owner consent or a parsed verdict.
 
-`pacomind_hermes.task_review_experience` lets an existing native review caller
+`protagine_hermes.task_review_experience` lets an existing native review caller
 consider two distinct tasks and executions. It retains contrary reviews of the
 same task but never counts them as extra experience. The candidate reviewer must
 decide whether the complete bundles support a recurring problem and a useful
@@ -809,7 +809,7 @@ The operator selects an existing local evaluator and its task scope:
   "scope": "Reading current supplied source files before stating their behavior",
   "oracle": "selected_oracle:check",
   "oracle_id": "frozen-recipe-identifier",
-  "environment": {"PACOMIND_SELECTED_ORACLE_PLAN": "/private/instance/oracle-plan.json"},
+  "environment": {"PROTAGINE_SELECTED_ORACLE_PLAN": "/private/instance/oracle-plan.json"},
   "allow_apply": false
 }
 ```
@@ -820,7 +820,7 @@ passing unrelated cases does not qualify a skill. In the existing native caller:
 
 ```python
 from tools import skill_ledger
-from pacomind_hermes import task_review_experience as experience
+from protagine_hermes import task_review_experience as experience
 
 evaluator = experience.declaration("/private/instance/task-review-evaluator.json")
 result = experience.evaluate_once(evaluator, scoped_client, owner_contact_id)
@@ -831,7 +831,7 @@ batch = experience.selected_batch(skill_ledger.list_entries(), evaluator,
 When a batch exists, the caller claims its `receipt(batch)` in the existing
 `ordinary_skill_review` ledger, rechecks its sources, and passes its complete
 observations to the native internal reviewer. Trusted request middleware binds
-that same receipt to `_pacomind_task_assessment_batch` before staging one new
+that same receipt to `_protagine_task_assessment_batch` before staging one new
 main skill file. Model-supplied evaluator metadata must be overwritten. This is
 an integration entry point; it adds no scheduler, service or default adoption.
 The public installer's opt-in `--ordinary-skill-review` option connects it to one
@@ -848,7 +848,7 @@ and `error_class`, with optional `result_sha256`. The generic
 errors cannot inherit that qualification. All selected occurrences must match.
 Omitting these selectors keeps tool-failure proposals pending. The caller binds
 the selected declaration and original claimed native observations outside model
-output in `_pacomind_native_failure_batch`. Before and after measurement it checks
+output in `_protagine_native_failure_batch`. Before and after measurement it checks
 the original ledger claim, native call/result bytes, participant and existing
 history erasure rules. Measurements retain `native_failure_evidence`; these
 observations never become machine artifact assessments.
@@ -862,14 +862,14 @@ deployment has learned usefully from ordinary production work.
 
 ### Bounded operational reviews
 
-New `pacomind_work_initiative` reviews require a managed `pacomind-reviews`
-native profile. The existing guided `pacomind init --profile local` setup offers
+New `protagine_work_initiative` reviews require a managed `protagine-reviews`
+native profile. The existing guided `protagine init --profile local` setup offers
 an optional review choice, default off; `--native-reviews` selects it explicitly.
 Existing attachments can use that same flag and their configured planning role.
 `--refresh-adapter` refreshes an already enabled review profile without enabling
 a previously disabled one. For private deployment staging, use the selected sidecar interpreter:
-`python -m pacomind.setup_native_reviews --install /private/instance`.
-This prepares the profile and enables `plugins.pacomind.native_reviews` in the
+`python -m protagine.setup_native_reviews --install /private/instance`.
+This prepares the profile and enables `plugins.protagine.native_reviews` in the
 selected native root configuration. An existing profile belonging to another
 instance is retained and installation fails. Named conversation profiles must
 select their root deployment for this shared worker.
@@ -879,8 +879,8 @@ server-eligible read-only proposals and reconciles already bound work. A separat
 LLM queue steward or scheduling service is unnecessary. Disabling the choice
 stops new discovery while preserving observation of existing bindings.
 
-The profile exposes two tools: `pacomind_read_work_source` and
-`pacomind_review_report`. Native `agent.disabled_toolsets: [kanban]` removes
+The profile exposes two tools: `protagine_read_work_source` and
+`protagine_review_report`. Native `agent.disabled_toolsets: [kanban]` removes
 the automatically added Kanban tools, including task creation and attachment
 access. Native `tools.tool_search.enabled: false` keeps both tools directly
 visible to the model; readiness checks the assembled schema array. The report
@@ -905,7 +905,7 @@ preserving logs. A useful report can identify unavailable configuration as the
 next bounded inspection. Existing bound contracts retain their exact body and
 digest; only new bindings use the bounded report-tool wording.
 The instance may set `operational_log_directory`; its
-default matches the existing producer's `~/.pacomind/logs`. A mismatched
+default matches the existing producer's `~/.protagine/logs`. A mismatched
 registered directory is unavailable, never substituted with another log.
 
 Before promotion, the adapter refreshes this profile from the existing

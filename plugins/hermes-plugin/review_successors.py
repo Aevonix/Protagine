@@ -29,9 +29,9 @@ def append(action, skill, evidence):
 def claim_for(payload, entries):
     """Only code-bound proposals from an actual current review can continue."""
     from .task_review_experience import receipt
-    batch = payload.get('_pacomind_task_assessment_batch') or payload.get('_pacomind_native_failure_batch')
-    if not isinstance(batch, dict) or (payload.get('_pacomind_task_assessment_batch')
-                                     and payload.get('_pacomind_native_failure_batch')):
+    batch = payload.get('_protagine_task_assessment_batch') or payload.get('_protagine_native_failure_batch')
+    if not isinstance(batch, dict) or (payload.get('_protagine_task_assessment_batch')
+                                     and payload.get('_protagine_native_failure_batch')):
         return None
     try:
         expected = receipt(batch)
@@ -40,8 +40,8 @@ def claim_for(payload, entries):
     claims = [row for row in entries if row.get('action') == 'ordinary_skill_review'
         and row.get('evidence', {}).get('status') == 'claimed'
         and row['evidence'].get('owner_contact_id')
-        and row['evidence'].get('native_execution_id') == payload.get('_pacomind_review_native_execution')
-        and row['evidence'].get('failure_sha256') == payload.get('_pacomind_review_batch_sha256')
+        and row['evidence'].get('native_execution_id') == payload.get('_protagine_review_native_execution')
+        and row['evidence'].get('failure_sha256') == payload.get('_protagine_review_batch_sha256')
         and all(row['evidence'].get(key) == value for key, value in expected.items())]
     return claims[0] if len(claims) == 1 else None
 
@@ -224,7 +224,7 @@ def next_successor(entries, *, native, owner, evaluator, connection):
             stop(parent, 'failed_proposal_unavailable')
             continue
         payload = json.loads(raw)
-        batch = payload.get('_pacomind_task_assessment_batch') or payload.get('_pacomind_native_failure_batch')
+        batch = payload.get('_protagine_task_assessment_batch') or payload.get('_protagine_native_failure_batch')
         if batch.get('evaluator') != (evaluator['binding'] if evaluator is not None else None):
             stop(parent, 'evaluator_changed')
             continue

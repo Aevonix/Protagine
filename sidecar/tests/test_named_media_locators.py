@@ -7,12 +7,12 @@ import json
 from PIL import Image
 import pytest
 
-from pacomind.memory.recall import calibration_fingerprint
-from pacomind.memory.search import collect_sources, select_memory
-from pacomind.memory.selection import RecallSelector
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.media import SourceMedia
-from pacomind.turns.source_read import read
+from protagine.memory.recall import calibration_fingerprint
+from protagine.memory.search import collect_sources, select_memory
+from protagine.memory.selection import RecallSelector
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.media import SourceMedia
+from protagine.turns.source_read import read
 
 
 QUERY = 'On the reference cobalt-map-v2, what is the shape on the left?'
@@ -36,9 +36,9 @@ def retain(ledger, identifier='image-a', *, text=TEXT, data=None, contact='perso
 @pytest.fixture
 def calibrated(monkeypatch):
     metadata = {'model': 'neutral-fixture', 'weights_revision': 'fixture'}
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'on')
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK_MIN_SCORE', '0.8')
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK_CALIBRATION', calibration_fingerprint(metadata))
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'on')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK_MIN_SCORE', '0.8')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK_CALIBRATION', calibration_fingerprint(metadata))
     return metadata
 
 
@@ -103,7 +103,7 @@ async def test_named_distinct_originals_preserve_ambiguity_under_shared_budget(t
     assert all(row['matching_attachment_candidates'] == 2 for row in locators(packet))
     limited = await search(ledger, calibrated, limit=1)
     assert len(limited.selected) == 1 and locators(limited)[0]['matching_attachment_candidates'] == 2
-    monkeypatch.setenv('PACOMIND_RECALL_CONTEXT_MAX_CHARS', '400')
+    monkeypatch.setenv('PROTAGINE_RECALL_CONTEXT_MAX_CHARS', '400')
     small = await search(ledger, calibrated)
     assert len(small.content) <= 400 and not small.selected  # No clipped identity.
 

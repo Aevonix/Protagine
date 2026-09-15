@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from pacomind.gate.taint import (
+from protagine.gate.taint import (
     DEFAULT_TTL_SECS, TaintRegistry, taint_ttl_secs)
 
 
@@ -35,13 +35,13 @@ def _register(reg, **kw):
 # ---------------------------------------------------------------------------
 
 def test_ttl_default_and_malformed(monkeypatch):
-    monkeypatch.delenv("PACOMIND_TOM2_TAINT_TTL_SECS", raising=False)
+    monkeypatch.delenv("PROTAGINE_TOM2_TAINT_TTL_SECS", raising=False)
     assert taint_ttl_secs() == DEFAULT_TTL_SECS
-    monkeypatch.setenv("PACOMIND_TOM2_TAINT_TTL_SECS", "banana")
+    monkeypatch.setenv("PROTAGINE_TOM2_TAINT_TTL_SECS", "banana")
     assert taint_ttl_secs() == DEFAULT_TTL_SECS       # protection: default
-    monkeypatch.setenv("PACOMIND_TOM2_TAINT_TTL_SECS", "-5")
+    monkeypatch.setenv("PROTAGINE_TOM2_TAINT_TTL_SECS", "-5")
     assert taint_ttl_secs() == DEFAULT_TTL_SECS       # never zero-length
-    monkeypatch.setenv("PACOMIND_TOM2_TAINT_TTL_SECS", "120")
+    monkeypatch.setenv("PROTAGINE_TOM2_TAINT_TTL_SECS", "120")
     assert taint_ttl_secs() == 120.0
 
 

@@ -7,9 +7,9 @@ import uuid
 
 import pytest
 
-from pacomind_hostworker import contract
-from pacomind_hostworker._private_io import strict_json_bytes
-from pacomind_hostworker.client import (
+from protagine_hostworker import contract
+from protagine_hostworker._private_io import strict_json_bytes
+from protagine_hostworker.client import (
     ClientCredential,
     GovernedActionClient,
     GovernedActionClientError,
@@ -177,7 +177,7 @@ def execution_request(**overrides):
         "action_digest": "a" * 64,
         "intent_id": "hti_" + "b" * 32,
         "intent_digest": "c" * 64,
-        "tool_name": "pacomind_create_commitment",
+        "tool_name": "protagine_create_commitment",
         "args": {"description": "hello"},
         "args_sha256": "d" * 64,
         "approval": {"schema": "x"},
@@ -207,7 +207,7 @@ def test_execute_sends_exactly_one_canonical_put(tmp_path):
     ]
     assert sent.data == contract.canonical_json_utf8(request).encode("utf-8")
     assert sent.get_header("Authorization") == "Bearer " + SECRET
-    assert sent.get_header("X-pacomind-principal") == WORKER_PRINCIPAL
+    assert sent.get_header("X-protagine-principal") == WORKER_PRINCIPAL
     assert timeout == pytest.approx(5.0)
 
 

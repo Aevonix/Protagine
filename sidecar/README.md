@@ -1,17 +1,17 @@
-# PacoMind sidecar
+# Protagine sidecar
 
-PacoMind provides persistent source memory, relevant context and shared work for
+Protagine provides persistent source memory, relevant context and shared work for
 a personal agent using locally configured models. This package runs the sidecar
-and supplies the `pacomind` command.
+and supplies the `protagine` command.
 
-Native Hermes attachment also requires the companion `pacomind-hermes` package
+Native Hermes attachment also requires the companion `protagine-hermes` package
 and an existing supported Hermes installation. The guided local setup uses one
 OpenAI-compatible chat endpoint and SQLite; graph and vector dependencies are
 optional.
 
-See the [public setup guide](https://github.com/Aevonix/PacoMind/blob/main/docs/LOCAL-HERMES-SETUP.md)
+See the [public setup guide](https://github.com/Aevonix/Protagine/blob/main/docs/LOCAL-HERMES-SETUP.md)
 for installation, private identity setup, supported runtime and operation.
-The [project README](https://github.com/Aevonix/PacoMind/blob/main/README.md)
+The [project README](https://github.com/Aevonix/Protagine/blob/main/README.md)
 describes current capabilities and their limits. Personal configuration,
 credentials and hardware adapters belong in the private deployment.
 

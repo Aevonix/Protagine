@@ -9,10 +9,10 @@ from types import SimpleNamespace
 from PIL import Image
 import pytest
 
-from pacomind.qualification.cases import json_fields, select_cases
-from pacomind.qualification.cli import run
-from pacomind.qualification.records import digest, read
-from pacomind.qualification.vision_cases import CASES
+from protagine.qualification.cases import json_fields, select_cases
+from protagine.qualification.cli import run
+from protagine.qualification.records import digest, read
+from protagine.qualification.vision_cases import CASES
 from test_function_routing import config, endpoint
 
 
@@ -52,7 +52,7 @@ def test_vision_registry_uses_pixels_and_declares_capability_without_changing_de
         'chat.grounded-note', 'extraction.conditions',
         'memory.formation-quality', 'memory.corrected-recollection']
     fixture_names = ['vision-arrangement.png', 'vision-labels.png', 'vision-covered-label.png']
-    fixture_root = Path(__file__).parents[1] / 'pacomind/qualification/fixtures'
+    fixture_root = Path(__file__).parents[1] / 'protagine/qualification/fixtures'
     for case, filename in zip(CASES, fixture_names):
         assert case.role == case.inputs['role'] == 'vision'
         assert case.boundary == case.consumer == 'role_completion'

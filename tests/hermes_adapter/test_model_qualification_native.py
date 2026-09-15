@@ -11,9 +11,9 @@ import time
 
 import pytest
 
-from pacomind.qualification.cli import add_parser, run
-from pacomind.qualification.native import configuration, native_cli, native_context
-from pacomind.qualification.records import read
+from protagine.qualification.cli import add_parser, run
+from protagine.qualification.native import configuration, native_cli, native_context
+from protagine.qualification.records import read
 
 
 @contextmanager
@@ -180,8 +180,8 @@ def test_native_reasoning_requires_actual_file_reads_not_only_a_correct_answer(t
 
 def test_native_reasoning_rejects_old_rule_wrong_order_and_invented_execution():
     from copy import deepcopy
-    from pacomind.qualification.cases import json_fields
-    from pacomind.qualification.native import cases
+    from protagine.qualification.cases import json_fields
+    from protagine.qualification.native import cases
     case = cases(['reasoning'])[0]
     output = {'eligible': [], 'newest_assembled': 'delta',
         'next_check': {'instrument': 'delta', 'observation': 'calibration'},
@@ -212,7 +212,7 @@ def coding_answer():
 
 @pytest.mark.parametrize('mode', ['correct', 'wrong_after_reads', 'correct_without_reads'])
 def test_native_coding_separates_returned_sources_from_claim_correctness(tmp_path, mode):
-    from pacomind.qualification.native import cases
+    from protagine.qualification.native import cases
     case = cases(['coding'])[0]
     assert case.id == 'native.coding.source-attribution' and case.role == 'coding'
     answer = coding_answer()
@@ -260,8 +260,8 @@ def test_native_coding_separates_returned_sources_from_claim_correctness(tmp_pat
     {'additional_claim': 'Both interpreters were executed and verified'},
 ])
 def test_native_coding_rejects_invented_paths_and_claims_despite_complete_reads(change):
-    from pacomind.qualification.cases import json_fields
-    from pacomind.qualification.native import cases
+    from protagine.qualification.cases import json_fields
+    from protagine.qualification.native import cases
     case = cases(['coding'])[0]
     effects = {'complete_fixture_reads': sorted(case.inputs['files']),
                'fixture_files_unchanged': True, 'mutation_tools_requested': []}
@@ -303,17 +303,17 @@ def test_native_transport_failure_is_not_graded_as_a_model_answer(tmp_path):
         assert row['cleanup'] == 'state_directory_removed'
 
 
-def test_recorded_separate_hermes_python_needs_no_pacomind_install(tmp_path):
+def test_recorded_separate_hermes_python_needs_no_protagine_install(tmp_path):
     import importlib.util
     import subprocess
     import venv
-    # Reuse installed native dependencies without installing PacoMind into this interpreter.
+    # Reuse installed native dependencies without installing Protagine into this interpreter.
     home = tmp_path/'native-python'
     venv.EnvBuilder(with_pip=False, symlinks=True).create(home)
     site = home/f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages'
     for source in (Path(p) for p in sys.path if p.endswith('site-packages')):
         for item in source.iterdir():
-            if item.name.startswith(('pacomind', '__editable__')) or item.suffix == '.pth':
+            if item.name.startswith(('protagine', '__editable__')) or item.suffix == '.pth':
                 continue
             target = site/item.name
             if not target.exists():
@@ -322,7 +322,7 @@ def test_recorded_separate_hermes_python_needs_no_pacomind_install(tmp_path):
     (site/'selected-native.pth').write_text(str(native_root)+'\n')
     python = home/'bin/python'
     check = subprocess.run([str(python), '-I', '-c',
-        'import importlib.util; assert importlib.util.find_spec("pacomind") is None; import run_agent'],
+        'import importlib.util; assert importlib.util.find_spec("protagine") is None; import run_agent'],
         env={'HOME': str(tmp_path/'probe-home'), 'HERMES_HOME': str(tmp_path/'probe-home'),
              'HERMES_SKIP_DOTENV': '1'}, capture_output=True, text=True, timeout=8)
     assert check.returncode == 0, check.stderr
@@ -332,7 +332,7 @@ def test_recorded_separate_hermes_python_needs_no_pacomind_install(tmp_path):
         instance.mkdir()
         (instance/'instance.json').write_text(json.dumps({'hermes_python': str(python)}))
         document = json.loads(config.read_text())
-        document['plugins'] = {'pacomind': {'instance_dir': str(instance)}}
+        document['plugins'] = {'protagine': {'instance_dir': str(instance)}}
         config.write_text(json.dumps(document))
         output = tmp_path/'run'
         args = arguments(config, output)
@@ -360,7 +360,7 @@ def test_explicit_missing_native_python_records_setup_error_without_inference(tm
 
 def test_deadline_during_process_creation_keeps_ownership(tmp_path, monkeypatch):
     import asyncio
-    from pacomind.qualification import native
+    from protagine.qualification import native
     original = asyncio.create_subprocess_exec
     spawned = []
 
@@ -389,9 +389,9 @@ def test_native_cancellation_records_real_interruption_and_exit(tmp_path):
 
 async def _native_cancellation_records_real_interruption_and_exit(tmp_path):
     import asyncio
-    from pacomind.qualification.native import cases
-    from pacomind.qualification.cases import EVALUATORS
-    from pacomind.qualification.runner import evaluate
+    from protagine.qualification.native import cases
+    from protagine.qualification.cases import EVALUATORS
+    from protagine.qualification.runner import evaluate
     with endpoint(blocked=True) as (url, requests, entered):
         config, recipe = configuration(configured(tmp_path, url), 'fixture', hermes_python=sys.executable)
         output = tmp_path/'run'
@@ -419,7 +419,7 @@ def test_incomplete_native_stop_retains_state_and_does_not_start_later_case(tmp_
     ({'models': {'native-fixture': {'timeout_seconds': .6, 'stale_timeout_seconds': .7}}}, [.6, .7])])
 def test_shared_custom_defaults_preserve_actual_native_timeout_resolution(tmp_path, named, expected):
     import subprocess
-    from pacomind.qualification.native import _environment
+    from protagine.qualification.native import _environment
     path = configured(tmp_path, 'http://127.0.0.1:9/v1')
     document = json.loads(path.read_text())
     for key in ('request_timeout_seconds', 'stale_timeout_seconds'):
@@ -454,7 +454,7 @@ def test_invalid_native_deadline_creates_no_run(tmp_path, monkeypatch, deadline)
     output = tmp_path/'invalid-run'
     async def forbidden_spawn(*args, **kwargs):
         pytest.fail('Invalid deadline must not spawn native work')
-    monkeypatch.setattr('pacomind.qualification.native.asyncio.create_subprocess_exec', forbidden_spawn)
+    monkeypatch.setattr('protagine.qualification.native.asyncio.create_subprocess_exec', forbidden_spawn)
     with pytest.raises(ValueError, match='Case deadline'):
         run(arguments(config, output, deadline=deadline))
     assert not output.exists()
@@ -463,9 +463,9 @@ def test_invalid_native_deadline_creates_no_run(tmp_path, monkeypatch, deadline)
 @pytest.mark.parametrize('spawn_delay', [0, .2])
 def test_spawn_failure_without_child_removes_state_and_allows_later_case(tmp_path, monkeypatch, spawn_delay):
     import asyncio
-    from pacomind.qualification import native
-    from pacomind.qualification.cases import EVALUATORS
-    from pacomind.qualification.runner import evaluate
+    from protagine.qualification import native
+    from protagine.qualification.cases import EVALUATORS
+    from protagine.qualification.runner import evaluate
 
     async def attempt():
         calls = []
@@ -499,9 +499,9 @@ def test_spawn_failure_without_child_removes_state_and_allows_later_case(tmp_pat
 def test_real_worker_distinguishes_no_acquisition_from_unconfirmed_cleanup(tmp_path, failure):
     import asyncio
     import venv
-    from pacomind.qualification import native
-    from pacomind.qualification.cases import EVALUATORS
-    from pacomind.qualification.runner import evaluate
+    from protagine.qualification import native
+    from protagine.qualification.cases import EVALUATORS
+    from protagine.qualification.runner import evaluate
 
     # The actual worker runs in a real owned subprocess. Minimal native modules
     # control the failure boundary; their effect log proves which calls occurred.
@@ -581,9 +581,9 @@ class AIAgent:
 def test_selected_runtime_identity_tracks_dependency_bytes_and_blocks_changed_resume(tmp_path):
     import asyncio
     import venv
-    from pacomind.qualification import native
-    from pacomind.qualification.cases import EVALUATORS
-    from pacomind.qualification.runner import evaluate
+    from protagine.qualification import native
+    from protagine.qualification.cases import EVALUATORS
+    from protagine.qualification.runner import evaluate
 
     # A selected editable-style installation. Importing any fixture module is an
     # error; the metadata probe must only inspect its declared source/data bytes.
@@ -649,9 +649,9 @@ async def _incomplete_native_stop_retains_state_and_does_not_start_later_case(tm
     """A real owned child ignores TERM; only it is killed, and uncertainty is retained."""
     import asyncio
     import sys
-    from pacomind.qualification import native
-    from pacomind.qualification.cases import EVALUATORS
-    from pacomind.qualification.runner import evaluate
+    from protagine.qualification import native
+    from protagine.qualification.cases import EVALUATORS
+    from protagine.qualification.runner import evaluate
     config, recipe = configuration(configured(tmp_path, 'http://127.0.0.1:9/v1'), 'fixture',
                                    hermes_python=sys.executable)
     original = asyncio.create_subprocess_exec
@@ -686,7 +686,7 @@ async def _incomplete_native_stop_retains_state_and_does_not_start_later_case(tm
 def test_trusted_fixture_worker_reuses_owned_native_child(tmp_path):
     import asyncio
     from types import SimpleNamespace
-    from pacomind.qualification.runner import RunContext
+    from protagine.qualification.runner import RunContext
     worker = tmp_path/'fixture_worker.py'
     worker.write_text('''import json,sys
 from pathlib import Path
@@ -707,7 +707,7 @@ result={'stage':'returned','worker_stopped':True,'agent_construction_started':Fa
 def test_trusted_fixture_lives_until_native_close(tmp_path,monkeypatch,construction_error):
     from contextlib import contextmanager
     from types import SimpleNamespace
-    from pacomind.qualification import native_worker
+    from protagine.qualification import native_worker
     events=[]
     class Agent:
         model='fixture'

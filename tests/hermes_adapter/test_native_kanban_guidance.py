@@ -18,16 +18,16 @@ kind,pathway=sys.argv[3:5]
 home=Path(os.environ['HERMES_HOME']);home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 (home/'config.yaml').write_text(json.dumps({'toolsets':['kanban'],
-    'plugins':{'enabled':['pacomind'],'pacomind':{'owner_contact_id':'fixture-owner',
+    'plugins':{'enabled':['protagine'],'protagine':{'owner_contact_id':'fixture-owner',
         'attested_system_platforms':['cli','voice'],'turn_writer_platforms':[]}}}))
 def no_network(*args,**kwargs):raise AssertionError('No external requests in native fixture')
 socket.socket.connect=no_network;socket.create_connection=no_network
-import pacomind_hermes
+import protagine_hermes
 def unavailable(*args,**kwargs):raise RuntimeError('No central fixture service')
-pacomind_hermes.PacoMindClient.get=unavailable;pacomind_hermes.PacoMindClient.post=unavailable
+protagine_hermes.ProtagineClient.get=unavailable;protagine_hermes.ProtagineClient.post=unavailable
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
-assert get_plugin_manager()._plugins['pacomind'].enabled
+assert get_plugin_manager()._plugins['protagine'].enabled
 from agent.delegation_context import delegated_child_context,non_dispatcher_owned_context
 from agent.prompt_builder import KANBAN_GUIDANCE
 from run_agent import AIAgent
@@ -114,13 +114,13 @@ def test_native_request_assigns_only_actual_dispatcher_worker(artifacts, tmp_pat
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for actual native instruction assembly')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'pacomind'),
+    env.update(HERMES_HOME=str(tmp_path/'profile'), PROTAGINE_STATE_DIR=str(tmp_path/'protagine'),
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), HERMES_DISABLE_TELEMETRY='1',
-        HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_SKIP_DOTENV='1', PACOMIND_GENERAL_PLUGIN_ACTIVE='1',
-        PACOMIND_MEMORY_WORKER_TOOLS='0', PACOMIND_MEMORY_TURN_WRITER='disabled',
-        PACOMIND_GUARD_CHAT_MODE='off', LITELLM_LOCAL_MODEL_COST_MAP='True')
+        HERMES_DISABLE_LAZY_INSTALLS='1', PROTAGINE_SKIP_DOTENV='1', PROTAGINE_GENERAL_PLUGIN_ACTIVE='1',
+        PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_TURN_WRITER='disabled',
+        PROTAGINE_GUARD_CHAT_MODE='off', LITELLM_LOCAL_MODEL_COST_MAP='True')
     result = run_python('-I', '-c', PROBE, artifacts[3],
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), kind, pathway, cwd=tmp_path, env=env)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), kind, pathway, cwd=tmp_path, env=env)
     assert json.loads(result.stdout.splitlines()[-1])['tools_preserved']
 
 
@@ -132,7 +132,7 @@ def no_network(*args,**kwargs):raise AssertionError('No external requests in nat
 socket.socket.connect=no_network;socket.create_connection=no_network
 from agent.message_sanitization import _sanitize_structure_non_ascii
 from agent.prompt_builder import KANBAN_GUIDANCE
-from pacomind_hermes.request_capabilities import describe
+from protagine_hermes.request_capabilities import describe
 if worker=='worker':
     os.environ['HERMES_KANBAN_TASK']='fixture-bound-task'
 instructions='Stable identity.\n'+KANBAN_GUIDANCE+'\nOther evidence rules.'
@@ -174,9 +174,9 @@ def test_native_ascii_sanitization_preserves_instruction_scope(artifacts, tmp_pa
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for actual native request sanitization')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'pacomind'),
-        HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_SKIP_DOTENV='1',
+    env.update(HERMES_HOME=str(tmp_path/'profile'), PROTAGINE_STATE_DIR=str(tmp_path/'protagine'),
+        HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1', PROTAGINE_SKIP_DOTENV='1',
         LITELLM_LOCAL_MODEL_COST_MAP='True')
     result = run_python('-I', '-c', SANITIZED_PROBE, artifacts[3],
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), shape, worker, cwd=tmp_path, env=env)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), shape, worker, cwd=tmp_path, env=env)
     assert json.loads(result.stdout.splitlines()[-1])['external_model_calls'] == 0

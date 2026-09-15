@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pacomind.migrations import (
+from protagine.migrations import (
     applied_versions_sync,
     run_migrations_sync,
     _discover,

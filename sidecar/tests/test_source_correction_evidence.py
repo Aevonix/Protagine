@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns import TurnIdempotencyLedger
 from test_procedure_source_context import ProcedureModel
 from test_source_claim_projection import claim, ingest, prepared
 from test_turn_source_evidence import source_app

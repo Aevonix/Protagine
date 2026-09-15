@@ -18,14 +18,14 @@ def _task_role_config(platform_name, error_type):
     return platform.get('extra', {})
 
 
-def configured_task_model_roles(platform_name='pacomind_task', *, error_type=TaskHandoffError):
+def configured_task_model_roles(platform_name='protagine_task', *, error_type=TaskHandoffError):
     roles = _task_role_config(platform_name, error_type).get('task_model_roles', {})
     if not isinstance(roles, dict):
         raise error_type('Native task model roles are invalid')
     return roles
 
 
-def resolve_task_model_role(platform_name='pacomind_task', retained=None, *, error_type=TaskHandoffError):
+def resolve_task_model_role(platform_name='protagine_task', retained=None, *, error_type=TaskHandoffError):
     """One explicit native projection; credentials remain native-owned."""
     selected = retained if retained is not None else _task_role_config(platform_name, error_type).get('task_model_role')
     if selected is None:
@@ -45,7 +45,7 @@ def resolve_task_model_role(platform_name='pacomind_task', retained=None, *, err
     return dict(selected)
 
 
-def select_task_model_role(role, platform_name='pacomind_task', *, error_type=TaskHandoffError):
+def select_task_model_role(role, platform_name='protagine_task', *, error_type=TaskHandoffError):
     """Resolve a named task role from the profile, before durable admission."""
     roles = configured_task_model_roles(platform_name, error_type=error_type)
     if (not isinstance(role, str) or not role.strip() or len(role) > 256

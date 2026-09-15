@@ -5,7 +5,7 @@ import socket
 import pytest
 import yaml
 
-from pacomind.setup_hermes import _receipt_preference
+from protagine.setup_hermes import _receipt_preference
 
 
 LAYOUTS = [

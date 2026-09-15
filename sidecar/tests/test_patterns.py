@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from pacomind.patterns.store import PatternStore
+from protagine.patterns.store import PatternStore
 
 
 @pytest.fixture
@@ -22,12 +22,12 @@ class TestPatternCreate:
     def test_create_basic(self, store):
         result = store.create_pattern(
             pattern_type="entity_cooccurrence",
-            description="User and PacoMind appear together",
-            pattern_key="cooc:User→PacoMind",
+            description="User and Protagine appear together",
+            pattern_key="cooc:User→Protagine",
             confidence=0.7,
         )
         assert result["pattern_type"] == "entity_cooccurrence"
-        assert result["description"] == "User and PacoMind appear together"
+        assert result["description"] == "User and Protagine appear together"
         assert result["frequency"] == 1
         assert result["confidence"] == 0.7
         assert result["id"]

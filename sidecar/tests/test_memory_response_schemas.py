@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 from jsonschema import Draft202012Validator, ValidationError
 import pytest
 
-from pacomind.beliefs import source_claims
-from pacomind.self_model import appraisals, judgments
+from protagine.beliefs import source_claims
+from protagine.self_model import appraisals, judgments
 from test_memory_formation import PROCEDURE, procedure
 
 

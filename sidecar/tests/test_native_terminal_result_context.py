@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from pacomind.turns.hermes_kanban import _completed_result
+from protagine.turns.hermes_kanban import _completed_result
 
 
 @pytest.fixture

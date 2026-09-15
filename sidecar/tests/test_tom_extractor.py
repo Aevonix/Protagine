@@ -3,7 +3,7 @@
 import pytest
 import json
 
-from pacomind.tom.extractor import (
+from protagine.tom.extractor import (
     TomExtractor,
     _parse_affect_json,
     _parse_fact_array,
@@ -186,7 +186,7 @@ class TestTomExtractor:
 
     async def test_affect_and_facts_run_same_contact_same_clock(self, monkeypatch):
         from datetime import datetime, timezone
-        import pacomind.tom.extractor as module
+        import protagine.tom.extractor as module
 
         class FixedClock(datetime):
             @classmethod

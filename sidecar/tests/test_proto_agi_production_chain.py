@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.api.authority import RequestAuthority
-from pacomind.cognition.drive_governance import (
+from protagine.api.authority import RequestAuthority
+from protagine.cognition.drive_governance import (
     CharterRevisionV1,
     DriveGovernance,
     DriveGovernanceStore,
@@ -17,30 +17,30 @@ from pacomind.cognition.drive_governance import (
     RankingBudgetV1,
     ScopeV1,
 )
-from pacomind.cognition.evidence_pipeline import (
+from protagine.cognition.evidence_pipeline import (
     CognitionEvidenceReducer,
     CognitionEvidenceStore,
 )
-from pacomind.cognition.external_events import (
+from protagine.cognition.external_events import (
     ExternalCognitionEventV1,
     ExternalEventInboxStore,
     ExternalEventIntake,
 )
-from pacomind.cognition.goal_spine import (
+from protagine.cognition.goal_spine import (
     CognitionSpine,
     CognitionSpineStore,
     ThoughtQueueAdapter,
 )
-from pacomind.cognition.runtime import CognitionRuntimeContractV1
-from pacomind.initiatives.approval_authority import ApprovalAuthorityStore
-from pacomind.projects import ProjectEngine, ProjectStore
-from pacomind.projects.event_outbox import ProjectEventProjector
-from pacomind.self_model.event_concerns import ExternalEventConcernReducer
-from pacomind.self_model.store import CompetenceStore, SelfModel
-from pacomind.self_model.workspace import ConcernStore
-from pacomind.server import _compose_p7_charter_admission
-from pacomind.task_queue.models import JobResult, JobStatus, JobType
-from pacomind.work_orders import QueueWorkOrderAdapter
+from protagine.cognition.runtime import CognitionRuntimeContractV1
+from protagine.initiatives.approval_authority import ApprovalAuthorityStore
+from protagine.projects import ProjectEngine, ProjectStore
+from protagine.projects.event_outbox import ProjectEventProjector
+from protagine.self_model.event_concerns import ExternalEventConcernReducer
+from protagine.self_model.store import CompetenceStore, SelfModel
+from protagine.self_model.workspace import ConcernStore
+from protagine.server import _compose_p7_charter_admission
+from protagine.task_queue.models import JobResult, JobStatus, JobType
+from protagine.work_orders import QueueWorkOrderAdapter
 
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
@@ -258,19 +258,19 @@ def _complete_work_order(job):
 async def test_owner_text_event_reaches_verified_learning_and_settlement(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("PACOMIND_EVENT_JOURNAL_DIR", str(tmp_path / "events"))
-    monkeypatch.setenv("PACOMIND_EVENT_JOURNAL_RETENTION", "500")
-    monkeypatch.setenv("PACOMIND_OWNER_PERSON_ID", "person-owner")
-    monkeypatch.setenv("PACOMIND_WORKSPACE", "live")
-    monkeypatch.setenv("PACOMIND_EVENT_CONCERNS", "live")
-    monkeypatch.setenv("PACOMIND_EXTERNAL_EVENT_CONCERNS", "live")
-    monkeypatch.setenv("PACOMIND_EVENT_CONCERNS_BOOTSTRAP", "replay")
-    monkeypatch.setenv("PACOMIND_COGNITION_SPINE", "live")
-    monkeypatch.setenv("PACOMIND_PROJECTS_MODE", "live")
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "live")
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE_BOOTSTRAP", "beginning")
-    import pacomind.projects.engine as project_engine_module
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_DIR", str(tmp_path / "events"))
+    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_RETENTION", "500")
+    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
+    monkeypatch.setenv("PROTAGINE_WORKSPACE", "live")
+    monkeypatch.setenv("PROTAGINE_EVENT_CONCERNS", "live")
+    monkeypatch.setenv("PROTAGINE_EXTERNAL_EVENT_CONCERNS", "live")
+    monkeypatch.setenv("PROTAGINE_EVENT_CONCERNS_BOOTSTRAP", "replay")
+    monkeypatch.setenv("PROTAGINE_COGNITION_SPINE", "live")
+    monkeypatch.setenv("PROTAGINE_PROJECTS_MODE", "live")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "live")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE_BOOTSTRAP", "beginning")
+    import protagine.projects.engine as project_engine_module
     monkeypatch.setattr(project_engine_module, "projects_review_secs", lambda: 0.0)
 
     governance, charter = _activate_owner_charter(tmp_path)

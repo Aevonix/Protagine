@@ -7,21 +7,21 @@ from urllib.parse import quote
 
 from .local_work import request
 
-PREFIX = 'pacomind-initiative:'
+PREFIX = 'protagine-initiative:'
 ROOT = '/v1/host/initiative-work'
 
 
 class NativeReviews:
     root = ROOT
     prefix = PREFIX
-    creator = 'pacomind-initiative'
+    creator = 'protagine-initiative'
 
     def __init__(self, client, owner, config=None):
         self.client, self.owner = client, owner
         self.config = config or {}
 
     def worker_profile(self, home):
-        if self.creator != 'pacomind-initiative':
+        if self.creator != 'protagine-initiative':
             return 'default'
         from .review_worker import refresh_profile
         return refresh_profile(self.config, home, self.owner)
@@ -44,7 +44,7 @@ class NativeReviews:
         if self.terminal(value):
             return self.on_terminal(identifier, value, kb, connect)
         home = kb.kanban_home().resolve()
-        expected_profile = 'pacomind-reviews'
+        expected_profile = 'protagine-reviews'
         if (value['execution'] != {'native_board': 'default', 'worker_profile': expected_profile,
                                    'source_home_id': hashlib.sha256(str(home).encode()).hexdigest()}
                 or kb.kanban_db_path(board='default').resolve() != home/'kanban.db'):
@@ -66,7 +66,7 @@ class NativeReviews:
                     if task.status == 'ready':
                         kb.block_task(db, task.id, reason='A bounded read-only review worker is required',
                                       kind='needs_input')
-                    if self.creator == 'pacomind-initiative' and kb.latest_run(db, task.id) is None:
+                    if self.creator == 'protagine-initiative' and kb.latest_run(db, task.id) is None:
                         raise ValueError('unrestricted_native_review_cannot_dispatch')
                     return request(self.client, self.path(identifier)+'/observe', {
                         'contact_id': self.owner, 'native_board': 'default',
@@ -139,10 +139,10 @@ class NativeReviews:
         # steward. Follow-ups keep their existing reconciliation contract.
         if kwargs.get('dry_run') or kwargs.get('board') != 'default' or os.environ.get('HERMES_KANBAN_TASK'):
             return
-        if self.creator == 'pacomind-followup' and self.config.get('enabled') is not True:
+        if self.creator == 'protagine-followup' and self.config.get('enabled') is not True:
             return
         query = '?contact_id='+quote(self.owner, safe='')
-        if self.creator == 'pacomind-initiative' and self.config.get('enabled') is True:
+        if self.creator == 'protagine-initiative' and self.config.get('enabled') is True:
             query += '&discover=true'
         result = request(self.client, self.root+query)
         for item in result['items']:
@@ -157,8 +157,8 @@ class NativeFollowups(NativeReviews):
     sends under task-scoped authority. This adapter never retries a send.
     """
     root = '/v1/host/temporal-followups'
-    prefix = 'pacomind-followup:'
-    creator = 'pacomind-followup'
+    prefix = 'protagine-followup:'
+    creator = 'protagine-followup'
 
     def worker_profile(self, home):
         from .review_worker import refresh_profile
@@ -172,7 +172,7 @@ class NativeFollowups(NativeReviews):
         if value.get('native_terminal_observed'):
             return value
         home = kb.kanban_home().resolve()
-        if (value['execution'] != {'native_board': 'default', 'worker_profile': 'pacomind-reviews',
+        if (value['execution'] != {'native_board': 'default', 'worker_profile': 'protagine-reviews',
                                    'source_home_id': hashlib.sha256(str(home).encode()).hexdigest()}
                 or kb.kanban_db_path(board='default').resolve() != home/'kanban.db'):
             raise ValueError('selected_native_followup_home_required')

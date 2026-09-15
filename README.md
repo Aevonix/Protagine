@@ -1,23 +1,25 @@
-# PacoMind
+# Protagine
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/branding/pacomind-primary-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/branding/pacomind-primary-light.svg">
-  <img alt="PacoMind" src="docs/branding/pacomind-primary-light.svg" width="440">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/branding/protagine-primary-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/branding/protagine-primary-light.svg">
+  <img alt="Protagine" src="docs/branding/protagine-primary-light.svg" width="440">
 </picture>
 
-**PACO: Persistent Autonomous Cognitive Orchestration**
+**A Proto-AGI engine for persistent agents.**
+
+[protagine.ai](https://protagine.ai)
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/Aevonix/PacoMind/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/PacoMind/actions/workflows/ci.yml)
+[![CI](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml)
 
-PacoMind is an effort to achieve **Proto-AGI** through persistent memory,
+Protagine is an effort to achieve **Proto-AGI** through persistent memory,
 an evolving identity, autonomous initiative and internal deliberation. It connects
 to [Hermes](https://github.com/NousResearch/hermes-agent) so an agent can carry
 knowledge and unfinished work across conversations, channels and model changes.
 
 Hermes provides the runtime: conversations, tools, channels and workers.
-PacoMind supplies the shared memory and state that let those activities contribute
+Protagine supplies the shared memory and state that let those activities contribute
 to one continuing agent. Each deployment creates its own private identity and
 chooses its models, channels and devices.
 
@@ -36,7 +38,7 @@ conclusions into plans, memories or proposed actions. Those processes need to
 produce observable value; running another model call is not evidence of progress.
 
 General intelligence is the ambition, not an achieved capability. The underlying
-models still determine much of the agent's reasoning ability. PacoMind aims to
+models still determine much of the agent's reasoning ability. Protagine aims to
 make learning and continuity survive changes to those models.
 
 ## How it works
@@ -50,7 +52,7 @@ make learning and continuity survive changes to those models.
 | Background deliberation | Reviews the agent's situation and proposes work through the existing initiative path. Its operating mode and cadence belong to the deployment. |
 | Learning | Uses ordinary experience to improve remembered knowledge and preferences. Skill proposals, evaluation and rollback provide a path toward broader improvements. Reliable autonomous self-improvement remains a development goal. |
 
-![Conversations and devices connect to Hermes. Hermes and PacoMind exchange information through plugins, a memory provider and request hooks. Both use models selected by role. PacoMind maintains private memory, identity and shared work.](docs/architecture.svg)
+![Conversations and devices connect to Hermes. Hermes and Protagine exchange information through plugins, a memory provider and request hooks. Both use models selected by role. Protagine maintains private memory, identity and shared work.](docs/architecture.svg)
 
 **Memory belongs to the agent, independently of the model.** SQLite holds
 canonical source records in the minimum installation. Optional Lance indexes
@@ -112,10 +114,10 @@ or an embedding model.
 Install the current published release:
 
 ```bash
-python3.12 -m venv "$HOME/.local/share/pacomind/venv"
-source "$HOME/.local/share/pacomind/venv/bin/activate"
-python -m pip install "pacomind-hermes[native-memory]" "pacomind[hermes]"
-pacomind init --hermes-python /path/to/hermes/.venv/bin/python
+python3.12 -m venv "$HOME/.local/share/protagine/venv"
+source "$HOME/.local/share/protagine/venv/bin/activate"
+python -m pip install "protagine-hermes[native-memory]" "protagine[hermes]"
+protagine init --hermes-python /path/to/hermes/.venv/bin/python
 ```
 
 The wizard selects a Hermes profile and asks for identity, owner, model and
@@ -124,8 +126,8 @@ replacing an existing memory provider is an explicit choice. Accept its startup
 option, or use your instance path:
 
 ```bash
-pacomind --instance /path/to/private/pacomind start --detach
-pacomind --instance /path/to/private/pacomind status
+protagine --instance /path/to/private/protagine start --detach
+protagine --instance /path/to/private/protagine status
 ```
 
 Start a fresh Hermes session, provide a harmless fact and ask for it in another
@@ -138,7 +140,7 @@ Setup does not patch Hermes core or restart a running gateway. The
 [setup guide](docs/LOCAL-HERMES-SETUP.md) covers services, profile attachment,
 tasks and adapter updates.
 
-PacoMind includes **Deep Research** and **Skill Creator** skills. Hermes lists
+Protagine includes **Deep Research** and **Skill Creator** skills. Hermes lists
 their short descriptions and loads the instructions when needed. They use the
 tools and models configured for that deployment.
 
@@ -192,7 +194,7 @@ over successive cycles. Model fine-tuning is an optional later path.
 ```bash
 python -m pip install -e './sidecar[dev]'
 cd sidecar
-python -m pytest -q tests pacomind
+python -m pytest -q tests protagine
 ```
 
 `tests/hermes_adapter` checks built packages against the pinned Hermes runtime.
@@ -202,11 +204,9 @@ credentials and deployment configuration out of public commits and examples.
 
 ## Branding
 
-PacoMind is a project from [Aevonix Research](https://aevonix.com).
-The [PacoMind logo kit](https://aevonix.com/brand/current/pacomind-logos.zip)
-includes SVG, PDF and PNG artwork. See the
-[brand guide](https://aevonix.com/branding) for colors, spacing and usage,
-or the [repository asset notes](docs/branding/README.md) for the files used here.
+Protagine is a project from [Aevonix Research](https://aevonix.com).
+See the [repository asset notes](docs/branding/README.md) for the Protagine
+wordmarks and icon used here.
 
 ## License
 

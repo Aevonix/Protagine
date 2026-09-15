@@ -7,8 +7,8 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from pacomind.telemetry import TelemetryStore
-from pacomind.initiatives.store import InitiativeStore
+from protagine.telemetry import TelemetryStore
+from protagine.initiatives.store import InitiativeStore
 
 
 class TestAgentSnapshot:
@@ -17,15 +17,15 @@ class TestAgentSnapshot:
     @pytest.fixture
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         """Create a test client with telemetry and initiative stores injected."""
-        from pacomind.api.routers import host as host_mod
-        from pacomind.api.routers.host import (
+        from protagine.api.routers import host as host_mod
+        from protagine.api.routers.host import (
             set_telemetry,
             set_initiative_store,
             set_autonomy_loop,
         )
-        from pacomind.server import create_app
+        from protagine.server import create_app
 
-        monkeypatch.setenv("PACOMIND_API_KEY", "test-api-key")
+        monkeypatch.setenv("PROTAGINE_API_KEY", "test-api-key")
 
         # Save module globals — leaking a Mock autonomy loop poisons
         # other test modules (e.g. test_sidecar's not-wired tests).
@@ -78,8 +78,8 @@ class TestAgentSnapshot:
 
     def test_agent_snapshot_with_initiatives(self, client: TestClient, tmp_path: Path):
         """Snapshot reflects pending and failed initiatives."""
-        from pacomind.api.routers.host import set_initiative_store
-        from pacomind.initiatives.store import InitiativeStore
+        from protagine.api.routers.host import set_initiative_store
+        from protagine.initiatives.store import InitiativeStore
 
         store = InitiativeStore(state_dir=tmp_path)
         set_initiative_store(store)
@@ -114,8 +114,8 @@ class TestAgentSnapshot:
 
     def test_agent_snapshot_stale_tick(self, client: TestClient):
         """Flag stale_autonomy_loop when last tick is old."""
-        from pacomind.api.routers.host import set_telemetry
-        from pacomind.telemetry import TelemetryStore
+        from protagine.api.routers.host import set_telemetry
+        from protagine.telemetry import TelemetryStore
 
         telemetry = TelemetryStore()
         telemetry.last_tick_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -131,8 +131,8 @@ class TestAgentSnapshot:
 
     def test_agent_snapshot_long_initiative_silence(self, client: TestClient):
         """Flag long_initiative_silence when no initiatives for 4+ hours."""
-        from pacomind.api.routers.host import set_telemetry
-        from pacomind.telemetry import TelemetryStore
+        from protagine.api.routers.host import set_telemetry
+        from protagine.telemetry import TelemetryStore
 
         telemetry = TelemetryStore()
         telemetry.last_initiative_at = datetime(2020, 1, 1, tzinfo=timezone.utc)

@@ -7,12 +7,12 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-import pacomind.api.routers.host as host_mod
-from pacomind.self_model.benchmark import BenchmarkStore, SelfhoodBenchmark
-from pacomind.self_model.experiments import (
+import protagine.api.routers.host as host_mod
+from protagine.self_model.benchmark import BenchmarkStore, SelfhoodBenchmark
+from protagine.self_model.experiments import (
     ExperimentEngine, ExperimentStore,
 )
-from pacomind.self_model.params import AdaptiveParamStore
+from protagine.self_model.params import AdaptiveParamStore
 
 
 def make_engine(tmp_path, *, rollups=None):

@@ -5,9 +5,9 @@ import json
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns import TurnIdempotencyLedger
 from test_scoped_api_authority import _principal, _write_keyring
 from test_source_claim_projection import Model, claim
 from test_turn_source_evidence import source_app
@@ -86,7 +86,7 @@ async def test_deadline_never_revives_missing_or_unavailable_binding(deadline_ap
             source_id=ref['source_id'], source_version=ref['source_version'], excerpt='Birch workshop',
             correction='This workshop was cancelled; do not act on the date.', author_principal='operator')
     elif mutation == 'attribution':
-        from pacomind.turns.source_attribution import correct
+        from protagine.turns.source_attribution import correct
         # The public attribution operation invalidates retained derived claims.
         correct(ledger, operation_id='participant-correction', performed_by='operator',
             source_ids=['corrected'], old_contact_id='contact-a', contact_id='contact-b',
@@ -297,7 +297,7 @@ async def test_relative_deadline_never_hides_history_or_borrows_another_event(de
     ('9:30am Monday', None, 'UTC', None),
 ])
 def test_deadline_clock_forms_keep_absolute_relative_and_dst_precision(expression, occurred, zone, expected):
-    from pacomind.beliefs.source_time import source_deadline_time, source_event_time
+    from protagine.beliefs.source_time import source_deadline_time, source_event_time
     result = source_deadline_time(expression, observed_at=occurred, timezone_name=zone,
                                   evidence='My appointment is '+expression+'.')
     if expected:
@@ -311,15 +311,15 @@ def test_deadline_clock_forms_keep_absolute_relative_and_dst_precision(expressio
 
 @pytest.mark.asyncio
 async def test_deadline_clock_frame_reuses_contact_and_agent_settings_with_explicit_override(source_app, tmp_path, monkeypatch):
-    from pacomind.api.routers import host
-    from pacomind.contacts.config import ContactsConfig
-    from pacomind.contacts.store import SQLiteContactStore
+    from protagine.api.routers import host
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
     store = SQLiteContactStore(config=ContactsConfig(sqlite_path=':memory:'))
     await store.connect()
     try:
         contact = await store.create(display_name='Appointment owner', trust_tier='trusted')
         monkeypatch.setattr(host, '_contacts_store', store)
-        monkeypatch.setenv('PACOMIND_AGENT_TIMEZONE', 'America/New_York')
+        monkeypatch.setenv('PROTAGINE_AGENT_TIMEZONE', 'America/New_York')
         keys = tmp_path/'clock-frame-keyring.json'
         _write_keyring(keys, [_principal(principal='clock-reader', secret='read',
             viewer=contact.contact_id, scopes=['memory:read'])])

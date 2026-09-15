@@ -3,9 +3,9 @@
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host
-from pacomind.world_model.config import WorldModelConfig
-from pacomind.world_model.store import WorldModelStore
+from protagine.api.routers import host
+from protagine.world_model.config import WorldModelConfig
+from protagine.world_model.store import WorldModelStore
 
 
 async def test_world_http_entities_and_relationships_survive_reopen(tmp_path, monkeypatch):

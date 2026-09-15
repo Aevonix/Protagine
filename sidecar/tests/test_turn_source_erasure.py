@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response, Request
 import pytest
-from pacomind.api.routers import host
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.idempotency import SourceErased
+from protagine.api.routers import host
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.idempotency import SourceErased
 from test_hermes_turn_outbox import _load_client, _create_database, _CURRENT_SCHEMA, _PENDING_INDEX, _APPLICATION_ID
 
 @pytest.fixture
 def ledger(tmp_path, monkeypatch):
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     return TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
 
 def source(ledger, turn_id="turn-a", *, contact="contact-a", session="session-a", messages=None):
@@ -94,7 +94,7 @@ def test_disconnected_replay_holds_then_reconciles_before_put(ledger, tmp_path, 
     outbox = module.TurnOutbox(tmp_path / "host.sqlite3")
     messages = source(ledger)
     outbox.enqueue("turn-a", queued("turn-a", messages))
-    client = module.PacoMindClient()
+    client = module.ProtagineClient()
     writes = []
     monkeypatch.setattr(client, "get", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
     monkeypatch.setattr(client, "put", lambda *a, **k: writes.append(k))
@@ -137,8 +137,8 @@ async def test_api_erases_before_graph_cleanup_and_blocks_replay(ledger, monkeyp
 
 @pytest.mark.asyncio
 async def test_graph_lineage_and_late_projection_guard(ledger):
-    from pacomind.intelligence.graph.client import PacoMindGraph
-    graph = object.__new__(PacoMindGraph)
+    from protagine.intelligence.graph.client import ProtagineGraph
+    graph = object.__new__(ProtagineGraph)
     graph.store_memory = AsyncMock(return_value="memory-a")
     source(ledger)
     await graph.record_turn("session-a", "contact-a", [], [], [], "A meaningful hydrofoil summary.", turn_id="turn-a")
@@ -148,16 +148,16 @@ async def test_graph_lineage_and_late_projection_guard(ledger):
     await graph.record_turn("session-a", "contact-a", [], [], [], "A late summary.", turn_id="turn-a")
     assert graph.store_memory.await_count == 1
     assert await graph._filter_erased_source_memories([{"source_uri": "turn:turn-a"}, {"source_uri": "file:unrelated"}]) == [{"source_uri": "file:unrelated"}]
-    assert await PacoMindGraph.store_memory(graph, "late", "episodic", [], source_uri="turn:turn-a") == ""
+    assert await ProtagineGraph.store_memory(graph, "late", "episodic", [], source_uri="turn:turn-a") == ""
 
 @pytest.mark.asyncio
 async def test_authenticated_contact_cannot_select_another_person(ledger, monkeypatch):
-    from pacomind.api.authority import RequestAuthority
+    from protagine.api.authority import RequestAuthority
     source(ledger, contact="contact-b")
     app = FastAPI()
     @app.middleware("http")
     async def principal(request, call_next):
-        request.state.pacomind_authority = RequestAuthority(
+        request.state.protagine_authority = RequestAuthority(
             principal_id="host-a", credential_id="key-a", scopes=frozenset({"memory:write", "turns:write"}),
             viewer_person_id="contact-a", person_ids=frozenset({"contact-a"}),
             audiences=frozenset({"viewer"}), authenticated=True,
@@ -182,16 +182,16 @@ def test_repeat_erase_retains_derived_cleanup_targets(ledger):
 @pytest.mark.asyncio
 async def test_mcp_forget_tool_reaches_the_real_erasure_api(ledger, monkeypatch):
     pytest.importorskip("mcp")
-    from pacomind.mcp.server import create_server
+    from protagine.mcp.server import create_server
     import httpx
     source(ledger)
     monkeypatch.setattr(host, "_graph", None)
-    monkeypatch.setenv("PACOMIND_MCP_SOURCE", "test-host")
+    monkeypatch.setenv("PROTAGINE_MCP_SOURCE", "test-host")
     app = FastAPI()
     app.include_router(host.router)
     original_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original_client(transport=ASGITransport(app=app), base_url="http://test", **kw))
     server = create_server()
-    result = await server._tool_manager._tools["pacomind_forget_sources"].fn(source_ids=["turn-a"], contact_id="contact-a")
+    result = await server._tool_manager._tools["protagine_forget_sources"].fn(source_ids=["turn-a"], contact_id="contact-a")
     assert result["source_erased"] is True
     assert ledger.is_source_erased("turn-a", "contact-a")

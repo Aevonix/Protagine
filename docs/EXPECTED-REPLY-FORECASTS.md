@@ -12,7 +12,7 @@ Latency alone is not evidence of motivation, disrespect or frustration.
 
 ## Admission and observation
 
-The existing `PACOMIND_EXPECTATIONS` switch and configured owner identity apply.
+The existing `PROTAGINE_EXPECTATIONS` switch and configured owner identity apply.
 A trusted outgoing transport callback can freeze a forecast when the wait's
 owner task and source versions are current, the actual dispatch acknowledgment
 is bound, and the horizon is still ahead. The first method requires WhatsApp and

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.autonomy.loop import AutonomyLoop
+from protagine.autonomy.loop import AutonomyLoop
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_terminal_reconciliation_has_its_own_wall_budget(monkeypatch):
             started.set()
             await never.wait()
 
-    monkeypatch.setenv("PACOMIND_PROJECT_RECONCILIATION_BUDGET_SECS", "0.05")
+    monkeypatch.setenv("PROTAGINE_PROJECT_RECONCILIATION_BUDGET_SECS", "0.05")
     loop = AutonomyLoop(SimpleNamespace(project_engine=Engine()))
 
     await asyncio.wait_for(

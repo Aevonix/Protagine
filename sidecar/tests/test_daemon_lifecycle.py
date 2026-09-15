@@ -22,12 +22,12 @@ def test_detached_sidecar_releases_terminal_before_product_stop(tmp_path):
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG') if key in os.environ}
     env.update(
         PYTHONPATH=str(source), PYTHONDONTWRITEBYTECODE='1',
-        PACOMIND_STATE_DIR=str(state), PACOMIND_INSTALL_PROFILE='local',
-        PACOMIND_SKIP_DOTENV='1', PACOMIND_API_KEY='isolated-lifecycle-test',
-        PACOMIND_CLIENT_API_KEY='isolated-lifecycle-test',
-        PACOMIND_GRAPH_ENABLED='false', PACOMIND_EMBED_PROVIDER='skip',
-        PACOMIND_SOURCE_CLAIMS='off', PACOMIND_AUTONOMY_PRESET='passive',
-        PACOMIND_EMBEDDED_WORKER_ENABLED='false',
+        PROTAGINE_STATE_DIR=str(state), PROTAGINE_INSTALL_PROFILE='local',
+        PROTAGINE_SKIP_DOTENV='1', PROTAGINE_API_KEY='isolated-lifecycle-test',
+        PROTAGINE_CLIENT_API_KEY='isolated-lifecycle-test',
+        PROTAGINE_GRAPH_ENABLED='false', PROTAGINE_EMBED_PROVIDER='skip',
+        PROTAGINE_SOURCE_CLAIMS='off', PROTAGINE_AUTONOMY_PRESET='passive',
+        PROTAGINE_EMBEDDED_WORKER_ENABLED='false',
         LITELLM_LOCAL_MODEL_COST_MAP='True', DO_NOT_TRACK='1',
     )
     with socket.socket() as listener:
@@ -35,7 +35,7 @@ def test_detached_sidecar_releases_terminal_before_product_stop(tmp_path):
         port = listener.getsockname()[1]
     master, slave = pty.openpty()
     launcher = subprocess.Popen(
-        [sys.executable, '-c', 'from pacomind import cli; '
+        [sys.executable, '-c', 'from protagine import cli; '
          f'cli._cmd_start_daemon("127.0.0.1", {port}, False)'],
         cwd=tmp_path, env=env, stdin=slave, stdout=slave, stderr=slave,
     )
@@ -70,7 +70,7 @@ def test_detached_sidecar_releases_terminal_before_product_stop(tmp_path):
             launcher.wait(timeout=5)
         # Exercise the same recorded-process shutdown used by the CLI.
         stopped = subprocess.run(
-            [sys.executable, '-c', 'from pacomind import cli; cli._cmd_stop()'],
+            [sys.executable, '-c', 'from protagine import cli; cli._cmd_stop()'],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=15,
         )
         os.close(master)

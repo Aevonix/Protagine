@@ -6,10 +6,10 @@ import json
 import aiohttp
 import pytest
 
-from pacomind.briefings.delivery import WhatsAppBriefingGateway
-from pacomind.briefings.models import Briefing
-from pacomind.delivery.bridge import ProactiveDeliveryBridge, _GatewayOutcomeStore
-from pacomind.delivery.rate_limiter import DeliveryRateLimiter
+from protagine.briefings.delivery import WhatsAppBriefingGateway
+from protagine.briefings.models import Briefing
+from protagine.delivery.bridge import ProactiveDeliveryBridge, _GatewayOutcomeStore
+from protagine.delivery.rate_limiter import DeliveryRateLimiter
 
 
 class _Response:
@@ -124,7 +124,7 @@ def test_governed_gateway_requires_exact_non_delivery_admission(monkeypatch, tmp
     document = _boundary_document(
         delivery_id,
         "awaiting_approval",
-        intent_id="pacomind-intent:" + "c" * 64,
+        intent_id="protagine-intent:" + "c" * 64,
         provider_delivered=False,
     )
     captured = []
@@ -207,7 +207,7 @@ def test_governed_gateway_rejects_inconsistent_exact_outcome(monkeypatch, tmp_pa
     document = _boundary_document(
         delivery_id,
         "awaiting_approval",
-        intent_id="pacomind-intent:" + "e" * 64,
+        intent_id="protagine-intent:" + "e" * 64,
         provider_delivered=True,
     )
     captured = []
@@ -249,7 +249,7 @@ def test_governed_gateway_lifecycle_is_durable_and_does_not_resubmit(
     monkeypatch, tmp_path,
 ):
     delivery_id = "initiative:" + "f" * 64
-    intent_id = "pacomind-intent:" + "1" * 64
+    intent_id = "protagine-intent:" + "1" * 64
     clock = _Clock()
     captured = []
     factory = _SessionFactory(
@@ -345,7 +345,7 @@ def test_governed_gateway_lifecycle_is_durable_and_does_not_resubmit(
 
 def test_governed_gateway_terminal_failure_converges_once(monkeypatch, tmp_path):
     delivery_id = "initiative:" + "2" * 64
-    intent_id = "pacomind-intent:" + "3" * 64
+    intent_id = "protagine-intent:" + "3" * 64
     clock = _Clock()
     captured = []
     monkeypatch.setattr(
@@ -414,7 +414,7 @@ def test_governed_gateway_rejects_stable_id_reuse_for_different_bytes(
     monkeypatch, tmp_path,
 ):
     delivery_id = "initiative:" + "4" * 64
-    intent_id = "pacomind-intent:" + "5" * 64
+    intent_id = "protagine-intent:" + "5" * 64
     captured = []
     monkeypatch.setattr(
         aiohttp,
@@ -462,7 +462,7 @@ def test_gateway_outcome_store_rejects_intent_change_and_state_regression(tmp_pa
         tmp_path / "outcomes.db", clock=clock, poll_seconds=5
     )
     delivery_id = "initiative:" + "6" * 64
-    intent_id = "pacomind-intent:" + "7" * 64
+    intent_id = "protagine-intent:" + "7" * 64
     store.reserve(delivery_id, "8" * 64)
     observed, changed = store.observe(
         delivery_id,
@@ -477,7 +477,7 @@ def test_gateway_outcome_store_rejects_intent_change_and_state_regression(tmp_pa
         store.observe(
             delivery_id,
             state="accepted",
-            intent_id="pacomind-intent:" + "9" * 64,
+            intent_id="protagine-intent:" + "9" * 64,
             provider_delivered=False,
         )
     store.observe(

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from pacomind.turns import documents
-from pacomind.turns.source_read import read
+from protagine.turns import documents
+from protagine.turns.source_read import read
 from test_source_documents import pdf_bytes
 from test_source_document_read import original, opened
 

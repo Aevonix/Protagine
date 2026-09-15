@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="120" viewBox="0 0 500 120" role="img" aria-labelledby="title desc">
+  <title id="title">Protagine</title>
+  <desc id="desc">Protagine primary logo. Dark variant with a transparent background, the existing stepped P mark and a text wordmark.</desc>
+  <path fill="#f3e5cd" fill-rule="evenodd" transform="translate(2.4818 20.146) scale(0.6131)" d="M9 112V28Q9 8 29 8H57V27H36Q28 27 28 35V112ZM111 53V67Q111 87 91 87H48V68H84Q92 68 92 60V53H111ZM64 8H91Q111 8 111 28V46H92V35Q92 27 84 27H64ZM48 41H78V54H48Z" />
+  <path fill="#a9d5ce" fill-rule="evenodd" transform="translate(2.4818 20.146) scale(0.6131)" d="M119 28H128V46H119V28ZM119 53H128V67Q128 104 91 104H48V95H91Q119 95 119 67V53Z" />
+  <path fill="#eeb07e" fill-rule="evenodd" transform="translate(2.4818 20.146) scale(0.6131)" d="M137 62H146V67Q146 122 91 122H78V113H91Q137 113 137 67V62Z" />
+  <text x="121" y="82" fill="#f3e5cd" font-family="DejaVu Sans, Arial, sans-serif" font-size="64" font-weight="700">Protagine</text>
+</svg>

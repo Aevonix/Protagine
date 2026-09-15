@@ -264,8 +264,8 @@ def selected_pairs(evidence, native_home, owner):
 
 def diagnostic_context(evidence, native_home, config, *, memory=None, connection=None):
     from agent.redact import redact_sensitive_text
-    from pacomind_hermes.client import PacoMindClient, TurnOutbox, turn_outbox_path
-    from pacomind_hermes.native_history import reconcile
+    from protagine_hermes.client import ProtagineClient, TurnOutbox, turn_outbox_path
+    from protagine_hermes.native_history import reconcile
     from hermes_state import _default_db_path
 
     if _default_db_path().resolve() != (native_home/'state.db').resolve():
@@ -281,13 +281,13 @@ def diagnostic_context(evidence, native_home, config, *, memory=None, connection
         lineage.append(source)
         return True
     if memory is None:
-        memory = SimpleNamespace(client=connection or PacoMindClient(url=config.get('url'), api_key=config.get('api_key')),
+        memory = SimpleNamespace(client=connection or ProtagineClient(url=config.get('url'), api_key=config.get('api_key')),
             outbox=TurnOutbox(turn_outbox_path(config)), register_source_read=retain_lineage)
     scope = SimpleNamespace(contact_id=owner, session_id=pairs[0]['session_id'])
     checked = json.loads(reconcile({}, json.dumps(payload), scope,
         {'tool_call_id': 'ordinary-review:'+evidence['failure_sha256']}, memory))
     messages = checked.get('messages', [])
-    if (checked.get('success') is not True or not checked.get('pacomind_native_history_read_v1')
+    if (checked.get('success') is not True or not checked.get('protagine_native_history_read_v1')
             or {row['id'] for row in messages} != {pair['native_message_id'] for pair in pairs}):
         raise ValueError('Current source erasure state excludes the original failure context')
     for pair in pairs:

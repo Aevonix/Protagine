@@ -23,12 +23,12 @@ from .task_model_roles import (
 )
 
 
-PLATFORM = 'pacomind_task'
-TASK_ROLE_METADATA = 'pacomind_task_model_role'
-TASK_IMAGE_RECEIPTS_METADATA = 'pacomind_task_request_image_receipts'
-ACTIVE = ContextVar('pacomind_native_task_handler', default=None)
-CONTROL = ContextVar('pacomind_native_task_control', default=None)
-CONTROL_UPDATE = ContextVar('pacomind_native_task_control_update', default=None)
+PLATFORM = 'protagine_task'
+TASK_ROLE_METADATA = 'protagine_task_model_role'
+TASK_IMAGE_RECEIPTS_METADATA = 'protagine_task_request_image_receipts'
+ACTIVE = ContextVar('protagine_native_task_handler', default=None)
+CONTROL = ContextVar('protagine_native_task_control', default=None)
+CONTROL_UPDATE = ContextVar('protagine_native_task_control_update', default=None)
 TASK_DELIVERY_CONTEXT = (
     'This is an accepted background task. Keep the original requested scope and '
     'return a concise result, retaining material uncertainty, failures and required '
@@ -467,7 +467,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 user_id=resolved['contact_id'], message_id='resume:' + expected_turn_id)
             event = MessageEvent(text='', source=source, message_type=MessageType.TEXT,
                 internal=True, allow_gateway_control=False,
-                metadata={'pacomind_task_resume_expected_turn_id': expected_turn_id})
+                metadata={'protagine_task_resume_expected_turn_id': expected_turn_id})
             key = self._event_session_key(event)
             store = getattr(self, '_session_store', None)
             entry = await asyncio.to_thread(store.lookup_by_session_key, key) if store is not None else None
@@ -670,7 +670,7 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 owned = await asyncio.to_thread(self.handoffs.control, event.source.chat_id)
                 if event.source.user_id != owned['source']['contact_id'] or event.source.platform != self.platform:
                     raise self._error('Native task participant does not match its owner')
-                expected_resume = (event.metadata or {}).get('pacomind_task_resume_expected_turn_id')
+                expected_resume = (event.metadata or {}).get('protagine_task_resume_expected_turn_id')
                 if expected_resume is not None and expected_resume != owned['native_turn_id']:
                     return None  # Another admitted turn won before this queued resume entered.
                 if (CONTROL.get() == owned['id'] and event.allow_gateway_control

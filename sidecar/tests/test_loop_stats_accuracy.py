@@ -5,10 +5,10 @@ task-queue manager, not the memory consolidator.
 
 from __future__ import annotations
 
-from pacomind.autonomy.loop import AutonomyLoop, LoopStats
-from pacomind.autonomy.registry import SubsystemRegistry
-from pacomind.events.bus import EventBus
-from pacomind.events.types import Event
+from protagine.autonomy.loop import AutonomyLoop, LoopStats
+from protagine.autonomy.registry import SubsystemRegistry
+from protagine.events.bus import EventBus
+from protagine.events.types import Event
 
 
 def _bare_loop(bus):
@@ -28,7 +28,7 @@ async def test_events_counted_once_across_ticks():
     await loop._phase_events()
     assert loop.stats.events_processed == 3
 
-    # No new events: an idle pacomind must not keep inflating the counter.
+    # No new events: an idle protagine must not keep inflating the counter.
     await loop._phase_events()
     assert loop.stats.events_processed == 3
 
@@ -68,8 +68,8 @@ async def test_tick_liveness_stamp_requires_a_completed_tick(monkeypatch):
     """last_tick_at is stamped at the END of _tick: a tick that dies in a
     phase (or is cancelled on budget) must not report fresh liveness."""
     import pytest
-    import pacomind.api.routers.host as host_mod
-    from pacomind.telemetry import TelemetryStore
+    import protagine.api.routers.host as host_mod
+    from protagine.telemetry import TelemetryStore
 
     telemetry = TelemetryStore()
     monkeypatch.setattr(host_mod, "_telemetry", telemetry)
@@ -98,7 +98,7 @@ async def test_tick_liveness_stamp_requires_a_completed_tick(monkeypatch):
 
 
 def test_registry_queue_is_task_queue(monkeypatch):
-    import pacomind.api.routers.host as host_mod
+    import protagine.api.routers.host as host_mod
 
     sentinel_queue = object()
     sentinel_consolidator = object()

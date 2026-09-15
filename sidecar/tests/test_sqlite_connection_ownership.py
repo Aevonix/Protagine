@@ -2,9 +2,9 @@
 
 import sqlite3
 
-from pacomind.autonomy.scheduler import ScheduleStore
-from pacomind.delivery.rate_limiter import DeliveryRateLimiter
-from pacomind.intelligence.synthesis.insight_store import InsightStore
+from protagine.autonomy.scheduler import ScheduleStore
+from protagine.delivery.rate_limiter import DeliveryRateLimiter
+from protagine.intelligence.synthesis.insight_store import InsightStore
 
 
 def _track_connections(monkeypatch, module):
@@ -29,7 +29,7 @@ def _track_connections(monkeypatch, module):
 
 
 def test_insight_store_closes_transient_connections(tmp_path, monkeypatch):
-    import pacomind.intelligence.synthesis.insight_store as module
+    import protagine.intelligence.synthesis.insight_store as module
 
     opened = _track_connections(monkeypatch, module)
     store = InsightStore(tmp_path / "insights.db")
@@ -39,7 +39,7 @@ def test_insight_store_closes_transient_connections(tmp_path, monkeypatch):
 
 
 def test_schedule_store_closes_transient_connections(tmp_path, monkeypatch):
-    import pacomind.autonomy.scheduler as module
+    import protagine.autonomy.scheduler as module
 
     opened = _track_connections(monkeypatch, module)
     ScheduleStore(str(tmp_path / "schedules.db"))
@@ -48,7 +48,7 @@ def test_schedule_store_closes_transient_connections(tmp_path, monkeypatch):
 
 
 def test_delivery_limiter_closes_transient_connections(tmp_path, monkeypatch):
-    import pacomind.delivery.rate_limiter as module
+    import protagine.delivery.rate_limiter as module
 
     opened = _track_connections(monkeypatch, module)
     limiter = DeliveryRateLimiter(

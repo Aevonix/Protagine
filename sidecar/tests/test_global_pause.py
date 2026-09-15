@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pacomind.directives import Action, DirectiveManager, DirectiveStore
-from pacomind.directives.extractor import extract_directives
-from pacomind.directives.models import GLOBAL_PAUSE_TERM
+from protagine.directives import Action, DirectiveManager, DirectiveStore
+from protagine.directives.extractor import extract_directives
+from protagine.directives.models import GLOBAL_PAUSE_TERM
 
 
 def _mgr():

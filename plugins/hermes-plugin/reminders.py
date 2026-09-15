@@ -13,10 +13,10 @@ from pathlib import Path
 import re
 
 logger = logging.getLogger(__name__)
-KIND = 'pacomind-source-reminder-v1'
+KIND = 'protagine-source-reminder-v1'
 ENDPOINT = '/v1/host/memory/sources/deadline'
 SCHEMA = {
-    'name': 'pacomind_reminder',
+    'name': 'protagine_reminder',
     'description': 'Remind the owner about a recalled deadline. Schedule uses the exact supplied source revision and claim ID; later explicit corrections move the reminder and forgotten evidence cancels it. lead_seconds schedules before the deadline. Uses this conversation for delivery; CLI output is local. Inspect or cancel by the returned native job_id. Use native cronjob_manage for schedules unrelated to memory.',
     'parameters': {'type': 'object', 'properties': {
         'operation': {'type': 'string', 'enum': ['schedule', 'inspect', 'cancel']},
@@ -41,7 +41,7 @@ def instant(value):
 def sibling(name):
     import importlib.util
     import sys
-    key = '_pacomind_reminder_' + name
+    key = '_protagine_reminder_' + name
     if key not in sys.modules:
         spec = importlib.util.spec_from_file_location(key, Path(__file__).with_name(name + '.py'))
         module = importlib.util.module_from_spec(spec)
@@ -70,7 +70,7 @@ class NativeReminders:
     def _bindings(self):
         from cron.jobs import list_jobs
         for job in list_jobs(include_disabled=True):
-            if not str(job.get('script', '')).startswith('pacomind-reminder-'):
+            if not str(job.get('script', '')).startswith('protagine-reminder-'):
                 continue
             try:
                 binding = json.loads(job['prompt'])
@@ -86,7 +86,7 @@ class NativeReminders:
     def _script_name(binding_id):
         if not re.fullmatch('[0-9a-f]{64}', binding_id):
             raise ValueError('Invalid reminder identity')
-        return 'pacomind-reminder-' + binding_id + '.py'
+        return 'protagine-reminder-' + binding_id + '.py'
 
     def _launcher(self, binding_id):
         script = self.home/'scripts'/self._script_name(binding_id)
@@ -218,13 +218,13 @@ class NativeReminders:
         with jobs.use_cron_store(self.home):
             for job, binding in list(self._bindings()):
                 # User pauses and completed delivered occurrences stay closed.
-                if job.get('state') == 'paused' or (job.get('pacomind_rendered_claim_id') and not self._script_failed(job)):
+                if job.get('state') == 'paused' or (job.get('protagine_rendered_claim_id') and not self._script_failed(job)):
                     continue
                 try:
                     current = self._current(binding)
                     with jobs._jobs_lock():
                         fresh = jobs.get_job(job['id'])
-                        if not fresh or fresh.get('state') == 'paused' or (fresh.get('pacomind_rendered_claim_id') and not self._script_failed(fresh)):
+                        if not fresh or fresh.get('state') == 'paused' or (fresh.get('protagine_rendered_claim_id') and not self._script_failed(fresh)):
                             continue
                         if current.get('status') != 'current':
                             jobs.pause_job(job['id'], reason='Remembered deadline evidence is unavailable or unresolved')
@@ -237,10 +237,10 @@ class NativeReminders:
                         if fresh.get('state') in {'completed', 'failed'}:
                             # A stale fire emitted nothing. Native rearm refuses
                             # any still-live execution/dispatch claim.
-                            if fresh.get('pacomind_suppressed_claim_id') or self._script_failed(fresh):
+                            if fresh.get('protagine_suppressed_claim_id') or self._script_failed(fresh):
                                 changed = jobs.rearm_oneshot(job['id'], target)
                                 if self._script_failed(fresh):
-                                    changed = jobs.update_job(job['id'], {'pacomind_rendered_claim_id': None})
+                                    changed = jobs.update_job(job['id'], {'protagine_rendered_claim_id': None})
                             else:
                                 continue
                         elif instant(fresh['schedule']['run_at']) != instant(target):
@@ -262,12 +262,12 @@ class NativeReminders:
             if pair is None:
                 return ''
             job, binding = pair
-            if job.get('state') == 'paused' or job.get('pacomind_rendered_claim_id'):
+            if job.get('state') == 'paused' or job.get('protagine_rendered_claim_id'):
                 return ''
             current = self._current(binding)
             with jobs._jobs_lock():
                 fresh = jobs.get_job(job['id'])
-                if not fresh or fresh.get('state') == 'paused' or fresh.get('pacomind_rendered_claim_id'):
+                if not fresh or fresh.get('state') == 'paused' or fresh.get('protagine_rendered_claim_id'):
                     return ''
                 if current.get('status') != 'current':
                     jobs.pause_job(job['id'], reason='Remembered deadline evidence is unavailable or unresolved')
@@ -275,14 +275,14 @@ class NativeReminders:
                 target = instant(self._scheduled_at(current, binding))
                 now = datetime.now(timezone.utc)
                 if target > now or now-target > timedelta(seconds=120):
-                    jobs.update_job(job['id'], {'pacomind_suppressed_claim_id': current['claim_id']})
+                    jobs.update_job(job['id'], {'protagine_suppressed_claim_id': current['claim_id']})
                     return ''
                 text = f"Reminder: {current['subject']} {current['predicate']}: {current['value']}"
                 if self.outbox is None:
                     raise ValueError('Native source ownership is unavailable')
                 sibling('cron_memory').retain(self.outbox, home=self.home, owner=self.owner,
                     job=fresh, binding=binding, sources=current['source_refs'])
-                jobs.update_job(job['id'], {'pacomind_rendered_claim_id': current['claim_id']})
+                jobs.update_job(job['id'], {'protagine_rendered_claim_id': current['claim_id']})
                 return text
 
 
@@ -293,39 +293,39 @@ def main(binding_id):
     import sys
     from hermes_cli.config import load_config
     try:
-        provider = importlib.import_module('pacomind_memory.provider')
+        provider = importlib.import_module('protagine_memory.provider')
     except ModuleNotFoundError as error:
-        if error.name not in {'pacomind_memory', 'pacomind_memory.provider'}:
+        if error.name not in {'protagine_memory', 'protagine_memory.provider'}:
             raise
         # Private directory installs and source checkouts have the same
         # provider beside this adapter, without a pip package on sys.path.
         adapter = Path(__file__).resolve().parent
-        sibling = 'pacomind-memory' if adapter.name == 'hermes-plugin' else 'pacomind_memory'
-        spec = importlib.util.spec_from_file_location('_pacomind_reminder_provider',
+        sibling = 'protagine-memory' if adapter.name == 'hermes-plugin' else 'protagine_memory'
+        spec = importlib.util.spec_from_file_location('_protagine_reminder_provider',
             adapter.parent/sibling/'provider.py')
         provider = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = provider
         spec.loader.exec_module(provider)
     path = Path(__file__).with_name('client.py')
-    spec = importlib.util.spec_from_file_location('_pacomind_reminder_client', path)
+    spec = importlib.util.spec_from_file_location('_protagine_reminder_client', path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     config = load_config() or {}
     home = provider._active_hermes_home()
-    settings = dict(config.get('plugins', {}).get('pacomind', {}))
+    settings = dict(config.get('plugins', {}).get('protagine', {}))
     # Keep explicit general-plugin settings; native provider setup owns the
     # fallback over inline memory.config. Cron scrubs inherited credentials,
     # so resolve placeholders from this same selected profile's existing .env.
     for key, value in provider._profile_config(home).items():
         settings.setdefault(key, value)
-    key = str(settings.get('api_key') or provider._profile_env('PACOMIND_API_KEY', home) or '').strip()
+    key = str(settings.get('api_key') or provider._profile_env('PROTAGINE_API_KEY', home) or '').strip()
     if key.startswith('${') and key.endswith('}'):
         key = provider._profile_env(key[2:-1], home)
-    client = module.PacoMindClient(url=settings.get('url') or provider._profile_env('PACOMIND_URL', home), api_key=key)
-    contact = settings.get('contact_id') or provider._profile_env('PACOMIND_MCP_CONTACT_ID', home)
+    client = module.ProtagineClient(url=settings.get('url') or provider._profile_env('PROTAGINE_URL', home), api_key=key)
+    contact = settings.get('contact_id') or provider._profile_env('PROTAGINE_MCP_CONTACT_ID', home)
     owner = str(settings.get('owner_contact_id') or (contact if contact != 'default' else '')
-                or provider._profile_env('PACOMIND_OWNER_CONTACT_ID', home) or '').strip()
+                or provider._profile_env('PROTAGINE_OWNER_CONTACT_ID', home) or '').strip()
     outbox_path = module.turn_outbox_path(settings)
     if not Path(outbox_path).is_file():
         raise ValueError('Native source ownership ledger is unavailable')

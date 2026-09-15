@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.skills_memory import (
+from protagine.skills_memory import (
     Skill, SkillStore, distill_from_completion, format_block,
     relevant_skills, should_distill, signature_overlap,
 )

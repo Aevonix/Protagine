@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pacomind.directed import DirectedActionService, ScopedTaskStore
-from pacomind.self_model import (
+from protagine.directed import DirectedActionService, ScopedTaskStore
+from protagine.self_model import (
     ActionJournal, CompetenceStore, SelfModel, TrustEngine,
 )
 

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from pacomind.intelligence.components.research_orchestrator import (
+from protagine.intelligence.components.research_orchestrator import (
     ResearchOrchestrator,
     ResearchResult,
     ResearchSource,
     SourceType,
 )
-from pacomind.research.search.base import SearchResult
+from protagine.research.search.base import SearchResult
 
 
 class _StubSearchOrchestrator:
@@ -29,8 +29,8 @@ class _StubSearchOrchestrator:
 async def test_web_source_uses_search_orchestrator():
     results = [
         SearchResult(
-            title="PacoMind AI",
-            url="https://example.com/pacomind",
+            title="Protagine AI",
+            url="https://example.com/protagine",
             snippet="A cognitive layer for agents.",
             source="duckduckgo",
             rank=1,
@@ -49,12 +49,12 @@ async def test_web_source_uses_search_orchestrator():
         search_orchestrator=_StubSearchOrchestrator(results),
     )
     orch.register_source(ResearchSource(type=SourceType.WEB, name="web", priority=0.9))
-    report = await orch.research("pacomind ai", max_sources=1)
+    report = await orch.research("protagine ai", max_sources=1)
     assert len(report.results) == 1
     r = report.results[0]
-    assert "PacoMind AI" in r.content
+    assert "Protagine AI" in r.content
     assert r.citations == [
-        "https://example.com/pacomind",
+        "https://example.com/protagine",
         "https://example.com/swarm",
     ]
 

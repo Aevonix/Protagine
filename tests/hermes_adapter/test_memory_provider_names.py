@@ -21,15 +21,15 @@ selected=sys.argv[3];first=sys.argv[4];local_source=sys.argv[5]=='profile'
 if local_source:
  import shutil
  selected_source=home/'plugins'/selected
- shutil.copytree(Path(sys.argv[6])/'plugins/pacomind-memory',selected_source)
+ shutil.copytree(Path(sys.argv[6])/'plugins/protagine-memory',selected_source)
  with (selected_source/'provider.py').open('a') as stream:stream.write('\nQUALIFIED_SOURCE_MARKER = \"selected-profile-source\"\n')
 (home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[]},'memory':{'provider':selected}}))
 first_module=importlib.import_module(first+'.provider')
-canonical=importlib.import_module('pacomind_memory.provider')
+canonical=importlib.import_module('protagine_memory.provider')
 assert first_module is canonical
 from plugins import memory
 found={entry.name:entry.value for entry in memory._iter_entry_points()}
-assert found['pacomind-memory']=='pacomind_memory'
+assert found['protagine-memory']=='protagine_memory'
 from agent.memory_provider import MemoryProvider
 created=[]
 def counted(cls,*args,**kwargs):
@@ -43,17 +43,17 @@ if local_source:
  assert selected_module.QUALIFIED_SOURCE_MARKER=='selected-profile-source'
  assert Path(selected_module.__file__).resolve()==(selected_source/'provider.py').resolve()
 else:
- assert isinstance(provider,canonical.PacoMindMemoryProvider)
-assert provider.name=='pacomind' and provider.is_available()
-assert not any(name == 'pacomind' or name.startswith(('pacomind.',)) for name in sys.modules)
+ assert isinstance(provider,canonical.ProtagineMemoryProvider)
+assert provider.name=='protagine' and provider.is_available()
+assert not any(name == 'protagine' or name.startswith(('protagine.',)) for name in sys.modules)
 provider.shutdown()
 print(json.dumps({'selected':selected,'first_import':first,'provider_instances':len(created),'name':provider.name,'module_identity_shared':True,'selected_profile_source':local_source,'model_calls':0}))
 '''
 
 
 @pytest.mark.parametrize(('selected', 'source'), [
-    ('pacomind-memory', 'entrypoint'), ('pacomind-memory', 'profile')])
-@pytest.mark.parametrize('first', ['pacomind_memory'])
+    ('protagine-memory', 'entrypoint'), ('protagine-memory', 'profile')])
+@pytest.mark.parametrize('first', ['protagine_memory'])
 def test_native_memory_selection_loads_one_provider(artifacts, tmp_path, selected, first, source):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified native Hermes runtime')

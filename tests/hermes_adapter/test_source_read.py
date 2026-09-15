@@ -6,8 +6,8 @@ def test_native_source_reader_pages_and_reconciles_actual_tool_outputs(artifacts
     probe = annotation.PROBE
     old = "def dispatch(args,*,session='later',task='review-task',turn='review-turn',call='operator-call'):"
     assert probe.count(old) == 1
-    probe = probe.replace(old, old.replace("call='operator-call'", "call='operator-call',tool='pacomind_memory_annotate'"))
-    old = "name='pacomind_memory_annotate',arguments=json.dumps(args)"
+    probe = probe.replace(old, old.replace("call='operator-call'", "call='operator-call',tool='protagine_memory_annotate'"))
+    old = "name='protagine_memory_annotate',arguments=json.dumps(args)"
     assert probe.count(old) == 1
     probe = probe.replace(old, "name=tool,arguments=json.dumps(args)")
     old = "return json.JSONDecoder().raw_decode(results[0]['content'])[0]"
@@ -31,7 +31,7 @@ messages=[{'role':'user','content':compose_user_api_content('',recalled,'')}]
 args={'source_id':long_ref['source_id']}; pages=[]; count=0
 while True:
     opened=dispatch(args,session='reader',task='reader-task',turn='reader-turn',
-                    call='source-read-'+str(count),tool='pacomind_memory_read_source')
+                    call='source-read-'+str(count),tool='protagine_memory_read_source')
     assert 'error' not in opened,opened
     assert opened['source_version']==long_ref['source_version']
     assert opened['reported_at']=='2024-02-03T04:05:06+00:00'
@@ -49,13 +49,13 @@ while True:
     args={**long_ref,'offset':opened['next_offset'],'read_revision':opened['read_revision']}
 assert count>1 and json.loads(''.join(pages))['messages'][0]['content']==long_text
 assert 'error' in dispatch({'source_id':'not-supplied'},session='reader',task='reader-task',
-    turn='reader-turn',call='unsupplied-read',tool='pacomind_memory_read_source')
+    turn='reader-turn',call='unsupplied-read',tool='protagine_memory_read_source')
 assert 'error' in dispatch({**long_ref,'source_version':'f'*64},session='reader',task='reader-task',
-    turn='reader-turn',call='wrong-revision-read',tool='pacomind_memory_read_source')
-with patch('pacomind_hermes.request_memory.RequestMemory.supplied_snapshot',
+    turn='reader-turn',call='wrong-revision-read',tool='protagine_memory_read_source')
+with patch('protagine_hermes.request_memory.RequestMemory.supplied_snapshot',
            return_value=[long_ref,{**long_ref,'source_version':'e'*64}]):
     ambiguous=dispatch({'source_id':long_ref['source_id']},session='reader',task='reader-task',
-        turn='reader-turn',call='ambiguous-revision-read',tool='pacomind_memory_read_source')
+        turn='reader-turn',call='ambiguous-revision-read',tool='protagine_memory_read_source')
     assert 'one revision' in ambiguous['error'],ambiguous
 ledger.erase_sources(contact_id='person',turn_ids=['long-native'])
 checked=apply_llm_request_middleware({'messages':messages},session_id='reader',
@@ -72,8 +72,8 @@ def test_native_observation_directory_admits_only_returned_refs_and_opens_curren
     probe = annotation.PROBE
     old = "def dispatch(args,*,session='later',task='review-task',turn='review-turn',call='operator-call'):"
     assert probe.count(old) == 1
-    probe = probe.replace(old, old.replace("call='operator-call'", "call='operator-call',tool='pacomind_memory_annotate'"))
-    old = "name='pacomind_memory_annotate',arguments=json.dumps(args)"
+    probe = probe.replace(old, old.replace("call='operator-call'", "call='operator-call',tool='protagine_memory_annotate'"))
+    old = "name='protagine_memory_annotate',arguments=json.dumps(args)"
     assert probe.count(old) == 1
     probe = probe.replace(old, "name=tool,arguments=json.dumps(args)")
     old = "return json.JSONDecoder().raw_decode(results[0]['content'])[0]"
@@ -82,8 +82,8 @@ def test_native_observation_directory_admits_only_returned_refs_and_opens_curren
     old = "print(json.dumps({'native_dispatch':True"
     assert probe.count(old) == 1
     check = r'''
-from pacomind.turns.tool_observations import ToolObservation, identity_id, record
-from pacomind.turns.source_attribution import correct
+from protagine.turns.tool_observations import ToolObservation, identity_id, record
+from protagine.turns.source_attribution import correct
 import hashlib
 instruction='Inspect the Corvus export bundle and resolve its checksum before marking it ready.'
 ledger.record_source('corvus-task',contact_id='person',session_id='original',
@@ -113,7 +113,7 @@ def open_source(selector):
     global count
     count+=1
     return dispatch(selector,session='reader',task='reader-task',turn='reader-turn',
-        call='opening-'+str(count),tool='pacomind_memory_read_source')
+        call='opening-'+str(count),tool='protagine_memory_read_source')
 def carry():
     result=dict(dispatch.last_result);messages.append(result)
     checked=apply_llm_request_middleware({'messages':messages},session_id='reader',

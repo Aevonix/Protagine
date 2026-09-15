@@ -1,13 +1,13 @@
-"""H4.1 — preset <-> loop-mode coupling (PACOMIND_PRESET_LOOP_COUPLING).
+"""H4.1 — preset <-> loop-mode coupling (PROTAGINE_PRESET_LOOP_COUPLING).
 
 The one deliberate default-flip of the hardening program: an active
-PACOMIND_AUTONOMY_PRESET now supplies the autonomy loop mode when
-PACOMIND_AUTONOMY_MODE is unset. Resolution precedence:
+PROTAGINE_AUTONOMY_PRESET now supplies the autonomy loop mode when
+PROTAGINE_AUTONOMY_MODE is unset. Resolution precedence:
 
     explicit env  >  coupled preset  >  legacy tick migration  >  default
 
 Regression locks: explicit env is the rollback path and always wins;
-PACOMIND_PRESET_LOOP_COUPLING=off restores today's env-only behavior exactly;
+PROTAGINE_PRESET_LOOP_COUPLING=off restores today's env-only behavior exactly;
 coupling errors fail toward reactive.
 """
 
@@ -15,12 +15,12 @@ import dataclasses
 
 import pytest
 
-from pacomind.autonomy.config import AutonomyConfig, AutonomyMode
-from pacomind.util import autonomy_preset as ap
+from protagine.autonomy.config import AutonomyConfig, AutonomyMode
+from protagine.util import autonomy_preset as ap
 
 _ENV = [
-    "PACOMIND_AUTONOMY_PRESET", "PACOMIND_AUTONOMY_MODE",
-    "PACOMIND_PRESET_LOOP_COUPLING", "PACOMIND_AUTONOMY_TICK_INTERVAL_SECS",
+    "PROTAGINE_AUTONOMY_PRESET", "PROTAGINE_AUTONOMY_MODE",
+    "PROTAGINE_PRESET_LOOP_COUPLING", "PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS",
 ]
 
 
@@ -32,27 +32,27 @@ def _clean_env(monkeypatch):
 
 class TestPresetTable:
     def test_every_preset_carries_a_loop_mode(self):
-        assert ap.PRESETS["passive"]["PACOMIND_AUTONOMY_MODE"] == "reactive"
-        assert ap.PRESETS["calibration"]["PACOMIND_AUTONOMY_MODE"] == "proactive"
-        assert ap.PRESETS["autonomous"]["PACOMIND_AUTONOMY_MODE"] == "proactive"
+        assert ap.PRESETS["passive"]["PROTAGINE_AUTONOMY_MODE"] == "reactive"
+        assert ap.PRESETS["calibration"]["PROTAGINE_AUTONOMY_MODE"] == "proactive"
+        assert ap.PRESETS["autonomous"]["PROTAGINE_AUTONOMY_MODE"] == "proactive"
 
     def test_snapshot_reports_coupling_and_mode(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "calibration")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "calibration")
         snap = ap.snapshot()
-        assert snap["PACOMIND_PRESET_LOOP_COUPLING"] == "on"
-        assert snap["PACOMIND_AUTONOMY_MODE"] == "proactive"
+        assert snap["PROTAGINE_PRESET_LOOP_COUPLING"] == "on"
+        assert snap["PROTAGINE_AUTONOMY_MODE"] == "proactive"
 
     def test_snapshot_coupling_off(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "calibration")
-        monkeypatch.setenv("PACOMIND_PRESET_LOOP_COUPLING", "off")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "calibration")
+        monkeypatch.setenv("PROTAGINE_PRESET_LOOP_COUPLING", "off")
         snap = ap.snapshot()
-        assert snap["PACOMIND_PRESET_LOOP_COUPLING"] == "off"
-        assert snap["PACOMIND_AUTONOMY_MODE"] == "reactive"
+        assert snap["PROTAGINE_PRESET_LOOP_COUPLING"] == "off"
+        assert snap["PROTAGINE_AUTONOMY_MODE"] == "reactive"
 
     def test_snapshot_explicit_env_wins(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "calibration")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_MODE", "reactive")
-        assert ap.snapshot()["PACOMIND_AUTONOMY_MODE"] == "reactive"
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "calibration")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_MODE", "reactive")
+        assert ap.snapshot()["PROTAGINE_AUTONOMY_MODE"] == "reactive"
 
 
 class TestResolutionPrecedence:
@@ -67,21 +67,21 @@ class TestResolutionPrecedence:
         for preset, want in (("passive", AutonomyMode.REACTIVE),
                              ("calibration", AutonomyMode.PROACTIVE),
                              ("autonomous", AutonomyMode.PROACTIVE)):
-            monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", preset)
+            monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", preset)
             cfg = AutonomyConfig.from_env()
             assert cfg.mode is want, preset
             assert cfg.mode_source == "preset", preset
 
     def test_explicit_env_beats_coupled_preset(self, monkeypatch):
-        """The rollback path: PACOMIND_AUTONOMY_MODE=reactive under a preset."""
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_MODE", "reactive")
+        """The rollback path: PROTAGINE_AUTONOMY_MODE=reactive under a preset."""
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_MODE", "reactive")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.REACTIVE
         assert cfg.mode_source == "env"
         # ...and upward, too (proactive without any preset help).
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "passive")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_MODE", "proactive")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "passive")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_MODE", "proactive")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.PROACTIVE
         assert cfg.mode_source == "env"
@@ -89,49 +89,49 @@ class TestResolutionPrecedence:
     def test_coupled_preset_beats_legacy_tick(self, monkeypatch):
         """passive + legacy tick: the preset's reactive wins over the old
         tick-implies-proactive migration."""
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "passive")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_TICK_INTERVAL_SECS", "60")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "passive")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS", "60")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.REACTIVE
         assert cfg.mode_source == "preset"
 
     def test_legacy_tick_beats_default(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_TICK_INTERVAL_SECS", "60")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS", "60")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.PROACTIVE
         assert cfg.mode_source == "legacy_tick"
 
     def test_invalid_explicit_env_still_counts_as_env(self, monkeypatch):
-        """A set-but-invalid PACOMIND_AUTONOMY_MODE falls back to reactive
+        """A set-but-invalid PROTAGINE_AUTONOMY_MODE falls back to reactive
         exactly as the legacy reader did (preset must NOT resurrect it)."""
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_MODE", "banana")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_MODE", "banana")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.REACTIVE
         assert cfg.mode_source == "env"
 
 
 class TestCouplingOffRegressionLock:
-    """PACOMIND_PRESET_LOOP_COUPLING=off = today's behavior, exactly."""
+    """PROTAGINE_PRESET_LOOP_COUPLING=off = today's behavior, exactly."""
 
     def test_coupling_off_ignores_preset(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
-        monkeypatch.setenv("PACOMIND_PRESET_LOOP_COUPLING", "off")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_PRESET_LOOP_COUPLING", "off")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.REACTIVE
         assert cfg.mode_source == "default"
 
     def test_coupling_off_config_identical_to_no_preset(self, monkeypatch):
         baseline = AutonomyConfig.from_env()
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
-        monkeypatch.setenv("PACOMIND_PRESET_LOOP_COUPLING", "off")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_PRESET_LOOP_COUPLING", "off")
         assert dataclasses.asdict(AutonomyConfig.from_env()) ==\
             dataclasses.asdict(baseline)
 
     def test_coupling_off_legacy_tick_migration_survives(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "passive")
-        monkeypatch.setenv("PACOMIND_PRESET_LOOP_COUPLING", "off")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_TICK_INTERVAL_SECS", "60")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "passive")
+        monkeypatch.setenv("PROTAGINE_PRESET_LOOP_COUPLING", "off")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS", "60")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.PROACTIVE
         assert cfg.mode_source == "legacy_tick"
@@ -139,7 +139,7 @@ class TestCouplingOffRegressionLock:
 
 class TestFailSafe:
     def test_coupling_error_fails_toward_reactive(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
 
         def _boom():
             raise RuntimeError("coupling machinery broke")
@@ -151,12 +151,12 @@ class TestFailSafe:
     def test_coupled_loop_mode_never_raises(self, monkeypatch):
         def _boom():
             raise RuntimeError("preset store broke")
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "autonomous")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")
         monkeypatch.setattr(ap, "preset_name", _boom)
         assert ap.coupled_loop_mode() is None
 
     def test_unknown_preset_stays_default(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_AUTONOMY_PRESET", "yolo")
+        monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "yolo")
         cfg = AutonomyConfig.from_env()
         assert cfg.mode is AutonomyMode.REACTIVE
         assert cfg.mode_source == "default"

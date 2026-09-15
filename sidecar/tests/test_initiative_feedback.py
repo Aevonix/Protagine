@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.api.routers import host as host_router
+from protagine.api.routers import host as host_router
 
 
 class _FakeInitiativeStore:

@@ -26,7 +26,7 @@ def handle(args, scope, client, request_memory, context=None):
     try:
         from .tool_observations import native_input, _arguments_hash
         _, original = native_input(scope, (context or {}).get('tool_call_id'), {
-            'name':'pacomind_memory_annotate', 'arguments_sha256':_arguments_hash(args)})
+            'name':'protagine_memory_annotate', 'arguments_sha256':_arguments_hash(args)})
         # Keep the first creating call before a possibly lost acknowledgement.
         # Retries in this turn reuse the request ID and its durable anchor.
         if ownership is None or not ownership.retain_origin(scope, annotation_id, messages=[original]):

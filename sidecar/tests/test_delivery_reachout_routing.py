@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from pacomind.delivery.classification import is_reachout, reachout_types
-from pacomind.delivery.bridge import GatewayPushResult, ProactiveDeliveryBridge
-from pacomind.delivery.channels import Channel
-from pacomind.delivery.rate_limiter import DeliveryRateLimiter
+from protagine.delivery.classification import is_reachout, reachout_types
+from protagine.delivery.bridge import GatewayPushResult, ProactiveDeliveryBridge
+from protagine.delivery.channels import Channel
+from protagine.delivery.rate_limiter import DeliveryRateLimiter
 
 
 class StubRegistry:
@@ -51,7 +51,7 @@ def test_reachout_defaults():
 
 
 def test_reachout_env_override(monkeypatch):
-    monkeypatch.setenv("PACOMIND_REACHOUT_TYPES", "introduction, scheduling")
+    monkeypatch.setenv("PROTAGINE_REACHOUT_TYPES", "introduction, scheduling")
     assert reachout_types() == frozenset({"introduction", "scheduling"})
     assert is_reachout("follow_up") is False   # no longer in the set
     assert is_reachout("introduction") is True
@@ -62,7 +62,7 @@ def test_reachout_env_override(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_preview_follow_up_resolves_owner_and_target(monkeypatch):
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner-xyz")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner-xyz")
     bridge = _bridge()
     initiative = {
         "id": "init-42",
@@ -88,7 +88,7 @@ def test_preview_follow_up_resolves_owner_and_target(monkeypatch):
 
 
 def test_preview_relationship_targets_the_person(monkeypatch):
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner-xyz")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner-xyz")
     bridge = _bridge()
     initiative = {
         "id": "init-r",
@@ -103,7 +103,7 @@ def test_preview_relationship_targets_the_person(monkeypatch):
 
 
 def test_preview_does_not_consume_rate_budget(monkeypatch):
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner-xyz")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner-xyz")
     bridge = _bridge()
     initiative = {"id": "i", "type": "follow_up", "priority": 0.5, "entity_id": "g"}
     assert bridge._rate_limiter.daily_count("cid-owner-xyz") == 0
@@ -116,7 +116,7 @@ def test_preview_does_not_consume_rate_budget(monkeypatch):
 
 def test_preview_matches_push_prep(monkeypatch):
     """preview and push share _prepare_initiative_dispatch (same routing)."""
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner-xyz")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner-xyz")
     bridge = _bridge()
     initiative = {"id": "i", "type": "follow_up", "priority": 0.9, "entity_id": "g"}
     prep = bridge._prepare_initiative_dispatch(initiative)
@@ -133,11 +133,11 @@ def test_governed_preview_resolves_new_contact_from_real_async_store(
 ):
     """A V3-authorized contact does not need a channels.json side write."""
     import asyncio
-    from pacomind.contacts.config import ContactsConfig
-    from pacomind.contacts.store import SQLiteContactStore
-    from pacomind.delivery.channels import ChannelRegistry
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+    from protagine.delivery.channels import ChannelRegistry
 
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner")
     monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "owner-group@g.us")
 
     async def scenario():
@@ -208,7 +208,7 @@ def test_governed_non_owner_missing_verified_dm_never_falls_back_home(
             assert platform == "whatsapp"
             return None
 
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner")
     bridge = ProactiveDeliveryBridge(
         rate_limiter=DeliveryRateLimiter(db_path=None),
         gateway_url="http://127.0.0.1:18802",
@@ -235,7 +235,7 @@ def test_governed_non_owner_missing_verified_dm_never_falls_back_home(
 # ---------------------------------------------------------------------------
 
 def test_executor_defaults_exclude_reachout():
-    from pacomind.services.initiative_executor import (
+    from protagine.services.initiative_executor import (
         _DEFAULT_TYPES, _EXECUTABLE_TYPES,
     )
     for t in ("follow_up", "relationship", "introduction",
@@ -253,14 +253,14 @@ def test_executor_defaults_exclude_reachout():
 # ---------------------------------------------------------------------------
 
 def test_gateway_transport_uses_push_to_gateway(monkeypatch):
-    """PACOMIND_DELIVERY_TRANSPORT=gateway routes the sanitised text through
+    """PROTAGINE_DELIVERY_TRANSPORT=gateway routes the sanitised text through
     push_to_gateway (flat contract) instead of the structured webhook."""
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner-xyz")
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner-xyz")
 
     cfg = AutonomyConfig()
     cfg.proactive_delivery_enabled = True
@@ -308,10 +308,10 @@ def test_gateway_transport_uses_push_to_gateway(monkeypatch):
 
 def test_default_transport_still_uses_webhook(monkeypatch):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
 
-    monkeypatch.delenv("PACOMIND_DELIVERY_TRANSPORT", raising=False)
+    monkeypatch.delenv("PROTAGINE_DELIVERY_TRANSPORT", raising=False)
     cfg = AutonomyConfig()
     cfg.proactive_delivery_enabled = True
     cfg.delivery_shadow_mode = False
@@ -348,11 +348,11 @@ def test_default_transport_still_uses_webhook(monkeypatch):
 
 def test_gateway_default_keeps_legacy_non_owner_standing_gate(monkeypatch):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
-    from pacomind.initiatives import standing_approvals
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
+    from protagine.initiatives import standing_approvals
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
     monkeypatch.setattr(standing_approvals, "is_approved", lambda _name: False)
     cfg = AutonomyConfig(
         proactive_delivery_enabled=True, delivery_shadow_mode=False,
@@ -397,11 +397,11 @@ def test_governed_whatsapp_route_never_exempts_rcs_or_sms_non_owner(
     monkeypatch,
 ):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
-    from pacomind.initiatives import standing_approvals
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
+    from protagine.initiatives import standing_approvals
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
     monkeypatch.setattr(standing_approvals, "is_approved", lambda _name: False)
     loop = AutonomyLoop(
         registry=SimpleNamespace(directives=None),
@@ -461,13 +461,13 @@ def test_governed_gateway_admission_bypasses_only_legacy_boolean_and_is_not_deli
     monkeypatch,
 ):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
-    from pacomind.initiatives import standing_approvals
-    from pacomind.api.routers import host
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
+    from protagine.initiatives import standing_approvals
+    from protagine.api.routers import host
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
-    monkeypatch.delenv("PACOMIND_GUARD_MODE", raising=False)
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.delenv("PROTAGINE_GUARD_MODE", raising=False)
     monkeypatch.setattr(standing_approvals, "is_approved", lambda _name: False)
     monkeypatch.setattr(host, "_response_guard", None)
 
@@ -572,9 +572,9 @@ def test_governed_gateway_admission_bypasses_only_legacy_boolean_and_is_not_deli
 
 def test_governed_reconciler_runs_in_reactive_mode_until_stopped(monkeypatch):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig, AutonomyMode
-    from pacomind.identity import resolver as identity_resolver
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig, AutonomyMode
+    from protagine.identity import resolver as identity_resolver
 
     class Resolver:
         async def owner_identities(self):
@@ -618,13 +618,13 @@ def test_reactive_restart_rebuilds_only_durable_admitted_initiative(monkeypatch)
     import asyncio
     import hashlib
     from datetime import datetime, timezone
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig, AutonomyMode
-    from pacomind.api.routers import host
-    from pacomind.identity import resolver as identity_resolver
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig, AutonomyMode
+    from protagine.api.routers import host
+    from protagine.identity import resolver as identity_resolver
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
-    monkeypatch.delenv("PACOMIND_GUARD_MODE", raising=False)
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.delenv("PROTAGINE_GUARD_MODE", raising=False)
     monkeypatch.setattr(host, "_response_guard", None)
 
     class Resolver:
@@ -741,13 +741,13 @@ def test_reactive_restart_rebuilds_only_durable_admitted_initiative(monkeypatch)
 
 def test_governed_gateway_terminal_failure_is_accounted_once(monkeypatch):
     import asyncio
-    from pacomind.autonomy.loop import AutonomyLoop
-    from pacomind.autonomy.config import AutonomyConfig
-    from pacomind.initiatives import standing_approvals
-    from pacomind.api.routers import host
+    from protagine.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.config import AutonomyConfig
+    from protagine.initiatives import standing_approvals
+    from protagine.api.routers import host
 
-    monkeypatch.setenv("PACOMIND_DELIVERY_TRANSPORT", "gateway")
-    monkeypatch.delenv("PACOMIND_GUARD_MODE", raising=False)
+    monkeypatch.setenv("PROTAGINE_DELIVERY_TRANSPORT", "gateway")
+    monkeypatch.delenv("PROTAGINE_GUARD_MODE", raising=False)
     monkeypatch.setattr(standing_approvals, "is_approved", lambda _name: False)
     monkeypatch.setattr(host, "_response_guard", None)
 

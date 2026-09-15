@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from pacomind.turns.idempotency import TurnIdempotencyLedger, SourceErased, canonical_turn_digest
-from pacomind.turns.source_attribution import correct, history, visible_hits
+from protagine.turns.idempotency import TurnIdempotencyLedger, SourceErased, canonical_turn_digest
+from protagine.turns.source_attribution import correct, history, visible_hits
 
 
 def add(ledger, sid, text, **kwargs):

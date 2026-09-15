@@ -21,11 +21,11 @@ native_db.append_message('work','assistant',report)
     probe = probe.replace('first=dispatch(args)', 'first=dispatch(args)\n    first_creating_row=dispatch.last_native_row')
     check = r'''
 import asyncio
-from pacomind_hermes.client import TurnOutbox
-from pacomind_hermes.request_memory import RequestMemory
-from pacomind_hermes.native_owned_copies import NativeOwnedCopies
-outbox=TurnOutbox(home/'state'/'pacomind-turn-outbox.sqlite3')
-memory=RequestMemory(pacomind_hermes.PacoMindClient(url='http://fixture',api_key='fixture-key'),outbox)
+from protagine_hermes.client import TurnOutbox
+from protagine_hermes.request_memory import RequestMemory
+from protagine_hermes.native_owned_copies import NativeOwnedCopies
+outbox=TurnOutbox(home/'state'/'protagine-turn-outbox.sqlite3')
+memory=RequestMemory(protagine_hermes.ProtagineClient(url='http://fixture',api_key='fixture-key'),outbox)
 owned=NativeOwnedCopies(memory,NS())
 before=native_db.get_messages('later')
 first_call=next(row for row in before if row['id']==first_creating_row)

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="480" viewBox="0 0 1000 480" role="img" aria-labelledby="title description">
-  <title id="title">PacoMind and Hermes architecture</title>
-  <desc id="description">Conversations and devices communicate with Hermes. Hermes and PacoMind exchange information through plugins, a memory provider and request hooks. Both use models selected by role. PacoMind maintains private memory, identity and shared work.</desc>
+  <title id="title">Protagine and Hermes architecture</title>
+  <desc id="description">Conversations and devices communicate with Hermes. Hermes and Protagine exchange information through plugins, a memory provider and request hooks. Both use models selected by role. Protagine maintains private memory, identity and shared work.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
       <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#b6c5db" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -27,7 +27,7 @@
       <text x="151" y="180">Conversations</text>
       <text x="151" y="211">and devices</text>
       <text x="465" y="195">Hermes runtime</text>
-      <text x="815" y="195">PacoMind</text>
+      <text x="815" y="195">Protagine</text>
       <text x="455" y="390">Models</text>
       <text x="815" y="390">Private state</text>
     </g>

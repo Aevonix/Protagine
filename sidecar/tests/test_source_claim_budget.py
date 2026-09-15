@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.beliefs.source_claims import extraction_timeout_seconds, projection_timeout_seconds, extract_claims
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns.idempotency import TurnIdempotencyLedger
+from protagine.beliefs.source_claims import extraction_timeout_seconds, projection_timeout_seconds, extract_claims
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns.idempotency import TurnIdempotencyLedger
 from test_function_routing import config, endpoint, router
 from test_source_claim_projection import claim, Model
 
@@ -96,7 +96,7 @@ async def test_memory_review_task_override_uses_selected_binding_and_deadline(mo
 
 @pytest.mark.asyncio
 async def test_long_multi_message_job_renews_after_role_reload(tmp_path, monkeypatch):
-    from pacomind.beliefs import source_projection as module
+    from protagine.beliefs import source_projection as module
     clock = [1000.0]
     monkeypatch.setattr(module, 'time', SimpleNamespace(time=lambda: clock[0]))
     ledger = TurnIdempotencyLedger(tmp_path / 'turns.db')

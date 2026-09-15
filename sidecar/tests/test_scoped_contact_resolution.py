@@ -5,10 +5,10 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
 
 
 @pytest.mark.asyncio

@@ -13,14 +13,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.directives import (
+from protagine.directives import (
     Action,
     DirectiveManager,
     DirectiveStore,
     DirectiveStoreUnavailable,
 )
-from pacomind.reasoning import ReasoningLoop, ToolExecutor
-from pacomind.reasoning.tool_policy import ToolActorPolicy
+from protagine.reasoning import ReasoningLoop, ToolExecutor
+from protagine.reasoning.tool_policy import ToolActorPolicy
 
 
 def _definition(name: str) -> dict:

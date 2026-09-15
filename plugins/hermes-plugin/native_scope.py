@@ -15,7 +15,7 @@ def _attested_contact(session_id, platform):
         return None
     try:
         from agent.relay_runtime import active_turn
-        from pacomind_hermes import _TRANSPORT_SCOPES
+        from protagine_hermes import _TRANSPORT_SCOPES
     except ImportError:
         return None
     turn = active_turn(session_id)

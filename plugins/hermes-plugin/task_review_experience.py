@@ -147,7 +147,7 @@ def recheck_native(batch, connection, owner):
     if (not claim or canonical is None or canonical != {
             key: value for key, value in batch.items() if key not in {'native_execution_id', 'evaluator'}}):
         raise ValueError('Native review no longer matches its claimed original observations')
-    config = load_config().get('plugins', {}).get('pacomind', {})
+    config = load_config().get('plugins', {}).get('protagine', {})
     if config.get('owner_contact_id') != owner:
         raise ValueError('Native review evidence belongs to another participant')
     return diagnostic_context(canonical, Path(get_hermes_home()), config, connection=connection)
@@ -156,9 +156,9 @@ def recheck_native(batch, connection, owner):
 def evaluate_once(evaluator, connection, owner):
     """One declared candidate, through the existing evaluator and rollback ledger."""
     from tools import write_approval, skill_ledger
-    from pacomind_hermes.review import editable_operation
-    from pacomind_hermes.review_evaluation import audit_evaluation, evaluate_pending
-    from pacomind_hermes.review_successors import handled_pending, evaluation_current
+    from protagine_hermes.review import editable_operation
+    from protagine_hermes.review_evaluation import audit_evaluation, evaluate_pending
+    from protagine_hermes.review_successors import handled_pending, evaluation_current
     current = declaration(evaluator['path'])
     if current['binding'] != evaluator['binding']:
         raise ValueError('Task-review evaluator declaration changed')
@@ -228,9 +228,9 @@ def evaluate_once(evaluator, connection, owner):
         if audited['status'] not in {'activated', 'unavailable'}: return audited
     for pending in write_approval.list_pending(write_approval.SKILLS):
         payload = pending.get('payload', {})
-        batch = payload.get('_pacomind_task_assessment_batch') or payload.get('_pacomind_native_failure_batch')
+        batch = payload.get('_protagine_task_assessment_batch') or payload.get('_protagine_native_failure_batch')
         if (pending.get('origin') != 'background_review' or not scoped_evidence(batch)
-                or (payload.get('_pacomind_task_assessment_batch') and payload.get('_pacomind_native_failure_batch'))):
+                or (payload.get('_protagine_task_assessment_batch') and payload.get('_protagine_native_failure_batch'))):
             continue
         operation = editable_operation(payload, allow_create=True)
         if not operation or operation['action'] != 'create':

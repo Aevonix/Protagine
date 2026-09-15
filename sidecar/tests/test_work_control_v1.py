@@ -11,31 +11,31 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.authority import required_scope
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import task_queue as queue_router
-from pacomind.task_queue.models import (
+from protagine.api.authority import required_scope
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import task_queue as queue_router
+from protagine.task_queue.models import (
     Job,
     JobStatus,
     JobType,
     WorkerCapabilities,
 )
-from pacomind.task_queue.queue_manager import QueueManager
-from pacomind.task_queue.scheduler import Scheduler
-from pacomind.task_queue.work_control import (
+from protagine.task_queue.queue_manager import QueueManager
+from protagine.task_queue.scheduler import Scheduler
+from protagine.task_queue.work_control import (
     WorkControlError,
     interrupt_capability,
     steer_capability,
 )
-from pacomind.task_queue.worker import JobHandler, WorkerNode
+from protagine.task_queue.worker import JobHandler, WorkerNode
 
 
 @pytest.fixture(autouse=True)
 def _live_control(monkeypatch):
-    monkeypatch.setenv("PACOMIND_WORK_CONTROL_MODE", "live")
-    monkeypatch.setenv("PACOMIND_WORK_CONTROL_ACK_TIMEOUT_SECS", "30")
-    monkeypatch.setenv("PACOMIND_WORKERS_MODE", "off")
-    monkeypatch.setenv("PACOMIND_AGENT_JOB_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("PROTAGINE_WORK_CONTROL_MODE", "live")
+    monkeypatch.setenv("PROTAGINE_WORK_CONTROL_ACK_TIMEOUT_SECS", "30")
+    monkeypatch.setenv("PROTAGINE_WORKERS_MODE", "off")
+    monkeypatch.setenv("PROTAGINE_AGENT_JOB_CLAIMS_ENABLED", "true")
 
 
 @pytest.fixture
@@ -592,7 +592,7 @@ class _ControlledHandler(JobHandler):
 
 
 def test_default_off_worker_has_no_control_capability_or_loop(monkeypatch):
-    monkeypatch.setenv("PACOMIND_WORK_CONTROL_MODE", "off")
+    monkeypatch.setenv("PROTAGINE_WORK_CONTROL_MODE", "off")
     worker = WorkerNode(
         "off-worker",
         object(),

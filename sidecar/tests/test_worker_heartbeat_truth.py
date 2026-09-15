@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pacomind.api.routers import task_queue as queue_router
-from pacomind.task_queue.models import Job, WorkerCapabilities
-from pacomind.task_queue.queue_manager import QueueManager, TaskQueueManager
-from pacomind.task_queue.scheduler import Scheduler
+from protagine.api.routers import task_queue as queue_router
+from protagine.task_queue.models import Job, WorkerCapabilities
+from protagine.task_queue.queue_manager import QueueManager, TaskQueueManager
+from protagine.task_queue.scheduler import Scheduler
 
 
 class _Clock:

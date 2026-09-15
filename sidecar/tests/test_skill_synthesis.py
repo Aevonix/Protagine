@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pacomind.skills.learning.pattern_extractor import PatternExtractor
-from pacomind.skills.models import TaskSolution
+from protagine.skills.learning.pattern_extractor import PatternExtractor
+from protagine.skills.models import TaskSolution
 
 
 def _solution(trace):
@@ -41,7 +41,7 @@ def test_nonempty_trace_emits_runnable_body():
     pattern = extractor.extract(_solution(trace=trace))
     src = pattern.source_code
     assert "NotImplementedError" not in src
-    assert "async def run(pacomind" in src
-    assert "pacomind.tools.invoke('send_email'" in src
-    assert "pacomind.tools.invoke('log_event'" in src
+    assert "async def run(protagine" in src
+    assert "protagine.tools.invoke('send_email'" in src
+    assert "protagine.tools.invoke('log_event'" in src
     assert "return _r1" in src

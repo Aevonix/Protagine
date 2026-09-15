@@ -1,7 +1,7 @@
-"""Tests for pacomind.vector.reranker — reranker providers and factory."""
+"""Tests for protagine.vector.reranker — reranker providers and factory."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from pacomind.vector.reranker import (
+from protagine.vector.reranker import (
     RerankResult,
     RerankerProvider,
     CUDARerankerProvider,
@@ -11,7 +11,7 @@ from pacomind.vector.reranker import (
     OpenAIAPIRerankerProvider,
     make_reranker_provider,
 )
-from pacomind.vector.tiers import ModelSpec
+from protagine.vector.tiers import ModelSpec
 
 
 class TestRerankResult:

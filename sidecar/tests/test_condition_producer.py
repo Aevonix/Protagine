@@ -6,12 +6,12 @@ import time
 
 import pytest
 
-import pacomind.autonomy.condition_worker as cw
-from pacomind.autonomy.loop import AutonomyLoop
-from pacomind.goals.config import GoalEngineConfig
-from pacomind.goals.engine import GoalEngine
-from pacomind.goals.models import GoalStatus
-from pacomind.goals.queue_bridge import GoalQueueBridge, InMemoryQueueBackend
+import protagine.autonomy.condition_worker as cw
+from protagine.autonomy.loop import AutonomyLoop
+from protagine.goals.config import GoalEngineConfig
+from protagine.goals.engine import GoalEngine
+from protagine.goals.models import GoalStatus
+from protagine.goals.queue_bridge import GoalQueueBridge, InMemoryQueueBackend
 
 
 def _blocked_goal(engine, condition_type=None, condition_params=None):

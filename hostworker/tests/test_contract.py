@@ -4,8 +4,8 @@ import sys
 
 import pytest
 
-from pacomind_hostworker import contract
-from pacomind_hostworker.contract import (
+from protagine_hostworker import contract
+from protagine_hostworker.contract import (
     GovernedContractError,
     canonical_json_ascii,
     canonical_json_utf8,
@@ -52,16 +52,16 @@ def test_schema_names_are_pinned():
     assert contract.INTENT_SCHEMA == "HermesToolActionIntentV1"
     assert contract.INTENT_ENVELOPE_SCHEMA == "HermesToolActionEnvelopeV1"
     assert contract.CALL_IDENTITY_SCHEMA == "HermesActionCallV1"
-    assert contract.EXECUTION_REQUEST_SCHEMA == "PacoMindGovernedActionExecutionV1"
+    assert contract.EXECUTION_REQUEST_SCHEMA == "ProtagineGovernedActionExecutionV1"
     assert (
         contract.APPROVAL_BINDING_SCHEMA
-        == "PacoMindOwnerApprovalExecutionBindingV1"
+        == "ProtagineOwnerApprovalExecutionBindingV1"
     )
     assert (
         contract.EXECUTION_RESULT_SCHEMA
-        == "PacoMindGovernedActionExecutionResultV1"
+        == "ProtagineGovernedActionExecutionResultV1"
     )
-    assert contract.EFFECT_SCHEMA == "PacoMindGovernedActionEffectV1"
+    assert contract.EFFECT_SCHEMA == "ProtagineGovernedActionEffectV1"
 
 
 def test_identifier_grammars_are_pinned():
@@ -123,21 +123,21 @@ def test_field_sets_are_pinned():
 
 
 def test_package_is_stdlib_only_and_server_free():
-    """The distribution must never import FastAPI or pacomind.
+    """The distribution must never import FastAPI or protagine.
 
     This is one half of the deliberate-redundancy rule documented in
     contract.py; the other half (the endpoint never importing this package)
     is enforced by sidecar/tests/test_hostworker_agreement.py.
     """
 
-    import pacomind_hostworker  # noqa: F401
-    import pacomind_hostworker.catalog  # noqa: F401
-    import pacomind_hostworker.gate  # noqa: F401
-    import pacomind_hostworker.intent  # noqa: F401
+    import protagine_hostworker  # noqa: F401
+    import protagine_hostworker.catalog  # noqa: F401
+    import protagine_hostworker.gate  # noqa: F401
+    import protagine_hostworker.intent  # noqa: F401
 
-    for forbidden in ("fastapi", "pacomind", "httpx", "pydantic"):
+    for forbidden in ("fastapi", "protagine", "httpx", "pydantic"):
         assert forbidden not in sys.modules, (
-            "pacomind_hostworker must stay stdlib-only but imported %s"
+            "protagine_hostworker must stay stdlib-only but imported %s"
             % forbidden
         )
 

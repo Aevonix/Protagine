@@ -1,4 +1,4 @@
-"""Every HTTP route must require auth when PACOMIND_API_KEY is set.
+"""Every HTTP route must require auth when PROTAGINE_API_KEY is set.
 
 Auth is enforced by a single global ApiKeyMiddleware rather than per-route
 Depends, so an endpoint cannot be accidentally left unauthenticated. This test
@@ -22,13 +22,13 @@ def _api_paths(app):
 
 @pytest.fixture
 def app(monkeypatch):
-    monkeypatch.setenv("PACOMIND_API_KEY", "test-secret-key")
-    from pacomind.server import create_app
+    monkeypatch.setenv("PROTAGINE_API_KEY", "test-secret-key")
+    from protagine.server import create_app
     return create_app()
 
 
 def test_all_http_routes_reject_unauthenticated_requests(app):
-    from pacomind.api.middleware import _DEV_MODE_ALLOWED
+    from protagine.api.middleware import _DEV_MODE_ALLOWED
 
     client = TestClient(app, raise_server_exceptions=False)
     checked = 0
@@ -47,7 +47,7 @@ def test_all_http_routes_reject_unauthenticated_requests(app):
 
 
 def test_allowlisted_paths_do_not_require_auth(app):
-    from pacomind.api.middleware import _DEV_MODE_ALLOWED
+    from protagine.api.middleware import _DEV_MODE_ALLOWED
 
     client = TestClient(app, raise_server_exceptions=False)
     for path in _DEV_MODE_ALLOWED:

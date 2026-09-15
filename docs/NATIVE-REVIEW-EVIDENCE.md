@@ -1,6 +1,6 @@
 # Source references for native review proposals
 
-PacoMind connects actual tool-result references to Hermes background review
+Protagine connects actual tool-result references to Hermes background review
 and skill evaluation. Reviews and adoption remain native-owned.
 
 The native request middleware captures references to structured tool failures

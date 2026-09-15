@@ -25,7 +25,7 @@ except ImportError:
 
 
 TOOL_SCHEMA = {
-    'name': 'pacomind_task',
+    'name': 'protagine_task',
     'description': (
         'Run an accepted task in the background while this conversation continues. '
         'Submit the complete deliverable and constraints, including any child work, in one bounded request. '
@@ -34,7 +34,7 @@ TOOL_SCHEMA = {
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
         'Status includes original-input and recent authorized update source references; '
-        'open them with pacomind_memory_read_source. Update acknowledgment and request '
+        'open them with protagine_memory_read_source. Update acknowledgment and request '
         'visibility do not prove that the behavior was applied. '
         'List also reports profile-declared model role names for task submission. '
         'Answer routine questions directly. For difficult reasoning or evidence synthesis, '
@@ -93,7 +93,7 @@ class NativeTasks:
             raise ValueError('Choose the existing task database or a state path')
         self._database_factory = database
         self.path = None if database is not None else Path(
-            state_path or outbox.path.parent / 'pacomind-native-tasks.sqlite3').expanduser()
+            state_path or outbox.path.parent / 'protagine-native-tasks.sqlite3').expanduser()
         if self.path is not None and self.path.resolve() == outbox.path.resolve():
             raise ValueError('Task associations cannot replace the turn outbox schema')
         self.storage = PrivateSQLitePath(self.path) if self.path is not None else None
@@ -164,7 +164,7 @@ class NativeTasks:
                 return await controller.dispatch(payload)
 
         adapter = ConnectedTaskAdapter(config, handoffs=self.handoffs)
-        if adapter.platform.value != 'pacomind_task':
+        if adapter.platform.value != 'protagine_task':
             raise ValueError('The shared task adapter must retain its registered platform')
         return adapter
 
@@ -455,7 +455,7 @@ class NativeTasks:
         try:
             active = ACTIVE.get()
             with owner_lookup_deadline(deadline_monotonic):
-                if scope.platform == 'pacomind_task':
+                if scope.platform == 'protagine_task':
                     if (active is None or active['adapter'] is not self.adapter
                             or active['handoffs'] is not self.handoffs
                             or active['id'] not in task_ids
