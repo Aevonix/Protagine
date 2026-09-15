@@ -16,6 +16,8 @@ The request option belongs to the embedding generation identity. Selecting it
 requires a rebuilt index even when the vector width stays the same. Existing
 configurations keep their current request payload and generation identity.
 The client does not truncate vectors or infer support from a model name.
+Docker Compose forwards the embedding endpoint, credential, revision and request
+width from the deployment environment.
 
 An isolated two-model trial with equal output widths passed the existing
 migration, interruption, resumption, source-scope and erasure checks. That result
