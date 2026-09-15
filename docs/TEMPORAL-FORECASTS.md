@@ -21,19 +21,34 @@ context: `event: native-first-attempt-within-480s-v1`, a named `cohort`, and an
 tasks cannot acquire a retrospective probability. Selection changes no task
 authority, scheduling, retries or notifications.
 
-The event, existing planning role recipe, native task configuration and
-registered action identify comparable samples. A changed recipe starts a
-separate statistical cohort. Opening a new finite enrollment window preserves
-learning from earlier comparable outcomes; its label and expiry are audit
+The event, planning role recipe and native task configuration observed at
+attachment, and registered action identify the workflow's statistical cohort.
+A different recipe at a later attachment starts a separate cohort. A recipe
+change while an already attached task is queued does not rewrite its original
+conditions or exclude its first-attempt outcome. Opening a new finite enrollment
+window preserves learning from earlier comparable outcomes; its label and expiry are audit
 metadata. The original probability freezes at attachment:
 `(4 * 0.7 + prior successes) / (4 + prior resolved outcomes)`, using at most
 50 earlier original forecasts and their latest available outcome correction.
 The four-observation prior limits early movement; the result is not yet
 calibrated. The same record freezes a constant 0.7 baseline. Readback reports
 paired Brier scores and an always-completes baseline, with no suggestion enabled.
-The selected recipe is configuration attribution, not proof of the eventual
-processor or a global model ranking. Owner work projection includes only the
-role and configuration revision; the sanitized full recipe stays in the ledger.
+The owner probability view identifies `configuration_revision` with
+`configuration_basis: attachment_time` and reports
+`execution_configuration_observed: false`. Its role and revision describe the
+attachment snapshot, not the configuration loaded by the eventual worker.
+The sanitized full snapshot remains in the immutable ledger's
+`conditions.role_recipe` and `model_provenance.capabilities` fields as the
+attachment-time configuration used by these forecasts; worker execution
+configuration remains unobserved. Provider response
+labels remain diagnostics and cannot attest the worker's loaded recipe.
+This is a workflow outcome prediction conditional on recorded attachment
+configuration, not a causal evaluation or ranking of a model.
+
+This representation change preserves existing forecast and outcome records,
+cohort membership and scores. Enrollment remains off by default and new
+prospective enrollment remains prohibited pending separate review of queued
+configuration changes; this clarification does not authorize enrollment.
 
 Independent terminal execution failures count even when no provider model
 label was observed. A later successful retry cannot replace the first failure.
@@ -43,8 +58,8 @@ attempt that is later resumed. Pending or missing observations stay unresolved;
 a slow task alone is not a failure receipt. Both failures and exclusions remain
 visible. Erased evidence stops contributing to future estimates.
 
-For prospective evaluation, freeze the selection and source versions before
-enrolling the next eight genuinely needed reviews of one registered class, or
+After that review, prospective evaluation must freeze selection and source
+versions before enrolling the next eight genuinely needed reviews of one registered class, or
 until 72 hours elapse, whichever comes first. Do not create tasks to fill the
 cohort. Compare untouched candidate and baseline probabilities on the same
 resolved first-attempt outcomes, reporting unresolved and censored counts,

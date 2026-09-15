@@ -294,6 +294,8 @@ def task_outcome(operation, review, native, state, owner):
     A native completed first attempt is a lifecycle outcome, not an assessed
     artifact. Model failures remain failures even without a response-model
     label. No probability authorizes polling, retry, outreach or escalation.
+    Role configuration was observed at attachment; neither that snapshot nor
+    a later response label attests which configuration the worker loaded.
     """
     parts = _parts(review, native, state, owner)
     if parts is None:
@@ -399,6 +401,7 @@ def task_outcome(operation, review, native, state, owner):
         'sample_n':conditions['estimate']['sample_n'],
         'role':conditions['role_recipe']['role'],
         'configuration_revision':conditions['role_recipe']['configuration_revision'],
+        'configuration_basis':'attachment_time', 'execution_configuration_observed':False,
         'calibrated':False, 'suggestion_enabled':False, 'quality_evaluated':False}
     if latest and prediction['outcome'] in {'hit','miss'}:
         value = int(prediction['outcome'] == 'hit')
