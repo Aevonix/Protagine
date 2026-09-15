@@ -438,6 +438,14 @@ model perception remain unobserved.
 
 ## Opening retained task results
 
+Task status includes `status_basis` and `status_observed_at_utc`, the time of
+the inspection. `dispatching` means the adapter is dispatching the accepted
+task; `running` means a native active-turn token was observed. The timestamp
+is neither a start time nor a worker heartbeat. A retained result reports
+`done` with basis `retained_assistant_report`; its `result_provenance` marks
+the assertions unverified and external effects unobserved. The result's source
+dependencies identify its inputs, without verifying the report's claims.
+
 For a failed background task, `pacomind_task` with `operation="status"` exposes
 the observed native failure separately from a retained answer when the runtime
 supplies a settled-turn outcome. It preserves the original input references.

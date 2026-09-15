@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.7.2 - quoted preferences and model qualification budgets
+## v1.7.2 - source references, task status and model qualification
 
 Memory formation can retain a standing preference as its exact source quotation.
 A generated paraphrase that is not a literal source span is discarded in favor
@@ -8,14 +8,20 @@ of that quotation and passed through the existing semantic admission review.
 Conditions and exceptions remain attached. Quoted statements retain their source
 history; differing wording alone does not establish a contradiction.
 
+For a short text message, the extractor can select a source reference instead of
+copying its quotation. Code resolves the reference to the original text before
+the existing validation and review. Longer passages and audio retain their
+existing source boundaries.
+
+Native task status distinguishes dispatch in progress from an observed active
+turn. Status includes its observation basis, and a retained worker answer is
+identified as an assistant report with external effects still unverified.
+
 Direct model qualification uses the selected binding's configured output
 allowance, frozen in a versioned recipe before execution. It records the client
 allowance, completion status and available token usage. Truncated replies retain
 bounded partial evidence and remain incomplete results. Domain consumers keep
 their own output limits, and qualification does not change deployed model roles.
-
-These changes repair memory representation and measurement. They do not establish
-that a particular model is qualified or that a deployment has completed Phase 1.
 
 ## v1.7.1 - recollection and proposal repairs
 

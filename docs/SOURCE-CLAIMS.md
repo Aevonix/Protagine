@@ -14,6 +14,17 @@ The background consumer uses the named extraction role and its configured local 
 
 Extraction accepts at most six assertions per string user message of at most 12,000 characters. Each must retain an exact contiguous source quotation, its message hash and character span. Subject and value must occur in that quotation. Unsupported, uncertain or rejected extraction remains raw source evidence. No confidence number is promoted to truth. The result records the extractor model alias and extraction version; changing the model does not change stored assertions.
 
+For typed messages of at most 500 characters, extraction version 15 offers an
+`evidence_refs` entry for the complete current message. The extractor can return
+its `evidence_ref` instead of copying the quotation. The consumer resolves that
+reference to the current source bytes before applying the existing subject,
+value, date, correction and admission checks. Unknown references and conflicting
+literal quotations are rejected; literal output remains supported without fuzzy
+quote repair. The reference grants no truth or authority and does not bypass
+preference review or change the existing whole-source episode policy. Longer
+messages continue selecting bounded literal passages. Audio transcripts retain
+their existing segment quotation and provenance checks and receive no such ref.
+
 Version 2 also requires a useful memory category and an inspectable reason for
 later recall. These are unverified model judgments. Explicit personal-disavowal
 phrases are checked against the full message so an extractor cannot clip them

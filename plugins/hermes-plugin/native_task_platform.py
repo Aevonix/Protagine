@@ -17,7 +17,7 @@ import threading
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from .task_handoffs import TaskHandoffError
+from .task_handoffs import TaskHandoffError, status_view
 from .task_model_roles import (
     configured_task_model_roles, resolve_task_model_role, select_task_model_role,
 )
@@ -397,13 +397,14 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 return result
             row, resolved, sources = await asyncio.to_thread(self.handoffs.inspect_sources, identity)
         except (TaskHandoffError, self._error):
-            return {'handoff_id': identity, 'status': 'unavailable', 'reason': 'source_unavailable'}
+            return status_view('unavailable', 'source_unavailable',
+                               handoff_id=identity, reason='source_unavailable')
         result = {'handoff_id': identity, 'status': 'queued', **sources,
+                  'status_basis': 'retained_admission',
                   'native_session_id': row['native_session_id'],
                   'native_task_id': row['native_task_id'], 'native_turn_id': row['native_turn_id']}
         if row['response']:
-            return {**result, 'status': 'done', 'result': row['response']['text'],
-                    'source_dependencies': row['response']['source_dependencies'],
+            return {**result, **self.handoffs.response_view(row),
                     'delivery': {'retained': True, 'playback': 'unobserved'}}
         failed = self.handoffs.failure_view(row)
         if failed:
@@ -420,24 +421,30 @@ class NativeTaskAdapter(BasePlatformAdapter):
                 if (origin is None or origin.platform != source.platform or origin.chat_id != identity
                         or origin.user_id != resolved['contact_id']
                         or (origin.profile or None) != (source.profile or None)):
-                    return {**result, 'status': 'unavailable', 'reason': 'native_origin_changed'}
+                    return {**result, **status_view('unavailable', 'native_origin_changed'),
+                            'reason': 'native_origin_changed'}
                 result['native_session_id'] = entry.session_id
                 if entry.active_turn_token:
-                    result['status'] = 'running'
+                    result.update(status='running', status_basis='native_active_turn_token')
                 elif entry.resume_pending or entry.suspended:
-                    result['status'] = 'interrupted'
+                    result.update(status='interrupted', status_basis=(
+                        'native_resume_pending' if entry.resume_pending else 'native_suspended'))
                 else:
-                    result['status'] = 'unavailable'
-        if result['status'] == 'queued' and identity in self._submitting:
-            result['status'] = 'running'
+                    result.update(status='unavailable', status_basis='native_session_idle')
+        if (result['status_basis'] in {'retained_admission', 'native_session_idle'}
+                and identity in self._submitting):
+            # Admission can create an empty session before acquiring a native
+            # turn token. The in-process dispatch guard is not execution proof.
+            result.update(status='dispatching', status_basis='adapter_dispatch_in_progress')
         elif result['status'] == 'queued':
             try:
                 selected = await asyncio.to_thread(self._task_model_role, row.get('model_role'))
                 if selected is not None and store is None:
                     raise self._error('Native session store is unavailable')
             except (self._error, OSError, ValueError):
-                result.update(status='unavailable', reason='task_model_role_unavailable')
-        return result
+                result.update(status='unavailable', status_basis='task_model_role_unavailable',
+                              reason='task_model_role_unavailable')
+        return status_view(**result)
 
     async def stop(self, identity):
         async with self._control_lock:

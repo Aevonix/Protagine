@@ -15,7 +15,7 @@ import sqlite3
 import time
 
 from .client import PrivateSQLitePath
-from .task_handoffs import TaskHandoffError, TaskHandoffs, erase_task_handoffs
+from .task_handoffs import TaskHandoffError, TaskHandoffs, erase_task_handoffs, status_view
 from .task_sources import NativeTaskSources, owner_lookup_deadline
 
 
@@ -338,10 +338,12 @@ class NativeTasks:
         if row.get('model_role') is not None:
             result['model_role'] = row['model_role']
         if row['response']:
-            return {**result, 'status': 'done', 'delivery': 'unobserved'}
+            return {**result, **TaskHandoffs.response_view(row, include_content=False),
+                    'delivery': 'unobserved'}
         stopped = TaskHandoffs.stop_view(row)
         return {**result, **(stopped or TaskHandoffs.failure_view(row)
-                            or {'status': 'unknown', 'reason': 'native_liveness_unobserved'})}
+                            or status_view('unknown', 'native_liveness_unobserved',
+                                           reason='native_liveness_unobserved'))}
 
     def request_revision(self, scope, task_ids, *, deadline_monotonic):
         """Read one accepted update locally; the request boundary checks its sources.
@@ -500,8 +502,7 @@ class NativeTasks:
                 return json.dumps({'task_id': identity, 'executor': 'native_hermes', **observed})
             row, _, sources = self.handoffs.inspect_sources(identity)
             if row['response']:
-                return json.dumps({'task_id': identity, 'status': 'done', **sources, 'result': row['response']['text'],
-                    'source_dependencies': row['response']['source_dependencies'],
+                return json.dumps({'task_id': identity, **sources, **self.handoffs.response_view(row),
                     'delivery': {'retained': True, 'outward': 'unobserved'}})
             return json.dumps({**self._metadata(row), **sources})
         except Exception as error:

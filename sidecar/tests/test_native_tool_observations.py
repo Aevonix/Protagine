@@ -531,7 +531,8 @@ def test_actual_native_responses_conversion_places_hint_in_instructions(native):
 
 
 @pytest.mark.parametrize('format', ['chat', 'anthropic', 'responses'])
-def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(native, format):
+@pytest.mark.parametrize('outage', [False, True], ids=['available', 'pending'])
+def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(native, format, outage):
     n = native
     earlier = {'command': 'printf first-status'}
     later = {'command': 'printf detailed-inspection'}
@@ -551,14 +552,22 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     assert all(row['tool_name'] == 'terminal' and row['arguments_truncated'] is False for row in candidates)
 
     # A wrong nomination remains the exact selected original, visibly identified.
+    n.clients[0].outage = outage
     receipt = n.retain('earlier-call', reason='Retain the detailed inspection outcome.', include_input=True)
-    assert receipt['source_recorded'], n.diagnostics(receipt)
+    # Bounded delivery may leave the exact durable nomination pending. Its
+    # identity must remain truthful in both states, without claiming persistence.
+    assert receipt['state'] in {'pending', 'delivered'}, n.diagnostics(receipt)
+    assert receipt['accepted'] is (receipt['state'] == 'delivered')
+    assert receipt['source_recorded'] is (receipt['state'] == 'delivered')
+    if outage:
+        assert receipt['state'] == 'pending'
     selected = receipt['selected_call']
     assert selected == {'tool_call_id': 'earlier-call', 'tool_name': 'terminal',
         'message_id': message_id, 'result_sha256': hashlib.sha256(b'first-status').hexdigest(),
         'arguments_preview': json.dumps(earlier, sort_keys=True, separators=(',', ':')),
         'arguments_truncated': False}
     row = next(row for row in n.outbox.snapshot() if row['turn_id'] == receipt['source_id'])
+    assert row['state'] == receipt['state']
     observation = row['payload']['observation']
     assert observation['content'] == 'first-status'
     assert observation['native']['tool_call_id'] == 'earlier-call'

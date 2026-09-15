@@ -100,15 +100,22 @@ def test_wrong_visual_readings_and_invented_unknowns_fail(case_id, field, wrong,
 
 
 def test_real_cli_router_transmits_images_and_records_candidate_output_identity_and_usage(tmp_path, capsys):
+    cap = 6144
+
     def answer(payload):
         case = next(case for case in CASES if case.inputs['messages'] == payload['messages'])
         assert _image(payload['messages']) == _image(case.inputs['messages'])
-        assert payload.get('max_tokens', payload.get('max_completion_tokens')) == 768
+        frozen = next(row for row in read(tmp_path/'run/run.json')['cases'] if row['id'] == case.id)
+        assert frozen['inputs']['messages'] == payload['messages']
+        assert frozen['inputs']['max_output_tokens'] == cap
+        assert frozen['version'] == '1-configured-output-v1'
+        assert payload.get('max_tokens', payload.get('max_completion_tokens')) == cap
         assert 'oracle' not in payload and 'fields' not in payload
         return json.dumps(ANSWERS[case.id])
 
     with endpoint(content=answer) as (url, calls):
         cfg = config(url, url)
+        cfg['modelPool']['deliberate']['maxTokens'] = cap
         args = _args(tmp_path, cfg)
         original = args.config.read_bytes()
         assert run(args) == 0
@@ -129,7 +136,9 @@ def test_real_cli_router_transmits_images_and_records_candidate_output_identity_
             assert observed['configured_model'] == 'openai/strong-neutral'
             assert observed['returned_model'] == 'strong-neutral'
             assert observed['weight_revision'] == 'fixture-revision-b'
-            assert observed['usage'] == {'prompt_tokens': 10, 'completion_tokens': 2, 'total_tokens': 12}
+            assert observed['requested_max_output_tokens'] == observed['client_max_tokens'] == cap
+            assert observed['usage'] == {'prompt_tokens': 10, 'completion_tokens': 2,
+                'total_tokens': 12, 'reasoning_tokens': None}
             assert observed['prior_attempts'] == []
             assert observed['completion_evidence']['text'] == result['output']
             assert observed['completion_evidence']['truncated'] is False
