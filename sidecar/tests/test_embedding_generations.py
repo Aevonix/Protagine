@@ -206,6 +206,68 @@ async def test_multimodal_api_has_explicit_endpoint_without_losing_text_provider
 
 
 @pytest.mark.asyncio
+async def test_explicit_request_width_requires_its_own_generation(tmp_path, monkeypatch):
+    import httpx
+    import json
+    from pacomind.vector.config import EmbeddingConfig
+    from pacomind.vector.embedder import EmbeddingPipeline
+    from pacomind.vector.openai_provider import OpenAIAPIEmbeddingProvider
+
+    # A previously persisted native-width generation remains readable unchanged.
+    fingerprint = 'a8fdadd7a8c5b78efd98394dfe7b51cf817a1345738630f36fb8fb590d10214c'
+    prior_identity = ('{"declared_revision":"declared-r1","dimensions":2,"document_format":"raw-text-v1",'
+        '"normalization":"unspecified","quantization":"unspecified","query_format":"prefix-v1:Retrieve: ",'
+        '"requested_model":"neutral","served_model":"served-neutral"}')
+    catalog = IndexCatalog(TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db'))
+    with catalog.ledger._connect() as conn:
+        conn.execute('INSERT INTO vector_generations(id,fingerprint,identity_json,status) VALUES(?,?,?,?)',
+                     ('prior', fingerprint, prior_identity, 'ready'))
+        conn.execute('INSERT INTO vector_active(slot,generation_id) VALUES(1,?)', ('prior',))
+    requests = []
+    def response(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'model': 'served-neutral',
+            'data': [{'index': 0, 'embedding': [1., 0.]}]})
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: client(transport=httpx.MockTransport(response), **kw))
+    monkeypatch.setenv('PACOMIND_EMBED_QUERY_INSTRUCTION', 'Retrieve: ')
+
+    async def pipeline(request_dimensions):
+        provider = OpenAIAPIEmbeddingProvider(EmbeddingConfig(provider='openai_api',
+            model_id='neutral', dimensions=2, revision='declared-r1', request_dimensions=request_dimensions))
+        provider.configure('http://fixture/v1', '')
+        result = EmbeddingPipeline(provider)
+        await result.warmup()
+        return result
+
+    native = await pipeline(None)
+    assert native.index_identity.fingerprint == fingerprint
+    assert catalog.read_generation(native.index_identity)['id'] == 'prior'
+    explicit = await pipeline(2)
+    assert explicit.index_identity.request_dimensions == 2
+    assert explicit.index_identity.dimensions == native.index_identity.dimensions
+    with pytest.raises(IncompatibleIndex):
+        catalog.read_generation(explicit.index_identity)
+    with pytest.raises(IncompatibleIndex):
+        catalog.write_generation(explicit.index_identity)
+    building = catalog.begin(explicit.index_identity)
+    assert building['identity']['request_dimensions'] == 2
+    assert catalog.write_generation(explicit.index_identity)['id'] == building['id']
+    assert catalog.read_generation(native.index_identity)['id'] == 'prior'
+    catalog.promote(building['id'], explicit.index_identity)
+    assert catalog.read_generation(explicit.index_identity)['id'] == building['id']
+    with pytest.raises(IncompatibleIndex):
+        catalog.read_generation(native.index_identity)
+
+    # Changing a live pipeline cannot reuse cached vectors or issue another request.
+    native._provider._config.request_dimensions = 2
+    with pytest.raises(IncompatibleIndex, match='configuration changed'):
+        await native.embed('A copper key.')
+    assert len(requests) == 2
+    assert 'dimensions' not in requests[0] and requests[1]['dimensions'] == 2
+
+
+@pytest.mark.asyncio
 async def test_provider_order_identity_and_query_format_are_bound(monkeypatch):
     import httpx
     from pacomind.vector.config import EmbeddingConfig

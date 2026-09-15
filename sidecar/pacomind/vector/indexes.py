@@ -26,10 +26,15 @@ class EmbeddingIdentity:
     query_format: str = "raw-text-v1"
     normalization: str = "unspecified"
     quantization: str = "unspecified"
+    request_dimensions: int | None = None
 
     @property
     def fingerprint(self) -> str:
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True,
+        payload = asdict(self)
+        # An omitted API option preserves the existing native-width identity.
+        if self.request_dimensions is None:
+            payload.pop("request_dimensions")
+        return hashlib.sha256(json.dumps(payload, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
 
     @classmethod
@@ -44,6 +49,7 @@ class EmbeddingIdentity:
             query_format='prefix-v1:' + pipeline.query_instruction,
             normalization="provider-l2" if config.provider in {"cpu", "cuda", "mlx"} else "unspecified",
             quantization=config.quantization or "unspecified",
+            request_dimensions=config.request_dimensions,
         )
 
 

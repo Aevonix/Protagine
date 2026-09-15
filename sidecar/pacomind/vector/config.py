@@ -55,6 +55,17 @@ class EmbeddingConfig:
     revision: Optional[str] = None  # operator-declared weights/deployment revision; not verification
     base_url: Optional[str] = field(default=None, repr=False)
     api_key: Optional[str] = field(default=None, repr=False)
+    request_dimensions: Optional[int] = None  # explicit text API option; dimensions still validates output
+
+    def __post_init__(self) -> None:
+        if self.request_dimensions is None:
+            return
+        if type(self.request_dimensions) is not int or self.request_dimensions <= 0:
+            raise ValueError("request_dimensions must be a positive integer")
+        if self.provider != "openai_api":
+            raise ValueError("request_dimensions requires the openai_api text embedding provider")
+        if self.request_dimensions != self.dimensions:
+            raise ValueError("request_dimensions must equal the configured output dimensions")
 
     @classmethod
     def from_env(cls) -> Optional[EmbeddingConfig]:
@@ -75,6 +86,8 @@ class EmbeddingConfig:
             quantization=os.environ.get("PACOMIND_EMBED_QUANTIZATION") or None,
             cache_dir=os.environ.get("PACOMIND_EMBED_CACHE_DIR") or None,
             revision=os.environ.get("PACOMIND_EMBED_REVISION") or None,
+            request_dimensions=(int(os.environ["PACOMIND_EMBED_REQUEST_DIMS"])
+                if os.environ.get("PACOMIND_EMBED_REQUEST_DIMS") else None),
         )
 
 
