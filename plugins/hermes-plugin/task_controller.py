@@ -580,15 +580,21 @@ class NativeTasks:
                     or any(origin.get(key) != getattr(scope, key, None)
                         for key in ('session_id', 'turn_id', 'platform'))):
                 return None
+            guidance = 'You can inspect or steer it using this task ID.'
             if 'task_id' in args:
                 if (set(args) != {'operation', 'task_id'} or args['task_id'] != row['id']
-                        or result.get('existing_task') is not True
-                        or row['stop'] or row['terminal'] or row['response']):
+                        or result.get('existing_task') is not True):
                     return None
+                self.sources.authorize_control(row['source'], scope)
+                row, _ = self.handoffs.resolve(row['id'])
+                # The persisted tool result already accepted this handoff.
+                # A later completion or stop does not undo that historical
+                # receipt; current source and owner authority still apply.
+                guidance = 'Inspect this task ID for its current status.'
             elif (row['request'] != args.get('request')
                     or args.get('model_role') != (row['model_role'] or {}).get('role')):
                 return None
-            return FinishTurn(text=f"Accepted task `{row['id']}`. You can inspect or steer it using this task ID.",
+            return FinishTurn(text=f"Accepted task `{row['id']}`. {guidance}",
                               tool_call_id=tool_call_id)
         except (KeyError, TypeError, ValueError, TaskHandoffError):
             return None

@@ -41,8 +41,12 @@ class RuntimeModelObserver:
                     'response_model': kwargs.get('response_model') if phase == 'response' else None}
             # Best-effort observation cannot prevent native work. A missing
             # start/end produces explicitly incomplete provenance at readback.
-            response = self.client.post('/v1/host/initiative-work/'+quote(identifier, safe='')+'/model-observation',
-                                        json=body, timeout=.4)
+            # Bounded review workers resolve the existing root credential only
+            # after this callback verifies a current initiative run. Registration
+            # and follow-up/unknown callbacks need no client or root secrets.
+            client = self.client() if callable(self.client) else self.client
+            response = client.post('/v1/host/initiative-work/'+quote(identifier, safe='')+'/model-observation',
+                                   json=body, timeout=.4)
             response.raise_for_status()
         except Exception:
             return

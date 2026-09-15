@@ -82,7 +82,8 @@ api.__enter__()
 ledger = get_turn_idempotency_ledger(state)
 wire, generation, foreground_calls, tool_results = [], {'alpha': [], 'beta': [], 'failure': []}, {}, {}
 context_reads = []
-held = {name: threading.Event() for name in ('alpha', 'beta', 'alpha_next', 'failure_next')}
+held = {name: threading.Event() for name in (
+    'alpha', 'beta', 'alpha_next', 'failure_next', 'failure_terminal')}
 release = {name: threading.Event() for name in held}
 task_ids = {}
 expected_failure_turn = None
@@ -368,9 +369,23 @@ def no_network(*args, **kwargs):
 socket.socket.connect = no_network
 socket.create_connection = no_network
 from hermes_cli.plugins import get_plugin_manager
+from pacomind_hermes.task_handoffs import TaskHandoffs
+original_observe_terminal = TaskHandoffs.observe_terminal
+
+
+def held_failure_terminal(self, identity, native, *, basis='native_on_session_end'):
+    if (basis == 'native_on_native_turn_settled'
+            and self.get(identity)['request'].startswith('TASK_FAILURE:')):
+        # A provider notice can precede native settlement. Make that real
+        # interleaving deterministic without replacing the terminal observation.
+        held['failure_terminal'].set()
+        assert release['failure_terminal'].wait(35), 'Failure settlement was never released'
+    return original_observe_terminal(self, identity, native, basis=basis)
+
+
+TaskHandoffs.observe_terminal = held_failure_terminal
 if existing_handoff:
     from pacomind_hermes.task_controller import NativeTasks
-    from pacomind_hermes.task_handoffs import TaskHandoffs
     original_admit, original_call = TaskHandoffs.admit, NativeTasks._call
     def counted_admit(self, **kwargs):
         admissions.append(kwargs.copy())
@@ -460,8 +475,10 @@ async def exercise():
             if mixed_handoff:
                 assert answers[0] == 'The mixed tool batch completed without terminating the foreground turn.', answers
             else:
+                guidance = ('Inspect this task ID for its current status.' if existing_handoff else
+                            'You can inspect or steer it using this task ID.')
                 assert answers[0] == (f"Accepted task `{task_ids['alpha']}`. "
-                    'You can inspect or steer it using this task ID.'), answers
+                    + guidance), answers
             entry = runner.session_store.get_or_create_session(alpha_event.source, touch_activity=False)
             messages = runner._session_db._db.get_messages(entry.session_id)
             results = [json.loads(row['content']) for row in messages if row['role'] == 'tool']
@@ -611,7 +628,12 @@ async def exercise():
         await wait_for(lambda: any('TASK_FAILURE' in row['request'] and row['notice_json']
             for row in adapter.handoffs.recent()), 'failed task notice')
         failed = next(row for row in adapter.handoffs.recent() if 'TASK_FAILURE' in row['request'])
+        assert failed['terminal'] is None and adapter._session_tasks, failed
+        release['failure_terminal'].set()
         await wait_for(lambda: not adapter._session_tasks, 'failed task delivery cleanup')
+        assert held['failure_terminal'].is_set(), 'The native failure settlement hook was not reached'
+        # The earlier notice row is a snapshot, not a live task view.
+        failed = adapter.handoffs.get(failed['id'])
         assert failed['terminal'] and failed['terminal']['failed'], failed
         assert failed['terminal']['failure_reason'] == 'timeout', failed
         assert failed['terminal']['failure_retryable'] is True, failed
@@ -695,6 +717,7 @@ async def exercise():
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,
             'matching_native_stop_terminal': True, 'late_reply_suppressed': True,
             'retry_exhaustion_retains_typed_failure_without_answer_receipt': True,
+            'failure_notice_precedes_settlement_and_cleanup_refreshes_exact_task': True,
             'failed_status_survives_database_reopen_without_redispatch': True,
             'owner_resume_preserves_same_task_session_and_completed_file_effect': True,
             'stale_duplicate_stopped_completed_resume_does_not_execute': True,

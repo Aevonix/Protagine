@@ -6,6 +6,8 @@ A conversation can finish by returning a task it already submitted in that
 turn. `handoff` with the existing `task_id` preserves the instruction, selected
 model and running work without submitting a duplicate. Current owner and source
 checks still apply; a task that has ended remains available through `status`.
+If the worker finishes while that acceptance is being returned, the conversation
+still receives its task ID. The receipt does not claim a successful outcome.
 
 Memory retention is offered when the current request contains an eligible
 completed tool result. Task workers no longer receive ordinary-owner task
@@ -13,6 +15,10 @@ controls or foreground handoff instructions. Current schemas and tool discovery
 agree on those capabilities, while original conversation history remains intact.
 Generic work observations retain their task IDs, evidence and status without
 assuming that every consumer exposes the same task tool.
+
+Managed review workers now register the existing model-request observer, so
+their requests can contribute to forecast evidence. Missing observations remain
+explicitly incomplete; this change does not enable forecast-driven scheduling.
 
 ## v1.8.1 - clearer working context and memory selection
 
