@@ -1,12 +1,17 @@
 # Changelog
 
-## v1.7.1 - owner API recollection and native proposal validation
+## v1.7.1 - recollection and proposal repairs
 
 Automatic recollection uses the general plugin's resolved identity for the
 current owner API turn. Previously, explicit memory tools could recognize that
 owner while the memory provider withheld automatic recall from the same turn.
 The provider requires a matching active turn and owner; it does not treat every
 API conversation as the owner.
+
+Memory extraction and review both accept a single complete JSON code block.
+Previously, a review in that format was rejected before its assertions could
+be committed. Duplicate keys, incomplete decisions and invalid values still
+fail validation; surrounding prose is not searched for a usable JSON fragment.
 
 Background skill creation uses Hermes' own validators before staging a proposal.
 Invalid content returns its error to the reviewer immediately, allowing a
