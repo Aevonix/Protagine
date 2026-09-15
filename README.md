@@ -3,12 +3,10 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/branding/protagine-primary-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/branding/protagine-primary-light.svg">
-  <img alt="Protagine" src="docs/branding/protagine-primary-light.svg" width="440">
+  <img alt="Protagine — Proto AGI Engine" src="docs/branding/protagine-primary-light.svg" width="440">
 </picture>
 
-**A Proto-AGI engine for persistent agents.**
-
-[protagine.ai](https://protagine.ai)
+**Proto AGI Engine**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml)
@@ -205,8 +203,10 @@ credentials and deployment configuration out of public commits and examples.
 ## Branding
 
 Protagine is a project from [Aevonix Research](https://aevonix.com).
-See the [repository asset notes](docs/branding/README.md) for the Protagine
-wordmarks and icon used here.
+The [Protagine logo kit](https://aevonix.com/brand/current/protagine-logos.zip)
+includes SVG, PDF and PNG artwork. See the
+[brand guide](https://aevonix.com/branding) for colors, spacing and usage,
+or the [repository asset notes](docs/branding/README.md) for the files used here.
 
 ## License
 
