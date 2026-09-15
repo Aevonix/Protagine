@@ -35,7 +35,8 @@ def native(source_app, monkeypatch, tmp_path, request):
     dbpath.parent.mkdir()
     monkeypatch.setattr(hermes_state, '_default_db_path', lambda: dbpath)
     db = hermes_state.SessionDB(dbpath)
-    db.create_session('native-session', getattr(request, 'param', 'cli'))
+    fixture_options = getattr(request, 'param', 'cli')
+    db.create_session('native-session', fixture_options if isinstance(fixture_options, str) else 'cli')
     db.append_message('native-session', 'user', INSTRUCTION)
     keyring = tmp_path/'keys.json'
     _write_keyring(keyring, [_principal(principal='host', secret='writer', viewer='cid-owner'),
@@ -102,6 +103,10 @@ def native(source_app, monkeypatch, tmp_path, request):
         monkeypatch.setattr(plugin, 'PacoMindClient', make_client)
         context = _Context(tmp_path/'outbox.db')
         context.config['plugins']['pacomind'] = context.config['plugins'].pop('pacomind')
+        if isinstance(fixture_options, dict) and fixture_options.get('tasks'):
+            context.config['plugins']['pacomind']['native_tasks'] = {'enabled': True}
+            context.platforms = {}
+            context.register_platform = lambda **kwargs: context.platforms.update({kwargs['name']: kwargs})
         plugin.register(context)
         from hermes_cli import middleware as native_middleware, plugins as native_plugins
         manager = SimpleNamespace(_middleware={key:[value] for key,value in context.middleware.items()})
@@ -114,8 +119,8 @@ def native(source_app, monkeypatch, tmp_path, request):
             conversation_history=[{'role':'user','content':INSTRUCTION}])
         messages = [{'role':'user','content':INSTRUCTION}]
         def request(request_id='api-2', *, anthropic=False, responses=False, deferred=False, tools=True,
-                    before_middleware=None):
-            payload = {'messages': copy.deepcopy(messages), 'tools':[{'type':'function','function':
+                    before_middleware=None, execution_scope=None, history=None):
+            payload = {'messages': copy.deepcopy(messages if history is None else history), 'tools':[{'type':'function','function':
                 context.tools['pacomind_memory_retain_observation']['schema']}]}
             if deferred:
                 from tools.tool_search import assemble_tool_defs, ToolSearchConfig
@@ -137,7 +142,7 @@ def native(source_app, monkeypatch, tmp_path, request):
             if before_middleware is not None:
                 before_middleware(payload)
             return native_middleware.apply_llm_request_middleware(payload,
-                **call_context, api_request_id=request_id,
+                **(call_context if execution_scope is None else execution_scope), api_request_id=request_id,
                 api_mode='anthropic_messages' if anthropic else 'chat_completions')
         request('api-1')
         def complete(call_id='call-1', result=RESULT, name='fixture_observe', arguments=None):
@@ -496,6 +501,306 @@ def test_actual_native_deferred_catalog_and_completed_call_offer_bounded_hint(na
     assert n.messages == before
     receipt = n.retain()
     assert receipt['source_recorded'], n.diagnostics(receipt)
+
+
+@pytest.mark.parametrize('surface', ['request', 'search', 'describe'])
+def test_zero_candidate_turn_does_not_offer_retention(native, monkeypatch, surface):
+    """Reproduce the capture that discovered retention before any result existed.
+
+    User facts are already captured by the turn writer. A discovery receipt
+    does not make the separate original-tool-result retention path usable.
+    """
+    from unittest.mock import MagicMock, patch
+    from run_agent import AIAgent
+    from agent.tool_executor import execute_tool_calls_sequential
+    from tools import tool_search
+    from tools.registry import registry
+    n = native
+    name = 'pacomind_memory_retain_observation'
+    schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
+    observe_schema = {'name': 'fixture_observe', 'description': 'Inspect the copper fixture.',
+                      'parameters': {'type': 'object', 'properties': {}}}
+    configuration = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})
+    monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: configuration)
+    monkeypatch.setattr('model_tools.get_tool_definitions', lambda **kwargs:
+                        [schema, {'type': 'function', 'function': observe_schema}])
+    monkeypatch.setattr('model_tools.check_toolset_requirements', lambda **kwargs: {})
+    monkeypatch.setattr('hermes_cli.plugins.discover_plugins', lambda **kwargs: None)
+    monkeypatch.setattr('agent.model_metadata.get_model_context_length', lambda *args, **kwargs: 65536)
+    monkeypatch.setattr('agent.model_metadata._resolve_custom_endpoint_context_length', lambda *args, **kwargs: 65536)
+    monkeypatch.setattr(registry, '_tools', dict(registry._tools))
+    registry.register(name, 'pacomind', n.context.tools[name]['schema'],
+                      n.context.tools[name]['handler'], override=True)
+    registry.register('fixture_observe', 'fixture', observe_schema,
+        lambda args, **kwargs: subprocess.run([sys.executable, '-c', 'import sys; sys.stdout.write(sys.argv[1])', RESULT],
+            check=True, capture_output=True, text=True, timeout=5).stdout)
+    with patch('agent.process_bootstrap.OpenAI'), patch('agent.model_metadata.fetch_model_metadata', return_value={}):
+        agent = AIAgent(api_key='fixture', base_url='http://127.0.0.1:1/v1', provider='openai',
+            model='fixture/model', session_id='native-session', session_db=n.db, quiet_mode=True,
+            skip_context_files=True, skip_memory=True, skip_background_review=True, platform='cli')
+    agent._current_turn_id, agent._current_api_request_id = 'native-turn', 'zero-candidate'
+    agent._subdirectory_hints.check_tool_call = MagicMock(return_value='')
+    agent._end_session_on_close = False
+    def execute(function_name, args, call_id):
+        call = {'id': call_id, 'type': 'function',
+                'function': {'name': function_name, 'arguments': json.dumps(args)}}
+        n.messages.append({'role': 'assistant', 'content': None, 'tool_calls': [call]})
+        assistant = SimpleNamespace(tool_calls=[SimpleNamespace(id=call['id'], type='function',
+            function=SimpleNamespace(**call['function']))])
+        execute_tool_calls_sequential(agent, assistant, n.messages, 'native-task', finalize=False)
+        return json.loads(n.messages[-1]['content'])
+    def discover(call_id):
+        function_name = 'tool_search' if surface == 'search' else 'tool_describe'
+        args = {'queries': [name]} if surface == 'search' else {'names': [name]}
+        return execute(function_name, args, call_id)
+    try:
+        request = n.request('zero-candidate', deferred=True).payload
+        assert 'pacomind-observation-candidates-v1' not in str(request)
+        if surface == 'request':
+            functions = [row['function'] for row in request['tools']]
+            assert name not in str(functions)
+        else:
+            result = discover('discover-without-result')
+            assert name not in result['tools']
+            if surface == 'search':
+                assert result['total_available'] == 1  # The independent observation tool remains.
+                assert result['results'][0]['matches'] == []
+            else:
+                assert result['not_found'] == [name]
+        assert not n.outbox.snapshot()
+
+        # A real local completion, exact persistence, and a subsequent request
+        # make the same tool available without rebuilding the native catalog.
+        assert execute('fixture_observe', {}, 'call-1') == json.loads(RESULT)
+        previous = copy.deepcopy(n.messages)
+        offered = n.request('eligible', deferred=True).payload
+        assert name in str(offered['tools']) and n.messages == previous
+        agent._current_api_request_id = 'eligible'
+        if surface != 'request':
+            assert name in discover('discover-with-result')['tools']
+        # Invoke the native deferred wrapper, not a replacement test handler.
+        args = {'calls': [{'name': name, 'arguments': {'call_id': 'call-1',
+            'reason': 'Use the original copper outcome later.'}}]}
+        receipt = execute('tool_call', args, 'retain-real-result')
+        assert receipt['source_recorded'], n.diagnostics(receipt)
+    finally:
+        agent.close()
+
+
+@pytest.mark.parametrize('api_format', ['chat', 'anthropic', 'responses'])
+def test_direct_retention_schema_follows_exact_current_result(native, api_format):
+    n = native
+    options = {'anthropic': api_format == 'anthropic', 'responses': api_format == 'responses'}
+    name = 'pacomind_memory_retain_observation'
+    assert name not in str(n.request('empty', **options).payload['tools'])
+    n.complete()
+    assert name in str(n.request('complete', **options).payload['tools'])
+    original = copy.deepcopy(n.messages)
+    n.messages[-1]['content'] = 'A different purported outcome.'
+    stale = n.request('stale', **options).payload
+    assert name not in str(stale['tools'])
+    assert 'pacomind-observation-candidates-v1' not in str(stale)
+    n.messages[:] = original
+    assert name in str(n.request('restored', **options).payload['tools'])
+
+
+def test_concurrent_sessions_do_not_share_discovery_eligibility(native, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from hermes_cli import middleware
+    from tools import tool_search
+    n = native
+    name = 'pacomind_memory_retain_observation'
+    schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
+    config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})
+    monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: config)
+    other = {'session_id': 'independent-session', 'task_id': 'independent-task', 'turn_id': 'independent-turn'}
+    n.db.create_session(other['session_id'], 'cli')
+    n.context.hooks['pre_llm_call'](**other, platform='cli', sender_id='owner',
+        user_message=INSTRUCTION, conversation_history=[{'role': 'user', 'content': INSTRUCTION}])
+    n.complete()
+    history = copy.deepcopy(n.messages)
+    barrier = Barrier(2)
+    def discover(scope):
+        # Deliberately identical native request IDs and copied call/result
+        # bytes. Only the first session actually completed this call.
+        request = n.request('shared-request-id', execution_scope=scope, history=history, deferred=True).payload
+        barrier.wait(timeout=5)
+        value = middleware.run_tool_execution_middleware(**scope, api_request_id='shared-request-id',
+            tool_name='tool_describe', tool_call_id='same-discovery-id', args={'names': [name]},
+            next_call=lambda args: tool_search.dispatch_tool_describe(args, current_tool_defs=[schema], config=config))
+        return request, json.loads(value)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = [future.result(timeout=10) for future in
+            [pool.submit(discover, n.scope), pool.submit(discover, other)]]
+    assert name in str(first[0]['tools']) and name in first[1]['tools']
+    assert name not in str(second[0]['tools']) and name not in second[1]['tools']
+    assert second[1]['not_found'] == [name]
+    assert n.messages == history
+
+
+@pytest.mark.parametrize('listing', ['full', 'names'])
+def test_retention_listing_filter_preserves_other_tools_and_original_history(native, listing):
+    from tools import tool_search
+    n = native
+    name = 'pacomind_memory_retain_observation'
+    original = json.dumps({'quoted_tool_name': name})
+    n.complete('catalog-quote', original, 'tool_describe', {'names': [name]})
+    before = copy.deepcopy(n.messages)
+    peers = [{'type': 'function', 'function': {'name': f'fixture_peer_{index:02}',
+        'description': 'Inspect the selected fixture without changing its original records. ' * 3,
+        'parameters': {'type': 'object', 'properties': {}}}} for index in range(20)]
+    visible = {'type': 'function', 'function': {'name': 'fixture_visible',
+        'description': f'This source mentions {name}; preserve this unrelated description verbatim.',
+        'parameters': {'type': 'object', 'properties': {}}}}
+    original_bridge = {}
+    def assemble(payload):
+        payload['tools'] += peers + [visible]
+        config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on',
+            'defer': [name] + [row['function']['name'] for row in peers],
+            'listing_max_tokens': 4000 if listing == 'full' else 200})
+        result = tool_search.assemble_tool_defs(payload['tools'], config=config)
+        assert result.listing_form == listing
+        payload['tools'] = result.tool_defs
+        original_bridge.update({row['function']['name']: copy.deepcopy(row) for row in result.tool_defs})
+    result = n.request('listing-empty', before_middleware=assemble).payload
+    offered = {row['function']['name']: row for row in result['tools']}
+    assert offered['fixture_visible'] == visible
+    assert offered['tool_describe'] == original_bridge['tool_describe']
+    assert offered['tool_call'] == original_bridge['tool_call']
+    description = offered['tool_search']['function']['description']
+    assert name not in description and description.startswith('Search 20 additional tools')
+    assert all(row['function']['name'] in description for row in peers)
+    assert 'other tools (20):' in description
+    assert any(row.get('tool_call_id') == 'catalog-quote' and row.get('content') == original
+               for row in result['messages'])
+    assert n.messages == before
+
+
+def test_search_filter_preserves_unrelated_matches_and_documents_summary_count_limit(native, monkeypatch):
+    from hermes_cli import middleware
+    from tools import tool_search
+    from tools.registry import registry
+    n = native
+    name = 'pacomind_memory_retain_observation'
+    peer = {'name': 'fixture_peer', 'description': 'Inspect copper fixture records.',
+            'parameters': {'type': 'object', 'properties': {}}}
+    defs = [{'type': 'function', 'function': n.context.tools[name]['schema']},
+            {'type': 'function', 'function': peer}]
+    config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name, 'fixture_peer'], 'listing': 'off'})
+    monkeypatch.setattr(registry, '_tools', dict(registry._tools))
+    registry.register(name, 'pacomind', n.context.tools[name]['schema'], n.context.tools[name]['handler'], override=True)
+    registry.register('fixture_peer', 'fixture', peer, lambda args, **kwargs: '{}')
+    n.request('bare-catalog', before_middleware=lambda payload:
+              payload.update(tools=tool_search.assemble_tool_defs(defs, config=config).tool_defs))
+    def search(queries):
+        args = {'queries': queries}
+        original = tool_search.dispatch_tool_search(args, current_tool_defs=defs, config=config)
+        filtered = middleware.run_tool_execution_middleware(**n.scope, api_request_id='bare-catalog',
+            tool_name='tool_search', tool_call_id='discovery', args=args, next_call=lambda args: original)
+        return json.loads(original), json.loads(filtered), original == filtered
+    original, filtered, _ = search([name, 'copper fixture records', 'zzzznonmatching'])
+    assert name not in filtered['tools']
+    assert filtered['tools']['fixture_peer'] == original['tools']['fixture_peer']
+    assert filtered['results'][1] == original['results'][1]
+    assert filtered['total_available'] == original['total_available'] - 1
+    assert filtered['results'][2]['available_sources'] == original['results'][2]['available_sources']
+
+    # The current hook supplies no scoped catalog on a pure lexical miss.
+    # Preserve native metadata instead of inventing membership from a global
+    # registry; this aggregate is not a claim of request-level eligibility.
+    original, filtered, identical = search(['zzzznonmatching'])
+    assert identical and original == filtered and filtered['total_available'] == 2
+
+
+@pytest.mark.parametrize('api_format', ['chat', 'anthropic', 'responses', 'functions'])
+def test_ineligible_forced_retention_restores_provider_default_and_keeps_other_tools(native, api_format):
+    n = native
+    name = 'pacomind_memory_retain_observation'
+    peer = {'name': 'fixture_peer', 'description': 'Inspect copper fixture records.',
+            'parameters': {'type': 'object', 'properties': {}}}
+    options = {'anthropic': api_format == 'anthropic', 'responses': api_format == 'responses'}
+    key = 'function_call' if api_format == 'functions' else 'tool_choice'
+    forced = ({'type': 'tool', 'name': name} if api_format == 'anthropic' else
+              {'type': 'function', 'name': name} if api_format == 'responses' else
+              {'name': name} if api_format == 'functions' else
+              {'type': 'function', 'function': {'name': name}})
+    def force(payload):
+        if api_format == 'functions':
+            payload['functions'] = [row['function'] for row in payload.pop('tools')] + [peer]
+        elif api_format == 'anthropic':
+            payload['tools'].append({'name': peer['name'], 'description': peer['description'],
+                                     'input_schema': peer['parameters']})
+        elif api_format == 'responses':
+            payload['tools'].append({'type': 'function', **peer})
+        else:
+            payload['tools'].append({'type': 'function', 'function': peer})
+        payload[key] = copy.deepcopy(forced)
+    first = n.request('empty-forced', before_middleware=force, **options).payload
+    assert key not in first
+    schemas = first['functions'] if api_format == 'functions' else first['tools']
+    assert [row.get('function', row)['name'] for row in schemas] == ['fixture_peer']
+    n.complete()
+    eligible = n.request('eligible-forced', before_middleware=force, **options).payload
+    assert eligible[key] == forced
+
+
+@pytest.mark.parametrize('native', [{'tasks': True}], indirect=True)
+def test_native_child_request_does_not_offer_owner_task_handoff(native, monkeypatch):
+    from tools import tool_search
+    from hermes_cli import middleware
+    n = native
+    name = 'pacomind_task'
+    assert name in n.context.tools
+    def task_tools(payload):
+        payload['tools'] = tool_search.assemble_tool_defs([
+            {'type': 'function', 'function': n.context.tools[name]['schema']},
+            {'type': 'function', 'function': {'name': 'delegate_task',
+                'description': 'Delegate child work.', 'parameters': {'type': 'object', 'properties': {}}}}],
+            config=tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})).tool_defs
+    ordinary = n.request('ordinary-task', before_middleware=task_tools).payload
+    assert name in str(ordinary['tools'])
+    assert "operation='handoff'" in json.dumps(ordinary)
+    child = {'session_id': 'native-child', 'task_id': 'child-task', 'turn_id': 'child-turn'}
+    n.db.create_session(child['session_id'], 'subagent')
+    n.context.hooks['subagent_start'](parent_session_id=n.scope['session_id'],
+        parent_turn_id=n.scope['turn_id'], child_session_id=child['session_id'])
+    n.context.hooks['pre_llm_call'](**child, platform='cli', sender_id='owner',
+        parent_session_id=n.scope['session_id'], user_message=INSTRUCTION,
+        conversation_history=[{'role': 'user', 'content': INSTRUCTION}])
+    request = n.request('child-request', execution_scope=child, before_middleware=task_tools).payload
+    assert name not in str(request['tools'])
+    assert 'delegate_task' in str(request['tools'])
+    assert "operation='handoff'" not in json.dumps(request)
+    schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
+    config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})
+    monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: config)
+    def describe(scope, request_id):
+        return json.loads(middleware.run_tool_execution_middleware(**scope, api_request_id=request_id,
+            tool_name='tool_describe', tool_call_id='describe-task', args={'names': [name]},
+            next_call=lambda args: tool_search.dispatch_tool_describe(args, current_tool_defs=[schema], config=config)))
+    assert name in describe(n.scope, 'ordinary-task')['tools']
+    child_result = describe(child, 'child-request')
+    assert name not in child_result['tools'] and child_result['not_found'] == [name]
+    # Reuse the actual inherited scope at the original source boundary. This
+    # fixture has no gateway listener, so it cannot qualify task dispatch.
+    sources = importlib.import_module(n.plugin.__name__ + '.task_sources')
+    child_scope = n.plugin._TRANSPORT_SCOPES.for_execution(**child)
+    boundary = sources.NativeTaskSources(n.clients[0], n.outbox, 'cid-owner')
+    with pytest.raises(sources.TaskHandoffError, match='An ordinary authenticated owner turn is required'):
+        boundary.actor_contact(child_scope)
+
+
+@pytest.mark.parametrize('anthropic', [False, True])
+def test_required_tool_choice_disappears_with_its_only_unavailable_tool(native, anthropic):
+    choice = {'type': 'any'} if anthropic else 'required'
+    first = native.request('empty-required', anthropic=anthropic,
+        before_middleware=lambda payload: payload.update(tool_choice=choice)).payload
+    assert first['tools'] == [] and 'tool_choice' not in first
+    native.complete()
+    eligible = native.request('eligible-required', anthropic=anthropic,
+        before_middleware=lambda payload: payload.update(tool_choice=choice)).payload
+    assert eligible['tools'] and eligible['tool_choice'] == choice
 
 
 @pytest.mark.parametrize('legacy_arguments', [False, True])

@@ -305,9 +305,14 @@ class ReviewWorker:
 
 def register_worker(ctx, lane):
     from hermes_cli.config import load_config
+    from .runtime_models import RuntimeModelObserver
     worker = ReviewWorker(lane)
     config = load_config()
     validate_profile(config, worker.home, worker.owner)
+    # The managed worker returns before the general plugin registers observers.
+    # Reuse its existing scoped root client without adding general owner tools.
+    RuntimeModelObserver(lambda: _selected_client(worker.home, worker.owner),
+                         worker.owner).register(ctx)
     ctx.register_hook('pre_tool_call', worker.before_tool)
     ctx.register_tool(name='pacomind_read_work_source', toolset=TOOLSET, handler=worker.read,
         schema={'name': 'pacomind_read_work_source',

@@ -46,6 +46,8 @@ from . import source_annotate
 from . import source_read
 from . import memory_search
 from .tool_observations import ToolObservations
+from .request_tool_visibility import without_tool, without_discovery_tool
+from .task_sources import is_direct_scope
 from . import input_provenance
 from .task_controller import configured_tasks, TOOL_SCHEMA as _NATIVE_TASK_SCHEMA, FinishTurn as _FinishTurn
 
@@ -2727,6 +2729,9 @@ def register(ctx: Any) -> None:
                     return reconcile(selected_args,value,scope,context,request_memory)
                 scope = _TRANSPORT_SCOPES.for_execution(session_id=context.get('session_id',''),
                     task_id=context.get('task_id',''), turn_id=context.get('turn_id',''))
+                if not is_direct_scope(scope):
+                    value = without_discovery_tool(value, context, 'pacomind_task')
+                value = tool_observations.discovery(value, scope, context)
                 tool_observations.completed(scope, context, value, arguments=observed_arguments)
                 return value
             if execution_observer is not None:
@@ -2760,7 +2765,8 @@ def register(ctx: Any) -> None:
     def reconcile_request(request, **kwargs):
         from .request_capabilities import describe
         if native_drafts is not None and native_drafts.worker:
-            result = {'request': describe(request)}
+            result = {'request': describe(without_tool(without_tool(request,
+                'pacomind_task'), 'pacomind_memory_retain_observation'))}
             return finish_request(result, **kwargs)
         _TRANSPORT_SCOPES.bind_current_session(**kwargs)
         scope = _TRANSPORT_SCOPES.for_execution(
@@ -2778,9 +2784,11 @@ def register(ctx: Any) -> None:
         if supplied is not None and not supplied.observe_updates(scope, result['request'], stage='middleware_visible'):
             result['request'] = input_provenance.withheld_request(result['request'], failure=supplied.failure)
             result['reason'] = 'source_update_receipt_unavailable'
-        result['request'] = describe(result['request'])
         result['request'] = tool_observations.checked(result['request'], scope, kwargs.get('api_request_id'),
             api_mode=str(kwargs.get('api_mode') or ''))
+        if not is_direct_scope(scope):
+            result['request'] = without_tool(result['request'], 'pacomind_task')
+        result['request'] = describe(result['request'])
         native_memory.checked(result['request'], scope)
         return finish_request(result, **kwargs)
 

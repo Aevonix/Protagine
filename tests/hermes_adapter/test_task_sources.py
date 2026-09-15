@@ -230,6 +230,61 @@ def dependencies_and_outages():
  # this original instruction or blocking its independent reuse.
  assert sources.resolve_source(src)['watermark']>src['watermark']
 
+def existing_handoff_races():
+ # The native FinishTurn type/loop is covered by the channel integration.
+ # Drive this controller/source boundary synchronously with its two-field value.
+ from dataclasses import make_dataclass
+ from pacomind_hermes import task_controller
+ task_controller.FinishTurn=make_dataclass('FinishTurn',[('text',str),('tool_call_id',str)],frozen=True)
+ controller=task_controller.NativeTasks(client,outbox,owner,database=database,sources=sources)
+ for race in ('completed','failed','retained_reply','stopped','annotated','erased','owner_changed'):
+  current=scope(session='race-'+race,turn='turn-'+race)
+  row=admit(label=race,sc=current);identity=row['id'];src=row['source']
+  native={'session_id':'worker-'+race,'task_id':'work-'+race,'turn_id':'native-turn-'+race}
+  store.bind(identity,native)
+  args={'operation':'handoff','task_id':identity}
+  accepted=controller.handle(args,current)
+  assert json.loads(accepted)['accepted'] is True,accepted
+  before_puts=sum(method=='PUT' for method,_,_,_ in wire)
+  with database() as db:before_rows=db.execute('SELECT count(*) FROM native_voice_handoffs').fetchone()[0]
+  if race=='retained_reply':
+   store.complete_source(identity,{**native,'input_refs':src['input_refs'],'source_refs':src['source_refs']})
+   store.retain_reply(identity,'The original worker retained its actual result.')
+  elif race=='stopped':
+   store.request_stop(identity)
+   store.observe_terminal(identity,{**native,'interrupted':True})
+  else:
+   store.observe_terminal(identity,{**native,'completed':race!='failed','failed':race=='failed'})
+  if race=='annotated':
+   ref=src['source_refs'][0]
+   ledger.append_source_annotation(contact_id=owner,session_id=current.session_id,
+    annotation_id='handoff-race-correction',**ref,excerpt='violet calibration',
+    correction='Use the corrected orange label instead.',author_principal='fixture-owner')
+   assert ledger.source_references([ref['source_id']],contact_id=owner,session_id='later')==[ref]
+  elif race=='erased':
+   ledger.erase_sources(contact_id=owner,turn_ids=[src['input_refs'][0]['source_id']])
+  elif race=='owner_changed':
+   asyncio.run(contacts.correct_handle_identity(operation_id='handoff-race-owner',performed_by='fixture-owner',
+    gateway='sms',address='+15550001',expected_contact_id=owner,contact_id=guest,evidence_refs=['fixture:correction']))
+  receipt=controller.finish_handoff(scope=current,tool_name='pacomind_task',tool_call_id='accepted-call-'+race,
+   tool_arguments=json.dumps(args),tool_result=accepted)
+  if race in ('annotated','erased','owner_changed'):
+   assert receipt is None,(race,receipt)
+  else:
+   assert receipt is not None,race
+   assert receipt.tool_call_id=='accepted-call-'+race
+   assert receipt.text==f'Accepted task `{identity}`. Inspect this task ID for its current status.'
+   # Acceptance is historical; no current running/successful-completion claim.
+   assert store.get(identity)['id']==identity
+   if race=='retained_reply':
+    assert store.get(identity)['response']['text']=='The original worker retained its actual result.'
+   elif race=='stopped':
+    assert store.stop_view(store.get(identity))['status']=='cancelled'
+   # State was eligible when accepted. A NEW handoff after it ends is rejected.
+   assert 'stopped or ended' in json.loads(controller.handle(args,current))['error']
+  assert sum(method=='PUT' for method,_,_,_ in wire)==before_puts
+  with database() as db:assert db.execute('SELECT count(*) FROM native_voice_handoffs').fetchone()[0]==before_rows
+
 try:
  globals()[sys.argv[4]]()
  print(json.dumps({'case':sys.argv[4],'passed':True,'canonical_api':True,'external_network':False}))
@@ -245,6 +300,7 @@ finally:
 @pytest.mark.parametrize('case', [
     'ordinary', 'authority_changes', 'joined_child_is_not_direct_input',
     'erasure', 'annotations', 'dependencies_and_outages',
+    'existing_handoff_races',
 ])
 def test_native_task_sources(artifacts, tmp_path, case):
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}

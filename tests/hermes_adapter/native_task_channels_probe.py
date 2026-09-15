@@ -29,6 +29,7 @@ home.mkdir(mode=0o700)
 artifact = home/'task-artifact.md'
 artifact.write_text('The completed task artifact.\n')
 beta_reply = f'TASK_BETA saved its result at {artifact}, with its own retained source.'
+alpha_reply = 'TASK_ALPHA finished the original violet-note comparison after the foreground handoff.'
 state = Path(os.environ['PACOMIND_STATE_DIR'])
 state.mkdir(mode=0o700)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
@@ -47,6 +48,7 @@ owner = asyncio.run(seed())
 host._contacts_store = contacts
 os.environ['PACOMIND_OWNER_CONTACT_ID'] = owner
 secret = 'isolated-native-task-fixture-key'
+tool_form = os.environ.get('PACOMIND_TEST_TASK_TOOL_FORM', 'deferred')
 keyring = home/'keys.json'
 keyring.write_text(json.dumps({'version': 1, 'principals': [{
     'principal': 'native-task-fixture', 'status': 'active', 'viewer_person_id': owner,
@@ -62,6 +64,7 @@ keyring.chmod(0o600)
         'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}}}},
     'auxiliary': {'title_generation': {'enabled': False}},
     'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4, 'api_max_retries': 0}, 'toolsets': ['pacomind'],
+    'tools': {'tool_search': {'eager': ['pacomind_task'] if tool_form.endswith('direct') else []}},
     'display': {'platforms': {'pacomind_task': {'streaming': False, 'tool_progress': 'off'}}},
     'memory': {'provider': 'pacomind-memory', 'config': {
         'contact_id': owner, 'url': 'http://fixture', 'api_key': secret}},
@@ -79,7 +82,8 @@ api.__enter__()
 ledger = get_turn_idempotency_ledger(state)
 wire, generation, foreground_calls, tool_results = [], {'alpha': [], 'beta': [], 'failure': []}, {}, {}
 context_reads = []
-held = {name: threading.Event() for name in ('alpha', 'beta', 'alpha_next', 'failure_next')}
+held = {name: threading.Event() for name in (
+    'alpha', 'beta', 'alpha_next', 'failure_next', 'failure_terminal')}
 release = {name: threading.Event() for name in held}
 task_ids = {}
 expected_failure_turn = None
@@ -87,6 +91,9 @@ source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
 steer_delivery = os.environ.get('PACOMIND_TEST_STEER_DELIVERY', 'tool_batch')
 submission = os.environ.get('PACOMIND_TEST_TASK_SUBMISSION', 'submit')
+existing_handoff = submission == 'existing_handoff'
+mixed_handoff = tool_form.startswith('mixed_')
+accepted_before_handoff, admissions, dispatches, controllers = {}, [], [], {}
 update_text = 'Keep the alpha comparison scoped to the violet notes and label the result ORANGE-472.'
 
 
@@ -118,6 +125,21 @@ def tool(body, name, arguments):
         'arguments': json.dumps(arguments)}}]}, 'tool_calls')
 
 
+def existing_task_handoff(body, identity):
+    calls = [{'name': 'pacomind_task', 'arguments': {'operation': 'handoff', 'task_id': identity}}]
+    if mixed_handoff:
+        calls.append({'name': 'pacomind_task', 'arguments': {'operation': 'status', 'task_id': identity}})
+    names = {value.get('function', {}).get('name') for value in body['tools']}
+    direct = tool_form.endswith('direct')
+    assert ('pacomind_task' in names) == direct, (tool_form, names)
+    if not direct:
+        calls = [{'name': 'tool_call', 'arguments': {'calls': calls}}]
+    return message_response(body, {'role': 'assistant', 'content': None, 'tool_calls': [
+        {'id': 'fixture-tool-' + str(next(tool_ids)), 'type': 'function',
+         'function': {'name': call['name'], 'arguments': json.dumps(call['arguments'])}}
+        for call in calls]}, 'tool_calls')
+
+
 def respond(request):
     if request.url.host == 'fixture':
         response = api.request(request.method, request.url.path, params=request.url.params,
@@ -142,6 +164,12 @@ def respond(request):
     from pacomind_hermes.input_provenance import current
     active = ACTIVE.get()
     if active is not None:
+        if existing_handoff:
+            assert 'pacomind_task' not in json.dumps(body['tools']), (
+                'A task worker was offered foreground-only task control in its schema or catalog')
+            worker_text = json.dumps(body['messages'])
+            assert 'Actual acceptance completes this foreground request' not in worker_text
+            assert 'When the user asks for background work and a prompt return' not in worker_text
         row = adapter.handoffs.get(active['id'])
         if 'TASK_FAILURE' in row['request']:
             generation['failure'].append(body)
@@ -184,6 +212,8 @@ def respond(request):
             held[name].set()
             assert release[name].wait(35), 'Held ' + name + ' request was never released'
             if name == 'alpha':
+                if existing_handoff:
+                    return answer(body, alpha_reply)
                 if steer_delivery == 'next_turn':
                     return answer(body, 'Initial alpha answer completed before the queued correction.')
                 return tool(body, 'pacomind_memory_read_source', row['source']['source_refs'][0])
@@ -214,11 +244,35 @@ def respond(request):
     latest = latest if isinstance(latest, str) else json.dumps(latest)
     tag = next((name for name in ('SUBMIT_ALPHA', 'SUBMIT_BETA', 'SUBMIT_FAILURE', 'RESUME_FAILURE',
                                  'RESUME_FAILURE_DUPLICATE', 'ORDINARY', 'STEER_ALPHA', 'STOP_ALPHA',
-                                 'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED', 'HANDOFF_REJECTED')
+                                 'STATUS_QUEUED', 'STATUS_VISIBLE', 'STATUS_ERASED', 'HANDOFF_REJECTED',
+                                 'HANDOFF_PRIOR_TURN')
                 if latest.startswith('FG_' + name + ':')), None)
     assert tag is not None, latest
     foreground_calls[tag] = foreground_calls.get(tag, 0) + 1
     step = foreground_calls[tag]
+    if tag == 'HANDOFF_PRIOR_TURN':
+        assert step <= 2
+        if step == 1:
+            return tool(body, 'pacomind_task', {'operation': 'handoff', 'task_id': task_ids['alpha']})
+        result = json.loads(next(row['content'] for row in reversed(body['messages']) if row['role'] == 'tool'))
+        assert result.get('error') and not result.get('accepted'), result
+        return answer(body, 'A different foreground turn cannot finish through the prior task admission.')
+    if tag == 'SUBMIT_ALPHA' and existing_handoff and step > 1:
+        results = [json.loads(row['content']) for row in body['messages'] if row['role'] == 'tool']
+        if step == 2:
+            accepted = results[-1]
+            assert accepted.get('accepted') is True, accepted
+            accepted_before_handoff.update(adapter.handoffs.get(accepted['task_id']))
+            return existing_task_handoff(body, accepted['task_id'])
+        assert mixed_handoff and step == 3, (
+            'An existing-task handoff must finish without another foreground provider response', results)
+        if tool_form == 'mixed_deferred':
+            assert len(results) == 2 and results[-1].get('error') == (
+                'Local tools require one entry per tool_call; mixed and multi-local batches are not supported.'), results
+        else:
+            assert any(value.get('accepted') and value.get('task_id') == accepted_before_handoff['id']
+                       for value in results[1:]), results
+        return answer(body, 'The mixed tool batch completed without terminating the foreground turn.')
     if tag == 'HANDOFF_REJECTED':
         assert step <= 2
         if step == 1:
@@ -275,7 +329,7 @@ def respond(request):
                 'task_id': task_ids['failure'], 'expected_turn_id': expected_failure_turn})
         if tag.startswith('SUBMIT_'):
             name = tag.removeprefix('SUBMIT_')
-            return tool(body, 'pacomind_task', {'operation': submission if name == 'ALPHA' else 'submit',
+            return tool(body, 'pacomind_task', {'operation': submission if name == 'ALPHA' and not existing_handoff else 'submit',
                 'request': 'TASK_' + name + ': Compare my violet calibration notes and retain the result.',
                 **({'model_role': 'coding'} if name == 'ALPHA' else {})})
         return tool(body, 'pacomind_task', {'operation': 'steer' if tag == 'STEER_ALPHA' else 'stop',
@@ -315,12 +369,38 @@ def no_network(*args, **kwargs):
 socket.socket.connect = no_network
 socket.create_connection = no_network
 from hermes_cli.plugins import get_plugin_manager
+from pacomind_hermes.task_handoffs import TaskHandoffs
+original_observe_terminal = TaskHandoffs.observe_terminal
+
+
+def held_failure_terminal(self, identity, native, *, basis='native_on_session_end'):
+    if (basis == 'native_on_native_turn_settled'
+            and self.get(identity)['request'].startswith('TASK_FAILURE:')):
+        # A provider notice can precede native settlement. Make that real
+        # interleaving deterministic without replacing the terminal observation.
+        held['failure_terminal'].set()
+        assert release['failure_terminal'].wait(35), 'Failure settlement was never released'
+    return original_observe_terminal(self, identity, native, basis=basis)
+
+
+TaskHandoffs.observe_terminal = held_failure_terminal
+if existing_handoff:
+    from pacomind_hermes.task_controller import NativeTasks
+    original_admit, original_call = TaskHandoffs.admit, NativeTasks._call
+    def counted_admit(self, **kwargs):
+        admissions.append(kwargs.copy())
+        return original_admit(self, **kwargs)
+    def counted_call(self, action, identity, **kwargs):
+        dispatches.append((action, identity))
+        controllers[identity] = self
+        return original_call(self, action, identity, **kwargs)
+    TaskHandoffs.admit, NativeTasks._call = counted_admit, counted_call
 manager = get_plugin_manager()
 manager.discover_and_load()
 assert manager._plugins['pacomind'].enabled, manager._plugins['pacomind'].error
 from pacomind_hermes.task_controller import FinishTurn, TOOL_SCHEMA
 assert ('handoff' in TOOL_SCHEMA['parameters']['properties']['operation']['enum']) == (FinishTurn is not None)
-if submission == 'handoff':
+if submission == 'handoff' or existing_handoff:
     assert FinishTurn is not None, 'Terminal handoff requires the native post_tool_batch contract'
 from gateway.config import GatewayConfig, PlatformConfig, Platform
 from gateway.platform_registry import platform_registry
@@ -390,27 +470,107 @@ async def exercise():
             assert row['source']['origin']['platform'] == 'api_server'
             assert row['source']['source_session_id'] != row['native_session_id']
             assert row['response'] is None and row['stop'] is None
-        if submission == 'handoff':
-            assert foreground_calls['SUBMIT_ALPHA'] == 1
-            assert answers[0] == (f"Accepted task `{task_ids['alpha']}`. "
-                'You can inspect or steer it using this task ID.'), answers
+        if submission == 'handoff' or existing_handoff:
+            assert foreground_calls['SUBMIT_ALPHA'] == (3 if mixed_handoff else 2 if existing_handoff else 1)
+            if mixed_handoff:
+                assert answers[0] == 'The mixed tool batch completed without terminating the foreground turn.', answers
+            else:
+                guidance = ('Inspect this task ID for its current status.' if existing_handoff else
+                            'You can inspect or steer it using this task ID.')
+                assert answers[0] == (f"Accepted task `{task_ids['alpha']}`. "
+                    + guidance), answers
             entry = runner.session_store.get_or_create_session(alpha_event.source, touch_activity=False)
             messages = runner._session_db._db.get_messages(entry.session_id)
             results = [json.loads(row['content']) for row in messages if row['role'] == 'tool']
-            assert len(results) == 1 and results[0]['accepted'] is True, results
+            expected_results = 3 if tool_form == 'mixed_direct' else 2 if existing_handoff else 1
+            assert len(results) == expected_results, results
+            assert results[0]['accepted'] is True, results
             assert results[0]['task_id'] == task_ids['alpha'] and results[0]['delivery'] == 'unobserved'
+            if existing_handoff and tool_form != 'mixed_deferred':
+                accepted = next(value for value in results[1:] if value.get('accepted'))
+                assert accepted['existing_task'] is True and accepted['task_id'] == results[0]['task_id'], accepted
+                assert accepted['model_role'] == results[0]['model_role'], accepted
+                assert accepted['status'] not in {'queued', 'running'}, accepted
             receipts = [row for row in messages if row['role'] == 'assistant' and row['content']]
             assert len(receipts) == 1 and receipts[0]['content'] == answers[0], receipts
             receipt = receipts[0]
-            assert receipt['display_kind'] == 'runtime_handoff'
-            provenance = receipt['display_metadata']
-            assert provenance['response_origin'] == 'runtime' and provenance['type'] == 'tool_handoff'
-            assert provenance['session_id'] == entry.session_id and provenance['api_request_id']
-            tool_row = next(row for row in messages if row['role'] == 'tool')
-            assert provenance['tool_call_id'] == tool_row['tool_call_id']
-            assert provenance['tool_name'] == 'tool_call' and tool_row['tool_name'] == 'pacomind_task'
+            if mixed_handoff:
+                assert receipt['display_kind'] != 'runtime_handoff', receipt
+            else:
+                assert receipt['display_kind'] == 'runtime_handoff'
+                provenance = receipt['display_metadata']
+                assert provenance['response_origin'] == 'runtime' and provenance['type'] == 'tool_handoff'
+                assert provenance['session_id'] == entry.session_id and provenance['api_request_id']
+                tool_row = [row for row in messages if row['role'] == 'tool'][-1]
+                assert provenance['tool_call_id'] == tool_row['tool_call_id']
+                assert provenance['tool_name'] == ('pacomind_task' if tool_form.endswith('direct') else 'tool_call')
+                assert tool_row['tool_name'] == 'pacomind_task'
             # Finishing this foreground turn cannot interrupt its independently owned task.
             assert held['alpha'].is_set() and not release['alpha'].is_set()
+        if existing_handoff:
+            from types import SimpleNamespace
+            retained = adapter.handoffs.get(task_ids['alpha'])
+            for key in ('id', 'created', 'request', 'source', 'model_role'):
+                assert retained[key] == accepted_before_handoff[key], (key, retained, accepted_before_handoff)
+            assert len(admissions) == 2 and sum('TASK_ALPHA' in item['request'] for item in admissions) == 1
+            assert dispatches.count(('submit', task_ids['alpha'])) == 1, dispatches
+            assert len(generation['alpha']) == 1, generation['alpha']
+            controller = controllers[task_ids['alpha']]
+            scope = dict(valid_participant=True, contact_id=owner, authority_lane='owner',
+                resolution_status='resolved', **retained['source']['origin'])
+            arguments = {'operation': 'handoff', 'task_id': task_ids['alpha']}
+            exact_scope = SimpleNamespace(**scope)
+            for extra in ({'request': retained['request']}, {'model_role': 'coding'},
+                          {'expected_turn_id': retained['native_turn_id']}):
+                rejected = json.loads(await asyncio.to_thread(controller.handle, {**arguments, **extra}, exact_scope))
+                assert rejected.get('error') and not rejected.get('accepted'), rejected
+            for changed in ({'turn_id': 'another-turn'}, {'session_id': 'another-session'},
+                            {'platform': 'whatsapp'}, {'contact_id': 'another-owner'}):
+                other = SimpleNamespace(**{**scope, **changed})
+                rejected = json.loads(await asyncio.to_thread(controller.handle, arguments, other))
+                assert rejected.get('error') and not rejected.get('accepted'), (changed, rejected)
+                if not mixed_handoff:
+                    assert controller.finish_handoff(scope=other, tool_name='pacomind_task',
+                        tool_call_id='foreign-handoff', tool_arguments=json.dumps(arguments),
+                        tool_result=json.dumps(results[1])) is None, changed
+            denied = await asyncio.wait_for(runner._handle_message(event('HANDOFF_PRIOR_TURN')), 12)
+            assert denied == 'A different foreground turn cannot finish through the prior task admission.', denied
+            assert adapter.handoffs.count() == 2 and len(admissions) == 2
+            assert dispatches.count(('submit', task_ids['alpha'])) == 1, dispatches
+            release['alpha'].set()
+            await wait_for(lambda: bool(adapter.handoffs.get(task_ids['alpha'])['response']),
+                           'original task result after foreground handoff')
+            completed = adapter.handoffs.get(task_ids['alpha'])
+            assert completed['response']['text'] == alpha_reply and completed['terminal']['completed']
+            assert completed['native_session_id'] == retained['native_session_id']
+            assert completed['native_turn_id'] == retained['native_turn_id']
+            assert completed['dependencies']['input_refs'] == retained['source']['input_refs']
+            for key in ('request', 'source', 'model_role'):
+                assert completed[key] == retained[key], key
+            rejected = json.loads(await asyncio.to_thread(controller.handle, arguments, exact_scope))
+            assert rejected.get('error') and not rejected.get('accepted'), rejected
+            beta = adapter.handoffs.get(task_ids['beta'])
+            beta_scope = SimpleNamespace(**{**scope, **beta['source']['origin']})
+            stopped = json.loads(await asyncio.to_thread(controller.handle,
+                {'operation': 'stop', 'task_id': beta['id']}, beta_scope))
+            assert stopped['stop_requested'], stopped
+            rejected = json.loads(await asyncio.to_thread(controller.handle,
+                {'operation': 'handoff', 'task_id': beta['id']}, beta_scope))
+            assert rejected.get('error') and not rejected.get('accepted'), rejected
+            ledger.erase_sources(contact_id=owner,
+                turn_ids=[retained['source']['input_refs'][0]['source_id']])
+            rejected = json.loads(await asyncio.to_thread(controller.handle, arguments, exact_scope))
+            assert rejected.get('error') == (
+                'Task sources are unavailable or changed; inspect source state before continuing'), rejected
+            assert not rejected.get('accepted'), rejected
+            assert len(admissions) == 2 and dispatches.count(('submit', task_ids['alpha'])) == 1, dispatches
+            print(json.dumps({'cross_channel_native_tasks': True, 'existing_task_handoff': True,
+                'tool_form': tool_form, 'same_admission_and_source': True,
+                'native_finish_preserves_background_task': not mixed_handoff,
+                'mixed_batch_does_not_finish': mixed_handoff, 'unrelated_turn_rejected': True,
+                'original_task_result_retained': True, 'ended_stopped_erased_tasks_not_reaccepted': True,
+                'worker_task_control_and_foreground_guidance_absent': True}))
+            return
         assert len({tuple(row[key] for key in ('native_session_id', 'native_task_id', 'native_turn_id'))
                     for row in rows}) == 2
         assert source_parents['alpha'] != source_parents['beta']
@@ -468,7 +628,12 @@ async def exercise():
         await wait_for(lambda: any('TASK_FAILURE' in row['request'] and row['notice_json']
             for row in adapter.handoffs.recent()), 'failed task notice')
         failed = next(row for row in adapter.handoffs.recent() if 'TASK_FAILURE' in row['request'])
+        assert failed['terminal'] is None and adapter._session_tasks, failed
+        release['failure_terminal'].set()
         await wait_for(lambda: not adapter._session_tasks, 'failed task delivery cleanup')
+        assert held['failure_terminal'].is_set(), 'The native failure settlement hook was not reached'
+        # The earlier notice row is a snapshot, not a live task view.
+        failed = adapter.handoffs.get(failed['id'])
         assert failed['terminal'] and failed['terminal']['failed'], failed
         assert failed['terminal']['failure_reason'] == 'timeout', failed
         assert failed['terminal']['failure_retryable'] is True, failed
@@ -552,6 +717,7 @@ async def exercise():
             'foreground_completed_while_tasks_held': True, 'steering_in_actual_sdk_request': True,
             'matching_native_stop_terminal': True, 'late_reply_suppressed': True,
             'retry_exhaustion_retains_typed_failure_without_answer_receipt': True,
+            'failure_notice_precedes_settlement_and_cleanup_refreshes_exact_task': True,
             'failed_status_survives_database_reopen_without_redispatch': True,
             'owner_resume_preserves_same_task_session_and_completed_file_effect': True,
             'stale_duplicate_stopped_completed_resume_does_not_execute': True,

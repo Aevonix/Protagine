@@ -7,9 +7,10 @@ from test_execution_input_purpose import admitted
 from test_execution_registry import observation, store
 
 
-def task(store, name='coding', *, person='owner'):
+def task(store, name='coding', *, person='owner',
+         text='Build a run summary utility. Preserve unconfirmed outcomes.'):
     refs = admitted(store, name=name + '-input', person=person,
-                    text='Build a run summary utility. Preserve unconfirmed outcomes.')
+                    text=text)
     value = observation(name, contact_id=person, input_refs=refs,
                         task_experience={'task_id': 'a' * 64, 'purpose': 'qualification',
                                          'origin_platform': 'cli'})
@@ -29,7 +30,11 @@ def test_live_task_has_usable_handle_and_reopenable_original_input(store):
     context = request_work_context(view, session_id='other-conversation')['text']
     assert '"task_id": "' + 'a' * 64 + '"' in context
     assert '"input_source"' in context
-    assert 'pacomind_task' in context and 'status' in context
+    assert 'pacomind_memory_read_source' in context
+    assert 'terminal observation is not proof of useful completion' in context
+    # Work observations also reach workers without owner task controls.
+    # The owning adapter supplies available actions, not this shared data view.
+    assert 'Use task_id with pacomind_task' not in context
     # The task handle comes from its admitted metadata, not a session or turn ID.
     assert value['execution_id'] != row['task_id']
 
@@ -92,7 +97,12 @@ def test_present_building_question_uses_current_work_without_dropping_history():
 
 
 def test_small_work_budget_keeps_source_locator_actionable_without_quotation(store):
-    task(store)
+    task(store, text=(
+        'Build a run summary utility. Include each run\'s input, processor, '
+        'elapsed time, observed output, verification result and unresolved '
+        'conditions. Keep reported outcomes distinct from independently '
+        'checked results. Preserve the source references so another session '
+        'can inspect the original request before continuing the work.'))
     view = store.view(contact_id='owner', owner=True, session_id='observer')
     # Fit the single execution and source handle while withholding its longer
     # optional quotation. A locator still needs the ordinary freshness check.

@@ -11,6 +11,7 @@ import time
 
 from .followups import capture_instruction
 from .request_work import replace_context
+from .request_tool_visibility import without_tool, without_discovery_tool
 
 MAX_BYTES = 16384
 # Discovery metadata is already available through the current tool catalog.
@@ -18,6 +19,7 @@ MAX_BYTES = 16384
 _EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'pacomind_memory_retain_observation'}
 _HINT_MARKER = 'pacomind-observation-candidates-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
+_RETENTION = 'pacomind_memory_retain_observation'
 
 
 def argument_preview(arguments):
@@ -260,7 +262,7 @@ class ToolObservations:
             return request
         request = replace_context(request, api_mode=api_mode, marker=_HINT_MARKER)
         if key is None or not isinstance(request_id, str) or not request_id:
-            return request
+            return without_tool(request, _RETENTION)
         calls, results = _request_results(request)
         eligible = []
         with self._lock:
@@ -279,7 +281,9 @@ class ToolObservations:
                 while len(record['visible']) > 8:
                     record['visible'].pop(next(iter(record['visible'])))
         available = _available_retention(request)
-        if not eligible or not available or self.request_memory.supplied_snapshot(scope) is None:
+        if not eligible or self.request_memory.supplied_snapshot(scope) is None:
+            return without_tool(request, _RETENTION)
+        if not available:
             return request
         name, deferred = available
         guidance = (f'For durable findings or meaningful outcomes with likely future use, you may retain '
@@ -303,6 +307,25 @@ class ToolObservations:
             return request
         text = guidance + json.dumps(listed, ensure_ascii=True).replace('[/', r'\u005b/')
         return replace_context(request, text, api_mode=api_mode, marker=_HINT_MARKER)
+
+    def discovery(self, value, scope, context):
+        """Filter this completed discovery only, using checked request witnesses.
+
+        The native agent executor wraps bridge reads in tool_execution. Its
+        session catalog is not an input to this hook, so adjust aggregate
+        counts only when the returned named record proves its membership.
+        """
+        name, request_id = context.get('tool_name'), context.get('api_request_id')
+        if name not in {'tool_search', 'tool_describe'} or not isinstance(value, str):
+            return value
+        key = _key(scope)
+        if key is not None and self.request_memory.supplied_snapshot(scope) is not None:
+            with self._lock:
+                if any(request_id in record['visible'] and record['sources'] is not None
+                       and record['input_sha256'] == hashlib.sha256(scope.user_message.encode()).hexdigest()
+                       for record in self._turns.get(key, {}).values()):
+                    return value
+        return without_discovery_tool(value, context, _RETENTION)
 
     def finish(self, scope):
         with self._lock:

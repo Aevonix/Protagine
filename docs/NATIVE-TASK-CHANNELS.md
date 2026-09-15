@@ -54,6 +54,7 @@ attested local platforms keep their existing local owner policy.
 | Operation | Fields | Observation |
 | --- | --- | --- |
 | `handoff` | `request`, optional `model_role` | Transfers the remaining request to background work and ends the foreground turn with the actual accepted `task_id`. Requires the native turn-finish interface. |
+| `handoff` | `task_id` only | Returns the acceptance for a task submitted in this same turn, then ends the foreground turn. It does not submit the task again or change its instruction or model. |
 | `submit` | `request`, optional `model_role` | Stable `task_id`, durable acceptance and any observed native admission. Acceptance is not completion. |
 | `status` | `task_id` | Native state, readable retained result, original-input references and up to four recent authorized updates with visibility receipts. |
 | `steer` | `task_id`, `request` | One captured source update and separate native control/request visibility receipts. Visibility does not prove model obedience. |
@@ -67,6 +68,12 @@ the current turn. A handoff acknowledges durable acceptance; it does not claim
 the task has started or completed. Hermes returns that acknowledgement through
 the conversation's normal delivery path without another model call. The
 background task keeps running, and later messages can inspect or steer its ID.
+
+After `submit`, use `handoff` with the returned `task_id` when the remaining
+foreground work is finished. This form checks the current owner and source and
+requires the original session, turn and platform. Omit `request`, `model_role`
+and `expected_turn_id`. Use `steer` to change instructions and `status` for a task
+from another turn or one that has already ended.
 
 When handoff is supported, the current-request work context clarifies that
 acceptance completes the foreground request while execution and verification
