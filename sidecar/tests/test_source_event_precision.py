@@ -60,7 +60,7 @@ def test_plain_source_packet_labels_report_clock_without_creating_event_time():
     _, packet = pack_memory_context(rows)
     assert '"reported_at": "' + STAMP + '"' in packet
     assert '"event_time": "unprojected"' in packet
-    assert "Report time is not event time." in packet
+    assert "report time isn't event time." in packet
     assert '"occurred_at"' not in packet
 
 
