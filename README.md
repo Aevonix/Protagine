@@ -31,9 +31,34 @@ and unfinished tasks through background deliberation, then turning useful
 conclusions into plans, memories or proposed actions. Those processes need to
 produce observable value; running another model call is not evidence of progress.
 
-General intelligence is the ambition, not an achieved capability. The underlying
-models still determine much of the agent's reasoning ability. Protagine aims to
-make learning and continuity survive changes to those models.
+### Model independence and the agent harness
+
+Our research hypothesis is that **AGI-like behavior can emerge from sufficiently
+intelligent LLMs coordinated through a persistent agent harness**. Protagine
+explores this through memory orchestration, identity, autonomous initiative,
+deliberation and feedback from completed work. The harness determines what the
+agent remembers, how it uses that knowledge, which work it pursues and how
+results inform its next actions.
+
+The goal is to achieve Proto-AGI independently of any particular model,
+provider or fixed suite of models, without requiring new model training or
+fine-tuning. Learning in this approach happens through retained experience and
+changes to the agent's memory, procedures and orchestration. Its continuity and
+identity live outside model weights. Model independence still requires each
+chosen LLM to have the capabilities needed for its assigned role.
+
+**Compute is divided by role.** Conversation, planning and reasoning, memory
+extraction, review, coding and vision can use separate LLMs. A deployment can
+also assign several roles to the same model. Hermes runs conversations, tools
+and workers; Protagine connects those activities through persistent memory and
+shared state, with its own configurable model roles for supporting work.
+
+We call the intended combined system a **"Super Agent"**: one continuing agent
+with a shared identity, body of knowledge and set of commitments, supported by
+replaceable models performing different functions. The research question is
+whether this coordination can produce general, sustained behavior beyond the
+individual model calls. General intelligence remains an ambition, not an
+achieved capability; adding models or orchestration alone does not establish it.
 
 ## How it works
 
@@ -164,7 +189,8 @@ It should learn which improvement methods work, choose better experiments and
 use the results to make its next learning cycle more effective.
 
 Recursive improvement requires showing that this process becomes more effective
-over successive cycles. Model fine-tuning is an optional later path.
+over successive cycles. Model fine-tuning may be explored separately, but it is
+not a prerequisite for the harness approach described above.
 
 ## Documentation
 
