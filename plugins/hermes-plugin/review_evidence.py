@@ -9,6 +9,8 @@ from copy import deepcopy
 import hashlib
 import json
 
+from .review_experience import TERMINAL_EXIT, fingerprint, terminal_cancelled, terminal_exit_failure
+
 _CURRENT = ContextVar('protagine_native_review_evidence', default=None)
 
 
@@ -23,7 +25,7 @@ def capture(scope, request, *, durable=False):
     messages = request.get('messages', request.get('input', []))
     if not isinstance(messages, list):
         return
-    calls, failures = {}, {}
+    calls, arguments, failures = {}, {}, {}
     for message in messages[-256:]:
         if not isinstance(message, dict):
             continue
@@ -31,8 +33,10 @@ def capture(scope, request, *, durable=False):
             for call in message.get('tool_calls') or []:
                 if isinstance(call, dict) and isinstance(call.get('function'), dict):
                     calls[call.get('id')] = call['function'].get('name')
+                    arguments[call.get('id')] = call['function'].get('arguments')
         elif message.get('type') == 'function_call':
             calls[message.get('call_id')] = message.get('name')
+            arguments[message.get('call_id')] = message.get('arguments')
         if message.get('role') == 'tool':
             call_id, content = message.get('tool_call_id'), message.get('content')
         elif message.get('type') == 'function_call_output':
@@ -48,15 +52,28 @@ def capture(scope, request, *, durable=False):
             result = json.loads(content)
         except (ValueError, RecursionError):
             continue
-        if not isinstance(result, dict) or not result.get('error'):
+        if not isinstance(result, dict) or (name == 'terminal' and terminal_cancelled(result)):
             continue
-        error = result['error']
-        classification = ('unsupported_regex_features' if isinstance(error, str)
-            and 'regex parse error' in error.lower() and 'not supported' in error.lower()
-            else 'tool_returned_error')
+        error, details = result.get('error'), {}
+        if error:
+            classification = ('unsupported_regex_features' if isinstance(error, str)
+                and 'regex parse error' in error.lower() and 'not supported' in error.lower()
+                else 'tool_returned_error')
+        elif name == 'terminal' and terminal_exit_failure(result):
+            try:
+                args = arguments.get(call_id)
+                args = json.loads(args) if isinstance(args, str) else args
+                if not isinstance(args, dict) or not isinstance(args.get('command'), str) or not args['command'].strip():
+                    continue
+                details['arguments_sha256'] = fingerprint(args)
+            except (ValueError, TypeError, RecursionError):
+                continue
+            classification = TERMINAL_EXIT
+        else:
+            continue
         failures[call_id] = {'tool_call_id': call_id, 'tool_name': name,
             'request_visible_result_sha256': hashlib.sha256(content.encode()).hexdigest(),
-            'error_class': classification}
+            'error_class': classification, **details}
     if failures:
         _CURRENT.set({'version': 1, 'source': 'native_request_tool_results',
             'session_id': scope.session_id, 'turn_id': scope.turn_id,
