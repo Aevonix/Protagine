@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.7.1 - owner API recollection and native proposal validation
+
+Automatic recollection uses the general plugin's resolved identity for the
+current owner API turn. Previously, explicit memory tools could recognize that
+owner while the memory provider withheld automatic recall from the same turn.
+The provider requires a matching active turn and owner; it does not treat every
+API conversation as the owner.
+
+Background skill creation uses Hermes' own validators before staging a proposal.
+Invalid content returns its error to the reviewer immediately, allowing a
+correction during the same review. Previously, staging could report success for
+a proposal that the later native evaluation rejected before any measurement.
+
+Task-tool instructions now tell callers to preserve the complete deliverable
+and its permission boundaries, keep child work inside the background task,
+and return the accepted handle promptly. Following these instructions and
+completing the task still depend on the model and need behavioral validation.
+
 ## v1.7.0 - ordinary skill learning and due reply reviews
 
 Guided setup can schedule ordinary skill review through Hermes' existing cron.
