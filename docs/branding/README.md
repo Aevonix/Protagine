@@ -1,20 +1,18 @@
 # Protagine artwork
 
-These repository assets retain the existing stepped P mark and color palette.
-The primary SVG wordmarks have been updated to Protagine. The avatar is unchanged
-apart from its filename.
+These assets match the Protagine website artwork from Aevonix Research
+(commit `d549db0db60194cd349ad60376c55b09de2c0f5d`). The primary SVGs use
+outlined lettering and the Engine mark, so their appearance does not depend
+on locally installed fonts.
 
 | File | Use |
 | --- | --- |
-| `protagine-primary-dark.svg` | Light lettering and spectrum accents for a dark background. |
-| `protagine-primary-light.svg` | Graphite lettering and darker accents for a light background. |
-| `protagine-avatar.png` | 512 × 512 avatar with a graphite background. |
+| `protagine-primary-dark.svg` | Primary logo for a dark background. |
+| `protagine-primary-light.svg` | Primary logo for a light background. |
+| `protagine-avatar.png` | Square profile avatar. |
 
-The SVG wordmarks use text with a local sans-serif font fallback. Their lettering
-may vary slightly between renderers. The repository README selects the appropriate
-artwork for the reader's light or dark appearance.
-
-## Usage
+The repository README selects the appropriate artwork for the reader's light
+or dark appearance. Visit [protagine.ai](https://protagine.ai) for the project.
 
 For press requests, co-branding or other artwork usage questions, contact
 [Maggie@aevonix.com](mailto:Maggie@aevonix.com).
