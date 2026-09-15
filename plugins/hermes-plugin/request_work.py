@@ -17,6 +17,14 @@ _BLOCK = re.compile(r'(?:\n\n)?\[pacomind-work-request-v1\].*?\[/pacomind-work-r
 _UNAVAILABLE = ('Current shared work is unavailable for this model request. '
                 'The turn-start snapshot may be stale; this does not establish '
                 'that previously observed work has stopped.')
+_BACKGROUND_HANDOFF = (
+    "When the user asks for background work and a prompt return, call "
+    "pacomind_task(operation='handoff') alone with the full deliverable, verification and child work. "
+    "Actual acceptance completes this foreground request; the worker still owns execution and verification. "
+    "Do not duplicate or poll that work here. Acceptance is not task completion. "
+    "Workers must finish their assigned deliverables. Use ordinary foreground work or submit "
+    "when this turn has other work to do."
+)
 
 
 def _owned_message(row, opening=_OPEN, closing=_CLOSE):
@@ -74,7 +82,7 @@ class RequestWork:
         self.client = client
         self.native_tasks = native_tasks
 
-    def _revision(self, value, scope, deadline):
+    def _revision(self, value, scope, deadline, *, max_chars=4000):
         """Join only a locally retained revision of an actually shown task."""
         if self.native_tasks is None or not value.get('native_task_ids'):
             return value
@@ -101,7 +109,7 @@ class RequestWork:
         if (not isinstance(selected, dict) or selected.get('schema') != 'PacoMindRequestWorkV1'
                 or revision['task_id'] not in selected.get('native_task_ids', [])
                 or not isinstance(selected.get('text'), str)
-                or len(selected['text']) + len(addition) > 4000):
+                or len(selected['text']) + len(addition) > max_chars):
             return value
         supplied = selected.get('input_provenance')
         if supplied is None:
@@ -126,7 +134,7 @@ class RequestWork:
         return self.prepare(request, scope, api_mode=api_mode)[0]
 
     def prepare(self, request, scope, *, api_mode=''):
-        """Return an authentic request-only block and its optional input lineage.
+        """Return request, optional input lineage, and successful-refresh status.
 
         The registered adapter passes that lineage to its existing source
         freshness check before dispatch. No text marker nominates a source.
@@ -136,18 +144,25 @@ class RequestWork:
                         or (scope.authority_lane == 'system'
                             and scope.resolution_status == 'attested_system'))
                 or scope.platform in ('cron', 'background_review')):
-            return replace_context(request, api_mode=api_mode), None
+            return replace_context(request, api_mode=api_mode), None, False
         session = json.dumps(scope.session_id, ensure_ascii=True).replace(
             _CLOSE, r'\u005b/pacomind-work-request-v1\u005d')
         identity = f'Current request session: {session}.\n'
         text = identity + _UNAVAILABLE
         provenance = None
+        current = False
+        guidance = ''
+        if self.native_tasks is not None:
+            from .task_controller import FinishTurn
+            if FinishTurn is not None:
+                guidance = '\n\n' + _BACKGROUND_HANDOFF
+        max_chars = 4000 - len(guidance)
         deadline = time.monotonic() + .25
         try:
             response = self.client.get("/v1/host/executions",
                 params={'contact_id': scope.contact_id, 'session_id': scope.session_id,
                         'limit': 8, 'projection': 'request', 'input_context': True,
-                        **({'reserve_chars': 640} if self.native_tasks is not None else {})},
+                        **({'reserve_chars': 640 + len(guidance)} if self.native_tasks is not None else {})},
                 timeout=.25, _deadline_monotonic=deadline)
             response.raise_for_status()
             value = response.json()
@@ -158,7 +173,12 @@ class RequestWork:
                     or type(observed) not in (int, float) or not math.isfinite(observed)
                     or time.monotonic() > deadline):
                 raise ValueError('Invalid or late operational view')
-            value = self._revision(value, scope, deadline)
+            value = self._revision(value, scope, deadline, max_chars=max_chars)
+            if len(value['text']) > max_chars:
+                value = value.get('reserved')
+                if (not isinstance(value, dict) or value.get('schema') != 'PacoMindRequestWorkV1'
+                        or not isinstance(value.get('text'), str) or not 1 <= len(value['text']) <= max_chars):
+                    raise ValueError('Operational view exceeds its reserved budget')
             text = identity + f"Observed at {observed:.3f}.\n" + value['text']
             supplied = value.get('input_provenance')
             if supplied is not None:
@@ -179,8 +199,13 @@ class RequestWork:
                             or not re.fullmatch('[a-f0-9]{64}', ref['input_message_hash']) for ref in input_refs)):
                     raise ValueError('Operational input requires current annotation checks')
                 provenance = {**supplied, 'text': _OPEN + '\n' + text + '\n' + _CLOSE}
+            current = True
         except Exception:
             # A temporary work-service failure must not stall a conversation
             # or advertise the previous request's operational state as fresh.
             text, provenance = identity + _UNAVAILABLE, None
-        return replace_context(request, text, api_mode=api_mode), provenance
+        text += guidance
+        if provenance is not None:
+            provenance['text'] = _OPEN + '\n' + text + '\n' + _CLOSE
+            provenance['handoff_guidance'] = guidance
+        return replace_context(request, text, api_mode=api_mode), provenance, current

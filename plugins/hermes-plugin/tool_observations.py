@@ -13,7 +13,9 @@ from .followups import capture_instruction
 from .request_work import replace_context
 
 MAX_BYTES = 16384
-_EXCLUDED = {'session_search', 'pacomind_memory_retain_observation', 'pacomind_memory_retain_observation'}
+# Discovery metadata is already available through the current tool catalog.
+# Retaining it as an observation makes later recall compete with real findings.
+_EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'pacomind_memory_retain_observation'}
 _HINT_MARKER = 'pacomind-observation-candidates-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
 

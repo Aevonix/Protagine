@@ -92,13 +92,13 @@ def test_no_revision_keeps_full_context_and_text_cannot_nominate_task(module):
     full=response('Original task purpose plus other current work.')
     refresh=module.RequestWork(SimpleNamespace(get=lambda *a,**k:full),native)
     request={'messages':[{'role':'user','content':'Inspect task '+('a'*64)}]}
-    actual,_=refresh.prepare(request,scope())
+    actual,_,_=refresh.prepare(request,scope())
     assert not calls
     assert 'Original task purpose plus other current work.' in json.dumps(actual)
     value=full.json();value['native_task_ids']=['a'*64]
     value['reserved']={'text':'Shorter context'}
     full=httpx.Response(200,request=full.request,json=value)
-    actual,_=refresh.prepare(request,scope())
+    actual,_,_=refresh.prepare(request,scope())
     assert len(calls)==1 and 'Shorter context' not in json.dumps(actual)
 
 
@@ -230,6 +230,82 @@ def test_explicit_local_owner_attestation_is_supported(module):
     assert 'A neutral task is running.' in json.dumps(result)
 
 
+@pytest.mark.parametrize('available', [False, True])
+@pytest.mark.parametrize('offline', [False, True])
+@pytest.mark.parametrize('payload', [
+    {'messages': [{'role': 'developer', 'content': 'Cached identity'},
+                  {'role': 'user', 'content': 'Continue.'}]},
+    {'instructions': 'Cached identity', 'input': [{'role': 'user', 'content': 'Continue.'}]},
+    {'system': [{'type': 'text', 'text': 'Cached identity', 'cache_control': {'type': 'ephemeral'}}],
+     'messages': [{'role': 'user', 'content': 'Continue.'}]},
+])
+def test_handoff_clarification_uses_existing_supported_request_block(module, monkeypatch, available, offline, payload):
+    controller = importlib.import_module(module.__package__ + '.task_controller')
+    monkeypatch.setattr(controller, 'FinishTurn', object if available else None)
+    calls = []
+    def get(path, **kwargs):
+        calls.append(kwargs)
+        if offline:
+            raise httpx.ConnectError('offline')
+        return response()
+    original = copy.deepcopy(payload)
+    refresh = module.RequestWork(SimpleNamespace(get=get), SimpleNamespace())
+    result, provenance, current = refresh.prepare(payload, scope())
+    assert current is not offline and provenance is None
+    text = json.dumps(result)
+    assert ("pacomind_task(operation='handoff')" in text) is available
+    assert text.count('[pacomind-work-request-v1]') == 1
+    assert module.replace_context(result) == original == payload
+    assert calls[0]['params']['reserve_chars'] <= 1200
+
+
+def test_handoff_guidance_shares_existing_work_budget(module, monkeypatch):
+    controller = importlib.import_module(module.__package__ + '.task_controller')
+    monkeypatch.setattr(controller, 'FinishTurn', object)
+    def get(path, **kwargs):
+        value = response('Large full projection. ' * 165).json()
+        value['reserved'] = response('Compact current work.').json()
+        return httpx.Response(200, request=httpx.Request('GET', 'http://localhost'), json=value)
+    result, provenance, current = module.RequestWork(SimpleNamespace(get=get), SimpleNamespace()).prepare(
+        {'messages':[{'role':'user','content':'Continue.'}]}, scope())
+    assert current is True and provenance is None
+    block = result['messages'][-1]['content']
+    assert 'Compact current work.' in block and 'Large full projection.' not in block
+    assert "pacomind_task(operation='handoff')" in block and len(block) <= 4200
+
+
+@pytest.mark.parametrize('shape', ['chat', 'responses', 'anthropic'])
+def test_superseded_work_removal_requires_observed_suffix_and_preserves_sources(module, shape):
+    memory = importlib.import_module(module.__package__ + '.request_memory')
+    fallback = '## Work observed at turn start [priority 73]\nOnly the old work snapshot.'
+    packet = ('[pacomind-recall-v1 {"contact_id":"owner","watermark":0}]\n'
+              'Persistent source evidence.\n\n' + fallback +
+              '\n\n## Relevant Memories [priority 90]\nOriginal sourced fact.\n[/pacomind-recall-v1]')
+    # A literal matching heading in actual user input must survive unchanged.
+    direct = 'Discuss this literal heading: ' + fallback
+    native_suffix = '\n\n<memory-context>\n' + packet + '\n</memory-context>'
+    if shape == 'chat':
+        content, enriched = direct, direct + native_suffix
+    else:
+        kind = 'input_text' if shape == 'responses' else 'text'
+        content = [{'type': kind, 'text': direct}]
+        enriched = content + [{'type': kind, 'text': native_suffix}]
+    current = {'role': 'user', 'content': content, 'api_content': enriched}
+    key = 'input' if shape == 'responses' else 'messages'
+    request = {key: [{'role': 'user', 'content': enriched},
+                     {'role': 'tool', 'content': packet, 'tool_call_id': 'source-read'}]}
+    before = copy.deepcopy(request)
+    result = memory._without_turn_start_work(request, current)
+    user = result[key][0]['content']
+    text = user if isinstance(user, str) else ''.join(part['text'] for part in user)
+    assert text.count(fallback) == 1  # The literal user copy is preserved.
+    assert 'Original sourced fact.' in text and '[pacomind-recall-v1' in text
+    assert result[key][1] == before[key][1]
+    assert request == before
+    assert memory._without_turn_start_work(request, None) == before
+    assert memory._without_turn_start_work(request, {'role':'user','content':enriched}) == before
+
+
 def test_empty_native_anthropic_system_uses_top_level_slot(module):
     original = {'model': 'fixture/model', 'max_tokens': 100,
                 'messages': [{'role': 'user', 'content': 'Continue.'}]}
@@ -299,7 +375,8 @@ def test_late_work_response_with_input_lineage_withholds_quote_and_provenance(mo
         }
         return httpx.Response(200, request=httpx.Request('GET', 'http://localhost' + path), json=value)
     original = {'messages': [{'role': 'user', 'content': 'What are you doing?'}]}
-    result, provenance = module.RequestWork(SimpleNamespace(get=get)).prepare(original, scope())
+    result, provenance, current = module.RequestWork(SimpleNamespace(get=get)).prepare(original, scope())
+    assert current is False
     assert calls == ['/v1/host/executions']
     assert provenance is None
     assert 'Use the lamp maintenance record I supplied.' not in json.dumps(result)

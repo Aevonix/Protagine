@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.8.1 - clearer working context and memory selection
+
+After a successful work refresh, model requests carry the current work view
+without repeating the turn-start snapshot. If refresh fails, that snapshot
+remains available with a notice that current work could not be checked. Source
+attribution and the stored conversation remain intact.
+
+The existing request context clarifies background handoff: return the actual
+acceptance while the worker completes and verifies its assignment. This applies
+when the native handoff capability is available, including in cached conversations.
+It guides model behavior; acceptance still does not prove task completion.
+
+Tool search and description results are excluded from persistent-observation
+candidates. They remain available in conversation history and the current tool
+catalog. Substantive tool results can still be retained and recalled.
+
 ## v1.8.0 - return control after background handoff
 
 The optional native task tool now offers an explicit `handoff` operation. It

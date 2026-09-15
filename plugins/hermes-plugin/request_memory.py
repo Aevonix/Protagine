@@ -189,6 +189,50 @@ def _native_packet(row):
     return _PACKET.search(suffix)
 
 
+def _without_turn_start_work(request, current):
+    """Omit only the observed native suffix's superseded work section.
+
+    Run after source checks and ownership registration, so changing this view
+    cannot change the original input identity or lose recalled dependencies.
+    Literal user/tool content and the native transcript remain untouched.
+    """
+    packet = _native_packet(current)
+    if packet is None:
+        return request
+    original = packet.group()
+    section = re.compile(r'\n\n## Work observed at turn start \[priority 73\]\n.*?'
+                         r'(?=\n\n## |\n\[/pacomind-recall-v1\])', re.S)
+    matches = list(section.finditer(original))
+    if len(matches) != 1:
+        return request
+    match = matches[0]
+    replacement = original[:match.start()] + original[match.end():]
+    direct = current['content']
+
+    def suffix(value):
+        if isinstance(value, str):
+            return value.replace(original, replacement, 1) if value.count(original) == 1 else value
+        if isinstance(value, list):
+            return [dict(part, text=suffix(part['text'])) if isinstance(part, dict)
+                    and part.get('type') in ('text', 'input_text') and isinstance(part.get('text'), str)
+                    else part for part in value]
+        return value
+
+    def content(value):
+        if isinstance(direct, str) and isinstance(value, str) and value.startswith(direct):
+            return direct + suffix(value[len(direct):])
+        if isinstance(direct, list) and isinstance(value, list) and value[:len(direct)] == direct:
+            return direct + suffix(value[len(direct):])
+        return value
+
+    result = dict(request)
+    for name in ('messages', 'input'):
+        if isinstance(request.get(name), list):
+            result[name] = [dict(row, content=content(row.get('content'))) if _user_input(row)
+                            else row for row in request[name]]
+    return result
+
+
 def _request_texts(value):
     if isinstance(value, str):
         yield value
@@ -878,7 +922,7 @@ class RequestMemory:
                     self._owned_calls.pop(key, None)
         return list(refs.values())
 
-    def __call__(self, request, scope, *, operational=None):
+    def __call__(self, request, scope, *, operational=None, current_work=False):
         from .input_provenance import current as supplied_current, withheld_request
         supplied_input = supplied_current()
         updates = supplied_input.request_updates(scope, request) if supplied_input else []
@@ -1106,7 +1150,8 @@ class RequestMemory:
                                 and operational['watermark'] == watermark):
             from .request_work import replace_context
             filtered = replace_context(filtered,
-                'Current shared work withheld because its admitted input is unavailable or changed.')
+                'Current shared work withheld because its admitted input is unavailable or changed.'
+                + operational.get('handoff_guidance', ''))
         if fresh and observed:
             actual_texts = list(_request_texts(filtered))
             current_packet = _native_packet(current)
@@ -1161,7 +1206,8 @@ class RequestMemory:
                 if operational:
                     from .request_work import replace_context
                     filtered = replace_context(filtered,
-                        'Current shared work withheld because source ownership could not be retained.')
+                        'Current shared work withheld because source ownership could not be retained.'
+                        + operational.get('handoff_guidance', ''))
                 return {'request':filtered, 'source':'pacomind', 'freshness_retryable':False,
                         'reason':'native_source_ownership_unavailable'}
             # A correction owns its typed carrier and later answer, not the
@@ -1186,6 +1232,9 @@ class RequestMemory:
                                 owners.setdefault(call, dependencies)
                     self._supplied[observed_key].update(supplied)
                     self._requests_seen.add(observed_key)
+        if current_work and (operational is None or
+                any(operational['text'] in text for text in _request_texts(filtered))):
+            filtered = _without_turn_start_work(filtered, current)
         return {'request': filtered, 'source': 'pacomind',
                 'freshness_retryable': freshness_retryable and not fresh,
                 'reason': 'source_erasure_checked' if fresh else 'source_erasure_unavailable'}
