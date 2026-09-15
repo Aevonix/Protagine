@@ -1154,6 +1154,17 @@ class PacoMindMemoryProvider(_MemoryProviderABC):
         # agree; constructor input alone never overrides it.
         if supplied_contact and not (platform or sender or chat):
             return supplied_contact
+        # Native API ingress has a chat ID but no sender. Reuse its exact
+        # pre-LLM attestation instead of treating that identity as an owner default.
+        if effective == "api_server" and not sender:
+            try:
+                from pacomind_hermes.native_scope import attested_api_contact
+                native_contact = attested_api_contact(session_id or self._session_id)
+            except ImportError:
+                native_contact = None
+            if (native_contact and native_contact == self._contact_id
+                    and supplied_contact in (None, native_contact)):
+                return native_contact
         if sender or chat or not internal_lane:
             if not sender:
                 return ""

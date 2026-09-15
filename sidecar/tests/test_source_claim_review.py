@@ -28,9 +28,10 @@ def review(*keeps):
 
 
 class ReviewedModel(Model):
-    def __init__(self, output, *, before_review=None):
+    def __init__(self, output, *, before_review=None, extraction_output=None):
         super().__init__({})
         self.review_output, self.before_review = output, before_review
+        self.extraction_output = json.dumps(CLAIMS) if extraction_output is None else extraction_output
 
     async def complete(self, messages, **kwargs):
         payload = json.loads(messages[-1]['content'])
@@ -40,7 +41,7 @@ class ReviewedModel(Model):
             await self.before_review()
         if is_review and isinstance(self.review_output, Exception):
             raise self.review_output
-        return SimpleNamespace(content=self.review_output if is_review else json.dumps(CLAIMS),
+        return SimpleNamespace(content=self.review_output if is_review else self.extraction_output,
             model_id='same-local-model', function_role='judging' if is_review else 'extraction',
             config_revision='local-config', model_revision='local-weights', binding='local')
 
@@ -53,9 +54,11 @@ def prepared(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_review_keeps_original_claim_bytes_and_records_distinct_judgment(tmp_path):
+@pytest.mark.parametrize('envelope', ['{}', '```json\n{}\n```', '```\r\n{}\r\n```', '\n```JSON \n{}\n```\n'])
+async def test_review_keeps_original_claim_bytes_and_records_distinct_judgment(tmp_path, envelope):
     ledger, projection = prepared(tmp_path)
-    model = ReviewedModel(review(False, True))
+    model = ReviewedModel(envelope.format(review(False, True)),
+                          extraction_output=envelope.format(json.dumps(CLAIMS)))
     assert await projection.process_one(model)
     proposed = model.calls[1][0]['proposals']
     assert model.calls[1][0]['message'] == TEXT
@@ -85,6 +88,23 @@ async def test_review_keeps_original_claim_bytes_and_records_distinct_judgment(t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['extraction', 'review'])
+@pytest.mark.parametrize('envelope', [
+    'Here is the result:\n{}', '```json\n{}', '```json\n{}\n```\nMore prose',
+    '```json\n{}\n```\n```json\n[]\n```', '```python\n{}\n```',
+])
+async def test_ambiguous_json_envelope_defers_without_committing(tmp_path, stage, envelope):
+    ledger, projection = prepared(tmp_path)
+    extraction = envelope.format(json.dumps(CLAIMS)) if stage == 'extraction' else json.dumps(CLAIMS)
+    judgment = envelope.format(review(True, True)) if stage == 'review' else review(True, True)
+    await projection.process_one(ReviewedModel(judgment, extraction_output=extraction))
+    status = projection.status('person')[0]
+    assert status['status'] == 'pending' and status['claim_count'] == 0
+    assert status['error'] == 'SourceClaimOutputError'
+    assert ledger.search_sources('case', contact_id='person', session_id='later')
+
+
+@pytest.mark.asyncio
 async def test_semantic_rejection_completes_without_erasing_the_source(tmp_path):
     ledger, projection = prepared(tmp_path)
     await projection.process_one(ReviewedModel(review(False, False)))
@@ -95,6 +115,7 @@ async def test_semantic_rejection_completes_without_erasing_the_source(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fenced', [False, True])
 @pytest.mark.parametrize('output', [
     '{}', '[]', '{', review(True),
     '{"0":{"keep":true,"reason":"Valid"},"0":{"keep":false,"reason":"Duplicate"}}',
@@ -103,8 +124,10 @@ async def test_semantic_rejection_completes_without_erasing_the_source(tmp_path)
     json.dumps({'0': {'keep': True, 'reason': 'Valid', 'value': 'rewritten'}, '1': {'keep': True, 'reason': 'Valid'}}),
     RuntimeError('No judging role is available'),
 ])
-async def test_invalid_or_unavailable_review_defers_whole_batch_without_commit(tmp_path, output):
+async def test_invalid_or_unavailable_review_defers_whole_batch_without_commit(tmp_path, output, fenced):
     ledger, projection = prepared(tmp_path)
+    if fenced and isinstance(output, str):
+        output = '```json\n' + output + '\n```'
     await projection.process_one(ReviewedModel(output))
     status = projection.status('person')[0]
     assert status['status'] == 'pending' and status['claim_count'] == 0
@@ -178,6 +201,8 @@ def test_exact_keys_and_duplicate_keys_are_required_without_repair():
         check.validate(json.loads(review(True)))
     with pytest.raises(SourceClaimOutputError):
         validated_review('{"0":{"keep":true,"reason":"a"},"0":{"keep":true,"reason":"b"}}', 2)
+    with pytest.raises(SourceClaimOutputError, match='invalid_claim_review_json'):
+        validated_review(None, 2)
     assert projection_timeout_seconds(SimpleNamespace()) == 40
 
 

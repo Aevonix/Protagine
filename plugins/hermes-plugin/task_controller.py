@@ -23,7 +23,10 @@ TOOL_SCHEMA = {
     'name': 'pacomind_task',
     'description': (
         'Run an accepted task in the background while this conversation continues. '
-        'Submit a bounded request; inspect, steer, stop or resume the returned task_id from '
+        'Submit the complete deliverable and constraints, including any child work, in one bounded request. '
+        'After acceptance, return the actual task_id and end the foreground turn once its reply is complete; '
+        'let the task perform its completion and verification work. '
+        'Inspect, steer, stop or resume the returned task_id from '
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
         'Status includes original-input and recent authorized update source references; '
@@ -39,11 +42,17 @@ TOOL_SCHEMA = {
         'type': 'object', 'additionalProperties': False,
         'properties': {
             'operation': {'type': 'string', 'enum': ['submit', 'status', 'steer', 'stop', 'resume', 'list']},
-            'request': {'type': 'string', 'minLength': 1, 'maxLength': 32768},
+            'request': {'type': 'string', 'minLength': 1, 'maxLength': 32768,
+                'description': 'For submit: preserve the requested deliverable, destination, '
+                    'verification or readback steps, and permission boundaries. Include child work '
+                    'inside this task and apply child-only restrictions only to that child. '
+                    'A read-only child does not make this task read-only.'},
             'model_role': {'type': 'string', 'minLength': 1, 'maxLength': 256,
                 'description': 'Optional for submit: a task role declared in this profile, '
                     'such as coding or reasoning. Omit to use the configured task default. '
-                    'Choose for the work, not merely because it runs in the background.'},
+                    'Choose for the work, not merely because it runs in the background. '
+                    'The role selects model configuration; it does not change permissions '
+                    'or remove deliverables.'},
             'task_id': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
             'expected_turn_id': {'type': 'string', 'minLength': 1, 'maxLength': 512,
                 'description': 'Required for resume: the exact native_turn_id observed in task status.'},
