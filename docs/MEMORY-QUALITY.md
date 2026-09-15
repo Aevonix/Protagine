@@ -17,8 +17,22 @@ within the existing 500-character evidence limit. It asks for conditions and
 subsequent steps together, but extraction and admission review can still split
 one instruction into several claims. An individual claim does not establish
 conditional completeness. The model does not generate a second version of the
-stored instructions. Other values retain their 160-character limit. Existing
-stored claims remain readable and are not rewritten.
+stored instructions. A standing preference can likewise use the explicit
+`representation="preference"` form: its exact evidence, up to 500 characters,
+is a quoted statement including attribution, conditions and exceptions. A
+nonliteral generated preference value is discarded in favor of this quoted form
+when it cannot be grounded as a supported partial revision. Existing literal
+compact preferences and other factual values retain their 160-character limit.
+Stored claims remain readable and are not rewritten.
+
+Quoted preferences always require the existing semantic admission review, even
+when they quote a whole message; they cannot use the episode review bypass.
+Review judges the chosen preference and its scope, rather than treating the
+whole quotation as a scalar value. Recall retains distinct quoted witnesses
+without inferring equality or contradiction from their wording. Its comparison
+marker preserves that uncertainty beside any compact-value comparisons.
+Explicit reviewed corrections and changes still select their exact predecessor
+and govern its lifecycle, including when normalized wording happens to match.
 
 On a binding with verified [structured-output support](FUNCTION-ROUTING.md), a
 source of at most 500 characters requests its complete message as constrained

@@ -38,7 +38,7 @@ def run(args):
         report = compare(args.incumbent, args.candidate)
         print(json.dumps(report, indent=2) if args.json else markdown(report))
         return 0
-    from .runner import inspect_binding, router_for, evaluate
+    from .runner import inspect_binding, router_for, evaluate, materialize_role_cases
     native = getattr(args, 'suite', 'standard') == 'native'
     if native:
         from .native import configuration
@@ -63,7 +63,8 @@ def run(args):
     else:
         if getattr(args, 'deadline_seconds', None) is not None or getattr(args, 'cleanup_seconds', None) is not None:
             raise ValueError('Deadline overrides apply only to the native suite')
-        cases = select_cases(roles)
+        cases, policy = materialize_role_cases(config, args.binding, select_cases(roles))
+        recipe = {**recipe, 'qualification_output_policy': policy}
         factory = lambda case: router_for(config, args.binding, [case])
     asyncio.run(evaluate(args.output, recipe, cases, consumers, EVALUATORS,
         factory, resume=args.resume, evidence_mode=args.evidence_mode))

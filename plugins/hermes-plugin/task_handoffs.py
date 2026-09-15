@@ -18,6 +18,12 @@ def _utc_timestamp(value):
         return None
 
 
+def status_view(status, status_basis, **fields):
+    """Time of this status inspection, not a task start or effect receipt."""
+    return {**fields, 'status': status, 'status_basis': status_basis,
+            'status_observed_at_utc': _utc_timestamp(time.time())}
+
+
 class TaskHandoffError(ValueError):
     """An association, source, or control operation could not be retained."""
 
@@ -394,13 +400,24 @@ class TaskHandoffs:
                 (json.dumps(value, sort_keys=True), identity, *(native[key] for key in fields)))
 
     @staticmethod
+    def response_view(row, *, include_content=True):
+        response = row.get('response')
+        if not response:
+            return None
+        return status_view('done', 'retained_assistant_report',
+            result_provenance={'kind': 'assistant_report', 'assertions': 'unverified',
+                               'external_effects': 'unobserved'},
+            **({'result': response['text'], 'source_dependencies': response['source_dependencies']}
+               if include_content else {}))
+
+    @staticmethod
     def failure_view(row):
         terminal = row.get('terminal')
         if (row.get('response') or not terminal or terminal.get('failed') is not True
                 or any(not terminal.get(key) or terminal[key] != row.get('native_' + key)
                        for key in ('session_id', 'task_id', 'turn_id'))):
             return None
-        return {'status': 'failed', 'failure': terminal}
+        return status_view('failed', terminal.get('basis') or 'retained_native_failure', failure=terminal)
 
     @staticmethod
     def stop_view(row):
@@ -416,9 +433,9 @@ class TaskHandoffs:
         basis = ('native_turn_finalized' if terminal else 'native_startup_resume_suppressed' if resumed
                  else 'native_admission_blocked' if stop.get('native_admission_blocked') else None)
         settled = basis is not None
-        return {'status': 'cancelled' if settled else 'stopping',
-                'stop': {**stop, 'cancellation_basis': basis, 'native_turn_termination': terminal,
-                         'process_cleanup': 'unobserved'}}
+        return status_view('cancelled' if settled else 'stopping', basis or 'retained_stop_request',
+            stop={**stop, 'cancellation_basis': basis, 'native_turn_termination': terminal,
+                  'process_cleanup': 'unobserved'})
 
     def resolve(self, identity):
         row = self.get(identity)

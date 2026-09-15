@@ -72,7 +72,8 @@ def test_only_offered_episode_ids_can_be_selected_by_the_decoder():
 
 
 @pytest.mark.asyncio
-async def test_episode_correction_kind_comes_from_the_selected_stored_record(tmp_path):
+@pytest.mark.parametrize('use_reference', [False, True])
+async def test_episode_correction_kind_comes_from_the_selected_stored_record(tmp_path, use_reference):
     ledger = TurnIdempotencyLedger(tmp_path / 'episode.db')
     projection = SourceClaimProjection(ledger)
     await record(ledger, projection, 'original', REPORT, episode(REPORT))
@@ -80,6 +81,9 @@ async def test_episode_correction_kind_comes_from_the_selected_stored_record(tmp
     proposal = {k: v for k, v in episode(CORRECTION).items()
                 if k not in {'representation', 'memory_kind'}}
     proposal.update(operation='correct', prior_claim_id=original['id'])
+    if use_reference:
+        proposal.pop('evidence')
+        proposal['evidence_ref'] = 'current_message'
     jsonschema.validate([proposal], claim_response_schema(CORRECTION, prior=[original])['schema'])
     await record(ledger, projection, 'correction', CORRECTION, proposal)
     current = next(row for row in claims(ledger) if row['turn_id'] == 'correction')
