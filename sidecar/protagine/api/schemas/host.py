@@ -153,6 +153,24 @@ class MemorySearchResponse(BaseModel):
     annotation_checks: List[SourceAnnotationCheck] = Field(default_factory=list, max_length=20)
 
 
+class MemoryRecentRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    identity: HostIdentity
+    person_id: str = Field(min_length=1, max_length=256, pattern=r'\S')
+    session_id: str = Field(min_length=1, max_length=256, pattern=r'\S')
+    platform: str = Field(min_length=1, max_length=64, pattern=r'^[a-z0-9][a-z0-9_.-]*$')
+    limit: int = Field(default=8, ge=1, le=20, strict=True)
+
+
+class MemoryRecentResponse(BaseModel):
+    platform: str
+    entries: List[Dict[str, Any]] = Field(max_length=20)
+    source_refs: List[Dict[str, str]]
+    watermark: int = Field(ge=0)
+    annotation_checks: List[SourceAnnotationCheck] = Field(default_factory=list, max_length=20)
+    coverage: Dict[str, Any]
+
+
 # --- Context ----------------------------------------------------------------
 
 class ContextAssembleRequest(BaseModel):

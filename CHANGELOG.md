@@ -53,6 +53,20 @@ This updates `protagine-hermes` to 1.8.7. The sidecar remains 1.8.6 and hostwork
 0.3.0. Upgrade the adapter in the Hermes environment and restart that gateway
 to load it.
 
+## v1.8.7 - read recent canonical conversations
+
+Adds participant-scoped `POST /v1/host/memory/recent` for bounded chronological
+conversation reads by platform. Selection uses recorded occurrence time and
+canonical source revisions, preserving user/assistant attribution, corrections
+and erasure checks without semantic ranking or a model call. Indexed channel
+locators cover new turns; reviewed history and verified source-linked
+communications locate existing sources without exposing unlinked summaries.
+
+The response carries source and annotation receipts plus explicit coverage for
+missing metadata, omitted corrections and result/content limits. Only the
+sidecar advances to 1.8.7; the unchanged Hermes adapter remains 1.8.6 and
+hostworker remains 0.3.0.
+
 ## v1.8.6 - diagnose retained model responses
 
 Hermes response observations now retain stop reasons, text/tool/reasoning counts

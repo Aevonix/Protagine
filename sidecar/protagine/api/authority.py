@@ -1113,6 +1113,7 @@ def required_scope(method: str, path: str) -> str:
         ("GET", "/v1/host/queue/contract"): "workers:contract",
         ("POST", "/v1/host/memory/read"): "memory:read",
         ("POST", "/v1/host/memory/search"): "memory:search",
+        ("POST", "/v1/host/memory/recent"): "memory:read",
         ("POST", "/v1/host/memory/sources/forget"): "memory:write",
         ("POST", "/v1/host/memory/sources/annotations"): "memory:write",
         ("POST", "/v1/host/memory/sources/deadline"): "memory:read",
