@@ -18,14 +18,18 @@ from .client import PrivateSQLitePath
 from .task_handoffs import TaskHandoffError, TaskHandoffs, erase_task_handoffs, status_view
 from .task_sources import NativeTaskSources, owner_lookup_deadline
 
+try:
+    from hermes_cli.tool_completion import FinishTurn
+except ImportError:
+    FinishTurn = None
+
 
 TOOL_SCHEMA = {
     'name': 'pacomind_task',
     'description': (
         'Run an accepted task in the background while this conversation continues. '
         'Submit the complete deliverable and constraints, including any child work, in one bounded request. '
-        'After acceptance, return the actual task_id and end the foreground turn once its reply is complete; '
-        'let the task perform its completion and verification work. '
+        'After acceptance, use the actual task_id and let the task perform its completion and verification work. '
         'Inspect, steer, stop or resume the returned task_id from '
         'another conversation belonging to the same owner. Results are retained '
         'for inspection; acceptance is not completion or an outward delivery. '
@@ -60,6 +64,17 @@ TOOL_SCHEMA = {
         'required': ['operation'],
     },
 }
+
+if FinishTurn is not None:
+    TOOL_SCHEMA['description'] += (
+        ' Use handoff when this task carries the remaining request and this foreground turn '
+        'should finish with its acceptance receipt. Submit keeps the foreground conversation available '
+        'for more work. Handoff can finish the turn only when it is the sole successful tool call.')
+    TOOL_SCHEMA['parameters']['properties']['operation']['enum'].insert(1, 'handoff')
+    for field in ('request', 'model_role'):
+        prop = TOOL_SCHEMA['parameters']['properties'][field]
+        prop['description'] = prop['description'].replace('for submit:', 'for submit or handoff:').replace(
+            'For submit:', 'For submit or handoff:')
 
 
 class NativeTasks:
@@ -425,13 +440,15 @@ class NativeTasks:
                     or scope.contact_id != self.owner or scope.authority_lane not in {'owner', 'system'}):
                 raise TaskHandoffError('An attested owner conversation is required')
             operation = args.get('operation')
-            expected = {'operation'} | ({'request'} if operation == 'submit' else
+            if operation == 'handoff' and FinishTurn is None:
+                raise TaskHandoffError('This native runtime does not support terminal handoff; use submit to continue normally')
+            expected = {'operation'} | ({'request'} if operation in {'submit', 'handoff'} else
                 {'task_id', 'request'} if operation == 'steer' else
                 {'task_id', 'expected_turn_id'} if operation == 'resume' else
                 {'task_id'} if operation in {'status', 'stop'} else set())
-            if operation == 'submit' and 'model_role' in args:
+            if operation in {'submit', 'handoff'} and 'model_role' in args:
                 expected.add('model_role')
-            if set(args) != expected or operation not in {'submit', 'status', 'steer', 'stop', 'resume', 'list'}:
+            if set(args) != expected or operation not in {'submit', 'handoff', 'status', 'steer', 'stop', 'resume', 'list'}:
                 raise TaskHandoffError('Use one task operation with its exact fields')
             if operation == 'list':
                 items = []
@@ -444,7 +461,7 @@ class NativeTasks:
                     'configured_model_roles': sorted(key for key in roles
                         if isinstance(key, str) and key.strip() and len(key) <= 256)
                         if isinstance(roles, dict) else []})
-            if operation == 'submit':
+            if operation in {'submit', 'handoff'}:
                 adapter = self.adapter
                 if adapter is None or adapter.loop is None or not adapter.loop.is_running():
                     raise TaskHandoffError('The native task gateway is not connected')
@@ -511,6 +528,38 @@ class NativeTasks:
             return json.dumps({'error': str(error) if isinstance(error, (TaskHandoffError, ValueError))
                 else type(error).__name__, **({'task_id': identity} if identity else {}),
                 'outcome': 'unconfirmed'})
+
+    def finish_handoff(self, *, scope, tool_name, tool_call_id, tool_arguments, tool_result, **_):
+        """Native invokes this only for the current successful persisted single-tool batch."""
+        if (FinishTurn is None or tool_name not in {TOOL_SCHEMA['name'], 'tool_call'} or not tool_call_id
+                or scope is None or not scope.valid_participant or scope.contact_id != self.owner
+                or scope.authority_lane not in {'owner', 'system'}):
+            return None
+        try:
+            args, result = json.loads(tool_arguments), json.loads(tool_result)
+            if not isinstance(args, dict):
+                return None
+            if tool_name == 'tool_call':
+                from tools.tool_search import resolve_underlying_call
+                tool_name, args, error = resolve_underlying_call(args)
+                if error or tool_name != TOOL_SCHEMA['name']:
+                    return None
+            if (args.get('operation') != 'handoff'
+                    or not isinstance(result, dict) or result.get('accepted') is not True
+                    or 'error' in result or result.get('executor') != 'native_hermes'):
+                return None
+            row = self.handoffs.get(result['task_id'])
+            origin = row['source'].get('origin') or {}
+            if (row['request'] != args.get('request') or row['source']['contact_id'] != self.owner
+                    or result.get('model_role') != row['model_role']
+                    or args.get('model_role') != (row['model_role'] or {}).get('role')
+                    or any(origin.get(key) != getattr(scope, key, None)
+                        for key in ('session_id', 'turn_id', 'platform'))):
+                return None
+            return FinishTurn(text=f"Accepted task `{row['id']}`. You can inspect or steer it using this task ID.",
+                              tool_call_id=tool_call_id)
+        except (KeyError, TypeError, ValueError, TaskHandoffError):
+            return None
 
 
 def configured_tasks(client, outbox, owner_contact_id, *, config,
