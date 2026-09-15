@@ -88,6 +88,39 @@ async def test_review_keeps_original_claim_bytes_and_records_distinct_judgment(t
 
 
 @pytest.mark.asyncio
+async def test_review_receives_shared_quality_without_extraction_output_instructions(tmp_path):
+    from pacomind.beliefs.promotion import QUALITY_CRITERIA
+
+    class CapturedModel(ReviewedModel):
+        async def complete(self, messages, **kwargs):
+            requests.append(deepcopy(messages))
+            return await super().complete(messages, **kwargs)
+
+    requests = []
+    ledger, projection = prepared(tmp_path)
+    model = CapturedModel(review(False, True))
+    assert await projection.process_one(model)
+    assert len(requests) == len(model.calls) == 2
+    extraction_system, review_system = (messages[0]['content'] for messages in requests)
+    assert extraction_system.count(QUALITY_CRITERIA) == review_system.count(QUALITY_CRITERIA) == 1
+    assert 'Include memory_kind and recall_reason in every item.' in extraction_system
+    assert 'Include memory_kind and recall_reason in every item.' not in review_system
+    assert 'Actual props, projects and asserted real facts may still be retained when adjacent to fiction.' in review_system
+    extraction_payload, review_payload = (json.loads(messages[1]['content']) for messages in requests)
+    assert {key: value for key, value in review_payload.items() if key != 'proposals'} == extraction_payload
+    assert review_payload['message'] == TEXT
+    for item, original in zip(review_payload['proposals'], CLAIMS, strict=True):
+        assert item['claim']['value'] == original['value']
+        assert item['claim']['evidence'] == original['evidence']
+        assert item['claim']['memory_quality']['recall_reason'] == original['recall_reason']
+    schema = model.calls[1][1]['context']['response_schema']['schema']
+    assert set(schema['properties']) == {'0', '1'}
+    assert all(set(item['properties']) == {'keep', 'reason'} for item in schema['properties'].values())
+    assert projection.status('person')[0]['claim_count'] == 1
+    assert ledger.search_sources('blue case', contact_id='person', session_id='later')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('stage', ['extraction', 'review'])
 @pytest.mark.parametrize('envelope', [
     'Here is the result:\n{}', '```json\n{}', '```json\n{}\n```\nMore prose',
