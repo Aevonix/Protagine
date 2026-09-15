@@ -12,9 +12,13 @@ import pytest
 from conftest import ROOT, run_python
 
 
-@pytest.mark.parametrize('steer_delivery,submission', [
-    ('tool_batch', 'submit'), ('next_turn', 'submit'), ('tool_batch', 'handoff')])
-def test_native_task_channels(artifacts, tmp_path, steer_delivery, submission):
+@pytest.mark.parametrize('steer_delivery,submission,tool_form', [
+    pytest.param('tool_batch', 'submit', 'deferred', id='tool_batch-submit'),
+    pytest.param('next_turn', 'submit', 'deferred', id='next_turn-submit'),
+    pytest.param('tool_batch', 'handoff', 'deferred', id='tool_batch-handoff'),
+    *[('tool_batch', 'existing_handoff', form)
+      for form in ('direct', 'deferred', 'mixed_direct', 'mixed_deferred')]])
+def test_native_task_channels(artifacts, tmp_path, steer_delivery, submission, tool_form):
     native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native gateway integration')
@@ -22,6 +26,7 @@ def test_native_task_channels(artifacts, tmp_path, steer_delivery, submission):
     env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'state'),
         PACOMIND_TEST_STEER_DELIVERY=steer_delivery,
         PACOMIND_TEST_TASK_SUBMISSION=submission,
+        PACOMIND_TEST_TASK_TOOL_FORM=tool_form,
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), HERMES_DISABLE_TELEMETRY='1',
         HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         PACOMIND_GENERAL_PLUGIN_ACTIVE='1', PACOMIND_MEMORY_WORKER_TOOLS='0',

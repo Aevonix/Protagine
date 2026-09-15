@@ -19,6 +19,15 @@ _ORIGIN_FIELDS = ('platform', 'authority_gateway', 'sender_id', 'session_id', 't
 _OWNER_DEADLINE = ContextVar('pacomind_task_owner_deadline', default=None)
 
 
+def is_direct_scope(scope):
+    """Cheap existing task precondition, without owner lookup or source I/O."""
+    return not (scope is None or not scope.valid_participant
+        or scope.authority_lane not in {'owner', 'system'}
+        or scope.platform in _NON_DIRECT or current() is not None
+        or getattr(scope, 'parent_session_id', '')
+        or not getattr(scope, 'session_id', '') or not getattr(scope, 'turn_id', ''))
+
+
 @contextmanager
 def owner_lookup_deadline(deadline):
     """Bound existing owner lookups for optional request context only."""
@@ -80,11 +89,7 @@ class NativeTaskSources:
         return contact
 
     def _scope(self, scope):
-        if (scope is None or not scope.valid_participant
-                or scope.authority_lane not in {'owner', 'system'}
-                or scope.platform in _NON_DIRECT or current() is not None
-                or getattr(scope, 'parent_session_id', '')
-                or not scope.session_id or not scope.turn_id):
+        if not is_direct_scope(scope):
             raise TaskHandoffError('An ordinary authenticated owner turn is required')
         origin = dict(platform=scope.platform,
             authority_gateway=getattr(scope, 'authority_gateway', '') or scope.platform,

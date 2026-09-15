@@ -69,8 +69,13 @@ if FinishTurn is not None:
     TOOL_SCHEMA['description'] += (
         ' Use handoff when this task carries the remaining request and this foreground turn '
         'should finish with its acceptance receipt. Submit keeps the foreground conversation available '
-        'for more work. Handoff can finish the turn only when it is the sole successful tool call.')
+        'for more work. To hand off a task already accepted in this turn, pass its task_id alone; '
+        'this returns the existing acceptance without starting another task. Use request for new work. '
+        'Handoff can finish the turn only when it is the sole successful tool call.')
     TOOL_SCHEMA['parameters']['properties']['operation']['enum'].insert(1, 'handoff')
+    TOOL_SCHEMA['parameters']['properties']['task_id']['description'] = (
+        'For handoff: an existing task accepted in this same turn. Omit request, model_role '
+        'and expected_turn_id; use steer to change an existing task.')
     for field in ('request', 'model_role'):
         prop = TOOL_SCHEMA['parameters']['properties'][field]
         prop['description'] = prop['description'].replace('for submit:', 'for submit or handoff:').replace(
@@ -442,14 +447,34 @@ class NativeTasks:
             operation = args.get('operation')
             if operation == 'handoff' and FinishTurn is None:
                 raise TaskHandoffError('This native runtime does not support terminal handoff; use submit to continue normally')
-            expected = {'operation'} | ({'request'} if operation in {'submit', 'handoff'} else
+            existing_handoff = operation == 'handoff' and 'task_id' in args
+            expected = {'operation'} | ({'task_id'} if existing_handoff else
+                {'request'} if operation in {'submit', 'handoff'} else
                 {'task_id', 'request'} if operation == 'steer' else
                 {'task_id', 'expected_turn_id'} if operation == 'resume' else
                 {'task_id'} if operation in {'status', 'stop'} else set())
-            if operation in {'submit', 'handoff'} and 'model_role' in args:
+            if not existing_handoff and operation in {'submit', 'handoff'} and 'model_role' in args:
                 expected.add('model_role')
             if set(args) != expected or operation not in {'submit', 'handoff', 'status', 'steer', 'stop', 'resume', 'list'}:
+                if existing_handoff:
+                    identity = args['task_id']
+                    raise TaskHandoffError('Existing task handoff accepts only operation and task_id; use steer to change its request')
                 raise TaskHandoffError('Use one task operation with its exact fields')
+            if existing_handoff:
+                identity = args['task_id']
+                row = self.handoffs.get(identity)
+                self.sources.authorize_control(row['source'], scope)
+                origin = row['source'].get('origin') or {}
+                if any(origin.get(key) != getattr(scope, key, None)
+                       for key in ('session_id', 'turn_id', 'platform')):
+                    raise TaskHandoffError('Handoff requires a task accepted in this same turn; use status for other tasks')
+                row, _ = self.handoffs.resolve(identity)
+                if row['stop'] or row['terminal'] or row['response']:
+                    raise TaskHandoffError('This task has stopped or ended; inspect its status')
+                # This operation returns an existing acceptance. It does not
+                # recapture instructions, dispatch work or change its model.
+                return json.dumps({**self._metadata(row), 'accepted': True,
+                    'existing_task': True, 'delivery': 'unobserved'})
             if operation == 'list':
                 items = []
                 for row in self.handoffs.recent(contact_id=self.owner):
@@ -550,11 +575,18 @@ class NativeTasks:
                 return None
             row = self.handoffs.get(result['task_id'])
             origin = row['source'].get('origin') or {}
-            if (row['request'] != args.get('request') or row['source']['contact_id'] != self.owner
+            if (row['source']['contact_id'] != self.owner
                     or result.get('model_role') != row['model_role']
-                    or args.get('model_role') != (row['model_role'] or {}).get('role')
                     or any(origin.get(key) != getattr(scope, key, None)
                         for key in ('session_id', 'turn_id', 'platform'))):
+                return None
+            if 'task_id' in args:
+                if (set(args) != {'operation', 'task_id'} or args['task_id'] != row['id']
+                        or result.get('existing_task') is not True
+                        or row['stop'] or row['terminal'] or row['response']):
+                    return None
+            elif (row['request'] != args.get('request')
+                    or args.get('model_role') != (row['model_role'] or {}).get('role')):
                 return None
             return FinishTurn(text=f"Accepted task `{row['id']}`. You can inspect or steer it using this task ID.",
                               tool_call_id=tool_call_id)

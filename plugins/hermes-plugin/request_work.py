@@ -10,6 +10,7 @@ import math
 import re
 import time
 
+from .task_sources import is_direct_scope
 
 _OPEN = '[pacomind-work-request-v1]'
 _CLOSE = '[/pacomind-work-request-v1]'
@@ -152,7 +153,7 @@ class RequestWork:
         provenance = None
         current = False
         guidance = ''
-        if self.native_tasks is not None:
+        if self.native_tasks is not None and is_direct_scope(scope):
             from .task_controller import FinishTurn
             if FinishTurn is not None:
                 guidance = '\n\n' + _BACKGROUND_HANDOFF

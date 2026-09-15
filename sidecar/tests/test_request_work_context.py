@@ -21,13 +21,24 @@ def module():
 def scope(**changes):
     return SimpleNamespace(valid_participant=True, authority_lane='owner',
         resolution_status='resolved', platform='sms', contact_id='owner',
-        session_id='session-a', **changes)
+        session_id='session-a', turn_id='turn-a', **changes)
 
 
 def response(text='A neutral task is running.'):
     return httpx.Response(200, request=httpx.Request('GET', 'http://localhost/v1/host/executions'),
         json={'schema': 'PacoMindRequestWorkV1', 'observed_at': 1234.5,
               'text': text, 'truncated': False})
+
+
+def test_generic_work_projection_does_not_instruct_an_owner_only_tool():
+    from test_work_ancestry_projection import execution, rows
+    task = execution(2)
+    task.update(task_id='a'*64, platform='pacomind_task')
+    projected = request_work_context({'items': [task]})
+    assert not any(line.startswith('Use task_id with pacomind_task') for line in projected['text'].splitlines())
+    assert projected['native_task_ids'] == ['a'*64]
+    assert any(row.get('task_id') == 'a'*64 for row in rows(projected))
+    assert 'terminal observation is not proof of useful completion' in projected['text']
 
 
 def test_task_revision_requires_current_owner_and_never_falls_back(module, tmp_path):
