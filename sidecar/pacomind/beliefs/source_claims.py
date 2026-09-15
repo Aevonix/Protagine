@@ -236,10 +236,19 @@ def _unique_review_object(pairs):
     return result
 
 
+def _json_body(raw: str) -> str:
+    """Unwrap one complete JSON fence without finding JSON inside other text."""
+    if not isinstance(raw, str):
+        raise TypeError('Model JSON response must be text')
+    body = raw.strip()
+    fenced = re.fullmatch(r'```(?:json)?[ \t]*\r?\n(.*?)\r?\n```', body, re.DOTALL | re.I)
+    return fenced.group(1) if fenced else body
+
+
 def validated_review(raw: str, count: int) -> dict:
     """A missing decision is unfinished work, never implicit rejection."""
     try:
-        result = json.loads(raw, object_pairs_hook=_unique_review_object)
+        result = json.loads(_json_body(raw), object_pairs_hook=_unique_review_object)
     except (TypeError, ValueError) as exc:
         raise SourceClaimOutputError('invalid_claim_review_json') from exc
     if not isinstance(result, dict) or set(result) != {str(index) for index in range(count)}:
@@ -300,11 +309,8 @@ def validated_claims(raw: str, *, message: str, prior: list[dict], observed_at: 
 
     observed = utc_timestamp(observed_at)
     observed_at = observed.isoformat() if observed else None
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
     try:
-        values = json.loads(text)
+        values = json.loads(_json_body(raw))
     except (TypeError, ValueError):
         if diagnostics is not None:
             diagnostics["invalid_array_count"] += 1
