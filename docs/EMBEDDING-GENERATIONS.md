@@ -23,6 +23,18 @@ not add dynamic embedding provider configuration; selecting a different
 embedding provider still uses the existing deployment configuration path.
 Index promotion itself takes effect in the running store without a restart.
 
+For the `openai_api` text provider, `PACOMIND_EMBED_DIMS` specifies the expected
+output width; it does not request dimension reduction. To explicitly ask a
+supporting endpoint for a width, set `PACOMIND_EMBED_REQUEST_DIMS` to the same
+positive integer (or set `EmbeddingConfig.request_dimensions`). With this option
+unset, requests continue to omit `dimensions`. The client never truncates
+vectors, and rejects responses with a different width. This option is not
+supported by local or multimodal providers. A multimodal startup that selects it
+falls back to text-only operation through the existing initialization path.
+Changing the explicit request option changes the embedding identity even when
+the expected output width is unchanged; rebuild before semantic use. Unchanged
+configurations retain their existing generation identity.
+
 Existing Lance collections have no trustworthy embedding identity. They remain
 on disk as an unverified legacy generation, and semantic search through the
 managed runtime refuses to compare them with a newly configured model. Graph

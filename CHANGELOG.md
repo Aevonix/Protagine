@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.8.4 - embedding dimensions and commitment feedback
+
+A rejected commitment ID now returns the precise rejection and clears that
+unconfirmed local attempt. It no longer appears as a server outage that blocks
+unrelated tools. Uncertain responses retain their existing restrictions, and a
+failed retry preserves a previously confirmed undertaking token.
+
+OpenAI-compatible text embedding providers can request a specific output width
+through `PACOMIND_EMBED_REQUEST_DIMS`. The value must match the configured
+response width. Requests omit the field unless it is explicitly selected;
+unsupported providers and incorrect response widths remain errors.
+
+The request option belongs to the embedding generation identity. Selecting it
+requires a rebuilt index even when the vector width stays the same. Existing
+configurations keep their current request payload and generation identity.
+The client does not truncate vectors or infer support from a model name.
+Docker Compose forwards the embedding endpoint, credential, revision and request
+width from the deployment environment.
+
+An isolated two-model trial with equal output widths passed the existing
+migration, interruption, resumption, source-scope and erasure checks. That result
+does not qualify general retrieval quality or change a deployment's model roles.
+
 ## v1.8.3 - memory quality and failed-proposal review
 
 Memory retains a quoted preference or procedure when its applicability cannot

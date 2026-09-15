@@ -22,7 +22,6 @@ services:
       retries: 5
       start_period: 30s
 
-  # Retain this existing service key and state volume across the rename.
   pacomind:
     image: ghcr.io/aevonix/pacomind:latest
     build:
@@ -42,6 +41,10 @@ services:
       PACOMIND_EMBED_PROVIDER: ${PACOMIND_EMBED_PROVIDER:-cpu}
       PACOMIND_EMBED_MODEL: ${PACOMIND_EMBED_MODEL:-}
       PACOMIND_EMBED_DIMS: ${PACOMIND_EMBED_DIMS:-}
+      PACOMIND_EMBED_REQUEST_DIMS: ${PACOMIND_EMBED_REQUEST_DIMS:-}
+      PACOMIND_EMBED_REVISION: ${PACOMIND_EMBED_REVISION:-}
+      PACOMIND_EMBED_BASE_URL: ${PACOMIND_EMBED_BASE_URL:-}
+      PACOMIND_EMBED_API_KEY: ${PACOMIND_EMBED_API_KEY:-}
       PACOMIND_RERANKER_MODEL: ${PACOMIND_RERANKER_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:

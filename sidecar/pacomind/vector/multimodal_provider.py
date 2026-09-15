@@ -354,6 +354,8 @@ class APIMultimodalProvider(MultimodalEmbeddingProvider):
 
     def __init__(self, config: EmbeddingConfig) -> None:
         super().__init__(config)
+        if config.request_dimensions is not None:
+            raise ValueError("request_dimensions is supported only for text API embeddings")
         if not config.base_url:
             raise ValueError("Multimodal API embeddings require an explicit endpoint")
         self._base_url = config.base_url.rstrip("/")

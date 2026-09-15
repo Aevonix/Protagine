@@ -1727,6 +1727,8 @@ async def lifespan(app: FastAPI):
             model_id=embed_model,
             dimensions=int(embed_dims) if embed_dims else 384,
             revision=os.environ.get("PACOMIND_EMBED_REVISION") or None,
+            request_dimensions=(int(os.environ["PACOMIND_EMBED_REQUEST_DIMS"])
+                if os.environ.get("PACOMIND_EMBED_REQUEST_DIMS") else None),
         )
         from pacomind.vector.embedder import make_provider
         provider = make_provider(embed_config)
@@ -1756,6 +1758,7 @@ async def lifespan(app: FastAPI):
                         dimensions=int(embed_dims) if embed_dims else 1024,
                         base_url=os.environ.get("PACOMIND_EMBED_BASE_URL"),
                         api_key=os.environ.get("PACOMIND_EMBED_API_KEY"),
+                        request_dimensions=embed_config.request_dimensions,
                     )
                     mm_provider = make_multimodal_provider(mm_config)
                     img_store = make_image_store(

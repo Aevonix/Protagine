@@ -51,6 +51,33 @@ import yaml
 assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['pacomind']['native_reviews']==review_config
 selected=yaml.safe_load((root/'profiles/pacomind-reviews/config.yaml').read_text())
 assert selected['model']['default']=='replaceable-planning-model' and 'max_tokens' not in selected['model']
+# Enabled --refresh-adapter uses the same installer for the already owned
+# profile. Refresh its adapter, retain unrelated files and the client binding.
+profile=root/'profiles/pacomind-reviews'
+forwarder=profile/'plugins/pacomind/__init__.py'
+expected_forwarder=forwarder.read_bytes()
+forwarder.write_text('# Previous managed adapter forwarder.\n')
+(profile/'owner-note.txt').write_text('Retain this unrelated profile file.\n')
+configure(state,install=True)
+assert forwarder.read_bytes()==expected_forwarder
+assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['pacomind']['native_reviews']==review_config
+def profile_files():
+ return {str(path.relative_to(profile)):path.read_bytes() for path in profile.rglob('*') if path.is_file()}
+refreshed=profile_files();root_before=(root/'config.yaml').read_bytes()
+configure(state,install=True)
+assert profile_files()==refreshed and (root/'config.yaml').read_bytes()==root_before
+assert (profile/'owner-note.txt').read_text()=='Retain this unrelated profile file.\n'
+# A pre-existing worker for another owner or source home is never overwritten.
+for key,value in [('owner_contact_id','other-owner'),('source_home',str(root/'other-home'))]:
+ other=json.loads(json.dumps(selected))
+ other['plugins']['pacomind']['native_reviews'][key]=value
+ (profile/'config.yaml').write_text(yaml.safe_dump(other,sort_keys=False))
+ before=profile_files()
+ try:configure(state,install=True)
+ except ValueError as error:assert str(error)=='review_profile_owned_by_another_instance'
+ else:raise AssertionError('A foreign managed review profile was overwritten')
+ assert profile_files()==before and (root/'config.yaml').read_bytes()==root_before
+ (profile/'config.yaml').write_bytes(refreshed['config.yaml'])
 store=InitiativeStore(state);host._initiative_store=store;host._task_queue=None
 def proposal(label):
  return store.create(type='operational',description=label,priority=.5,

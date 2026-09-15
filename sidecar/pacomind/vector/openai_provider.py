@@ -82,8 +82,9 @@ class OpenAIAPIEmbeddingProvider(EmbeddingProvider):
             "model": self._config.model_id,
             "input": texts,
         }
-        # NOTE: do not send "dimensions" — non-matryoshka models (e.g.
-        # Qwen3-Embedding-8B, native 4096) reject it with HTTP 400 on vllm.
+        # A validation width alone does not request provider-side reduction.
+        if self._config.request_dimensions is not None:
+            payload["dimensions"] = self._config.request_dimensions
 
         # Resilience (v0.21.1): the embedding endpoint is often remote (e.g. an
         # SSH-tunnelled vLLM). Transient blips were silently failing memory writes
