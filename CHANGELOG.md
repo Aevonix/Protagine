@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.8.3 - conditional memory and task error feedback
+
+Memory retains a quoted preference or procedure when its applicability cannot
+be resolved to a date. Its full conditions and source remain available in
+recollection, history and relationship context. Retention does not mean that
+those conditions apply now. Scalar facts retain their date validation.
+Extraction uses an object response schema compatible with strict output rules;
+source-reference alternatives no longer require a second generated quotation.
+
+A future change keeps the preceding preference available until its recorded
+end. It cannot extend an earlier expiry, and a change with an unknown effective
+time does not silently take effect when the message is ingested.
+
+Rejected task operations name their missing and unexpected fields before any
+task is changed or dispatched. The request field also describes corrections to
+existing tasks. This gives models a concrete error to correct without accepting
+alternate argument names or retrying the operation automatically.
+
 ## v1.8.2 - task handoff and available tools
 
 A conversation can finish by returning a task it already submitted in that

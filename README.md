@@ -109,13 +109,12 @@ You need Python 3.12, Git, a supported Hermes deployment and one OpenAI-compatib
 chat endpoint. The minimum profile does not require Docker, a graph database
 or an embedding model.
 
-Install the current tagged release:
+Install the current published release:
 
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.34 https://github.com/Aevonix/PacoMind.git
-python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
+python -m pip install "pacomind-hermes[native-memory]" "pacomind[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```
 
