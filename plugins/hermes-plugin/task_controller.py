@@ -50,7 +50,9 @@ TOOL_SCHEMA = {
                 'description': 'For submit: preserve the requested deliverable, destination, '
                     'verification or readback steps, and permission boundaries. Include child work '
                     'inside this task and apply child-only restrictions only to that child. '
-                    'A read-only child does not make this task read-only.'},
+                    'A read-only child does not make this task read-only. '
+                    'For steer: the complete correction for the existing task_id, including '
+                    'conditions that must remain unchanged.'},
             'model_role': {'type': 'string', 'minLength': 1, 'maxLength': 256,
                 'description': 'Optional for submit: a task role declared in this profile, '
                     'such as coding or reasoning. Omit to use the configured task default. '
@@ -459,7 +461,16 @@ class NativeTasks:
                 if existing_handoff:
                     identity = args['task_id']
                     raise TaskHandoffError('Existing task handoff accepts only operation and task_id; use steer to change its request')
-                raise TaskHandoffError('Use one task operation with its exact fields')
+                if operation not in TOOL_SCHEMA['parameters']['properties']['operation']['enum']:
+                    raise TaskHandoffError('Choose a supported operation: ' + ', '.join(
+                        TOOL_SCHEMA['parameters']['properties']['operation']['enum']))
+                allowed = expected | ({'model_role'} if operation in {'submit', 'handoff'} else set())
+                details = [f'For {operation}, use only these fields: ' + ', '.join(sorted(allowed))]
+                if expected - set(args):
+                    details.append('Missing fields: ' + ', '.join(sorted(expected - set(args))))
+                if set(args) - expected:
+                    details.append('Unexpected fields: ' + ', '.join(sorted(set(args) - expected)))
+                raise TaskHandoffError('. '.join(details) + '.')
             if existing_handoff:
                 identity = args['task_id']
                 row = self.handoffs.get(identity)
