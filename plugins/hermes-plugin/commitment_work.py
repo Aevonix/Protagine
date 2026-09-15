@@ -66,6 +66,15 @@ class CommitmentCoordinator:
         encoded = quote(commitment_id, safe='')
         response = self.client.post(f"/v1/host/commitments/{encoded}/work",
                                     json=payload, timeout=1)
+        if response.status_code == 404:
+            # This exact endpoint response precedes any undertaking mutation.
+            # An arbitrary proxy 404, malformed reply or lost response remains
+            # uncertain and must retain the existing fence.
+            if response.json() == {'detail': 'unknown commitment'}:
+                return {'commitment_id': commitment_id, 'accepted': False,
+                    'reason': 'unknown_commitment', 'effect_performed': False,
+                    'effect_authorized': False,
+                    'error': 'Unknown commitment in this participant scope; select an existing listed commitment before undertaking work'}
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict) or result.get('commitment_id') != commitment_id or type(result.get('accepted')) is not bool:
@@ -109,15 +118,17 @@ class CommitmentCoordinator:
                                'commitment_id': current['commitment_id']})
         payload = {key: str(context.get(key) or '') for key in ('session_id', 'task_id', 'turn_id')}
         payload.update(contact_id=scope.contact_id, operation=args['operation'])
-        if args['operation'] == 'claim':
+        attempt = None
+        if args['operation'] == 'claim' and not (current and current['claim_id']):
             # An attempted undertaking is distinct from an unrelated, unclaimed
-            # turn. Keep it fenced while admission is pending, rejected or lost.
+            # turn. Keep it fenced while admission is pending, contested or lost.
             # Native child/rotation binding carries this same marker.
-            self._remember(context, {
+            attempt = {
                     'commitment_id': args['commitment_id'], 'claim_id': '',
                     'holder': {key: value for key, value in payload.items() if key != 'operation'},
                     **({'child_session_id': current['child_session_id']}
-                       if current and current.get('child_session_id') else {})})
+                       if current and current.get('child_session_id') else {})}
+            self._remember(context, attempt)
         if (args['operation'] == 'release' and current and not current['claim_id']
                 and args['commitment_id'] == current['commitment_id']):
             # Stop this local attempt without releasing another session's lease.
@@ -128,7 +139,17 @@ class CommitmentCoordinator:
             payload = {**current['holder'], 'operation': 'release', 'claim_id': current['claim_id']}
         try:
             result = self._request(args['commitment_id'], payload)
-            if args['operation'] == 'claim' and result['accepted']:
+            if result.get('reason') == 'unknown_commitment' and attempt is not None:
+                # Clear only this definitively rejected attempt. A concurrent
+                # request may already have replaced it with another attempt or
+                # a confirmed token; inherited child fences remain independent.
+                with self._lock:
+                    for key, value in list(self._claims.items()):
+                        if (key[1:] == self._key(context)[1:] and not value['claim_id']
+                                and value['holder'] is attempt['holder']):
+                            self._claims.pop(key)
+                    result['detached'] = self._claim(context) is None
+            elif args['operation'] == 'claim' and result['accepted']:
                 token = result.get('claim_id')
                 if not isinstance(token, str) or len(token) != 32:
                     raise ValueError('missing undertaking token')
@@ -147,7 +168,8 @@ class CommitmentCoordinator:
             result.pop('claim_id', None)
             return json.dumps(result)
         except Exception:
-            return json.dumps({'error': 'Commitment coordination unavailable; no undertaking confirmed'})
+            return json.dumps({'error': "Commitment coordination unavailable; this request's outcome is unconfirmed",
+                               'commitment_id': args['commitment_id'], 'outcome': 'unconfirmed'})
 
     def before_tool(self, context):
         if context.get('tool_name') in {'pacomind_commitment_work', 'pacomind_accept_local_draft'}:
