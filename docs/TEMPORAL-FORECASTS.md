@@ -45,10 +45,9 @@ labels remain diagnostics and cannot attest the worker's loaded recipe.
 This is a workflow outcome prediction conditional on recorded attachment
 configuration, not a causal evaluation or ranking of a model.
 
-This representation change preserves existing forecast and outcome records,
-cohort membership and scores. Enrollment remains off by default and new
-prospective enrollment remains prohibited pending separate review of queued
-configuration changes; this clarification does not authorize enrollment.
+These fields preserve existing forecast and outcome records, cohort membership
+and scores. Enrollment remains opt-in. The prediction is uncalibrated; clearer
+configuration attribution does not establish forecast quality or model fitness.
 
 Independent terminal execution failures count even when no provider model
 label was observed. A later successful retry cannot replace the first failure.
@@ -58,8 +57,8 @@ attempt that is later resumed. Pending or missing observations stay unresolved;
 a slow task alone is not a failure receipt. Both failures and exclusions remain
 visible. Erased evidence stops contributing to future estimates.
 
-After that review, prospective evaluation must freeze selection and source
-versions before enrolling the next eight genuinely needed reviews of one registered class, or
+For prospective evaluation, freeze selection and source versions before
+enrolling the next eight genuinely needed reviews of one registered class, or
 until 72 hours elapse, whichever comes first. Do not create tasks to fill the
 cohort. Compare untouched candidate and baseline probabilities on the same
 resolved first-attempt outcomes, reporting unresolved and censored counts,

@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.8.0 - return control after background handoff
+
+The optional native task tool now offers an explicit `handoff` operation. It
+accepts the remaining request as background work and returns the actual task ID
+through Hermes' normal conversation delivery, without another model call.
+Ordinary `submit` still allows further foreground work. Later conversations can
+inspect, steer or stop the same task.
+
+This uses a small typed turn-finish interface in the qualified Hermes build.
+It applies only after a single successful tool result is persisted. Mixed
+batches, errors, interruption and pending steering retain their normal handling.
+The reply records runtime provenance and claims acceptance only. Runtimes
+without the interface keep ordinary submission and do not advertise handoff.
+
+Task-outcome forecasts now label their configuration as observed at attachment,
+with worker execution configuration explicitly unobserved. A model response
+label does not prove which full configuration the worker loaded. Existing
+forecast history, probabilities and scores stay intact.
+
 ## v1.7.2 - source references, task status and model qualification
 
 Memory formation can retain a standing preference as its exact source quotation.

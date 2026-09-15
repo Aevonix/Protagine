@@ -53,12 +53,25 @@ attested local platforms keep their existing local owner policy.
 
 | Operation | Fields | Observation |
 | --- | --- | --- |
+| `handoff` | `request`, optional `model_role` | Transfers the remaining request to background work and ends the foreground turn with the actual accepted `task_id`. Requires the native turn-finish interface. |
 | `submit` | `request`, optional `model_role` | Stable `task_id`, durable acceptance and any observed native admission. Acceptance is not completion. |
 | `status` | `task_id` | Native state, readable retained result, original-input references and up to four recent authorized updates with visibility receipts. |
 | `steer` | `task_id`, `request` | One captured source update and separate native control/request visibility receipts. Visibility does not prove model obedience. |
 | `stop` | `task_id` | Durable stop intent and matching native termination or verified admission/resume suppression when observed. |
 | `resume` | `task_id`, `expected_turn_id` | Explicit continuation of an eligible failed or interrupted native session; the observed turn generation prevents duplicate admission. |
 | `list` | none | Recent owned associations, with an explicit incomplete-running-inventory marker. Use the existing current-work view for the wider activity picture. |
+
+Use `handoff` when the complete remaining request belongs in the background.
+Finish unrelated foreground work first, or use `submit` to continue working in
+the current turn. A handoff acknowledges durable acceptance; it does not claim
+the task has started or completed. Hermes returns that acknowledgement through
+the conversation's normal delivery path without another model call. The
+background task keeps running, and later messages can inspect or steer its ID.
+
+Automatic turn completion requires a single successful handoff call whose
+result has been persisted. Mixed tool batches, tool failures, interruptions and
+pending steering keep their ordinary control behavior. An accepted task remains
+inspectable even when these conditions prevent the foreground turn from ending.
 
 The model cannot supply an owner, arbitrary source envelope or slash command.
 Submission and steering capture the actual current ordinary instruction through
