@@ -208,6 +208,33 @@ def test_actual_native_original_roundtrips_into_automatic_recall(native):
     assert len([row for row in n.outbox.snapshot() if row['turn_id']==result['source_id']]) == 1
 
 
+@pytest.mark.parametrize('name', ['tool_search', 'tool_describe'])
+def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
+    n = native
+    catalog = json.dumps({'tools': {'fixture_observe': {
+        'description': 'Inspect copper synchronization.',
+        'parameters': {'type': 'object', 'properties': {}}}}})
+    n.complete('catalog', catalog, name, {'name': 'fixture_observe'})
+    request = n.request().payload
+    hints = [row['content'] for row in request['messages']
+             if str(row.get('content', '')).startswith('[pacomind-observation-candidates-v1]')]
+    assert not any('"call_id": "catalog"' in text for text in hints)
+    assert any(row.get('tool_call_id') == 'catalog' and row.get('content') == catalog
+               for row in request['messages'])
+    nomination = n.retain('catalog', reason='Reuse this tool description next time.')
+    assert not nomination['accepted'] and not nomination['source_recorded'], nomination
+    with sqlite3.connect(n.ledger.db_path) as db:
+        assert db.execute("SELECT count(*) FROM turn_sources WHERE turn_id LIKE 'native-observation:%'").fetchone()[0] == 0
+
+    # Discovery remains usable; a subsequent substantive result still crosses
+    # the actual native/outbox/API boundary and is recalled in another session.
+    n.complete('finding', RESULT, 'fixture_observe', {'target': 'copper'})
+    n.request('api-3')
+    saved = n.retain('finding', request_id='api-3')
+    assert saved['accepted'] and saved['source_recorded'], n.diagnostics(saved)
+    assert 'copper synchronization' in n.recall()['body']
+
+
 def test_recipe_original_inputs_and_final_result_open_through_native_reader(native):
     from hermes_cli import middleware as native_middleware
     n = native
