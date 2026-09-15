@@ -20,18 +20,18 @@ def validator(module):
 
 def test_claim_schema_preserves_procedure_and_empty_output_but_not_unquoted_content():
     check = validator(source_claims)
-    check.validate([])
+    check.validate({'claims': []})
     wire = {k: v for k, v in procedure().items() if k != 'value'} | {'representation': 'procedure'}
-    check.validate([wire])
+    check.validate({'claims': [wire]})
     fabricated = {**wire, 'subject': 'invented device'}
-    check.validate([fabricated])  # Schema validity cannot establish source grounding.
+    check.validate({'claims': [fabricated]})  # Schema validity cannot establish source grounding.
     assert source_claims.validated_claims(json.dumps([fabricated]), message=PROCEDURE,
                                         prior=[], observed_at=None) == []
     for bad in [[{**procedure(), 'memory_kind': 'personal_context'}], [procedure()],
                 [wire] * 7, [{**wire, 'extra': True}],
                 [{k: v for k, v in wire.items() if k != 'prior_claim_id'}]]:
         with pytest.raises(ValidationError):
-            check.validate(bad)
+            check.validate({'claims': bad})
 
 
 def test_short_source_schema_retains_trailing_time_and_reporter_context():
@@ -42,11 +42,11 @@ def test_short_source_schema_retains_trailing_time_and_reporter_context():
             'valid_from_text': 'today', 'valid_to_text': None, 'event_at_text': None,
             'memory_kind': 'personal_context', 'recall_reason': 'Find the reported timer location when needed.'}
     check = Draft202012Validator(schema)
-    check.validate([item])
+    check.validate({'claims': [item]})
     # This was parseable JSON but discarded the useful fact after losing the
     # quoted date. The constrained wire must retain the entire short source.
     with pytest.raises(ValidationError):
-        check.validate([{**item, 'evidence': message.removesuffix(' today.')}])
+        check.validate({'claims': [{**item, 'evidence': message.removesuffix(' today.')}]})
     accepted = source_claims.validated_claims(json.dumps([item]), message=message,
         prior=[], observed_at='2026-09-09T12:00:00+00:00')
     assert len(accepted) == 1 and accepted[0]['value'] == 'lower rack'
@@ -64,16 +64,20 @@ async def test_source_specific_schemas_are_not_shared_between_concurrent_request
     for call, text in zip(router.complete.call_args_list, messages):
         schema = call.kwargs['context']['response_schema']['schema']
         assert all(branch['properties']['evidence']['const'] == text
-                   for branch in schema['items']['anyOf'])
+                   for branch in schema['properties']['claims']['items']['anyOf']
+                   if 'evidence' in branch['properties'])
     assert all('const' not in branch['properties']['evidence']
-               for branch in source_claims.RESPONSE_SCHEMA['schema']['items']['anyOf'])
+               for branch in source_claims.RESPONSE_SCHEMA['schema']['properties']['claims']['items']['anyOf'])
 
 
 def test_long_sources_still_select_bounded_spans():
     for size in (500, 501):
         text = 'x' * size
         schema = source_claims.claim_response_schema(text)['schema']
-        for branch in schema['items']['anyOf']:
+        for branch in schema['properties']['claims']['items']['anyOf']:
+            if 'evidence' not in branch['properties']:
+                assert size == 500 and branch['properties']['evidence_ref']['enum'] == ['current_message']
+                continue
             evidence = branch['properties']['evidence']
             assert evidence['maxLength'] == 500
             assert ('const' in evidence) is (size == 500)

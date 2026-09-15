@@ -82,7 +82,7 @@ async def test_retained_audio_forms_reviewed_derived_claim_with_exact_original_l
     assert row['admission_review']['model_provenance']['model_id'] == 'fixture-review'
     assert len(model.calls) == 2 and model.calls[0][0]['source_evidence'] == model.calls[1][0]['source_evidence']
     schema = model.calls[0][1]['context']['response_schema']['schema']
-    assert schema['items']['anyOf'][0]['properties']['evidence']['enum'] == [text]
+    assert schema['properties']['claims']['items']['anyOf'][0]['properties']['evidence']['enum'] == [text]
     packet = prepared(projection, contact='person')[0]['assertions'][0]
     assert packet['evidence_basis'] == basis and packet['reported_at'] != packet['event_at']
     # The injected reader packet must retain lineage, not merely the stored row.

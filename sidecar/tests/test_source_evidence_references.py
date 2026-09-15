@@ -53,7 +53,7 @@ async def test_reference_correction_preserves_conditions_actual_lineage_and_reop
         supplied, options = model.calls[0]
         assert supplied['evidence_refs'] == {
             'current_message': {'source_start': 0, 'source_end': len(text)}}
-        Draft202012Validator(options['context']['response_schema']['schema']).validate([proposal])
+        Draft202012Validator(options['context']['response_schema']['schema']).validate({'claims': [proposal]})
         reviewed = model.calls[1][0]['proposals'][0]['claim']
         assert reviewed['evidence'] == reviewed['value'] == text
         assert 'evidence_ref' not in reviewed
@@ -114,11 +114,16 @@ async def test_referenced_correction_cannot_retire_predecessor_without_admission
 def test_reference_schema_resolves_all_existing_representations(text, proposal):
     selected = referenced(proposal)
     schema = claim_response_schema(text)['schema']
-    Draft202012Validator(schema).validate([selected])
+    Draft202012Validator(schema).validate({'claims': [selected]})
     resolved, = validated_claims(json.dumps([selected]), message=text, prior=[], observed_at=None)
     literal, = validated_claims(json.dumps([proposal]), message=text, prior=[], observed_at=None)
     assert resolved == literal and resolved['evidence'] == text
-    Draft202012Validator(schema).validate([selected | {'evidence': text}])
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema).validate({'claims': [selected | {'evidence': text}]})
+    # A prompt-only reply may redundantly repeat matching source bytes. The
+    # existing validator still checks equality rather than silently repairing it.
+    assert validated_claims(json.dumps([selected | {'evidence': text}]),
+        message=text, prior=[], observed_at=None) == [resolved]
 
 
 @pytest.mark.parametrize('fields,reason', [
@@ -131,7 +136,7 @@ def test_reference_schema_resolves_all_existing_representations(text, proposal):
 def test_unknown_or_conflicting_reference_never_repairs_a_quote(fields, reason):
     proposal = referenced(preference(ORIGINAL)) | fields
     with pytest.raises(ValidationError):
-        Draft202012Validator(claim_response_schema(ORIGINAL)['schema']).validate([proposal])
+        Draft202012Validator(claim_response_schema(ORIGINAL)['schema']).validate({'claims': [proposal]})
     diagnostic = {}
     assert validated_claims(json.dumps([proposal]), message=ORIGINAL, prior=[],
                             observed_at=None, diagnostics=diagnostic) == []
@@ -185,7 +190,7 @@ async def test_long_text_keeps_bounded_literal_passages_and_offers_no_reference(
     schema = model.calls[0][1]['context']['response_schema']['schema']
     proposal = referenced(preference(text))
     with pytest.raises(ValidationError):
-        Draft202012Validator(schema).validate([proposal])
+        Draft202012Validator(schema).validate({'claims': [proposal]})
     diagnostic = {}
     assert validated_claims(json.dumps([proposal]), message=text, prior=[],
                             observed_at=None, diagnostics=diagnostic) == []
@@ -207,5 +212,5 @@ async def test_audio_reference_cannot_select_rendered_message_or_widen_segment_l
     assert 'evidence_refs' not in model.calls[0][0]
     schema = model.calls[0][1]['context']['response_schema']['schema']
     with pytest.raises(ValidationError):
-        Draft202012Validator(schema).validate([proposal])
+        Draft202012Validator(schema).validate({'claims': [proposal]})
     assert projection.status('person')[0]['diagnostics']['rejection_counts'] == {'evidence_ref_unknown': 1}

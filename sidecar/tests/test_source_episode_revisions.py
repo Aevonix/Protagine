@@ -65,10 +65,10 @@ def test_only_offered_episode_ids_can_be_selected_by_the_decoder():
     schema = claim_response_schema(CORRECTION, prior=prior)['schema']
     proposal = episode(CORRECTION) | {'operation': 'correct', 'prior_claim_id': 'episode-first'}
     proposal = {k: v for k, v in proposal.items() if k not in {'representation', 'memory_kind'}}
-    jsonschema.validate([proposal], schema)
+    jsonschema.validate({'claims': [proposal]}, schema)
     for identifier in ('invented', 'ordinary-fact'):
         with pytest.raises(jsonschema.ValidationError):
-            jsonschema.validate([proposal | {'prior_claim_id': identifier}], schema)
+            jsonschema.validate({'claims': [proposal | {'prior_claim_id': identifier}]}, schema)
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_episode_correction_kind_comes_from_the_selected_stored_record(tmp
     if use_reference:
         proposal.pop('evidence')
         proposal['evidence_ref'] = 'current_message'
-    jsonschema.validate([proposal], claim_response_schema(CORRECTION, prior=[original])['schema'])
+    jsonschema.validate({'claims': [proposal]}, claim_response_schema(CORRECTION, prior=[original])['schema'])
     await record(ledger, projection, 'correction', CORRECTION, proposal)
     current = next(row for row in claims(ledger) if row['turn_id'] == 'correction')
     assert current['representation'] == 'episode'
@@ -106,7 +106,7 @@ async def test_structured_branch_cannot_correct_an_episode_or_silently_change_it
         'recall_reason': 'Use the corrected count when reviewing the incident.',
         'valid_from_text': None, 'valid_to_text': None, 'event_at_text': None}
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate([wrong], claim_response_schema(CORRECTION, prior=[original])['schema'])
+        jsonschema.validate({'claims': [wrong]}, claim_response_schema(CORRECTION, prior=[original])['schema'])
     diagnostic = {}
     assert validated_claims(json.dumps([wrong]), message=CORRECTION, prior=[original],
         observed_at=None, diagnostics=diagnostic) == []

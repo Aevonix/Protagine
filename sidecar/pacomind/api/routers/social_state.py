@@ -73,7 +73,12 @@ def appraisal_context(*, contact_id, session_id, query):
         return '', []
     lines = []
     for item in view['records']:
-        lines.append(f"{item['kind']} ({item['certainty']}, topic {item['topic']}): {item['text']}")
+        applicability = '; applicability unresolved; source conditions not evaluated' if item.get('applicability') else ''
+        lines.append(f"{item['kind']} ({item['certainty']}{applicability}, topic {item['topic']}): {item['text']}")
+    if any(item.get('applicability') for item in view['records']):
+        lines.append('Use a quoted preference when the current context supports its conditions, '
+                     'respecting its exceptions and connected requirements. '
+                     'Storage alone does not establish applicability.')
     hint_topics = {}
     for hint in view['behavior_hints']:
         if hint['hint'] in _HINT_TEXT:

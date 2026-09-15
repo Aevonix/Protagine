@@ -88,9 +88,9 @@ async def test_long_conditional_preference_preserves_exact_bytes_and_review_scop
     assert retained['value'] == retained['evidence'] == text
     assert model.calls[1][0]['proposals'][0]['claim']['value'] == text
     schema = claim_response_schema(text)['schema']
-    Draft202012Validator(schema).validate([preference(text)])
+    Draft202012Validator(schema).validate({'claims': [preference(text)]})
     with pytest.raises(ValidationError):
-        Draft202012Validator(schema).validate([preference(text, 'paraphrase', representation='preference')])
+        Draft202012Validator(schema).validate({'claims': [preference(text, 'paraphrase', representation='preference')]})
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,8 @@ async def test_explicit_lifecycle_preserves_compact_and_quoted_preference_identi
     text = ('Correction: I prefer detailed handoffs.' if operation == 'correct'
             else 'Starting now, I prefer detailed handoffs.')
     proposal = preference(text, 'detailed' if original_quoted else None,
-                          operation=operation, prior_claim_id=original['id'])
+                          operation=operation, prior_claim_id=original['id'],
+                          valid_from_text='now' if operation == 'change' else None)
     # Restore a provider's clipped passage including the operation cue.
     proposal['evidence'] = 'I prefer detailed handoffs.'
     await add(projection, 'correction', text, proposal)
@@ -186,7 +187,8 @@ async def test_reviewed_quoted_revision_does_not_use_normalized_wording_equality
     await add(projection, 'original', old, preference(old))
     original = rows(projection)['original']
     await add(projection, 'correction', new,
-        preference(new, operation=operation, prior_claim_id=original['id']))
+        preference(new, operation=operation, prior_claim_id=original['id'],
+                   valid_from_text='now' if operation == 'change' else None))
     found = rows(projection)
     assert found['original']['retracted_by' if operation == 'correct' else 'superseded_by'] == found['correction']['id']
     assert [row['value'] for row in projection.preferences('owner')] == [new]
