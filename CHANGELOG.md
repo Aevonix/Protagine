@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.8.4 - explicit embedding dimensions
+## v1.8.4 - embedding dimensions and commitment feedback
+
+A rejected commitment ID now returns the precise rejection and clears that
+unconfirmed local attempt. It no longer appears as a server outage that blocks
+unrelated tools. Uncertain responses retain their existing restrictions, and a
+failed retry preserves a previously confirmed undertaking token.
 
 OpenAI-compatible text embedding providers can request a specific output width
 through `PACOMIND_EMBED_REQUEST_DIMS`. The value must match the configured
