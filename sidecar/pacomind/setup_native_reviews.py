@@ -82,9 +82,7 @@ def configure(state, *, install=False):
                    else Path(binding_info['sources'].get('pacomind_hermes') or binding_info['sources']['pacomind_hermes']))
         if not (adapter/'review_worker.py').is_file():
             raise ValueError('Upgrade the selected native adapter before enabling reviews')
-        directory = worker/'plugins'/('pacomind' if (worker/'plugins/pacomind').exists() else 'pacomind')
-        if (worker/'plugins/pacomind').exists() and (worker/'plugins/pacomind').exists():
-            raise ValueError('Duplicate managed review adapters need reconciliation')
+        directory = worker/'plugins/pacomind'
         write(directory/'__init__.py', _forwarder(adapter.parent, 'pacomind_hermes'))
         write(directory/'plugin.yaml', (adapter/'plugin.yaml').read_bytes())
         write(worker/'.env', '# No owner channel or sidecar credentials in the review profile.\n')
