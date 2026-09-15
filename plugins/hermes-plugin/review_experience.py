@@ -13,10 +13,33 @@ from types import SimpleNamespace
 _LOCK = threading.Lock()
 ACTION = 'ordinary_skill_failure'
 UNATTRIBUTED_ACTION = 'ordinary_tool_failure'
+TERMINAL_EXIT = 'terminal_nonzero_exit'
 
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def terminal_cancelled(result):
+    return (result.get('status') in ('interrupted', 'cancelled', 'canceled')
+            or result.get('exit_code') in (130, 137, 143))
+
+
+def terminal_exit_failure(result):
+    """A completed native process outcome, independent of printed prose."""
+    return (isinstance(result, dict) and not terminal_cancelled(result)
+            and type(result.get('exit_code')) is int and 0 < result['exit_code'] <= 255
+            and isinstance(result.get('output'), str))
+
+
+def failure_group(value):
+    # Unknown failures and process exits must match their original bytes.
+    # Different commands with the same exit status/output are not recurrence.
+    classification = value['error_class']
+    exact = value['request_visible_result_sha256'] if classification in {
+        'tool_returned_error', TERMINAL_EXIT} else ''
+    arguments = value['arguments_sha256'] if classification == TERMINAL_EXIT else ''
+    return value['contact_id'], value['tool_name'], classification, exact, arguments
 
 
 def observations(scope, messages, failures):
@@ -82,6 +105,8 @@ def observations(scope, messages, failures):
                 keys += ('turn_id',)
             else:
                 keys += ('skill_call_id', 'skill_sha256')
+            if error_class == TERMINAL_EXIT:
+                keys += ('turn_id', 'arguments_sha256')
             evidence['observation_id'] = fingerprint({key: evidence[key] for key in keys})
             result.append((name, evidence))
     return result
@@ -125,10 +150,7 @@ def next_batch(entries, skill=None, skill_sha256=None):
                                       or 'skill_call_id' in value or 'skill_sha256' in value))
                 or value.get('observation_id') in consumed):
             continue
-        # Unknown error classes must recur byte-for-byte; two unrelated errors
-        # from the same tool are not a demonstrated recurring failure.
-        exact = value['request_visible_result_sha256'] if value['error_class'] == 'tool_returned_error' else ''
-        key = value['contact_id'], value['tool_name'], value['error_class'], exact
+        key = failure_group(value)
         group = groups.setdefault(key, {})
         group[value['observation_id']] = value
     for values in groups.values():
@@ -174,8 +196,7 @@ def next_tool_batch(entries):
         identity = occurrence(value)
         if identity in consumed_calls:
             continue
-        exact = value['request_visible_result_sha256'] if value['error_class'] == 'tool_returned_error' else ''
-        key = value['contact_id'], value['tool_name'], value['error_class'], exact
+        key = failure_group(value)
         values = groups.setdefault(key, {})
         if identity not in values:
             observation = {k: v for k, v in value.items()
@@ -250,9 +271,18 @@ def selected_pairs(evidence, native_home, owner):
                     raise ValueError('Native error classification is unavailable') from None
                 error = row['content']
             else:
-                if not isinstance(result, dict) or not result.get('error'):
+                if observation.get('error_class') == TERMINAL_EXIT:
+                    arguments = calls[0][1].get('arguments', '{}')
+                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    if (observation['tool_name'] != 'terminal' or not terminal_exit_failure(result)
+                            or not isinstance(arguments, dict)
+                            or fingerprint(arguments) != observation.get('arguments_sha256')):
+                        raise ValueError('Original native process outcome or command no longer matches')
+                    error = {'exit_code': result['exit_code'], 'output': result['output']}
+                elif not isinstance(result, dict) or not result.get('error'):
                     raise ValueError('Original native result does not contain the retained failure')
-                error = result['error']
+                else:
+                    error = result['error']
             pairs.append({'observation_id': observation['observation_id'],
                 'session_id': session, 'turn_id': observation['turn_id'], 'tool_call_id': call_id,
                 'tool_name': observation['tool_name'], 'native_message_id': row['id'],
