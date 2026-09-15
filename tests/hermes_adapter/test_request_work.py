@@ -290,6 +290,23 @@ try:
         result=agent.run_conversation(user_message,task_id='neutral-work-turn')
         assert result['final_response']=='NATIVE_WORK_REFRESH_OK', result
         assert prefetch.call_count==1 and len(requests)==(2 if scenario=='task_source' else 3)
+        # Real provider assembly supplies the fallback once; actual registered
+        # request middleware supersedes it only after a successful refresh.
+        for index, request in enumerate(requests):
+            visible = json.dumps(request['messages'])
+            if scenario == 'completion' and index == 2:
+                assert 'Work observed at turn start' in visible, visible
+                assert 'unavailable' in work_block(request), visible
+            else:
+                assert 'Work observed at turn start' not in visible, visible
+            block = work_block(request)
+            from pacomind_hermes.task_controller import FinishTurn
+            if scenario == 'task_revision' and FinishTurn is not None:
+                assert "pacomind_task(operation='handoff')" in block, block
+                assert 'Acceptance is not task completion.' in block, block
+                assert agent._cached_system_prompt == 'Stable neutral identity.'
+            elif scenario != 'task_revision':
+                assert "pacomind_task(operation='handoff')" not in block, block
         transcript=result['messages']
         assert marker not in json.dumps(transcript), transcript
         assert any(row.get('role')=='user' and row.get('content')==user_message for row in transcript)

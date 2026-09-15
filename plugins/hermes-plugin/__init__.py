@@ -2767,9 +2767,9 @@ def register(ctx: Any) -> None:
             session_id=str(kwargs.get('session_id') or ''),
             task_id=str(kwargs.get('task_id') or ''),
             turn_id=str(kwargs.get('turn_id') or ''))
-        request, operational = request_work.prepare(request, scope,
+        request, operational, current_work = request_work.prepare(request, scope,
             api_mode=str(kwargs.get('api_mode') or ''))
-        result = request_memory(request, scope, operational=operational)
+        result = request_memory(request, scope, operational=operational, current_work=current_work)
         if not check_supplied_input(scope, result):
             result['request'] = input_provenance.withheld_request(result['request'],
                 failure=input_provenance.current().failure)
