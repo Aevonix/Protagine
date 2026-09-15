@@ -162,10 +162,10 @@ use and recovery.
 
 ### Phase 2: improve the learning process
 
-After Phase 1 is validated, extend the learning loop to skills, playbooks,
-prompts, retrieval strategies and non-core code. The agent should identify a
-recurring failure, propose a change, compare it with the current behavior,
-adopt an authorized improvement and retain the result for its next attempt.
+After Phase 1 is validated, improve how the agent selects, evaluates and retains
+changes to skills, playbooks, prompts, retrieval strategies and non-core code.
+It should learn which improvement methods work, choose better experiments and
+use the results to make its next learning cycle more effective.
 
 Recursive improvement requires showing that this process becomes more effective
 over successive cycles. Model fine-tuning is an optional later path.

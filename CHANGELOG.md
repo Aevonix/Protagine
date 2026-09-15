@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.8.3 - conditional memory and task error feedback
+## v1.8.3 - memory quality and failed-proposal review
 
 Memory retains a quoted preference or procedure when its applicability cannot
 be resolved to a date. Its full conditions and source remain available in
@@ -12,6 +12,17 @@ source-reference alternatives no longer require a second generated quotation.
 A future change keeps the preceding preference available until its recorded
 end. It cannot extend an earlier expiry, and a change with an unknown effective
 time does not silently take effect when the message is ingested.
+
+Extraction and admission review share the same memory-quality criteria. Review
+checks the complete meaning of a proposed property and its reason for future
+recall. Both remain model judgments; a retained quotation is not proof of truth.
+
+An ordinary native skill review can continue from a retained proposal failure
+on a later firing of the existing job. Each original review allows at most two
+linked successors. Original experience stays consumed, owner rejection stops
+the chain, and every changed proposal still needs independent evaluation.
+Failed proposal bytes and diagnostics remain in the native ledger. Successful
+activation settles the exact superseded pending proposals.
 
 Rejected task operations name their missing and unexpected fields before any
 task is changed or dispatched. The request field also describes corrections to
