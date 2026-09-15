@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.8.5-hermes - retain terminal outcomes for ordinary review
+
+The Hermes adapter now retains completed terminal commands with a nonzero exit
+code even when the tool returns no `error` field. Review receives the original
+result and command, and recurrence requires matching evidence from separate
+turns. Cancelled commands and error-like text inside successful output do not
+count. A nonzero exit can be expected and does not establish a task failure or
+a defect in a skill.
+
+Ten focused tests passed. Replaying two original terminal results captured both
+previously omitted outcomes without establishing recurrence. Useful learning
+from later ordinary use remains to be demonstrated. This release updates
+`protagine-hermes` to 1.8.5; the sidecar remains 1.8.4 and hostworker 0.3.0.
+
 ## v1.8.4 - embedding dimensions and commitment feedback
 
 A rejected commitment ID now returns the precise rejection and clears that
