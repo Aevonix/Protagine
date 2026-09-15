@@ -69,6 +69,16 @@ def stage_skill_change(arguments):
         denied = manager._background_review_preflight(action, name)
         if denied is not None:
             return json.dumps(denied)
+        if action == 'create':
+            content = operation.get('content')
+            if not isinstance(content, str):
+                return json.dumps({'success':False, 'error':'Create content must be the full SKILL.md text.'})
+            # Dispatch is intercepted here. Return the native create contract
+            # error to this reviewer before accepting an unusable proposal.
+            invalid = (manager._validate_name(name) or manager._validate_category(operation.get('category'))
+                or manager._validate_frontmatter(content, new_skill=True) or manager._validate_content_size(content))
+            if invalid:
+                return json.dumps({'success':False, 'error':invalid})
         # Staging intercepts native dispatch, so retain Hermes' existing
         # review-local read requirement as well as its ownership preflight.
         # Native read marks identify paths, not a content-freshness guarantee.
