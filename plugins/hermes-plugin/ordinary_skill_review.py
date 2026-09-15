@@ -58,8 +58,15 @@ async def review_once(native_home, native_source, native, configuration, destina
                       resolve_runtime=None):
     from tools import skill_ledger, skill_manager_tool, skill_provenance
     from pacomind_hermes.review_experience import next_batch, next_tool_batch
+    from pacomind_hermes import review_successors, task_review_experience as experience
     selected = skill_manager_tool._find_skill(skill) if skill is not None else None
     entries = skill_ledger.list_entries()
+    claimed = next((row for row in entries if row.get('action') == 'ordinary_skill_review'
+        and row.get('evidence', {}).get('status') == 'claimed'
+        and row['evidence'].get('native_execution_id') == native['id']), None)
+    if claimed is not None:
+        return {'status': 'idle', 'reason': 'native_review_already_claimed',
+                'claim_id': claimed['id'], 'quality_credit': False}
     assessment_client, evaluated = connection, None
     if evaluator is not None:
         from pacomind_hermes import task_review_experience as experience
@@ -67,8 +74,14 @@ async def review_once(native_home, native_source, native, configuration, destina
         if evaluated is not None and (evaluated.get('candidate_measured')
                 or evaluated['status'] not in {'activated','proposal_only','unavailable'}):
             return evaluated
+    entries = skill_ledger.list_entries()
+    successor = review_successors.next_successor(entries, native=native, owner=owner,
+        evaluator=evaluator, connection=assessment_client)
     text = (selected['path']/'SKILL.md').read_text() if selected is not None else None
-    batch = next_batch(entries,skill,hashlib.sha256(text.encode()).hexdigest()) if text is not None else None
+    batch = successor[0] if successor else (
+        next_batch(entries,skill,hashlib.sha256(text.encode()).hexdigest()) if text is not None else None)
+    if successor:
+        skill, text = None, None
     if batch is None:
         batch = next_tool_batch(entries)
         if batch is not None:
@@ -104,11 +117,14 @@ async def review_once(native_home, native_source, native, configuration, destina
     except Exception as error:
         return {'status':'unavailable', 'reason':'planning_policy_unavailable',
                 'error_type':type(error).__name__, 'quality_credit':False}
-    # Claim before a model call. A killed or interrupted assessment consumes
-    # these exact observations; only new experience can justify another pass.
+    # Claim before a model call. These observations stay consumed even when an
+    # assessment is interrupted. A linked failed-proposal successor is recorded
+    # separately and never counts as fresh ordinary experience.
     receipt = {'status':'claimed','native_execution_id':native['id'],
                'failure_sha256':batch['failure_sha256'],
-               'observation_ids':batch['observation_ids']}
+               'observation_ids':batch['observation_ids'],
+               'native_job_id':native['job_id'], 'owner_contact_id':owner,
+               **({'successor': successor[1]} if successor else {})}
     if (batch.get('source') == 'ordinary_task_assessment_batch'
             or batch.get('evaluator') is not None):
         receipt.update(experience.receipt(batch))
@@ -125,7 +141,8 @@ async def review_once(native_home, native_source, native, configuration, destina
         runner=reviewer or native_runner
         result=await runner({**batch,**({'skill_text':text} if text is not None else {})},native=native,native_home=native_home,
             native_source=native_source,directory=directory,runtime_options=runtime,
-            routing_policy=policy,skill=skill)
+            routing_policy=policy,skill=skill,
+            **({'diagnostic_context': successor[2]} if successor else {}))
     except Exception as error:
         result={'status':'unavailable','error_type':type(error).__name__}
     result={**result,'claim_id':claim,'failure_sha256':batch['failure_sha256'],
@@ -133,6 +150,7 @@ async def review_once(native_home, native_source, native, configuration, destina
     terminal=skill_ledger.append_entry('ordinary_skill_review',skill,actor='curator',evidence=result)
     if not terminal or skill_ledger.get_entry(terminal) is None:
         raise RuntimeError('Native ordinary review result was not retained')
+    review_successors.finish(skill_ledger.get_entry(claim), result)
     return result
 
 
@@ -189,7 +207,9 @@ def native_review(evidence, *, native, native_home, directory, runtime_options, 
         expected = experience.receipt(evidence)
         if expected['native_execution_id'] != native['id']:
             raise ValueError('Native failure review belongs to another claimed execution')
-        diagnostic_context = experience.recheck(evidence, connection, owner)
+        current = experience.recheck(evidence, connection, owner)
+        diagnostic_context = current if diagnostic_context is None else {
+            'original_diagnostics': current, 'failed_proposal': diagnostic_context}
     elif create_only:
         if skill is not None:
             raise ValueError('An unattributed failure cannot select an existing skill')

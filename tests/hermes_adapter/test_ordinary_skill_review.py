@@ -54,7 +54,8 @@ sys.path.insert(0,str(adapter))
 from pacomind_hermes.client import TurnOutbox
 import yaml
 config=yaml.safe_load(before)['plugins']['pacomind']
-evaluated=sys.argv[2]=='native_evaluated'
+successor=sys.argv[2]=='semantic_successor'
+evaluated=sys.argv[2] in {'native_evaluated','semantic_successor'}
 passive=sys.argv[2] in {'native_tools','native_evaluated'}
 if passive:
  from hermes_cli.plugins import get_plugin_manager
@@ -75,16 +76,19 @@ if passive:
  assert len({r['evidence']['turn_id'] for r in failures})==2
  assert not (config.get('native_reviews') or {}).get('enabled'),config
 if evaluated:
- observed=failures[0]['evidence']
- assert observed['tool_name']=='read_file' and observed['error_class']=='tool_returned_error'
- assert {r['evidence']['request_visible_result_sha256'] for r in failures}=={observed['request_visible_result_sha256']}
+ selectors=[]
+ if passive:
+  observed=failures[0]['evidence']
+  assert observed['tool_name']=='read_file' and observed['error_class']=='tool_returned_error'
+  assert {r['evidence']['request_visible_result_sha256'] for r in failures}=={observed['request_visible_result_sha256']}
+  selectors=[{'tool_name':observed['tool_name'],'error_class':observed['error_class'],
+              'result_sha256':observed['request_visible_result_sha256']}]
  declaration=state/'native-failure-evaluator.json'
  declaration.write_text(json.dumps({'id':'controlled-native-failure','scope':'Read complete supplied sources before describing behavior.',
   'oracle':'_fixture_skill_oracle:assess','oracle_id':'controlled-source-procedure-v1','allow_apply':True,
   'environment':{'PACOMIND_FIXTURE_ORACLE_LOG':str(state/'oracle-measurements.jsonl'),
                  'PACOMIND_FIXTURE_ORACLE_REGRESSION':str(state/'oracle-regression')},
-  'native_failures':[{'tool_name':observed['tool_name'],'error_class':observed['error_class'],
-                      'result_sha256':observed['request_visible_result_sha256']}]}))
+  'native_failures':selectors}))
  setup_code='from pathlib import Path; import sys; from pacomind.setup_skill_reviews import configure; configure(Path(sys.argv[1]), evaluator_path=sys.argv[2])'
  upgraded=subprocess.run([manifest['sidecar_python'],'-B','-c',setup_code,str(state),str(declaration)],
   env={**os.environ,'PYTHONPATH':manifest['sidecar_module_root']},capture_output=True,text=True,timeout=30)
@@ -117,6 +121,16 @@ deadline=time.monotonic()+30
 while binding['job_id'] in get_running_job_ids() and time.monotonic()<deadline:time.sleep(.05)
 assert binding['job_id'] not in get_running_job_ids()
 pending=write_approval.list_pending(write_approval.SKILLS)
+if successor:
+ assert pending==[],pending
+ original=[r for r in skill_ledger.list_entries() if r['evidence'].get('version')=='ordinary-review-failure-v1']
+ assert len(original)==1 and original[0]['evidence']['kind']=='validation',original
+ assert original[0]['evidence']['candidate_measured'] is False
+ failed=original[0]
+ assert not (state/'oracle-measurements.jsonl').exists(),'Validation failure ran an evaluator'
+ trigger_job(binding['job_id']);tick(verbose=False,sync=True)
+ pending=write_approval.list_pending(write_approval.SKILLS)
+ assert skill_ledger.get_entry(failed['id'])==failed,'Original failure changed'
 assert len(pending)==1,pending
 payload=pending[0]['payload']
 batch=payload.get('_pacomind_task_assessment_batch')
@@ -131,7 +145,8 @@ if passive:
   assert len(batch['observations'])==2 and batch['native_execution_id']==payload['_pacomind_review_native_execution']
  else:assert '_pacomind_native_failure_batch' not in payload
 else:
- assert batch['evaluator'] is None and batch['task_ids']==['task-1','task-2'],batch
+ assert batch['task_ids']==['task-1','task-2'],batch
+ assert (batch['evaluator'] is not None)==successor,batch
 assert payload['_pacomind_review_create_only'] is True
 assert payload['name']=='neutral-source-handoff'
 assert not (home/'skills/neutral-source-handoff/SKILL.md').exists()
@@ -146,8 +161,8 @@ if evaluated:
  assert len(measured)==1,entries
  accepted=measured[0]
  for phase in ('baseline','candidate'):
-  ancestry=accepted['evidence'][phase]['native_failure_evidence']
-  assert ancestry['source']=='ordinary_native_failure_batch' and ancestry['evaluator']==batch['evaluator']
+  ancestry=accepted['evidence'][phase]['task_assessment_evidence' if successor else 'native_failure_evidence']
+  assert ancestry['source']==batch['source'] and ancestry['evaluator']==batch['evaluator']
   assert ancestry['observation_ids']==batch['observation_ids']
  assert any(r['action']=='evaluation' and r['evidence'].get('status')=='activated' for r in entries)
  trigger_job(binding['job_id']);tick(verbose=False,sync=True)
@@ -167,14 +182,22 @@ else:
  assert len(write_approval.list_pending(write_approval.SKILLS))==1
 rows=skill_ledger.list_entries()
 claims=[r for r in rows if r['action']=='ordinary_skill_review' and r['evidence'].get('status')=='claimed']
-assert len(claims)==1,claims
+assert len(claims)==(2 if successor else 1),claims
+if successor:
+ child,parent=claims
+ assert child['evidence']['successor']=={'root_claim_id':parent['id'],'parent_claim_id':parent['id'],
+  'failure_entry_id':failed['id'],'attempt':1},claims
+ assert child['evidence']['source_refs']==parent['evidence']['source_refs']
+ assert child['evidence']['native_execution_id']!=parent['evidence']['native_execution_id']
+ assert skill_ledger.get_entry(failed['id'])==failed
 if not passive:assert claims[0]['evidence']['source_refs']==batch['source_refs'],claims
 reports=list((home/'logs/ordinary-skill-reviews').glob('*/assessment.json'))
-assert len(reports)==1 and 'Internal assessment cannot invoke tools' in reports[0].read_text()
+assert len(reports)==(2 if successor else 1)
+assert all('Internal assessment cannot invoke tools' in report.read_text() for report in reports)
 assert (home/'config.yaml').read_bytes()==before
 with sqlite3.connect(home/'cron/executions.db') as db:
  executions=db.execute('SELECT job_id,status FROM executions ORDER BY started_at').fetchall()
-assert len(executions)==(5 if evaluated else 3) and all(row[1]=='completed' for row in executions),executions
+assert len(executions)==(6 if successor else 5 if evaluated else 3) and all(row[1]=='completed' for row in executions),executions
 assert TurnOutbox(config['turn_outbox_path']).snapshot()==outbox_before
 print(json.dumps({'fresh_native_cron':True,'proposal_only':not evaluated,'native_evaluated':evaluated,'ordinary_claims':len(claims),
  'unrelated_cron_authority_unchanged':True,'review_owner_source_rows':0,'passive_tool_producer':passive,'quality_credit':False}))
@@ -195,7 +218,7 @@ def assess(text, *, phase):
 '''
 
 
-@pytest.mark.parametrize('producer',['semantic','native_tools','native_evaluated'])
+@pytest.mark.parametrize('producer',['semantic','native_tools','native_evaluated','semantic_successor'])
 def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unattested(artifacts, tmp_path,producer):
     native = os.environ.get('PACOMIND_TEST_HERMES_PATH')
     if not native:
@@ -252,7 +275,7 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
                 rows=[{'source_id':'assessment-'+str(i),'source_version':str(i)*64,
                     'task_id':'task-'+str(i),'execution_id':'execution-'+str(i),'complete':True,
                     'attribution':'host_reported_machine_assessment_unverified','owner_approval':'unobserved',
-                    'content':'Complete original artifact and fallible source review '+str(i)} for i in (1,2)] if producer=='semantic' else []
+                    'content':'Complete original artifact and fallible source review '+str(i)} for i in (1,2)] if producer in {'semantic','semantic_successor'} else []
                 self.send({'assessments':rows,'sources_current':True,'next_offset':None});return
             if not self.path.endswith('/chat/completions'):
                 self.send({});return
@@ -263,10 +286,15 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
             if isinstance(choice,dict) and choice.get('function',{}).get('name')=='pacomind_setup_echo':
                 name,args='pacomind_setup_echo',{'token':'pacomind-ready'}
             elif 'This is system-generated assessment evidence' in full:
-                if not any(m.get('role')=='tool' and '"staged": true' in str(m.get('content')) for m in messages):
+                attempted=any(call.get('function',{}).get('name')=='skill_manage'
+                    and json.loads(call['function']['arguments']).get('name')=='neutral-source-handoff'
+                    for m in messages for call in m.get('tool_calls',[]))
+                if not attempted:
+                    description=('x'*80 if producer=='semantic_successor'
+                        and 'system_recorded_failed_proposal' not in full else 'Consult complete supplied sources.')
                     name,args='skill_manage',{'action':'create','name':'neutral-source-handoff',
-                        'content':'---\nname: neutral-source-handoff\ndescription: Consult complete supplied sources.\n---\nRead every supplied source before describing behavior.\n',
-                            **({'_pacomind_task_assessment_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer=='semantic' else
+                        'content':'---\nname: neutral-source-handoff\ndescription: '+description+'\n---\nRead every supplied source before describing behavior.\n',
+                            **({'_pacomind_task_assessment_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer in {'semantic','semantic_successor'} else
                                {'_pacomind_native_failure_batch':{'evaluator':{'oracle':'model_chosen:forbidden'}}} if producer=='native_evaluated' else {})}
                 else:name=args=None
             elif ('SYSTEM-GENERATED REVIEW OF DISTINCT OPERATIONAL TASK ASSESSMENTS' in full
@@ -314,7 +342,7 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
         install=INSTALL.replace("'--hermes-home', sys.argv[3]", "'--ordinary-skill-review', '--hermes-home', sys.argv[3]")
         run_python('-I','-c',install,installed,os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
             home,wheel,f'http://127.0.0.1:{server.server_port}/v1',api_port,python,cwd=tmp_path,env=env)
-        if producer=='native_evaluated':
+        if producer in {'native_evaluated','semantic_successor'}:
             (home/'pacomind/adapter/_fixture_skill_oracle.py').write_text(ORACLE)
         api=ThreadingHTTPServer(('127.0.0.1',api_port),ScriptedBoundary)
         api_thread=threading.Thread(target=api.serve_forever,daemon=True);api_thread.start()
@@ -323,9 +351,13 @@ def test_fresh_public_install_runs_native_review_and_keeps_unrelated_cron_unatte
         assert result.returncode==0,result.stdout[-5000:]+result.stderr[-6000:]
         assert json.loads(result.stdout.splitlines()[-1])['fresh_native_cron']
         assert authorized_host_requests
-        assert len(assessment_reads)>=(2 if producer=='semantic' else 1)
+        assert len(assessment_reads)>=(2 if producer in {'semantic','semantic_successor'} else 1)
         native_calls=[row for row in requests if 'SYSTEM-GENERATED' in json.dumps(row.get('messages',[]))]
-        assert len(native_calls)==4
+        assert len(native_calls)==(8 if producer=='semantic_successor' else 4)
+        if producer=='semantic_successor':
+            feedback_calls=[row for row in native_calls if 'system_recorded_failed_proposal' in json.dumps(row['messages'])]
+            assert len(feedback_calls)==4
+            assert all('description' in json.dumps(row['messages']) for row in feedback_calls)
     finally:
         if api is not None:
             api.shutdown();api.server_close();api_thread.join(timeout=2)

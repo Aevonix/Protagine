@@ -111,6 +111,11 @@ def audit_evaluation(entry_id, oracle, *, oracle_id):
         status = 'rolled_back' if ok and restored else 'rollback_failed'
     result = {'status': status, 'evaluation_id': entry_id, 'measurement': measured}
     result['result_entry_id'] = _record(skill, result)
+    if status == 'activated':
+        from .review_successors import settle_ancestors
+        pending = approval.get_pending(approval.SKILLS, evidence['pending_id'])
+        if pending is not None:
+            settle_ancestors(pending['payload'], entry_id)
     if status in {'activated', 'rolled_back'}:
         approval.discard_pending(approval.SKILLS, evidence['pending_id'])
     return result
@@ -126,10 +131,13 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
     from tools import skill_ledger as ledger, skill_manager_tool as manager
     from tools import skill_provenance as provenance, skills_tool, write_approval as approval
     from .review import editable_operation
+    from .review_successors import record_failure, evaluation_current
     pending = approval.get_pending(approval.SKILLS, pending_id)
     if not pending or pending.get('origin') != 'background_review':
         raise ValueError('Expected a native background-review proposal')
     payload = pending['payload']
+    if not evaluation_current(payload):
+        return {'status': 'proposal_rejected', 'pending_id': pending_id, 'candidate_measured': False}
     operation = editable_operation(payload, allow_create=True)
     if operation is None or operation.get('name') != skill:
         raise ValueError('Evaluator supports one main-file change of the explicitly selected skill only')
@@ -145,6 +153,11 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
                        or manager._validate_frontmatter(operation['content'], new_skill=True)
                        or manager._validate_content_size(operation['content']))
             if invalid:
+                failure = record_failure(payload, kind='validation', diagnostic=invalid,
+                    phase='proposal_validation', pending_id=pending_id)
+                if failure:
+                    return {'status': 'invalid_proposal', 'failure_entry_id': failure,
+                            'pending_id': pending_id, 'diagnostic': invalid, 'candidate_measured': False}
                 raise ValueError('Native skill creation contract is invalid: ' + invalid)
             target = manager._resolve_skill_dir(skill, operation.get('category')) / 'SKILL.md'
         else:
@@ -177,6 +190,8 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
                 if terminal.get(entry['id']) == 'activated':
                     return {'status': 'changed_elsewhere', 'evaluation_id': entry['id']}
         def unchanged():
+            if not evaluation_current(payload):
+                return False
             if creating:
                 return manager._find_skill(skill) is None and not target.parent.exists()
             return target.is_file() and target.read_bytes() == original
@@ -193,8 +208,19 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
             candidate_text = original_text.replace(operation['old_string'], operation['new_string'],
                                                    -1 if operation.get('replace_all', False) else 1)
         candidate = candidate_text.encode()
-        baseline, old_cases = _measure(oracle, original_text, 'baseline')
-        proposed, new_cases = _measure(oracle, candidate_text, 'candidate')
+        phase, baseline = 'baseline', None
+        try:
+            baseline, old_cases = _measure(oracle, original_text, phase)
+            phase = 'candidate'
+            proposed, new_cases = _measure(oracle, candidate_text, phase)
+        except Exception as error:
+            failure = record_failure(payload, kind='oracle_unavailable',
+                diagnostic={'error_type': type(error).__name__}, phase=phase,
+                pending_id=pending_id, measurement={'baseline': baseline} if baseline is not None else None)
+            if failure:
+                return {'status': 'unavailable', 'failure_entry_id': failure,
+                        'phase': phase, 'candidate_measured': False}
+            raise
         evidence = {'pending_id': pending_id, 'payload_sha256': payload_hash,
                     'oracle_id': oracle_id, 'skill_path': str(target),
                     'before_sha256': original_sha256, 'candidate_sha256': _digest(candidate),
@@ -204,7 +230,12 @@ def evaluate_pending(pending_id, skill, oracle, *, oracle_id):
         improved = (original != candidate and old_cases.keys() == new_cases.keys() and all(new_cases.values())
                     and sum(new_cases.values()) > sum(old_cases.values()))
         if not improved:
-            return {'status': 'not_improved', 'result_entry_id': _record(skill, {**evidence, 'status': 'not_improved'})}
+            recorded = _record(skill, {**evidence, 'status': 'not_improved'})
+            failure = record_failure(payload, kind='not_improved', phase='comparison', pending_id=pending_id,
+                diagnostic='The candidate did not demonstrate improvement under the selected evaluator.',
+                evaluation_id=recorded)
+            return {'status': 'not_improved', 'result_entry_id': recorded,
+                    **({'failure_entry_id': failure} if failure else {})}
         if not unchanged() or approval.get_pending(approval.SKILLS, pending_id) != pending:
             return {'status': 'changed_elsewhere'}
         before = [] if creating else ledger.snapshot_paths(existing['path'])
