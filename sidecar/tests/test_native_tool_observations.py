@@ -47,6 +47,24 @@ def native(source_app, monkeypatch, tmp_path, request):
     ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
     with TestClient(source_app, headers={'Authorization':'Bearer writer'}) as http:
         plugin = _load_plugin('pacomind_original_tool_observation_test')
+        client_module = importlib.import_module(plugin.__name__ + '.client')
+        # These native/ASGI tests exercise source semantics, not scheduler or
+        # filesystem latency. Only a drain and its nested delivery share this
+        # controlled clock; request freshness and separate deadline tests keep
+        # their real clocks. Explicit timeout tests advance it at the I/O boundary.
+        delivery_clock = SimpleNamespace(now=None, wall=None)
+        monkeypatch.setattr(client_module, 'time', SimpleNamespace(
+            monotonic=lambda: time.monotonic() if delivery_clock.now is None else delivery_clock.now,
+            time=lambda: time.time() if delivery_clock.wall is None else delivery_clock.wall,
+            sleep=time.sleep))
+        original_drain = plugin.TurnOutbox.drain
+        def drain(outbox, *args, **kwargs):
+            delivery_clock.now = time.monotonic()
+            try:
+                return original_drain(outbox, *args, **kwargs)
+            finally:
+                delivery_clock.now = None
+        monkeypatch.setattr(plugin.TurnOutbox, 'drain', drain)
         http_events = []
         class Client(plugin.PacoMindClient):
             outage = False
@@ -55,7 +73,8 @@ def native(source_app, monkeypatch, tmp_path, request):
                 began = time.monotonic()
                 event = {'method': method, 'path': path}
                 if kwargs.get('_deadline_monotonic') is not None:
-                    event['remaining_budget_ms'] = round((kwargs['_deadline_monotonic'] - began) * 1000, 3)
+                    event['remaining_budget_ms'] = round((kwargs['_deadline_monotonic']
+                        - client_module.time.monotonic()) * 1000, 3)
                 try:
                     if self.outage and '/source-observation/' in path:
                         response = httpx.Response(503, request=httpx.Request(method, 'http://fixture'+path))
@@ -160,7 +179,8 @@ def native(source_app, monkeypatch, tmp_path, request):
             return json.dumps({'receipt': receipt, 'http': http_events[-16:], 'outbox': rows}, indent=2)
         yield SimpleNamespace(plugin=plugin, context=context, db=db, http=http, clients=clients,
             complete=complete, request=request, retain=retain, ledger=ledger, recall=recall,
-            messages=messages, scope=call_context, outbox=outbox, diagnostics=diagnostics)
+            messages=messages, scope=call_context, outbox=outbox, diagnostics=diagnostics,
+            delivery_clock=delivery_clock)
         db.close()
 
 
@@ -349,6 +369,49 @@ def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexe
     assert receipt['source_recorded'], n.diagnostics(receipt)
     assert receipt['input_included'] is include_input
     assert 'files_written' in n.recall()['body']
+    assert n.db._conn.execute("SELECT count(*) FROM messages WHERE role='tool'").fetchone()[0] == 1
+
+
+def test_late_observation_acknowledgment_recovers_exact_source_after_lease_expiry(native, monkeypatch):
+    n = native
+    n.complete(arguments={'item': 'copper synchronization'})
+    n.request()
+    n.delivery_clock.wall = time.time()
+    original_put, puts = n.clients[0].put, []
+    def late_acknowledgment(path, **kwargs):
+        response = original_put(path, **kwargs)  # The real API commits first.
+        if '/source-observation/' in path:
+            puts.append((path, copy.deepcopy(kwargs['json'])))
+            if len(puts) == 1:
+                assert response.status_code == 201
+                n.delivery_clock.now = kwargs['_deadline_monotonic']
+        return response
+    monkeypatch.setattr(n.clients[0], 'put', late_acknowledgment)
+
+    first = n.retain(include_input=True)
+    assert first['state'] == 'pending' and not first['accepted'] and not first['source_recorded']
+    pending = next(row for row in n.outbox.snapshot() if row['turn_id'] == first['source_id'])
+    assert pending['attempts'] == 1 and pending['last_error'] == 'delivery_outcome_unknown'
+    assert pending['lease_id'] and pending['lease_expires_at'] > n.delivery_clock.wall
+    assert 'copper synchronization' in n.recall()['body']
+
+    def deliver(stored, *, timeout_seconds):
+        return n.clients[0].sync_turn(**stored, outbox=n.outbox, timeout_seconds=timeout_seconds)
+    assert n.outbox.drain(deliver, limit=16, timeout_seconds=.25) == 0
+    assert len(puts) == 1  # An uncertain in-flight lease cannot be replayed yet.
+    n.delivery_clock.wall = pending['lease_expires_at'] + .001
+    assert n.outbox.drain(deliver, limit=16, timeout_seconds=.25) == 1
+    assert puts[1] == puts[0] and len(puts) == 2
+    receipt = n.retain()
+    assert receipt['accepted'] and receipt['source_recorded'], n.diagnostics(receipt)
+    assert receipt['source_id'] == first['source_id']
+    assert receipt['selected_call'] == first['selected_call'] and receipt['input_included']
+    delivered = next(row for row in n.outbox.snapshot() if row['turn_id'] == first['source_id'])
+    assert delivered['state'] == 'delivered' and delivered['attempts'] == 2
+    assert delivered['payload'] == pending['payload']
+    with n.ledger._connect() as db:
+        assert db.execute('SELECT count(*) FROM turn_sources WHERE turn_id=?',
+                          (first['source_id'],)).fetchone()[0] == 1
     assert n.db._conn.execute("SELECT count(*) FROM messages WHERE role='tool'").fetchone()[0] == 1
 
 
