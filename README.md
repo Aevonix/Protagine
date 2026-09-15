@@ -11,7 +11,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Aevonix/PacoMind/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/PacoMind/actions/workflows/ci.yml)
 
-PacoMind is an effort to achieve **pseudo-AGI** through persistent memory,
+PacoMind is an effort to achieve **Proto-AGI** through persistent memory,
 an evolving identity, autonomous initiative and internal deliberation. It connects
 to [Hermes](https://github.com/NousResearch/hermes-agent) so an agent can carry
 knowledge and unfinished work across conversations, channels and model changes.
@@ -23,7 +23,7 @@ chooses its models, channels and devices.
 
 ## What we are trying to achieve
 
-We use **pseudo-AGI** for a practical goal: an agent that remembers what matters,
+We use **Proto-AGI** for a practical goal: an agent that remembers what matters,
 forms and revises its own working judgments, keeps commitments, acts on useful
 opportunities and improves through experience. The owner should be able to keep
 talking to it while it works, correct its understanding and inspect the reasons

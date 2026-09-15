@@ -10,7 +10,7 @@ or contract change and add a row to the changelog below.
 
 ## Why
 
-A pseudo-AGI agent's behavior is substantially its prompts. Fragmented
+A Proto-AGI agent's behavior is substantially its prompts. Fragmented
 prompts mean fragmented judgment: the executor had no evidence discipline,
 the thinker had no grounding requirement, nothing carried calibrated
 confidence, and every module described "who am I" differently. The charter
