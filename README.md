@@ -1,5 +1,3 @@
-# Protagine
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/branding/protagine-primary-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/branding/protagine-primary-light.svg">
