@@ -292,6 +292,22 @@ def recovery_receipts():
     assert view['stop']['native_turn_termination'] is None and view['stop']['process_cleanup'] == 'unobserved'
     assert running['id'] not in store().pending()
 
+def origin_receipt():
+    s = source()
+    args = dict(request_id='observed-origin', request='Inspect the existing local notes.', source_input=s)
+    row = store().admit(**args, origin_execution_id='d'*64)
+    assert store().get(row['id'])['origin_execution_id'] == 'd'*64
+    # Restart/retry has no current observer or may carry a different observer
+    # UUID. Neither changes task identity, source bytes or its first receipt.
+    assert store().admit(**args) == row
+    assert store().admit(**args, origin_execution_id='e'*64) == row
+    old_args = {**args, 'request_id':'historical-origin'}
+    old = store().admit(**old_args)
+    assert old['origin_execution_id'] is None
+    assert store().admit(**old_args, origin_execution_id='e'*64) == old
+    fails(lambda: store().admit(**{**args, 'request_id':'bad-origin'},
+        origin_execution_id='guessed'), 'exact observed origin')
+
 globals()[sys.argv[2]]()
 print(json.dumps({'case':sys.argv[2],'passed':True,'execution_started':False}))
 '''
@@ -301,6 +317,7 @@ print(json.dumps({'case':sys.argv[2],'passed':True,'execution_started':False}))
     'legacy_adoption', 'cross_channel', 'stop_after_erasure', 'generation_fencing',
     'reply_ordering', 'concurrent_stop_reply', 'update_consumption_and_erasure',
     'recovery_receipts', 'status_source_inspection',
+    'origin_receipt',
 ])
 def test_generic_handoff_store(artifacts, tmp_path, case):
     installed = artifacts[3]

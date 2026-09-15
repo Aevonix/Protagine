@@ -104,6 +104,7 @@ class NativeTasks:
             error_type=error_type, reply_effect=reply_effect)
         self.owner = owner_contact_id
         self.client, self.outbox = client, outbox
+        self.execution_observer = None
         self.adapter_type = adapter_type
         self.adapter_resolver = adapter_resolver
         self.adapter = None
@@ -440,6 +441,56 @@ class NativeTasks:
             return None
         return None
 
+    def request_origin(self, scope, task_ids, *, deadline_monotonic):
+        """Retained admission lineage for one actually shown same-owner task.
+
+        Reuse request-memory's final source/annotation checks. This neither
+        dispatches task control nor reads other native session transcripts.
+        """
+        from .input_provenance import _refs
+        from .native_task_platform import ACTIVE
+        if (getattr(scope, 'contact_id', None) != self.owner
+                or not isinstance(task_ids, list) or len(task_ids) > 8):
+            return None
+        try:
+            active = ACTIVE.get()
+            with owner_lookup_deadline(deadline_monotonic):
+                if scope.platform == 'pacomind_task':
+                    if (active is None or active['adapter'] is not self.adapter
+                            or active['handoffs'] is not self.handoffs
+                            or active['id'] not in task_ids
+                            or active.get('native') != {key: getattr(scope, key, '') for key in
+                                ('session_id', 'task_id', 'turn_id')}):
+                        return None
+                    task_ids = [active['id']]
+                elif self.sources.actor_contact(scope) != self.owner:
+                    return None
+                for identity in task_ids:
+                    row = self.handoffs.get(identity)
+                    if self.sources.resolve_owner(row['source'], require_task_grant=True) != self.owner:
+                        continue
+                    origin = row['source'].get('origin')
+                    if not origin:
+                        continue
+                    parents = [row['source'], row['dependencies'] or {}]
+                    def merged(name, digest):
+                        refs = [ref for parent in parents for ref in parent.get(name, [])]
+                        return _refs(list({json.dumps(ref, sort_keys=True): ref for ref in refs}.values()), digest)
+                    refs = merged('source_refs', 'source_version')
+                    inputs = merged('input_refs', 'input_message_hash')
+                    if {ref['source_id'] for ref in inputs} - {ref['source_id'] for ref in refs}:
+                        return None
+                    if time.monotonic() > deadline_monotonic:
+                        return None
+                    return {'task_id': identity, 'origin': origin, 'contact_id': self.owner,
+                        'origin_execution_id': row.get('origin_execution_id'),
+                        'source_refs': refs, 'unannotated_input_refs': inputs,
+                        'watermark': max(row['source']['watermark'],
+                            self.outbox.erasure_watermark(self.owner, deadline_monotonic=deadline_monotonic))}
+        except Exception:
+            return None  # Optional context cannot weaken a failed owner/source check.
+        return None
+
     def handle(self, args, scope):
         identity = None
         try:
@@ -516,9 +567,12 @@ class NativeTasks:
                     and getattr(scope, 'resolution_status', '') == 'resolved'
                     and origin.get('platform') == getattr(scope, 'platform', '')
                     and origin.get('platform') not in getattr(self.sources, 'attested_system_platforms', {'cli'}))
+                observed_origin = (self.execution_observer.origin_context(origin, self.owner, [])
+                    if self.execution_observer is not None else None)
                 row = self.handoffs.admit(request_id=request_id, request=args['request'],
                     source_input=source, model_role=selected,
-                    experience='operational' if ordinary else None)
+                    experience='operational' if ordinary else None,
+                    origin_execution_id=(observed_origin['origin_execution_id'] if observed_origin else None))
                 identity = row['id']
                 observed = self._call('submit', identity)
                 return json.dumps({'task_id': identity, 'accepted': True, 'executor': 'native_hermes',

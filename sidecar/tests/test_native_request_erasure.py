@@ -78,6 +78,100 @@ def runtime(tmp_path):
     return SimpleNamespace(module=module, outbox=outbox, ledger=ledger, fact=fact)
 
 
+@pytest.mark.parametrize('evidence, change', [
+    ('recall', 'erased'), ('search', 'erased'), ('search', 'annotated'),
+])
+def test_derived_assignment_keeps_consumed_source_and_known_annotation_checks(
+        runtime, source_app, monkeypatch, evidence, change):
+    from fastapi.testclient import TestClient
+    from pacomind.api.authority import RequestAuthority
+    import pacomind.turns
+
+    rt = runtime
+    monkeypatch.setattr(pacomind.turns, 'get_turn_idempotency_ledger', lambda *_: rt.ledger)
+    @source_app.middleware('http')
+    async def owner_authority(request, next_call):
+        request.state.pacomind_authority = RequestAuthority(principal_id='fixture', credential_id='fixture',
+            scopes=frozenset({'memory:read', 'context:read'}), viewer_person_id='owner',
+            person_ids=frozenset({'owner'}), audiences=frozenset({'viewer'}), authenticated=True)
+        return await next_call(request)
+    api = TestClient(source_app)
+    posted = []
+    def get(path, **kwargs):
+        return api.get(path, params=kwargs.get('params'))
+    def post(path, **kwargs):
+        posted.append(copy.deepcopy(kwargs['json']))
+        return api.post(path, json=kwargs['json'])
+    client = SimpleNamespace(get=get, post=post)
+    boundary = rt.module.RequestMemory(client, rt.outbox)
+    parent = SimpleNamespace(contact_id='owner', session_id='parent', task_id='parent-task',
+                             turn_id='parent-turn', valid_participant=True)
+    current = {'role':'user', 'content':'Prepare an independent task and delegate a check.'}
+    assert boundary.consumed_snapshot(parent) is None
+    boundary.observe(parent, [current], user_message=current['content'])
+    assert boundary.consumed_snapshot(parent) is None
+    boundary({'messages':[current]}, parent)
+    assert boundary.consumed_snapshot(parent)['source_refs'] == []
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='parent')[0]
+    if evidence == 'search':
+        search = importlib.import_module(rt.module.__package__ + '.memory_search')
+        result = search.handle({'query':'orchard badge'}, parent, client, boundary,
+                               {'tool_call_id':'retained-search'})
+        assert 'error' not in json.loads(result), result
+        request = {'messages':[current, {'role':'tool', 'tool_call_id':'retained-search', 'content':result}]}
+    else:
+        stamp = json.dumps({'contact_id':'owner', 'watermark':0, 'sources':[ref]})
+        current['api_content'] = current['content'] + '\n\n[pacomind-recall-v1 ' + stamp + ']\n' + rt.fact + '\n[/pacomind-recall-v1]'
+        request = {'messages':[{'role':'user', 'content':current['api_content']}]}
+    checked = boundary(request, parent)
+    assert rt.fact in json.dumps(checked['request'])
+    consumed = boundary.consumed_snapshot(parent)
+    assert consumed['source_refs'] == [ref]
+    assert bool(consumed['annotation_checks']) is (evidence == 'search')
+    assert boundary.consumed_snapshot(SimpleNamespace(**{**vars(parent), 'contact_id':'other'})) is None
+
+    # The accepted task A is independent of recalled B. Its validity cannot
+    # substitute for B's real lineage when the model-authored label repeats B.
+    original = {'role':'user', 'content':'Perform independent task A.'}
+    rt.ledger.record_source('task-a', contact_id='owner', session_id='task',
+                            messages=[original], derive_claims=False)
+    task_ref = rt.ledger.source_references(['task-a'], contact_id='owner', session_id='task')[0]
+    source_hash = importlib.import_module(rt.module.__package__ + '.client').source_message_hash
+    child = SimpleNamespace(contact_id='owner', session_id='child', task_id='child-task',
+                            turn_id='child-turn', valid_participant=True)
+    child_input = {'role':'user', 'content':'Inspect the accepted work.'}
+    boundary.observe(child, [child_input], user_message=child_input['content'])
+    text = '[pacomind-work-request-v1]\n' + json.dumps({
+        'assignment':{'basis':'native_model_authored', 'excerpt':rt.fact}}) + '\n[/pacomind-work-request-v1]'
+    operational = {**consumed, 'text':text, 'source_refs':[task_ref, *consumed['source_refs']],
+        'unannotated_input_refs':[{'source_id':'task-a', 'input_message_hash':source_hash('task', original)}]}
+    request = {'messages':[child_input, {'role':'system', 'content':text}]}
+    assert rt.fact in json.dumps(boundary(request, child, operational=operational)['request'])
+    if change == 'erased':
+        rt.ledger.erase_sources(contact_id='owner', turn_ids=['fixture-source'])
+    else:
+        rt.ledger.append_source_annotation(contact_id='owner', session_id='later',
+            annotation_id='changed-b', **ref, excerpt=rt.fact,
+            correction='This was a fictional badge, not an actual possession.', author_principal='operator')
+    checked = boundary(request, child, operational=operational)
+    assert rt.fact not in json.dumps(checked['request'])
+    assert 'Current shared work withheld' in json.dumps(checked['request'])
+    assert rt.ledger.source_references(['task-a'], contact_id='owner', session_id='child') == [task_ref]
+    assert ref in posted[-1]['source_refs']
+    if evidence == 'search':
+        assert posted[-1]['annotation_checks'] == consumed['annotation_checks']
+    # A later unavailable parent check cannot certify an earlier snapshot as
+    # the source set of another newly generated assignment.
+    def unavailable(*args, **kwargs):
+        raise OSError('unavailable')
+    client.get = client.post = unavailable
+    boundary(request, parent)
+    assert boundary.consumed_snapshot(parent) is None
+    assert consumed['source_refs'] == [ref]
+    boundary.finish(task_id=parent.task_id, turn_id=parent.turn_id, contact_id='owner')
+    assert boundary.consumed_snapshot(parent) is None
+
+
 def test_retained_packets_and_exact_copies_reconcile_after_restart(runtime):
     rt = runtime
     request = {'messages': [
