@@ -14,8 +14,9 @@ _OUTPUT_LIMIT_TRACE = 'pacomind.execution-output-limit.v1:'
 
 
 class ExecutionObserver:
-    def __init__(self, client):
+    def __init__(self, client, *, assignment_snapshot=None):
         self.client = client
+        self.assignment_snapshot = assignment_snapshot
         self.instance = uuid.uuid4().hex
         self._lock = threading.RLock()
         self._records = OrderedDict()
@@ -95,6 +96,10 @@ class ExecutionObserver:
         self._send(dict(payload))
 
     def child(self, **kwargs):
+        try:
+            sources = self.assignment_snapshot(**kwargs) if self.assignment_snapshot is not None else None
+        except Exception:
+            sources = None
         with self._lock:
             parent = self._records.get(str(kwargs.get("parent_turn_id") or ""))
             child_session = str(kwargs.get("child_session_id") or "")
@@ -102,6 +107,13 @@ class ExecutionObserver:
             if not parent or not child_session or current_session != str(kwargs.get("parent_session_id") or ""):
                 return
             binding = {"parent_session_id": current_session, "contact_id": parent["contact_id"], "execution_id": parent["execution_id"]}
+            goal = kwargs.get('child_goal')
+            if (isinstance(goal, str) and goal.strip() and isinstance(sources, dict)
+                    and sources.get('contact_id') == parent['contact_id']):
+                # Only this process's live child label; never send prompt text
+                # to the operational ledger or treat it as a human input.
+                binding['assignment'] = {'excerpt': goal[:512], 'partial': len(goal) > 512}
+                binding['assignment_provenance'] = sources
             previous = self._children.get(child_session)
             if previous is not None and previous != binding:
                 # A reused child session cannot inherit a different participant.
@@ -110,6 +122,36 @@ class ExecutionObserver:
             self._children[child_session] = binding
             while len(self._children) > 2048:
                 self._children.popitem(last=False)
+
+    def origin_context(self, origin, contact_id, shown):
+        """Join a source-checked task to already shown same-owner children.
+
+        Lookups use exact native turn/session identities, not a session scan.
+        The caller retains source freshness and the existing request budget.
+        Nothing here gives another session control over these children.
+        """
+        with self._lock:
+            parent = self._records.get(origin.get('turn_id'))
+            if (parent is None or parent['contact_id'] != contact_id
+                    or origin.get('session_id') not in {
+                        parent['session_id'], self._current_sessions.get(parent['turn_id'])}
+                    or origin.get('platform') != parent['platform']):
+                return None
+            assignments = []
+            for item in shown:
+                bound = self._children.get(item.get('session_id'))
+                child = self._records.get(item.get('turn_id'))
+                if (not bound or not child or not bound.get('assignment')
+                        or bound['contact_id'] != contact_id
+                        or bound['execution_id'] != parent['execution_id']
+                        or child['state'] != 'observed'
+                        or child['execution_id'] != item.get('execution_id')
+                        or child['parent_execution_id'] != parent['execution_id']):
+                    continue
+                assignments.append({'execution_id': child['execution_id'],
+                    'assignment': {'basis': 'native_model_authored', **bound['assignment']},
+                    'input_provenance': bound['assignment_provenance']})
+            return {'origin_execution_id': parent['execution_id'], 'assignments': assignments}
 
     @staticmethod
     def _body_output_limit(kwargs):

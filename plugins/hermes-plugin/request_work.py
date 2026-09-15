@@ -79,9 +79,76 @@ def replace_context(request, text=None, *, api_mode='', marker='pacomind-work-re
 
 
 class RequestWork:
-    def __init__(self, client, native_tasks=None):
+    def __init__(self, client, native_tasks=None, execution_observer=None):
         self.client = client
         self.native_tasks = native_tasks
+        self.execution_observer = execution_observer
+
+    def _origin(self, value, scope, deadline, *, max_chars):
+        """Add native admission/child linkage inside the existing packed view."""
+        if self.execution_observer is None or self.native_tasks is None or not value.get('native_task_ids'):
+            return value
+        origin = self.native_tasks.request_origin(scope, value['native_task_ids'], deadline_monotonic=deadline)
+        if origin is None or time.monotonic() > deadline:
+            return value
+        def rows(selected):
+            return [json.loads(line) for line in selected['text'].splitlines() if line.startswith('{')]
+        retained_origin = origin.get('origin_execution_id')
+        if not retained_origin:
+            return value
+        observed = self.execution_observer.origin_context(origin['origin'], scope.contact_id, rows(value))
+        observed = {'origin_execution_id': retained_origin, 'assignments':
+            observed['assignments'] if observed and observed['origin_execution_id'] == retained_origin else []}
+        def augment(selected, budget):
+            if not isinstance(selected, dict) or origin['task_id'] not in selected.get('native_task_ids', []):
+                return selected
+            def line(row):
+                return json.dumps(row, ensure_ascii=True).replace(
+                    _CLOSE, r'\u005b/pacomind-work-request-v1\u005d') + '\n'
+            addition = line({'task_id': origin['task_id'],
+                             'origin_execution_id': observed['origin_execution_id']})
+            shown = {row.get('execution_id') for row in rows(selected)}
+            parents = [origin]
+            for assignment in observed['assignments']:
+                if assignment['execution_id'] not in shown:
+                    continue
+                sources = assignment['input_provenance']
+                if (sources['contact_id'] != scope.contact_id
+                        or sources['watermark'] > (selected.get('input_provenance') or origin)['watermark']):
+                    continue
+                detail = dict(assignment['assignment'])
+                excerpt = detail['excerpt']
+                length = min(240, len(excerpt))
+                while length:
+                    detail.update(excerpt=excerpt[:length],
+                        partial=assignment['assignment']['partial'] or length < len(excerpt))
+                    extra = line({'execution_id': assignment['execution_id'], 'assignment': detail})
+                    if len(addition) + len(extra) <= 540:
+                        addition += extra
+                        parents.append(sources)
+                        break
+                    length -= 1
+            if len(selected['text']) + len(addition) > budget:
+                return selected
+            supplied = selected.get('input_provenance') or {key: origin[key] for key in
+                ('contact_id', 'watermark', 'source_refs', 'unannotated_input_refs')}
+            if (supplied.get('contact_id') != scope.contact_id
+                    or supplied.get('watermark', -1) < origin['watermark']):
+                return selected
+            supplied = dict(supplied)
+            for key in ('source_refs', 'unannotated_input_refs', 'annotation_checks'):
+                supplied[key] = list({json.dumps(ref, sort_keys=True): ref
+                    for ref in [*supplied.get(key, []),
+                        *(ref for parent in parents for ref in parent.get(key, []))]}.values())
+            return {**selected, 'text': selected['text'] + addition, 'input_provenance': supplied}
+        # Both variants carry the same checked lineage. A later accepted update
+        # can still use the reserved view without losing this origin binding.
+        original_reserved = value.get('reserved')
+        reserved = augment(original_reserved, max_chars - 640)
+        full = augment(value, max_chars)
+        if full is value and reserved is not original_reserved:
+            full = reserved
+        return {**full, **({'reserved': reserved} if reserved is not None else {})}
 
     def _revision(self, value, scope, deadline, *, max_chars=4000):
         """Join only a locally retained revision of an actually shown task."""
@@ -163,7 +230,9 @@ class RequestWork:
             response = self.client.get("/v1/host/executions",
                 params={'contact_id': scope.contact_id, 'session_id': scope.session_id,
                         'limit': 8, 'projection': 'request', 'input_context': True,
-                        **({'reserve_chars': 640 + len(guidance)} if self.native_tasks is not None else {})},
+                        **({'reserve_chars': min(1200, 640 + len(guidance)
+                            + (540 if self.execution_observer is not None else 0))}
+                           if self.native_tasks is not None else {})},
                 timeout=.25, _deadline_monotonic=deadline)
             response.raise_for_status()
             value = response.json()
@@ -174,6 +243,7 @@ class RequestWork:
                     or type(observed) not in (int, float) or not math.isfinite(observed)
                     or time.monotonic() > deadline):
                 raise ValueError('Invalid or late operational view')
+            value = self._origin(value, scope, deadline, max_chars=max_chars)
             value = self._revision(value, scope, deadline, max_chars=max_chars)
             if len(value['text']) > max_chars:
                 value = value.get('reserved')

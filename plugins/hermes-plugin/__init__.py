@@ -2382,11 +2382,18 @@ def register(ctx: Any) -> None:
         attested_system_platforms=attested_system_platforms)
         if isinstance(task_config, dict) and task_config.get('enabled') is True else None)
     native_memory = NativeMemoryRequests(request_memory)
-    request_work = RequestWork(client, native_tasks)
+    def assignment_snapshot(**kwargs):
+        parent = _TRANSPORT_SCOPES.for_execution(
+            session_id=kwargs.get('parent_session_id', ''), task_id='',
+            turn_id=kwargs.get('parent_turn_id', ''))
+        return request_memory.consumed_snapshot(parent) if parent is not None else None
     execution_observer = (
-        ExecutionObserver(client)
+        ExecutionObserver(client, assignment_snapshot=assignment_snapshot)
         if config.get("execution_registry_enabled") is True else None
     )
+    if native_tasks is not None:
+        native_tasks.execution_observer = execution_observer
+    request_work = RequestWork(client, native_tasks, execution_observer)
     _TRANSPORT_SCOPES.clear()
     dispatcher = _ToolDispatcher(
         client=client,

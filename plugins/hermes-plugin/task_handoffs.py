@@ -59,7 +59,7 @@ class TaskHandoffs:
                 UNIQUE(request_id))''')
             db.execute('BEGIN IMMEDIATE')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(native_voice_handoffs)')}
-            for name in ('stop_json', 'terminal_json', 'model_role_json'):
+            for name in ('stop_json', 'terminal_json', 'model_role_json', 'origin_execution_id'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE native_voice_handoffs ADD COLUMN {name} TEXT')
             db.execute('''CREATE TABLE IF NOT EXISTS native_voice_updates (
@@ -68,7 +68,7 @@ class TaskHandoffs:
                 dispatch_json TEXT, observations_json TEXT NOT NULL DEFAULT '{}')''')
 
     def admit(self, *, request_id, request, source_input, model_role=None, experience=None,
-              request_image_receipts=False):
+              request_image_receipts=False, origin_execution_id=None):
         """Retain task purpose when the trusted caller knows it prospectively.
 
         Operator work can pass operational; evaluation runs pass qualification.
@@ -81,6 +81,10 @@ class TaskHandoffs:
             raise self._error('A bounded stable identifier is required')
         if not isinstance(request, str) or not request.strip() or len(request) > 32768:
             raise self._error('A bounded task request is required')
+        if origin_execution_id is not None and (not isinstance(origin_execution_id, str)
+                or len(origin_execution_id) != 64
+                or any(char not in '0123456789abcdef' for char in origin_execution_id)):
+            raise self._error('An exact observed origin execution is required')
         if model_role is not None and (
                 not isinstance(model_role, dict) or set(model_role) != {'role', 'provider', 'model'}
                 or any(not isinstance(v, str) or not v.strip() or len(v) > 256
@@ -115,9 +119,10 @@ class TaskHandoffs:
             if row and row['id'] != identity:
                 raise self._error('A request ID cannot be rebound')
             db.execute('INSERT OR IGNORE INTO native_voice_handoffs '
-                '(id,request_id,request,source_json,created,model_role_json) VALUES(?,?,?,?,?,?)',
+                '(id,request_id,request,source_json,created,model_role_json,origin_execution_id) VALUES(?,?,?,?,?,?,?)',
                 (identity, request_id, request, payload, time.time(),
-                 json.dumps(model_role, sort_keys=True) if model_role is not None else None))
+                 json.dumps(model_role, sort_keys=True) if model_role is not None else None,
+                 origin_execution_id))
         return self.get(identity)
 
     def pending(self, limit=16, *, after=None):

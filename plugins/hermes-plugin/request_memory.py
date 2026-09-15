@@ -689,6 +689,7 @@ class RequestMemory:
         self._plain_user_tails = {}
         self._native_history = {}
         self._owned_calls = {}
+        self._consumed_checks = {}
 
     def observe(self, scope, messages, *, user_message=None):
         # Native pre_llm_call exposes both clean content and persisted
@@ -718,6 +719,8 @@ class RequestMemory:
             self._supplied[key] = {}
             self._read_receipts[key] = {}
             self._owned_calls[key] = {}
+            self._consumed_checks[key] = {'current': False, 'overflow': False,
+                'annotation_checks': {}, 'unannotated_input_refs': {}}
             self._requests_seen.discard(key)
             self._host_inputs.pop(key, None)
             self._trim_observations(key)
@@ -733,6 +736,7 @@ class RequestMemory:
             self._plain_user_tails.pop(evicted, None)
             self._native_history.pop(evicted, None)
             self._owned_calls.pop(evicted, None)
+            self._consumed_checks.pop(evicted, None)
 
     def snapshot_review_parent(self, scope):
         """Copy native observations before parent cleanup, without attesting freshness."""
@@ -766,6 +770,8 @@ class RequestMemory:
             self._supplied[key] = {}
             self._read_receipts[key] = copy.deepcopy(snapshot.read_receipts)
             self._owned_calls[key] = {}
+            self._consumed_checks[key] = {'current': False, 'overflow': False,
+                'annotation_checks': {}, 'unannotated_input_refs': {}}
             self._requests_seen.discard(key)
             self._host_inputs.pop(key, None)
             self._plain_user_tails[key] = []
@@ -904,6 +910,27 @@ class RequestMemory:
                 return None
             return copy.deepcopy(list(self._supplied[key].values()))
 
+    def consumed_snapshot(self, scope):
+        """Exact consumed parents for a model-authored operational assignment.
+
+        Preserve known annotation/input checks without inventing annotation
+        membership for ordinary recall. None means the latest request was not
+        verified; empty source refs are a verified source-free request.
+        """
+        if scope is None or not scope.valid_participant:
+            return None
+        key = (scope.contact_id, scope.task_id, scope.turn_id)
+        with self._lock:
+            checks = self._consumed_checks.get(key)
+            refs = list(self._supplied.get(key, {}).values())
+            if (not checks or not checks['current'] or checks['overflow']
+                    or key not in self._requests_seen or len(refs) > 512):
+                return None
+            return copy.deepcopy({'contact_id': scope.contact_id, 'watermark': checks['watermark'],
+                'source_refs': refs,
+                **{name: list(checks[name].values()) for name in
+                   ('annotation_checks', 'unannotated_input_refs')}})
+
     def finish(self, *, task_id, turn_id, contact_id=None):
         refs = {}
         with self._lock:
@@ -919,6 +946,7 @@ class RequestMemory:
                     self._plain_user_tails.pop(key, None)
                     self._native_history.pop(key, None)
                     self._owned_calls.pop(key, None)
+                    self._consumed_checks.pop(key, None)
         return list(refs.values())
 
     def __call__(self, request, scope, *, operational=None, current_work=False):
@@ -936,6 +964,8 @@ class RequestMemory:
             native_history = list(self._native_history.get(observed_key, []))
             owned_calls = dict(self._owned_calls.get(observed_key, {}))
             prior_sources = copy.deepcopy(list(self._supplied.get(observed_key, {}).values()))
+            if observed_key in self._consumed_checks:
+                self._consumed_checks[observed_key]['current'] = False
         current_content = current.get('api_content', current.get('content')) if current else None
         # Only native-observed recall and authenticated read receipts can
         # nominate parents. User-authored markers cannot select other people's
@@ -945,6 +975,8 @@ class RequestMemory:
         annotation_checks = {}
         searched_receipts = []
         unannotated_inputs = []
+        operational_checks = []
+        operational_current = True
         native_copies = []
         try:
             if self.ownership is not None and observed:
@@ -979,6 +1011,14 @@ class RequestMemory:
                 for ref in operational['source_refs']:
                     source_refs[(ref['source_id'], ref['source_version'])] = ref
                 unannotated_inputs = operational['unannotated_input_refs']
+                operational_checks = operational.get('annotation_checks', [])
+                from .memory_search import _annotation_check
+                if (not isinstance(operational_checks, list) or len(operational_checks) > 512
+                        or any(not _annotation_check(check, operational['source_refs'])
+                               for check in operational_checks)):
+                    raise ValueError('Invalid operational annotation checks')
+                for check in operational_checks:
+                    annotation_checks[_content_key(check)] = check
             parents_valid = len(source_refs) <= 512 and len(annotation_checks) <= 512
         except (KeyError, TypeError, ValueError, AttributeError, OSError, sqlite3.Error):
             parents_valid = False
@@ -1025,6 +1065,7 @@ class RequestMemory:
                             or any(type(value) is not bool for value in current_checks)):
                         raise ValueError('search_annotation_freshness_unavailable')
                     checked = dict(zip(annotation_checks, current_checks))
+                    operational_current = all(checked[_content_key(check)] for check in operational_checks)
                     for call_id, receipt in searched_receipts:
                         receipt['search_current'] = all(checked[_content_key(check)]
                             for check in receipt['annotation_checks'])
@@ -1145,7 +1186,7 @@ class RequestMemory:
                     'source':'pacomind', 'freshness_retryable':False,
                     'reason':'source_update_ownership_unavailable'}
             supplied_input.admit_updates(scope, filtered, updates)
-        if operational and not (fresh and observed and operational['contact_id'] == contact
+        if operational and not (fresh and observed and operational_current and operational['contact_id'] == contact
                                 and operational['watermark'] == watermark):
             from .request_work import replace_context
             filtered = replace_context(filtered,
@@ -1156,14 +1197,17 @@ class RequestMemory:
             current_packet = _native_packet(current)
             packets = packets | ({current_packet.group()} if current_packet else set())
             supplied = {}
+            consumed = {'annotation_checks': [], 'unannotated_input_refs': []}
             for native_copy in native_copies:
                 if any(native_copy['content'] in text for text in actual_texts):
                     for ref in native_copy['sources']:
                         supplied[(ref['source_id'], ref['source_version'])] = ref
-            if (operational and operational['contact_id'] == contact and operational['watermark'] == watermark
+            if (operational and operational_current and operational['contact_id'] == contact and operational['watermark'] == watermark
                     and any(operational['text'] in text for text in actual_texts)):
                 for ref in operational['source_refs']:
                     supplied[(ref['source_id'], ref['source_version'])] = ref
+                consumed['annotation_checks'].extend(operational_checks)
+                consumed['unannotated_input_refs'].extend(unannotated_inputs)
             if host_input and host_input['watermark'] == watermark and host_input['text']:
                 enriched = current.get('api_content') if current else None
                 if (isinstance(enriched, str) and isinstance(current_input, str)
@@ -1177,6 +1221,7 @@ class RequestMemory:
                 if receipt and receipt['watermark'] == watermark:
                     for ref in receipt['sources']:
                         supplied[(ref['source_id'], ref['source_version'])] = ref
+                    consumed['annotation_checks'].extend(receipt.get('annotation_checks', []))
             for block in packets:
                 if not any(block in text for text in actual_texts):
                     continue
@@ -1231,6 +1276,16 @@ class RequestMemory:
                                 owners.setdefault(call, dependencies)
                     self._supplied[observed_key].update(supplied)
                     self._requests_seen.add(observed_key)
+                    checks = self._consumed_checks[observed_key]
+                    checks.update(current=True, watermark=watermark)
+                    for name, values in consumed.items():
+                        for value in values:
+                            identity = _content_key(value)
+                            if identity not in checks[name]:
+                                if len(checks[name]) >= 512:
+                                    checks['overflow'] = True
+                                    break
+                                checks[name][identity] = copy.deepcopy(value)
         if current_work and (operational is None or
                 any(operational['text'] in text for text in _request_texts(filtered))):
             filtered = _without_turn_start_work(filtered, current)

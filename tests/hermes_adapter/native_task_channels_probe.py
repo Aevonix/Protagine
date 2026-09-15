@@ -209,6 +209,19 @@ def respond(request):
             'memory_sessions': list(supplied._memory_sessions), 'messages': body['messages'],
             'freshness_warnings': freshness_warnings[-4:]}
         if step == 1:
+            work_rows = [json.loads(line) for message in body['messages']
+                if message.get('role') in {'system', 'developer'}
+                and str(message.get('content', '')).startswith('[pacomind-work-request-v1]')
+                for line in message['content'].splitlines() if line.startswith('{')]
+            origin = next((item for item in work_rows
+                if item.get('task_id') == row['id'] and item.get('origin_execution_id')), None)
+            assert origin is not None, ('Accepted task lacks its exact admitting execution', work_rows)
+            assert origin['origin_execution_id'] == row['origin_execution_id']
+            with ledger._connect() as connection:
+                admitting = connection.execute('SELECT session_id, turn_id, contact_id FROM '
+                    'execution_observations WHERE execution_id=?', (origin['origin_execution_id'],)).fetchone()
+            assert tuple(admitting) == (row['source']['origin']['session_id'],
+                row['source']['origin']['turn_id'], owner), (origin, admitting)
             assert any(read['status'] == 200 and read['context'] == {
                 'session_id': row['native_session_id'], 'contact_id': owner}
                 for read in context_reads), {'task': name, 'context_reads': context_reads}
@@ -293,6 +306,13 @@ def respond(request):
     if tag.startswith('STATUS_'):
         assert step <= (3 if tag == 'STATUS_QUEUED' else 2)
         if step == 1:
+            if tag == 'STATUS_ERASED':
+                work_rows = [json.loads(line) for message in body['messages']
+                    if message.get('role') in {'system', 'developer'}
+                    and str(message.get('content', '')).startswith('[pacomind-work-request-v1]')
+                    for line in message['content'].splitlines() if line.startswith('{')]
+                assert not any(item.get('task_id') == task_ids['alpha']
+                    and item.get('origin_execution_id') for item in work_rows), work_rows
             return tool(body, 'pacomind_task', {'operation': 'status', 'task_id': task_ids['alpha']})
         results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
         result = json.loads(results[-1])
@@ -553,6 +573,18 @@ async def exercise():
                 resolution_status='resolved', **retained['source']['origin'])
             arguments = {'operation': 'handoff', 'task_id': task_ids['alpha']}
             exact_scope = SimpleNamespace(**scope)
+            # A new controller and observer cannot reconstruct this ID from
+            # their fresh UUID. The original admission carries the real proof.
+            restarted = type(controller)(controller.client, controller.outbox, owner, database=controller.database)
+            from pacomind_hermes.executions import ExecutionObserver
+            from pacomind_hermes.request_work import RequestWork
+            fresh_observer = ExecutionObserver(controller.client)
+            origin_view = {'schema':'PacoMindRequestWorkV1', 'native_task_ids':[retained['id']],
+                'text':'Retained task observation.\n'}
+            projected = await asyncio.to_thread(RequestWork(controller.client, restarted, fresh_observer)._origin,
+                origin_view, exact_scope, time.monotonic()+1, max_chars=4000)
+            assert retained['origin_execution_id'] in projected['text'], projected
+            assert not fresh_observer._records and not fresh_observer._children
             for extra in ({'request': retained['request']}, {'model_role': 'coding'},
                           {'expected_turn_id': retained['native_turn_id']}):
                 rejected = json.loads(await asyncio.to_thread(controller.handle, {**arguments, **extra}, exact_scope))
