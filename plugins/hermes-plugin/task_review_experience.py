@@ -158,6 +158,7 @@ def evaluate_once(evaluator, connection, owner):
     from tools import write_approval, skill_ledger
     from pacomind_hermes.review import editable_operation
     from pacomind_hermes.review_evaluation import audit_evaluation, evaluate_pending
+    from pacomind_hermes.review_successors import handled_pending, evaluation_current
     current = declaration(evaluator['path'])
     if current['binding'] != evaluator['binding']:
         raise ValueError('Task-review evaluator declaration changed')
@@ -234,6 +235,8 @@ def evaluate_once(evaluator, connection, owner):
         operation = editable_operation(payload, allow_create=True)
         if not operation or operation['action'] != 'create':
             continue
+        if handled_pending(pending, entries) or not evaluation_current(payload):
+            continue  # Its original failure is retained; a linked successor is a separate attempt.
         if not evaluator['value']['allow_apply']:
             return {'status': 'proposal_only', 'pending_id': pending['id'], 'quality_credit': False}
         payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -244,5 +247,5 @@ def evaluate_once(evaluator, connection, owner):
             continue
         recheck(batch, connection, owner)
         result = evaluate_pending(pending['id'], operation['name'], bound_oracle(batch), oracle_id=oracle_id)
-        return {**result, 'candidate_measured': True, 'quality_credit': False}
+        return {**result, 'candidate_measured': result.get('candidate_measured', True), 'quality_credit': False}
     return audited

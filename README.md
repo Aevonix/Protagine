@@ -109,13 +109,12 @@ You need Python 3.12, Git, a supported Hermes deployment and one OpenAI-compatib
 chat endpoint. The minimum profile does not require Docker, a graph database
 or an embedding model.
 
-Install the current tagged release:
+Install the current published release:
 
 ```bash
 python3.12 -m venv "$HOME/.local/share/pacomind/venv"
 source "$HOME/.local/share/pacomind/venv/bin/activate"
-git clone --depth 1 --branch v1.5.34 https://github.com/Aevonix/PacoMind.git
-python -m pip install "./PacoMind[native-memory]" "./PacoMind/sidecar[hermes]"
+python -m pip install "pacomind-hermes[native-memory]" "pacomind[hermes]"
 pacomind init --hermes-python /path/to/hermes/.venv/bin/python
 ```
 
@@ -163,10 +162,10 @@ use and recovery.
 
 ### Phase 2: improve the learning process
 
-After Phase 1 is validated, extend the learning loop to skills, playbooks,
-prompts, retrieval strategies and non-core code. The agent should identify a
-recurring failure, propose a change, compare it with the current behavior,
-adopt an authorized improvement and retain the result for its next attempt.
+After Phase 1 is validated, improve how the agent selects, evaluates and retains
+changes to skills, playbooks, prompts, retrieval strategies and non-core code.
+It should learn which improvement methods work, choose better experiments and
+use the results to make its next learning cycle more effective.
 
 Recursive improvement requires showing that this process becomes more effective
 over successive cycles. Model fine-tuning is an optional later path.

@@ -81,3 +81,24 @@ observations do not detect unsupported prose or every task failure. A caller
 that deliberately injects an operator exercise into an authenticated owner
 transport must preserve its explicit test provenance or suppress collection;
 the participant fields alone cannot distinguish it from ordinary owner work.
+
+## Continuing from a failed proposal
+
+The existing ordinary-review job can assess a changed proposal after a recorded
+validation failure or measured non-improvement. The native ledger retains the
+exact failed proposal and its diagnostic. A later job firing can claim a linked
+successor, with at most two successors per original review. The original
+observations remain consumed and do not become new experience.
+
+The reviewer receives the failed proposal and its public diagnostic. Hidden
+evaluation answers are withheld. Current sources, owner and job must still
+match. An identical candidate, repeated validation failure, unsupported change
+or owner rejection stops the chain. Rejection is checked again during staging
+and evaluation, including when it happens while the reviewer is working.
+
+Every changed proposal still requires independent evaluation before activation.
+Only successful activation settles its exact superseded pending proposals;
+their failure history stays in the ledger. An unavailable assessment or oracle
+does not justify rewriting a skill or resetting a consumed evaluation. Explicit
+evaluation remains available after an operator verifies that recovery is valid.
+These transitions do not by themselves establish a useful improvement.

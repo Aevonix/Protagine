@@ -233,7 +233,7 @@ def test_ungrounded_value_or_unknown_relative_date_is_not_a_claim():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("output", ["[{", '{"claims": []}', '[null]', '[{}, {}, {}, {}, {}, {}, {}]'])
+@pytest.mark.parametrize("output", ["[{", '{"claims": [], "extra": true}', '[null]', '[{}, {}, {}, {}, {}, {}, {}]'])
 async def test_malformed_extraction_stays_pending_and_recovers_without_losing_source(tmp_path, output):
     text = "My office is in River."
     ledger = TurnIdempotencyLedger(tmp_path / "ledger.db")

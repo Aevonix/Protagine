@@ -44,7 +44,8 @@ async def test_complete_procedure_survives_commit_restart_and_scoped_projection(
     requested = model.calls[0][1]['context']['response_schema']
     assert requested['name'] == 'source_claims'
     assert all(branch['properties']['evidence']['const'] == PROCEDURE
-               for branch in requested['schema']['items']['anyOf'])
+               for branch in requested['schema']['properties']['claims']['items']['anyOf']
+               if 'evidence' in branch['properties'])
     status = projection.status('contact-a')[0]
     assert status['status'] == 'complete' and status['claim_count'] == 1
     reopened = SourceClaimProjection(TurnIdempotencyLedger(path))

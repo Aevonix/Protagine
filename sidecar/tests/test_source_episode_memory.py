@@ -30,7 +30,7 @@ def episode(text=REPORT):
 
 def test_episode_preserves_complete_report_without_synthesized_fact_fields():
     proposal = episode()
-    jsonschema.validate([proposal], claim_response_schema(REPORT)['schema'])
+    jsonschema.validate({'claims': [proposal]}, claim_response_schema(REPORT)['schema'])
     record, = validated_claims(json.dumps([proposal]), message=REPORT, prior=[], observed_at=None)
     assert record['value'] == record['evidence'] == REPORT
     assert record['representation'] == 'episode'

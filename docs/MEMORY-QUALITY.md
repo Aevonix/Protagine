@@ -12,6 +12,12 @@ is stored as `memory_quality` and explicitly labeled unverified. It is neither a
 truth score nor permission to act. Corrections, changes and conflicting reports
 keep the existing source and time rules.
 
+Extraction and semantic admission review use the same criteria for future
+usefulness. Review checks whether the complete subject, relation and value
+express a supported property, and assesses the extractor's recall reason. A
+copied fragment or an imagined future task is insufficient. This uses the
+existing review call; it remains a fallible model judgment.
+
 The extractor stores a procedure's selected exact evidence passage as its value,
 within the existing 500-character evidence limit. It asks for conditions and
 subsequent steps together, but extraction and admission review can still split
@@ -33,6 +39,10 @@ without inferring equality or contradiction from their wording. Its comparison
 marker preserves that uncertainty beside any compact-value comparisons.
 Explicit reviewed corrections and changes still select their exact predecessor
 and govern its lifecycle, including when normalized wording happens to match.
+Quoted conditions remain available even when their applicability cannot be
+resolved to a date. Recall does not label them as currently satisfied. A future
+change preserves its predecessor until the recorded boundary; an unresolved
+effective date does not silently become the message's ingestion time.
 
 On a binding with verified [structured-output support](FUNCTION-ROUTING.md), a
 source of at most 500 characters requests its complete message as constrained

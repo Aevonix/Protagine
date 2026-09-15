@@ -180,6 +180,129 @@ def stage(name):
  finally:skill_provenance.reset_current_write_origin(token)
  assert result['staged'],result
  return result['pending_id'],home/'skills'/name/'SKILL.md',text
+if scenario.startswith('successor_'):
+ import asyncio,hashlib
+ from pacomind_hermes.ordinary_skill_review import review_once
+ from pacomind_hermes import review_successors
+ calls=[];results=[];directory=home/'review-results';directory.mkdir()
+ name='neutral-task-procedure'
+ original='---\nname: '+name+'\ndescription: '+('x'*80 if scenario in {
+  'successor_validation','successor_repeat_failure','successor_no_change','successor_erasure'}
+  else 'Use complete source evidence.')+'\n---\nRead the supplied source.\n'
+ corrected='---\nname: '+name+'\ndescription: Use complete source evidence.\n---\nRead the complete source and its limits.\n'
+ async def runtime(config):return {},{'run_deadline_seconds':30}
+ async def author(evidence,**options):
+  # Scripted native author output qualifies lifecycle, not model quality. The
+  # real native staging/validation/pending/ledger paths run without a model.
+  calls.append((evidence,options))
+  index=len(calls)-1
+  if index:
+   feedback=options['diagnostic_context']
+   assert evidence['task_ids']==batch['task_ids'] and evidence['source_refs']==batch['source_refs']
+   assert feedback['successor']['attempt']==index
+   assert feedback['proposal']['content']==(original if index==1 else corrected+'\nrevision1')
+   assert 'cases' not in json.dumps(feedback) and 'private_expected_answer' not in json.dumps(feedback)
+  if index and scenario=='successor_no_change':return {'status':'no_proposal'}
+  if index and scenario=='successor_rejected_during_assessment':
+   assert write_approval.discard_pending(write_approval.SKILLS,first['pending_id'])
+  content=original if not index or scenario in {'successor_identical','successor_repeat_failure'} else corrected
+  if scenario=='successor_repeat_failure' and index:content+='\nA changed draft with the same invalid description.'
+  if scenario=='successor_limit' and index:content+='\nrevision'+str(index)
+  arguments={'action':'create','name':name,'content':content,'_pacomind_review_create_only':True,
+   '_pacomind_task_assessment_batch':experience.receipt(evidence),
+   '_pacomind_review_batch_sha256':evidence['failure_sha256'],
+   '_pacomind_review_native_execution':options['native']['id']}
+  token=skill_provenance.set_current_write_origin('background_review')
+  try:result=json.loads(stage_skill_change(arguments))
+  finally:skill_provenance.reset_current_write_origin(token)
+  results.append(result)
+  return {'status':'proposed' if result.get('staged') else 'no_proposal','pending_id':result.get('pending_id')}
+ def fire(identifier):
+  return asyncio.run(review_once(home,Path(sys.argv[2]),{'id':identifier,'job_id':'ordinary-review'},
+   {},directory,reviewer=author,evaluator=evaluator,connection=reader,owner='owner',resolve_runtime=runtime))
+ first=fire('original-fire')
+ root=skill_ledger.get_entry(first['claim_id'])
+ assert root['evidence']['task_ids']==['task-1','task-2']
+ assert experience.selected_batch(skill_ledger.list_entries(),evaluator,reader,'owner') is None
+ assert len(calls)==1
+ if first['status']=='proposed':
+  if scenario=='successor_oracle_unavailable':
+   def unavailable(text,*,phase):
+    phases.append((phase,text))
+    if phase=='candidate':raise RuntimeError('Controlled unavailable measurement')
+    return {'cases':[{'id':'current-source','passed':False}],'private_expected_answer':'hidden'}
+   oracle.check=unavailable
+  else:regression=True
+  outcome=fire('first-evaluation')
+  assert outcome['status']==('unavailable' if scenario=='successor_oracle_unavailable' else 'not_improved'),outcome
+  assert len(calls)==1
+ failures=[r for r in skill_ledger.list_entries() if r['evidence'].get('version')==review_successors.VERSION]
+ assert len(failures)==1,failures
+ retained=json.dumps(failures[0],sort_keys=True)
+ failure=failures[0]['evidence']
+ assert failure['root_claim_id']==root['id'] and failure['claim_id']==root['id']
+ assert hashlib.sha256(skill_ledger.read_blob(failure['proposal_blob'])).hexdigest()==failure['payload_sha256']
+ if scenario=='successor_owner_reject':
+  assert write_approval.discard_pending(write_approval.SKILLS,first['pending_id'])
+ if scenario=='successor_erasure':reader.current=False
+ if scenario=='successor_oracle_unavailable':
+  assert failure['kind']=='oracle_unavailable' and not failure['candidate_measured']
+  assert failure['measurement_progress']['baseline']['private_expected_answer']=='hidden'
+ before=len(phases)
+ second=fire('successor-fire')
+ if scenario in {'successor_owner_reject','successor_erasure','successor_oracle_unavailable'}:
+  assert len(calls)==1 and len(phases)==before
+ else:
+  assert len(calls)==2
+  child=skill_ledger.get_entry(second['claim_id'])
+  link=child['evidence']['successor']
+  assert link=={'root_claim_id':root['id'],'parent_claim_id':root['id'],
+   'failure_entry_id':failures[0]['id'],'attempt':1}
+  assert child['evidence']['observation_ids']==root['evidence']['observation_ids']
+  # The same actual scheduled execution cannot claim another successor.
+  fire('successor-fire')
+  assert len(calls)==2
+  if scenario in {'successor_validation','successor_measured'}:
+   assert second['status']=='proposed' and not (home/'skills'/name/'SKILL.md').exists()
+   assert write_approval.get_pending(write_approval.SKILLS,second['pending_id'])
+   assert len(phases)==before  # Staging the changed proposal is not evaluation.
+   regression=False
+   measured=fire('changed-evaluation')
+   assert measured['status']=='activated' and (home/'skills'/name/'SKILL.md').read_text()==corrected
+   assert [phase for phase,_ in phases[before:]]==['baseline','candidate','post_activation']
+   assert not write_approval.list_pending(write_approval.SKILLS)
+  elif scenario=='successor_rejected_before_evaluation':
+   assert second['status']=='proposed'
+   assert write_approval.discard_pending(write_approval.SKILLS,first['pending_id'])
+   from pacomind_hermes.review_evaluation import evaluate_pending
+   rejected=evaluate_pending(second['pending_id'],name,oracle.check,oracle_id='neutral-frozen-recipe')
+   assert rejected['status']=='proposal_rejected',rejected
+   fire('rejected-evaluation')
+   assert len(phases)==before and not (home/'skills'/name/'SKILL.md').exists()
+  elif scenario=='successor_limit':
+   assert fire('second-evaluation')['status']=='not_improved'
+   third=fire('last-successor')
+   assert len(calls)==3 and skill_ledger.get_entry(third['claim_id'])['evidence']['successor']['attempt']==2
+   assert fire('third-evaluation')['status']=='not_improved'
+   fire('exhausted')
+   assert len(calls)==3
+  else:
+   assert second['status']=='no_proposal'
+  for i in range(2):fire('later-'+str(i))
+  assert len(calls)==(3 if scenario=='successor_limit' else 2)
+ assert json.dumps(skill_ledger.get_entry(failures[0]['id']),sort_keys=True)==retained
+ assert len(reader.records)==2 and experience.selected_batch(skill_ledger.list_entries(),evaluator,reader,'owner') is None
+ assert all(not r['evidence'].get('quality_credit') for r in skill_ledger.list_entries()
+  if r['action']=='ordinary_skill_review')
+ stopped=[r['evidence']['reason'] for r in skill_ledger.list_entries() if r['evidence'].get('status')=='successor_stopped']
+ expected={'successor_identical':'identical_candidate','successor_repeat_failure':'repeated_deterministic_failure',
+  'successor_no_change':'no_supported_change','successor_limit':'successor_limit',
+  'successor_owner_reject':'pending_removed_or_changed','successor_erasure':'source_unavailable',
+  'successor_rejected_during_assessment':'pending_removed_or_changed',
+  'successor_rejected_before_evaluation':'pending_removed_or_changed',
+  'successor_oracle_unavailable':'evaluation_unavailable'}.get(scenario)
+ if expected:assert expected in stopped,(scenario,stopped)
+ print(json.dumps({'passed':True,'scenario':scenario,'production_learning_proof':False}));sys.exit(0)
 pending,target,text=stage('neutral-task-procedure')
 if scenario=='declaration_changed':
  value['scope']='Changed owner scope';path.write_text(json.dumps(value))
@@ -234,7 +357,11 @@ print(json.dumps({'passed':True,'scenario':scenario,'production_learning_proof':
 
 
 @pytest.mark.parametrize('scenario',['proposal_only','activate_audit_rollback','evidence_corrected',
-                                     'declaration_changed','owner_edit','audit_rotation','audit_unavailable_pending'])
+                                     'declaration_changed','owner_edit','audit_rotation','audit_unavailable_pending',
+                                     'successor_validation','successor_measured','successor_identical',
+                                     'successor_repeat_failure','successor_no_change','successor_limit',
+                                     'successor_owner_reject','successor_erasure','successor_oracle_unavailable',
+                                     'successor_rejected_during_assessment','successor_rejected_before_evaluation'])
 def test_actual_native_task_candidate_evaluation_and_later_audit(artifacts,tmp_path,scenario):
     import os
     from conftest import run_python

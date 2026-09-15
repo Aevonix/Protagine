@@ -33,6 +33,10 @@ def stage_skill_change(arguments):
     guards still run before staging and when the proposal is eventually applied.
     """
     from tools import skill_manager_tool as manager, write_approval as approval
+    from .review_successors import candidate_guard, record_failure
+    denied = candidate_guard(arguments)
+    if denied:
+        return json.dumps({'success': False, 'error': denied})
     # The worker binds this scope before staging, which returns before native
     # pre-tool hooks. An unattributed failure cannot justify an existing edit.
     if arguments.get('_pacomind_review_create_only') is True:
@@ -78,6 +82,7 @@ def stage_skill_change(arguments):
             invalid = (manager._validate_name(name) or manager._validate_category(operation.get('category'))
                 or manager._validate_frontmatter(content, new_skill=True) or manager._validate_content_size(content))
             if invalid:
+                record_failure(arguments, kind='validation', diagnostic=invalid, phase='proposal_validation')
                 return json.dumps({'success':False, 'error':invalid})
         # Staging intercepts native dispatch, so retain Hermes' existing
         # review-local read requirement as well as its ownership preflight.

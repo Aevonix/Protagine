@@ -84,7 +84,7 @@ async def test_multi_message_counts_aggregate_and_last_completed_binding_is_expl
 async def test_failed_array_keeps_provenance_and_retry_replaces_attempt_counts(tmp_path):
     ledger, projection = setup(tmp_path)
     model = Model({})
-    model.complete = AsyncMock(return_value=response('{"claims": []}'))
+    model.complete = AsyncMock(return_value=response('{"claims": [], "extra": true}'))
     assert await projection.process_one(model)
     failed = projection.status('person')[0]
     assert failed['status'] == 'pending' and failed['error'] == 'SourceClaimOutputError'

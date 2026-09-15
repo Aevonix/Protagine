@@ -11,10 +11,16 @@ import time
 import uuid
 
 from .source_claims import (EXTRACTION_VERSION, admission_metadata, extract_claims,
-                            extraction_diagnostics, projection_timeout_seconds, norm_value)
+                            extraction_diagnostics, projection_timeout_seconds, norm_value,
+                            quoted_applicability)
 from .source_time import MemoryTimeQuery, filter_unstructured
 
 logger = logging.getLogger(__name__)
+
+# Includes older procedures whose exact quotation predates the explicit
+# representation field. These records do not certify conditional applicability.
+_QUOTED_SQL = """(json_extract(c.data_json,'$.representation') IN ('preference','procedure')
+    OR json_extract(c.data_json,'$.memory_quality.memory_kind')='procedure')"""
 
 
 def initialize(conn):
@@ -310,7 +316,8 @@ class SourceClaimProjection:
                     AND json_extract(c.data_json,'$.event_at')<?))""")
                 args.extend((time_query.end, time_query.start, time_query.start, time_query.end))
             elif time_query.mode == "valid_range":
-                where += ["c.valid_from IS NOT NULL", "c.valid_from<?", "(c.valid_to IS NULL OR c.valid_to>?)"]
+                where += [f"(c.valid_from IS NOT NULL OR {_QUOTED_SQL})",
+                          "(c.valid_from IS NULL OR c.valid_from<?)", "(c.valid_to IS NULL OR c.valid_to>?)"]
                 args.extend((time_query.end, time_query.start))
             else:
                 where += ["(c.valid_from IS NULL OR c.valid_from<=?)", "(c.valid_to IS NULL OR c.valid_to>?)"]
@@ -347,6 +354,9 @@ class SourceClaimProjection:
             if row["message_hash"] not in membership[turn]:
                 continue
             data = json.loads(row["data_json"])
+            applicability = quoted_applicability(data)
+            if applicability is not None:
+                data['applicability'] = applicability
             if data.get('subject_basis_claim_id'):
                 basis = subject_basis(conn, data, contact_id=contact_id)
                 if basis is None:
@@ -502,7 +512,8 @@ class SourceClaimProjection:
                     elif claim["operation"] == "change" and claim["valid_from"]:
                         if not old["valid_from"] or old["valid_from"] < claim["valid_from"]:
                             conn.execute('UPDATE source_claims SET valid_to=?,superseded_by=? WHERE id=?',
-                                         (claim["valid_from"], cid, old["id"]))
+                                         (min(old['valid_to'], claim['valid_from']) if old['valid_to']
+                                          else claim['valid_from'], cid, old["id"]))
                 written += 1
             return written
 
@@ -594,6 +605,8 @@ class SourceClaimProjection:
         """Read admitted speaker preferences without authoring another profile.
 
         Keep the full quotation, including a recurring activity or condition.
+        Explicit date bounds restrict eligibility; quoted applicability remains
+        unresolved so consumers can use the statement without assuming it applies.
         A correction makes an interpretation unsuitable as automatic guidance;
         ordinary source recall still presents the original and its annotation.
         """
@@ -604,7 +617,7 @@ class SourceClaimProjection:
             ids = [r[0] for r in conn.execute('''SELECT c.id FROM source_claims c
                 JOIN turn_sources s ON s.turn_id=c.turn_id
                 WHERE s.contact_id=? AND (s.scope='person' OR s.session_id=?)
-                AND c.subject_key='speaker' AND c.superseded_by IS NULL AND c.retracted_by IS NULL
+                AND c.subject_key='speaker' AND (c.superseded_by IS NULL OR c.valid_to>?) AND c.retracted_by IS NULL
                 AND json_extract(c.data_json,'$.memory_quality.memory_kind')='preference'
                 AND json_extract(c.data_json,'$.admission_review.version')='source-claim-review-v1'
                 AND json_extract(c.data_json,'$.admission_review.basis')='model_judgment_unverified'
@@ -612,7 +625,7 @@ class SourceClaimProjection:
                 AND NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=s.turn_id)
                 AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=s.turn_id)
                 ORDER BY s.ingested_at DESC,c.id LIMIT ?''',
-                (contact_id, session_id, stamp, stamp, max(1, min(limit, 100))))]
+                (contact_id, session_id, stamp, stamp, stamp, max(1, min(limit, 100))))]
             result = []
             for claim in self._rows(conn, contact_id, session_id, ids=ids, limit=len(ids) or 1):
                 annotations = conn.execute('SELECT target_message_hashes_json FROM source_annotations WHERE target_source_id=?',
@@ -863,7 +876,8 @@ class SourceClaimProjection:
                         # event outside the requested interval through here.
                         groups[key] = [c for c in self._rows(conn, contact_id, session_id, key=key,
                             time_query=MemoryTimeQuery(), distinct_values=True, limit=9)
-                            if c.get('representation') == 'episode' and not c.get('event_at')]
+                            if (c.get('representation') == 'episode' or quoted_applicability(c) is not None)
+                            and not c.get('event_at')]
                         if groups[key]:
                             unresolved_time_keys.add(key)
             return groups[key]
@@ -927,6 +941,7 @@ class SourceClaimProjection:
             # wording equality/difference, including beside compact values.
             scalars = [c for c in group if c.get('representation') != 'preference']
             quoted_preferences = len(scalars) != len(group)
+            quoted_statements = any(quoted_applicability(c) is not None for c in group)
             values = {norm_value(c["value"]) for c in scalars}
             def overlaps(a, b):
                 return (not a["valid_to"] or not b["valid_from"] or b["valid_from"] < a["valid_to"]) and (
@@ -941,7 +956,7 @@ class SourceClaimProjection:
                             "status": "legacy_precision_unknown" if c.get("event_at") else "unknown"}),
                         "reported_at": c["observed_at"], "validity_basis": c["validity_basis"],
                         "operation": c["operation"], "prior_claim_id": c.get("prior_claim_id"),
-                        **{k: c[k] for k in ('representation', 'evidence_basis', 'epistemic_state', 'source_modality', 'subject_basis', 'value_basis') if k in c}}
+                        **{k: c[k] for k in ('representation', 'applicability', 'evidence_basis', 'epistemic_state', 'source_modality', 'subject_basis', 'value_basis') if k in c}}
                        for c in group]
             status = ("unresolved_conflict" if conflict else "quoted_preference_statements" if quoted_preferences
                       else "temporal_history" if len(values) > 1 else "source_assertion")
@@ -966,7 +981,8 @@ class SourceClaimProjection:
                             # are provenance, not the passage's semantic topic.
                             # Conflicting peers remain one indivisible candidate.
                             "ranking_text": "\n".join(dict.fromkeys(c["evidence"] for c in group)),
-                            **({"validity_status": "query_time_unresolved"}
+                            **({"validity_status": "unknown"} if quoted_statements else
+                               {"validity_status": "query_time_unresolved"}
                                if time_query.mode == "unresolved_time" or key in unresolved_time_keys else {}),
                             "contradiction_count": len(values) - 1 if conflict else None if quoted_preferences else 0,
                             "relevance": 1 / (61 + len(bundles)),

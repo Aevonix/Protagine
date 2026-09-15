@@ -42,6 +42,23 @@ def resolve_owner(value, require_task_grant):
     return 'owner'
 controller.handoffs = TaskHandoffs(controller.database, resolve_source, resolve_owner)
 row = controller.handoffs.admit(request_id='original', request='Inspect local notes', source_input=source)
+# A rejected call must explain its actual operation's fields before any
+# source capture, task update or native dispatch. A generic schema error
+# previously left models repeating the same invalid correction arguments.
+scope = SimpleNamespace(valid_participant=True, contact_id='owner', authority_lane='owner')
+for arguments, missing, unexpected in [
+    ({'operation':'steer', 'task_id':row['id'], 'message':'Use the revised destination'},
+     'request', 'message'),
+    ({'operation':'resume', 'task_id':row['id'], 'request':'Continue'},
+     'expected_turn_id', 'request'),
+]:
+    failure = json.loads(controller.handle(arguments, scope))
+    assert f'Missing fields: {missing}' in failure['error'], failure
+    assert f'Unexpected fields: {unexpected}' in failure['error'], failure
+    assert f"For {arguments['operation']}, use only these fields:" in failure['error'], failure
+    assert controller.handoffs.get(row['id']) == row
+unsupported = json.loads(controller.handle({'operation':'invented'}, scope))
+assert 'Choose a supported operation:' in unsupported['error'], unsupported
 config = PlatformConfig(enabled=True)
 # Built-in platform keeps this focused check independent of plugin discovery.
 # Two actual adapter instances deliberately share a platform and store, so a

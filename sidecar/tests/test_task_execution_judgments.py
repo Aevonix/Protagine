@@ -298,7 +298,8 @@ def test_model_tool_cannot_classify_experience_and_local_scope_is_not_assumed_or
     task.source['principal'] = 'hermes:sms'
     rejected = json.loads(controller.handle({'operation': 'submit', 'request': 'Inspect notes',
                                             'experience': 'operational'}, remote))
-    assert 'exact fields' in rejected['error'] and controller.handoffs.count() == 0
+    assert 'Unexpected fields: experience' in rejected['error']
+    assert controller.handoffs.count() == 0
     ordinary = json.loads(controller.handle({'operation': 'submit', 'request': 'Inspect notes'}, remote))
     assert ordinary['accepted']
     assert controller.handoffs.get(ordinary['task_id'])['source']['task_experience'] == 'operational'
