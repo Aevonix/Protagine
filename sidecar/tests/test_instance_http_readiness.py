@@ -3,7 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
 
-from pacomind.services.instance import InstanceService
+from protagine.services.instance import InstanceService
 
 
 def test_ready_instance_accepts_a_delayed_health_response(tmp_path, monkeypatch):
@@ -30,9 +30,9 @@ def test_ready_instance_accepts_a_delayed_health_response(tmp_path, monkeypatch)
     server = ThreadingHTTPServer(('127.0.0.1', 0), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setenv('PACOMIND_SIDECAR_HOST', '127.0.0.1')
-    monkeypatch.setenv('PACOMIND_SIDECAR_PORT', str(server.server_port))
-    monkeypatch.setenv('PACOMIND_CLIENT_API_KEY', 'test-instance-client')
+    monkeypatch.setenv('PROTAGINE_SIDECAR_HOST', '127.0.0.1')
+    monkeypatch.setenv('PROTAGINE_SIDECAR_PORT', str(server.server_port))
+    monkeypatch.setenv('PROTAGINE_CLIENT_API_KEY', 'test-instance-client')
     service = InstanceService(tmp_path/'instance', tmp_path/'hermes', home=tmp_path/'user')
     try:
         assert service.healthy()

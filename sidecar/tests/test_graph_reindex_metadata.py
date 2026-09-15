@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from pacomind.intelligence.graph.client import PacoMindGraph
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.vector.collections import Collection
-from pacomind.vector.indexes import EmbeddingIdentity, IndexCatalog
-from pacomind.vector.migrate import migrate_tier
-from pacomind.vector.store import VectorStore
+from protagine.intelligence.graph.client import ProtagineGraph
+from protagine.turns import TurnIdempotencyLedger
+from protagine.vector.collections import Collection
+from protagine.vector.indexes import EmbeddingIdentity, IndexCatalog
+from protagine.vector.migrate import migrate_tier
+from protagine.vector.store import VectorStore
 
 
 class Result:
@@ -50,7 +50,7 @@ class Driver:
 
 
 def graph(records=()):
-    value = PacoMindGraph.__new__(PacoMindGraph)
+    value = ProtagineGraph.__new__(ProtagineGraph)
     value.driver = Driver(records)
     value.database = 'neutral-fixture'
     value._embed_fn = value._vector_store = None

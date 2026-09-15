@@ -8,17 +8,17 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.authority import required_scope
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import task_queue as queue_router
-from pacomind.task_queue.contract import queue_contract_identity
-from pacomind.task_queue.models import (
+from protagine.api.authority import required_scope
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import task_queue as queue_router
+from protagine.task_queue.contract import queue_contract_identity
+from protagine.task_queue.models import (
     Job,
     JobType,
     WorkerCapabilities,
 )
-from pacomind.task_queue.queue_manager import TaskQueueManager
-from pacomind.task_queue.routing import AGENT_SYNC_ROUTE
+from protagine.task_queue.queue_manager import TaskQueueManager
+from protagine.task_queue.routing import AGENT_SYNC_ROUTE
 
 
 COMMIT_A = "a" * 40
@@ -29,16 +29,16 @@ MANIFEST_B = "d" * 64
 
 @pytest.fixture(autouse=True)
 def _contract_env(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RELEASE_COMMIT", COMMIT_A)
+    monkeypatch.setenv("PROTAGINE_RELEASE_COMMIT", COMMIT_A)
     monkeypatch.setenv(
-        "PACOMIND_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_A,
+        "PROTAGINE_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_A,
     )
-    monkeypatch.setenv("PACOMIND_WORKER_AUTHORITY_MODE", "shadow")
-    monkeypatch.setenv("PACOMIND_AGENT_JOB_CLAIMS_ENABLED", "false")
-    monkeypatch.setenv("PACOMIND_AGENT_WORKER_ROUTES", "agent_sync")
-    monkeypatch.setenv("PACOMIND_AGENT_SYNC_WORKER_NODE_ID", "sync-node")
-    monkeypatch.delenv("PACOMIND_ACTION_PLANE_WORKER_NODE_ID", raising=False)
-    monkeypatch.delenv("PACOMIND_HERMES_RUN_WORKER_NODE_ID", raising=False)
+    monkeypatch.setenv("PROTAGINE_WORKER_AUTHORITY_MODE", "shadow")
+    monkeypatch.setenv("PROTAGINE_AGENT_JOB_CLAIMS_ENABLED", "false")
+    monkeypatch.setenv("PROTAGINE_AGENT_WORKER_ROUTES", "agent_sync")
+    monkeypatch.setenv("PROTAGINE_AGENT_SYNC_WORKER_NODE_ID", "sync-node")
+    monkeypatch.delenv("PROTAGINE_ACTION_PLANE_WORKER_NODE_ID", raising=False)
+    monkeypatch.delenv("PROTAGINE_HERMES_RUN_WORKER_NODE_ID", raising=False)
 
 
 def _write_keyring(path, scopes):
@@ -120,7 +120,7 @@ async def test_contract_endpoint_auth_matrix(tmp_path):
         )
     assert allowed.status_code == 200
     body = allowed.json()
-    assert body["schema"] == "PacoMindQueueContractV1"
+    assert body["schema"] == "ProtagineQueueContractV1"
     assert body["version"] == 1
     assert body["release"] == {
         "commit": COMMIT_A,
@@ -215,9 +215,9 @@ async def test_contract_endpoint_auth_matrix(tmp_path):
 async def test_contract_rejects_missing_malformed_or_null_release_identity(
     monkeypatch, commit, manifest,
 ):
-    monkeypatch.setenv("PACOMIND_RELEASE_COMMIT", commit)
+    monkeypatch.setenv("PROTAGINE_RELEASE_COMMIT", commit)
     monkeypatch.setenv(
-        "PACOMIND_RELEASE_ARTIFACT_MANIFEST_SHA256", manifest,
+        "PROTAGINE_RELEASE_ARTIFACT_MANIFEST_SHA256", manifest,
     )
     app = _app(legacy_key="legacy-secret")
     async with AsyncClient(
@@ -240,21 +240,21 @@ def test_contract_digest_is_deterministic_and_binds_release_and_owners(
     assert first == replay
     assert len(first["contract_sha256"]) == 64
 
-    monkeypatch.setenv("PACOMIND_RELEASE_COMMIT", COMMIT_B)
+    monkeypatch.setenv("PROTAGINE_RELEASE_COMMIT", COMMIT_B)
     changed_commit = queue_contract_identity()
     assert changed_commit["contract_sha256"] != first["contract_sha256"]
 
-    monkeypatch.setenv("PACOMIND_RELEASE_COMMIT", COMMIT_A)
+    monkeypatch.setenv("PROTAGINE_RELEASE_COMMIT", COMMIT_A)
     monkeypatch.setenv(
-        "PACOMIND_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_B,
+        "PROTAGINE_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_B,
     )
     changed_manifest = queue_contract_identity()
     assert changed_manifest["contract_sha256"] != first["contract_sha256"]
 
     monkeypatch.setenv(
-        "PACOMIND_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_A,
+        "PROTAGINE_RELEASE_ARTIFACT_MANIFEST_SHA256", MANIFEST_A,
     )
-    monkeypatch.setenv("PACOMIND_AGENT_SYNC_WORKER_NODE_ID", "new-sync-node")
+    monkeypatch.setenv("PROTAGINE_AGENT_SYNC_WORKER_NODE_ID", "new-sync-node")
     changed_owner = queue_contract_identity()
     assert changed_owner["contract_sha256"] != first["contract_sha256"]
 
@@ -263,8 +263,8 @@ def test_contract_digest_is_deterministic_and_binds_release_and_owners(
 async def test_contract_runtime_thought_readiness_is_dynamic_not_in_digest(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("PACOMIND_WORKERS_MODE", "off")
-    monkeypatch.setenv("PACOMIND_THOUGHT_WORKER_NODE_ID", "thought-node")
+    monkeypatch.setenv("PROTAGINE_WORKERS_MODE", "off")
+    monkeypatch.setenv("PROTAGINE_THOUGHT_WORKER_NODE_ID", "thought-node")
     TaskQueueManager._instance = None
     manager = await TaskQueueManager.initialize(db_path=tmp_path / "thought.db")
     try:
@@ -291,8 +291,8 @@ async def test_contract_runtime_thought_readiness_is_dynamic_not_in_digest(
 async def test_exact_job_inspection_is_authenticated_and_canary_complete(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("PACOMIND_WORKERS_MODE", "off")
-    monkeypatch.setenv("PACOMIND_AGENT_JOB_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("PROTAGINE_WORKERS_MODE", "off")
+    monkeypatch.setenv("PROTAGINE_AGENT_JOB_CLAIMS_ENABLED", "true")
     TaskQueueManager._instance = None
     manager = await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
     try:

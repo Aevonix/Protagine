@@ -36,7 +36,7 @@ def label(draw, text, x, y, scale=9):
 
 
 def main():
-    target = Path(__file__).resolve().parents[2] / 'pacomind/qualification/fixtures'
+    target = Path(__file__).resolve().parents[2] / 'protagine/qualification/fixtures'
     target.mkdir(exist_ok=True)
 
     image = Image.new('RGB', (720, 480), 'white')

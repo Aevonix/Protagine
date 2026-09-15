@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from pacomind.vector.reranker import (
+from protagine.vector.reranker import (
     OpenAIAPIRerankerProvider,
     QWEN3_RERANK_PREFIX,
     QWEN3_RERANK_SUFFIX,

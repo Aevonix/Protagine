@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from pacomind.api.routers import host as host_mod
-from pacomind.api.schemas.host import (
+from protagine.api.routers import host as host_mod
+from protagine.api.schemas.host import (
     HostIdentity, HostMessage, HostTurnContext, TurnSyncRequest)
-from pacomind.gate.context_provenance import ContextProvenanceStore
+from protagine.gate.context_provenance import ContextProvenanceStore
 
 
 class _FakeGraph:

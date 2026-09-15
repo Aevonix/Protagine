@@ -5,7 +5,7 @@ Creates a commitment, simulates conversations mentioning it, verifies
 the system extracts, tracks, and surfaces it in context, then checks
 autonomy detects it as overdue.
 
-Usage: PACOMIND_API_KEY=test python3 test_full_cycle.py
+Usage: PROTAGINE_API_KEY=test python3 test_full_cycle.py
 """
 
 import json
@@ -17,9 +17,9 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-PACOMIND_URL = os.environ.get("PACOMIND_URL", "http://localhost:7777")
-PACOMIND_API_KEY = os.environ.get("PACOMIND_API_KEY", "")
-HEADERS = {"Authorization": f"Bearer {PACOMIND_API_KEY}"}
+PROTAGINE_URL = os.environ.get("PROTAGINE_URL", "http://localhost:7777")
+PROTAGINE_API_KEY = os.environ.get("PROTAGINE_API_KEY", "")
+HEADERS = {"Authorization": f"Bearer {PROTAGINE_API_KEY}"}
 CT = {"Content-Type": "application/json"}
 
 def log(msg, status=""):
@@ -27,16 +27,16 @@ def log(msg, status=""):
     print(f"  {msg}{tag}")
 
 def get(path, **params):
-    return httpx.get(f"{PACOMIND_URL}{path}", headers=HEADERS, params=params, timeout=10)
+    return httpx.get(f"{PROTAGINE_URL}{path}", headers=HEADERS, params=params, timeout=10)
 
 def post(path, data):
-    return httpx.post(f"{PACOMIND_URL}{path}", headers={**HEADERS, **CT}, json=data, timeout=15)
+    return httpx.post(f"{PROTAGINE_URL}{path}", headers={**HEADERS, **CT}, json=data, timeout=15)
 
 def patch(path, data):
-    return httpx.patch(f"{PACOMIND_URL}{path}", headers={**HEADERS, **CT}, json=data, timeout=10)
+    return httpx.patch(f"{PROTAGINE_URL}{path}", headers={**HEADERS, **CT}, json=data, timeout=10)
 
 def delete(path):
-    return httpx.delete(f"{PACOMIND_URL}{path}", headers=HEADERS, timeout=10)
+    return httpx.delete(f"{PROTAGINE_URL}{path}", headers=HEADERS, timeout=10)
 
 
 def test_full_cycle():
@@ -62,7 +62,7 @@ def test_full_cycle():
     due = (datetime.now(timezone.utc) + timedelta(seconds=3)).isoformat()
     r = post("/v1/host/commitments", {
         "person_id": contact,
-        "description": "Ship PacoMind v0.6.0 with SuperPacoMind Network prototype",
+        "description": "Ship Protagine v0.6.0 with SuperProtagine Network prototype",
         "due_at": due,
         "priority": 3,
     })
@@ -72,7 +72,7 @@ def test_full_cycle():
     # Create a fact about this person
     r = post("/v1/host/mind/facts", {
         "contact_id": contact,
-        "fact": "Lead architect on PacoMind project — focused on cognitive subsystems",
+        "fact": "Lead architect on Protagine project — focused on cognitive subsystems",
         "category": "role",
         "confidence": 0.9,
     })
@@ -80,10 +80,10 @@ def test_full_cycle():
 
     # Create world model entity for the project
     r = post("/v1/host/world/entities", {
-        "name": "PacoMind v0.6.0",
+        "name": "Protagine v0.6.0",
         "entity_type": "project",
         "confidence": 0.95,
-        "properties": {"status": "in_progress", "milestone": "SuperPacoMind Network"},
+        "properties": {"status": "in_progress", "milestone": "SuperProtagine Network"},
     })
     check("Create world entity", r.status_code == 200, f"status={r.status_code}")
 
@@ -98,11 +98,11 @@ def test_full_cycle():
         "context": {"session_id": f"cycle-{uuid.uuid4().hex[:6]}", "contact_id": contact},
         "incoming_message": {
             "role": "user",
-            "content": "I'm working hard on the SuperPacoMind Network. The progress is good but the deadline is tight. I prefer async communication and late-night coding.",
+            "content": "I'm working hard on the SuperProtagine Network. The progress is good but the deadline is tight. I prefer async communication and late-night coding.",
         },
         "outgoing_message": {
             "role": "assistant",
-            "content": "Your progress on SuperPacoMind Network sounds solid. I've noted your async communication preference. Let me know if you need help with the deadline.",
+            "content": "Your progress on SuperProtagine Network sounds solid. I've noted your async communication preference. Let me know if you need help with the deadline.",
         },
     })
     check("turn_sync accepted", r.status_code in (200, 501), f"status={r.status_code}")
@@ -112,7 +112,7 @@ def test_full_cycle():
         "contact_id": contact,
         "valence": 0.7,
         "arousal": 0.5,
-        "trigger": "productive progress on SuperPacoMind",
+        "trigger": "productive progress on SuperProtagine",
     })
     check("Affect tracked", r.status_code in (200, 201), f"valence=0.7")
 
@@ -146,19 +146,19 @@ def test_full_cycle():
         section_ids = [s["id"] for s in sections]
         section_titles = {s["id"]: s["title"] for s in sections}
 
-        check("Commitments in context", "pacomind-commitments" in section_ids,
-              section_titles.get("pacomind-commitments", "missing"))
-        check("Legacy mood estimates stay out of context", "pacomind-affect" not in section_ids,
+        check("Commitments in context", "protagine-commitments" in section_ids,
+              section_titles.get("protagine-commitments", "missing"))
+        check("Legacy mood estimates stay out of context", "protagine-affect" not in section_ids,
               "Affect history remains explicitly inspectable")
-        check("Facts in context", "pacomind-shared-facts" in section_ids,
-              section_titles.get("pacomind-shared-facts", "missing"))
-        check("Surprises in context", "pacomind-surprises" in section_ids,
-              section_titles.get("pacomind-surprises", "missing"))
+        check("Facts in context", "protagine-shared-facts" in section_ids,
+              section_titles.get("protagine-shared-facts", "missing"))
+        check("Surprises in context", "protagine-surprises" in section_ids,
+              section_titles.get("protagine-surprises", "missing"))
 
         # Verify commitment text appears in context
         ctx_text = json.dumps(sections)
-        check("Commitment text in context", "SuperPacoMind" in ctx_text or "v0.6.0" in ctx_text,
-              "SuperPacoMind/v0.6.0 found" if "SuperPacoMind" in ctx_text or "v0.6.0" in ctx_text else "not found")
+        check("Commitment text in context", "SuperProtagine" in ctx_text or "v0.6.0" in ctx_text,
+              "SuperProtagine/v0.6.0 found" if "SuperProtagine" in ctx_text or "v0.6.0" in ctx_text else "not found")
 
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 4: VERIFY — Check overdue detection and autonomy

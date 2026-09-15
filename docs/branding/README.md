@@ -40,7 +40,7 @@ print use, additional colors and press copy.
 
 ## Usage
 
-Earlier PacoMind assets remain in this directory for compatibility; use the
+Earlier Protagine assets remain in this directory for compatibility; use the
 Protagine files for new artwork. A software repository's open source license
 does not itself grant a license to the brand assets. This kit does not
 introduce a new trademark or software license for the logos.

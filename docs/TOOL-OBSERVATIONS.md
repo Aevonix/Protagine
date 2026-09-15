@@ -1,8 +1,8 @@
 # Remembering useful tool observations
 
-PacoMind can retain the original result of an explicitly nominated tool call for
+Protagine can retain the original result of an explicitly nominated tool call for
 later automatic recollection. The ordinary agent can use
-`pacomind_memory_retain_observation(call_id, reason)` after a tool result supplies
+`protagine_memory_retain_observation(call_id, reason)` after a tool result supplies
 concrete information with future value. The owner does not need to invoke the
 memory tool by name. The reason explains why the result is useful; it is not a
 replacement for its contents.

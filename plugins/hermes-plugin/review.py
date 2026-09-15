@@ -39,7 +39,7 @@ def stage_skill_change(arguments):
         return json.dumps({'success': False, 'error': denied})
     # The worker binds this scope before staging, which returns before native
     # pre-tool hooks. An unattributed failure cannot justify an existing edit.
-    if arguments.get('_pacomind_review_create_only') is True:
+    if arguments.get('_protagine_review_create_only') is True:
         selected = editable_operation(arguments, allow_create=True)
         if selected is None or selected.get('action') != 'create':
             return json.dumps({'success':False, 'error':'Unattributed review may only propose one new main skill file; existing skills have not been implicated.'})
@@ -105,16 +105,16 @@ def stage_skill_change(arguments):
     # Source references come from the actual native request captured before
     # Hermes forked this review, never from the proposed skill's arguments.
     from .review_evidence import current
-    payload['_pacomind_review_evidence'] = current()
+    payload['_protagine_review_evidence'] = current()
     operation = editable_operation(arguments, allow_create=True)
     if operation is not None:
         current = manager._find_skill(operation.get('name', ''))
         if operation['action'] == 'create':
             # Absence comes from the native catalog, never proposed metadata.
-            payload['_pacomind_review_base_absent'] = current is None
-            payload['_pacomind_review_base_sha256'] = None
+            payload['_protagine_review_base_absent'] = current is None
+            payload['_protagine_review_base_sha256'] = None
         elif current:
-            payload['_pacomind_review_base_sha256'] = hashlib.sha256((current['path'] / 'SKILL.md').read_bytes()).hexdigest()
+            payload['_protagine_review_base_sha256'] = hashlib.sha256((current['path'] / 'SKILL.md').read_bytes()).hexdigest()
     record = approval.stage_write(approval.SKILLS, payload, summary=summary, origin='background_review')
     # Native staging is best-effort. Never report a stored proposal when its
     # writer failed; the later evaluator also reads this same pending record.

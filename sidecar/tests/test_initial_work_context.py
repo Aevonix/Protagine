@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import executions, host
-from pacomind.api.schemas.host import ContextAssembleRequest
-from pacomind.turns import executions as work
-from pacomind.turns.idempotency import source_message_hash
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import executions, host
+from protagine.api.schemas.host import ContextAssembleRequest
+from protagine.turns import executions as work
+from protagine.turns.idempotency import source_message_hash
 from test_execution_registry import observation, store
 
 
@@ -39,7 +39,7 @@ def shaped_work(view):
 
 @pytest.mark.asyncio
 async def test_initial_owner_work_is_bounded_and_preserves_family_and_result(store, monkeypatch):
-    monkeypatch.setenv('PACOMIND_OWNER_CONTACT_ID', 'owner')
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
     monkeypatch.setattr(host, '_p8_runtime', None)
     monkeypatch.setattr(host, '_require_scoped_context_runtime_for_guest', lambda *a: None)
     parent = observation('parent', platform='whatsapp')
@@ -73,8 +73,8 @@ async def test_initial_owner_work_is_bounded_and_preserves_family_and_result(sto
             context={'contact_id': person, 'session_id': child['session_id']},
             incoming_message={'role': 'user', 'content': 'Inspect the selected source records.'})
         result = await host.context_assemble(body, SimpleNamespace(
-            state=SimpleNamespace(pacomind_authority=authority)))
-        sections = [s for s in result.sections if s.id == 'pacomind-executions']
+            state=SimpleNamespace(protagine_authority=authority)))
+        sections = [s for s in result.sections if s.id == 'protagine-executions']
         if person == 'guest':
             assert sections == []
             continue

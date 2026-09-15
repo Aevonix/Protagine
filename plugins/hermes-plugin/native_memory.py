@@ -48,9 +48,9 @@ class NativeMemoryRequests:
             logger.warning('Native memory request coverage needs Hermes 0.21.1 and NeMo Relay 0.8.3')
             return False
         key = (scope.session_id, scope.task_id, scope.turn_id)
-        consumer = 'pacomind.memory:' + str(turn.handle.uuid)
+        consumer = 'protagine.memory:' + str(turn.handle.uuid)
         image_observer = None
-        if getattr(scope, 'platform', '') == 'pacomind_task':
+        if getattr(scope, 'platform', '') == 'protagine_task':
             try:
                 from .native_task_platform import request_image_observer
                 image_observer = request_image_observer(scope)

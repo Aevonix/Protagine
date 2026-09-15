@@ -16,19 +16,19 @@ if sys.argv[3]: sys.path.append(sys.argv[3])
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.contacts.config import ContactsConfig
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
+from protagine.contacts.store import SQLiteContactStore
+from protagine.contacts.config import ContactsConfig
 from plugins.memory import load_memory_provider
 from agent.memory_manager import MemoryManager, build_memory_context_block
 from gateway.session_context import set_session_vars
 
 home = Path(os.environ['HERMES_HOME']); home.mkdir(exist_ok=True)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
-state = Path(os.environ['PACOMIND_STATE_DIR']); state.mkdir()
-(home/'config.yaml').write_text(json.dumps({'memory': {'provider': 'pacomind-memory'}}))
-(home/'pacomind-memory.json').write_text(json.dumps({
+state = Path(os.environ['PROTAGINE_STATE_DIR']); state.mkdir()
+(home/'config.yaml').write_text(json.dumps({'memory': {'provider': 'protagine-memory'}}))
+(home/'protagine-memory.json').write_text(json.dumps({
     'url': 'http://test', 'contact_id': 'fixture-owner', 'turn_writer': 'disabled'}))
 contacts = SQLiteContactStore(ContactsConfig(sqlite_path=str(state/'contacts.db')))
 async def contact_setup():
@@ -63,7 +63,7 @@ try:
             observed.append((request.url.path, response.status_code, response.json()))
             return httpx.Response(response.status_code, json=response.json())
         httpx.Client = lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs)
-        provider = load_memory_provider('pacomind-memory')
+        provider = load_memory_provider('protagine-memory')
         assert provider is not None
         assert Path(sys.modules[type(provider).__module__].__file__).resolve().is_relative_to(Path(sys.argv[1]))
         manager = MemoryManager(); manager.add_provider(provider)
@@ -93,9 +93,9 @@ def test_native_guest_recall_without_p8(artifacts, tmp_path):
     _, _, _, installed = artifacts
     env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG") if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path / "home"), HERMES_BUNDLED_PLUGINS=str(tmp_path / "bundled"),
-               PACOMIND_STATE_DIR=str(tmp_path / "state"), PACOMIND_API_KEY="fixture-key",
-               PACOMIND_OWNER_CONTACT_ID="fixture-owner", PACOMIND_RECALL_RERANK="off",
-               PACOMIND_MEMORY_TURN_WRITER="disabled", PACOMIND_MEMORY_WORKER_TOOLS="0")
+               PROTAGINE_STATE_DIR=str(tmp_path / "state"), PROTAGINE_API_KEY="fixture-key",
+               PROTAGINE_OWNER_CONTACT_ID="fixture-owner", PROTAGINE_RECALL_RERANK="off",
+               PROTAGINE_MEMORY_TURN_WRITER="disabled", PROTAGINE_MEMORY_WORKER_TOOLS="0")
     result = run_python("-I", "-c", PROBE, installed, ROOT / "sidecar",
-                        os.environ.get("PACOMIND_TEST_DEPENDENCY_PATH", ""), cwd=tmp_path, env=env)
+                        os.environ.get("PROTAGINE_TEST_DEPENDENCY_PATH", ""), cwd=tmp_path, env=env)
     assert json.loads(result.stdout.splitlines()[-1]) == {"native_callback": True, "scoped_recall": True}

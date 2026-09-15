@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from pacomind.world_model.config import WorldModelConfig
-from pacomind.world_model.entities import BaseEntity
-from pacomind.world_model.store import WorldModelStore
-from pacomind.world_model.observations import compact_situation
-from pacomind.self_model.situation import SituationFactV1, SituationSnapshotV1
+from protagine.world_model.config import WorldModelConfig
+from protagine.world_model.entities import BaseEntity
+from protagine.world_model.store import WorldModelStore
+from protagine.world_model.observations import compact_situation
+from protagine.self_model.situation import SituationFactV1, SituationSnapshotV1
 
 SCOPE = dict(subject_person_id='cid-owner', viewer_scope='owner', shareability='owner_private')
 BASE = dict(entity_id='we-service', property_key='model', kind='observed', producer='service:router', **SCOPE)
@@ -98,7 +98,7 @@ async def test_exact_scope_and_erasure_preserve_invalidated_head_and_raw_history
 
 
 async def test_a_long_telemetry_history_still_produces_one_current_fact(store):
-    from pacomind.world_model.observations import observation, canonical, SOURCE_PREFIX
+    from protagine.world_model.observations import observation, canonical, SOURCE_PREFIX
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
     rows = []
     for index in range(2100):
@@ -127,11 +127,11 @@ def test_compact_situation_never_presents_stale_hardware_as_current():
 
 
 async def test_existing_batch_job_writes_only_quoted_canonical_reports_and_rechecks_identity(store, tmp_path, monkeypatch):
-    from pacomind.turns.idempotency import TurnIdempotencyLedger
-    from pacomind.turns.source_attribution import correct
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
-    monkeypatch.setenv('PACOMIND_WORLD_LLM_EXTRACT', 'live')
-    monkeypatch.setenv('PACOMIND_CAUSAL_EXTRACT', 'off')
+    from protagine.turns.idempotency import TurnIdempotencyLedger
+    from protagine.turns.source_attribution import correct
+    from protagine.world_model.llm_extract import WorldLLMExtractor
+    monkeypatch.setenv('PROTAGINE_WORLD_LLM_EXTRACT', 'live')
+    monkeypatch.setenv('PROTAGINE_CAUSAL_EXTRACT', 'off')
     ledger = TurnIdempotencyLedger(tmp_path / 'sources.db')
     quote = 'Nimbus Router runs model-blue.'
     ledger.record_source('source-real', contact_id='cid-owner', session_id='text',
@@ -170,8 +170,8 @@ async def test_existing_batch_job_writes_only_quoted_canonical_reports_and_reche
 
 
 async def test_unattributed_text_batch_does_not_create_typed_observations(store, monkeypatch):
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
-    monkeypatch.setenv('PACOMIND_WORLD_LLM_EXTRACT', 'live')
+    from protagine.world_model.llm_extract import WorldLLMExtractor
+    monkeypatch.setenv('PROTAGINE_WORLD_LLM_EXTRACT', 'live')
     async def extract(texts):
         return {'entities': [{'name': 'Nimbus Router', 'type': 'product', 'confidence': .8}],
                 'observations': [{'entity': 'Nimbus Router', 'property': 'model', 'value': 'blue',
@@ -189,9 +189,9 @@ async def test_unattributed_text_batch_does_not_create_typed_observations(store,
     'Nimbus Router is offline until 2026-09-15.',
 ])
 async def test_dated_report_cannot_become_current_from_receipt_time(store, tmp_path, monkeypatch, text):
-    from pacomind.turns.idempotency import TurnIdempotencyLedger
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
-    monkeypatch.setenv('PACOMIND_WORLD_LLM_EXTRACT', 'live')
+    from protagine.turns.idempotency import TurnIdempotencyLedger
+    from protagine.world_model.llm_extract import WorldLLMExtractor
+    monkeypatch.setenv('PROTAGINE_WORLD_LLM_EXTRACT', 'live')
     ledger = TurnIdempotencyLedger(tmp_path / 'sources.db')
     ledger.record_source('dated', contact_id='cid-owner', session_id='text',
                          messages=[{'role': 'user', 'content': text}])
@@ -211,7 +211,7 @@ async def test_dated_report_cannot_become_current_from_receipt_time(store, tmp_p
 @pytest.mark.asyncio
 async def test_world_batch_uses_current_named_extraction_role():
     from types import SimpleNamespace
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
+    from protagine.world_model.llm_extract import WorldLLMExtractor
     calls=[]
     class Processor:
         supports_function_routing=True

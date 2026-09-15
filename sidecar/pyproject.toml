@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pacomind"
+name = "protagine"
 version = "1.8.4"
 description = "Persistent identity, memory and autonomy for AI agents"
 readme = "README.md"
@@ -29,7 +29,7 @@ dependencies = [
 graph = ["neo4j>=5.18"]
 neo4j = ["neo4j>=5.18"]
 vectors = ["sentence-transformers>=3.0", "pandas>=2.0", "pyarrow>=15.0", "lancedb>=0.10"]
-hermes = ["pacomind-hermes>=1.8.4,<2"]
+hermes = ["protagine-hermes>=1.8.4,<2"]
 mcp = ["mcp[cli]>=1.0,<2"]
 lancedb = ["lancedb>=0.6", "pyarrow>=14.0", "pandas>=2.0"]
 extraction = ["PyMuPDF>=1.24", "beautifulsoup4>=4.12"]
@@ -50,16 +50,20 @@ dev = [
 ]
 
 [project.scripts]
-pacomind = "pacomind.cli:main"
-pacomind-agent-bridge = "pacomind.workers.agent_bridge:main"
-pacomind-queue-worker = "pacomind.workers.queue_worker:main"
-pacomind-skills-sync = "pacomind.workers.skills_sync:main"
-pacomind-worker = "pacomind.workers.pacomind_worker:main"
+protagine = "protagine.cli:main"
+protagine-agent-bridge = "protagine.workers.agent_bridge:main"
+protagine-queue-worker = "protagine.workers.queue_worker:main"
+protagine-skills-sync = "protagine.workers.skills_sync:main"
+protagine-worker = "protagine.workers.protagine_worker:main"
+
+[project.urls]
+Homepage = "https://aevonix.com/protagine"
+Repository = "https://github.com/Aevonix/Protagine"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pacomind*"]
+include = ["protagine*"]
 exclude = ["*.tests", "*.tests.*", "*.test_*", "*.conftest"]
 
 [tool.setuptools.package-data]
-pacomind = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png"]
+protagine = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png"]

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pacomind.intelligence.components.initiative_engine import (
+from protagine.intelligence.components.initiative_engine import (
     Initiative,
     InitiativeEngine,
     InitiativeType,

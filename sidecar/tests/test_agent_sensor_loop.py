@@ -1,7 +1,7 @@
 """Agent-as-sensor loop (v0.16.0).
 
-PacoMind never calls external APIs: the agent observes through its own
-Hermes connections and reports to the observation store; PacoMind's
+Protagine never calls external APIs: the agent observes through its own
+Hermes connections and reports to the observation store; Protagine's
 generators read observations; the autonomy loop requests syncs when a
 domain goes stale; volatile initiatives auto-close when a refresh shows
 the condition cleared.
@@ -15,18 +15,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pacomind.initiatives.action_registry import (
+from protagine.initiatives.action_registry import (
     OBSERVATION_SYNC_ACTIONS,
     RiskTier,
     get_action,
 )
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.intelligence.components.initiative_engine import (
+from protagine.initiatives.store import InitiativeStore
+from protagine.intelligence.components.initiative_engine import (
     InitiativeConfig,
     InitiativeEngine,
     InitiativeType,
 )
-from pacomind.observations.store import (
+from protagine.observations.store import (
     OBSERVATION_DOMAINS,
     OBSERVATION_SYNC_INTERVALS,
     ObservationStore,
@@ -103,7 +103,7 @@ class TestObservationAPI:
     def client(self, obs_store):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from pacomind.api.routers import observations as obs_router
+        from protagine.api.routers import observations as obs_router
 
         app = FastAPI()
         app.include_router(obs_router.router)
@@ -246,7 +246,7 @@ class TestObservationRebuild:
 
     @pytest.mark.asyncio
     async def test_refresh_endpoint_auto_closes(self, engine, obs_store, tmp_path):
-        from pacomind.api.routers import host as host_mod
+        from protagine.api.routers import host as host_mod
 
         init_store = InitiativeStore(state_dir=tmp_path / "init")
         created = init_store.create(
@@ -283,9 +283,9 @@ class TestObservationRebuild:
 
 class TestObservationSyncPhase:
     def _loop(self, obs_store):
-        from pacomind.api.routers import observations as obs_router
-        from pacomind.autonomy.config import AutonomyConfig
-        from pacomind.autonomy.loop import AutonomyLoop
+        from protagine.api.routers import observations as obs_router
+        from protagine.autonomy.config import AutonomyConfig
+        from protagine.autonomy.loop import AutonomyLoop
 
         obs_router.set_observation_store(obs_store)
         registry = MagicMock()
@@ -295,7 +295,7 @@ class TestObservationSyncPhase:
 
     @pytest.mark.asyncio
     async def test_never_observed_domains_get_sync_jobs(self, obs_store):
-        from pacomind.api.routers import observations as obs_router
+        from protagine.api.routers import observations as obs_router
 
         loop, registry = self._loop(obs_store)
         try:
@@ -310,7 +310,7 @@ class TestObservationSyncPhase:
 
     @pytest.mark.asyncio
     async def test_fresh_domain_not_synced_and_no_respam(self, obs_store):
-        from pacomind.api.routers import observations as obs_router
+        from protagine.api.routers import observations as obs_router
 
         for domain in OBSERVATION_DOMAINS:
             obs_store.record(domain, "e1", {"status": "healthy"})
@@ -335,9 +335,9 @@ class TestObservationSyncPhase:
 
     @pytest.mark.asyncio
     async def test_sync_domains_env_filter(self, obs_store, monkeypatch):
-        from pacomind.api.routers import observations as obs_router
+        from protagine.api.routers import observations as obs_router
 
-        monkeypatch.setenv("PACOMIND_SYNC_DOMAINS", "system")
+        monkeypatch.setenv("PROTAGINE_SYNC_DOMAINS", "system")
         loop, registry = self._loop(obs_store)
         try:
             await loop._phase_observation_sync()
@@ -367,12 +367,12 @@ class TestSensorRegistration:
             assert spec.risk == RiskTier.READ_ONLY, action_name
 
     def test_no_agent_name_hardcoded_in_sidecar(self):
-        # PacoMind is a public project: every deployment names its own
-        # agent. Identity comes from PACOMIND_AGENT_NAME /
-        # PACOMIND_WORKER_NODE_ID, never from code or defaults.
+        # Protagine is a public project: every deployment names its own
+        # agent. Identity comes from PROTAGINE_AGENT_NAME /
+        # PROTAGINE_WORKER_NODE_ID, never from code or defaults.
         import pathlib
 
-        src = pathlib.Path(__file__).resolve().parents[1] / "pacomind"
+        src = pathlib.Path(__file__).resolve().parents[1] / "protagine"
         offenders = [
             str(path)
             for path in src.rglob("*.py")
@@ -381,11 +381,11 @@ class TestSensorRegistration:
         assert offenders == []
 
     def test_no_notification_relay_defaults_remain(self):
-        # The agent decides dispositions; PacoMind must not default to
+        # The agent decides dispositions; Protagine must not default to
         # "notify the owner" framing anywhere in the pipeline.
         import pathlib
 
-        src = pathlib.Path(__file__).resolve().parents[1] / "pacomind"
+        src = pathlib.Path(__file__).resolve().parents[1] / "protagine"
         offenders = []
         for path in src.rglob("*.py"):
             text = path.read_text(errors="ignore")

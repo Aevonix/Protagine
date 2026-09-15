@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pacomind.briefings.aggregators import (
+from protagine.briefings.aggregators import (
     CalendarAggregator,
     RelationshipAggregator,
     StubCalendarAggregator,
@@ -15,7 +15,7 @@ from pacomind.briefings.aggregators import (
     _resolve_tz,
     _to_calendar_event,
 )
-from pacomind.briefings.models import CalendarEvent
+from protagine.briefings.models import CalendarEvent
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,7 @@ class TestRelationshipAggregator:
     # --- protocol compliance ---
 
     def test_satisfies_protocol(self):
-        from pacomind.briefings.aggregators import RelationshipAggregatorProtocol
+        from protagine.briefings.aggregators import RelationshipAggregatorProtocol
 
         graph = MagicMock()
         scorer = MagicMock()
@@ -369,7 +369,7 @@ class TestCalendarAggregator:
     # --- protocol compliance ---
 
     def test_satisfies_protocol(self):
-        from pacomind.briefings.aggregators import CalendarAggregatorProtocol
+        from protagine.briefings.aggregators import CalendarAggregatorProtocol
 
         agg = self._make_agg()
         assert isinstance(agg, CalendarAggregatorProtocol)

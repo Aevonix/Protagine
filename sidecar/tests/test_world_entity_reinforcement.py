@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import asyncio
 
-from pacomind.world_model.config import WorldModelConfig
-from pacomind.world_model.entities import BaseEntity
-from pacomind.world_model.populator import WorldModelPopulator
-from pacomind.world_model.sqlite.backend import SQLiteBackend
-from pacomind.world_model.store import WorldModelStore
+from protagine.world_model.config import WorldModelConfig
+from protagine.world_model.entities import BaseEntity
+from protagine.world_model.populator import WorldModelPopulator
+from protagine.world_model.sqlite.backend import SQLiteBackend
+from protagine.world_model.store import WorldModelStore
 
 
 async def _store():

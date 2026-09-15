@@ -1,4 +1,4 @@
-"""Exact, durable boundary for owner-authorized PacoMind actions.
+"""Exact, durable boundary for owner-authorized Protagine actions.
 
 The transport body is intentionally not an identity surface.  These tests
 pin the dedicated scoped principal, the immutable execution request, and the
@@ -19,23 +19,23 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.authority import (
+from protagine.api.authority import (
     KeyringError,
     RequestAuthority,
     load_keyring,
     required_scope,
 )
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import governed_actions as action_router
-from pacomind.governed_actions import (
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import governed_actions as action_router
+from protagine.governed_actions import (
     ACTION_TOOL_NAMES,
-    PacoMindSubsystemActionExecutor,
+    ProtagineSubsystemActionExecutor,
     GovernedActionLedger,
     GovernedActionService,
     canonical_json,
     sha256_json,
 )
-import pacomind.governed_actions as governed_actions_module
+import protagine.governed_actions as governed_actions_module
 
 
 NOW = 1_900_000_000.0
@@ -66,44 +66,44 @@ def _authority(
 
 def _args(tool: str) -> dict:
     return {
-        "pacomind_autonomy_disable": {},
-        "pacomind_autonomy_enable": {},
-        "pacomind_create_commitment": {
+        "protagine_autonomy_disable": {},
+        "protagine_autonomy_enable": {},
+        "protagine_create_commitment": {
             "description": "Send the report",
             "due_at": "2030-03-01T12:00:00+00:00",
             "priority": 80,
         },
-        "pacomind_initiative_feedback": {
+        "protagine_initiative_feedback": {
             "initiative_id": "initiative-1",
             "action": "actioned",
             "details": {"source": "deck"},
         },
-        "pacomind_record_insight": {
+        "protagine_record_insight": {
             "content": "Prefers concise status updates",
             "insight_type": "preference",
             "confidence": 0.8,
         },
-        "pacomind_research": {"topic": "bounded agent execution", "depth": "quick"},
-        "pacomind_resolve_commitment": {
+        "protagine_research": {"topic": "bounded agent execution", "depth": "quick"},
+        "protagine_resolve_commitment": {
             "commitment_id": "commitment-1",
             "outcome": "done",
             "reason": "Delivered",
         },
-        "pacomind_task_complete": {"task_id": "task-1"},
-        "pacomind_task_dismiss": {"task_id": "task-1", "reason": "stale"},
-        "pacomind_task_snooze": {"task_id": "task-1", "hours": 24, "reason": "Later"},
+        "protagine_task_complete": {"task_id": "task-1"},
+        "protagine_task_dismiss": {"task_id": "task-1", "reason": "stale"},
+        "protagine_task_snooze": {"task_id": "task-1", "hours": 24, "reason": "Later"},
     }[tool]
 
 
 def _request(
     *,
-    tool: str = "pacomind_task_complete",
+    tool: str = "protagine_task_complete",
     args: dict | None = None,
     action_id: str = "123e4567-e89b-42d3-a456-426614174000",
 ) -> dict:
     args = _args(tool) if args is None else args
     approval = {
-        "schema": "PacoMindOwnerApprovalExecutionBindingV1",
+        "schema": "ProtagineOwnerApprovalExecutionBindingV1",
         "version": 1,
         "approval_id": "APR-OWNER0000001",
         "decision_id": "DEC-OWNER-0001",
@@ -113,7 +113,7 @@ def _request(
         "expires_at": NOW + 120,
     }
     unsigned = {
-        "schema": "PacoMindGovernedActionExecutionV1",
+        "schema": "ProtagineGovernedActionExecutionV1",
         "version": 1,
         "action_id": action_id,
         "action_digest": "b" * 64,
@@ -151,7 +151,7 @@ class FakeExecutor:
             or "autonomy"
         )
         return {
-            "schema": "PacoMindGovernedActionEffectV1",
+            "schema": "ProtagineGovernedActionEffectV1",
             "version": 1,
             "effect_id": target,
             "outcome": "completed",
@@ -182,7 +182,7 @@ async def test_exact_request_executes_once_and_replay_is_byte_stable(tmp_path):
     observed = await service.observe(body["action_id"], _authority())
 
     assert first == replay == observed
-    assert first["schema"] == "PacoMindGovernedActionExecutionResultV1"
+    assert first["schema"] == "ProtagineGovernedActionExecutionResultV1"
     assert first["status"] == "completed"
     assert first["effect_state"] == "performed"
     assert first["effect_digest"] == sha256_json(first["effect"])
@@ -308,7 +308,7 @@ async def test_invalid_effect_projection_is_ambiguous_after_single_dispatch(tmp_
         async def perform(self, request, owner_person_id):
             self.perform_calls.append((request, owner_person_id))
             return {
-                "schema": "PacoMindGovernedActionEffectV1",
+                "schema": "ProtagineGovernedActionEffectV1",
                 "version": 1,
                 "effect_id": "task-1",
                 "outcome": "completed",
@@ -488,17 +488,17 @@ async def test_deep_huge_and_nonfinite_documents_fail_before_ledger(tmp_path):
 @pytest.mark.parametrize(
     ("tool", "args"),
     (
-        ("pacomind_task_complete", {"task_id": "task@other"}),
+        ("protagine_task_complete", {"task_id": "task@other"}),
         (
-            "pacomind_resolve_commitment",
+            "protagine_resolve_commitment",
             {"commitment_id": "commitment@other"},
         ),
         (
-            "pacomind_initiative_feedback",
+            "protagine_initiative_feedback",
             {"initiative_id": "initiative@other", "action": "actioned"},
         ),
         (
-            "pacomind_initiative_feedback",
+            "protagine_initiative_feedback",
             {
                 "initiative_id": "initiative-1",
                 "action": "actioned",
@@ -666,7 +666,7 @@ async def test_http_boundary_enforces_dedicated_keyring_role(tmp_path):
     body = _request()
     headers = {
         "Authorization": "Bearer dedicated-governed-action-secret",
-        "X-PacoMind-Principal": "host-action-worker",
+        "X-Protagine-Principal": "host-action-worker",
     }
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -729,7 +729,7 @@ async def test_http_boundary_rejects_declared_and_chunked_oversize_before_execut
     path = "/v1/host/actions/" + body["action_id"]
     headers = {
         "Authorization": "Bearer dedicated-governed-action-secret",
-        "X-PacoMind-Principal": "host-action-worker",
+        "X-Protagine-Principal": "host-action-worker",
         "Content-Type": "application/json",
     }
 
@@ -843,7 +843,7 @@ async def test_generic_subsystem_adapter_maps_every_action_without_context_forwa
     async def disable():
         running["value"] = False
 
-    executor = PacoMindSubsystemActionExecutor(
+    executor = ProtagineSubsystemActionExecutor(
         graph=_Graph(),
         goals=_Goals(),
         commitments=_Commitments(),
@@ -866,10 +866,10 @@ async def test_generic_subsystem_adapter_maps_every_action_without_context_forwa
 
 
 @pytest.mark.asyncio
-async def test_record_insight_matches_live_pacomind_graph_contract(monkeypatch):
+async def test_record_insight_matches_live_protagine_graph_contract(monkeypatch):
     import inspect
 
-    from pacomind.intelligence.graph.client import PacoMindGraph
+    from protagine.intelligence.graph.client import ProtagineGraph
 
     writes = []
 
@@ -882,24 +882,24 @@ async def test_record_insight_matches_live_pacomind_graph_contract(monkeypatch):
         "person_id",
         "source_type",
         "content_hash",
-    } <= set(inspect.signature(PacoMindGraph.store_memory).parameters)
+    } <= set(inspect.signature(ProtagineGraph.store_memory).parameters)
 
     async def store_memory(_self, **kwargs):
         writes.append(kwargs)
         return "insight-live-1"
 
-    monkeypatch.setattr(PacoMindGraph, "store_memory", store_memory)
-    graph = object.__new__(PacoMindGraph)
-    executor = PacoMindSubsystemActionExecutor(graph=graph)
-    args = _args("pacomind_record_insight")
-    request = _request(tool="pacomind_record_insight", args=args)
+    monkeypatch.setattr(ProtagineGraph, "store_memory", store_memory)
+    graph = object.__new__(ProtagineGraph)
+    executor = ProtagineSubsystemActionExecutor(graph=graph)
+    args = _args("protagine_record_insight")
+    request = _request(tool="protagine_record_insight", args=args)
 
     await executor.prepare(request, OWNER)
     effect = await executor.perform(request, OWNER)
 
     assert effect["effect_id"] == "insight-live-1"
     expected_content_hash = sha256_json({
-        "schema": "PacoMindGovernedInsightIdentityV1",
+        "schema": "ProtagineGovernedInsightIdentityV1",
         "version": 1,
         "person_id": OWNER,
         "insight_type": args["insight_type"],
@@ -925,7 +925,7 @@ async def test_record_insight_matches_live_pacomind_graph_contract(monkeypatch):
     await executor.perform(request, other_owner)
     assert writes[-1]["person_id"] == other_owner
     assert writes[-1]["content_hash"] == sha256_json({
-        "schema": "PacoMindGovernedInsightIdentityV1",
+        "schema": "ProtagineGovernedInsightIdentityV1",
         "version": 1,
         "person_id": other_owner,
         "insight_type": args["insight_type"],
@@ -937,10 +937,10 @@ async def test_record_insight_matches_live_pacomind_graph_contract(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_record_insight_contract_drift_fails_during_read_only_prepare():
-    executor = PacoMindSubsystemActionExecutor(graph=object())
+    executor = ProtagineSubsystemActionExecutor(graph=object())
     with pytest.raises(RuntimeError, match="insight writer"):
         await executor.prepare(
-            _request(tool="pacomind_record_insight"),
+            _request(tool="protagine_record_insight"),
             OWNER,
         )
 

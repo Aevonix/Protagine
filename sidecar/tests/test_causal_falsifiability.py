@@ -12,13 +12,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.world_model.config import WorldModelConfig
-from pacomind.world_model.entities import BaseEntity
-from pacomind.world_model.expectation_resolvers import (
+from protagine.world_model.config import WorldModelConfig
+from protagine.world_model.entities import BaseEntity
+from protagine.world_model.expectation_resolvers import (
     CAUSAL_PREFIX, register_world_resolvers, resolve_causal_edge,
 )
-from pacomind.world_model.relationships import WorldRelationship
-from pacomind.world_model.store import WorldModelStore
+from protagine.world_model.relationships import WorldRelationship
+from protagine.world_model.store import WorldModelStore
 
 
 async def _store_with(*rels):
@@ -48,7 +48,7 @@ def _pred(conf_floor=0.5, edge_id="wr-c", rel="WM_CAUSES"):
 
 
 def _with_store(monkeypatch, store):
-    from pacomind.api.routers import host as host_mod
+    from protagine.api.routers import host as host_mod
     monkeypatch.setattr(host_mod, "_world_store", store)
 
 
@@ -118,16 +118,16 @@ def test_causal_self_survival_is_not_registered_as_outcome_truth():
 
 
 # ---------------------------------------------------------------------------
-# Creation side (rides PACOMIND_EXPECTATIONS)
+# Creation side (rides PROTAGINE_EXPECTATIONS)
 # ---------------------------------------------------------------------------
 
 def _extractor_env(monkeypatch, engine):
-    from pacomind.api.routers import host as host_mod
+    from protagine.api.routers import host as host_mod
     monkeypatch.setattr(host_mod, "_expectations", engine)
 
 
 def _expectation_engine(tmp_path):
-    from pacomind.self_model.expectations import (
+    from protagine.self_model.expectations import (
         ExpectationEngine, ExpectationStore,
     )
     return ExpectationEngine(
@@ -136,8 +136,8 @@ def _expectation_engine(tmp_path):
 
 @pytest.mark.asyncio
 async def test_causal_write_and_boost_do_not_generate_self_validating_predictions(monkeypatch, tmp_path):
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
-    monkeypatch.setenv("PACOMIND_EXPECTATIONS", "on")
+    from protagine.world_model.llm_extract import WorldLLMExtractor
+    monkeypatch.setenv("PROTAGINE_EXPECTATIONS", "on")
     eng = _expectation_engine(tmp_path)
     _extractor_env(monkeypatch, eng)
     store = await _store_with()
@@ -159,11 +159,11 @@ async def test_causal_write_and_boost_do_not_generate_self_validating_prediction
 @pytest.mark.asyncio
 async def test_expectations_off_no_prediction_and_write_unaffected(
         monkeypatch, tmp_path):
-    """Regression lock: with PACOMIND_EXPECTATIONS off the causal write path
+    """Regression lock: with PROTAGINE_EXPECTATIONS off the causal write path
     behaves exactly as before — edge written, nothing predicted."""
-    from pacomind.world_model.llm_extract import WorldLLMExtractor
-    monkeypatch.delenv("PACOMIND_EXPECTATIONS", raising=False)
-    monkeypatch.delenv("PACOMIND_AUTONOMY_PRESET", raising=False)
+    from protagine.world_model.llm_extract import WorldLLMExtractor
+    monkeypatch.delenv("PROTAGINE_EXPECTATIONS", raising=False)
+    monkeypatch.delenv("PROTAGINE_AUTONOMY_PRESET", raising=False)
     eng = _expectation_engine(tmp_path)
     _extractor_env(monkeypatch, eng)
     store = await _store_with()
@@ -182,7 +182,7 @@ async def test_expectations_off_no_prediction_and_write_unaffected(
 @pytest.mark.asyncio
 async def test_historical_pending_causal_prediction_is_not_scored_from_survival(monkeypatch, tmp_path):
     """An existing edge cannot manufacture an observed causal success."""
-    monkeypatch.setenv("PACOMIND_EXPECTATIONS", "on")
+    monkeypatch.setenv("PROTAGINE_EXPECTATIONS", "on")
     eng = _expectation_engine(tmp_path)
     register_world_resolvers(eng)
     store = await _store_with(_edge(conf=0.5))

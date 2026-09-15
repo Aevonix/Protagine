@@ -18,24 +18,24 @@ trusted=sys.argv[4]=='attested'
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import host
-from pacomind.turns import get_turn_idempotency_ledger
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import host
+from protagine.turns import get_turn_idempotency_ledger
 home=Path(os.environ['HERMES_HOME']);home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 home.joinpath('config.yaml').write_text(json.dumps({
-    'plugins':{'enabled':['pacomind'],'pacomind':{'url':'http://fixture','owner_contact_id':'contact-a',
+    'plugins':{'enabled':['protagine'],'protagine':{'url':'http://fixture','owner_contact_id':'contact-a',
         'attested_system_platforms':['cli'] if trusted else [],'turn_writer_platforms':['cli']}},
-    'memory':{'provider':'pacomind-memory','config':{'url':'http://fixture','contact_id':'contact-a'}}}))
+    'memory':{'provider':'protagine-memory','config':{'url':'http://fixture','contact_id':'contact-a'}}}))
 home.joinpath('SOUL.md').write_text('Neutral CLI fixture. Answer the current question.')
 fact='My neutral orchard badge is cobalt-716.'
-ledger=get_turn_idempotency_ledger(os.environ['PACOMIND_STATE_DIR'])
+ledger=get_turn_idempotency_ledger(os.environ['PROTAGINE_STATE_DIR'])
 ledger.record_source('earlier-neutral-source',contact_id='contact-a',session_id='earlier-channel',
     messages=[{'role':'user','content':fact}],derive_claims=False)
 app=FastAPI();calls=[];recorded_turns=[]
 @app.middleware('http')
 async def authority(request,next_call):
-    request.state.pacomind_authority=RequestAuthority(principal_id='neutral-fixture',credential_id='fixture',
+    request.state.protagine_authority=RequestAuthority(principal_id='neutral-fixture',credential_id='fixture',
         scopes=frozenset({'context:read','turns:write','memory:read'}),viewer_person_id='contact-a',
         person_ids=frozenset({'contact-a'}),audiences=frozenset({'viewer'}),authenticated=True)
     return await next_call(request)
@@ -55,12 +55,12 @@ def no_network(*args,**kwargs):raise AssertionError('Controlled API and provider
 socket.socket.connect=no_network;socket.create_connection=no_network
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
-assert get_plugin_manager()._plugins['pacomind'].enabled
+assert get_plugin_manager()._plugins['protagine'].enabled
 from run_agent import AIAgent
 from hermes_state import SessionDB
 from agent import relay_runtime
-from pacomind_hermes.native_scope import attested_cli_contact
-import pacomind_hermes,run_agent
+from protagine_hermes.native_scope import attested_cli_contact
+import protagine_hermes,run_agent
 openai_target='run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
 tools_target='run_agent' if 'get_tool_definitions' in vars(run_agent) else 'model_tools'
 physical=[];binding=[];client=MagicMock()
@@ -79,7 +79,7 @@ with patch(openai_target,return_value=client),patch(tools_target+'.get_tool_defi
         quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',max_iterations=1,
         session_db=SessionDB(home/'state.db'))
     agent._use_prompt_caching=False;agent.save_trajectories=False;agent.compression_enabled=False
-    provider=agent._memory_manager.get_provider('pacomind')
+    provider=agent._memory_manager.get_provider('protagine')
     assert provider is not None
     assert provider._prefetch_contact(agent.session_id)==''
     result=agent.run_conversation('What is my neutral orchard badge?',task_id='ordinary-cli')
@@ -98,7 +98,7 @@ with patch(openai_target,return_value=client),patch(tools_target+'.get_tool_defi
         assert recorded_turns[0]['context']['contact_id']=='contact-a'
     # The registry deliberately retains prior scopes. A finished native turn
     # cannot use one as ambient owner authority or replay its provider cache.
-    assert pacomind_hermes._TRANSPORT_SCOPES.for_session(agent.session_id) is not None
+    assert protagine_hermes._TRANSPORT_SCOPES.for_session(agent.session_id) is not None
     assert relay_runtime.active_turn(agent.session_id) is None
     count=len(calls)
     assert attested_cli_contact(agent.session_id) is None
@@ -107,7 +107,7 @@ with patch(openai_target,return_value=client),patch(tools_target+'.get_tool_defi
     agent.close()
 print(json.dumps({'trusted_cli':trusted,'actual_native_turn':True,'current_recollection_visible':trusted,
     'unattested_cli_rejected':not trusted,'finished_scope_rejected':True,'unrelated_session_rejected':True,
-    'model_calls':0,'controlled_provider_calls':len(physical),'default_context_authority':os.environ['PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY']}))
+    'model_calls':0,'controlled_provider_calls':len(physical),'default_context_authority':os.environ['PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY']}))
 '''
 
 
@@ -116,12 +116,12 @@ def test_native_cli_prefetch_uses_current_resolved_scope(artifacts, tmp_path, mo
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install the qualified native Hermes release')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path / 'profile'), PACOMIND_STATE_DIR=str(tmp_path / 'pacomind'),
+    env.update(HERMES_HOME=str(tmp_path / 'profile'), PROTAGINE_STATE_DIR=str(tmp_path / 'protagine'),
         HERMES_BUNDLED_PLUGINS=str(tmp_path / 'bundled'), HERMES_DISABLE_TELEMETRY='1',
-        HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_GENERAL_PLUGIN_ACTIVE='1',
-        PACOMIND_MEMORY_TURN_WRITER='disabled', PACOMIND_MEMORY_WORKER_TOOLS='0',
-        PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none', PACOMIND_OWNER_CONTACT_ID='contact-a',
-        PACOMIND_GUARD_CHAT_MODE='off')
+        HERMES_DISABLE_LAZY_INSTALLS='1', PROTAGINE_GENERAL_PLUGIN_ACTIVE='1',
+        PROTAGINE_MEMORY_TURN_WRITER='disabled', PROTAGINE_MEMORY_WORKER_TOOLS='0',
+        PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none', PROTAGINE_OWNER_CONTACT_ID='contact-a',
+        PROTAGINE_GUARD_CHAT_MODE='off')
     run_python('-I', '-c', PROBE, artifacts[3], ROOT / 'sidecar',
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), mode,
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), mode,
         os.environ.get('HERMES_TEST_SOURCE', ''), cwd=tmp_path, env=env)

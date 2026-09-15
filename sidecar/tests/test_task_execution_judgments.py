@@ -11,20 +11,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.api.routers.executions import ExecutionObservation
-from pacomind.self_model.execution_outcomes import evidence_text
-from pacomind.self_model.judgments import SelfJudgments
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.executions import ExecutionRegistry
-from pacomind.turns.idempotency import source_message_hash
+from protagine.api.routers.executions import ExecutionObservation
+from protagine.self_model.execution_outcomes import evidence_text
+from protagine.self_model.judgments import SelfJudgments
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.executions import ExecutionRegistry
+from protagine.turns.idempotency import source_message_hash
 from test_hermes_general_governance import _load_plugin
 from test_self_judgments import Processor, Clock
 
 
 @pytest.fixture
 def task(tmp_path, monkeypatch):
-    monkeypatch.setenv('PACOMIND_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setenv('PACOMIND_SELF_JUDGMENTS_ENABLED', '1')
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
+    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path/'hermes'))
     plugin = _load_plugin('task_experience_integration')
     try:
@@ -140,12 +140,12 @@ async def test_native_terminal_keeps_actual_request_and_unknown_quality(task, ou
     assert facts['processor']['served_model'] == (None if outcome == 'failed' else 'reported-processor')
     assert facts['processor']['error_request_count'] == int(outcome == 'failed')
     assert 'callback pairs only' in facts['processor']['coverage']
-    from pacomind.turns.source_vectors import chunks
+    from protagine.turns.source_vectors import chunks
     with closing(task.ledger._connect()) as conn:
         assert conn.execute('SELECT count(*) FROM turn_source_search WHERE turn_id=?',
                             (sources[0]['turn_id'],)).fetchone()[0] == 0
         assert list(chunks(conn, sources[0])) == []
-    from pacomind.turns.source_read import read
+    from protagine.turns.source_read import read
     ref = task.ledger.source_references([sources[0]['turn_id']], contact_id='owner', session_id='later')[0]
     opened = read(task.ledger, contact_id='owner', session_id='later', **ref)
     assert opened['complete']
@@ -175,7 +175,7 @@ def test_qualification_and_unclassified_tasks_do_not_enter_learning(task, purpos
 
 @pytest.mark.parametrize('quiet_seconds', [0, 180])
 def test_unclassified_native_task_keeps_its_handle_across_conversations(task, quiet_seconds):
-    from pacomind.turns.executions import request_work_context
+    from protagine.turns.executions import request_work_context
     from test_execution_registry import observation
     # Terminal/operator admission supplies no learning classification. Its
     # native binding is still real and must be available to another session.
@@ -196,7 +196,7 @@ def test_unclassified_native_task_keeps_its_handle_across_conversations(task, qu
 
 
 def test_replay_after_queue_failure_uses_durable_terminal_once(task, monkeypatch):
-    from pacomind.self_model import judgments
+    from protagine.self_model import judgments
     original = judgments.enqueue
     def fail(*args, **kwargs):
         raise sqlite3.OperationalError('Controlled queue transaction failure')

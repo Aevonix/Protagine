@@ -12,15 +12,15 @@ import time
 
 from .task_sources import is_direct_scope
 
-_OPEN = '[pacomind-work-request-v1]'
-_CLOSE = '[/pacomind-work-request-v1]'
-_BLOCK = re.compile(r'(?:\n\n)?\[pacomind-work-request-v1\].*?\[/pacomind-work-request-v1\]', re.S)
+_OPEN = '[protagine-work-request-v1]'
+_CLOSE = '[/protagine-work-request-v1]'
+_BLOCK = re.compile(r'(?:\n\n)?\[protagine-work-request-v1\].*?\[/protagine-work-request-v1\]', re.S)
 _UNAVAILABLE = ('Current shared work is unavailable for this model request. '
                 'The turn-start snapshot may be stale; this does not establish '
                 'that previously observed work has stopped.')
 _BACKGROUND_HANDOFF = (
     "When the user asks for background work and a prompt return, call "
-    "pacomind_task(operation='handoff') alone with the full deliverable, verification and child work. "
+    "protagine_task(operation='handoff') alone with the full deliverable, verification and child work. "
     "Actual acceptance completes this foreground request; the worker still owns execution and verification. "
     "Do not duplicate or poll that work here. Acceptance is not task completion. "
     "Workers must finish their assigned deliverables. Use ordinary foreground work or submit "
@@ -35,7 +35,7 @@ def _owned_message(row, opening=_OPEN, closing=_CLOSE):
             and row['content'].endswith('\n' + closing))
 
 
-def replace_context(request, text=None, *, api_mode='', marker='pacomind-work-request-v1'):
+def replace_context(request, text=None, *, api_mode='', marker='protagine-work-request-v1'):
     """Replace our request-only block without changing user or tool content."""
     result = dict(request)
     opening, closing = '[' + marker + ']', '[/' + marker + ']'
@@ -104,7 +104,7 @@ class RequestWork:
                 return selected
             def line(row):
                 return json.dumps(row, ensure_ascii=True).replace(
-                    _CLOSE, r'\u005b/pacomind-work-request-v1\u005d') + '\n'
+                    _CLOSE, r'\u005b/protagine-work-request-v1\u005d') + '\n'
             addition = line({'task_id': origin['task_id'],
                              'origin_execution_id': observed['origin_execution_id']})
             shown = {row.get('execution_id') for row in rows(selected)}
@@ -164,7 +164,7 @@ class RequestWork:
                       'partial': length < len(instruction)}
             return json.dumps({'task_id': revision['task_id'],
                 'latest_accepted_update': update}, ensure_ascii=True).replace(
-                    _CLOSE, r'\u005b/pacomind-work-request-v1\u005d') + '\n'
+                    _CLOSE, r'\u005b/protagine-work-request-v1\u005d') + '\n'
         length = min(240, len(instruction))
         while length and len(line(length)) > 640:
             length -= 1
@@ -174,7 +174,7 @@ class RequestWork:
         # Reserve one of the existing eight records only when a revision is
         # present. With no update the normal full projection stays unchanged.
         selected = value.get('reserved')
-        if (not isinstance(selected, dict) or selected.get('schema') != 'PacoMindRequestWorkV1'
+        if (not isinstance(selected, dict) or selected.get('schema') != 'ProtagineRequestWorkV1'
                 or revision['task_id'] not in selected.get('native_task_ids', [])
                 or not isinstance(selected.get('text'), str)
                 or len(selected['text']) + len(addition) > max_chars):
@@ -214,7 +214,7 @@ class RequestWork:
                 or scope.platform in ('cron', 'background_review')):
             return replace_context(request, api_mode=api_mode), None, False
         session = json.dumps(scope.session_id, ensure_ascii=True).replace(
-            _CLOSE, r'\u005b/pacomind-work-request-v1\u005d')
+            _CLOSE, r'\u005b/protagine-work-request-v1\u005d')
         identity = f'Current request session: {session}.\n'
         text = identity + _UNAVAILABLE
         provenance = None
@@ -237,7 +237,7 @@ class RequestWork:
             response.raise_for_status()
             value = response.json()
             observed = value.get('observed_at')
-            if (value.get('schema') != 'PacoMindRequestWorkV1'
+            if (value.get('schema') != 'ProtagineRequestWorkV1'
                     or not isinstance(value.get('text'), str)
                     or not 1 <= len(value['text']) <= 4000
                     or type(observed) not in (int, float) or not math.isfinite(observed)
@@ -247,7 +247,7 @@ class RequestWork:
             value = self._revision(value, scope, deadline, max_chars=max_chars)
             if len(value['text']) > max_chars:
                 value = value.get('reserved')
-                if (not isinstance(value, dict) or value.get('schema') != 'PacoMindRequestWorkV1'
+                if (not isinstance(value, dict) or value.get('schema') != 'ProtagineRequestWorkV1'
                         or not isinstance(value.get('text'), str) or not 1 <= len(value['text']) <= max_chars):
                     raise ValueError('Operational view exceeds its reserved budget')
             text = identity + f"Observed at {observed:.3f}.\n" + value['text']

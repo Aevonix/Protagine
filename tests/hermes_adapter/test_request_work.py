@@ -28,21 +28,21 @@ if scenario == 'task_revision':
         import traceback
         traceback.print_exception(kind,error,tb);sys.stderr.flush();os._exit(1)
     sys.excepthook=setup_failure
-if os.environ.get('PACOMIND_TEST_HERMES_PATH'):
-    sys.path.insert(2, os.environ['PACOMIND_TEST_HERMES_PATH'])
+if os.environ.get('PROTAGINE_TEST_HERMES_PATH'):
+    sys.path.insert(2, os.environ['PROTAGINE_TEST_HERMES_PATH'])
 import httpx
 import uvicorn
 from fastapi import FastAPI, Response
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import executions, host
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.turns import get_turn_idempotency_ledger
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import executions, host
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.initiatives.store import InitiativeStore
+from protagine.turns import get_turn_idempotency_ledger
 
 home=Path(os.environ['HERMES_HOME']); home.mkdir(mode=0o700)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
-state=Path(os.environ['PACOMIND_STATE_DIR']); state.mkdir()
+state=Path(os.environ['PROTAGINE_STATE_DIR']); state.mkdir()
 contacts=SQLiteContactStore(ContactsConfig(sqlite_path=str(state/'contacts.db')))
 async def create_owner():
     await contacts.connect()
@@ -50,7 +50,7 @@ async def create_owner():
     await contacts.add_handle(contact.contact_id,gateway='sms',address='+15550007160',verified=True)
     return contact.contact_id
 owner=asyncio.run(create_owner()); host._contacts_store=contacts
-os.environ['PACOMIND_OWNER_CONTACT_ID']=owner
+os.environ['PROTAGINE_OWNER_CONTACT_ID']=owner
 store=InitiativeStore(state); host._initiative_store=store; host._task_queue=None
 work=store.create(type='RESEARCH_DEEP_DIVE', description='Neutral concurrent note comparison',
     source_type='installed_capabilities', created_by='native_local_work',
@@ -65,8 +65,8 @@ ledger=get_turn_idempotency_ledger(state)
 ledger.record_source('neutral-source', contact_id=owner, session_id='earlier-session',
     messages=[{'role':'user','content':fact}], derive_claims=False)
 if scenario in {'task_source', 'task_revision'}:
-    from pacomind.turns.executions import ExecutionRegistry
-    from pacomind.turns.idempotency import source_message_hash
+    from protagine.turns.executions import ExecutionRegistry
+    from protagine.turns.idempotency import source_message_hash
     task_text = 'Repair the neutral sample report and preserve its original inputs. ' * 8
     task_message = {'role':'user', 'content':task_text}
     ledger.record_source('task-original', contact_id=owner, session_id='native-task',
@@ -75,7 +75,7 @@ if scenario in {'task_source', 'task_revision'}:
     def observe_task(task_identity):
       assert ExecutionRegistry(ledger).observe({
         'execution_id':'b'*64, 'session_id':'native-task', 'turn_id':'native-task-turn',
-        'parent_execution_id':'', 'platform':'pacomind_task', 'state':'observed',
+        'parent_execution_id':'', 'platform':'protagine_task', 'state':'observed',
         'phase':'turn', 'tool_name':'', 'sequence':1,
         'input_refs':[{'source_id':'task-original',
             'input_message_hash':source_message_hash('native-task', task_message)}],
@@ -93,7 +93,7 @@ if scenario in {'task_source', 'task_revision'}:
         view['reported_worker'] = {'available':True, 'items':[
             {'label':'Old feed', 'state':'stopped', 'freshness':'stale', 'liveness':'unverified'},
             {'label':'Delivery', 'state':'reported_ready', 'freshness':'recent', 'liveness':'unverified',
-             'work_snapshot':{'schema':'PacoMindWorkSnapshotV1', 'available':True,
+             'work_snapshot':{'schema':'ProtagineWorkSnapshotV1', 'available':True,
                  'complete':False, 'coverage':'Selected producer deliveries and exact intent-linked provider cursors; no recipient read proof',
                  'freshness':'recent', 'items':[], 'observed_at':1234.5, 'partial':False,
                  'pending_total':0, 'source_status':{'outbox':'observed','provider':'observed'},
@@ -105,7 +105,7 @@ if scenario in {'task_source', 'task_revision'}:
 app=FastAPI(); wire=[]; unavailable=threading.Event()
 @app.middleware('http')
 async def authority(request, next_call):
-    request.state.pacomind_authority=RequestAuthority(principal_id='neutral-native', credential_id='fixture',
+    request.state.protagine_authority=RequestAuthority(principal_id='neutral-native', credential_id='fixture',
         scopes=frozenset({'turns:write','turns:resolve-sender','context:read'}), viewer_person_id=owner,
         turn_ingress_platforms=frozenset({'sms'}),
         person_ids=frozenset({owner}), audiences=frozenset({'viewer'}), authenticated=True)
@@ -129,11 +129,11 @@ def local_only(self,address):
     return original_connect(self,address)
 socket.socket.connect=local_only
 if scenario == 'task_revision':
-    from pacomind_hermes.client import PacoMindClient, TurnOutbox
-    from pacomind_hermes.task_controller import NativeTasks
+    from protagine_hermes.client import ProtagineClient, TurnOutbox
+    from protagine_hermes.task_controller import NativeTasks
     (home/'state').mkdir(mode=0o700)
-    controller=NativeTasks(PacoMindClient(url=base),
-        TurnOutbox(home/'state/pacomind-turn-outbox.sqlite3'),owner)
+    controller=NativeTasks(ProtagineClient(url=base),
+        TurnOutbox(home/'state/protagine-turn-outbox.sqlite3'),owner)
     def source_input(identity,session,message,platform='cli',sender=''):
         ref,=ledger.source_references([identity],contact_id=owner,session_id='observer')
         return {'version':1,'principal':'hermes:'+platform,'contact_id':owner,
@@ -153,17 +153,17 @@ if scenario == 'task_revision':
     revision=controller.handoffs.admit_update(task['id'],instruction=revision_text,
         source_input=revision_source,principal='hermes:sms')
 (home/'config.yaml').write_text(json.dumps({
-    'plugins':{'enabled':['pacomind'],'pacomind':{'owner_contact_id':owner,'url':base,
+    'plugins':{'enabled':['protagine'],'protagine':{'owner_contact_id':owner,'url':base,
         'attested_system_platforms':['cli'],'turn_writer_platforms':[],
         **({'native_tasks':{'enabled':True}} if scenario=='task_revision' else {})}},
-    'memory':{'provider':'pacomind-memory','config':{'contact_id':owner,'url':base}}}))
+    'memory':{'provider':'protagine-memory','config':{'contact_id':owner,'url':base}}}))
 
 from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load()
-assert get_plugin_manager()._plugins['pacomind'].enabled
+assert get_plugin_manager()._plugins['protagine'].enabled
 from plugins.memory import load_memory_provider
 from agent.memory_manager import MemoryManager
-provider=load_memory_provider('pacomind-memory')
+provider=load_memory_provider('protagine-memory')
 manager=MemoryManager(); manager.add_provider(provider)
 manager.initialize_all('neutral-owner-session', hermes_home=str(home), platform=platform)
 from gateway.session_context import set_session_vars, clear_session_vars
@@ -190,13 +190,13 @@ writer=threading.Thread(target=complete_other_work,daemon=True); writer.start()
 from run_agent import AIAgent
 from hermes_state import SessionDB
 import run_agent
-if os.environ.get('PACOMIND_TEST_HERMES_PATH'):
-    assert Path(run_agent.__file__).resolve().parent == Path(os.environ['PACOMIND_TEST_HERMES_PATH']).resolve()
+if os.environ.get('PROTAGINE_TEST_HERMES_PATH'):
+    assert Path(run_agent.__file__).resolve().parent == Path(os.environ['PROTAGINE_TEST_HERMES_PATH']).resolve()
 # 0.21.0 binds eager aliases; 0.21.1 calls the defining modules directly.
 OPENAI_TARGET = 'run_agent.OpenAI' if 'OpenAI' in vars(run_agent) else 'agent.process_bootstrap.OpenAI'
 TOOLS_TARGET = 'run_agent' if 'get_tool_definitions' in vars(run_agent) else 'model_tools'
 requests=[]; user_message='Read the neutral local note while keeping track of the other work.'
-marker='[pacomind-work-request-v1]'; closing='[/pacomind-work-request-v1]'
+marker='[protagine-work-request-v1]'; closing='[/protagine-work-request-v1]'
 def work_block(request):
     blocks=[]
     for row in request['messages']:
@@ -242,12 +242,12 @@ def answer(**kwargs):
         if index == 1:
             release_writer.set(); assert writer_done.wait(10) and not errors, errors
             call=NS(id='open-task-input', type='function', function=NS(
-                name='pacomind_memory_read_source', arguments=json.dumps(task_ref)))
+                name='protagine_memory_read_source', arguments=json.dumps(task_ref)))
             return NS(choices=[NS(message=NS(content='',tool_calls=[call]),finish_reason='tool_calls')],
                       model='fixture/model',usage=None)
         assert index == 2
         opened = json.loads([row['content'] for row in kwargs['messages'] if row.get('role')=='tool'][-1])
-        assert opened['pacomind_source_read_v1'] and opened['complete'], opened
+        assert opened['protagine_source_read_v1'] and opened['complete'], opened
         assert json.loads(opened['content'])['messages'] == [task_message], opened
         return NS(choices=[NS(message=NS(content='NATIVE_WORK_REFRESH_OK',tool_calls=None),
                              finish_reason='stop')],model='fixture/model',usage=None)
@@ -272,7 +272,7 @@ client=MagicMock(); client.chat.completions.create.side_effect=answer
 definitions=[{'type':'function','function':{'name':'read_file','description':'Read a local file',
     'parameters':{'type':'object','properties':{'path':{'type':'string'}},'required':['path']}}}]
 if scenario == 'task_source':
-    definitions.append({'type':'function','function':{'name':'pacomind_memory_read_source',
+    definitions.append({'type':'function','function':{'name':'protagine_memory_read_source',
         'description':'Open an exact supplied source', 'parameters':{'type':'object',
             'properties':{key:{'type':'string'} for key in ('source_id','source_version')},
             'required':['source_id','source_version']}}})
@@ -300,13 +300,13 @@ try:
             else:
                 assert 'Work observed at turn start' not in visible, visible
             block = work_block(request)
-            from pacomind_hermes.task_controller import FinishTurn
+            from protagine_hermes.task_controller import FinishTurn
             if scenario == 'task_revision' and FinishTurn is not None:
-                assert "pacomind_task(operation='handoff')" in block, block
+                assert "protagine_task(operation='handoff')" in block, block
                 assert 'Acceptance is not task completion.' in block, block
                 assert agent._cached_system_prompt == 'Stable neutral identity.'
             elif scenario != 'task_revision':
-                assert "pacomind_task(operation='handoff')" not in block, block
+                assert "protagine_task(operation='handoff')" not in block, block
         transcript=result['messages']
         assert marker not in json.dumps(transcript), transcript
         assert any(row.get('role')=='user' and row.get('content')==user_message for row in transcript)
@@ -327,7 +327,7 @@ try:
             assert revision_text not in json.dumps(requests[2]['messages']),requests[2]['messages']
         if scenario in {'task_source','task_revision'}:
             import sqlite3
-            with sqlite3.connect(home/'state/pacomind-turn-outbox.sqlite3') as db:
+            with sqlite3.connect(home/'state/protagine-turn-outbox.sqlite3') as db:
                 owned=[json.loads(row[0]) for row in db.execute(
                     'SELECT metadata_json FROM native_source_ownership WHERE session_id=?', (agent.session_id,))]
             assert any(task_ref in row.get('sources',[]) for row in owned), owned
@@ -368,13 +368,13 @@ print(json.dumps({'native_single_turn':True,'actual_http_and_ledger':True,
 def test_native_turn_refreshes_shared_work_between_model_calls(artifacts, tmp_path, platform, scenario, erased_source):
     if importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes to exercise actual native model requests')
-    env={key:os.environ[key] for key in ('PATH','HOME','TMPDIR','LANG','PACOMIND_TEST_HERMES_PATH') if key in os.environ}
-    env.update(HERMES_HOME=str(tmp_path/'profile'), PACOMIND_STATE_DIR=str(tmp_path/'pacomind'),
+    env={key:os.environ[key] for key in ('PATH','HOME','TMPDIR','LANG','PROTAGINE_TEST_HERMES_PATH') if key in os.environ}
+    env.update(HERMES_HOME=str(tmp_path/'profile'), PROTAGINE_STATE_DIR=str(tmp_path/'protagine'),
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'), HERMES_DISABLE_TELEMETRY='1',
-        HERMES_DISABLE_LAZY_INSTALLS='1', PACOMIND_GENERAL_PLUGIN_ACTIVE='1',
-        PACOMIND_MEMORY_WORKER_TOOLS='0', PACOMIND_MEMORY_TURN_WRITER='disabled',
-        PACOMIND_MEMORY_DEFAULT_CONTEXT_AUTHORITY='owner_system', PACOMIND_GUARD_CHAT_MODE='off',
-        PACOMIND_OWNER_CONTACT_ID='owner', PACOMIND_SKIP_DOTENV='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
+        HERMES_DISABLE_LAZY_INSTALLS='1', PROTAGINE_GENERAL_PLUGIN_ACTIVE='1',
+        PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_TURN_WRITER='disabled',
+        PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='owner_system', PROTAGINE_GUARD_CHAT_MODE='off',
+        PROTAGINE_OWNER_CONTACT_ID='owner', PROTAGINE_SKIP_DOTENV='1', LITELLM_LOCAL_MODEL_COST_MAP='True')
     result=run_python('-I','-c',PROBE,artifacts[3],ROOT/'sidecar',
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),platform,scenario,erased_source,cwd=tmp_path,env=env)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),platform,scenario,erased_source,cwd=tmp_path,env=env)
     assert json.loads(result.stdout.splitlines()[-1])['concurrent_completion_visible']

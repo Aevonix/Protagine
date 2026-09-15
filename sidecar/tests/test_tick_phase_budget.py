@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from pacomind.autonomy.loop import AutonomyLoop, LoopStats
-from pacomind.autonomy.config import AutonomyConfig
-from pacomind.intelligence.graph import client as client_mod
+from protagine.autonomy.loop import AutonomyLoop, LoopStats
+from protagine.autonomy.config import AutonomyConfig
+from protagine.intelligence.graph import client as client_mod
 
 
 # --- one write per batch --------------------------------------------------------
@@ -74,7 +74,7 @@ class _ConfidenceFixture:
             for i in range(count)
         ]
         self.queries = []
-        g = client_mod.PacoMindGraph.__new__(client_mod.PacoMindGraph)
+        g = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
         g.driver = _Driver(self)
         g.database = "neo4j"
         self.graph = g

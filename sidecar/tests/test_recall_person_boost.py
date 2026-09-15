@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pacomind.intelligence.graph import client as client_mod
-from pacomind.research.gatherer import GraphGatherer
+from protagine.intelligence.graph import client as client_mod
+from protagine.research.gatherer import GraphGatherer
 
 
 # --- fakes (mirrors test_recall_ranking.py, plus ABOUT support) --------------
@@ -112,7 +112,7 @@ class Fixture:
         self.queries = []
         self.node_props = node_props
         self.about_ids = set(about_ids)
-        g = client_mod.PacoMindGraph.__new__(client_mod.PacoMindGraph)
+        g = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
         g.driver = _FakeDriver(self)
         g.database = "neo4j"
         g._vector_store = _FakeVectorStore(hits)
@@ -146,7 +146,7 @@ _NODES = [_node("m1"), _node("m2")]
 @pytest.mark.asyncio
 async def test_explicit_person_is_a_hard_vector_candidate_filter(monkeypatch):
     """A cross-person ANN hit is not hydrated, ranked, or returned."""
-    monkeypatch.delenv("PACOMIND_RECALL_PERSON_BOOST", raising=False)
+    monkeypatch.delenv("PROTAGINE_RECALL_PERSON_BOOST", raising=False)
     fx = Fixture(_HITS, _NODES, about_ids={"m2"})
     out = await fx.recall("q", limit=2, person_id="cid-1")
     assert [m["id"] for m in out] == ["m2"]
@@ -159,7 +159,7 @@ async def test_explicit_person_is_a_hard_vector_candidate_filter(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_legacy_boost_flag_cannot_reopen_candidate_scope(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECALL_PERSON_BOOST", "0.5")
+    monkeypatch.setenv("PROTAGINE_RECALL_PERSON_BOOST", "0.5")
     fx = Fixture(_HITS, _NODES, about_ids={"m2"})
     out = await fx.recall("q", limit=2, person_id="cid-1")
     assert [m["id"] for m in out] == ["m2"]
@@ -168,7 +168,7 @@ async def test_legacy_boost_flag_cannot_reopen_candidate_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scoped_miss_stays_empty_without_global_fallback(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECALL_PERSON_BOOST", "0.5")
+    monkeypatch.setenv("PROTAGINE_RECALL_PERSON_BOOST", "0.5")
     fx = Fixture(_HITS, _NODES, about_ids=set())     # nothing about cid-1
     out = await fx.recall("q", limit=2, person_id="cid-1")
     assert out == []
@@ -177,7 +177,7 @@ async def test_scoped_miss_stays_empty_without_global_fallback(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unscoped_internal_recall_keeps_legacy_global_behavior(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECALL_PERSON_BOOST", "0.5")
+    monkeypatch.setenv("PROTAGINE_RECALL_PERSON_BOOST", "0.5")
     fx = Fixture(_HITS, _NODES, about_ids={"m2"})
     out = await fx.recall("q", limit=2)               # no person_id supplied
     assert [m["id"] for m in out] == ["m1", "m2"]
@@ -187,7 +187,7 @@ async def test_unscoped_internal_recall_keeps_legacy_global_behavior(monkeypatch
 
 @pytest.mark.asyncio
 async def test_graph_only_fallback_has_the_same_hard_boundary(monkeypatch):
-    monkeypatch.delenv("PACOMIND_RECALL_PERSON_BOOST", raising=False)
+    monkeypatch.delenv("PROTAGINE_RECALL_PERSON_BOOST", raising=False)
     fx = Fixture([], _NODES, about_ids={"m2"})
     fx.graph._vector_store = None
     out = await fx.recall("content", limit=2, person_id="cid-1")
@@ -248,7 +248,7 @@ async def test_graph_wide_source_exclusion_protects_untyped_recall_callers():
         ["tom:shared_fact"], legacy_metadata_markers=["shared_fact"])
 
     # Deliberately omit exclude_source_uris, exactly as the model-facing
-    # pacomind_memory_search and internal synthesis consumers do.
+    # protagine_memory_search and internal synthesis consumers do.
     out = await fx.recall("content", limit=1, person_id="cid-1")
     assert [memory["id"] for memory in out] == ["ordinary"]
     hydration = [
@@ -361,7 +361,7 @@ async def test_default_research_fallback_still_owns_and_closes_graph(
 
     owned = OwnedGraph()
     monkeypatch.setattr(
-        client_mod, "PacoMindGraph", lambda: owned)
+        client_mod, "ProtagineGraph", lambda: owned)
     gathered = await GraphGatherer().gather("ordinary")
     assert [item.content for item in gathered] == [
         "ordinary research memory"]

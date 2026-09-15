@@ -3,8 +3,8 @@
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.routers import host
-from pacomind.tom.facts import SharedFactsStore
+from protagine.api.routers import host
+from protagine.tom.facts import SharedFactsStore
 from test_turn_source_evidence import source_app
 
 

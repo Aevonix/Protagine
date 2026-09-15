@@ -20,7 +20,7 @@ def no_network(*args,**kwargs):raise AssertionError('Native create fixture must 
 socket.socket.connect=no_network;socket.create_connection=no_network
 from tools import skill_manager_tool as manager,skill_provenance as provenance
 from tools import skill_ledger as ledger,write_approval as approval
-from pacomind_hermes.review import stage_skill_change
+from protagine_hermes.review import stage_skill_change
 if sys.argv[3]:
     assert Path(manager.__file__).resolve().is_relative_to(Path(sys.argv[3]).resolve())
 name='catalog-maintenance'
@@ -33,7 +33,7 @@ def arguments(operation):
         return {'name':operation['name'],'operations':[{k:v for k,v in operation.items() if k!='name'}]}
     if shape=='mixed_batch':
         return {'operations':[{**valid,'name':'catalog-index'},operation]}
-    return {'operations':[operation],'_pacomind_review_create_only':True}
+    return {'operations':[operation],'_protagine_review_create_only':True}
 def ledger_bytes():
     return ledger.ledger_path().read_bytes() if ledger.ledger_path().exists() else None
 token=provenance.set_current_write_origin('background_review')
@@ -79,7 +79,7 @@ print(json.dumps({'passed':True,'shape':shape,'network_calls':0}))
 
 @pytest.mark.parametrize('shape', ['flat', 'batch', 'default_name', 'mixed_batch'])
 def test_native_create_contract_before_review_staging(artifacts, tmp_path, shape):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native create staging')
     result = run_python('-I', '-B', '-c', PROBE, artifacts[3], shape, native,

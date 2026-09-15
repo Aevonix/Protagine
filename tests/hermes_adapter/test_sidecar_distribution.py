@@ -8,7 +8,7 @@ from conftest import ROOT, run_python
 def test_sidecar_wheel_contains_product_without_embedded_tests(tmp_path):
     run_python("-m", "build", "--wheel", "--no-isolation", "--outdir", tmp_path,
                cwd=ROOT / "sidecar")
-    wheel = next(tmp_path.glob("pacomind-*.whl"))
+    wheel = next(tmp_path.glob("protagine-*.whl"))
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert not [name for name in names if any(
@@ -17,19 +17,19 @@ def test_sidecar_wheel_contains_product_without_embedded_tests(tmp_path):
         for name in ("briefings/aggregators.py", "events/bus.py",
                      "intelligence/components/tool_learner.py",
                      "intelligence/synthesis/insight_deliverer.py"):
-            assert "pacomind/" + name in names
+            assert "protagine/" + name in names
         for name in ("vision-arrangement.png", "vision-labels.png", "vision-covered-label.png"):
-            member = "pacomind/qualification/fixtures/" + name
+            member = "protagine/qualification/fixtures/" + name
             assert archive.read(member) == (ROOT / "sidecar" / member).read_bytes()
     installed = tmp_path / "installed"
     run_python("-m", "pip", "install", "--no-deps", "--no-index", "--target", installed,
                wheel, cwd=tmp_path)
     env = {key: os.environ[key] for key in ("PATH", "LANG") if key in os.environ}
     env.update(HOME=str(tmp_path), PYTHONPATH=str(installed), PYTHON_DOTENV_DISABLED="1")
-    run_python("-c", "from pacomind.briefings.aggregators import CalendarAggregator; "
-               "from pacomind.events.bus import EventBus; "
-               "from pacomind.intelligence.components.tool_learner import ToolLearner; "
-               "from pacomind.intelligence.synthesis.insight_deliverer import InsightDeliverer; "
-               "from pacomind.qualification.cases import select_cases; "
+    run_python("-c", "from protagine.briefings.aggregators import CalendarAggregator; "
+               "from protagine.events.bus import EventBus; "
+               "from protagine.intelligence.components.tool_learner import ToolLearner; "
+               "from protagine.intelligence.synthesis.insight_deliverer import InsightDeliverer; "
+               "from protagine.qualification.cases import select_cases; "
                "assert len(select_cases(['vision'])) == 3",
                cwd=tmp_path, env=env)

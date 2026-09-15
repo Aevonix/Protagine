@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 sys.path.append(sys.argv[4])
 root=Path(sys.argv[2]); case=sys.argv[3]; layout=sys.argv[5]
-assert importlib.util.find_spec('pacomind_memory') is None
+assert importlib.util.find_spec('protagine_memory') is None
 def blocked(*args,**kwargs): raise AssertionError('Configuration qualification must not call the network')
 socket.socket.connect=blocked; socket.create_connection=blocked
 home=Path(os.environ['HERMES_HOME']); home.mkdir(mode=0o700)
@@ -31,23 +31,23 @@ elif case=='environment':
  memory={'contact_id':'default'}; native={}
  expected=('http://127.0.0.1:7774','environment-owner','profile-api-key')
 elif case=='inherited':
- memory['api_key']='${PACOMIND_API_KEY}'; native={}
+ memory['api_key']='${PROTAGINE_API_KEY}'; native={}
  expected=('http://127.0.0.1:7771','inline-owner','fixture-factory-key')
 plugin['turn_outbox_path']=str(home/'state'/'owned-outbox.db')
-(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[],'pacomind':plugin},
-    'memory':{'provider':'pacomind-memory','config':memory}}))
-(home/'pacomind-memory.json').write_text(json.dumps(native))
+(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[],'protagine':plugin},
+    'memory':{'provider':'protagine-memory','config':memory}}))
+(home/'protagine-memory.json').write_text(json.dumps(native))
 (home/'.env').write_text('SELECTED_KEY=profile-key\nPLUGIN_KEY=profile-plugin-key\n'
-    'PACOMIND_API_KEY=profile-api-key\nPACOMIND_URL=http://127.0.0.1:7774\n'
-    'PACOMIND_OWNER_CONTACT_ID=environment-owner\n')
-assert not any(k in os.environ for k in ('SELECTED_KEY','PLUGIN_KEY','PACOMIND_API_KEY','PACOMIND_OWNER_CONTACT_ID'))
+    'PROTAGINE_API_KEY=profile-api-key\nPROTAGINE_URL=http://127.0.0.1:7774\n'
+    'PROTAGINE_OWNER_CONTACT_ID=environment-owner\n')
+assert not any(k in os.environ for k in ('SELECTED_KEY','PLUGIN_KEY','PROTAGINE_API_KEY','PROTAGINE_OWNER_CONTACT_ID'))
 if case=='inherited':
  (home/'.env').write_text('')
  from tools.environments.local import build_subprocess_env
- child=build_subprocess_env(base={**os.environ,'PACOMIND_API_KEY':'fixture-factory-key'})
- assert child['PACOMIND_API_KEY']=='fixture-factory-key'
+ child=build_subprocess_env(base={**os.environ,'PROTAGINE_API_KEY':'fixture-factory-key'})
+ assert child['PROTAGINE_API_KEY']=='fixture-factory-key'
  os.environ.clear(); os.environ.update(child)
-implementation=root/('pacomind_hermes' if layout=='private' else 'plugins/hermes-plugin')/'reminders.py'
+implementation=root/('protagine_hermes' if layout=='private' else 'plugins/hermes-plugin')/'reminders.py'
 spec=importlib.util.spec_from_file_location('reminder_config_probe',implementation)
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 client_spec=importlib.util.spec_from_file_location('reminder_config_client',implementation.with_name('client.py'))
@@ -64,7 +64,7 @@ def reader(client,owner,*,home,outbox):
 module.NativeReminders=reader
 module.main('selected-binding')
 assert observed==['selected-binding']
-assert importlib.util.find_spec('pacomind_memory') is None
+assert importlib.util.find_spec('protagine_memory') is None
 print(json.dumps({'case':case,'layout':layout,'adapter_package_absent':True,
     'selected_profile':True,'credentials_from_existing_profile':True,'network_calls':0}))
 '''
@@ -73,7 +73,7 @@ print(json.dumps({'case':case,'layout':layout,'adapter_package_absent':True,
 @pytest.mark.parametrize('case,layout', [('native','source'), ('plugin','source'),
     ('environment','source'), ('inherited','source'), ('native','private')])
 def test_cold_reminder_uses_native_profile_config_and_credentials(tmp_path, case, layout):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         spec = importlib.util.find_spec('hermes_cli')
         if spec is None:
@@ -89,15 +89,15 @@ def test_cold_reminder_uses_native_profile_config_and_credentials(tmp_path, case
     dependencies = tmp_path/'dependencies'
     dependencies.mkdir()
     for entry in Path(sysconfig.get_path('purelib')).iterdir():
-        if 'pacomind' not in entry.name and not entry.name.endswith('.pth'):
+        if 'protagine' not in entry.name and not entry.name.endswith('.pth'):
             (dependencies/entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
     source = ROOT
     if layout == 'private':
         source = tmp_path/'private-adapter'
-        (source/'pacomind_hermes').mkdir(parents=True)
-        (source/'pacomind_memory').mkdir()
+        (source/'protagine_hermes').mkdir(parents=True)
+        (source/'protagine_memory').mkdir()
         for name in ('reminders.py', 'client.py'):
-            shutil.copyfile(ROOT/'plugins/hermes-plugin'/name, source/'pacomind_hermes'/name)
-        shutil.copyfile(ROOT/'plugins/pacomind-memory/provider.py', source/'pacomind_memory/provider.py')
+            shutil.copyfile(ROOT/'plugins/hermes-plugin'/name, source/'protagine_hermes'/name)
+        shutil.copyfile(ROOT/'plugins/protagine-memory/provider.py', source/'protagine_memory/provider.py')
     run_python('-I', '-S', '-B', '-c', PROBE, native, source, case, dependencies, layout,
                cwd=tmp_path, env=env)

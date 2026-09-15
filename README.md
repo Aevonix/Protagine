@@ -133,10 +133,10 @@ or an embedding model.
 Install the current published release:
 
 ```bash
-python3.12 -m venv "$HOME/.local/share/pacomind/venv"
-source "$HOME/.local/share/pacomind/venv/bin/activate"
-python -m pip install "pacomind-hermes[native-memory]" "pacomind[hermes]"
-pacomind init --hermes-python /path/to/hermes/.venv/bin/python
+python3.12 -m venv "$HOME/.local/share/protagine/venv"
+source "$HOME/.local/share/protagine/venv/bin/activate"
+python -m pip install "protagine-hermes[native-memory]" "protagine[hermes]"
+protagine init --hermes-python /path/to/hermes/.venv/bin/python
 ```
 
 The wizard selects a Hermes profile and asks for identity, owner, model and
@@ -145,8 +145,8 @@ replacing an existing memory provider is an explicit choice. Accept its startup
 option, or use your instance path:
 
 ```bash
-pacomind --instance /path/to/private/pacomind start --detach
-pacomind --instance /path/to/private/pacomind status
+protagine --instance /path/to/private/protagine start --detach
+protagine --instance /path/to/private/protagine status
 ```
 
 Start a fresh Hermes session, provide a harmless fact and ask for it in another
@@ -214,7 +214,7 @@ not a prerequisite for the harness approach described above.
 ```bash
 python -m pip install -e './sidecar[dev]'
 cd sidecar
-python -m pytest -q tests pacomind
+python -m pytest -q tests protagine
 ```
 
 `tests/hermes_adapter` checks built packages against the pinned Hermes runtime.

@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pacomind.contextgate import (
+from protagine.contextgate import (
     GateConfig,
     GateDecision,
     chunk_text,
@@ -18,7 +18,7 @@ from pacomind.contextgate import (
     prepare_context,
     rank_chunks,
 )
-from pacomind.contextgate.retrieve import lexical_scores
+from protagine.contextgate.retrieve import lexical_scores
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ def test_estimate_code_denser():
 
 
 def test_estimate_env_override(monkeypatch):
-    monkeypatch.setenv("PACOMIND_CONTEXT_CHARS_PER_TOKEN", "2.0")
+    monkeypatch.setenv("PROTAGINE_CONTEXT_CHARS_PER_TOKEN", "2.0")
     text = "hello world, this is plain prose without any symbols at all " * 10
     assert estimate_tokens(text) == pytest.approx(len(text) / 2, rel=0.01)
 
@@ -168,9 +168,9 @@ def test_decide_default_budget_from_config():
 
 
 def test_gateconfig_from_env(monkeypatch):
-    monkeypatch.setenv("PACOMIND_CONTEXT_GATE", "off")
-    monkeypatch.setenv("PACOMIND_CONTEXT_GATE_HEADROOM", "0.5")
-    monkeypatch.setenv("PACOMIND_CONTEXT_GATE_BUDGET", "1234")
+    monkeypatch.setenv("PROTAGINE_CONTEXT_GATE", "off")
+    monkeypatch.setenv("PROTAGINE_CONTEXT_GATE_HEADROOM", "0.5")
+    monkeypatch.setenv("PROTAGINE_CONTEXT_GATE_BUDGET", "1234")
     cfg = GateConfig.from_env()
     assert cfg.mode == "off"
     assert cfg.headroom == 0.5
@@ -321,7 +321,7 @@ def test_prepare_summarizer_failure_degrades():
 
 @pytest.fixture()
 def client():
-    from pacomind.api.routers.context_gate import router as cg_router
+    from protagine.api.routers.context_gate import router as cg_router
 
     app = FastAPI()
     app.include_router(cg_router)
@@ -371,9 +371,9 @@ def test_api_requires_content(client):
 
 
 def test_api_model_tier_budget(client, monkeypatch):
-    from pacomind.api.routers import host as host_mod
-    from pacomind.router.router import LLMRouter
-    from pacomind.router.tiers import build_tiers_from_host
+    from protagine.api.routers import host as host_mod
+    from protagine.router.router import LLMRouter
+    from protagine.router.tiers import build_tiers_from_host
 
     tiers = build_tiers_from_host(
         {

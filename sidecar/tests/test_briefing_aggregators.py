@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
-from pacomind.briefings.aggregators import (
+from protagine.briefings.aggregators import (
     AnomalyDetectorAggregator,
     DiscovererSynthesisAggregator,
 )

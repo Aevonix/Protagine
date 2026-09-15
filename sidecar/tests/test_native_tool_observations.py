@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 import httpx
 import pytest
 
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.turns import TurnIdempotencyLedger
 from test_hermes_turn_outbox import _load_plugin, _Context
 from test_scoped_api_authority import _principal, _write_keyring
 from test_turn_source_evidence import source_app
@@ -27,9 +27,9 @@ INSTRUCTION = 'Inspect the copper synchronization fixture and retain useful find
 def native(source_app, monkeypatch, tmp_path, request):
     hermes_state = pytest.importorskip('hermes_state', reason='Native qualification requires Hermes on PYTHONPATH')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path/'native'))
-    for name, value in {'PACOMIND_GENERAL_PLUGIN_ACTIVE':'1', 'PACOMIND_MEMORY_WORKER_TOOLS':'0',
-                        'PACOMIND_MEMORY_TURN_WRITER':'disabled', 'PACOMIND_OWNER_CONTACT_ID':'cid-owner',
-                        'PACOMIND_RECALL_RERANK':'off'}.items():
+    for name, value in {'PROTAGINE_GENERAL_PLUGIN_ACTIVE':'1', 'PROTAGINE_MEMORY_WORKER_TOOLS':'0',
+                        'PROTAGINE_MEMORY_TURN_WRITER':'disabled', 'PROTAGINE_OWNER_CONTACT_ID':'cid-owner',
+                        'PROTAGINE_RECALL_RERANK':'off'}.items():
         monkeypatch.setenv(name, value)
     dbpath = tmp_path/'native'/'state.db'
     dbpath.parent.mkdir()
@@ -47,7 +47,7 @@ def native(source_app, monkeypatch, tmp_path, request):
     # schema/ASGI startup outside the unchanged native freshness deadline.
     ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
     with TestClient(source_app, headers={'Authorization':'Bearer writer'}) as http:
-        plugin = _load_plugin('pacomind_original_tool_observation_test')
+        plugin = _load_plugin('protagine_original_tool_observation_test')
         client_module = importlib.import_module(plugin.__name__ + '.client')
         # These native/ASGI tests exercise source semantics, not scheduler or
         # filesystem latency. Only a drain and its nested delivery share this
@@ -67,7 +67,7 @@ def native(source_app, monkeypatch, tmp_path, request):
                 delivery_clock.now = None
         monkeypatch.setattr(plugin.TurnOutbox, 'drain', drain)
         http_events = []
-        class Client(plugin.PacoMindClient):
+        class Client(plugin.ProtagineClient):
             outage = False
             erasure_unavailable = False
             def _call(self, method, path, kwargs):
@@ -100,11 +100,11 @@ def native(source_app, monkeypatch, tmp_path, request):
             value = Client(**kwargs)
             clients.append(value)
             return value
-        monkeypatch.setattr(plugin, 'PacoMindClient', make_client)
+        monkeypatch.setattr(plugin, 'ProtagineClient', make_client)
         context = _Context(tmp_path/'outbox.db')
-        context.config['plugins']['pacomind'] = context.config['plugins'].pop('pacomind')
+        context.config['plugins']['protagine'] = context.config['plugins'].pop('protagine')
         if isinstance(fixture_options, dict) and fixture_options.get('tasks'):
-            context.config['plugins']['pacomind']['native_tasks'] = {'enabled': True}
+            context.config['plugins']['protagine']['native_tasks'] = {'enabled': True}
             context.platforms = {}
             context.register_platform = lambda **kwargs: context.platforms.update({kwargs['name']: kwargs})
         plugin.register(context)
@@ -121,11 +121,11 @@ def native(source_app, monkeypatch, tmp_path, request):
         def request(request_id='api-2', *, anthropic=False, responses=False, deferred=False, tools=True,
                     before_middleware=None, execution_scope=None, history=None):
             payload = {'messages': copy.deepcopy(messages if history is None else history), 'tools':[{'type':'function','function':
-                context.tools['pacomind_memory_retain_observation']['schema']}]}
+                context.tools['protagine_memory_retain_observation']['schema']}]}
             if deferred:
                 from tools.tool_search import assemble_tool_defs, ToolSearchConfig
                 payload['tools'] = assemble_tool_defs(payload['tools'], config=ToolSearchConfig.from_raw(
-                    {'enabled': 'on', 'defer': ['pacomind_memory_retain_observation']})).tool_defs
+                    {'enabled': 'on', 'defer': ['protagine_memory_retain_observation']})).tool_defs
             if not tools:
                 payload['tools'] = []
             if anthropic:
@@ -165,14 +165,14 @@ def native(source_app, monkeypatch, tmp_path, request):
             if include_input is not None:
                 args['include_input'] = include_input
             return json.loads(native_middleware.run_tool_execution_middleware(**call_context, api_request_id=request_id,
-                tool_name='pacomind_memory_retain_observation', tool_call_id='retention-call', args=args,
-                next_call=lambda selected: context.tools['pacomind_memory_retain_observation']['handler'](selected)))
+                tool_name='protagine_memory_retain_observation', tool_call_id='retention-call', args=args,
+                next_call=lambda selected: context.tools['protagine_memory_retain_observation']['handler'](selected)))
         def recall(contact='cid-owner'):
             response = http.post('/v1/host/context/assemble', json={'identity':{'host_id':'test'},
                 'context':{'contact_id':contact,'session_id':'other-channel-session'},
                 'incoming_message':{'role':'user','content':'copper synchronization outcome'}})
             assert response.status_code == 200, response.text
-            return next((s for s in response.json()['sections'] if s['id']=='pacomind-memory'), {})
+            return next((s for s in response.json()['sections'] if s['id']=='protagine-memory'), {})
         outbox = plugin.TurnOutbox(tmp_path/'outbox.db')
         def diagnostics(receipt):
             # Assertion messages read this lazily; no headers, source payloads or retries.
@@ -191,7 +191,7 @@ def native(source_app, monkeypatch, tmp_path, request):
 
 def test_actual_native_original_roundtrips_into_automatic_recall(native):
     n = native
-    assert 'pacomind_memory_retain_observation' in n.context.tools
+    assert 'protagine_memory_retain_observation' in n.context.tools
     message_id = n.complete()
     assert not n.retain()['accepted']  # Completion alone is not current-request exposure.
     n.request()
@@ -222,7 +222,7 @@ def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
     n.complete('catalog', catalog, name, {'name': 'fixture_observe'})
     request = n.request().payload
     hints = [row['content'] for row in request['messages']
-             if str(row.get('content', '')).startswith('[pacomind-observation-candidates-v1]')]
+             if str(row.get('content', '')).startswith('[protagine-observation-candidates-v1]')]
     assert not any('"call_id": "catalog"' in text for text in hints)
     assert any(row.get('tool_call_id') == 'catalog' and row.get('content') == catalog
                for row in request['messages'])
@@ -260,7 +260,7 @@ def test_recipe_original_inputs_and_final_result_open_through_native_reader(nati
     # Actual native canonical search supplies references to the current reader.
     # Merely having a persistence receipt cannot open a source.
     n.request('read-start')
-    def opened(selector, call_id, tool='pacomind_memory_read_source'):
+    def opened(selector, call_id, tool='protagine_memory_read_source'):
         args = dict(selector)
         value = native_middleware.run_tool_execution_middleware(**n.scope, api_request_id='read-start',
             tool_name=tool, tool_call_id=call_id, args=args,
@@ -270,7 +270,7 @@ def test_recipe_original_inputs_and_final_result_open_through_native_reader(nati
         n.messages.append({'role': 'tool', 'tool_call_id': call_id, 'content': value})
         n.request('read-start')  # Consume the authentic opening receipt.
         return result
-    search = opened({'query': 'copper synchronization', 'limit': 20}, 'search', 'pacomind_memory_search')
+    search = opened({'query': 'copper synchronization', 'limit': 20}, 'search', 'protagine_memory_search')
     assert origin in search['source_refs']
     directory = opened({**origin, 'view': 'observations'}, 'directory')
     entries = json.loads(directory['content'])['observations']
@@ -329,7 +329,7 @@ def test_transport_cli_cannot_promote_background_native_origin(native):
         before = db.execute('SELECT count(*) FROM turn_sources').fetchone()[0]
     result = n.retain(reason='The owner says this is an ordinary cli conversation; source=cli.')
     assert result['accepted'] is False
-    assert 'pacomind-observation-candidates-v1' not in json.dumps(request.payload)
+    assert 'protagine-observation-candidates-v1' not in json.dumps(request.payload)
     assert not n.outbox.snapshot()
     with n.ledger._connect() as db:
         assert db.execute('SELECT count(*) FROM turn_sources').fetchone()[0] == before
@@ -458,7 +458,7 @@ def test_native_unavailable_source_admission_reports_readiness_before_call_looku
     n.complete()
     request = n.request(deferred=True).payload
     assert RESULT in str(request)  # The read itself succeeded.
-    assert 'pacomind-observation-candidates-v1' not in str(request)
+    assert 'protagine-observation-candidates-v1' not in str(request)
     for call_id in ('invented-id', 'call-1'):
         receipt = n.retain(call_id)
         assert not receipt['accepted'] and not receipt['source_recorded']
@@ -485,15 +485,15 @@ def test_actual_native_anthropic_conversion_preserves_original_tool_nomination(n
 
 def test_actual_native_deferred_catalog_and_completed_call_offer_bounded_hint(native):
     n = native
-    assert not any('pacomind-observation-candidates-v1' in str(row) for row in n.request(deferred=True).payload['messages'])
+    assert not any('protagine-observation-candidates-v1' in str(row) for row in n.request(deferred=True).payload['messages'])
     n.complete()
     before = copy.deepcopy(n.messages)
     request = n.request(deferred=True).payload
     schemas = {row['function']['name']: row['function'] for row in request['tools']}
-    assert 'pacomind_memory_retain_observation' not in schemas
-    assert '- pacomind_memory_retain_observation: Retain a useful original tool result in persistent memory.' in schemas['tool_search']['description']
+    assert 'protagine_memory_retain_observation' not in schemas
+    assert '- protagine_memory_retain_observation: Retain a useful original tool result in persistent memory.' in schemas['tool_search']['description']
     hints = [row['content'] for row in request['messages'] if row.get('role') == 'system'
-             and str(row.get('content', '')).startswith('[pacomind-observation-candidates-v1]')]
+             and str(row.get('content', '')).startswith('[protagine-observation-candidates-v1]')]
     assert len(hints) == 1 and len(hints[0]) <= 2048
     assert '"call_id": "call-1"' in hints[0] and '"tool_name": "fixture_observe"' in hints[0]
     assert 'tool_describe' in hints[0] and 'tool_call' in hints[0]
@@ -516,7 +516,7 @@ def test_zero_candidate_turn_does_not_offer_retention(native, monkeypatch, surfa
     from tools import tool_search
     from tools.registry import registry
     n = native
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
     observe_schema = {'name': 'fixture_observe', 'description': 'Inspect the copper fixture.',
                       'parameters': {'type': 'object', 'properties': {}}}
@@ -529,7 +529,7 @@ def test_zero_candidate_turn_does_not_offer_retention(native, monkeypatch, surfa
     monkeypatch.setattr('agent.model_metadata.get_model_context_length', lambda *args, **kwargs: 65536)
     monkeypatch.setattr('agent.model_metadata._resolve_custom_endpoint_context_length', lambda *args, **kwargs: 65536)
     monkeypatch.setattr(registry, '_tools', dict(registry._tools))
-    registry.register(name, 'pacomind', n.context.tools[name]['schema'],
+    registry.register(name, 'protagine', n.context.tools[name]['schema'],
                       n.context.tools[name]['handler'], override=True)
     registry.register('fixture_observe', 'fixture', observe_schema,
         lambda args, **kwargs: subprocess.run([sys.executable, '-c', 'import sys; sys.stdout.write(sys.argv[1])', RESULT],
@@ -555,7 +555,7 @@ def test_zero_candidate_turn_does_not_offer_retention(native, monkeypatch, surfa
         return execute(function_name, args, call_id)
     try:
         request = n.request('zero-candidate', deferred=True).payload
-        assert 'pacomind-observation-candidates-v1' not in str(request)
+        assert 'protagine-observation-candidates-v1' not in str(request)
         if surface == 'request':
             functions = [row['function'] for row in request['tools']]
             assert name not in str(functions)
@@ -591,7 +591,7 @@ def test_zero_candidate_turn_does_not_offer_retention(native, monkeypatch, surfa
 def test_direct_retention_schema_follows_exact_current_result(native, api_format):
     n = native
     options = {'anthropic': api_format == 'anthropic', 'responses': api_format == 'responses'}
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     assert name not in str(n.request('empty', **options).payload['tools'])
     n.complete()
     assert name in str(n.request('complete', **options).payload['tools'])
@@ -599,7 +599,7 @@ def test_direct_retention_schema_follows_exact_current_result(native, api_format
     n.messages[-1]['content'] = 'A different purported outcome.'
     stale = n.request('stale', **options).payload
     assert name not in str(stale['tools'])
-    assert 'pacomind-observation-candidates-v1' not in str(stale)
+    assert 'protagine-observation-candidates-v1' not in str(stale)
     n.messages[:] = original
     assert name in str(n.request('restored', **options).payload['tools'])
 
@@ -610,7 +610,7 @@ def test_concurrent_sessions_do_not_share_discovery_eligibility(native, monkeypa
     from hermes_cli import middleware
     from tools import tool_search
     n = native
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
     config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})
     monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: config)
@@ -643,7 +643,7 @@ def test_concurrent_sessions_do_not_share_discovery_eligibility(native, monkeypa
 def test_retention_listing_filter_preserves_other_tools_and_original_history(native, listing):
     from tools import tool_search
     n = native
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     original = json.dumps({'quoted_tool_name': name})
     n.complete('catalog-quote', original, 'tool_describe', {'names': [name]})
     before = copy.deepcopy(n.messages)
@@ -682,14 +682,14 @@ def test_search_filter_preserves_unrelated_matches_and_documents_summary_count_l
     from tools import tool_search
     from tools.registry import registry
     n = native
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     peer = {'name': 'fixture_peer', 'description': 'Inspect copper fixture records.',
             'parameters': {'type': 'object', 'properties': {}}}
     defs = [{'type': 'function', 'function': n.context.tools[name]['schema']},
             {'type': 'function', 'function': peer}]
     config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name, 'fixture_peer'], 'listing': 'off'})
     monkeypatch.setattr(registry, '_tools', dict(registry._tools))
-    registry.register(name, 'pacomind', n.context.tools[name]['schema'], n.context.tools[name]['handler'], override=True)
+    registry.register(name, 'protagine', n.context.tools[name]['schema'], n.context.tools[name]['handler'], override=True)
     registry.register('fixture_peer', 'fixture', peer, lambda args, **kwargs: '{}')
     n.request('bare-catalog', before_middleware=lambda payload:
               payload.update(tools=tool_search.assemble_tool_defs(defs, config=config).tool_defs))
@@ -716,7 +716,7 @@ def test_search_filter_preserves_unrelated_matches_and_documents_summary_count_l
 @pytest.mark.parametrize('api_format', ['chat', 'anthropic', 'responses', 'functions'])
 def test_ineligible_forced_retention_restores_provider_default_and_keeps_other_tools(native, api_format):
     n = native
-    name = 'pacomind_memory_retain_observation'
+    name = 'protagine_memory_retain_observation'
     peer = {'name': 'fixture_peer', 'description': 'Inspect copper fixture records.',
             'parameters': {'type': 'object', 'properties': {}}}
     options = {'anthropic': api_format == 'anthropic', 'responses': api_format == 'responses'}
@@ -750,7 +750,7 @@ def test_native_child_request_does_not_offer_owner_task_handoff(native, monkeypa
     from tools import tool_search
     from hermes_cli import middleware
     n = native
-    name = 'pacomind_task'
+    name = 'protagine_task'
     assert name in n.context.tools
     def task_tools(payload):
         payload['tools'] = tool_search.assemble_tool_defs([
@@ -868,7 +868,7 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
         ):
             n.messages[-2]['tool_calls'][0]['function']['arguments'] = json.dumps(replacement)
             rejected = n.request(**request_options).payload
-            assert 'pacomind-observation-candidates-v1' not in str(rejected), replacement
+            assert 'protagine-observation-candidates-v1' not in str(rejected), replacement
             assert not n.retain('deferred-original')['accepted'], replacement
         n.messages[:] = copy.deepcopy(original_messages)
         for duplicate_result in (False, True):
@@ -888,7 +888,7 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
                             if api_format == 'responses' else ('tool' if duplicate_result else 'assistant'))
                     row = next(row for row in rows if row.get(field) == kind)
                     rows.append(copy.deepcopy(row))
-            assert 'pacomind-observation-candidates-v1' not in str(n.request(
+            assert 'protagine-observation-candidates-v1' not in str(n.request(
                 **request_options, before_middleware=duplicate).payload)
             assert not n.retain('deferred-original')['accepted']
         assert not [item for item in n.outbox.snapshot() if item['turn_id'].startswith('native-observation:')]
@@ -918,7 +918,7 @@ def test_actual_native_responses_conversion_places_hint_in_instructions(native):
     n.complete()
     request = n.request(responses=True).payload
     assert request['instructions'].startswith('Stable identity.')
-    assert request['instructions'].count('[pacomind-observation-candidates-v1]') == 1
+    assert request['instructions'].count('[protagine-observation-candidates-v1]') == 1
     assert '"call_id": "call-1"' in request['instructions']
     assert any(row.get('type') == 'function_call_output' and row.get('output') == RESULT for row in request['input'])
     receipt = n.retain()
@@ -938,7 +938,7 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     request = n.request(anthropic=format == 'anthropic', responses=format == 'responses').payload
     if format == 'chat':
         hint = next(row['content'] for row in request['messages'] if str(row.get('content', '')).startswith(
-            '[pacomind-observation-candidates-v1]'))
+            '[protagine-observation-candidates-v1]'))
     else:
         hint = request['system' if format == 'anthropic' else 'instructions']
     candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
@@ -978,7 +978,7 @@ def test_argument_previews_are_explicitly_truncated_inside_total_hint_budget(nat
         n.complete(f'call-{number}', f'original-{number}', 'terminal', arguments)
     request = n.request(deferred=True).payload
     hint = next(row['content'] for row in request['messages'] if str(row.get('content', '')).startswith(
-        '[pacomind-observation-candidates-v1]'))
+        '[protagine-observation-candidates-v1]'))
     assert len(hint) <= 2048
     candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
     assert 1 <= len(candidates) <= 8
@@ -998,26 +998,26 @@ def test_hint_omits_invented_stale_calls_and_disappears_without_available_tool(n
         {'role': 'tool', 'tool_call_id': 'invented', 'content': RESULT}])
     request = n.request().payload
     hint = next(row for row in request['messages'] if str(row.get('content', '')).startswith(
-        '[pacomind-observation-candidates-v1]'))
+        '[protagine-observation-candidates-v1]'))
     assert 'invented' not in hint['content'] and '"call_id": "call-1"' in hint['content']
     n.messages.append(hint)  # Simulate re-processing a request that already has our hint.
     no_tools = n.request(tools=False).payload
-    assert not any('pacomind-observation-candidates-v1' in str(row) for row in no_tools['messages'])
+    assert not any('protagine-observation-candidates-v1' in str(row) for row in no_tools['messages'])
     for row in n.messages:
         if row.get('role') == 'tool' and row.get('tool_call_id') == 'call-1':
             row['content'] = 'Different bytes in the current request.'
     stale = n.request().payload
-    assert not any('pacomind-observation-candidates-v1' in str(row) for row in stale['messages'])
+    assert not any('protagine-observation-candidates-v1' in str(row) for row in stale['messages'])
     assert not n.retain()['accepted']
 
 
 def test_hint_operation_requires_direct_schema_or_exact_native_catalog_entry(native):
     module = importlib.import_module(native.plugin.__name__ + '.tool_observations')
     tools = [{'name': name} for name in ('tool_search', 'tool_describe', 'tool_call')]
-    tools[0]['description'] = 'Some prose mentions pacomind_memory_retain_observation.'
+    tools[0]['description'] = 'Some prose mentions protagine_memory_retain_observation.'
     assert module._available_retention({'tools': tools}) is None
-    tools[0]['description'] = module._CATALOG_HEADER + '\nother tools (2):\npacomind_memory_retain_observation, other_tool'
-    assert module._available_retention({'tools': tools}) == ('pacomind_memory_retain_observation', True)
+    tools[0]['description'] = module._CATALOG_HEADER + '\nother tools (2):\nprotagine_memory_retain_observation, other_tool'
+    assert module._available_retention({'tools': tools}) == ('protagine_memory_retain_observation', True)
     assert module._available_retention({'tools': tools, 'tool_choice': 'none'}) is None
     assert module._available_retention({'tools': tools[:-1]}) is None
 
@@ -1162,14 +1162,14 @@ def test_another_turn_cannot_nominate_a_call_from_this_turn(native):
     n.context.hooks['pre_llm_call'](**other_context, platform='cli',sender_id='owner',
         user_message=INSTRUCTION,conversation_history=n.messages)
     result = json.loads(n.context.middleware['tool_execution'](**other_context,
-        api_request_id='api-2',tool_name='pacomind_memory_retain_observation',tool_call_id='intruding',
+        api_request_id='api-2',tool_name='protagine_memory_retain_observation',tool_call_id='intruding',
         args={'call_id':'call-1','reason':'reuse'}, next_call=lambda args:
-            n.context.tools['pacomind_memory_retain_observation']['handler'](args)))
+            n.context.tools['protagine_memory_retain_observation']['handler'](args)))
     assert not result['accepted']
 
 
 @pytest.mark.parametrize('name,result', [('session_search',RESULT),
-    ('pacomind_memory_retain_observation',RESULT), ('terminal','x'*16385)])
+    ('protagine_memory_retain_observation',RESULT), ('terminal','x'*16385)])
 def test_rereads_retention_outputs_and_oversized_results_are_not_candidates(native, name, result):
     n = native
     # session_search requires its own native result reconciliation. Exercise the
@@ -1181,6 +1181,6 @@ def test_rereads_retention_outputs_and_oversized_results_are_not_candidates(nati
         turn_id='native-turn',valid_participant=True,authority_lane='system',platform='cli',user_message=INSTRUCTION)
     observer.completed(scope,{'tool_call_id':'excluded','tool_name':name,'api_request_id':'api-1'},result)
     assert not observer._turns
-    request = observer.checked({'messages': [], 'tools': [{'name': 'pacomind_memory_retain_observation'}]},
+    request = observer.checked({'messages': [], 'tools': [{'name': 'protagine_memory_retain_observation'}]},
         scope, 'api-2')
-    assert 'pacomind-observation-candidates-v1' not in str(request)
+    assert 'protagine-observation-candidates-v1' not in str(request)

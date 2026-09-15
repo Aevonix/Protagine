@@ -4,12 +4,12 @@ import sqlite3
 
 import pytest
 
-from pacomind.execution_results import ExecutionResultV1
-from pacomind.events.journal import event_record_request_digest
-from pacomind.projects.event_outbox import ProjectEventProjector
-from pacomind.projects.models import Project, Step
-from pacomind.projects.store import ProjectStore
-from pacomind.work_orders import WorkOrderV1
+from protagine.execution_results import ExecutionResultV1
+from protagine.events.journal import event_record_request_digest
+from protagine.projects.event_outbox import ProjectEventProjector
+from protagine.projects.models import Project, Step
+from protagine.projects.store import ProjectStore
+from protagine.work_orders import WorkOrderV1
 
 
 def _verified_result(store: ProjectStore):
@@ -137,11 +137,11 @@ def test_execution_result_stages_exact_immutable_event_in_own_transaction(tmp_pa
 def test_execution_replay_preserves_first_stage_mode_across_cutover(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "live")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "live")
     store = ProjectStore(str(tmp_path / "projects.db"))
     _project, _step, order, result = _verified_result(store)
 
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "off")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "off")
     store.save_execution_result(order, result, transport_status="completed")
 
     pending = store.pending_project_events()
@@ -261,9 +261,9 @@ def test_terminal_replay_preserves_first_stage_mode_across_cutover(
     project.outcome = "succeeded"
     project.reason = "all_steps_done"
 
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "live")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "live")
     store.save_project(project)
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "shadow")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "shadow")
     store.save_project(project)
 
     terminal = [
@@ -277,7 +277,7 @@ def test_terminal_replay_preserves_first_stage_mode_across_cutover(
 def test_new_attempt_cannot_change_result_head_after_project_terminal(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("PACOMIND_COGNITION_EVIDENCE", "live")
+    monkeypatch.setenv("PROTAGINE_COGNITION_EVIDENCE", "live")
     store = ProjectStore(str(tmp_path / "projects.db"))
     project, step, order, result = _verified_result(store)
     step.status = "done"
@@ -375,9 +375,9 @@ def test_invalid_json_records_error_and_does_not_poison_later_drain(tmp_path):
 def test_corrupted_projection_receipt_is_not_acknowledged_or_released(
     tmp_path, monkeypatch, field, mutate,
 ):
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("PACOMIND_EVENT_JOURNAL_DIR", str(tmp_path / "events"))
-    monkeypatch.setenv("PACOMIND_EVENT_JOURNAL_RETENTION", "500")
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_DIR", str(tmp_path / "events"))
+    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_RETENTION", "500")
     store = ProjectStore(str(tmp_path / "projects.db"))
     _verified_result(store)
 

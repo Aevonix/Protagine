@@ -10,10 +10,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.authority import required_scope
-from pacomind.api.contact_grants import ContactGrantRegistry
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import host
+from protagine.api.authority import required_scope
+from protagine.api.contact_grants import ContactGrantRegistry
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
 
 
 def _write_private(path, value) -> None:
@@ -270,7 +270,7 @@ def _app(keyring, grants, *, legacy_key=None):
 def _headers(secret: str, principal: str | None = None):
     value = {"Authorization": "Bearer " + secret}
     if principal:
-        value["X-PacoMind-Principal"] = principal
+        value["X-Protagine-Principal"] = principal
     return value
 
 
@@ -291,7 +291,7 @@ def contact_sources(monkeypatch):
     monkeypatch.setattr(host, "_contacts_store", contacts)
     monkeypatch.setattr(host, "_commitment_store", _Commitments())
     monkeypatch.setattr(host, "_comms_log", _Comms())
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-owner")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-owner")
     return contacts
 
 
@@ -348,7 +348,7 @@ async def test_contact_policy_projects_only_callers_attested_grants(
     assert post.status_code == 403
     assert post.json()["detail"]["code"] == "unscoped_api_denied"
     body = response.json()
-    assert body["schema"] == "PacoMindContactPolicySourceV1"
+    assert body["schema"] == "ProtagineContactPolicySourceV1"
     assert body["read_only"] is True
     assert body["execution_authority"] is False
     assert body["caller_principal"] == "deck-reader"
@@ -409,7 +409,7 @@ async def test_denied_standing_normalizes_an_outreach_recommendation(
         }
 
     monkeypatch.setattr(
-        "pacomind.contacts.comms.evaluate_outreach", recommend
+        "protagine.contacts.comms.evaluate_outreach", recommend
     )
     app = _app(keyring, ContactGrantRegistry(None))
     async with AsyncClient(
@@ -677,7 +677,7 @@ async def test_contact_provision_create_normalizes_e164_is_inert_and_idempotent(
     assert repeated.status_code == 200
     assert repeated.json() == first.json()
     result = first.json()
-    assert result["schema"] == "PacoMindContactProvisionResultV1"
+    assert result["schema"] == "ProtagineContactProvisionResultV1"
     assert result["address"] == "12125550210@s.whatsapp.net"
     assert result["created"] is True
     assert result["verified"] is True
@@ -1134,7 +1134,7 @@ async def test_contact_standing_is_exact_scoped_idempotent_and_audited(
 
     assert first.status_code == 200
     assert first.json() == {
-        "schema": "PacoMindContactStandingResultV1",
+        "schema": "ProtagineContactStandingResultV1",
         "version": 1,
         "contact_id": "cid-other",
         "interaction_allowed": True,
@@ -1191,8 +1191,8 @@ async def test_contact_standing_is_exact_scoped_idempotent_and_audited(
 async def test_contact_standing_fails_closed_when_owner_identity_is_unavailable(
     tmp_path, contact_sources, monkeypatch,
 ):
-    monkeypatch.delenv("PACOMIND_OWNER_CONTACT_ID", raising=False)
-    monkeypatch.delenv("PACOMIND_HOST_CONTACT_ID", raising=False)
+    monkeypatch.delenv("PROTAGINE_OWNER_CONTACT_ID", raising=False)
+    monkeypatch.delenv("PROTAGINE_HOST_CONTACT_ID", raising=False)
     keyring = tmp_path / "keyring.json"
     _write_private(keyring, {
         "version": 1,
@@ -1244,8 +1244,8 @@ async def test_projection_and_mutation_share_legacy_and_name_owner_resolution(
     _write_private(grants_path, {"version": 1, "principals": {}})
     app = _app(keyring, ContactGrantRegistry(grants_path))
 
-    monkeypatch.delenv("PACOMIND_OWNER_CONTACT_ID", raising=False)
-    monkeypatch.setenv("PACOMIND_HOST_CONTACT_ID", "cid-owner")
+    monkeypatch.delenv("PROTAGINE_OWNER_CONTACT_ID", raising=False)
+    monkeypatch.setenv("PROTAGINE_HOST_CONTACT_ID", "cid-owner")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         legacy_read = await c.get(
             "/v1/host/contact-policy",
@@ -1260,8 +1260,8 @@ async def test_projection_and_mutation_share_legacy_and_name_owner_resolution(
                 "operation_id": "deck-standing-legacy-owner",
             },
         )
-        monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "Owner")
-        monkeypatch.delenv("PACOMIND_HOST_CONTACT_ID", raising=False)
+        monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "Owner")
+        monkeypatch.delenv("PROTAGINE_HOST_CONTACT_ID", raising=False)
         name_read = await c.get(
             "/v1/host/contact-policy",
             headers=_headers("deck-reader-secret", "deck-reader"),
@@ -1296,7 +1296,7 @@ async def test_owner_resolution_uncertainty_returns_no_projection_or_mutation(
         contact_sources.contacts.append(
             _contact("cid-owner-duplicate", name="Owner", allowed=True)
         )
-    monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", owner_value)
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", owner_value)
     keyring = tmp_path / "keyring.json"
     _write_private(keyring, {
         "version": 1,

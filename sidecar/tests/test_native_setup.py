@@ -16,8 +16,8 @@ import yaml
 
 from dotenv import dotenv_values
 
-from pacomind import setup, setup_hermes
-from pacomind.util.instance import load_environment
+from protagine import setup, setup_hermes
+from protagine.util.instance import load_environment
 
 
 def _skill_review_native(home, code, *arguments):
@@ -30,17 +30,17 @@ def _skill_review_native(home, code, *arguments):
 
 def _install_skill_review(args, monkeypatch):
     pytest.importorskip('cron.jobs')
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
     args.ordinary_skill_review = True
     assert setup.run_init(None, args) == 0
-    state = Path(args.hermes_home)/'pacomind'
+    state = Path(args.hermes_home)/'protagine'
     return state, json.loads((state/'instance.json').read_text())['ordinary_skill_review']
 
 
 def test_ordinary_skill_review_fresh_install_binds_before_activation_and_preserves_other_jobs(args, monkeypatch):
-    from pacomind import setup_skill_reviews
+    from protagine import setup_skill_reviews
     home = Path(args.hermes_home)
     unrelated = _skill_review_native(home, '''
 import json
@@ -71,7 +71,7 @@ print(json.dumps(create_job(prompt='Keep this unrelated task', schedule='0 1 * *
 
 
 def test_ordinary_skill_review_guided_opt_in(args, monkeypatch):
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     pytest.importorskip('cron.jobs')
     monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
@@ -89,7 +89,7 @@ def test_ordinary_skill_review_guided_opt_in(args, monkeypatch):
     monkeypatch.setattr(setup, '_prompt', choose)
     args.non_interactive = False
     assert setup.run_init(None, args) == 0
-    state = Path(args.hermes_home)/'pacomind'
+    state = Path(args.hermes_home)/'protagine'
     binding = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
     assert binding['enabled'] and binding['schedule'] == '0 4 * * *'
     assert binding['evaluator_path'] is None
@@ -98,7 +98,7 @@ def test_ordinary_skill_review_guided_opt_in(args, monkeypatch):
 
 def test_ordinary_skill_review_existing_upgrade_schedule_disable_and_reenable(args, monkeypatch, tmp_path):
     state, first = _install_skill_review(args, monkeypatch)
-    models = (state/'.pacomind-llm-config.json').read_bytes()
+    models = (state/'.protagine-llm-config.json').read_bytes()
     home = Path(args.hermes_home)
     config = (home/'config.yaml').read_bytes()
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Existing setup called a model'))
@@ -121,7 +121,7 @@ def test_ordinary_skill_review_existing_upgrade_schedule_disable_and_reenable(ar
     assert setup.run_init(None, args) == 0
     again = json.loads((state/'instance.json').read_text())['ordinary_skill_review']
     assert again['job_id'] != first['job_id'] and again['evaluator_path'] is None
-    assert (state/'.pacomind-llm-config.json').read_bytes() == models
+    assert (state/'.protagine-llm-config.json').read_bytes() == models
     assert (home/'config.yaml').read_bytes() == config
 
 
@@ -145,7 +145,7 @@ print(json.dumps(update_job(sys.argv[1], {'schedule':'0 3 * * *'})))
 
 
 def test_ordinary_skill_review_manifest_failure_removes_only_new_paused_job(args, monkeypatch):
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     pytest.importorskip('cron.jobs')
     monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path(sys.executable))
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a, **k: None)
@@ -159,8 +159,8 @@ def test_ordinary_skill_review_manifest_failure_removes_only_new_paused_job(args
     assert setup.run_init(None, args) == 1
     home = Path(args.hermes_home)
     assert _skill_review_native(home, 'import json; from cron.jobs import list_jobs; print(json.dumps(list_jobs(include_disabled=True)))') == []
-    assert not list((home/'scripts').glob('pacomind-skill-review-*'))
-    assert 'ordinary_skill_review' not in json.loads((home/'pacomind'/'instance.json').read_text())
+    assert not list((home/'scripts').glob('protagine-skill-review-*'))
+    assert 'ordinary_skill_review' not in json.loads((home/'protagine'/'instance.json').read_text())
 
 
 def test_ordinary_skill_review_invalid_schedule_precedes_attachment(args, monkeypatch):
@@ -170,7 +170,7 @@ def test_ordinary_skill_review_invalid_schedule_precedes_attachment(args, monkey
     args.skill_review_schedule = 'not a schedule'
     assert setup.run_init(None, args) == 1
     home = Path(args.hermes_home)
-    assert not (home/'pacomind').exists()
+    assert not (home/'protagine').exists()
     assert not (home/'plugins').exists()
     assert not (home/'cron'/'jobs.json').exists()
 
@@ -178,7 +178,7 @@ def test_ordinary_skill_review_invalid_schedule_precedes_attachment(args, monkey
 @pytest.fixture(autouse=True)
 def isolated_platform_environment(monkeypatch):
     monkeypatch.setattr(os, 'environ', {key:value for key,value in os.environ.items()
-        if not key.startswith(('PACOMIND_', 'PACOMIND_')) or key == 'PACOMIND_TEST_HOME'})
+        if not key.startswith(('PROTAGINE_', 'PROTAGINE_')) or key == 'PROTAGINE_TEST_HOME'})
 
 
 @pytest.mark.parametrize('version, supported', [
@@ -242,7 +242,7 @@ def artifact(tmp_path):
     root = Path(__file__).resolve().parents[2]
     wheel = tmp_path/'adapter.whl'
     with zipfile.ZipFile(wheel, 'w') as output:
-        for package, source in [('pacomind_hermes', root/'plugins/hermes-plugin'), ('pacomind_memory', root/'plugins/pacomind-memory')]:
+        for package, source in [('protagine_hermes', root/'plugins/hermes-plugin'), ('protagine_memory', root/'plugins/protagine-memory')]:
             for path in source.rglob('*'):
                 if path.is_file() and path.suffix in {'.py', '.yaml', '.md'} and '__pycache__' not in path.parts:
                     output.write(path, package+'/'+str(path.relative_to(source)))
@@ -252,9 +252,9 @@ def artifact(tmp_path):
 @pytest.fixture
 def args(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'environ', dict(os.environ))
-    monkeypatch.delenv('PACOMIND_STATE_DIR', raising=False)
-    monkeypatch.delenv('PACOMIND_STATE_DIR', raising=False)
-    monkeypatch.delenv('PACOMIND_SKIP_DOTENV', raising=False)
+    monkeypatch.delenv('PROTAGINE_STATE_DIR', raising=False)
+    monkeypatch.delenv('PROTAGINE_STATE_DIR', raising=False)
+    monkeypatch.delenv('PROTAGINE_SKIP_DOTENV', raising=False)
     monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path('/fixture/python'))
     monkeypatch.setattr(setup_hermes, '_adapter_binding', lambda *args: {'mode': 'private-directory'})
     monkeypatch.setattr(setup, '_check_port', lambda port: False)
@@ -316,12 +316,12 @@ other_eager: *eager
     assert setup.run_init(None, args) == 0
     configured = yaml.safe_load((home/'config.yaml').read_text())
     assert configured['tools']['tool_search'] == {
-        **original['tools']['tool_search'], 'eager': ['another_plugin_tool', 'pacomind_task']}
+        **original['tools']['tool_search'], 'eager': ['another_plugin_tool', 'protagine_task']}
     assert configured['tools']['terminal'] == original['tools']['terminal']
     for name in ('other_tools', 'other_search', 'other_eager'):
         assert configured[name] == original[name]
-    assert configured['plugins']['pacomind']['enabled_action_tools'] == []
-    assert configured['plugins']['pacomind']['enabled_message_tools'] == []
+    assert configured['plugins']['protagine']['enabled_action_tools'] == []
+    assert configured['plugins']['protagine']['enabled_message_tools'] == []
     before = (home/'config.yaml').read_bytes()
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Existing setup made inference'))
     assert setup.run_init(None, args) == 0
@@ -331,9 +331,9 @@ other_eager: *eager
 @pytest.mark.parametrize('background', ['none', 'native_goals', 'local_work_and_goals'])
 def test_wizard_preserves_full_model_configuration_and_existing_chat(
         args, supplied_model_config, background, monkeypatch, capsys, caplog):
-    from pacomind import setup_local_work
-    from pacomind.router.router import LLMRouter
-    from pacomind.router.functions import candidates
+    from protagine import setup_local_work
+    from protagine.router.router import LLMRouter
+    from protagine.router.functions import candidates
     caplog.set_level('INFO')
     home = Path(args.hermes_home)
     home.mkdir(mode=0o700)
@@ -351,15 +351,15 @@ def test_wizard_preserves_full_model_configuration_and_existing_chat(
     args.local_work = background == 'local_work_and_goals'
     def native_create(command, **kwargs):
         assert 'create_profile' in command[-1] and 'kb.create_board' in command[-1]
-        worker = home/'profiles/pacomind-drafts'
+        worker = home/'profiles/protagine-drafts'
         worker.mkdir(parents=True)
         (worker/'config.yaml').write_text('{}\n')
         return SimpleNamespace(returncode=0)
     native = Mock(side_effect=native_create)
     monkeypatch.setattr(setup_local_work.subprocess, 'run', native)
     assert setup.run_init(None, args) == 0
-    state = home/'pacomind'
-    stored = state/'.pacomind-llm-config.json'
+    state = home/'protagine'
+    stored = state/'.protagine-llm-config.json'
     assert json.loads(stored.read_text()) == supplied_model_config
     assert stored.stat().st_mode & 0o777 == 0o600
     assert json.loads((state/'instance.json').read_text())['status'] == 'configured_not_behaviorally_verified'
@@ -382,12 +382,12 @@ def test_wizard_preserves_full_model_configuration_and_existing_chat(
         native.assert_called_once()
         tools.assert_any_call('http://127.0.0.1:8125/v1', 'planner', 'fixture-planning-private-key',
                               extra_body={'temperature': 0.4, 'top_p': 0.92})
-        worker = yaml.safe_load((home/'profiles/pacomind-drafts/config.yaml').read_text())
+        worker = yaml.safe_load((home/'profiles/protagine-drafts/config.yaml').read_text())
         assert worker['model']['default'] == 'planner'
         assert worker['model']['max_tokens'] == 6144
-        assert worker['providers']['pacomind-planning-0']['extra_body'] == {'temperature': 0.4, 'top_p': 0.92}
+        assert worker['providers']['protagine-planning-0']['extra_body'] == {'temperature': 0.4, 'top_p': 0.92}
         assert worker['providers']['custom']['request_timeout_seconds'] == 140
-        assert worker['plugins']['pacomind']['native_local_work']['routing_policy']['run_deadline_seconds'] == 540
+        assert worker['plugins']['protagine']['native_local_work']['routing_policy']['run_deadline_seconds'] == 540
     else:
         native.assert_not_called()
     if args.native_goals:
@@ -415,7 +415,7 @@ def test_invalid_model_configuration_precedes_probe_and_any_wizard_write(
     monkeypatch.setattr(httpx, 'get', lambda *a, **k: pytest.fail('Invalid config reached discovery'))
     assert setup.run_init(None, args) == 1
     assert {p.relative_to(home): p.read_bytes() for p in home.rglob('*') if p.is_file()} == before
-    assert not (home/'pacomind').exists()
+    assert not (home/'protagine').exists()
     result = capsys.readouterr()
     assert 'Invalid --model-config' in result.out + result.err
     assert 'fixture-secret-invalid-candidate' not in result.out + result.err
@@ -454,7 +454,7 @@ def test_model_pool_without_request_overrides_remains_valid(args, supplied_model
 @pytest.mark.parametrize('mode', ['local_work', 'native_reviews'])
 def test_supplied_configuration_requires_its_own_planning_role_before_attachment(
         args, supplied_model_config, mode, monkeypatch):
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     supplied_model_config['functionRoles'].pop('planning')
     Path(args.model_config).write_text(json.dumps(supplied_model_config))
     setattr(args, mode, True)
@@ -469,7 +469,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
         args, supplied_model_config, monkeypatch, trailing_slash):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
 
     recipe = {'temperature': 0.35, 'chat_template_kwargs': {'enable_thinking': False}}
     requests = []
@@ -489,7 +489,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
                     status, response = 400, {'error': 'configured request recipe missing'}
                 else:
                     response = {'choices': [{'message': {'tool_calls': [{'function': {
-                        'name': 'pacomind_setup_echo', 'arguments': '{"token":"pacomind-ready"}'}}]}}]}
+                        'name': 'protagine_setup_echo', 'arguments': '{"token":"protagine-ready"}'}}]}}]}
             else:
                 response = {'choices': [{'message': {'content': 'OK'}}]}
             if self.path != '/v1/chat/completions':
@@ -525,7 +525,7 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
             assert body['model'] == 'planner'
             assert all(body[key] == value for key, value in recipe.items())
             assert 'extra_body' not in body
-            assert body['tool_choice']['function']['name'] == 'pacomind_setup_echo'
+            assert body['tool_choice']['function']['name'] == 'protagine_setup_echo'
     finally:
         server.shutdown()
         server.server_close()
@@ -533,10 +533,10 @@ def test_fresh_and_retained_planning_probe_sends_selected_recipe_over_http(
 
 
 def test_model_config_cli_forwards_the_private_path_without_starting_identity(monkeypatch):
-    from pacomind import cli
+    from protagine import cli
     wizard = Mock(return_value=1)
     monkeypatch.setattr(setup, 'run_init', wizard)
-    monkeypatch.setattr(cli.sys, 'argv', ['pacomind', 'init', '--model-config', '/private/models.json'])
+    monkeypatch.setattr(cli.sys, 'argv', ['protagine', 'init', '--model-config', '/private/models.json'])
     with pytest.raises(SystemExit) as stopped:
         cli.main()
     assert stopped.value.code == 1
@@ -575,49 +575,49 @@ def test_new_instance_can_keep_channel_disabled_with_receipts_preselected(args):
     assert setup.run_init(None, args) == 0
     config = yaml.safe_load((home/'config.yaml').read_text())
     assert config['whatsapp'] == {'enabled': False, 'send_read_receipts': True}
-    assert config['plugins']['pacomind']['enabled_message_tools'] == []
+    assert config['plugins']['protagine']['enabled_message_tools'] == []
 
 
 def test_new_private_instance_uses_canonical_resources_and_scoped_authority(args, tmp_path, monkeypatch):
     home = Path(args.hermes_home)
     assert setup.run_init(None, args) == 0
-    state = home/'pacomind'
+    state = home/'protagine'
     config = yaml.safe_load((home/'config.yaml').read_text())
     env = dotenv_values(state/'.env', interpolate=False)
-    assert config['memory']['provider'] == 'pacomind-memory'
-    assert config['plugins']['enabled'] == ['pacomind']
-    assert config['plugins']['pacomind']['instance_dir'] == str(state)
-    assert config['plugins']['pacomind']['enabled_action_tools'] == []
+    assert config['memory']['provider'] == 'protagine-memory'
+    assert config['plugins']['enabled'] == ['protagine']
+    assert config['plugins']['protagine']['instance_dir'] == str(state)
+    assert config['plugins']['protagine']['enabled_action_tools'] == []
     assert 'toolsets' not in config and 'kanban' not in config
-    assert 'PACOMIND_HERMES_WORK_BOARDS' not in env
+    assert 'PROTAGINE_HERMES_WORK_BOARDS' not in env
     keyring = json.loads((state/'api-keyring.json').read_text())
     principal = keyring['principals'][0]
     assert principal['allow_unscoped_api'] is False
-    assert principal['viewer_person_id'] == env['PACOMIND_OWNER_CONTACT_ID']
+    assert principal['viewer_person_id'] == env['PROTAGINE_OWNER_CONTACT_ID']
     assert principal['turn_ingress_platforms'] == ['cli']
     assert 'api:access' not in principal['scopes']
-    assert env['PACOMIND_API_KEY'] == '' and env['PACOMIND_CLIENT_API_KEY'] == principal['credentials'][0]['secret']
+    assert env['PROTAGINE_API_KEY'] == '' and env['PROTAGINE_CLIENT_API_KEY'] == principal['credentials'][0]['secret']
     assert principal['credentials'][0]['secret'] not in (home/'config.yaml').read_text()
     assert (home/'SOUL.md').read_text().startswith('# Orion')
-    assert (state/'adapter/pacomind_hermes/evidence.py').is_file()
-    from pacomind.setup_skills import SKILL_NAME, SKILL_RESOURCE
+    assert (state/'adapter/protagine_hermes/evidence.py').is_file()
+    from protagine.setup_skills import SKILL_NAME, SKILL_RESOURCE
     assert (home/'skills'/SKILL_NAME/'SKILL.md').read_bytes() == setup_hermes._adapter_resources(args.adapter_wheel)[SKILL_RESOURCE]
     assert (state/'api-keyring.json').stat().st_mode & 0o777 == 0o600
     # Same selected home finds this instance without a separate global pointer.
-    monkeypatch.delenv('PACOMIND_STATE_DIR', raising=False)
-    monkeypatch.delenv('PACOMIND_STATE_DIR', raising=False)
+    monkeypatch.delenv('PROTAGINE_STATE_DIR', raising=False)
+    monkeypatch.delenv('PROTAGINE_STATE_DIR', raising=False)
     monkeypatch.setenv('HERMES_HOME', str(home))
-    monkeypatch.setenv('PACOMIND_API_KEY', 'foreign-inherited-key')
+    monkeypatch.setenv('PROTAGINE_API_KEY', 'foreign-inherited-key')
     load_environment()
-    assert setup.os.environ['PACOMIND_STATE_DIR'] == str(state)
-    assert setup.os.environ['PACOMIND_API_KEY'] == ''
+    assert setup.os.environ['PROTAGINE_STATE_DIR'] == str(state)
+    assert setup.os.environ['PROTAGINE_API_KEY'] == ''
     before = (home/'config.yaml').read_bytes(), (state/'api-keyring.json').read_bytes()
     assert setup.run_init(None, args) == 0
     assert before == ((home/'config.yaml').read_bytes(), (state/'api-keyring.json').read_bytes())
 
 
 def test_skills_only_installs_and_refreshes_owned_bytes_without_instance_or_model(args, monkeypatch):
-    from pacomind.setup_skills import SKILL_NAME, SKILL_RESOURCE
+    from protagine.setup_skills import SKILL_NAME, SKILL_RESOURCE
     home = Path(args.hermes_home)
     home.mkdir()
     originals = {'config.yaml': b'model: {default: retained}\n', 'SOUL.md': b'Private identity',
@@ -638,23 +638,23 @@ def test_skills_only_installs_and_refreshes_owned_bytes_without_instance_or_mode
     assert setup.run_init(None, only) == 0
     assert before == {path: path.read_bytes() for path in skill.parent.iterdir() if path.is_file()}
     assert all((home/name).read_bytes() == content for name, content in originals.items())
-    assert not (home/'pacomind').exists() and not (home/'.env').exists()
+    assert not (home/'protagine').exists() and not (home/'.env').exists()
 
 
 def test_skills_only_cli_does_not_continue_into_identity_setup(args, monkeypatch):
-    from pacomind import cli
-    monkeypatch.setattr(cli.sys, 'argv', ['pacomind', 'init', '--skills-only',
+    from protagine import cli
+    monkeypatch.setattr(cli.sys, 'argv', ['protagine', 'init', '--skills-only',
         '--hermes-home', args.hermes_home, '--adapter-wheel', args.adapter_wheel])
     monkeypatch.setattr(cli, '_load_dotenv', lambda: pytest.fail('Skills-only loaded instance environment'))
     monkeypatch.setattr(cli, '_cmd_init', lambda *a: pytest.fail('Skills-only initialized identity'))
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Skills-only called a model'))
     cli.main()
-    assert not (Path(args.hermes_home)/'pacomind').exists()
+    assert not (Path(args.hermes_home)/'protagine').exists()
 
 
 @pytest.mark.parametrize('collision', ['unowned', 'edited', 'symlink'])
 def test_skills_install_preserves_user_owned_or_edited_destinations(args, collision):
-    from pacomind.setup_skills import SKILL_NAME
+    from protagine.setup_skills import SKILL_NAME
     home = Path(args.hermes_home)
     skill = home/'skills'/SKILL_NAME/'SKILL.md'
     only = SimpleNamespace(skills_only=True, hermes_home=str(home), adapter_wheel=args.adapter_wheel)
@@ -673,21 +673,21 @@ def test_skills_install_preserves_user_owned_or_edited_destinations(args, collis
 
 
 def test_new_setup_detects_skill_collision_before_model_or_attachment(args, monkeypatch):
-    from pacomind.setup_skills import SKILL_NAME
+    from protagine.setup_skills import SKILL_NAME
     home = Path(args.hermes_home)
     skill = home/'skills'/SKILL_NAME/'SKILL.md'
     skill.parent.mkdir(parents=True); skill.write_text('My own skill')
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Collision must precede inference'))
     assert setup.run_init(None, args) == 1
     assert skill.read_text() == 'My own skill'
-    assert not (home/'pacomind').exists() and not (home/'config.yaml').exists()
+    assert not (home/'protagine').exists() and not (home/'config.yaml').exists()
 
 
 def test_skill_install_rolls_back_a_failed_ownership_write(args, monkeypatch):
-    from pacomind.setup_skills import SKILL_NAME
+    from protagine.setup_skills import SKILL_NAME
     write = setup._atomic_hermes_config_write
     def fail_marker(path, before, after):
-        if path.name == '.pacomind-owned.json':
+        if path.name == '.protagine-owned.json':
             raise OSError('Fixture ownership write failure')
         write(path, before, after)
     monkeypatch.setattr(setup, '_atomic_hermes_config_write', fail_marker)
@@ -697,27 +697,27 @@ def test_skill_install_rolls_back_a_failed_ownership_write(args, monkeypatch):
 
 
 def test_multiple_bundled_skills_validate_all_destinations_before_any_write(tmp_path):
-    from pacomind.setup_skills import BUNDLE_PREFIX, prepare, install
+    from protagine.setup_skills import BUNDLE_PREFIX, prepare, install
     home = tmp_path/'profile'
     resources = {BUNDLE_PREFIX+name+'/SKILL.md': ('Instructions for '+name).encode()
-                 for name in ('pacomind-first', 'pacomind-second')}
+                 for name in ('protagine-first', 'protagine-second')}
     install(prepare(home, resources))
-    first, second = [home/'skills'/name/'SKILL.md' for name in ('pacomind-first', 'pacomind-second')]
+    first, second = [home/'skills'/name/'SKILL.md' for name in ('protagine-first', 'protagine-second')]
     second.write_bytes(b'My modified second skill')
     before = {p: p.read_bytes() for p in home.rglob('*') if p.is_file()}
     candidate = {path: content+b' updated' for path, content in resources.items()}
     with pytest.raises(ValueError, match='Locally modified'):
         prepare(home, candidate, refresh=True)
     assert before == {p: p.read_bytes() for p in home.rglob('*') if p.is_file()}
-    assert first.read_bytes() == b'Instructions for pacomind-first'
+    assert first.read_bytes() == b'Instructions for protagine-first'
 
 
 def test_enrolled_owner_accounts_resolve_through_the_generated_scoped_api(args, monkeypatch):
     from fastapi import FastAPI
-    from pacomind.api.middleware import ApiKeyMiddleware
-    from pacomind.api.routers import host
-    from pacomind.contacts.config import ContactsConfig
-    from pacomind.contacts.store import SQLiteContactStore
+    from protagine.api.middleware import ApiKeyMiddleware
+    from protagine.api.routers import host
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
 
     home = Path(args.hermes_home)
     home.mkdir(mode=0o700)
@@ -725,10 +725,10 @@ def test_enrolled_owner_accounts_resolve_through_the_generated_scoped_api(args, 
     (home/'config.yaml').write_text(yaml.safe_dump(channels))
     args.owner_handle = ['telegram=123456789', 'sms=+1 (202) 555-0198', 'telegram=123456789']
     assert setup.run_init(None, args) == 0
-    state = home/'pacomind'
+    state = home/'protagine'
     config = yaml.safe_load((home/'config.yaml').read_text())
     assert config['telegram'] == channels['telegram']
-    assert config['plugins']['pacomind']['attested_system_platforms'] == ['cli']
+    assert config['plugins']['protagine']['attested_system_platforms'] == ['cli']
     principal = json.loads((state/'api-keyring.json').read_text())['principals'][0]
     assert principal['turn_ingress_platforms'] == ['cli', 'sms', 'telegram']
     assert 'turns:resolve-sender' in principal['scopes']
@@ -838,12 +838,12 @@ def test_private_path_preflight_does_not_create_outbox_before_safe_install(args,
         return original_probe(endpoint)
     monkeypatch.setattr(setup_hermes, '_verify_local_endpoint', probe)
     assert setup.run_init(None, args) == 0
-    assert (home/'pacomind'/'instance.json').is_file()
-    assert not (home/'state'/'pacomind-turn-outbox.sqlite3').exists()
+    assert (home/'protagine'/'instance.json').is_file()
+    assert not (home/'state'/'protagine-turn-outbox.sqlite3').exists()
     setup_hermes._preflight_outbox(home, resources)
     from test_hermes_turn_outbox import _load_client
-    client = _load_client('pacomind_setup_runtime_path_test')
-    path = home/'state'/'pacomind-turn-outbox.sqlite3'
+    client = _load_client('protagine_setup_runtime_path_test')
+    path = home/'state'/'protagine-turn-outbox.sqlite3'
     client.TurnOutbox(path).prepare()
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
@@ -859,10 +859,10 @@ def test_attach_preserves_existing_identity_channels_model_and_unrelated_env(arg
     assert setup.run_init(None, args) == 0
     updated = yaml.safe_load((home/'config.yaml').read_text())
     assert updated['model'] == original['model'] and updated['platforms'] == original['platforms']
-    assert updated['plugins']['enabled'] == ['other', 'pacomind']
+    assert updated['plugins']['enabled'] == ['other', 'protagine']
     assert (home/'SOUL.md').read_text() == 'Existing private identity'
     assert (home/'.env').read_text().startswith('OTHER_PRIVATE_KEY=keep\n')
-    assert yaml.safe_load((home/'pacomind/hermes-original/config.yaml').read_text()) == original
+    assert yaml.safe_load((home/'protagine/hermes-original/config.yaml').read_text()) == original
 
 
 def test_guiding_values_and_time_preferences_roundtrip_privately(args, monkeypatch):
@@ -871,16 +871,16 @@ def test_guiding_values_and_time_preferences_roundtrip_privately(args, monkeypat
     args.quiet_hours = '22:30-07:15'
     monkeypatch.setenv('TOKEN', 'must-not-substitute')
     assert setup.run_init(None, args) == 0
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     env = dotenv_values(state/'.env', interpolate=False)
     expected = ['Be candid', 'Respect # evidence', 'Read "carefully"', 'Literal ${TOKEN}']
-    assert json.loads(env['PACOMIND_AGENT_VALUES']) == expected
-    assert env['PACOMIND_AGENT_TIMEZONE'] == 'Europe/Paris'
-    assert env['PACOMIND_AGENT_QUIET_HOURS'] == '22:30-07:15'
+    assert json.loads(env['PROTAGINE_AGENT_VALUES']) == expected
+    assert env['PROTAGINE_AGENT_TIMEZONE'] == 'Europe/Paris'
+    assert env['PROTAGINE_AGENT_QUIET_HOURS'] == '22:30-07:15'
     assert json.loads((state/'instance.json').read_text())['agent_preferences']['values'] == expected
     monkeypatch.setenv('HERMES_HOME', str(home))
     load_environment()
-    assert json.loads(os.environ['PACOMIND_AGENT_VALUES']) == expected
+    assert json.loads(os.environ['PROTAGINE_AGENT_VALUES']) == expected
     before = (state/'.env').read_bytes(), (home/'SOUL.md').read_bytes()
     args.agent_values = 'Replacement must not overwrite an existing identity'
     assert setup.run_init(None, args) == 0
@@ -892,24 +892,24 @@ def test_guiding_values_and_time_preferences_roundtrip_privately(args, monkeypat
 def test_invalid_time_preferences_do_not_partially_attach(args, field, value):
     setattr(args, field, value)
     assert setup.run_init(None, args) == 1
-    assert not (Path(args.hermes_home)/'pacomind'/'instance.json').exists()
+    assert not (Path(args.hermes_home)/'protagine'/'instance.json').exists()
 
 
 def test_native_goals_opt_in_and_existing_instance_reentry_preserve_state(args, monkeypatch, capsys):
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a: None)
     args.native_goals = True
     assert setup.run_init(None, args) == 0
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     config = yaml.safe_load((home/'config.yaml').read_text())
     assert config['toolsets'] == ['hermes-cli', 'kanban']
     assert config['platform_toolsets']['cli'] == ['hermes-cli', 'kanban']
     assert config['kanban']['dispatch_in_gateway'] is True
     assert config['auxiliary']['goal_judge'] == {
         'provider':'custom', 'model':args.model, 'base_url':args.model_url}
-    assert json.loads(dotenv_values(state/'.env', interpolate=False)['PACOMIND_HERMES_WORK_BOARDS']) == ['default']
+    assert json.loads(dotenv_values(state/'.env', interpolate=False)['PROTAGINE_HERMES_WORK_BOARDS']) == ['default']
     assert not (home/'kanban.db').exists() and not (home/'profiles').exists()
-    assert 'PacoMind does not start or restart it' in capsys.readouterr().out
+    assert 'Protagine does not start or restart it' in capsys.readouterr().out
     paths = [home/'config.yaml', home/'SOUL.md', home/'.env', state/'.env', state/'contacts.db',
              state/'instance.json', state/'api-keyring.json']
     before = {path:path.read_bytes() for path in paths}
@@ -920,7 +920,7 @@ def test_native_goals_opt_in_and_existing_instance_reentry_preserve_state(args, 
 
 @pytest.mark.parametrize('conflict', ['yaml', 'home_env', 'process_env'])
 def test_native_goals_dispatch_conflict_precedes_attachment(args, monkeypatch, conflict):
-    from pacomind import setup_local_work
+    from protagine import setup_local_work
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a: None)
     args.native_goals = True
     home = Path(args.hermes_home); home.mkdir(mode=0o700)
@@ -959,28 +959,28 @@ def test_native_goals_native_path_overrides_match_observation_before_writes(args
 
 
 def test_native_goals_single_database_override_cannot_claim_multiple_boards(tmp_path):
-    from pacomind.setup_native_goals import prepare
+    from protagine.setup_native_goals import prepare
     home = tmp_path/'home'
     with pytest.raises(ValueError, match='HERMES_KANBAN_DB conflicts'):
         prepare({}, home, native_env={'HERMES_KANBAN_DB':str(home/'kanban.db')},
                 observer_env={}, local_work=True)
     _, details = prepare({}, home, native_env={'HERMES_KANBAN_DB':str(home/'kanban.db')},
-        observer_env={'PACOMIND_HERMES_WORK_BOARDS':'["default","default"]'})
+        observer_env={'PROTAGINE_HERMES_WORK_BOARDS':'["default","default"]'})
     assert details['boards'] == ['default']
     assert not home.exists()
 
 
 def test_native_goals_preserve_explicit_tools_judge_and_board_selection(args, monkeypatch):
-    from pacomind.setup_native_goals import enable
+    from protagine.setup_native_goals import enable
     assert setup.run_init(None, args) == 0
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     config = yaml.safe_load((home/'config.yaml').read_text())
     judge = {'provider':'custom:deliberate', 'model':'judge-model', 'timeout':97, 'extra_body':{'mode':'retained'}}
     config.update(toolsets=['file'], platform_toolsets={'cli':['file'], 'telegram':['web']},
                   auxiliary={'goal_judge':judge, 'vision':{'provider':'existing'}})
     (home/'config.yaml').write_text(yaml.safe_dump(config))
     with (state/'.env').open('a') as stream:
-        stream.write('PACOMIND_HERMES_WORK_BOARDS=["existing"]\n')
+        stream.write('PROTAGINE_HERMES_WORK_BOARDS=["existing"]\n')
     paths = [home/'SOUL.md', home/'.env', state/'contacts.db', state/'instance.json', state/'api-keyring.json']
     before = {path:path.read_bytes() for path in paths}
     enable(state)
@@ -988,13 +988,13 @@ def test_native_goals_preserve_explicit_tools_judge_and_board_selection(args, mo
     assert after['toolsets'] == ['file', 'kanban']
     assert after['platform_toolsets'] == {'cli':['file', 'kanban'], 'telegram':['web']}
     assert after['auxiliary'] == config['auxiliary'] and after['model'] == config['model']
-    assert json.loads(dotenv_values(state/'.env', interpolate=False)['PACOMIND_HERMES_WORK_BOARDS']) == ['existing']
+    assert json.loads(dotenv_values(state/'.env', interpolate=False)['PROTAGINE_HERMES_WORK_BOARDS']) == ['existing']
     assert all(path.read_bytes() == data for path, data in before.items())
 
 
 def test_native_goals_select_current_and_exact_draft_board_without_creating_boards(tmp_path):
-    from pacomind.setup_native_goals import prepare
-    from pacomind.setup_local_work import board_name
+    from protagine.setup_native_goals import prepare
+    from protagine.setup_local_work import board_name
     home = tmp_path/'root/profiles/orion'
     current = tmp_path/'root/kanban/current'; current.parent.mkdir(parents=True)
     current.write_text('OPERATIONS\n')
@@ -1011,9 +1011,9 @@ def test_native_goals_select_current_and_exact_draft_board_without_creating_boar
 
 
 def test_native_goals_environment_write_failure_restores_config(args, monkeypatch):
-    from pacomind.setup_native_goals import enable
+    from protagine.setup_native_goals import enable
     assert setup.run_init(None, args) == 0
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     before = (home/'config.yaml').read_bytes(), (state/'.env').read_bytes()
     write = setup._atomic_hermes_config_write
     def fail_environment(path, previous, updated):
@@ -1027,7 +1027,7 @@ def test_native_goals_environment_write_failure_restores_config(args, monkeypatc
 
 
 def test_native_goals_detach_yaml_aliases_before_changing_selected_branches(tmp_path):
-    from pacomind.setup_native_goals import prepare
+    from protagine.setup_native_goals import prepare
     config = yaml.safe_load('''
 model: {provider: openai, default: selected-main}
 toolsets: &tools [file]
@@ -1051,8 +1051,8 @@ other_aux: *aux
 
 def _changed_adapter(args, monkeypatch):
     current = setup_hermes._adapter_resources(args.adapter_wheel)
-    candidate = {**current, 'pacomind_hermes/qualified_update.py':b'VALUE = "new release"\n',
-        'pacomind_hermes/plugin.yaml':current['pacomind_hermes/plugin.yaml']+b'\n# Selected new release\n'}
+    candidate = {**current, 'protagine_hermes/qualified_update.py':b'VALUE = "new release"\n',
+        'protagine_hermes/plugin.yaml':current['protagine_hermes/plugin.yaml']+b'\n# Selected new release\n'}
     monkeypatch.setattr(setup_hermes, '_adapter_resources', lambda wheel: candidate)
     args.refresh_adapter = True
     return current, candidate
@@ -1060,18 +1060,18 @@ def _changed_adapter(args, monkeypatch):
 
 def test_explicit_refresh_preserves_state_and_worker_and_is_idempotent(args, monkeypatch):
     assert setup.run_init(None, args) == 0
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     current, candidate = _changed_adapter(args, monkeypatch)
     # Existing known worker, with independent config and state, must remain bound.
-    worker = home/'profiles/pacomind-drafts'; plugin = worker/'plugins/pacomind'
+    worker = home/'profiles/protagine-drafts'; plugin = worker/'plugins/protagine'
     plugin.mkdir(parents=True)
-    (plugin/'__init__.py').write_text(setup_hermes._forwarder(state/'adapter', 'pacomind_hermes'))
-    (plugin/'plugin.yaml').write_bytes(current['pacomind_hermes/plugin.yaml'])
-    (worker/'config.yaml').write_text(yaml.safe_dump({'plugins':{'pacomind':{'instance_dir':str(state)}},
+    (plugin/'__init__.py').write_text(setup_hermes._forwarder(state/'adapter', 'protagine_hermes'))
+    (plugin/'plugin.yaml').write_bytes(current['protagine_hermes/plugin.yaml'])
+    (worker/'config.yaml').write_text(yaml.safe_dump({'plugins':{'protagine':{'instance_dir':str(state)}},
         'model':{'default':'retain-model'},'unrelated':{'keep':[1,2]},
         'hooks':{'output_spill':{'max_chars':65536}}}))
     manifest = json.loads((state/'instance.json').read_text())
-    manifest['local_work'] = {'executor':'kanban','worker_profile':'pacomind-drafts','board':'pacomind-drafts'}
+    manifest['local_work'] = {'executor':'kanban','worker_profile':'protagine-drafts','board':'protagine-drafts'}
     (state/'instance.json').write_text(json.dumps(manifest))
     (state/'retained-memory.db').write_bytes(b'unchanged private fixture state')
     paths = [home/'SOUL.md', home/'config.yaml', home/'.env', state/'.env',
@@ -1081,7 +1081,7 @@ def test_explicit_refresh_preserves_state_and_worker_and_is_idempotent(args, mon
     assert setup.run_init(None, args) == 0
     assert all(path.read_bytes()==raw for path,raw in before.items())
     assert setup_hermes._copied_resources(state/'adapter') == candidate
-    assert (plugin/'plugin.yaml').read_bytes() == candidate['pacomind_hermes/plugin.yaml']
+    assert (plugin/'plugin.yaml').read_bytes() == candidate['protagine_hermes/plugin.yaml']
     assert json.loads((state/'instance.json').read_text())['local_work']==manifest['local_work']
     backups = list(state.glob('adapter-previous-*')); assert len(backups)==1
     assert setup_hermes._copied_resources(backups[0]) == current
@@ -1103,9 +1103,9 @@ def test_explicit_refresh_adds_task_visibility_once_without_changing_tool_author
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Refresh made inference'))
     assert setup.run_init(None, args) == 0
     expected = yaml.safe_load(original)
-    expected['tools']['tool_search']['eager'].append('pacomind_task')
+    expected['tools']['tool_search']['eager'].append('protagine_task')
     assert yaml.safe_load(path.read_text()) == expected
-    assert any(p.read_bytes() == original for p in path.parent.glob('.config.yaml.pacomind-backup-*'))
+    assert any(p.read_bytes() == original for p in path.parent.glob('.config.yaml.protagine-backup-*'))
     updated, mtime = path.read_bytes(), path.stat().st_mtime_ns
     assert setup.run_init(None, args) == 0
     assert (path.read_bytes(), path.stat().st_mtime_ns) == (updated, mtime)
@@ -1113,16 +1113,16 @@ def test_explicit_refresh_adds_task_visibility_once_without_changing_tool_author
 
 def test_explicit_refresh_aligns_old_spill_allowance_without_changing_adapter(args, monkeypatch, capsys):
     assert setup.run_init(None, args) == 0
-    home=Path(args.hermes_home);state=home/'pacomind';path=home/'config.yaml'
+    home=Path(args.hermes_home);state=home/'protagine';path=home/'config.yaml'
     config=yaml.safe_load(path.read_text());config['hooks']={'output_spill':{'max_chars':10000,'preview_tail':200},'retained':{'x':1}}
     path.write_text(yaml.safe_dump(config));original=path.read_bytes()
     adapter=setup_hermes._copied_resources(state/'adapter')
-    worker=home/'profiles/pacomind-drafts';(worker/'plugins/pacomind').mkdir(parents=True)
-    (worker/'plugins/pacomind/__init__.py').write_text(setup_hermes._forwarder(state/'adapter','pacomind_hermes'))
-    (worker/'plugins/pacomind/plugin.yaml').write_bytes(adapter['pacomind_hermes/plugin.yaml'])
-    worker_config={'plugins':{'pacomind':{'instance_dir':str(state)}},'hooks':{'output_spill':{'preview_head':123}}}
+    worker=home/'profiles/protagine-drafts';(worker/'plugins/protagine').mkdir(parents=True)
+    (worker/'plugins/protagine/__init__.py').write_text(setup_hermes._forwarder(state/'adapter','protagine_hermes'))
+    (worker/'plugins/protagine/plugin.yaml').write_bytes(adapter['protagine_hermes/plugin.yaml'])
+    worker_config={'plugins':{'protagine':{'instance_dir':str(state)}},'hooks':{'output_spill':{'preview_head':123}}}
     (worker/'config.yaml').write_text(yaml.safe_dump(worker_config))
-    manifest=json.loads((state/'instance.json').read_text());manifest['local_work']={'executor':'kanban','worker_profile':'pacomind-drafts'}
+    manifest=json.loads((state/'instance.json').read_text());manifest['local_work']={'executor':'kanban','worker_profile':'protagine-drafts'}
     (state/'instance.json').write_text(json.dumps(manifest))
     identity=(home/'SOUL.md').read_bytes();args.refresh_adapter=True
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: pytest.fail('Refresh made an inference call'))
@@ -1132,20 +1132,20 @@ def test_explicit_refresh_aligns_old_spill_allowance_without_changing_adapter(ar
     assert (home/'SOUL.md').read_bytes()==identity
     worker_config['hooks']['output_spill']['max_chars']=65536
     assert yaml.safe_load((worker/'config.yaml').read_text())==worker_config
-    assert any(p.read_bytes()==original for p in home.glob('.config.yaml.pacomind-backup-*'))
+    assert any(p.read_bytes()==original for p in home.glob('.config.yaml.protagine-backup-*'))
     assert 'max_chars -> 65536' in capsys.readouterr().out
     before=path.read_bytes();assert setup.run_init(None,args)==0 and path.read_bytes()==before
 
 
 def test_worker_profile_creation_and_role_refresh_align_memory_spill(tmp_path, monkeypatch):
-    from pacomind import setup_local_work as local
-    state=tmp_path/'pacomind';state.mkdir();home=tmp_path/'hermes'
-    worker=home/'profiles/pacomind-drafts';worker.mkdir(parents=True)
+    from protagine import setup_local_work as local
+    state=tmp_path/'protagine';state.mkdir();home=tmp_path/'hermes'
+    worker=home/'profiles/protagine-drafts';worker.mkdir(parents=True)
     config=local.worker_configuration({}, {}, {'instance_dir':str(state)}, {})
     assert config['hooks']['output_spill']['max_chars']==65536
     config['hooks']={'output_spill':{'max_chars':10000,'preview_head':321}}
     path=worker/'config.yaml';path.write_text(yaml.safe_dump(config))
-    (state/'instance.json').write_text(json.dumps({'hermes_home':str(home),'local_work':{'executor':'kanban','worker_profile':'pacomind-drafts'}}))
+    (state/'instance.json').write_text(json.dumps({'hermes_home':str(home),'local_work':{'executor':'kanban','worker_profile':'protagine-drafts'}}))
     monkeypatch.setattr(local,'model_configuration',lambda *a,**k: ({'model':{'default':'changed'}},{'role':'planning'}))
     local.refresh_role(state)
     after=yaml.safe_load(path.read_text())
@@ -1157,24 +1157,24 @@ def test_worker_profile_creation_and_role_refresh_align_memory_spill(tmp_path, m
 
 
 def test_review_setup_is_opt_in_and_upgrade_preserves_selection(args, monkeypatch):
-    from pacomind import setup_native_reviews, setup_local_work
+    from protagine import setup_native_reviews, setup_local_work
     calls = []
     monkeypatch.setattr(setup_native_reviews, 'configure', lambda state, **kw: calls.append((state, kw)))
     monkeypatch.setattr(setup_local_work, 'verify_tools', lambda *a: None)
     assert setup.run_init(None, args) == 0
     assert calls == []
-    home = Path(args.hermes_home); state = home/'pacomind'
+    home = Path(args.hermes_home); state = home/'protagine'
     args.native_reviews = True
     assert setup.run_init(None, args) == 0
     assert calls == [(state, {'install': True})]
     path = home/'config.yaml'; config = yaml.safe_load(path.read_text())
-    config['plugins']['pacomind']['native_reviews'] = {'enabled': True, 'instance_dir': str(state)}
+    config['plugins']['protagine']['native_reviews'] = {'enabled': True, 'instance_dir': str(state)}
     path.write_text(yaml.safe_dump(config))
     args.native_reviews = False; args.refresh_adapter = True
     monkeypatch.setattr(setup_hermes, 'refresh_adapter', lambda *a: None)
     assert setup.run_init(None, args) == 0
     assert len(calls) == 2
-    config['plugins']['pacomind']['native_reviews']['enabled'] = False
+    config['plugins']['protagine']['native_reviews']['enabled'] = False
     path.write_text(yaml.safe_dump(config))
     assert setup.run_init(None, args) == 0
     assert len(calls) == 2
@@ -1182,9 +1182,9 @@ def test_review_setup_is_opt_in_and_upgrade_preserves_selection(args, monkeypatc
 
 def test_refresh_rejects_local_edits_before_mutation(args, monkeypatch):
     assert setup.run_init(None, args)==0
-    home=Path(args.hermes_home);state=home/'pacomind'
+    home=Path(args.hermes_home);state=home/'protagine'
     _changed_adapter(args, monkeypatch)
-    edited=state/'adapter/pacomind_hermes/evidence.py';edited.write_bytes(edited.read_bytes()+b'\n# Local change\n')
+    edited=state/'adapter/protagine_hermes/evidence.py';edited.write_bytes(edited.read_bytes()+b'\n# Local change\n')
     before={str(path.relative_to(home)):path.read_bytes() for path in home.rglob('*') if path.is_file()}
     assert setup.run_init(None,args)==1
     assert before=={str(path.relative_to(home)):path.read_bytes() for path in home.rglob('*') if path.is_file()}
@@ -1192,9 +1192,9 @@ def test_refresh_rejects_local_edits_before_mutation(args, monkeypatch):
 
 def test_refresh_write_failure_restores_previous_adapter(args, monkeypatch):
     assert setup.run_init(None,args)==0
-    home=Path(args.hermes_home);state=home/'pacomind'
+    home=Path(args.hermes_home);state=home/'protagine'
     current,_=_changed_adapter(args,monkeypatch)
-    before=(state/'instance.json').read_bytes(),(home/'plugins/pacomind/plugin.yaml').read_bytes()
+    before=(state/'instance.json').read_bytes(),(home/'plugins/protagine/plugin.yaml').read_bytes()
     write=setup._atomic_hermes_config_write
     def fail_manifest(path,original,updated):
         if path==state/'instance.json':raise OSError('Disposable manifest write failure')
@@ -1202,14 +1202,14 @@ def test_refresh_write_failure_restores_previous_adapter(args, monkeypatch):
     monkeypatch.setattr(setup,'_atomic_hermes_config_write',fail_manifest)
     assert setup.run_init(None,args)==1
     assert setup_hermes._copied_resources(state/'adapter')==current
-    assert before==((state/'instance.json').read_bytes(),(home/'plugins/pacomind/plugin.yaml').read_bytes())
+    assert before==((state/'instance.json').read_bytes(),(home/'plugins/protagine/plugin.yaml').read_bytes())
 
 
 def test_refresh_installed_package_updates_binding_without_another_copy(args, monkeypatch):
-    binding={'mode':'native-installed','version':'old','sources':{'pacomind_hermes':'/native/package'}}
+    binding={'mode':'native-installed','version':'old','sources':{'protagine_hermes':'/native/package'}}
     monkeypatch.setattr(setup_hermes,'_adapter_binding',lambda *a:binding)
     assert setup.run_init(None,args)==0
-    home=Path(args.hermes_home);state=home/'pacomind'
+    home=Path(args.hermes_home);state=home/'protagine'
     current,_=_changed_adapter(args,monkeypatch)
     binding={**binding,'version':'new'}
     assert setup.run_init(None,args)==0
@@ -1233,7 +1233,7 @@ def test_refresh_rejects_changed_loading_topology_without_writing(args, monkeypa
 
 @pytest.mark.parametrize('address', ['127.0.0.1', '203.0.113.10'])
 def test_selected_hostname_is_bound_for_runtime_routing(args, monkeypatch, address):
-    from pacomind.router.router import LLMRouter
+    from protagine.router.router import LLMRouter
     args.model_url = 'http://model.lan:8123/v1'
     monkeypatch.setattr(socket, 'getaddrinfo', lambda *a, **k: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, '', (address, 8123))])
@@ -1242,7 +1242,7 @@ def test_selected_hostname_is_bound_for_runtime_routing(args, monkeypatch, addre
         assert result == 1 and not Path(args.hermes_home).exists()
         return
     assert result == 0
-    config = json.loads((Path(args.hermes_home)/'pacomind/.pacomind-llm-config.json').read_text())
+    config = json.loads((Path(args.hermes_home)/'protagine/.protagine-llm-config.json').read_text())
     assert config['localHosts'] == ['model.lan']
     router = LLMRouter(tiers={}, self_learner=object())
     router.configure(config)
@@ -1286,8 +1286,8 @@ def test_explicit_provider_replacement_retains_original(args):
     (home/'config.yaml').write_bytes(original)
     args.replace_memory_provider = True
     assert setup.run_init(None, args) == 0
-    assert (home/'pacomind/hermes-original/config.yaml').read_bytes() == original
-    assert yaml.safe_load((home/'config.yaml').read_text())['memory']['provider'] == 'pacomind-memory'
+    assert (home/'protagine/hermes-original/config.yaml').read_bytes() == original
+    assert yaml.safe_load((home/'config.yaml').read_text())['memory']['provider'] == 'protagine-memory'
 
 
 def test_attachment_failure_restores_exact_existing_home(args, monkeypatch):
@@ -1298,7 +1298,7 @@ def test_attachment_failure_restores_exact_existing_home(args, monkeypatch):
     (home/'SOUL.md').write_text('Existing identity')
     write = setup_hermes._private_write
     def failed_write(path, content):
-        if path == home/'plugins'/'pacomind'/'plugin.yaml':
+        if path == home/'plugins'/'protagine'/'plugin.yaml':
             raise OSError('fixture write failure')
         return write(path, content)
     monkeypatch.setattr(setup_hermes, '_private_write', failed_write)
@@ -1306,19 +1306,19 @@ def test_attachment_failure_restores_exact_existing_home(args, monkeypatch):
     assert (home/'config.yaml').read_bytes() == original
     assert (home/'.env').read_bytes() == b'EXISTING_KEY=retained\n'
     assert (home/'SOUL.md').read_text() == 'Existing identity'
-    assert not (home/'plugins'/'pacomind').exists()
-    assert (home/'pacomind'/'hermes-original'/'config.yaml').read_bytes() == original
+    assert not (home/'plugins'/'protagine').exists()
+    assert (home/'protagine'/'hermes-original'/'config.yaml').read_bytes() == original
 
 
 def test_instance_never_uses_another_homes_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'environ', dict(os.environ))
-    monkeypatch.delenv('PACOMIND_SKIP_DOTENV', raising=False)
-    monkeypatch.setenv('PACOMIND_INSTANCE_SELECTED', '1')
+    monkeypatch.delenv('PROTAGINE_SKIP_DOTENV', raising=False)
+    monkeypatch.setenv('PROTAGINE_INSTANCE_SELECTED', '1')
     selected = tmp_path/'missing-selected-instance'
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(selected))
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(selected))
     monkeypatch.setenv('HOME', str(tmp_path))
-    (tmp_path/'.pacomind').mkdir()
-    (tmp_path/'.pacomind'/'.env').write_text('OTHER_AGENT_ONLY=private\n')
+    (tmp_path/'.protagine').mkdir()
+    (tmp_path/'.protagine'/'.env').write_text('OTHER_AGENT_ONLY=private\n')
     monkeypatch.delenv('OTHER_AGENT_ONLY', raising=False)
     with pytest.raises(ValueError, match='incomplete'):
         load_environment()
@@ -1328,10 +1328,10 @@ def test_instance_never_uses_another_homes_environment(tmp_path, monkeypatch):
 @pytest.mark.parametrize('command', [['start', '--detach'], ['stop']])
 @pytest.mark.parametrize('skip_dotenv', ['', '1'])
 def test_missing_explicit_instance_never_enters_process_control(tmp_path, monkeypatch, command, skip_dotenv):
-    from pacomind import cli
+    from protagine import cli
     monkeypatch.setattr(os, 'environ', dict(os.environ))
-    monkeypatch.setenv('PACOMIND_SKIP_DOTENV', skip_dotenv)
-    monkeypatch.setattr(cli.sys, 'argv', ['pacomind', '--instance', str(tmp_path/'typo'), *command])
+    monkeypatch.setenv('PROTAGINE_SKIP_DOTENV', skip_dotenv)
+    monkeypatch.setattr(cli.sys, 'argv', ['protagine', '--instance', str(tmp_path/'typo'), *command])
     monkeypatch.setattr(cli, '_cleanup_orphans', lambda **kw: pytest.fail('Global cleanup invoked'))
     monkeypatch.setattr(cli, '_find_pid_on_port', lambda *a: pytest.fail('Unrelated port probed'))
     monkeypatch.setattr(cli.os, 'kill', lambda *a: pytest.fail('Process signalled'))
@@ -1340,9 +1340,9 @@ def test_missing_explicit_instance_never_enters_process_control(tmp_path, monkey
 
 
 def test_local_stop_refuses_reused_pid_and_other_instance_port(tmp_path, monkeypatch, capsys):
-    from pacomind import cli
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(tmp_path))
-    monkeypatch.setenv('PACOMIND_INSTALL_PROFILE', 'local')
+    from protagine import cli
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('PROTAGINE_INSTALL_PROFILE', 'local')
     (tmp_path/'sidecar.pid').write_text('1234')
     (tmp_path/'sidecar-process.json').write_text(json.dumps({'pid':1234,'signature':'original process'}))
     monkeypatch.setattr(cli, '_process_signature', lambda pid: 'different process')
@@ -1358,9 +1358,9 @@ def test_local_stop_refuses_reused_pid_and_other_instance_port(tmp_path, monkeyp
 
 @pytest.mark.parametrize('interrupted', [False, True])
 def test_local_start_records_process_after_python_launcher_exec(tmp_path, monkeypatch, interrupted):
-    from pacomind import cli
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(tmp_path))
-    monkeypatch.setenv('PACOMIND_INSTALL_PROFILE', 'local')
+    from protagine import cli
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('PROTAGINE_INSTALL_PROFILE', 'local')
     monkeypatch.setattr(setup, '_check_port', lambda port: False)
     monkeypatch.setattr(cli, '_find_pids_on_port', lambda port: [])
     monkeypatch.setattr(cli, '_load_dotenv', lambda: None)
@@ -1394,11 +1394,11 @@ def test_local_start_records_process_after_python_launcher_exec(tmp_path, monkey
 
 
 def test_local_status_only_uses_scoped_memory_status(tmp_path, monkeypatch, capsys):
-    from pacomind import cli
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(tmp_path))
-    monkeypatch.setenv('PACOMIND_INSTALL_PROFILE', 'local')
-    monkeypatch.setenv('PACOMIND_OWNER_CONTACT_ID', 'existing-owner')
-    monkeypatch.setenv('PACOMIND_CLIENT_API_KEY', 'fixture-private-key')
+    from protagine import cli
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('PROTAGINE_INSTALL_PROFILE', 'local')
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'existing-owner')
+    monkeypatch.setenv('PROTAGINE_CLIENT_API_KEY', 'fixture-private-key')
     calls = []
     def get(url, **kw):
         calls.append((url, kw))
@@ -1413,16 +1413,16 @@ def test_local_status_only_uses_scoped_memory_status(tmp_path, monkeypatch, caps
 
 def test_legacy_state_directory_keeps_global_dotenv_and_launch_precedence(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'environ', dict(os.environ))
-    monkeypatch.delenv('PACOMIND_SKIP_DOTENV', raising=False)
-    monkeypatch.delenv('PACOMIND_INSTANCE_SELECTED', raising=False)
+    monkeypatch.delenv('PROTAGINE_SKIP_DOTENV', raising=False)
+    monkeypatch.delenv('PROTAGINE_INSTANCE_SELECTED', raising=False)
     monkeypatch.setenv('HOME', str(tmp_path))
-    state = tmp_path/'.pacomind'/'data'; state.mkdir(parents=True)
-    monkeypatch.setenv('PACOMIND_STATE_DIR', str(state))
+    state = tmp_path/'.protagine'/'data'; state.mkdir(parents=True)
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(state))
     monkeypatch.setenv('LEGACY_LAUNCH_VALUE', 'launch-value')
     (state.parent/'.env').write_text('LEGACY_LAUNCH_VALUE=file-value\nLEGACY_FILE_ONLY=loaded\n')
     (state/'.env').write_text('WRONG_STATE_ENV=not-selected\n')
     load_environment()
-    assert os.environ['PACOMIND_STATE_DIR'] == str(state)
+    assert os.environ['PROTAGINE_STATE_DIR'] == str(state)
     assert os.environ['LEGACY_LAUNCH_VALUE'] == 'launch-value'
     assert os.environ['LEGACY_FILE_ONLY'] == 'loaded'
     assert 'WRONG_STATE_ENV' not in os.environ
@@ -1431,44 +1431,44 @@ def test_legacy_state_directory_keeps_global_dotenv_and_launch_precedence(tmp_pa
 def test_refresh_keeps_bound_paths_credentials_and_work(args, monkeypatch):
     """Refresh canonical packages through existing directory and worker bindings."""
     home = Path(args.hermes_home)
-    state = home/'pacomind'
+    state = home/'protagine'
     adapter = state/'adapter'
     old_resources = {}
-    for module, name in [('pacomind_hermes', 'pacomind'), ('pacomind_memory', 'pacomind-memory')]:
+    for module, name in [('protagine_hermes', 'protagine'), ('protagine_memory', 'protagine-memory')]:
         old_resources[module+'/__init__.py'] = b'# retained historical implementation\n'
         old_resources[module+'/plugin.yaml'] = ('name: '+name+'\n').encode()
     for name, content in old_resources.items():
         path = adapter/name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    (state/'.env').write_text(f'PACOMIND_STATE_DIR={state}\nPACOMIND_INSTALL_PROFILE=local\n'
-                             'PACOMIND_API_KEY=fixture-private-key\n')
-    (home/'.env').write_text('PACOMIND_NATIVE_API_KEY=fixture-native-key\nPRIVATE_CHANNEL=retained\n')
+    (state/'.env').write_text(f'PROTAGINE_STATE_DIR={state}\nPROTAGINE_INSTALL_PROFILE=local\n'
+                             'PROTAGINE_API_KEY=fixture-private-key\n')
+    (home/'.env').write_text('PROTAGINE_NATIVE_API_KEY=fixture-native-key\nPRIVATE_CHANNEL=retained\n')
     (home/'SOUL.md').write_text('Private agent identity retained.')
     (state/'retained-memory.db').write_bytes(b'original source ids, erasures and corrections')
     manifest = {'version':1, 'profile':'local', 'hermes_home':str(home),
                 'hermes_python':'/fixture/python', 'owner_id':'owner-original',
                 'adapter_binding':{'mode':'private-directory'},
                 'adapter_sha256':setup_hermes._resource_digest(old_resources),
-                'local_work':{'executor':'kanban', 'worker_profile':'pacomind-drafts', 'board':'pacomind-drafts'}}
+                'local_work':{'executor':'kanban', 'worker_profile':'protagine-drafts', 'board':'protagine-drafts'}}
     (state/'instance.json').write_text(json.dumps(manifest))
-    root_config = {'plugins':{'enabled':['other', 'pacomind'], 'pacomind':{'instance_dir':str(state)},
-                             'entries':{'pacomind':{'allow_tool_override':True}}},
-                   'memory':{'provider':'pacomind-memory', 'config':{'api_key':'${PACOMIND_NATIVE_API_KEY}'}},
-                   'model':{'default':'keep-model'}, 'platform_toolsets':{'cli':['pacomind','kanban']}}
+    root_config = {'plugins':{'enabled':['other', 'protagine'], 'protagine':{'instance_dir':str(state)},
+                             'entries':{'protagine':{'allow_tool_override':True}}},
+                   'memory':{'provider':'protagine-memory', 'config':{'api_key':'${PROTAGINE_NATIVE_API_KEY}'}},
+                   'model':{'default':'keep-model'}, 'platform_toolsets':{'cli':['protagine','kanban']}}
     (home/'config.yaml').write_text(yaml.safe_dump(root_config))
-    worker = home/'profiles/pacomind-drafts'
+    worker = home/'profiles/protagine-drafts'
     worker.mkdir(parents=True)
-    (worker/'config.yaml').write_text(yaml.safe_dump({'plugins':{'enabled':['pacomind'],
-        'pacomind':{'instance_dir':str(state)}}, 'toolsets':['pacomind','kanban'], 'model':{'default':'keep-worker'}}))
+    (worker/'config.yaml').write_text(yaml.safe_dump({'plugins':{'enabled':['protagine'],
+        'protagine':{'instance_dir':str(state)}}, 'toolsets':['protagine','kanban'], 'model':{'default':'keep-worker'}}))
     forwarders = []
-    for profile, directories in [(home, [('pacomind','pacomind_hermes'),('pacomind-memory','pacomind_memory')]),
-                                 (worker, [('pacomind','pacomind_hermes')])]:
+    for profile, directories in [(home, [('protagine','protagine_hermes'),('protagine-memory','protagine_memory')]),
+                                 (worker, [('protagine','protagine_hermes')])]:
         for directory, module in directories:
             target = profile/'plugins'/directory
             target.mkdir(parents=True)
             forwarder = target/'__init__.py'
-            forwarder.write_text(setup_hermes._forwarder(adapter, module, module=='pacomind_memory'))
+            forwarder.write_text(setup_hermes._forwarder(adapter, module, module=='protagine_memory'))
             forwarders.append(forwarder)
             (target/'plugin.yaml').write_bytes(old_resources[module+'/plugin.yaml'])
     candidate = setup_hermes._adapter_resources(args.adapter_wheel)
@@ -1480,13 +1480,13 @@ def test_refresh_keeps_bound_paths_credentials_and_work(args, monkeypatch):
     assert setup.run_init(None, args) == 0
     assert all(path.read_bytes() == raw for path,raw in before.items())
     after = yaml.safe_load((home/'config.yaml').read_text())
-    assert after['plugins']['enabled'] == ['other','pacomind']
-    assert after['plugins']['pacomind']['instance_dir'] == str(state)
-    assert after['plugins']['entries'] == {'pacomind':{'allow_tool_override':True}}
-    assert after['memory'] == {'provider':'pacomind-memory','config':{'api_key':'${PACOMIND_NATIVE_API_KEY}'}}
+    assert after['plugins']['enabled'] == ['other','protagine']
+    assert after['plugins']['protagine']['instance_dir'] == str(state)
+    assert after['plugins']['entries'] == {'protagine':{'allow_tool_override':True}}
+    assert after['memory'] == {'provider':'protagine-memory','config':{'api_key':'${PROTAGINE_NATIVE_API_KEY}'}}
     assert after['model'] == root_config['model']
-    assert after['platform_toolsets']['cli'] == ['pacomind','kanban']
-    assert yaml.safe_load((home/'plugins/pacomind/plugin.yaml').read_text())['name'] == 'pacomind'
+    assert after['platform_toolsets']['cli'] == ['protagine','kanban']
+    assert yaml.safe_load((home/'plugins/protagine/plugin.yaml').read_text())['name'] == 'protagine'
     assert json.loads((state/'instance.json').read_text())['local_work'] == manifest['local_work']
     assert setup_hermes._copied_resources(next(state.glob('adapter-previous-*'))) == old_resources
     stable = {str(path.relative_to(home)):path.read_bytes() for path in home.rglob('*') if path.is_file()}
@@ -1494,10 +1494,10 @@ def test_refresh_keeps_bound_paths_credentials_and_work(args, monkeypatch):
     assert stable == {str(path.relative_to(home)):path.read_bytes() for path in home.rglob('*') if path.is_file()}
     # The normal loader selects the retained private environment.
     monkeypatch.setenv('HERMES_HOME', str(home))
-    monkeypatch.setenv('PACOMIND_API_KEY', 'foreign-inherited-value')
+    monkeypatch.setenv('PROTAGINE_API_KEY', 'foreign-inherited-value')
     load_environment()
-    assert os.environ['PACOMIND_STATE_DIR'] == str(state)
-    assert os.environ['PACOMIND_API_KEY'] == 'fixture-private-key'
+    assert os.environ['PROTAGINE_STATE_DIR'] == str(state)
+    assert os.environ['PROTAGINE_API_KEY'] == 'fixture-private-key'
 
 
 def test_installed_probe_checks_canonical_metadata_and_module_bytes(tmp_path):
@@ -1510,30 +1510,30 @@ def test_installed_probe_checks_canonical_metadata_and_module_bytes(tmp_path):
     site = Path(subprocess.check_output([str(python), '-I', '-c',
         'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip())
     resources = {}
-    for package in ('pacomind_hermes', 'pacomind_memory'):
+    for package in ('protagine_hermes', 'protagine_memory'):
         for name in ('__init__.py', 'client.py', 'plugin.yaml'):
             content = b'# Selected fixture module\n' if name.endswith('.py') else b'name: fixture\n'
             path = site/package/name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             resources[package+'/'+name] = content
-    dist = site/'pacomind_hermes-1.3.0.dist-info'
+    dist = site/'protagine_hermes-1.3.0.dist-info'
     dist.mkdir()
-    (dist/'METADATA').write_text('Metadata-Version: 2.1\nName: pacomind-hermes\nVersion: 1.3.0\n')
+    (dist/'METADATA').write_text('Metadata-Version: 2.1\nName: protagine-hermes\nVersion: 1.3.0\n')
     (dist/'entry_points.txt').write_text(
-        '[hermes_agent.plugins]\npacomind = pacomind_hermes\n'
-        '[hermes_agent.memory_providers]\npacomind-memory = pacomind_memory\n')
+        '[hermes_agent.plugins]\nprotagine = protagine_hermes\n'
+        '[hermes_agent.memory_providers]\nprotagine-memory = protagine_memory\n')
     result = setup_hermes._adapter_binding(python, resources)
     assert result['mode'] == 'native-installed' and result['version'] == '1.3.0'
-    assert set(result['sources']) == {'pacomind_hermes','pacomind_memory'}
+    assert set(result['sources']) == {'protagine_hermes','protagine_memory'}
     # Conflicting canonical discovery must not be hidden by a directory fallback.
     old = site/'unrelated_adapter-1.0.0.dist-info'
     old.mkdir()
     (old/'METADATA').write_text('Metadata-Version: 2.1\nName: unrelated-adapter\nVersion: 1.0.0\n')
-    (old/'entry_points.txt').write_text('[hermes_agent.plugins]\npacomind = unrelated_adapter\n')
+    (old/'entry_points.txt').write_text('[hermes_agent.plugins]\nprotagine = unrelated_adapter\n')
     with pytest.raises(ValueError, match='incomplete or different'):
         setup_hermes._adapter_binding(python, resources)
     (old/'entry_points.txt').unlink()
-    (site/'pacomind_hermes/client.py').write_bytes(b'# Different installed implementation\n')
+    (site/'protagine_hermes/client.py').write_bytes(b'# Different installed implementation\n')
     with pytest.raises(ValueError, match='incomplete or different'):
         setup_hermes._adapter_binding(python, resources)

@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from pacomind.turns.executions import request_work_context
+from protagine.turns.executions import request_work_context
 
 
 def execution(number, *, parent=None, age=1, session=None):
@@ -43,7 +43,7 @@ def concurrent_view():
                     'result': {'report_sha256': 'a' * 64}}]},
             'native_kanban': {'available': True, 'items': [], 'total': 0, 'recent_total': 8,
                 'selection': 'configured_boards', 'partial': False,
-                'boards': [{'board': board, 'available': True} for board in ('default', 'pacomind-drafts')],
+                'boards': [{'board': board, 'available': True} for board in ('default', 'protagine-drafts')],
                 'recent': [{'native_task_id': 'old-board-task', 'label': 'Previous inventory review',
                     'status': 'done', 'liveness': 'native_terminal_record'}]},
             'reported_worker': {'available': True, 'items': [
@@ -68,7 +68,7 @@ def test_native_task_survives_other_readers_before_during_and_after_work(with_in
     # remain inspectable within the same budget, even without an input quote.
     observer = execution(1, session='observer')
     worker = execution(2, age=8)
-    worker.update(task_id='a' * 64, platform='pacomind_task')
+    worker.update(task_id='a' * 64, platform='protagine_task')
     if with_input:
         worker['request_input'] = {
             'status': 'admitted_input_excerpt', 'source_id': 'original-task',
@@ -99,7 +99,7 @@ def test_native_task_survives_other_readers_before_during_and_after_work(with_in
          'liveness': 'unverified', 'status_sha256': 'd' * 64},
         {'label': 'Direct delivery', 'state': 'reported_ready', 'freshness': 'recent',
          'liveness': 'unverified', 'status_sha256': 'e' * 64,
-         'work_snapshot': {'schema': 'PacoMindWorkSnapshotV1', 'available': True,
+         'work_snapshot': {'schema': 'ProtagineWorkSnapshotV1', 'available': True,
              'complete': False, 'coverage': 'Selected producer deliveries and exact intent-linked provider cursors; no recipient read proof',
              'freshness': 'recent', 'items': [], 'observed_at': 1234.5, 'partial': False,
              'pending_total': 0, 'source_status': {'outbox': 'observed', 'provider': 'observed'},
@@ -241,7 +241,7 @@ def test_terminal_task_outcome_precedes_unrelated_expired_execution(same_session
 
 
 def test_expired_phase_is_historical_in_both_contexts_without_inventing_completion():
-    from pacomind.turns.executions import format_view
+    from protagine.turns.executions import format_view
 
     stale = execution(2, age=500)
     view = {'items': [stale], 'total': 1, 'truncated': False}

@@ -13,35 +13,35 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 if sys.argv[3]:sys.path.append(sys.argv[3])
 if sys.argv[4]:sys.path.insert(0,sys.argv[4])
-package=types.ModuleType('pacomind_hermes');package.__path__=[sys.argv[2]];sys.modules['pacomind_hermes']=package
+package=types.ModuleType('protagine_hermes');package.__path__=[sys.argv[2]];sys.modules['protagine_hermes']=package
 def no_network(*a,**kw):raise AssertionError('No network in native forecast qualification')
 socket.socket.connect=no_network
 from hermes_cli import kanban_db as kb
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import initiative_work,host
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.self_model.expectations import ExpectationStore,ExpectationEngine
-from pacomind.self_model import runtime_forecasts
-from pacomind.turns import get_turn_idempotency_ledger
-from pacomind.turns.hermes_kanban import task_snapshot
-from pacomind_hermes.initiative_work import NativeReviews
-from pacomind_hermes.review_worker import register_worker
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import initiative_work,host
+from protagine.initiatives.store import InitiativeStore
+from protagine.self_model.expectations import ExpectationStore,ExpectationEngine
+from protagine.self_model import runtime_forecasts
+from protagine.turns import get_turn_idempotency_ledger
+from protagine.turns.hermes_kanban import task_snapshot
+from protagine_hermes.initiative_work import NativeReviews
+from protagine_hermes.review_worker import register_worker
 from unittest.mock import patch
 root=Path(os.environ['HERMES_HOME']);root.mkdir()
-(root/'config.yaml').write_text('plugins: {enabled: [], pacomind: {owner_contact_id: owner}}\n')
-state=Path(os.environ['PACOMIND_STATE_DIR']);state.mkdir()
-shutil.copytree(sys.argv[2],state/'adapter/pacomind_hermes')
+(root/'config.yaml').write_text('plugins: {enabled: [], protagine: {owner_contact_id: owner}}\n')
+state=Path(os.environ['PROTAGINE_STATE_DIR']);state.mkdir()
+shutil.copytree(sys.argv[2],state/'adapter/protagine_hermes')
 for name in ('catalog.py','contract.py'):
- shutil.copyfile(Path(sys.argv[2]).parents[1]/'hostworker/pacomind_hostworker'/name,state/'adapter/pacomind_hermes/pacomind_hostworker'/name)
+ shutil.copyfile(Path(sys.argv[2]).parents[1]/'hostworker/protagine_hostworker'/name,state/'adapter/protagine_hermes/protagine_hostworker'/name)
 (state/'instance.json').write_text(json.dumps({'version':1,'profile':'local','hermes_home':str(root),
  'hermes_python':sys.executable,'sidecar_python':sys.argv[5],'sidecar_module_root':sys.argv[1],
  'adapter_binding':{'mode':'private-directory'}}))
-(state/'.pacomind-llm-config.json').write_text(json.dumps({'provider':'vllm','models':{},
+(state/'.protagine-llm-config.json').write_text(json.dumps({'provider':'vllm','models':{},
  'modelPool':{'planning-fixture':{'model':'replaceable-planning-model',
  'baseUrl':'http://127.0.0.1:9/v1','apiKey':'fixture-private-token','supportsTools':True}},'functionRoles':{'planning':['planning-fixture']}}))
-from pacomind.setup_native_reviews import configure
+from protagine.setup_native_reviews import configure
 configure(state,install=True)
 store=InitiativeStore(state);host._initiative_store=store
 host._expectations=ExpectationEngine(ExpectationStore(str(state/'expectations.db')))
@@ -49,7 +49,7 @@ sources=get_turn_idempotency_ledger(state)
 app=FastAPI()
 @app.middleware('http')
 async def authority(request,next_call):
- request.state.pacomind_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
+ request.state.protagine_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
      scopes=frozenset({'turns:write','context:read'}),viewer_person_id='owner',person_ids=frozenset({'owner'}),
      audiences=frozenset({'viewer'}),authenticated=True)
  return await next_call(request)
@@ -92,7 +92,7 @@ assert prediction['detail']['conditions']['estimate']['sample_n']==0
 assert prediction['detail']['model_provenance']['served_model'] is None
 # A queued profile change does not turn the frozen attachment recipe into an
 # observation of the configuration eventually loaded by a worker.
-configuration_path=state/'.pacomind-llm-config.json'
+configuration_path=state/'.protagine-llm-config.json'
 original_configuration=configuration_path.read_text()
 queued_configuration=json.loads(original_configuration)
 queued_configuration['modelPool']['planning-fixture']['model']='changed-before-first-claim'
@@ -115,17 +115,17 @@ with kb.connect(board='default') as db:
  # its observer registration, so constructing an observer here hides a missing
  # production integration.
  import yaml
- worker_configuration=yaml.safe_load((root/'profiles/pacomind-reviews/config.yaml').read_text())
+ worker_configuration=yaml.safe_load((root/'profiles/protagine-reviews/config.yaml').read_text())
  hooks={};registered_tools={}
  with patch('hermes_cli.config.load_config',return_value=worker_configuration), patch(
-   'pacomind_hermes.review_worker._selected_client',return_value=client) as selected_client:
+   'protagine_hermes.review_worker._selected_client',return_value=client) as selected_client:
   register_worker(types.SimpleNamespace(register_hook=lambda n,f:hooks.update({n:f}),
    register_tool=lambda **kw:registered_tools.update({kw['name']:kw})),
-   worker_configuration['plugins']['pacomind']['native_reviews'])
+   worker_configuration['plugins']['protagine']['native_reviews'])
   selected_client.assert_not_called()
- assert set(registered_tools)=={'pacomind_read_work_source','pacomind_review_report'}
+ assert set(registered_tools)=={'protagine_read_work_source','protagine_review_report'}
  with patch('agent.delegation_context.is_dispatcher_owned_worker_context',return_value=True), patch(
-   'pacomind_hermes.review_worker._selected_client',return_value=client) as selected_client:
+   'protagine_hermes.review_worker._selected_client',return_value=client) as selected_client:
   hooks['pre_api_request'](model='requested-alias',provider='custom')
   selected_client.assert_not_called()
   hooks['pre_api_request'](api_request_id='fixture-request',model='requested-alias',provider='custom')
@@ -136,7 +136,7 @@ with kb.connect(board='default') as db:
  # Credential/service unavailability remains a missed receipt, never a failure
  # of the already accepted review. The existing complete pair still settles.
  with patch('agent.delegation_context.is_dispatcher_owned_worker_context',return_value=True), patch(
-   'pacomind_hermes.review_worker._selected_client',side_effect=OSError('fixture unavailable')):
+   'protagine_hermes.review_worker._selected_client',side_effect=OSError('fixture unavailable')):
   hooks['api_request_error'](api_request_id='unavailable-request',model='requested-alias')
  assert kb.complete_task(db,task.id,summary='Metadata read; result quality not independently assessed.',expected_run_id=task.current_run_id,fire_lifecycle_hook=False)
 for key in ('HERMES_KANBAN_TASK','HERMES_KANBAN_RUN_ID','HERMES_KANBAN_CLAIM_LOCK'):os.environ.pop(key)
@@ -190,9 +190,9 @@ stale=client.post('/v1/host/initiative-work/'+first.id+'/model-observation',json
 assert stale.status_code==409,stale.text
 assert not projection['suggestion_enabled'] and projection['comparison']['receipt_ref']==first_history['outcomes'][0]['receipt_ref']
 assert runtime_forecasts.project(started,native,snapshot,'other')['status']=='source_unavailable'
-from pacomind.turns.local_work import local_work_view
-from pacomind.turns.executions import request_work_context
-from pacomind.turns import hermes_kanban
+from protagine.turns.local_work import local_work_view
+from protagine.turns.executions import request_work_context
+from protagine.turns import hermes_kanban
 original_snapshot=hermes_kanban.task_snapshot
 snapshot_reads=[]
 def counted_snapshot(*args,**kwargs):
@@ -303,9 +303,9 @@ selection={**selection,'cohort':'next-fixture-window','expires_at':time.time()+1
 after_erasure=worker.work(proposal('A review after an erased probability sample').id)['forecast']['task_outcome']
 assert after_erasure['sample_n']==1 and abs(after_erasure['probability']-.56)<1e-10
 # A different attachment recipe starts at the frozen prior in its own cohort.
-configuration=json.loads((state/'.pacomind-llm-config.json').read_text())
+configuration=json.loads((state/'.protagine-llm-config.json').read_text())
 configuration['modelPool']['planning-fixture']['model']='another-replaceable-model'
-(state/'.pacomind-llm-config.json').write_text(json.dumps(configuration))
+(state/'.protagine-llm-config.json').write_text(json.dumps(configuration))
 swapped=worker.work(proposal('A review after a planning-role swap').id)
 swap_forecast=swapped['forecast']['task_outcome']
 assert swap_forecast['sample_n']==0 and swap_forecast['probability']==.7
@@ -326,14 +326,14 @@ def test_actual_native_forecast_learning(tmp_path):
     root = Path(__file__).resolve().parents[2]
     env = {key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'hermes'),HERMES_KANBAN_HOME=str(tmp_path/'hermes'),
-        PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),PACOMIND_HERMES_WORK_BOARDS='["default"]',
-        PACOMIND_STATE_DIR=str(tmp_path/'state'),PACOMIND_OWNER_CONTACT_ID='owner',PACOMIND_EXPECTATIONS='on',
+        PROTAGINE_HERMES_HOME=str(tmp_path/'hermes'),PROTAGINE_HERMES_WORK_BOARDS='["default"]',
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'),PROTAGINE_OWNER_CONTACT_ID='owner',PROTAGINE_EXPECTATIONS='on',
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1',HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
+        PROTAGINE_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
     result=subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
-        str(root/'plugins/hermes-plugin'),os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
-        os.environ.get('PROTAGINE_HERMES_TEST_SOURCE',os.environ.get('PACOMIND_TEST_HERMES_PATH','')),sys.executable],
+        str(root/'plugins/hermes-plugin'),os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),
+        os.environ.get('PROTAGINE_HERMES_TEST_SOURCE',os.environ.get('PROTAGINE_TEST_HERMES_PATH','')),sys.executable],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=90)
     assert result.returncode==0,result.stdout+result.stderr
     assert '"next_horizon_changed": true' in result.stdout

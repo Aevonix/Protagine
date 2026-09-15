@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host as host_mod
+from protagine.api.routers import host as host_mod
 
 
 @asynccontextmanager

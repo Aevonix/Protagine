@@ -16,7 +16,7 @@ _PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "hermes-plugin"
 
 
 def _load_plugin():
-    name = "pacomind_hermes_plugin_under_test"
+    name = "protagine_hermes_plugin_under_test"
     sys.modules.pop(name, None)
     spec = importlib.util.spec_from_file_location(
         name,
@@ -68,8 +68,8 @@ class _Client:
 
 class _Context:
     def __init__(self, outbox_path):
-        self.config = {"plugins": {"pacomind": {
-            "url": "http://pacomind.test",
+        self.config = {"plugins": {"protagine": {
+            "url": "http://protagine.test",
             "owner_contact_id": "cid-owner",
             "attested_system_platforms": ["cli"],
             "turn_outbox_path": str(outbox_path),
@@ -95,10 +95,10 @@ def plugin(monkeypatch, tmp_path):
     module = _load_plugin()
     _record_origin_storage(module, monkeypatch)
     _Client.instances.clear()
-    module.PacoMindClient = _Client
-    monkeypatch.setenv("PACOMIND_GENERAL_PLUGIN_ACTIVE", "1")
-    monkeypatch.setenv("PACOMIND_MEMORY_WORKER_TOOLS", "0")
-    monkeypatch.setenv("PACOMIND_MEMORY_TURN_WRITER", "disabled")
+    module.ProtagineClient = _Client
+    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
+    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "0")
+    monkeypatch.setenv("PROTAGINE_MEMORY_TURN_WRITER", "disabled")
     context = _Context(tmp_path / "turn-outbox.sqlite3")
     module.register(context)
     # These payload checks exercise a synchronous drain, not elapsed disk time.
@@ -203,7 +203,7 @@ def test_expired_turn_drain_preserves_exact_payload_for_explicit_recovery(plugin
         expired.setattr(module.TurnOutbox, "_connect", expire_after_connect)
         _post(context, session="sess-deferred", task="task-deferred", turn="turn-deferred")
 
-    config = context.config["plugins"]["pacomind"]
+    config = context.config["plugins"]["protagine"]
     outbox = module.TurnOutbox(config["turn_outbox_path"])
     pending, = outbox.snapshot()
     assert pending["state"] == "pending"

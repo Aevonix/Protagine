@@ -21,11 +21,11 @@ if dependencies:
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.middleware import ApiKeyMiddleware
-from pacomind.api.routers import executions, host
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.turns import get_turn_idempotency_ledger
+from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import executions, host
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.turns import get_turn_idempotency_ledger
 
 home = Path(os.environ['HERMES_HOME'])
 home.mkdir(mode=0o700)
@@ -33,7 +33,7 @@ artifact = home/'task-artifact.md'
 artifact.write_text('The completed task artifact.\n')
 beta_reply = f'TASK_BETA saved its result at {artifact}, with its own retained source.'
 alpha_reply = 'TASK_ALPHA finished the original violet-note comparison after the foreground handoff.'
-state = Path(os.environ['PACOMIND_STATE_DIR'])
+state = Path(os.environ['PROTAGINE_STATE_DIR'])
 state.mkdir(mode=0o700)
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
 contacts = SQLiteContactStore(ContactsConfig(sqlite_path=str(state/'contacts.db')))
@@ -49,9 +49,9 @@ async def seed():
 
 owner = asyncio.run(seed())
 host._contacts_store = contacts
-os.environ['PACOMIND_OWNER_CONTACT_ID'] = owner
+os.environ['PROTAGINE_OWNER_CONTACT_ID'] = owner
 secret = 'isolated-native-task-fixture-key'
-tool_form = os.environ.get('PACOMIND_TEST_TASK_TOOL_FORM', 'deferred')
+tool_form = os.environ.get('PROTAGINE_TEST_TASK_TOOL_FORM', 'deferred')
 keyring = home/'keys.json'
 keyring.write_text(json.dumps({'version': 1, 'principals': [{
     'principal': 'native-task-fixture', 'status': 'active', 'viewer_person_id': owner,
@@ -63,15 +63,15 @@ keyring.chmod(0o600)
     'model': {'provider': 'custom', 'default': 'fixture-model', 'base_url': 'http://model.fixture/v1'},
     'providers': {'task-interactive': {
         'base_url': 'http://model.fixture/v1', 'api_key': 'fixture-task-model-key'}},
-    'platforms': {'pacomind_task': {'extra': {'task_model_roles': {
+    'platforms': {'protagine_task': {'extra': {'task_model_roles': {
         'coding': {'role': 'coding', 'provider': 'task-interactive', 'model': 'fixture-coding-model'}}}}},
     'auxiliary': {'title_generation': {'enabled': False}},
-    'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4, 'api_max_retries': 0}, 'toolsets': ['pacomind'],
-    'tools': {'tool_search': {'eager': ['pacomind_task'] if tool_form.endswith('direct') else []}},
-    'display': {'platforms': {'pacomind_task': {'streaming': False, 'tool_progress': 'off'}}},
-    'memory': {'provider': 'pacomind-memory', 'config': {
+    'terminal': {'cwd': str(home)}, 'agent': {'max_turns': 4, 'api_max_retries': 0}, 'toolsets': ['protagine'],
+    'tools': {'tool_search': {'eager': ['protagine_task'] if tool_form.endswith('direct') else []}},
+    'display': {'platforms': {'protagine_task': {'streaming': False, 'tool_progress': 'off'}}},
+    'memory': {'provider': 'protagine-memory', 'config': {
         'contact_id': owner, 'url': 'http://fixture', 'api_key': secret}},
-    'plugins': {'enabled': ['pacomind'], 'pacomind': {
+    'plugins': {'enabled': ['protagine'], 'protagine': {
         'owner_contact_id': owner, 'url': 'http://fixture', 'api_key': secret,
         'turn_outbox_path': str(home/'outbox.db'), 'execution_registry_enabled': True,
         'native_tasks': {'enabled': True, 'state_path': str(home/'native-tasks.db')}}}}))
@@ -93,8 +93,8 @@ task_ids = {}
 expected_failure_turn = None
 source_parents, status_views, tool_ids = {}, {}, itertools.count()
 tearing_down = False
-steer_delivery = os.environ.get('PACOMIND_TEST_STEER_DELIVERY', 'tool_batch')
-submission = os.environ.get('PACOMIND_TEST_TASK_SUBMISSION', 'submit')
+steer_delivery = os.environ.get('PROTAGINE_TEST_STEER_DELIVERY', 'tool_batch')
+submission = os.environ.get('PROTAGINE_TEST_TASK_SUBMISSION', 'submit')
 existing_handoff = submission == 'existing_handoff'
 mixed_handoff = tool_form.startswith('mixed_')
 accepted_before_handoff, admissions, dispatches, controllers = {}, [], [], {}
@@ -130,12 +130,12 @@ def tool(body, name, arguments):
 
 
 def existing_task_handoff(body, identity):
-    calls = [{'name': 'pacomind_task', 'arguments': {'operation': 'handoff', 'task_id': identity}}]
+    calls = [{'name': 'protagine_task', 'arguments': {'operation': 'handoff', 'task_id': identity}}]
     if mixed_handoff:
-        calls.append({'name': 'pacomind_task', 'arguments': {'operation': 'status', 'task_id': identity}})
+        calls.append({'name': 'protagine_task', 'arguments': {'operation': 'status', 'task_id': identity}})
     names = {value.get('function', {}).get('name') for value in body['tools']}
     direct = tool_form.endswith('direct')
-    assert ('pacomind_task' in names) == direct, (tool_form, names)
+    assert ('protagine_task' in names) == direct, (tool_form, names)
     if not direct:
         calls = [{'name': 'tool_call', 'arguments': {'calls': calls}}]
     return message_response(body, {'role': 'assistant', 'content': None, 'tool_calls': [
@@ -164,12 +164,12 @@ def respond(request):
         # Release controlled provider work during cleanup without replacing an
         # earlier test failure with an assertion from a cancelled request.
         return answer(body, 'Fixture cleanup after qualification ended.')
-    from pacomind_hermes.native_task_platform import ACTIVE
-    from pacomind_hermes.input_provenance import current
+    from protagine_hermes.native_task_platform import ACTIVE
+    from protagine_hermes.input_provenance import current
     active = ACTIVE.get()
     if active is not None:
         if existing_handoff:
-            assert 'pacomind_task' not in json.dumps(body['tools']), (
+            assert 'protagine_task' not in json.dumps(body['tools']), (
                 'A task worker was offered foreground-only task control in its schema or catalog')
             worker_text = json.dumps(body['messages'])
             assert 'Actual acceptance completes this foreground request' not in worker_text
@@ -211,7 +211,7 @@ def respond(request):
         if step == 1:
             work_rows = [json.loads(line) for message in body['messages']
                 if message.get('role') in {'system', 'developer'}
-                and str(message.get('content', '')).startswith('[pacomind-work-request-v1]')
+                and str(message.get('content', '')).startswith('[protagine-work-request-v1]')
                 for line in message['content'].splitlines() if line.startswith('{')]
             origin = next((item for item in work_rows
                 if item.get('task_id') == row['id'] and item.get('origin_execution_id')), None)
@@ -234,10 +234,10 @@ def respond(request):
                     return answer(body, alpha_reply)
                 if steer_delivery == 'next_turn':
                     return answer(body, 'Initial alpha answer completed before the queued correction.')
-                return tool(body, 'pacomind_memory_read_source', row['source']['source_refs'][0])
+                return tool(body, 'protagine_memory_read_source', row['source']['source_refs'][0])
             return answer(body, beta_reply)
         text = json.dumps(body['messages'])
-        assert update_text in text and 'pacomind-task-update-v1' in text, text
+        assert update_text in text and 'protagine-task-update-v1' in text, text
         updates = adapter.handoffs.updates(row['id'])
         from agent import relay_runtime
         turn = relay_runtime.current_turn()
@@ -271,7 +271,7 @@ def respond(request):
     if tag == 'HANDOFF_PRIOR_TURN':
         assert step <= 2
         if step == 1:
-            return tool(body, 'pacomind_task', {'operation': 'handoff', 'task_id': task_ids['alpha']})
+            return tool(body, 'protagine_task', {'operation': 'handoff', 'task_id': task_ids['alpha']})
         result = json.loads(next(row['content'] for row in reversed(body['messages']) if row['role'] == 'tool'))
         assert result.get('error') and not result.get('accepted'), result
         return answer(body, 'A different foreground turn cannot finish through the prior task admission.')
@@ -294,7 +294,7 @@ def respond(request):
     if tag == 'HANDOFF_REJECTED':
         assert step <= 2
         if step == 1:
-            return tool(body, 'pacomind_task', {'operation': 'handoff', 'request': ' '})
+            return tool(body, 'protagine_task', {'operation': 'handoff', 'request': ' '})
         result = json.loads(next(row['content'] for row in reversed(body['messages']) if row.get('role') == 'tool'))
         assert result['error'] and result['outcome'] == 'unconfirmed' and 'task_id' not in result, result
         return answer(body, 'The invalid handoff was rejected; the conversation can continue.')
@@ -309,11 +309,11 @@ def respond(request):
             if tag == 'STATUS_ERASED':
                 work_rows = [json.loads(line) for message in body['messages']
                     if message.get('role') in {'system', 'developer'}
-                    and str(message.get('content', '')).startswith('[pacomind-work-request-v1]')
+                    and str(message.get('content', '')).startswith('[protagine-work-request-v1]')
                     for line in message['content'].splitlines() if line.startswith('{')]
                 assert not any(item.get('task_id') == task_ids['alpha']
                     and item.get('origin_execution_id') for item in work_rows), work_rows
-            return tool(body, 'pacomind_task', {'operation': 'status', 'task_id': task_ids['alpha']})
+            return tool(body, 'protagine_task', {'operation': 'status', 'task_id': task_ids['alpha']})
         results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
         result = json.loads(results[-1])
         if step == 2:
@@ -343,21 +343,21 @@ def respond(request):
                 assert observed['middleware_visible'] == observed['native_request_visible'] == (tag == 'STATUS_VISIBLE')
                 assert 'instruction' not in observed
                 if tag == 'STATUS_QUEUED':
-                    return tool(body, 'pacomind_memory_read_source', observed['source_refs'][0])
+                    return tool(body, 'protagine_memory_read_source', observed['source_refs'][0])
         else:
-            assert result['pacomind_source_read_v1'] and update_text in result['content'], result
+            assert result['protagine_source_read_v1'] and update_text in result['content'], result
         return answer(body, 'FG_' + tag + '_ACK')
     assert step <= 2, (tag, body)
     if step == 1:
         if tag.startswith('RESUME_'):
-            return tool(body, 'pacomind_task', {'operation': 'resume',
+            return tool(body, 'protagine_task', {'operation': 'resume',
                 'task_id': task_ids['failure'], 'expected_turn_id': expected_failure_turn})
         if tag.startswith('SUBMIT_'):
             name = tag.removeprefix('SUBMIT_')
-            return tool(body, 'pacomind_task', {'operation': submission if name == 'ALPHA' and not existing_handoff else 'submit',
+            return tool(body, 'protagine_task', {'operation': submission if name == 'ALPHA' and not existing_handoff else 'submit',
                 'request': 'TASK_' + name + ': Compare my violet calibration notes and retain the result.',
                 **({'model_role': 'coding'} if name == 'ALPHA' else {})})
-        return tool(body, 'pacomind_task', {'operation': 'steer' if tag == 'STEER_ALPHA' else 'stop',
+        return tool(body, 'protagine_task', {'operation': 'steer' if tag == 'STEER_ALPHA' else 'stop',
             'task_id': task_ids['alpha'], **({'request': update_text} if tag == 'STEER_ALPHA' else {})})
     results = [row['content'] for row in body['messages'] if row.get('role') == 'tool']
     tool_results[tag] = results
@@ -394,8 +394,8 @@ def no_network(*args, **kwargs):
 socket.socket.connect = no_network
 socket.create_connection = no_network
 from hermes_cli.plugins import get_plugin_manager
-from pacomind_hermes import client as boundary_client, request_memory as boundary_memory
-from pacomind_hermes.task_handoffs import TaskHandoffs
+from protagine_hermes import client as boundary_client, request_memory as boundary_memory
+from protagine_hermes.task_handoffs import TaskHandoffs
 
 # This fixture qualifies concurrent channels and source ownership, not the
 # latency of an in-process TestClient under CI load. Keep the real erasure
@@ -438,7 +438,7 @@ def held_failure_terminal(self, identity, native, *, basis='native_on_session_en
 
 TaskHandoffs.observe_terminal = held_failure_terminal
 if existing_handoff:
-    from pacomind_hermes.task_controller import NativeTasks
+    from protagine_hermes.task_controller import NativeTasks
     original_admit, original_call = TaskHandoffs.admit, NativeTasks._call
     def counted_admit(self, **kwargs):
         admissions.append(kwargs.copy())
@@ -450,8 +450,8 @@ if existing_handoff:
     TaskHandoffs.admit, NativeTasks._call = counted_admit, counted_call
 manager = get_plugin_manager()
 manager.discover_and_load()
-assert manager._plugins['pacomind'].enabled, manager._plugins['pacomind'].error
-from pacomind_hermes.task_controller import FinishTurn, TOOL_SCHEMA
+assert manager._plugins['protagine'].enabled, manager._plugins['protagine'].error
+from protagine_hermes.task_controller import FinishTurn, TOOL_SCHEMA
 assert ('handoff' in TOOL_SCHEMA['parameters']['properties']['operation']['enum']) == (FinishTurn is not None)
 if submission == 'handoff' or existing_handoff:
     assert FinishTurn is not None, 'Terminal handoff requires the native post_tool_batch contract'
@@ -466,9 +466,9 @@ import tools.tirith_security
 tools.tirith_security.ensure_installed = lambda **kwargs: False
 config = GatewayConfig(sessions_dir=home/'sessions', loop_watchdog=False)
 platform_config = PlatformConfig(enabled=True, typing_indicator=False, gateway_restart_notification=False)
-config.platforms = {Platform('pacomind_task'): platform_config}
+config.platforms = {Platform('protagine_task'): platform_config}
 runner = GatewayRunner(config)
-adapter = platform_registry.create_adapter('pacomind_task', platform_config)
+adapter = platform_registry.create_adapter('protagine_task', platform_config)
 assert adapter is not None
 adapter.send_document = AsyncMock(wraps=adapter.send_document)
 runner.adapters[adapter.platform] = adapter
@@ -556,8 +556,8 @@ async def exercise():
                 assert provenance['session_id'] == entry.session_id and provenance['api_request_id']
                 tool_row = [row for row in messages if row['role'] == 'tool'][-1]
                 assert provenance['tool_call_id'] == tool_row['tool_call_id']
-                assert provenance['tool_name'] == ('pacomind_task' if tool_form.endswith('direct') else 'tool_call')
-                assert tool_row['tool_name'] == 'pacomind_task'
+                assert provenance['tool_name'] == ('protagine_task' if tool_form.endswith('direct') else 'tool_call')
+                assert tool_row['tool_name'] == 'protagine_task'
             # Finishing this foreground turn cannot interrupt its independently owned task.
             assert held['alpha'].is_set() and not release['alpha'].is_set()
         if existing_handoff:
@@ -576,10 +576,10 @@ async def exercise():
             # A new controller and observer cannot reconstruct this ID from
             # their fresh UUID. The original admission carries the real proof.
             restarted = type(controller)(controller.client, controller.outbox, owner, database=controller.database)
-            from pacomind_hermes.executions import ExecutionObserver
-            from pacomind_hermes.request_work import RequestWork
+            from protagine_hermes.executions import ExecutionObserver
+            from protagine_hermes.request_work import RequestWork
             fresh_observer = ExecutionObserver(controller.client)
-            origin_view = {'schema':'PacoMindRequestWorkV1', 'native_task_ids':[retained['id']],
+            origin_view = {'schema':'ProtagineRequestWorkV1', 'native_task_ids':[retained['id']],
                 'text':'Retained task observation.\n'}
             projected = await asyncio.to_thread(RequestWork(controller.client, restarted, fresh_observer)._origin,
                 origin_view, exact_scope, time.monotonic()+1, max_chars=4000)
@@ -595,7 +595,7 @@ async def exercise():
                 rejected = json.loads(await asyncio.to_thread(controller.handle, arguments, other))
                 assert rejected.get('error') and not rejected.get('accepted'), (changed, rejected)
                 if not mixed_handoff:
-                    assert controller.finish_handoff(scope=other, tool_name='pacomind_task',
+                    assert controller.finish_handoff(scope=other, tool_name='protagine_task',
                         tool_call_id='foreign-handoff', tool_arguments=json.dumps(arguments),
                         tool_result=json.dumps(results[1])) is None, changed
             denied = await asyncio.wait_for(runner._handle_message(event('HANDOFF_PRIOR_TURN')), 12)
@@ -716,8 +716,8 @@ async def exercise():
         assert status['input_source_refs'] == failed['source']['source_refs']
         # Reopen the retained database as a restarted consumer, without a live
         # native session store. A failed result remains distinct from an answer.
-        from pacomind_hermes.task_controller import NativeTasks
-        from pacomind_hermes.task_handoffs import TaskHandoffs
+        from protagine_hermes.task_controller import NativeTasks
+        from protagine_hermes.task_handoffs import TaskHandoffs
         reopened = TaskHandoffs(adapter.handoffs._database, adapter.handoffs._resolve_source,
                                adapter.handoffs._resolve_owner)
         saved = reopened.get(failed['id'])
@@ -774,7 +774,7 @@ async def exercise():
             'native_session_id', 'native_task_id', 'native_turn_id', 'response', 'stop'))
         assert len(generation['alpha']) == 2 and len(generation['beta']) == 1
         assert 'Native task participant does not match its owner' in (home/'logs'/'errors.log').read_text()
-        assert all(handle.gateway != 'pacomind_task' for handle in await contacts.get_handles(owner))
+        assert all(handle.gateway != 'protagine_task' for handle in await contacts.get_handles(owner))
         ledger.erase_sources(contact_id=owner, turn_ids=[updates[0]['source']['source_refs'][0]['source_id']])
         inspected = await asyncio.wait_for(runner._handle_message(event('STATUS_ERASED')), 12)
         assert inspected == 'FG_STATUS_ERASED_ACK', inspected
@@ -812,8 +812,8 @@ try:
     if steer_delivery == 'next_turn':
         from types import SimpleNamespace
         from hermes_state import SessionDB
-        from pacomind_hermes.client import TurnOutbox, PacoMindClient
-        from pacomind_hermes.native_owned_copies import NativeOwnedCopies
+        from protagine_hermes.client import TurnOutbox, ProtagineClient
+        from protagine_hermes.native_owned_copies import NativeOwnedCopies
         session = adapter.handoffs.get(task_ids['alpha'])['native_session_id']
         with SessionDB(home/'state.db') as native:
             before = {row['id']:dict(row) for row in native._conn.execute(
@@ -824,7 +824,7 @@ try:
             unrelated_id = native.append_message(session, 'user', 'An unrelated later task remains intact.')
             unrelated = dict(native._conn.execute('SELECT * FROM messages WHERE id=?', (unrelated_id,)).fetchone())
         owned = NativeOwnedCopies(SimpleNamespace(outbox=TurnOutbox(home/'outbox.db'),
-            client=PacoMindClient('http://fixture', secret)), None)
+            client=ProtagineClient('http://fixture', secret)), None)
         reservations = owned._rows(owner)
         copies = [row for row in reservations if row['metadata'].get('anchor_id') == carrier_id]
         updates = [row for row in copies if row['metadata'].get('update_carrier_hash')]

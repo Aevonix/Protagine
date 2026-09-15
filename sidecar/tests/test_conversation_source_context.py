@@ -6,14 +6,14 @@ import sqlite3
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.beliefs.source_time import MemoryTimeQuery
-from pacomind.memory.recall import pack_memory_context
-from pacomind.memory.search import CollectedSources, select_memory
-from pacomind.memory.selection import RecallSelector
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.idempotency import source_message_hash
-from pacomind.turns.source_annotations import expand, current_candidates
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.beliefs.source_time import MemoryTimeQuery
+from protagine.memory.recall import pack_memory_context
+from protagine.memory.search import CollectedSources, select_memory
+from protagine.memory.selection import RecallSelector
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.idempotency import source_message_hash
+from protagine.turns.source_annotations import expand, current_candidates
 from test_canonical_memory_search import memory_app, search
 from test_source_claim_projection import Model, claim
 from test_turn_source_evidence import source_app
@@ -57,7 +57,7 @@ async def packet(ledger, hits, *, selector=None, query='Where is the prototype n
 @pytest.mark.asyncio
 @pytest.mark.parametrize('supplied', [False, True])
 async def test_owner_correction_and_acknowledgment_are_one_separately_attributed_candidate(tmp_path, monkeypatch, supplied):
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     hits = seed(ledger, supplied=supplied)
     before = copy.deepcopy(hits)
@@ -81,7 +81,7 @@ async def test_owner_correction_and_acknowledgment_are_one_separately_attributed
 
 @pytest.mark.asyncio
 async def test_request_remains_a_request_and_unrelated_linked_result_is_not_injected(tmp_path, monkeypatch):
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     unrelated = 'ARCHIVED TOOL RESULT: obsolete compatibility instructions for a different project.'
     ledger.record_source('observation', contact_id='person', session_id='original',
@@ -104,8 +104,8 @@ async def test_request_remains_a_request_and_unrelated_linked_result_is_not_inje
 
 @pytest.mark.asyncio
 async def test_pair_uses_existing_single_relevance_pass_and_can_lose_to_a_useful_result(tmp_path, monkeypatch):
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'on')
-    monkeypatch.delenv('PACOMIND_RECALL_RERANK_MIN_SCORE', raising=False)
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'on')
+    monkeypatch.delenv('PROTAGINE_RECALL_RERANK_MIN_SCORE', raising=False)
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     hits = seed(ledger)
     ledger.record_source('measurement', contact_id='person', session_id='original',
@@ -126,7 +126,7 @@ async def test_pair_uses_existing_single_relevance_pass_and_can_lose_to_a_useful
 @pytest.mark.asyncio
 @pytest.mark.parametrize('target', ['input', 'reply'])
 async def test_pair_carries_current_owner_annotation_and_erasure(tmp_path, monkeypatch, target):
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     hits = seed(ledger, supplied=True)
     original = await packet(ledger, hits)
@@ -147,7 +147,7 @@ async def test_pair_carries_current_owner_annotation_and_erasure(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_corrected_conversation_renders_attributed_data_without_nested_json_strings(tmp_path, monkeypatch):
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     request = 'Which laboratory schedule says "May 14"?\nI thought the date had changed.'
     response = 'I used "May 13" from the old laboratory notes.\nThat explanation was wrong.'
@@ -255,6 +255,6 @@ async def test_actual_scoped_search_and_automatic_context_share_the_pair(memory_
             'context': {'contact_id': 'person', 'session_id': 'later'},
             'incoming_message': {'role': 'user', 'content': 'laboratory'}, 'include_initiatives': False})
         assert response.status_code == 200
-        automatic = '\n'.join(row['body'] for row in response.json()['sections'] if row['id'] == 'pacomind-memory')
+        automatic = '\n'.join(row['body'] for row in response.json()['sections'] if row['id'] == 'protagine-memory')
         assert explicit['content'] == automatic
         assert INPUT in automatic and REPLY in automatic and 'conversation_pair' in automatic

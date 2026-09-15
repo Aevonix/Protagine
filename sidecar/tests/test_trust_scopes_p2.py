@@ -4,11 +4,11 @@ first-class, restrictively-gated trust tier (not a silent peripheral fallback).
 
 import pytest
 
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.gate.layers.l4_trust_tier import TrustTierChecker
-from pacomind.gate.models import GatePayload
-from pacomind.intelligence.relationships.trust_tiers import (
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.gate.layers.l4_trust_tier import TrustTierChecker
+from protagine.gate.models import GatePayload
+from protagine.intelligence.relationships.trust_tiers import (
     TIER_CAPABILITIES,
     TrustTier,
 )
@@ -73,8 +73,8 @@ async def test_group_guest_gated_like_peripheral():
 
 def test_group_guest_capabilities_are_restrictive():
     caps = TIER_CAPABILITIES[TrustTier.GROUP_GUEST]
-    assert caps["pacomind_proactive_reach_out"] is False
-    assert caps["pacomind_full_context_sharing"] is False
+    assert caps["protagine_proactive_reach_out"] is False
+    assert caps["protagine_full_context_sharing"] is False
     assert caps["contact_can_request_reminders"] is False
 
 
@@ -121,9 +121,9 @@ async def test_promote_never_lowers_standing(store):
 
 
 def test_config_flag_from_env(monkeypatch):
-    from pacomind.contacts.config import ContactsConfig
-    monkeypatch.setenv("PACOMIND_AUTO_PROMOTE_GROUP_TO_1ON1", "true")
-    monkeypatch.setenv("PACOMIND_GROUP_PROMOTE_MIN_INTERACTIONS", "3")
+    from protagine.contacts.config import ContactsConfig
+    monkeypatch.setenv("PROTAGINE_AUTO_PROMOTE_GROUP_TO_1ON1", "true")
+    monkeypatch.setenv("PROTAGINE_GROUP_PROMOTE_MIN_INTERACTIONS", "3")
     cfg = ContactsConfig.from_env()
     assert cfg.auto_promote_group_to_1on1 is True
     assert cfg.group_promote_min_interactions == 3

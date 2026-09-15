@@ -6,11 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pacomind.world_model.config import WorldModelConfig
-from pacomind.world_model.entities import PersonEntity
-from pacomind.world_model.relationships import WorldRelationship
-from pacomind.world_model.sqlite.backend import SQLiteBackend
-from pacomind.world_model.store import WorldModelStore
+from protagine.world_model.config import WorldModelConfig
+from protagine.world_model.entities import PersonEntity
+from protagine.world_model.relationships import WorldRelationship
+from protagine.world_model.sqlite.backend import SQLiteBackend
+from protagine.world_model.store import WorldModelStore
 
 
 def _iso(days_ago: float) -> str:

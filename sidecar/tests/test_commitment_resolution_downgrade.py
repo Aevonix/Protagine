@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from pacomind.commitments.store import CommitmentStore
+from protagine.commitments.store import CommitmentStore
 
 
 # Deployment evidence: rollback floor

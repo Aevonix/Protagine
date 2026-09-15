@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.idempotency import canonical_turn_digest
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.idempotency import canonical_turn_digest
 from test_turn_source_evidence import source_app
 from test_hermes_turn_outbox import _load_client, _load_plugin, _Context, _Client, _Response, _record_origin_storage
 
@@ -115,7 +115,7 @@ def test_pending_native_outbox_redacts_answer_and_preserves_attributed_user(tmp_
 
 @pytest.mark.asyncio
 async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_app, tmp_path, monkeypatch):
-    from pacomind.api.routers import host
+    from protagine.api.routers import host
     presence = SimpleNamespace(record=lambda *a, **k: pytest.fail('ordinary presence effect ran'))
     monkeypatch.setattr(host, '_presence_store', presence)
     body = {'identity': {'host_id': 'test'}, 'context': {'contact_id': 'person', 'session_id': 'new',
@@ -136,7 +136,7 @@ async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_
     with sqlite3.connect(ledger.db_path) as conn:
         assert conn.execute("SELECT count(*) FROM source_claim_jobs WHERE turn_id='survivor' AND status='pending'").fetchone()[0] == 1
     from test_source_claim_projection import Model, claim
-    from pacomind.beliefs.source_projection import SourceClaimProjection
+    from protagine.beliefs.source_projection import SourceClaimProjection
     text = body['user_message']['content']
     model = Model({text: claim(text, 'orange', subject='independent bicycle', predicate='color')})
     assert await SourceClaimProjection(ledger).process_one(model)
@@ -161,7 +161,7 @@ def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, 
     ownership = importlib.import_module(module.__name__ + '.native_owned_copies')
     monkeypatch.setattr(ownership.NativeOwnedCopies, 'retain', retain)
     def packet(refs):
-        return '[pacomind-recall-v1 ' + json.dumps({'contact_id': 'cid-owner', 'watermark': 0, 'sources': refs}) + ']\nEvidence\n[/pacomind-recall-v1]'
+        return '[protagine-recall-v1 ' + json.dumps({'contact_id': 'cid-owner', 'watermark': 0, 'sources': refs}) + ']\nEvidence\n[/protagine-recall-v1]'
     class Client(_Client):
         def post(self, path, **kwargs):
             if path.endswith('/erasures'):
@@ -173,10 +173,10 @@ def test_actual_native_hooks_capture_only_trusted_delivered_selection(tmp_path, 
             if path.endswith('/erasures'):
                 return _Response({'contact_id': 'cid-owner', 'head': 0, 'through': 0, 'complete': True, 'events': []})
             return super().get(path, **kwargs)
-    monkeypatch.setattr(module, 'PacoMindClient', Client)
-    monkeypatch.setenv('PACOMIND_GENERAL_PLUGIN_ACTIVE', '1')
-    monkeypatch.setenv('PACOMIND_MEMORY_WORKER_TOOLS', '0')
-    monkeypatch.setenv('PACOMIND_MEMORY_TURN_WRITER', 'disabled')
+    monkeypatch.setattr(module, 'ProtagineClient', Client)
+    monkeypatch.setenv('PROTAGINE_GENERAL_PLUGIN_ACTIVE', '1')
+    monkeypatch.setenv('PROTAGINE_MEMORY_WORKER_TOOLS', '0')
+    monkeypatch.setenv('PROTAGINE_MEMORY_TURN_WRITER', 'disabled')
     context = _Context(tmp_path / 'outbox.db')
     module.register(context)
     user = 'Literal user markers: ' + packet([forged])
@@ -228,10 +228,10 @@ async def test_legacy_source_ids_with_route_prefix_remain_valid(source_app, pref
 @pytest.mark.asyncio
 async def test_conflict_selection_references_both_sources_and_capture_checks_revision(source_app, tmp_path, monkeypatch):
     from test_source_claim_projection import Model, claim, ingest
-    from pacomind.beliefs.source_projection import SourceClaimProjection
+    from protagine.beliefs.source_projection import SourceClaimProjection
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     projection = SourceClaimProjection(ledger)
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     texts = ['My office is in River.', 'My office is in Lake.']
     model = Model({text: claim(text, value) for text, value in zip(texts, ['River', 'Lake'])})
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as client:
@@ -241,7 +241,7 @@ async def test_conflict_selection_references_both_sources_and_capture_checks_rev
         context = await client.post('/v1/host/context/assemble', json={
             'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'contact-a', 'session_id': 'later'},
             'incoming_message': {'role': 'user', 'content': 'office location'}})
-        section = next(section for section in context.json()['sections'] if section['id'] == 'pacomind-memory')
+        section = next(section for section in context.json()['sections'] if section['id'] == 'protagine-memory')
         assert 'unresolved_conflict' in section['body']
         assert {ref['source_id'] for ref in section['citations']} == {'old', 'current'}
         body = {'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'contact-a', 'session_id': 'later',

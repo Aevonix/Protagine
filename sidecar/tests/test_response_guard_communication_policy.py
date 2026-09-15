@@ -7,23 +7,23 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from pacomind.api.routers import host as host_mod
-from pacomind.api.schemas.host import ResponseGuardCheckRequest
-from pacomind.gate.communication_policy import (
+from protagine.api.routers import host as host_mod
+from protagine.api.schemas.host import ResponseGuardCheckRequest
+from protagine.gate.communication_policy import (
     COMMUNICATION_DISCLOSURE_CLASSES,
     CommunicationPolicyContextV1,
     MAX_COMMUNICATION_DISCLOSURE_STATEMENT_CHARS,
     MAX_COMMUNICATION_PURPOSE_CHARS,
 )
-from pacomind.gate.context_provenance import (
+from protagine.gate.context_provenance import (
     ContextProvenanceStore,
     ProvenanceCrossContextGuard,
 )
-from pacomind.gate.guard_audit import GuardAuditStore
-from pacomind.gate.layers.l6_review import SecondaryReviewer
-from pacomind.gate.models import GatePayload
-from pacomind.gate.response_guard import GuardMode, ResponseGuard
-from pacomind.intelligence.relationships.trust_tiers import TrustTier
+from protagine.gate.guard_audit import GuardAuditStore
+from protagine.gate.layers.l6_review import SecondaryReviewer
+from protagine.gate.models import GatePayload
+from protagine.gate.response_guard import GuardMode, ResponseGuard
+from protagine.intelligence.relationships.trust_tiers import TrustTier
 
 
 def _policy_dict(**changes):
@@ -139,7 +139,7 @@ def test_context_digest_is_deterministic_and_detects_field_tamper():
         "7fe1a58869435b2eff8e58a67540ec94"
     )
 
-    # PacoMind cannot reconstruct the host's private full policy record.  It
+    # Protagine cannot reconstruct the host's private full policy record.  It
     # therefore preserves that external digest and separately binds every
     # field it saw, making a substituted purpose detectable by the caller.
     tampered = _policy(purpose="Coordinate a different approved task.")
@@ -204,7 +204,7 @@ async def test_result_binds_external_policy_and_full_context_digests(monkeypatch
 async def test_missing_guard_result_still_binds_policy(monkeypatch):
     policy = _policy()
     monkeypatch.setattr(host_mod, "_response_guard", None)
-    monkeypatch.setenv("PACOMIND_GUARD_MODE", "enforce")
+    monkeypatch.setenv("PROTAGINE_GUARD_MODE", "enforce")
     result = await host_mod.response_guard_check(ResponseGuardCheckRequest(
         surface="text_message",
         response_text="hello",
@@ -218,7 +218,7 @@ async def test_missing_guard_result_still_binds_policy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_policy_is_visible_to_guard_inputs_without_authority_widening(monkeypatch):
-    monkeypatch.setenv("PACOMIND_GUARD_ENFORCE_CHECKS", "all")
+    monkeypatch.setenv("PROTAGINE_GUARD_ENFORCE_CHECKS", "all")
     store = ContextProvenanceStore(":memory:")
     store.record("conversation-private", ["Project Falcon"])
 

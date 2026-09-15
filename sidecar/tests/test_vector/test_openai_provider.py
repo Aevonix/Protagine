@@ -1,9 +1,9 @@
-"""Tests for pacomind.vector.openai_provider — API embedding provider."""
+"""Tests for protagine.vector.openai_provider — API embedding provider."""
 import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
-from pacomind.vector.config import EmbeddingConfig
-from pacomind.vector.openai_provider import OpenAIAPIEmbeddingProvider
+from protagine.vector.config import EmbeddingConfig
+from protagine.vector.openai_provider import OpenAIAPIEmbeddingProvider
 
 
 class TestOpenAIAPIEmbeddingProvider:
@@ -63,13 +63,13 @@ class TestOpenAIAPIEmbeddingProvider:
 
 class TestMakeProvider:
     def test_openai_api_provider(self):
-        from pacomind.vector.embedder import make_provider
+        from protagine.vector.embedder import make_provider
         config = EmbeddingConfig(provider="openai_api", model_id="text-embedding-3-small", dimensions=1536)
         provider = make_provider(config)
         assert isinstance(provider, OpenAIAPIEmbeddingProvider)
 
     def test_unknown_provider_raises(self):
-        from pacomind.vector.embedder import make_provider
+        from protagine.vector.embedder import make_provider
         config = EmbeddingConfig(provider="nonexistent", model_id="test", dimensions=384)
         with pytest.raises(ValueError, match="Unknown embedding provider"):
             make_provider(config)
@@ -94,20 +94,20 @@ class TestRequestDimensionsConfig:
                             request_dimensions=2)
 
     def test_environment_option_is_independent_of_validation_width(self, monkeypatch):
-        monkeypatch.setenv("PACOMIND_EMBED_PROVIDER", "openai_api")
-        monkeypatch.setenv("PACOMIND_EMBED_MODEL", "neutral")
-        monkeypatch.setenv("PACOMIND_EMBED_DIMS", "2")
-        monkeypatch.delenv("PACOMIND_EMBED_REQUEST_DIMS", raising=False)
+        monkeypatch.setenv("PROTAGINE_EMBED_PROVIDER", "openai_api")
+        monkeypatch.setenv("PROTAGINE_EMBED_MODEL", "neutral")
+        monkeypatch.setenv("PROTAGINE_EMBED_DIMS", "2")
+        monkeypatch.delenv("PROTAGINE_EMBED_REQUEST_DIMS", raising=False)
         assert EmbeddingConfig.from_env().request_dimensions is None
-        monkeypatch.setenv("PACOMIND_EMBED_REQUEST_DIMS", "2")
+        monkeypatch.setenv("PROTAGINE_EMBED_REQUEST_DIMS", "2")
         config = EmbeddingConfig.from_env()
         assert config.request_dimensions == config.dimensions == 2
-        monkeypatch.setenv("PACOMIND_EMBED_REQUEST_DIMS", "3")
+        monkeypatch.setenv("PROTAGINE_EMBED_REQUEST_DIMS", "3")
         with pytest.raises(ValueError, match="equal.*output dimensions"):
             EmbeddingConfig.from_env()
 
     def test_multimodal_api_cannot_silently_ignore_text_request_width(self):
-        from pacomind.vector.multimodal_provider import make_multimodal_provider
+        from protagine.vector.multimodal_provider import make_multimodal_provider
         config = EmbeddingConfig(provider="openai_api", model_id="neutral", dimensions=2,
                                 base_url="http://fixture/v1", request_dimensions=2)
         with pytest.raises(ValueError, match="only for text API"):

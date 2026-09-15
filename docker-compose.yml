@@ -22,33 +22,33 @@ services:
       retries: 5
       start_period: 30s
 
-  pacomind:
-    image: ghcr.io/aevonix/pacomind:latest
+  protagine:
+    image: ghcr.io/aevonix/protagine:latest
     build:
       context: ./sidecar
       dockerfile: Dockerfile
     ports:
-      - "${PACOMIND_SIDECAR_PORT:-7777}:7777"
+      - "${PROTAGINE_SIDECAR_PORT:-7777}:7777"
     environment:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD for this optional graph deployment}
       NEO4J_DATABASE: neo4j
-      PACOMIND_SIDECAR_HOST: 0.0.0.0
-      PACOMIND_SIDECAR_PORT: "7777"
-      PACOMIND_API_KEY: ${PACOMIND_API_KEY:-}
-      PACOMIND_STATE_DIR: /var/lib/pacomind
-      PACOMIND_EMBED_PROVIDER: ${PACOMIND_EMBED_PROVIDER:-cpu}
-      PACOMIND_EMBED_MODEL: ${PACOMIND_EMBED_MODEL:-}
-      PACOMIND_EMBED_DIMS: ${PACOMIND_EMBED_DIMS:-}
-      PACOMIND_EMBED_REQUEST_DIMS: ${PACOMIND_EMBED_REQUEST_DIMS:-}
-      PACOMIND_EMBED_REVISION: ${PACOMIND_EMBED_REVISION:-}
-      PACOMIND_EMBED_BASE_URL: ${PACOMIND_EMBED_BASE_URL:-}
-      PACOMIND_EMBED_API_KEY: ${PACOMIND_EMBED_API_KEY:-}
-      PACOMIND_RERANKER_MODEL: ${PACOMIND_RERANKER_MODEL:-}
+      PROTAGINE_SIDECAR_HOST: 0.0.0.0
+      PROTAGINE_SIDECAR_PORT: "7777"
+      PROTAGINE_API_KEY: ${PROTAGINE_API_KEY:-}
+      PROTAGINE_STATE_DIR: /var/lib/protagine
+      PROTAGINE_EMBED_PROVIDER: ${PROTAGINE_EMBED_PROVIDER:-cpu}
+      PROTAGINE_EMBED_MODEL: ${PROTAGINE_EMBED_MODEL:-}
+      PROTAGINE_EMBED_DIMS: ${PROTAGINE_EMBED_DIMS:-}
+      PROTAGINE_EMBED_REQUEST_DIMS: ${PROTAGINE_EMBED_REQUEST_DIMS:-}
+      PROTAGINE_EMBED_REVISION: ${PROTAGINE_EMBED_REVISION:-}
+      PROTAGINE_EMBED_BASE_URL: ${PROTAGINE_EMBED_BASE_URL:-}
+      PROTAGINE_EMBED_API_KEY: ${PROTAGINE_EMBED_API_KEY:-}
+      PROTAGINE_RERANKER_MODEL: ${PROTAGINE_RERANKER_MODEL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
-      - pacomind-state:/var/lib/pacomind
+      - protagine-state:/var/lib/protagine
       - model-cache:/root/.cache/huggingface
     depends_on:
       neo4j:
@@ -63,5 +63,5 @@ services:
 volumes:
   neo4j-data:
   neo4j-logs:
-  pacomind-state:
+  protagine-state:
   model-cache:

@@ -19,15 +19,15 @@ from conftest import ROOT, run_python as run
 def test_artifacts_contain_canonical_adapters_without_sidecar_or_worker(artifacts):
     _, wheel, source, _ = artifacts
     expected = {
-        "pacomind_hermes/__init__.py": "plugins/hermes-plugin/__init__.py",
-        "pacomind_memory/provider.py": "plugins/pacomind-memory/provider.py",
-        "pacomind_memory/cli.py": "plugins/pacomind-memory/cli.py",
-        "pacomind_hermes/pacomind_hostworker/catalog.py": "hostworker/pacomind_hostworker/catalog.py",
-        "pacomind_hermes/pacomind_hostworker/contract.py": "hostworker/pacomind_hostworker/contract.py",
+        "protagine_hermes/__init__.py": "plugins/hermes-plugin/__init__.py",
+        "protagine_memory/provider.py": "plugins/protagine-memory/provider.py",
+        "protagine_memory/cli.py": "plugins/protagine-memory/cli.py",
+        "protagine_hermes/protagine_hostworker/catalog.py": "hostworker/protagine_hostworker/catalog.py",
+        "protagine_hermes/protagine_hostworker/contract.py": "hostworker/protagine_hostworker/contract.py",
     }
     for skill in (ROOT/'plugins/hermes-plugin/bundled_skills').glob('*/SKILL.md'):
-        expected['pacomind_hermes/bundled_skills/'+str(skill.relative_to(ROOT/'plugins/hermes-plugin/bundled_skills'))] = str(skill.relative_to(ROOT))
-    assert 'pacomind_hermes/bundled_skills/pacomind-deep-research/SKILL.md' in expected
+        expected['protagine_hermes/bundled_skills/'+str(skill.relative_to(ROOT/'plugins/hermes-plugin/bundled_skills'))] = str(skill.relative_to(ROOT))
+    assert 'protagine_hermes/bundled_skills/protagine-deep-research/SKILL.md' in expected
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         for destination, canonical in expected.items():
@@ -35,21 +35,21 @@ def test_artifacts_contain_canonical_adapters_without_sidecar_or_worker(artifact
         metadata = BytesParser().parsebytes(archive.read(next(
             name for name in names if name.endswith(".dist-info/METADATA")
         )))
-        for package in ("pacomind_hermes", "pacomind_memory"):
+        for package in ("protagine_hermes", "protagine_memory"):
             manifest = yaml.safe_load(archive.read(f"{package}/plugin.yaml"))
             assert manifest["version"] == metadata["Version"], package
-        assert "pacomind_memory/SKILL.md" in names
+        assert "protagine_memory/SKILL.md" in names
         assert not any(
-            name.startswith("pacomind/") or "/worker.py" in name or "/ops/" in name
+            name.startswith("protagine/") or "/worker.py" in name or "/ops/" in name
             or "hermes-context" in name for name in names
         )
         entries = configparser.ConfigParser()
         entries.read_string(archive.read(next(
             name for name in names if name.endswith("/entry_points.txt")
         )).decode())
-        assert dict(entries["hermes_agent.plugins"]) == {"pacomind": "pacomind_hermes"}
+        assert dict(entries["hermes_agent.plugins"]) == {"protagine": "protagine_hermes"}
         assert dict(entries["hermes_agent.memory_providers"]) == {
-            "pacomind-memory": "pacomind_memory"
+            "protagine-memory": "protagine_memory"
         }
     # python -m build builds this wheel from the sdist by default. The source
     # archive must therefore carry both canonical catalog inputs as well.
@@ -108,7 +108,7 @@ manifests = {item.name: item for item in discover_entrypoint_manifests()}
 assert manifests[selected].source == "entrypoint"
 assert manifests[selected].kind == "standalone"
 entry = find_provider_entry_point(provider_name)
-assert entry is not None and entry.value == "pacomind_memory"
+assert entry is not None and entry.value == "protagine_memory"
 assert find_provider_dir(provider_name).resolve().is_relative_to(installed)
 
 manager = get_plugin_manager()
@@ -116,7 +116,7 @@ manager.discover_and_load()
 loaded = manager._plugins.get(selected)
 if not active:
     assert loaded is None or not loaded.enabled
-    assert "pacomind_hermes" not in sys.modules
+    assert "protagine_hermes" not in sys.modules
     assert discover_plugin_cli_commands() == []
     assert not (home / "state" / "turns.sqlite3").exists()
 else:
@@ -132,7 +132,7 @@ else:
     assert (home / "state" / "turns.sqlite3").is_file()
     previous_recall_hooks = len(manager._hooks.get("pre_llm_call", []))
     provider = load_memory_provider(provider_name)
-    assert isinstance(provider, MemoryProvider) and provider.name == "pacomind"
+    assert isinstance(provider, MemoryProvider) and provider.name == "protagine"
     assert Path(sys.modules[type(provider).__module__].__file__).resolve().is_relative_to(installed)
     assert len(manager._hooks["pre_llm_call"]) == previous_recall_hooks + 1
 
@@ -181,12 +181,12 @@ for module in tuple(sys.modules.values()):
     if filename:
         for source in ("plugins", "hostworker", "sidecar"):
             assert not Path(filename).resolve().is_relative_to(checkout / source), filename
-assert not any(name == "pacomind" or name.startswith(("pacomind.",)) for name in sys.modules)
+assert not any(name == "protagine" or name.startswith(("protagine.",)) for name in sys.modules)
 print(json.dumps({"hermes": importlib.metadata.version("hermes-agent"), "active": active}))
 '''
 
 
-@pytest.mark.parametrize("selected", ["pacomind"])
+@pytest.mark.parametrize("selected", ["protagine"])
 @pytest.mark.parametrize("state", ["active", "inactive"])
 def test_wheel_uses_native_hermes_discovery_and_loaders(artifacts, tmp_path, state, selected):
     if importlib.util.find_spec("hermes_cli") is None:
@@ -198,9 +198,9 @@ def test_wheel_uses_native_hermes_discovery_and_loaders(artifacts, tmp_path, sta
     env.update({
         "HERMES_HOME": str(tmp_path / "profile"),
         "HERMES_BUNDLED_PLUGINS": str(tmp_path / "bundled"),
-        "PACOMIND_GENERAL_PLUGIN_ACTIVE": "1",
-        "PACOMIND_MEMORY_WORKER_TOOLS": "0",
-        "PACOMIND_MEMORY_TURN_WRITER": "disabled",
+        "PROTAGINE_GENERAL_PLUGIN_ACTIVE": "1",
+        "PROTAGINE_MEMORY_WORKER_TOOLS": "0",
+        "PROTAGINE_MEMORY_TURN_WRITER": "disabled",
     })
     result = run(
         "-I", "-c", NATIVE_PROBE, installed, ROOT, state, selected,

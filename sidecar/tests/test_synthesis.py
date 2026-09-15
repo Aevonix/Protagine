@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pacomind.autonomy.synthesis import (
+from protagine.autonomy.synthesis import (
     ConversationSynthesisTask,
     SynthesisState,
     _parse_turn_content,
 )
-from pacomind.goals.inference import ConversationMessage, IntentSignal
-from pacomind.goals.models import GoalStatus
+from protagine.goals.inference import ConversationMessage, IntentSignal
+from protagine.goals.models import GoalStatus
 
 
 # ── Parse turn content ───────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ async def test_synthesis_finds_and_creates_goals():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()
@@ -209,7 +209,7 @@ async def test_synthesis_deduplicates_candidates():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()
@@ -262,7 +262,7 @@ async def test_synthesis_respects_watermark():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()
@@ -318,7 +318,7 @@ async def test_synthesis_respects_max_goals_per_run():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()
@@ -372,7 +372,7 @@ async def test_synthesis_skips_duplicate_existing_goal():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()
@@ -437,7 +437,7 @@ async def test_synthesis_telemetry_touch():
 
     class FakeGraph:
         driver = MagicMock()
-        database = "pacomind"
+        database = "protagine"
 
         def __init__(self):
             self.driver.session = lambda **kw: FakeSession()

@@ -4,13 +4,13 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from pacomind.intelligence.components.initiative_engine import (
+from protagine.intelligence.components.initiative_engine import (
     InitiativeEngine,
     InitiativeType,
     Initiative,
     InitiativeConfig,
 )
-from pacomind.skills.base import ExecutionResult, InitiativeExecutionContext
+from protagine.skills.base import ExecutionResult, InitiativeExecutionContext
 
 
 class FakeGraphClient:
@@ -22,7 +22,7 @@ class FakeGraphClient:
         self.driver = MagicMock()
         self.driver.session = MagicMock()
 
-    async def ensure_pacomind_self(self):
+    async def ensure_protagine_self(self):
         pass
 
 
@@ -168,9 +168,9 @@ class TestRelationshipGating:
         """Relationship initiatives SHOULD generate for contacts with MANAGES edge."""
         # v0.16.0: relationship generation fails closed without a resolvable
         # owner identity, so configure one for this test.
-        from pacomind.identity.resolver import reset_identity_resolver
+        from protagine.identity.resolver import reset_identity_resolver
         reset_identity_resolver()
-        monkeypatch.setenv("PACOMIND_OWNER_CONTACT_ID", "cid-test-owner")
+        monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "cid-test-owner")
 
         graph = FakeGraphClient()
         mock_session = AsyncMock()

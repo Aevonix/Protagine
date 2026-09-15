@@ -16,13 +16,13 @@ from unittest.mock import MagicMock,patch
 sys.path.insert(0,sys.argv[1]);sys.path.insert(0,sys.argv[2])
 home=Path(os.environ['HERMES_HOME']);home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
-(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['pacomind'],'pacomind':{
+(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['protagine'],'protagine':{
     'owner_contact_id':'fixture-owner','attested_system_platforms':['cli'],
     'native_reviews':{'enabled':True},'turn_outbox_path':str(home/'outbox.db')}},
     'skills':{'creation_nudge_interval':1,'write_approval':False}}))
 def no_network(*a,**kw):raise AssertionError('Native experience fixture is offline')
 socket.socket.connect=no_network;socket.create_connection=no_network
-import pacomind_hermes
+import protagine_hermes
 class Reply:
     status_code=200
     def __init__(self,value):self.value=value
@@ -33,13 +33,13 @@ def get(self,path,**kw):
     if path=='/v1/host/memory/sources/erasures':
         return Reply({'contact_id':'fixture-owner','head':0,'through':0,'events':[],'complete':True})
     raise RuntimeError('No fixture service')
-pacomind_hermes.PacoMindClient.get=get
-pacomind_hermes.PacoMindClient.post=lambda *a,**kw:Reply({})
+protagine_hermes.ProtagineClient.get=get
+protagine_hermes.ProtagineClient.post=lambda *a,**kw:Reply({})
 from hermes_cli.plugins import get_plugin_manager,PluginContext,PluginManifest
 plugins=get_plugin_manager();plugins.discover_and_load()
 from tools import skill_ledger as ledger,write_approval as approval,skill_provenance
-from pacomind_hermes.review_experience import next_batch,UNATTRIBUTED_ACTION
-from pacomind_hermes.review_evidence import capture
+from protagine_hermes.review_experience import next_batch,UNATTRIBUTED_ACTION
+from protagine_hermes.review_evidence import capture
 from run_agent import AIAgent
 import run_agent
 from hermes_state import SessionDB
@@ -73,8 +73,8 @@ def delayed_builder(*args,**kwargs):
 def bind_batch(**kwargs):
     if kwargs.get('tool_name')=='skill_manage' and skill_provenance.is_background_review():
         assert batch is not None
-        return {'args':{**kwargs['args'],'_pacomind_review_batch_sha256':batch['failure_sha256'],
-            '_pacomind_review_observation_ids':batch['observation_ids']}}
+        return {'args':{**kwargs['args'],'_protagine_review_batch_sha256':batch['failure_sha256'],
+            '_protagine_review_observation_ids':batch['observation_ids']}}
 handle=PluginContext(PluginManifest(name='fixture-batch-consumer'),plugins).register_middleware('tool_request',bind_batch)
 parent=None
 try:
@@ -106,7 +106,7 @@ try:
             value=row['evidence'];assert 'skill_sha256' not in value and 'skill_call_id' not in value
             assert value['contact_id']=='fixture-owner' and value['platform']=='sms'
             assert str(missing) not in json.dumps(value)
-        current=pacomind_hermes._TRANSPORT_SCOPES.for_session(parent.session_id)
+        current=protagine_hermes._TRANSPORT_SCOPES.for_session(parent.session_id)
         request=parent_client.chat.completions.create.call_args_list[-1].kwargs
         capture(current,request,durable=True)
         assert len([r for r in ledger.list_entries() if r['action']==UNATTRIBUTED_ACTION])==2
@@ -125,8 +125,8 @@ try:
         pending=approval.list_pending(approval.SKILLS)
         assert len(pending)==1 and pending[0]['origin']=='background_review',pending
         assert pending[0]['payload']['name']==name and pending[0]['payload']['content']==content
-        assert pending[0]['payload']['_pacomind_review_batch_sha256']==batch['failure_sha256']
-        assert pending[0]['payload']['_pacomind_review_observation_ids']==batch['observation_ids']
+        assert pending[0]['payload']['_protagine_review_batch_sha256']==batch['failure_sha256']
+        assert pending[0]['payload']['_protagine_review_observation_ids']==batch['observation_ids']
         assert not list((home/'skills').rglob('SKILL.md'))
         assert not any(r['action']=='create' for r in ledger.list_entries())
         assert review_client.chat.completions.create.call_count==2
@@ -139,7 +139,7 @@ print(json.dumps({'real_native_failures':2,'unattributed':True,'one_native_stage
 
 
 def test_native_unattributed_failures_reach_one_staged_review(artifacts,tmp_path):
-    native=os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native=os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         pytest.skip('Requires the selected native Hermes source')
     _,_,_,installed=artifacts
@@ -155,14 +155,14 @@ from unittest.mock import MagicMock,patch
 sys.path[:0]=[sys.argv[1],sys.argv[2]]
 home=Path(os.environ['HERMES_HOME']);home.mkdir()
 Path(os.environ['HERMES_BUNDLED_PLUGINS']).mkdir()
-(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['pacomind'],'pacomind':{
+(home/'config.yaml').write_text(json.dumps({'plugins':{'enabled':['protagine'],'protagine':{
     'owner_contact_id':'fixture-owner','native_reviews':{'enabled':True},
     'native_tasks':{'enabled':True,'factory':'fixture_sources:build'},
     'turn_outbox_path':str(home/'outbox.db')}},'skills':{'creation_nudge_interval':0},
     'auxiliary':{'title_generation':{'enabled':False}}}))
 def no_network(*a,**kw):raise AssertionError('Task purpose fixture must stay offline')
 socket.socket.connect=no_network;socket.create_connection=no_network
-import pacomind_hermes
+import protagine_hermes
 class Reply:
     status_code=200
     def __init__(self,value):self.value=value
@@ -173,9 +173,9 @@ def get(self,path,**kw):
     if path=='/v1/host/memory/sources/erasures':return Reply({'contact_id':'fixture-owner',
         'head':0,'through':0,'events':[],'complete':True})
     raise RuntimeError('No fixture service')
-pacomind_hermes.PacoMindClient.get=get
-pacomind_hermes.PacoMindClient.post=lambda *a,**kw:Reply({})
-from pacomind_hermes.task_controller import NativeTasks
+protagine_hermes.ProtagineClient.get=get
+protagine_hermes.ProtagineClient.post=lambda *a,**kw:Reply({})
+from protagine_hermes.task_controller import NativeTasks
 class Sources:
     def resolve_source(self,value,dependencies=None):return copy.deepcopy(value)
     def resolve_owner(self,value,require_task_grant=False):
@@ -193,9 +193,9 @@ get_plugin_manager().discover_and_load()
 controller=created[0]
 from gateway.config import PlatformConfig
 controller.adapter=controller.create_adapter(PlatformConfig(enabled=True))
-from pacomind_hermes.native_task_platform import ACTIVE
-from pacomind_hermes.review_experience import next_batch,UNATTRIBUTED_ACTION
-from pacomind_hermes.review_evidence import current
+from protagine_hermes.native_task_platform import ACTIVE
+from protagine_hermes.review_experience import next_batch,UNATTRIBUTED_ACTION
+from protagine_hermes.review_evidence import current
 from tools import skill_ledger as ledger
 from run_agent import AIAgent
 import run_agent
@@ -227,17 +227,17 @@ for index,purpose in enumerate(('qualification','qualification','operational','o
                 patch(TOOLS_TARGET+'.check_toolset_requirements',return_value={}):
             parent=AIAgent(api_key='fixture-key',base_url='http://127.0.0.1:1/v1',provider='openai',
                 model='fixture/model',max_iterations=3,quiet_mode=True,skip_context_files=True,
-                skip_memory=True,skip_background_review=True,platform='pacomind_task',
+                skip_memory=True,skip_background_review=True,platform='protagine_task',
                 enabled_toolsets=['file'],session_db=SessionDB(home/'state.db'))
             parent._user_id='fixture-owner'
             parent._cached_system_prompt='Read the supplied file and finish.'
             parent._use_prompt_caching=False;parent.compression_enabled=False;parent.save_trajectories=False
             result=parent.run_conversation('Read the supplied file.',task_id='task-'+str(index))
             assert result['final_response']=='FINISHED',result
-            scope=pacomind_hermes._TRANSPORT_SCOPES.for_session(parent.session_id)
-            assert scope.platform=='pacomind_task' and scope.authority_lane=='owner'
+            scope=protagine_hermes._TRANSPORT_SCOPES.for_session(parent.session_id)
+            assert scope.platform=='protagine_task' and scope.authority_lane=='owner'
             assert scope.resolution_status=='resolved' and scope.contact_id=='fixture-owner'
-            experience=controller.execution_experience(**active['native'],platform='pacomind_task')
+            experience=controller.execution_experience(**active['native'],platform='protagine_task')
             assert experience['purpose']==purpose and experience['task_id']==row['id']
             assert current()['failures'][0]['tool_call_id']=='read-'+str(index)
             retained=[r for r in ledger.list_entries() if r['action']==UNATTRIBUTED_ACTION]
@@ -254,7 +254,7 @@ print(json.dumps({'native_owner_tasks':observed,'qualification_excluded':True,'o
 
 
 def test_native_owner_task_purpose_excludes_qualification_experience(artifacts,tmp_path):
-    native=os.environ.get('PACOMIND_TEST_HERMES_PATH')
+    native=os.environ.get('PROTAGINE_TEST_HERMES_PATH')
     if not native:
         pytest.skip('Requires the selected native Hermes source')
     _,_,_,installed=artifacts

@@ -10,14 +10,14 @@ Set paths explicitly and use a timestamped directory outside the source and
 state trees:
 
 ```bash
-export PACOMIND_SOURCE=/path/to/PacoMind
-export PACOMIND_STATE_DIR=${PACOMIND_STATE_DIR:-$HOME/.pacomind}
-export BACKUP=$HOME/pacomind-rollbacks/p8-$(date -u +%Y%m%dT%H%M%SZ)
+export PROTAGINE_SOURCE=/path/to/Protagine
+export PROTAGINE_STATE_DIR=${PROTAGINE_STATE_DIR:-$HOME/.protagine}
+export BACKUP=$HOME/protagine-rollbacks/p8-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$BACKUP"
-git -C "$PACOMIND_SOURCE" rev-parse HEAD > "$BACKUP/source-revision.txt"
-git -C "$PACOMIND_SOURCE" status --short > "$BACKUP/source-status.txt"
+git -C "$PROTAGINE_SOURCE" rev-parse HEAD > "$BACKUP/source-revision.txt"
+git -C "$PROTAGINE_SOURCE" status --short > "$BACKUP/source-status.txt"
 python -m pip freeze > "$BACKUP/python-packages.txt"
-printf '%s\n' "${PACOMIND_RECIPIENT_SIMULATOR_MODE:-off}" > "$BACKUP/p8-mode.txt"
+printf '%s\n' "${PROTAGINE_RECIPIENT_SIMULATOR_MODE:-off}" > "$BACKUP/p8-mode.txt"
 ```
 
 Preserve the exact previous wheel or immutable release directory used by the
@@ -29,9 +29,9 @@ If P8 files already exist, stop the sole sidecar writer or use SQLite's online
 backup operation for all three in the same backup generation:
 
 ```bash
-for db in pacomind-p8-visibility.db pacomind-p8-arcs.db pacomind-p8-recipient-audit.db; do
-  if test -f "$PACOMIND_STATE_DIR/$db"; then
-    sqlite3 "$PACOMIND_STATE_DIR/$db" ".backup '$BACKUP/$db'"
+for db in protagine-p8-visibility.db protagine-p8-arcs.db protagine-p8-recipient-audit.db; do
+  if test -f "$PROTAGINE_STATE_DIR/$db"; then
+    sqlite3 "$PROTAGINE_STATE_DIR/$db" ".backup '$BACKUP/$db'"
   fi
 done
 ```
@@ -44,7 +44,7 @@ rows, and do not mix databases restored from different generations.
 From `sidecar/`:
 
 ```bash
-env -u PACOMIND_RECIPIENT_SIMULATOR_MODE python -m pytest -q \
+env -u PROTAGINE_RECIPIENT_SIMULATOR_MODE python -m pytest -q \
   tests/test_tom_p8_server_integration.py \
   tests/test_tom_p8_outbound_integration.py
 ```
@@ -59,7 +59,7 @@ Build/install from the pinned candidate commit or switch an immutable release
 symlink. Start with:
 
 ```text
-PACOMIND_RECIPIENT_SIMULATOR_MODE=off
+PROTAGINE_RECIPIENT_SIMULATOR_MODE=off
 ```
 
 Verify the sidecar health, normal context assembly, normal text delivery, and
@@ -71,10 +71,10 @@ this change because no voice component is touched.
 Set only:
 
 ```text
-PACOMIND_RECIPIENT_SIMULATOR_MODE=shadow
+PROTAGINE_RECIPIENT_SIMULATOR_MODE=shadow
 ```
 
-Restart the PacoMind sidecar, then check:
+Restart the Protagine sidecar, then check:
 
 1. health reports `tom_p8_shadow` / the P8 shadow note;
 2. all three P8 databases exist and pass `PRAGMA integrity_check`;
@@ -107,15 +107,15 @@ as off.
 Set:
 
 ```text
-PACOMIND_RECIPIENT_SIMULATOR_MODE=off
+PROTAGINE_RECIPIENT_SIMULATOR_MODE=off
 ```
 
-Restart only the PacoMind sidecar. This detaches P8 and leaves additive ledgers
+Restart only the Protagine sidecar. This detaches P8 and leaves additive ledgers
 unused. Confirm health no longer advertises `tom_p8_shadow` and ordinary
 context/delivery still work.
 
 If code rollback is also required, stop the sidecar and reinstall/switch to the
-preserved prior immutable PacoMind package. Restore the source checkout
+preserved prior immutable Protagine package. Restore the source checkout
 separately using the recorded revision/worktree; never use `git reset --hard`
 against a dirty checkout. Normally keep the additive P8 databases for
 forensics. If data rollback is required, preserve the current generation first
@@ -123,7 +123,7 @@ and restore all related ledgers from one stopped-writer backup generation.
 
 Rollback acceptance:
 
-- installed PacoMind and source each match their independently recorded point;
+- installed Protagine and source each match their independently recorded point;
 - P8 is absent from health and no new P8 rows are written;
 - canonical SharedFacts and existing delivery behavior remain available; and
 - The host's custom phone/intercom/voice behavior required no Hermes or voice-code

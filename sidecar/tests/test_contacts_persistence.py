@@ -9,20 +9,20 @@ import os
 
 import pytest
 
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
 
 
 def test_from_env_defaults_to_state_dir(monkeypatch, tmp_path):
-    monkeypatch.delenv("PACOMIND_CONTACTS_DB", raising=False)
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("PROTAGINE_CONTACTS_DB", raising=False)
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     cfg = ContactsConfig.from_env()
-    assert cfg.sqlite_path == os.path.join(str(tmp_path), "pacomind-contacts.db")
+    assert cfg.sqlite_path == os.path.join(str(tmp_path), "protagine-contacts.db")
 
 
 def test_from_env_explicit_path_wins(monkeypatch, tmp_path):
-    monkeypatch.setenv("PACOMIND_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("PACOMIND_CONTACTS_DB", str(tmp_path / "custom.db"))
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_CONTACTS_DB", str(tmp_path / "custom.db"))
     assert ContactsConfig.from_env().sqlite_path == str(tmp_path / "custom.db")
 
 
@@ -50,10 +50,10 @@ async def test_contacts_survive_reconnect(tmp_path):
 
 @pytest.mark.asyncio
 async def test_startup_preserves_corrected_contacts_without_graph(tmp_path, monkeypatch):
-    from pacomind import server
-    from pacomind.api.routers import host
+    from protagine import server
+    from protagine.api.routers import host
 
-    monkeypatch.setenv("PACOMIND_CONTACTS_DB", str(tmp_path / "contacts.db"))
+    monkeypatch.setenv("PROTAGINE_CONTACTS_DB", str(tmp_path / "contacts.db"))
     monkeypatch.setattr(host, "_contacts_store", None)
     store = await server._initialize_contacts_store()
     target = await store.create(
@@ -96,7 +96,7 @@ async def test_startup_preserves_corrected_contacts_without_graph(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_import_reuses_existing_contact_without_graph(tmp_path):
-    from pacomind.contacts.importer import SQLiteContactImporter
+    from protagine.contacts.importer import SQLiteContactImporter
 
     store = SQLiteContactStore(ContactsConfig(sqlite_path=str(tmp_path / "contacts.db")))
     await store.connect()

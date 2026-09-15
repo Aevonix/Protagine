@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from pacomind.self_model.expectations import (
+from protagine.self_model.expectations import (
     ExpectationEngine,
     ExpectationStore,
     OutcomeObservationV1,

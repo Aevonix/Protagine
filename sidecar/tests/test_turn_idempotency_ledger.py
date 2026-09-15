@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from pacomind.turns import (
+from protagine.turns import (
     ReservationOutcome,
     TurnIdempotencyLedger,
     canonical_turn_digest,

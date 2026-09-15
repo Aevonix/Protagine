@@ -3,8 +3,8 @@ the param but the query silently dropped it)."""
 
 import pytest
 
-from pacomind.task_queue.models import Job, JobType
-from pacomind.task_queue.queue_manager import QueueManager
+from protagine.task_queue.models import Job, JobType
+from protagine.task_queue.queue_manager import QueueManager
 
 
 @pytest.fixture()
@@ -16,7 +16,7 @@ async def queue(tmp_path):
 
 
 async def _complete(q, job_type):
-    from pacomind.task_queue.models import WorkerCapabilities
+    from protagine.task_queue.models import WorkerCapabilities
     job = Job(job_type=job_type, payload={"description": f"{job_type.value} job"})
     jid = await q.post(job)
     caps = WorkerCapabilities(node_id="w", capabilities=set(),

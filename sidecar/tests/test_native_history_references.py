@@ -1,9 +1,9 @@
 import pytest
 
-from pacomind.api.routers.host import SourceFreshnessRequest
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.history_references import resolve
-from pacomind.turns.idempotency import source_message_hash
+from protagine.api.routers.host import SourceFreshnessRequest
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.history_references import resolve
+from protagine.turns.idempotency import source_message_hash
 
 
 def test_native_message_resolution_preserves_scope_and_erased_identity(tmp_path):

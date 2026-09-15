@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from pacomind.api.routers import host
-from pacomind.memory.recall import (
+from protagine.api.routers import host
+from protagine.memory.recall import (
     calibration_fingerprint, pack_memory_context, provider_calibration_metadata,
     source_candidates,
 )
-from pacomind.memory.selection import RecallSelector
+from protagine.memory.selection import RecallSelector
 from test_recall_ranking import RecallFixture, _Hit, _node
 from test_turn_source_evidence import source_app, envelope, recalled
 
@@ -29,13 +29,13 @@ def test_source_selection_runs_without_graph_imports():
 
         class NoGraph(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
-                if fullname == 'neo4j' or fullname.startswith('neo4j.') or fullname.startswith('pacomind.intelligence.graph'):
+                if fullname == 'neo4j' or fullname.startswith('neo4j.') or fullname.startswith('protagine.intelligence.graph'):
                     raise AssertionError('Source recall imported the graph: ' + fullname)
 
         sys.meta_path.insert(0, NoGraph())
         sys.path.insert(0, sys.argv[1])
-        from pacomind.memory.recall import source_candidates
-        from pacomind.memory.selection import RecallSelector
+        from protagine.memory.recall import source_candidates
+        from protagine.memory.selection import RecallSelector
 
         candidates = source_candidates([{
             'turn_id': 'meeting-source', 'role': 'user',
@@ -53,7 +53,7 @@ def test_source_selection_runs_without_graph_imports():
     ''')
     result = subprocess.run([sys.executable, '-I', '-c', script,
         str(Path(__file__).resolve().parents[1])], capture_output=True, text=True,
-        env={**os.environ, 'PACOMIND_RECALL_RERANK': 'off', 'PACOMIND_RECALL_RERANK': 'off'},
+        env={**os.environ, 'PROTAGINE_RECALL_RERANK': 'off', 'PROTAGINE_RECALL_RERANK': 'off'},
         timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'GRAPH_FREE_RECALL_OK'
@@ -74,9 +74,9 @@ class Reranker:
 
 
 def calibrate(monkeypatch, reranker):
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK", "on")
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK_MIN_SCORE", ".8")
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK_CALIBRATION", calibration_fingerprint(
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK", "on")
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK_MIN_SCORE", ".8")
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK_CALIBRATION", calibration_fingerprint(
         provider_calibration_metadata(reranker)))
 
 
@@ -121,7 +121,7 @@ async def test_one_context_section_uses_canonical_evidence_and_one_budget(source
     reranker = Reranker()
     calibrate(monkeypatch, reranker)
     monkeypatch.setattr(host, "_reranker", reranker)
-    monkeypatch.setenv("PACOMIND_RECALL_CONTEXT_MAX_CHARS", "1400")
+    monkeypatch.setenv("PROTAGINE_RECALL_CONTEXT_MAX_CHARS", "1400")
     graph = Graph([belief()])
     monkeypatch.setattr(host, "_graph", graph)
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
@@ -134,8 +134,8 @@ async def test_one_context_section_uses_canonical_evidence_and_one_budget(source
             "incoming_message": {"role": "user", "content": "hydrofoil"},
         })
     sections = response.json()["sections"]
-    assert not any(section["id"] == "pacomind-conversation-evidence" for section in sections)
-    memory = [section for section in sections if section["id"] == "pacomind-memory"]
+    assert not any(section["id"] == "protagine-conversation-evidence" for section in sections)
+    memory = [section for section in sections if section["id"] == "protagine-memory"]
     assert len(memory) == 1
     text = memory[0]["body"]
     assert len(text) <= 1400
@@ -190,7 +190,7 @@ async def test_candidate_retrieval_does_not_reinforce_or_rerank(monkeypatch):
 @pytest.mark.parametrize("candidates_only", [False, True])
 @pytest.mark.parametrize("hybrid", [False, True])
 async def test_erased_projection_is_excluded_before_selection(monkeypatch, candidates_only, hybrid):
-    monkeypatch.setenv("PACOMIND_RECALL_HYBRID", "on" if hybrid else "off")
+    monkeypatch.setenv("PROTAGINE_RECALL_HYBRID", "on" if hybrid else "off")
     fixture = RecallFixture([_Hit("erased", .99), _Hit("retained", .8)], [
         _node("erased", source_uri="turn:erased"),
         _node("retained", source_uri="turn:retained"),
@@ -214,8 +214,8 @@ def quotes():
 
 @pytest.mark.asyncio
 async def test_combined_rerank_bounds_model_work_without_mixing_unscored_tail(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK", "on")
-    monkeypatch.delenv("PACOMIND_RECALL_RERANK_MIN_SCORE", raising=False)
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK", "on")
+    monkeypatch.delenv("PROTAGINE_RECALL_RERANK_MIN_SCORE", raising=False)
     calls = []
 
     async def rank(query, documents, top_k):
@@ -271,8 +271,8 @@ async def test_media_producer_reaches_same_bounded_reranker_without_forcing_sele
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,fail", [("off", False), ("shadow", False), ("on", True)])
 async def test_bounded_rerank_preserves_full_fallback_and_shadow_input(monkeypatch, mode, fail):
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK", mode)
-    monkeypatch.delenv("PACOMIND_RECALL_RERANK_MIN_SCORE", raising=False)
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK", mode)
+    monkeypatch.delenv("PROTAGINE_RECALL_RERANK_MIN_SCORE", raising=False)
     reranker = Reranker(fail=fail)
     rows = [{**belief(f"Passage {i}"), "id": f"b{i}"} for i in range(30)]
     result = await RecallSelector(reranker.rerank).rerank(
@@ -311,7 +311,7 @@ def test_shared_budget_marks_truncation_without_mutating_original_evidence():
 
 @pytest.mark.asyncio
 async def test_one_result_limit_covers_sources_and_beliefs(monkeypatch):
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK", "off")
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK", "off")
     beliefs = [{**belief(), "id": f"b-{i}"} for i in range(10)]
     sources = [{**quotes()[0], "id": f"s-{i}"} for i in range(10)]
     rows, text = await RecallSelector().select_context("q", beliefs, sources, limit=5)
@@ -327,8 +327,8 @@ async def test_one_result_limit_covers_sources_and_beliefs(monkeypatch):
     [{"index": 0, "score": .001}, {"index": 0, "score": .999}],
 ])
 async def test_partial_or_malformed_reranking_preserves_one_comparable_fallback(monkeypatch, results):
-    monkeypatch.setenv("PACOMIND_RECALL_RERANK", "on")
-    monkeypatch.delenv("PACOMIND_RECALL_RERANK_MIN_SCORE", raising=False)
+    monkeypatch.setenv("PROTAGINE_RECALL_RERANK", "on")
+    monkeypatch.delenv("PROTAGINE_RECALL_RERANK_MIN_SCORE", raising=False)
     rank = AsyncMock(return_value=results)
     rows = [{**belief(f"Passage {i}"), "id": f"b{i}", "relevance": .02 - i / 10000}
             for i in range(6)]

@@ -127,7 +127,7 @@ class TransportMedia:
 
     def bind(self, scope, kwargs):
         if (scope is None or not scope.valid_participant or kwargs.get('parent_session_id')
-                or scope.platform in {'cron', 'subagent', 'background_review', 'pacomind_task'}):
+                or scope.platform in {'cron', 'subagent', 'background_review', 'protagine_task'}):
             return
         history = kwargs.get('conversation_history') or []
         current = next((row for row in reversed(history) if isinstance(row, dict) and row.get('role') == 'user'), {})

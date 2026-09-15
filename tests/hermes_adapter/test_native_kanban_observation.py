@@ -14,20 +14,20 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0, sys.argv[1])
 if sys.argv[2]: sys.path.append(sys.argv[2])
-if os.environ.get('PACOMIND_TEST_HERMES_PATH'):
-    sys.path.insert(0, os.environ['PACOMIND_TEST_HERMES_PATH'])
+if os.environ.get('PROTAGINE_TEST_HERMES_PATH'):
+    sys.path.insert(0, os.environ['PROTAGINE_TEST_HERMES_PATH'])
 def no_network(*args, **kwargs): raise AssertionError('No network in native board fixture')
 socket.socket.connect = no_network
 from hermes_cli import kanban_db as kb
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import executions, host
-from pacomind.turns.hermes_kanban import kanban_view
-from pacomind.turns.executions import format_view, request_work_context
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import executions, host
+from protagine.turns.hermes_kanban import kanban_view
+from protagine.turns.executions import format_view, request_work_context
 root = Path(os.environ['HERMES_HOME']); root.mkdir()
 (root/'config.yaml').write_text('plugins: {enabled: []}\ntoolsets: [kanban]\n')
-state = Path(os.environ['PACOMIND_STATE_DIR']); state.mkdir()
+state = Path(os.environ['PROTAGINE_STATE_DIR']); state.mkdir()
 kb.create_board('operations')
 kb.create_board('unselected')
 with kb.connect(board='unselected') as db:
@@ -64,20 +64,20 @@ del os.environ['HERMES_KANBAN_BOARD']
 kb.set_current_board('operations')
 
 # Explicit missing boards stay visible and are never created by a read.
-os.environ['PACOMIND_HERMES_WORK_BOARDS'] = json.dumps(['operations','missing'])
+os.environ['PROTAGINE_HERMES_WORK_BOARDS'] = json.dumps(['operations','missing'])
 view = kanban_view()
 assert view['available'] and view['partial'] and view['boards'][1]['reason'] == 'native_board_absent'
 assert not (root/'kanban/boards/missing').exists()
-os.environ['PACOMIND_HERMES_WORK_BOARDS'] = '["../unselected"]'
+os.environ['PROTAGINE_HERMES_WORK_BOARDS'] = '["../unselected"]'
 assert kanban_view()['reason'] == 'invalid_native_board_binding'
-os.environ['PACOMIND_HERMES_WORK_BOARDS'] = '["operations"]'
+os.environ['PROTAGINE_HERMES_WORK_BOARDS'] = '["operations"]'
 
 host._task_queue = None
 app = FastAPI()
 @app.middleware('http')
 async def identity(request, next_call):
     person = request.headers.get('fixture-person', 'owner')
-    request.state.pacomind_authority = RequestAuthority(principal_id='fixture',credential_id='fixture',
+    request.state.protagine_authority = RequestAuthority(principal_id='fixture',credential_id='fixture',
         scopes=frozenset({'context:read'}),viewer_person_id=person,person_ids=frozenset({person}),
         audiences=frozenset({'viewer'}),authenticated=True)
     return await next_call(request)
@@ -207,14 +207,14 @@ def test_actual_native_general_task_observed_across_sessions(tmp_path):
     root = Path(__file__).resolve().parents[2]
     env = {key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'hermes'),HERMES_KANBAN_HOME=str(tmp_path/'hermes'),
-        PACOMIND_STATE_DIR=str(tmp_path/'state'),PACOMIND_OWNER_CONTACT_ID='owner',
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'),PROTAGINE_OWNER_CONTACT_ID='owner',
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1',HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
-    if os.environ.get('PACOMIND_TEST_HERMES_PATH'):
-        env['PACOMIND_TEST_HERMES_PATH'] = os.environ['PACOMIND_TEST_HERMES_PATH']
+        PROTAGINE_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
+    if os.environ.get('PROTAGINE_TEST_HERMES_PATH'):
+        env['PROTAGINE_TEST_HERMES_PATH'] = os.environ['PROTAGINE_TEST_HERMES_PATH']
     result = subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
-                             os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH','')],
+                             os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH','')],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode == 0,result.stdout+result.stderr
     assert '"independent_owner_sessions": true' in result.stdout

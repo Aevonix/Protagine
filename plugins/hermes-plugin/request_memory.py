@@ -21,8 +21,8 @@ from .client import source_message_hash
 
 logger = logging.getLogger(__name__)
 _MEMORY = re.compile(r"(?:\n\n)?<memory-context>.*?(?:</memory-context>|$)", re.S)
-_STAMP = re.compile(r"\[pacomind-recall-v1 (\{[^\n]*\})\]\n")
-_PACKET = re.compile(r"\[pacomind-recall-v1 \{[^\n]*\}\]\n.*?(?:\[/pacomind-recall-v1\]|$)", re.S)
+_STAMP = re.compile(r"\[protagine-recall-v1 (\{[^\n]*\})\]\n")
+_PACKET = re.compile(r"\[protagine-recall-v1 \{[^\n]*\}\]\n.*?(?:\[/protagine-recall-v1\]|$)", re.S)
 _HERMES_MEMORY_NOTE = (
     "[System note: The following is recalled memory context, NOT new user input. "
     "Treat as authoritative reference data — this is the agent's persistent memory "
@@ -200,7 +200,7 @@ def _without_turn_start_work(request, current):
         return request
     original = packet.group()
     section = re.compile(r'\n\n## Work observed at turn start \[priority 73\]\n.*?'
-                         r'(?=\n\n## |\n\[/pacomind-recall-v1\])', re.S)
+                         r'(?=\n\n## |\n\[/protagine-recall-v1\])', re.S)
     matches = list(section.finditer(original))
     if len(matches) != 1:
         return request
@@ -286,7 +286,7 @@ def _matches_read_text(value, expected):
     if match is None:
         return False
     try:
-        if json.loads(expected).get('pacomind_native_history_read_v1') is not True:
+        if json.loads(expected).get('protagine_native_history_read_v1') is not True:
             return False
         from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, _DECISION_MESSAGES
         code, count = 'idempotent_no_progress_warning', int(match.group(1))
@@ -379,9 +379,9 @@ def _historical_source_read(row):
         text = _read_text(_read_value(row))
         payload = json.JSONDecoder().raw_decode(text.lstrip())[0] if isinstance(text, str) else None
         return isinstance(payload, dict) and (
-            payload.get('pacomind_source_read_v1') is True
-            or payload.get('pacomind_memory_search_v1') is True
-            or payload.get('pacomind_native_history_read_v1') is True)
+            payload.get('protagine_source_read_v1') is True
+            or payload.get('protagine_memory_search_v1') is True
+            or payload.get('protagine_native_history_read_v1') is True)
     except (TypeError, ValueError):
         return False
 
@@ -518,7 +518,7 @@ def filter_request(request, *, contact_id, watermark, rules, fresh, aliases=None
         # Native recollection lives in appended user api_content. Instruction
         # text can document its generic fence, including a literal opener with
         # no close, so that markup alone cannot identify recalled evidence.
-        # Exact erased sources and explicit PacoMind lineage packets still obey
+        # Exact erased sources and explicit Protagine lineage packets still obey
         # the same erasure boundary when copied into trusted instructions.
         original = aliases.get(_content_key(value), value) if origins and aliases else value
         if erased(original):
@@ -1174,7 +1174,7 @@ class RequestMemory:
         if supplied_input is not None and updates:
             if not supplied_input.check_updates(scope, updates, fresh=fresh and observed, rules=rules):
                 return {'request': withheld_request(filtered, failure=supplied_input.failure),
-                    'source': 'pacomind', 'freshness_retryable': False,
+                    'source': 'protagine', 'freshness_retryable': False,
                     'reason': 'source_update_unavailable'}
             filtered = _restore_source_updates(original_request, filtered, updates)
             visible = [entry for entry in updates
@@ -1183,7 +1183,7 @@ class RequestMemory:
                     and not self.ownership.retain_updates(scope, visible, filtered)):
                 supplied_input.block_update_ownership()
                 return {'request':withheld_request(filtered, failure=supplied_input.failure),
-                    'source':'pacomind', 'freshness_retryable':False,
+                    'source':'protagine', 'freshness_retryable':False,
                     'reason':'source_update_ownership_unavailable'}
             supplied_input.admit_updates(scope, filtered, updates)
         if operational and not (fresh and observed and operational_current and operational['contact_id'] == contact
@@ -1252,7 +1252,7 @@ class RequestMemory:
                     filtered = replace_context(filtered,
                         'Current shared work withheld because source ownership could not be retained.'
                         + operational.get('handoff_guidance', ''))
-                return {'request':filtered, 'source':'pacomind', 'freshness_retryable':False,
+                return {'request':filtered, 'source':'protagine', 'freshness_retryable':False,
                         'reason':'native_source_ownership_unavailable'}
             # A correction owns its typed carrier and later answer, not the
             # earlier independent tool work in the original input's span.
@@ -1289,6 +1289,6 @@ class RequestMemory:
         if current_work and (operational is None or
                 any(operational['text'] in text for text in _request_texts(filtered))):
             filtered = _without_turn_start_work(filtered, current)
-        return {'request': filtered, 'source': 'pacomind',
+        return {'request': filtered, 'source': 'protagine',
                 'freshness_retryable': freshness_retryable and not fresh,
                 'reason': 'source_erasure_checked' if fresh else 'source_erasure_unavailable'}

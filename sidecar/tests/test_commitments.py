@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from pacomind.commitments.store import CommitmentStore
+from protagine.commitments.store import CommitmentStore
 
 
 @pytest.fixture

@@ -15,11 +15,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from pacomind.api.schemas.host import TurnSyncRequest
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.idempotency import source_message_hash, SourceErased
-from pacomind.turns.media import SourceMedia
-from pacomind.turns.source_read import read
+from protagine.api.schemas.host import TurnSyncRequest
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.idempotency import source_message_hash, SourceErased
+from protagine.turns.media import SourceMedia
+from protagine.turns.source_read import read
 from test_source_media import image_bytes, message
 from test_turn_source_evidence import source_app
 from test_hermes_turn_outbox import _load_client
@@ -89,7 +89,7 @@ async def test_ingress_native_canonical_read_and_forget(transport, source_app, t
     user = retained[0]
     assert source_message_hash(transport.scope.session_id, user) == link == native_hash
     assert user['content'][0] == {'type': 'text', 'text': transport.event.text}
-    from pacomind.turns.audio import claim_message
+    from protagine.turns.audio import claim_message
     assert claim_message(user)['content'] == transport.event.text
     assert user['_transport_provenance']['runtime_prepared_text_kind'] == 'derived_not_author_statement'
     assert ledger.search_sources('famous painting', contact_id='person', session_id='later') == []
@@ -370,7 +370,7 @@ def test_registered_handoff_and_terminal_release_exact_turn(plugin_runtime, tran
 @pytest.mark.parametrize('server', ['current', 'old', 'missing'])
 def test_client_requires_transport_receipt_without_lossy_fallback(transport, monkeypatch, server):
     module = _load_client()
-    client = module.PacoMindClient('http://fixture')
+    client = module.ProtagineClient('http://fixture')
     body = capture(transport)
     calls = []
     def put(path, **kwargs):
@@ -387,5 +387,5 @@ def test_client_requires_transport_receipt_without_lossy_fallback(transport, mon
         require_source_receipt=True, timeout_seconds=1)
     assert result is (server == 'current')
     assert len(calls) == 1 and calls[0][0] == '/v2/host/turns/source-media/transport/media-turn'
-    from pacomind.api.authority import required_scope
+    from protagine.api.authority import required_scope
     assert required_scope('PUT', calls[0][0]) == 'turns:write'

@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.turns import TurnIdempotencyLedger
-from pacomind.turns.source_attribution import correct as reattribute
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.turns import TurnIdempotencyLedger
+from protagine.turns.source_attribution import correct as reattribute
 from test_source_claim_projection import Model, claim, prepared
 
 ORIGINAL = 'The loaner kit needs four glove pairs and two nylon brushes.'
@@ -53,7 +53,7 @@ async def test_partial_correction_preserves_unchanged_support_across_revisions_a
     assert any(row['evidence'] == ORIGINAL for row in bases)
     assert any(row['evidence'] == CORRECTION for row in bases)
     hits = reopened.ledger.search_sources('loaner kit needs', contact_id='contact-a', session_id='s')
-    from pacomind.beliefs.source_time import interpret_time_query
+    from protagine.beliefs.source_time import interpret_time_query
     from datetime import datetime, timezone
     _, bundles = reopened.prepare_context([], hits, contact_id='contact-a', session_id='s',
         time_query=interpret_time_query('loaner kit needs', now=datetime.now(timezone.utc)))

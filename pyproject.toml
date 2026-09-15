@@ -3,9 +3,9 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pacomind-hermes"
+name = "protagine-hermes"
 version = "1.8.4"
-description = "Native Hermes general and memory adapters for PacoMind"
+description = "Native Hermes general and memory adapters for Protagine"
 readme = "docs/HERMES-ADAPTER.md"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
@@ -16,24 +16,28 @@ dependencies = ["httpx>=0.27,<0.29", "httpcore>=1,<2", "typer>=0.12,<1", "PyYAML
 test = ["build>=1.2", "pytest>=8", "setuptools>=77", "wheel"]
 native-memory = ["nemo-relay>=0.8.3,<0.9"]
 
+[project.urls]
+Homepage = "https://aevonix.com/protagine"
+Repository = "https://github.com/Aevonix/Protagine"
+
 [project.entry-points."hermes_agent.plugins"]
-pacomind = "pacomind_hermes"
+protagine = "protagine_hermes"
 
 [project.entry-points."hermes_agent.memory_providers"]
-pacomind-memory = "pacomind_memory"
+protagine-memory = "protagine_memory"
 
 [tool.setuptools]
-packages = ["pacomind_hermes", "pacomind_hermes.pacomind_hostworker", "pacomind_memory"]
+packages = ["protagine_hermes", "protagine_hermes.protagine_hostworker", "protagine_memory"]
 include-package-data = false
 
 [tool.setuptools.package-dir]
-pacomind_hermes = "plugins/hermes-plugin"
-"pacomind_hermes.pacomind_hostworker" = "plugins/hermes-plugin/pacomind_hostworker"
-pacomind_memory = "plugins/pacomind-memory"
+protagine_hermes = "plugins/hermes-plugin"
+"protagine_hermes.protagine_hostworker" = "plugins/hermes-plugin/protagine_hostworker"
+protagine_memory = "plugins/protagine-memory"
 
 [tool.setuptools.package-data]
-pacomind_hermes = ["plugin.yaml", "SUPPLIED-INPUT.md", "bundled_skills/*/SKILL.md"]
-pacomind_memory = ["plugin.yaml", "SKILL.md"]
+protagine_hermes = ["plugin.yaml", "SUPPLIED-INPUT.md", "bundled_skills/*/SKILL.md"]
+protagine_memory = ["plugin.yaml", "SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/hermes_adapter"]

@@ -1,5 +1,5 @@
 """Real memory pruning (U1): dry_run, delete cap, vector coupling,
-fail-closed Neo4j handling, and the PACOMIND_MEMORY_PRUNE_MODE phase gate.
+fail-closed Neo4j handling, and the PROTAGINE_MEMORY_PRUNE_MODE phase gate.
 
 The flag defaults to ``shadow``, so the regression lock here is that the
 default path never deletes anything — graph or vector.
@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pacomind.intelligence.graph import client as client_mod
-from pacomind.vector.collections import Collection
+from protagine.intelligence.graph import client as client_mod
+from protagine.vector.collections import Collection
 
 
 # --- fakes -------------------------------------------------------------------
@@ -61,7 +61,7 @@ class _Fixture:
         self.fail = fail
         self.queries = []
         self.deleted_ids = []
-        self.graph = client_mod.PacoMindGraph.__new__(client_mod.PacoMindGraph)
+        self.graph = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
         self.graph.driver = _FakeDriver(self)
         self.graph.database = "neo4j"
         self.graph._vector_store = vector_store
@@ -114,10 +114,10 @@ async def test_vector_failure_does_not_abort_pass():
     assert out["deleted"] == 2  # graph deletes proceed; orphans swept later
 
 
-# --- phase gate (PACOMIND_MEMORY_PRUNE_MODE) -----------------------------------
+# --- phase gate (PROTAGINE_MEMORY_PRUNE_MODE) -----------------------------------
 
 def _loop_with_graph(graph):
-    from pacomind.autonomy.loop import AutonomyLoop
+    from protagine.autonomy.loop import AutonomyLoop
 
     class _Reg:
         pass
@@ -127,7 +127,7 @@ def _loop_with_graph(graph):
     loop = AutonomyLoop.__new__(AutonomyLoop)
     loop._registry = reg
     loop._periodic_last = {}
-    from pacomind.autonomy.loop import LoopStats
+    from protagine.autonomy.loop import LoopStats
     loop.stats = LoopStats()
     return loop
 
@@ -144,7 +144,7 @@ class _RecordingGraph:
 
 async def test_phase_default_is_shadow(monkeypatch):
     """Regression lock: with no flag set, the phase never live-deletes."""
-    monkeypatch.delenv("PACOMIND_MEMORY_PRUNE_MODE", raising=False)
+    monkeypatch.delenv("PROTAGINE_MEMORY_PRUNE_MODE", raising=False)
     graph = _RecordingGraph()
     loop = _loop_with_graph(graph)
     await loop._phase_memory_pruning()
@@ -152,7 +152,7 @@ async def test_phase_default_is_shadow(monkeypatch):
 
 
 async def test_phase_off_never_touches_graph(monkeypatch):
-    monkeypatch.setenv("PACOMIND_MEMORY_PRUNE_MODE", "off")
+    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "off")
     graph = _RecordingGraph()
     loop = _loop_with_graph(graph)
     await loop._phase_memory_pruning()
@@ -160,7 +160,7 @@ async def test_phase_off_never_touches_graph(monkeypatch):
 
 
 async def test_phase_live_deletes(monkeypatch):
-    monkeypatch.setenv("PACOMIND_MEMORY_PRUNE_MODE", "live")
+    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "live")
     graph = _RecordingGraph()
     loop = _loop_with_graph(graph)
     await loop._phase_memory_pruning()
@@ -168,7 +168,7 @@ async def test_phase_live_deletes(monkeypatch):
 
 
 async def test_phase_unknown_mode_fails_safe_to_shadow(monkeypatch):
-    monkeypatch.setenv("PACOMIND_MEMORY_PRUNE_MODE", "banana")
+    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "banana")
     graph = _RecordingGraph()
     loop = _loop_with_graph(graph)
     await loop._phase_memory_pruning()
@@ -176,7 +176,7 @@ async def test_phase_unknown_mode_fails_safe_to_shadow(monkeypatch):
 
 
 async def test_phase_runs_once_per_week_key(monkeypatch):
-    monkeypatch.delenv("PACOMIND_MEMORY_PRUNE_MODE", raising=False)
+    monkeypatch.delenv("PROTAGINE_MEMORY_PRUNE_MODE", raising=False)
     graph = _RecordingGraph()
     loop = _loop_with_graph(graph)
     await loop._phase_memory_pruning()

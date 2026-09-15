@@ -1,4 +1,4 @@
-"""Minimal HTTP client for the governed Hermes PacoMind adapter."""
+"""Minimal HTTP client for the governed Hermes Protagine adapter."""
 
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ def turn_outbox_path(config):
     configured = config.get('turn_outbox_path')
     if configured is not None and not isinstance(configured, (str, os.PathLike)):
         raise RuntimeError('turn_outbox_path must be a filesystem path')
-    return str(configured or os.environ.get('PACOMIND_HERMES_TURN_OUTBOX') or
-               Path(os.environ.get('HERMES_HOME') or Path.home()/'.hermes')/'state'/'pacomind-turn-outbox.sqlite3')
+    return str(configured or os.environ.get('PROTAGINE_HERMES_TURN_OUTBOX') or
+               Path(os.environ.get('HERMES_HOME') or Path.home()/'.hermes')/'state'/'protagine-turn-outbox.sqlite3')
 
 
 class TurnOutboxConflict(RuntimeError):
@@ -1689,15 +1689,15 @@ def _resolve_env_placeholder(value: Any) -> str:
     return text
 
 
-class PacoMindClient:
+class ProtagineClient:
     """Small synchronous client; effect endpoints are intentionally absent."""
 
     def __init__(self, url: str | None = None, api_key: str | None = None):
         self.url = str(
-            url or os.environ.get("PACOMIND_URL") or "http://127.0.0.1:7777"
+            url or os.environ.get("PROTAGINE_URL") or "http://127.0.0.1:7777"
         ).rstrip("/")
         self._api_key = _resolve_env_placeholder(
-            api_key if api_key is not None else os.environ.get("PACOMIND_API_KEY", "")
+            api_key if api_key is not None else os.environ.get("PROTAGINE_API_KEY", "")
         )
 
     def _headers(self, supplied: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -1768,7 +1768,7 @@ class PacoMindClient:
         outbox: TurnOutbox | None = None,
         timeout_seconds: float = 0.25,
     ) -> bool:
-        """Persist one participant-bound observation through PacoMind's ledger."""
+        """Persist one participant-bound observation through Protagine's ledger."""
 
         try:
             timeout = max(0.01, min(float(timeout_seconds), 1.0))
@@ -1915,8 +1915,8 @@ class PacoMindClient:
 
 
 __all__ = [
-    "PacoMindClient",
-    "PacoMindClient",
+    "ProtagineClient",
+    "ProtagineClient",
     "PrivateSQLitePath",
     "PrivateSQLitePathError",
     "TurnOutbox",

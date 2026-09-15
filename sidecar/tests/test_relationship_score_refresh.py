@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pacomind.autonomy.loop import AutonomyLoop
-from pacomind.contacts.config import ContactsConfig
-from pacomind.contacts.store import SQLiteContactStore
-from pacomind.contacts.scoring import compute_relationship_score
+from protagine.autonomy.loop import AutonomyLoop
+from protagine.contacts.config import ContactsConfig
+from protagine.contacts.store import SQLiteContactStore
+from protagine.contacts.scoring import compute_relationship_score
 
 
 @pytest.mark.asyncio

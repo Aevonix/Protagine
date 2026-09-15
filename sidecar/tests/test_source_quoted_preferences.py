@@ -4,12 +4,12 @@ import json
 from jsonschema import Draft202012Validator, ValidationError
 import pytest
 
-from pacomind.beliefs.source_claims import (
+from protagine.beliefs.source_claims import (
     admission_metadata, claim_response_schema, validated_claims,
 )
-from pacomind.beliefs.source_projection import SourceClaimProjection
-from pacomind.self_model.appraisals import AppraisalStore
-from pacomind.turns import TurnIdempotencyLedger
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.self_model.appraisals import AppraisalStore
+from protagine.turns import TurnIdempotencyLedger
 from test_source_claim_projection import claim, prepared
 from test_source_claim_review import ReviewedModel, review
 from test_source_claim_subject_basis import remove_original, rows
@@ -179,7 +179,7 @@ async def test_explicit_lifecycle_preserves_compact_and_quoted_preference_identi
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['correct', 'change'])
 async def test_reviewed_quoted_revision_does_not_use_normalized_wording_equality(tmp_path, operation):
-    from pacomind.beliefs.source_claims import norm_value
+    from protagine.beliefs.source_claims import norm_value
     projection = projection_at(tmp_path)
     old = 'I actually prefer 4-6 pages in a handoff now.'
     new = 'I actually prefer 4.6 pages in a handoff now.'
@@ -242,8 +242,8 @@ async def test_quoted_preference_guidance_revokes_with_source_after_reopen(tmp_p
 @pytest.mark.parametrize('third', ['equivalent', 'different', 'identical'])
 async def test_quoted_wording_neither_deduplicates_nor_asserts_conflict(tmp_path, third):
     from datetime import datetime, timezone
-    from pacomind.beliefs.source_time import interpret_time_query
-    from pacomind.memory.recall import pack_memory_context
+    from protagine.beliefs.source_time import interpret_time_query
+    from protagine.memory.recall import pack_memory_context
     projection = projection_at(tmp_path)
     await add(projection, 'compact', TEXT, preference(value='concise handoff'))
     await add(projection, 'quoted', TEXT, preference())

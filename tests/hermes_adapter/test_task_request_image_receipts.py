@@ -21,15 +21,15 @@ from agent import relay_runtime, relay_llm
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platform_registry import platform_registry, PlatformEntry
 from gateway.session import SessionStore
-from pacomind_hermes.native_memory import NativeMemoryRequests
-from pacomind_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
-from pacomind_hermes.native_task_platform import (
+from protagine_hermes.native_memory import NativeMemoryRequests
+from protagine_hermes.task_handoffs import TaskHandoffs, TaskHandoffError
+from protagine_hermes.native_task_platform import (
     ACTIVE, NativeTaskAdapter, bind_native_turn, request_image_observer,
     TASK_IMAGE_RECEIPTS_METADATA, _request_image_hashes)
 
 home = Path('profile').absolute(); home.mkdir(exist_ok=True)
 (home/'config.yaml').write_text('{}\n')
-platform_registry.register(PlatformEntry(name='pacomind_task',label='PacoMind task',
+platform_registry.register(PlatformEntry(name='protagine_task',label='Protagine task',
     adapter_factory=lambda config: None,check_fn=lambda: True))
 config = GatewayConfig(sessions_dir=home/'sessions')
 store = SessionStore(config.sessions_dir, config)
@@ -71,9 +71,9 @@ def begin(name, *, purpose='qualification', opt_in=True):
     src = adapter.build_source(chat_id=row['id'],chat_type='dm',user_id='owner',message_id=row['id'])
     entry = store.get_or_create_session(src,touch_activity=False)
     lease = coordinator.acquire_conversation(profile_key=relay_runtime.current_profile_key(),
-        session_id=entry.session_id,platform='pacomind_task')
+        session_id=entry.session_id,platform='protagine_task')
     turn = coordinator.begin_turn(lease,task_id=name+'-task',turn_id=name+'-turn')
-    fields = {'platform':'pacomind_task','session_id':entry.session_id,
+    fields = {'platform':'protagine_task','session_id':entry.session_id,
               'task_id':turn.task_id,'turn_id':turn.turn_id}
     active = {'handoffs':handoffs,'id':row['id'],'adapter':adapter,'supplied':None,
               'session_key':entry.session_key,'source':src}
@@ -249,7 +249,7 @@ print(json.dumps({'case':sys.argv[3],'passed':True,'network_calls':0,'model_call
 
 @pytest.mark.parametrize('case', ['admission', 'filtered_callbacks', 'scope_exclusions', 'bounds'])
 def test_task_request_image_receipts(artifacts, tmp_path, case):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native request receipt tests')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}

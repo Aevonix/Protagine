@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from pacomind.qualification.cases import STANDARD, role_completion, json_fields
-from pacomind.qualification.cli import run
-from pacomind.qualification.records import read
-from pacomind.qualification.report import compare, markdown
-from pacomind.qualification.runner import evaluate, inspect_binding, materialize_role_cases, router_for
-from pacomind.qualification.structured_cases import CASES
+from protagine.qualification.cases import STANDARD, role_completion, json_fields
+from protagine.qualification.cli import run
+from protagine.qualification.records import read
+from protagine.qualification.report import compare, markdown
+from protagine.qualification.runner import evaluate, inspect_binding, materialize_role_cases, router_for
+from protagine.qualification.structured_cases import CASES
 from test_function_routing import config, endpoint
 
 
@@ -48,8 +48,8 @@ def test_default_binding_allowance_does_not_fall_back_to_consumer_512():
 
 
 def test_domain_and_native_consumers_keep_their_original_budgets():
-    from pacomind.qualification.memory_cases import CASES as MEMORY
-    from pacomind.qualification.native import cases as native_cases
+    from protagine.qualification.memory_cases import CASES as MEMORY
+    from protagine.qualification.native import cases as native_cases
     cfg = config('http://127.0.0.1:9911/v1', 'http://127.0.0.1:9912/v1')
     originals = [MEMORY[0], *native_cases(['reasoning']), CASES[0]]
     records = [case.record() for case in originals]
@@ -63,7 +63,7 @@ def test_domain_and_native_consumers_keep_their_original_budgets():
 
 @pytest.mark.parametrize('key', ['max_tokens', 'max_completion_tokens', 'max_output_tokens'])
 def test_conflicting_request_override_cannot_misrepresent_the_frozen_allowance(key):
-    from pacomind.qualification.memory_cases import CASES as MEMORY
+    from protagine.qualification.memory_cases import CASES as MEMORY
     cfg = config('http://127.0.0.1:9911/v1', 'http://127.0.0.1:9912/v1')
     cfg['modelPool']['interactive']['extraBody'] = {key: 512}
     with pytest.raises(ValueError, match='output override conflicts'):

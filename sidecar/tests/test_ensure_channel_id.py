@@ -8,8 +8,8 @@ cross-context leak detection always work.
 import pytest
 from types import SimpleNamespace
 
-from pacomind.api.routers import host as host_mod
-from pacomind.api.schemas.host import HostIdentity, HostTurnContext
+from protagine.api.routers import host as host_mod
+from protagine.api.schemas.host import HostIdentity, HostTurnContext
 
 
 @pytest.fixture(autouse=True)

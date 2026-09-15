@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0,sys.argv[1])
 if sys.argv[3]:sys.path.append(sys.argv[3])
 if len(sys.argv)>4 and sys.argv[4]:sys.path.insert(0,sys.argv[4])
-package=types.ModuleType('pacomind_hermes');package.__path__=[sys.argv[2]];sys.modules['pacomind_hermes']=package
+package=types.ModuleType('protagine_hermes');package.__path__=[sys.argv[2]];sys.modules['protagine_hermes']=package
 def no_network(*a,**kw):raise AssertionError('No network in native review qualification')
 socket.socket.connect=no_network
 from hermes_cli import kanban_db as kb
@@ -25,42 +25,42 @@ except ModuleNotFoundError:
  from hermes_cli.kanban_db import _record_task_failure
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pacomind.api.authority import RequestAuthority
-from pacomind.api.routers import initiative_work,host,executions
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.turns.local_work import local_work_view
-from pacomind_hermes.initiative_work import NativeReviews
+from protagine.api.authority import RequestAuthority
+from protagine.api.routers import initiative_work,host,executions
+from protagine.initiatives.store import InitiativeStore
+from protagine.turns.local_work import local_work_view
+from protagine_hermes.initiative_work import NativeReviews
 root=Path(os.environ['HERMES_HOME']);root.mkdir()
-(root/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[], 'pacomind':{
+(root/'config.yaml').write_text(json.dumps({'plugins':{'enabled':[], 'protagine':{
  'owner_contact_id':'owner', 'native_reviews':{'client_factory_file':str(root/'private-client.py')}}}}))
-state=Path(os.environ['PACOMIND_STATE_DIR']);state.mkdir()
-shutil.copytree(sys.argv[2],state/'adapter/pacomind_hermes')
+state=Path(os.environ['PROTAGINE_STATE_DIR']);state.mkdir()
+shutil.copytree(sys.argv[2],state/'adapter/protagine_hermes')
 for name in ('catalog.py','contract.py'):
- shutil.copyfile(Path(sys.argv[2]).parents[1]/'hostworker/pacomind_hostworker'/name,state/'adapter/pacomind_hermes/pacomind_hostworker'/name)
+ shutil.copyfile(Path(sys.argv[2]).parents[1]/'hostworker/protagine_hostworker'/name,state/'adapter/protagine_hermes/protagine_hostworker'/name)
 (state/'instance.json').write_text(json.dumps({'version':1,'profile':'local','hermes_home':str(root),
  'hermes_python':sys.executable,'sidecar_python':sys.argv[5],'sidecar_module_root':sys.argv[1],
  'adapter_binding':{'mode':'private-directory'}}))
 routing={'provider':'vllm','models':{},'modelPool':{'planning-fixture':{
  'model':'replaceable-planning-model','baseUrl':'http://127.0.0.1:9/v1','supportsTools':True}},
  'functionRoles':{'planning':['planning-fixture']}}
-(state/'.pacomind-llm-config.json').write_text(json.dumps(routing))
-from pacomind.setup_native_reviews import configure
+(state/'.protagine-llm-config.json').write_text(json.dumps(routing))
+from protagine.setup_native_reviews import configure
 configure(state,install=True)
 review_config={'enabled':True,'instance_dir':str(state),'client_factory_file':str(root/'private-client.py')}
 import yaml
-assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['pacomind']['native_reviews']==review_config
-selected=yaml.safe_load((root/'profiles/pacomind-reviews/config.yaml').read_text())
+assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['protagine']['native_reviews']==review_config
+selected=yaml.safe_load((root/'profiles/protagine-reviews/config.yaml').read_text())
 assert selected['model']['default']=='replaceable-planning-model' and 'max_tokens' not in selected['model']
 # Enabled --refresh-adapter uses the same installer for the already owned
 # profile. Refresh its adapter, retain unrelated files and the client binding.
-profile=root/'profiles/pacomind-reviews'
-forwarder=profile/'plugins/pacomind/__init__.py'
+profile=root/'profiles/protagine-reviews'
+forwarder=profile/'plugins/protagine/__init__.py'
 expected_forwarder=forwarder.read_bytes()
 forwarder.write_text('# Previous managed adapter forwarder.\n')
 (profile/'owner-note.txt').write_text('Retain this unrelated profile file.\n')
 configure(state,install=True)
 assert forwarder.read_bytes()==expected_forwarder
-assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['pacomind']['native_reviews']==review_config
+assert yaml.safe_load((root/'config.yaml').read_text())['plugins']['protagine']['native_reviews']==review_config
 def profile_files():
  return {str(path.relative_to(profile)):path.read_bytes() for path in profile.rglob('*') if path.is_file()}
 refreshed=profile_files();root_before=(root/'config.yaml').read_bytes()
@@ -70,7 +70,7 @@ assert (profile/'owner-note.txt').read_text()=='Retain this unrelated profile fi
 # A pre-existing worker for another owner or source home is never overwritten.
 for key,value in [('owner_contact_id','other-owner'),('source_home',str(root/'other-home'))]:
  other=json.loads(json.dumps(selected))
- other['plugins']['pacomind']['native_reviews'][key]=value
+ other['plugins']['protagine']['native_reviews'][key]=value
  (profile/'config.yaml').write_text(yaml.safe_dump(other,sort_keys=False))
  before=profile_files()
  try:configure(state,install=True)
@@ -88,7 +88,7 @@ app=FastAPI()
 @app.middleware('http')
 async def authority(request,next_call):
  person=request.headers.get('fixture-person','owner')
- request.state.pacomind_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
+ request.state.protagine_authority=RequestAuthority(principal_id='fixture-native',credential_id='fixture',
      scopes=frozenset({'turns:write','context:read'}),viewer_person_id=person,person_ids=frozenset({person}),
      audiences=frozenset({'viewer'}),authenticated=True)
  return await next_call(request)
@@ -112,7 +112,7 @@ with kb.connect(board='default') as db:
  assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==1
  task=kb.get_task(db,tid)
  assert task.status=='ready' and not task.goal_mode
- assert task.assignee=='pacomind-reviews' and task.max_runtime_seconds==480 and task.max_retries==1
+ assert task.assignee=='protagine-reviews' and task.max_runtime_seconds==480 and task.max_retries==1
  assert not db.execute('SELECT 1 FROM kanban_notify_subs').fetchone()
  claimed=kb.claim_task(db,tid);run=claimed.current_run_id
 reviews[0].reconcile(board='default')
@@ -142,7 +142,7 @@ for client in clients:
 # ordinary cycle recovers it. No fake worker or new task is needed.
 second=proposal('Review another local observation')
 routing['modelPool']['planning-fixture']['model']='replacement-planning-model'
-(state/'.pacomind-llm-config.json').write_text(json.dumps(routing))
+(state/'.protagine-llm-config.json').write_text(json.dumps(routing))
 class LostAck:
  def get(self,*a,**kw):return clients[0].get(*a,**kw)
  def post(self,path,**kw):
@@ -153,10 +153,10 @@ try:NativeReviews(LostAck(),'owner',review_config).work(second.id)
 except RuntimeError:pass
 else:raise AssertionError('Lost acknowledgment was not retained')
 with kb.connect(board='default') as db:
- task=kb.get_task(db,db.execute('SELECT id FROM tasks WHERE idempotency_key=?',('pacomind-initiative:'+second.id,)).fetchone()[0])
+ task=kb.get_task(db,db.execute('SELECT id FROM tasks WHERE idempotency_key=?',('protagine-initiative:'+second.id,)).fetchone()[0])
  assert task.status=='blocked' and kb.latest_run(db,task.id) is None
 second_result=reviews[0].work(second.id)
-selected=yaml.safe_load((root/'profiles/pacomind-reviews/config.yaml').read_text())
+selected=yaml.safe_load((root/'profiles/protagine-reviews/config.yaml').read_text())
 assert selected['model']['default']=='replacement-planning-model' and 'max_tokens' not in selected['model']
 with kb.connect(board='default') as db:
  assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==2
@@ -173,7 +173,7 @@ failed=reviews[1].work(second.id)
 assert failed['status']=='failed' and failed['result']['run_outcome']=='gave_up',failed
 assert failed['result']['error']=='controlled spawn failure',failed
 reviews[0].reconcile(board='default')
-from pacomind.turns import get_turn_idempotency_ledger
+from protagine.turns import get_turn_idempotency_ledger
 source_ledger=get_turn_idempotency_ledger(state)
 with source_ledger._connect() as evidence:
  sources=evidence.execute('SELECT messages_json FROM turn_sources').fetchall()
@@ -182,7 +182,7 @@ with source_ledger._connect() as evidence:
  assert message['role']=='assistant' and message['_native_runtime_observation']=='native-runtime-observation-v1'
  assert '"outcome": "gave_up"' in message['content'] and '"served_model": "unknown"' in message['content']
  assert 'controlled spawn failure' not in message['content']
- assert evidence.execute('SELECT count(*) FROM self_judgment_runs').fetchone()[0]==int(os.environ.get('PACOMIND_SELF_JUDGMENTS_ENABLED')=='1')
+ assert evidence.execute('SELECT count(*) FROM self_judgment_runs').fetchone()[0]==int(os.environ.get('PROTAGINE_SELF_JUDGMENTS_ENABLED')=='1')
  assert evidence.execute('SELECT count(*) FROM source_claim_jobs').fetchone()[0]==0
 with kb.connect(board='default') as db:
  assert db.execute('SELECT count(*) FROM tasks').fetchone()[0]==2
@@ -198,7 +198,7 @@ third=proposal('Review missing worker readiness')
 try:NativeReviews(clients[0],'owner').work(third.id)
 except ValueError as error:assert str(error)=='read_only_review_profile_not_installed'
 else:raise AssertionError('Unconfigured review dispatched')
-manifest_path=root/'profiles/pacomind-reviews/plugins/pacomind/plugin.yaml'
+manifest_path=root/'profiles/protagine-reviews/plugins/protagine/plugin.yaml'
 manifest_before=manifest_path.read_bytes();manifest_path.unlink()
 try:
  try:reviews[0].work(third.id)
@@ -223,15 +223,15 @@ def test_actual_native_initiative_handoff_and_reconciliation(tmp_path, judgments
     root = Path(__file__).resolve().parents[2]
     env = {key:os.environ[key] for key in ('PATH','LANG') if key in os.environ}
     env.update(HOME=str(tmp_path),HERMES_HOME=str(tmp_path/'hermes'),HERMES_KANBAN_HOME=str(tmp_path/'hermes'),
-        PACOMIND_HERMES_HOME=str(tmp_path/'hermes'),PACOMIND_HERMES_WORK_BOARDS='["default"]',
-        PACOMIND_STATE_DIR=str(tmp_path/'state'),PACOMIND_OWNER_CONTACT_ID='owner',
+        PROTAGINE_HERMES_HOME=str(tmp_path/'hermes'),PROTAGINE_HERMES_WORK_BOARDS='["default"]',
+        PROTAGINE_STATE_DIR=str(tmp_path/'state'),PROTAGINE_OWNER_CONTACT_ID='owner',
         HERMES_BUNDLED_PLUGINS=str(tmp_path/'bundled'),PYTHONDONTWRITEBYTECODE='1',
         HERMES_DISABLE_TELEMETRY='1',HERMES_DISABLE_LAZY_INSTALLS='1',
-        PACOMIND_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
+        PROTAGINE_SKIP_DOTENV='1',PYTHON_DOTENV_DISABLED='1',LITELLM_LOCAL_MODEL_COST_MAP='True')
     if judgments_enabled:
-        env['PACOMIND_SELF_JUDGMENTS_ENABLED'] = '1'
+        env['PROTAGINE_SELF_JUDGMENTS_ENABLED'] = '1'
     result = subprocess.run([python,'-I','-B','-c',PROBE,str(root/'sidecar'),
-        str(root/'plugins/hermes-plugin'),os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH',''),
+        str(root/'plugins/hermes-plugin'),os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH',''),
         os.environ.get('PROTAGINE_HERMES_TEST_SOURCE',''),sys.executable],
         cwd=tmp_path,env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode == 0,result.stdout+result.stderr

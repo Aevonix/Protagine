@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from pacomind.turns.tool_observations import MAX_BYTES, NativeToolInput, ToolObservation
+from protagine.turns.tool_observations import MAX_BYTES, NativeToolInput, ToolObservation
 
 
 def observation(content, arguments):

@@ -2,7 +2,7 @@
 import json
 import pytest
 
-from pacomind.initiatives.native_work import contract
+from protagine.initiatives.native_work import contract
 from test_hermes_general_governance import runtime, _Context, _pre, _tool
 from test_accepted_local_work import local_api
 
@@ -27,7 +27,7 @@ def test_exact_legacy_observation_becomes_review_not_maintenance():
 def test_current_review_binding_keeps_exact_bounded_contract():
     row = generated()
     current = contract(row)
-    assert 'Complete with pacomind_review_report' in current['body']
+    assert 'Complete with protagine_review_report' in current['body']
     assert 'no artifact file, repair' in current['body']
     context = json.loads(row['context'])
     context['native_review'] = {'contract_sha256': current['sha256'], 'native_task_id': 'bound'}
@@ -53,7 +53,7 @@ def test_review_tool_uses_real_owner_system_turn_and_rejects_guest_and_extra_arg
     module, ctx, _, _ = runtime
     # A reload installs a fresh listener set. Re-registering on the old fake
     # would retain both the old untrusted-cron and new attested-cron observers.
-    ctx = _Context({**ctx.config['plugins']['pacomind'],
+    ctx = _Context({**ctx.config['plugins']['protagine'],
                     'attested_system_platforms': ['cli', 'cron']})
     module.register(ctx)
     calls = []
@@ -61,20 +61,20 @@ def test_review_tool_uses_real_owner_system_turn_and_rejects_guest_and_extra_arg
         calls.append(identifier) or {'id':identifier,'status':'assigned','result_authority':'unverified'})
     for session, platform, sender in [('owner','sms','+15550001'), ('cron','cron','')]:
         _pre(ctx, session=session, task=session, turn=session, platform=platform, sender=sender)
-        value = json.loads(_tool(ctx, 'pacomind_work_initiative', {'initiative_id':'selected'},
+        value = json.loads(_tool(ctx, 'protagine_work_initiative', {'initiative_id':'selected'},
                                 session=session,task=session,turn=session,call=session))
         assert value.get('status') == 'assigned', value
     _pre(ctx,session='guest',task='guest',turn='guest',platform='sms',sender='+15550002')
-    denied = json.loads(_tool(ctx,'pacomind_work_initiative',{'initiative_id':'selected'},
+    denied = json.loads(_tool(ctx,'protagine_work_initiative',{'initiative_id':'selected'},
                              session='guest',task='guest',turn='guest',call='guest'))
     assert 'error' in denied
-    denied = json.loads(_tool(ctx,'pacomind_work_initiative',{'initiative_id':'selected','body':'do more'},
+    denied = json.loads(_tool(ctx,'protagine_work_initiative',{'initiative_id':'selected','body':'do more'},
                              session='owner',task='owner',turn='owner',call='extra'))
     assert 'error' in denied and calls == ['selected','selected']
 
 
 def test_existing_scoped_credentials_reach_only_owner_review_routes(local_api):
-    from pacomind.api.routers import initiative_work
+    from protagine.api.routers import initiative_work
     api, _, initiatives, _, _ = local_api
     api.app.include_router(initiative_work.router)
     item = initiatives.create(type='operational',source_type='operational',created_by='autonomy_loop',
@@ -93,7 +93,7 @@ def test_existing_scoped_credentials_reach_only_owner_review_routes(local_api):
 
 
 def test_tick_discovery_is_bounded_and_leaves_other_initiatives_untouched(local_api):
-    from pacomind.api.routers import initiative_work
+    from protagine.api.routers import initiative_work
     api, _, initiatives, _, _ = local_api
     api.app.include_router(initiative_work.router)
     defaults = dict(type='operational', source_type='operational', created_by='autonomy_loop',

@@ -13,10 +13,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from pacomind.api.authority import RequestAuthority, required_scope
-from pacomind.api.routers import executions
-from pacomind.self_model.judgments import SelfJudgments
-from pacomind.self_model.task_assessments import ATTRIBUTION
+from protagine.api.authority import RequestAuthority, required_scope
+from protagine.api.routers import executions
+from protagine.self_model.judgments import SelfJudgments
+from protagine.self_model.task_assessments import ATTRIBUTION
 from test_self_judgments import Processor
 from test_task_execution_judgments import task, retained, counts
 
@@ -62,7 +62,7 @@ def host(task, monkeypatch):
     app = FastAPI()
     @app.middleware('http')
     async def auth(request, call_next):
-        request.state.pacomind_authority = authority[0]
+        request.state.protagine_authority = authority[0]
         return await call_next(request)
     app.include_router(executions.router)
     monkeypatch.setattr(executions, 'registry', lambda: task.registry)
@@ -105,7 +105,7 @@ async def test_host_caller_admits_one_review_without_rewriting_execution_or_abst
     assert processor.requests[0]['evidence'][0]['text'] == message['content']
     assert state.revisions()[0]['premise_basis'] == ATTRIBUTION
     assert 'owner approval unobserved' in state.brief('local work checkpoints')
-    from pacomind.turns.source_read import read
+    from protagine.turns.source_read import read
     opened = read(task.ledger, contact_id='owner', session_id='later',
         source_id=result['source_id'], source_version=result['source_version'])
     assert opened['complete'] and payload['assessment']['content'] in opened['content']
@@ -235,7 +235,7 @@ async def test_review_itself_can_be_corrected_and_owner_can_withdraw_its_view(ta
 
 def test_failed_source_queue_transaction_can_retry_without_a_duplicate_review(task, host, monkeypatch):
     import sqlite3
-    from pacomind.self_model import judgments
+    from protagine.self_model import judgments
     payload = packet(task)
     original = judgments.enqueue
     def unavailable(*args, **kwargs):
@@ -256,7 +256,7 @@ def test_assessment_identity_cannot_change_reviewer_or_drop_dependencies(task, h
     assert host.api.post('/v1/host/executions/assess', json=changed).status_code == 409
     assert host.api.post('/v1/host/executions/assess', json={**payload, 'owner_approval':'approved'}).status_code == 422
     assert len(assessment_sources(task)) == 1
-    from pacomind.api.schemas.host import TurnMessage
+    from protagine.api.schemas.host import TurnMessage
     forged = TurnMessage(role='assistant', content='A model claims it passed.',
         _task_artifact_assessment='task-artifact-assessment-v1').model_dump()
     assert '_task_artifact_assessment' not in forged
@@ -271,7 +271,7 @@ def test_oversized_complete_review_is_rejected_without_partial_evidence(task, ho
 
 
 def recalled_image(task):
-    from pacomind.turns.idempotency import source_message_hash
+    from protagine.turns.idempotency import source_message_hash
     user = {'role': 'user', 'content': [
         {'type': 'text', 'text': 'What does this controlled workshop image show?'},
         {'type': 'image', 'asset_id': 'sha256:'+'a'*64, 'mime_type': 'image/jpeg'}]}
@@ -360,7 +360,7 @@ async def test_actual_selected_message_change_withholds_assessment(task, host, c
 @pytest.mark.parametrize('change', ['omitted', 'empty', 'unknown-hash', 'other-source-hash',
     'wrong-revision', 'extra-source', 'annotated-member', 'supplied-correction'])
 def test_unknown_or_mismatched_membership_cannot_bypass_annotations(task, host, change):
-    from pacomind.turns.idempotency import source_message_hash
+    from protagine.turns.idempotency import source_message_hash
     ref, check, _, assistant = recalled_image(task)
     payload = packet(task)
     payload['source_refs'].append(ref)
@@ -391,7 +391,7 @@ def test_unknown_or_mismatched_membership_cannot_bypass_annotations(task, host, 
 
 
 def test_empty_annotation_default_preserves_legacy_request_identity(task, host):
-    from pacomind.turns.idempotency import canonical_turn_digest
+    from protagine.turns.idempotency import canonical_turn_digest
     payload = packet(task)
     host.caller.assess(payload)
     message = json.loads(assessment_sources(task)[0]['messages_json'])[0]
@@ -402,7 +402,7 @@ def test_empty_annotation_default_preserves_legacy_request_identity(task, host):
 
 
 def test_exact_membership_cannot_omit_the_immutable_execution_input(task, host):
-    from pacomind.turns.idempotency import source_message_hash
+    from protagine.turns.idempotency import source_message_hash
     ref, check, user, assistant = recalled_image(task)
     task.inputs[:] = [{'source_id': ref['source_id'],
         'input_message_hash': source_message_hash('image-session', user)}]
@@ -486,13 +486,13 @@ def test_assessment_read_rechecks_exact_source_support(task, host, change):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('retrieval', ['lexical', 'semantic'])
 async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task, host, monkeypatch, retrieval):
-    from pacomind.memory.search import CollectedSources, collect_sources, select_memory
-    from pacomind.memory.selection import RecallSelector
-    from pacomind.turns.source_read import read
-    from pacomind.turns.source_vectors import chunks, hydrate
+    from protagine.memory.search import CollectedSources, collect_sources, select_memory
+    from protagine.memory.selection import RecallSelector
+    from protagine.turns.source_read import read
+    from protagine.turns.source_vectors import chunks, hydrate
     from test_recall_source_presentation import rendered_rows
 
-    monkeypatch.setenv('PACOMIND_RECALL_RERANK', 'off')
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     payload = packet(task)
     proposal = 'The heatshield proposal recommends skipping the fan inspection.'
     payload['artifact'] = document('checklist.md',
@@ -521,7 +521,7 @@ async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task,
     assert 'complete source' in excerpt['assessment_context']['interpretation']
     assert excerpt['state'] == 'derived_unverified' and excerpt['role'] == 'assistant'
     assert {'source_id': receipt['source_id'], 'source_version': receipt['source_version']} in result.source_refs
-    from pacomind.memory.recall import pack_memory_context
+    from protagine.memory.recall import pack_memory_context
     _, smaller = pack_memory_context(result.selected, max_chars=2000)
     assert len(smaller) <= 2000 and rendered_rows(smaller)[0]['assessment_context'] == excerpt['assessment_context']
     opened = read(task.ledger, **scope, source_id=receipt['source_id'], source_version=receipt['source_version'])
@@ -535,7 +535,7 @@ async def test_assessment_excerpt_keeps_bundle_attribution_and_full_source(task,
 
     # Identical words and a copied public marker are still ordinary quoted
     # speech, not evidence that the execution host admitted another review.
-    from pacomind.api.schemas.host import TurnMessage
+    from protagine.api.schemas.host import TurnMessage
     copied = TurnMessage(role='user', content=proposal,
         _task_artifact_assessment='task-artifact-assessment-v1').model_dump()
     task.ledger.record_source('ordinary-copy', contact_id='owner', session_id='other',

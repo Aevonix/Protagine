@@ -12,9 +12,9 @@ from setuptools.command.build_py import build_py
 class AdapterBuildPy(build_py):
     def find_package_modules(self, package, package_dir):
         modules = super().find_package_modules(package, package_dir)
-        if package == "pacomind_hermes.pacomind_hostworker":
+        if package == "protagine_hermes.protagine_hostworker":
             modules.extend(
-                (package, name, f"hostworker/pacomind_hostworker/{name}.py")
+                (package, name, f"hostworker/protagine_hostworker/{name}.py")
                 for name in ("catalog", "contract")
             )
         return modules

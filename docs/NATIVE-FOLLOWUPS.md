@@ -6,13 +6,13 @@ late reply. Reply, cancellation, expiry and source corrections remain in the
 same commitment ledger.
 
 With native reviews installed, the existing Hermes dispatch tick assigns a
-due wait to the `pacomind-reviews` profile. It uses the configured planning
+due wait to the `protagine-reviews` profile. It uses the configured planning
 role and the same two tools as operational reviews:
 
-- `pacomind_read_work_source(0)` reads current wait and parent state.
+- `protagine_read_work_source(0)` reads current wait and parent state.
 - Numbered sources open the listed canonical task evidence, with attribution
   and bounded excerpts. A truncated excerpt does not establish full coverage.
-- `pacomind_review_report` completes or blocks only that native review.
+- `protagine_review_report` completes or blocks only that native review.
 
 The reader verifies the current native task, run and claim. Reporting checks
 the wait again. A reply or cancellation arriving during review supersedes
@@ -27,7 +27,7 @@ is not evidence about a person's character.
 The worker uses its selected root plugin's normal client configuration and
 Hermes secret scope, including the root's `.env` in multiplexed deployments.
 Deployments with a scoped credential loader may set
-`plugins.pacomind.native_reviews.client_factory_file` to an absolute private
+`plugins.protagine.native_reviews.client_factory_file` to an absolute private
 Python file exporting `client(config) -> (connection, owner_contact_id)`.
 The factory receives the selected root plugin configuration; its returned
 owner must match the worker. No credential is copied into the review profile,

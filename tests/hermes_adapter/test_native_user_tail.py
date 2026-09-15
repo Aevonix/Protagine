@@ -8,7 +8,7 @@ def test_mismatched_native_tail_cannot_restore_context(artifacts,tmp_path):
     run_python('-I','-c',r'''
 import sys
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes.request_memory import _restore_current_suffix
+from protagine_hermes.request_memory import _restore_current_suffix
 current={'role':'user','content':'Continue the accepted task.',
  'api_content':'Continue the accepted task.\n\n<memory-context>current native suffix</memory-context>'}
 tail=['Earlier instruction.','Continue the accepted task.']
@@ -26,7 +26,7 @@ def test_exact_unenriched_native_tail_splits_without_adding_context(artifacts,tm
     run_python('-I','-c',r'''
 import sys
 sys.path.insert(0,sys.argv[1])
-from pacomind_hermes.request_memory import _restore_current_suffix, _recombine_current_suffix
+from protagine_hermes.request_memory import _restore_current_suffix, _recombine_current_suffix
 tail=['Earlier instruction.','Continue the accepted task.']
 current={'role':'user','content':tail[-1]}
 for key in ('messages','input'):

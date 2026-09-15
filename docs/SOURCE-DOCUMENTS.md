@@ -38,7 +38,7 @@ message hash, turn ID, contact/session ownership, and turn digest remain the
 ordinary canonical provenance. Exact original bytes remain available through
 the existing scoped `GET /v1/host/memory/sources/assets/{asset_hash}` endpoint.
 
-After scoped recall supplies an exact source revision, `pacomind_memory_read_source`
+After scoped recall supplies an exact source revision, `protagine_memory_read_source`
 accepts `view: "document"`, its `asset_hash`, and a one-based `page`. The native
 tool can fill in `source_version` when this turn already supplied exactly one
 revision for the requested `source_id`. It never substitutes a newer revision.

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pacomind.tom.affect import AffectStore
+from protagine.tom.affect import AffectStore
 
 
 @pytest.fixture
@@ -209,9 +209,9 @@ class TestAffectDetection:
     async def test_condition_worker_does_not_emit_neutral_decline(
         self, store, monkeypatch,
     ):
-        from pacomind.api.routers import host
-        from pacomind.autonomy.condition_worker import _check_affect_decline
-        from pacomind.events import broadcaster
+        from protagine.api.routers import host
+        from protagine.autonomy.condition_worker import _check_affect_decline
+        from protagine.events import broadcaster
 
         store.create_event(contact_id="owner", valence=0.06, source="explicit")
         store.create_event(contact_id="owner", valence=-0.04, source="explicit")

@@ -16,10 +16,10 @@ from .request_tool_visibility import without_tool, without_discovery_tool
 MAX_BYTES = 16384
 # Discovery metadata is already available through the current tool catalog.
 # Retaining it as an observation makes later recall compete with real findings.
-_EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'pacomind_memory_retain_observation'}
-_HINT_MARKER = 'pacomind-observation-candidates-v1'
+_EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory_retain_observation'}
+_HINT_MARKER = 'protagine-observation-candidates-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
-_RETENTION = 'pacomind_memory_retain_observation'
+_RETENTION = 'protagine_memory_retain_observation'
 
 
 def argument_preview(arguments):
@@ -39,7 +39,7 @@ def _available_retention(request):
     functions = [tool.get('function', tool) for tool in schemas if isinstance(tool, dict)]
     named = {fn['name']: fn for fn in functions if isinstance(fn, dict) and isinstance(fn.get('name'), str)}
     for name in named:
-        if name == 'pacomind_memory_retain_observation':
+        if name == 'protagine_memory_retain_observation':
             return name, False
     if not {'tool_search', 'tool_describe', 'tool_call'} <= named.keys():
         return None
@@ -50,7 +50,7 @@ def _available_retention(request):
         names = [line[2:].split(':', 1)[0]] if line.startswith('- ') else line.split(',')
         for name in names:
             name = name.strip()
-            if name == 'pacomind_memory_retain_observation':
+            if name == 'protagine_memory_retain_observation':
                 return name, True
     return None
 
@@ -82,7 +82,7 @@ def _ordinary_native_origin(scope):
 
 def _key(scope):
     if (scope is None or not scope.valid_participant or scope.authority_lane not in {'owner', 'system'}
-            or scope.platform in {'cron', 'subagent', 'background_review', 'pacomind_task'}
+            or scope.platform in {'cron', 'subagent', 'background_review', 'protagine_task'}
             or getattr(scope, 'parent_session_id', '')
             or not isinstance(getattr(scope, 'user_message', None), str)
             or not scope.user_message.strip() or len(scope.user_message) > 32768

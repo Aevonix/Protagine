@@ -4,10 +4,10 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from pacomind.agents.store import AgentStore
-from pacomind.initiatives.store import InitiativeStore
-from pacomind.initiatives.assignment import AssignmentEngine
-from pacomind.initiatives.models import StoredInitiative
+from protagine.agents.store import AgentStore
+from protagine.initiatives.store import InitiativeStore
+from protagine.initiatives.assignment import AssignmentEngine
+from protagine.initiatives.models import StoredInitiative
 
 
 class TestAssignmentEngine:
@@ -50,7 +50,7 @@ class TestAssignmentEngine:
         store.create({
             "agent_id": agent_id,
             "node_id": f"node-{agent_id}",
-            "pacomind_id": "pacomind-1",
+            "protagine_id": "protagine-1",
             "name": f"agent-{agent_id}",
             "connection_mode": "local",
             "capabilities": capabilities,
@@ -307,24 +307,24 @@ class TestInitiativeCapabilities:
 
     def test_follow_up_needs_no_capabilities(self) -> None:
         """Test that follow_up allows any agent."""
-        from pacomind.initiatives.assignment import INITIATIVE_CAPABILITIES
+        from protagine.initiatives.assignment import INITIATIVE_CAPABILITIES
         
         assert INITIATIVE_CAPABILITIES.get("follow_up") == []
 
     def test_relationship_needs_messaging(self) -> None:
         """Test that relationship needs messaging capability."""
-        from pacomind.initiatives.assignment import INITIATIVE_CAPABILITIES
+        from protagine.initiatives.assignment import INITIATIVE_CAPABILITIES
         
         assert "messaging" in INITIATIVE_CAPABILITIES.get("relationship", [])
 
     def test_scheduling_needs_calendar(self) -> None:
         """Test that scheduling needs calendar capability."""
-        from pacomind.initiatives.assignment import INITIATIVE_CAPABILITIES
+        from protagine.initiatives.assignment import INITIATIVE_CAPABILITIES
         
         assert "calendar" in INITIATIVE_CAPABILITIES.get("scheduling", [])
 
     def test_coding_needs_coding(self) -> None:
         """Test that coding needs coding capability."""
-        from pacomind.initiatives.assignment import INITIATIVE_CAPABILITIES
+        from protagine.initiatives.assignment import INITIATIVE_CAPABILITIES
         
         assert "coding" in INITIATIVE_CAPABILITIES.get("coding", [])

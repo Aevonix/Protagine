@@ -19,10 +19,10 @@ socket.socket.connect = no_network
 socket.create_connection = no_network
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.session import SessionStore
-from pacomind_hermes.client import TurnOutbox
-from pacomind_hermes.task_controller import NativeTasks
-from pacomind_hermes.task_handoffs import TaskHandoffError
-from pacomind_hermes.native_task_platform import NativeTaskAdapter
+from protagine_hermes.client import TurnOutbox
+from protagine_hermes.task_controller import NativeTasks
+from protagine_hermes.task_handoffs import TaskHandoffError
+from protagine_hermes.native_task_platform import NativeTaskAdapter
 
 source = {'version':1, 'principal':'fixture', 'source_session_id':'source-session',
     'input_refs':[{'source_id':'source-input','input_message_hash':'a'*64}],
@@ -129,12 +129,12 @@ print(json.dumps({'status_evidence':True, 'duplicate_dispatch_prevented':True}))
 
 
 def test_native_status_evidence_and_report_provenance(artifacts, tmp_path):
-    native = os.environ.get('PACOMIND_TEST_HERMES_PATH', '')
+    native = os.environ.get('PROTAGINE_TEST_HERMES_PATH', '')
     if not native and importlib.util.find_spec('hermes_cli') is None:
         pytest.skip('Install qualified Hermes for native adapter integration')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
     env.update(HERMES_HOME=str(tmp_path/'profile'), HERMES_DISABLE_TELEMETRY='1',
         HERMES_DISABLE_LAZY_INSTALLS='1', PYTHON_DOTENV_DISABLED='1')
     result = run_python('-I', '-c', PROBE, artifacts[3], native,
-        os.environ.get('PACOMIND_TEST_DEPENDENCY_PATH', ''), cwd=tmp_path, env=env)
+        os.environ.get('PROTAGINE_TEST_DEPENDENCY_PATH', ''), cwd=tmp_path, env=env)
     assert '"status_evidence": true' in result.stdout

@@ -1,14 +1,14 @@
 # Model qualification
 
-The opt-in `pacomind models` command records bounded observations through existing consumers. It does not select or publish a deployment, start services, change model roles on a running agent, or create an evaluation database.
+The opt-in `protagine models` command records bounded observations through existing consumers. It does not select or publish a deployment, start services, change model roles on a running agent, or create an evaluation database.
 
 ```sh
-pacomind models inspect interactive --config /private/model-config.json
-pacomind models evaluate interactive --config /private/model-config.json --roles chat,extraction --output /private/results/candidate-01
-pacomind models compare /private/results/incumbent-01 /private/results/candidate-01
+protagine models inspect interactive --config /private/model-config.json
+protagine models evaluate interactive --config /private/model-config.json --roles chat,extraction --output /private/results/candidate-01
+protagine models compare /private/results/incumbent-01 /private/results/candidate-01
 ```
 
-`--config` is an existing PacoMind host model configuration, including its existing `modelPool`, role and network declarations. Credentials are consumed through that private configuration and are not copied into recipes or result records. Inspect reads declarations without querying endpoints. Evaluate makes model requests through an isolated router configured from a private copy; it never edits the supplied configuration. The selected case role is pinned to the requested binding. Supporting roles, such as semantic memory admission review, retain their configured bindings and appear in call observations. This is a recipe and consumer comparison, not an intrinsic score for isolated model weights.
+`--config` is an existing Protagine host model configuration, including its existing `modelPool`, role and network declarations. Credentials are consumed through that private configuration and are not copied into recipes or result records. Inspect reads declarations without querying endpoints. Evaluate makes model requests through an isolated router configured from a private copy; it never edits the supplied configuration. The selected case role is pinned to the requested binding. Supporting roles, such as semantic memory admission review, retain their configured bindings and appear in call observations. This is a recipe and consumer comparison, not an intrinsic score for isolated model weights.
 
 A case can declare `target_tasks` when its real consumer normally chooses a function through a task mapping. Only those named tasks are redirected to the case's qualification role in the isolated router. For example, memory cases bind `source_claim_extraction` to their extraction candidate even when production routes that task through reasoning. The original routing snapshot, frozen case declarations and per-attempt `qualification_routing` record show that isolation explicitly. Source admission review follows its own `source_claim_review` task mapping, defaulting to `judging`; its actual task, role and binding are recorded, including when it shares the extraction role. Unrelated task mappings remain configured as supplied. A role deadline also remains the qualification role's configured deadline; this is not a replay of a different production role's timing policy.
 
@@ -32,7 +32,7 @@ Four additional direct cases cover specific text decisions:
 Select them explicitly; the default remains `chat,extraction`:
 
 ```sh
-pacomind models evaluate interactive --config /private/model-config.json --roles reasoning,planning,judging,coding --output /private/results/structured-01
+protagine models evaluate interactive --config /private/model-config.json --roles reasoning,planning,judging,coding --output /private/results/structured-01
 ```
 
 Each case makes one existing-router completion call with no fallback. Standard direct-role cases now freeze the selected binding's configured output allowance into a derived `configured-output-v1` case and recipe before dispatch, preserving the original messages and oracle. The outer case allowance is at least the configured role deadline plus five seconds; role request/deadline limits and the 16 KiB result bound remain separate. An envelope exceeding the existing 600-second case bound is rejected before dispatch. Original 60-second/1,024-token case versions and their results remain unchanged. Domain and native consumers retain their own budgets.
@@ -50,7 +50,7 @@ Three direct vision cases send packaged PNG pixels through the same completion r
 | `vision.covered-and-unknown` | A visible label, plus unknown covered text, owner and capture time |
 
 ```sh
-pacomind models evaluate visual --config /private/model-config.json --roles vision --output /private/results/vision-01
+protagine models evaluate visual --config /private/model-config.json --roles vision --output /private/results/vision-01
 ```
 
 `visual` is an example existing binding name. Each case requires its `supportsVision` declaration, makes one completion call with no fallback, and permits 768 output tokens within a 60-second case deadline and 16 KiB result bound. A text-only candidate is recorded as unsupported before a request; another image-capable binding cannot earn it a pass. An image capability declaration or HTTP success alone does not pass the visual field checks. Exact image-bearing inputs, case/oracle hashes, returned text, actual selected binding, reported model identity and available usage remain in the existing result records.
@@ -90,8 +90,8 @@ A native qualification consumer must keep the blocking native run off the async 
 The opt-in native suite runs the installed Hermes `AIAgent` conversation loop in one owned subprocess per case. Hermes captures its home at import time, so each process starts with a fresh home and only the selected provider's connection, request and reasoning settings. It imports no deployed memory, skills, channels, auth store or identity files. Provider credentials must be in the supplied config or an explicitly referenced environment variable; the suite does not load a deployed `.env` file.
 
 ```sh
-pacomind models inspect local-primary --suite native --config /private/hermes-config.yaml
-pacomind models evaluate local-primary --suite native --config /private/hermes-config.yaml --roles chat --deadline-seconds 60 --cleanup-seconds 5 --output /private/results/native-chat-01
+protagine models inspect local-primary --suite native --config /private/hermes-config.yaml
+protagine models evaluate local-primary --suite native --config /private/hermes-config.yaml --roles chat --deadline-seconds 60 --cleanup-seconds 5 --output /private/results/native-chat-01
 ```
 
 Here the binding is an enabled named Hermes provider with an explicit endpoint and default model. The default native chat case has tools, persistent memory and background review disabled. It records the selected configuration and worker source hashes, declared transport timeouts, observed stage and owned process/worker cleanup. Returned provider identity remains unknown unless independently observed; a correct answer does not establish the primary model's identity. Native CLI-loop results do not qualify gateway admission, streaming delivery to a channel or automatic recollection.
@@ -99,10 +99,10 @@ Here the binding is an enabled named Hermes provider with an explicit endpoint a
 `--roles reasoning` adds a separate native case that requires reading two files in its temporary workspace. One contains assessment records and a decision rule; the other corrects that rule. The answer must apply the correction, compare the records correctly, preserve unknown verification and avoid claiming actions were performed. An independently specified structured answer and actual native tool results are graded together. A correct answer without both complete reads fails. Mutation-tool requests or changes to the source files also fail. JSON field types are checked recursively, so `false` cannot pass as an integer zero.
 
 ```sh
-pacomind models evaluate local-reasoning --suite native --config /private/hermes-config.yaml --roles reasoning --deadline-seconds 480 --cleanup-seconds 5 --output /private/results/native-reasoning-01
+protagine models evaluate local-reasoning --suite native --config /private/hermes-config.yaml --roles reasoning --deadline-seconds 480 --cleanup-seconds 5 --output /private/results/native-reasoning-01
 ```
 
-The case enables Hermes' file toolset and allows up to six iterations, starting with a 1024-token output limit. Native truncation recovery can increase that limit; the suite still enforces the declared elapsed deadline. It does not enable shell, browser, memory, deployed plugins or channels. Records reach the processor through actual file-tool reads rather than being placed in its initial prompt. This is a small public fixture for comparing a configured recipe's tool use and grounded reasoning. It is not a general reasoning benchmark or a test of PacoMind's production source ledger. Run the chat and reasoning roles separately when they require different elapsed budgets.
+The case enables Hermes' file toolset and allows up to six iterations, starting with a 1024-token output limit. Native truncation recovery can increase that limit; the suite still enforces the declared elapsed deadline. It does not enable shell, browser, memory, deployed plugins or channels. Records reach the processor through actual file-tool reads rather than being placed in its initial prompt. This is a small public fixture for comparing a configured recipe's tool use and grounded reasoning. It is not a general reasoning benchmark or a test of Protagine's production source ledger. Run the chat and reasoning roles separately when they require different elapsed budgets.
 
 `--roles coding` selects `native.coding.source-attribution` through the same
 file-tool consumer. Four small files describe a launcher, a measurement-child
@@ -118,7 +118,7 @@ no model-specific prompt or automatic routing restriction is installed.
 
 Named providers retain the shared `providers.custom` timeout defaults and native per-model precedence. Runtime inspection hashes the actual source and data bytes of the selected Hermes distribution's declared modules, including editable installations; a provider-resolution change therefore changes the recipe used for resume. This requires an inspectable Hermes distribution inventory and excludes bytecode caches and third-party dependency identity. A confirmed process-creation failure removes its unused temporary state. Unconfirmed cleanup after a process starts still retains that state and prevents further attempts in the run.
 
-The suite uses `hermes_python` from the `instance.json` selected by the supplied config's PacoMind plugin. Use `--hermes-python /path/to/hermes/.venv/bin/python` when evaluating another installed runtime or a config without that instance binding. Runtime source identity is inspected with that interpreter, and a missing runtime becomes a recorded setup error. PacoMind and Hermes can keep separate Python environments; the owned worker needs only the selected Hermes installation.
+The suite uses `hermes_python` from the `instance.json` selected by the supplied config's Protagine plugin. Use `--hermes-python /path/to/hermes/.venv/bin/python` when evaluating another installed runtime or a config without that instance binding. Runtime source identity is inspected with that interpreter, and a missing runtime becomes a recorded setup error. Protagine and Hermes can keep separate Python environments; the owned worker needs only the selected Hermes installation.
 
 The elapsed case deadline includes native startup and the conversation. Its cancellation sends a signal only to the owned process; that process calls its agent's `hard_interrupt()` and closes the agent after its run thread stops. The separately declared cleanup allowance is not extra answer time. If cooperative cleanup is unconfirmed, the suite terminates its remaining owned process, retains the isolated state and stops before later cases. Resume preserves that first result and does not bypass the incomplete cleanup; inspect the retained evidence and use a new run after resolving it. Existing ordinary async cases keep their cancellation behavior.
 

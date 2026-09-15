@@ -1,10 +1,10 @@
 # Native background tasks from ordinary conversations
 
-The optional `pacomind_task` tool lets an authenticated owner start a task and
+The optional `protagine_task` tool lets an authenticated owner start a task and
 continue the foreground conversation. Another channel currently mapped to that
 same owner can inspect, steer or stop the retained task ID. The gateway runs
 the work through its normal adapter, agent loop, session store, interruption
-and recovery path. PacoMind supplies source provenance and durable associations.
+and recovery path. Protagine supplies source provenance and durable associations.
 
 This feature does not create another executor or network endpoint. Hardware
 adapters can subclass the public native adapter and supply their existing
@@ -13,20 +13,20 @@ results for inspection; it does not send unsolicited completion messages.
 
 ## Enable
 
-Configure the ordinary PacoMind plugin, owner identity, source ledger and memory
+Configure the ordinary Protagine plugin, owner identity, source ledger and memory
 provider first. Then enable both the tool and its native execution platform:
 
 ```yaml
 plugins:
-  enabled: [pacomind]
-  pacomind:
+  enabled: [protagine]
+  protagine:
     native_tasks:
       enabled: true
       # Optional; defaults beside the configured turn outbox.
       # state_path: /private/agent-state/native-tasks.sqlite3
 
 platforms:
-  pacomind_task:
+  protagine_task:
     enabled: true
 ```
 
@@ -44,7 +44,7 @@ transport must authenticate its own callback before dispatching a retained ID.
 Standalone transport subclasses keep the base adapter's ordinary authorization
 policy; the configured controller applies trusted upstream delegation only
 after the shared source and owner checks.
-It does not create a `pacomind_task` contact handle. Its public transport scope
+It does not create a `protagine_task` contact handle. Its public transport scope
 comes from the retained original channel and current owner binding, and keeps
 that original handle for ordinary per-tool authority checks. Explicitly
 attested local platforms keep their existing local owner policy.
@@ -96,7 +96,7 @@ Shared work context exposes the active task handle and a source reference for
 its original request, including tasks without a learning classification. A long
 model or tool call can make liveness unknown; the open task remains inspectable
 before older results. The latest finished task remains inspectable for seven
-days while its original input remains readable. Use `status` for retained results and `pacomind_memory_read_source` for
+days while its original input remains readable. Use `status` for retained results and `protagine_memory_read_source` for
 original inputs or correction references returned by status. A correction can
 be accepted while still waiting to reach the working model. Request visibility
 records that delivery stage; the result still needs inspection to establish
@@ -109,7 +109,7 @@ task roles using its existing native providers:
 
 ```yaml
 platforms:
-  pacomind_task:
+  protagine_task:
     enabled: true
     extra:
       task_model_role: {role: reasoning, provider: local-reasoning, model: reasoner}
@@ -124,10 +124,10 @@ Submitting `model_role: coding` selects that declared role; omitting it keeps
 the task default. The caller cannot supply a provider URL, credential or arbitrary
 model. Select a role for its measured suitability to the task, not its size.
 
-Private transport adapters can use `pacomind_hermes.task_model_roles` to read
+Private transport adapters can use `protagine_hermes.task_model_roles` to read
 `configured_task_model_roles(platform_name)` and resolve
 `select_task_model_role(role, platform_name)` through the same implementation.
-The platform defaults to `pacomind_task`. These functions perform no admission,
+The platform defaults to `protagine_task`. These functions perform no admission,
 authorization or model call. The authenticated transport must retain the returned
 snapshot through `TaskHandoffs.admit(model_role=...)` with a stable source/request
 identity. A retry must not change that identity to evade a conflicting binding.
@@ -191,7 +191,7 @@ An existing transport can configure exactly one controller factory:
 
 ```yaml
 plugins:
-  pacomind:
+  protagine:
     native_tasks:
       enabled: true
       factory: private_agent.task_sources:build

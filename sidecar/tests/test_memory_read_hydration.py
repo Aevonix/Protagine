@@ -2,7 +2,7 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from pacomind.api.routers import host
+from protagine.api.routers import host
 from test_canonical_memory_search import memory_app
 from test_turn_source_evidence import source_app
 
@@ -32,7 +32,7 @@ async def test_memory_read_opens_canonical_source_without_graph(memory_app, monk
 
 @pytest.mark.asyncio
 async def test_memory_read_backend_failure_is_not_empty_success(memory_app, monkeypatch):
-    from pacomind import turns
+    from protagine import turns
     app, ledger = memory_app
     ref = ledger.source_references(['report'], contact_id='person', session_id='later')[0]
     def unavailable(*args): raise OSError('fixture unavailable')

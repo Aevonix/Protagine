@@ -9,8 +9,8 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from pacomind.sessions.reports import SessionReport, SessionReportStore
-from pacomind.api.schemas.host import (
+from protagine.sessions.reports import SessionReport, SessionReportStore
+from protagine.api.schemas.host import (
     SessionReportRequest,
     ContextDigestResponse,
     AgentSnapshotSystemState,
@@ -113,19 +113,19 @@ class TestSessionReportEndpoint:
 
     @pytest.fixture
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        from pacomind.api.routers.host import (
+        from protagine.api.routers.host import (
             set_telemetry,
             set_autonomy_loop,
             set_session_report_store,
             set_initiative_store,
         )
-        from pacomind.server import create_app
-        from pacomind.telemetry import TelemetryStore
-        from pacomind.initiatives.store import InitiativeStore
+        from protagine.server import create_app
+        from protagine.telemetry import TelemetryStore
+        from protagine.initiatives.store import InitiativeStore
 
-        from pacomind.api.routers import host as host_mod
+        from protagine.api.routers import host as host_mod
 
-        monkeypatch.setenv("PACOMIND_API_KEY", "test-api-key")
+        monkeypatch.setenv("PROTAGINE_API_KEY", "test-api-key")
 
         # Save module globals — leaking a Mock autonomy loop poisons
         # other test modules (e.g. test_sidecar's not-wired tests).
@@ -196,7 +196,7 @@ class TestSessionReportEndpoint:
 
     def test_store_store_not_ready(self, client: TestClient, monkeypatch):
         """Return 501 if the store global is None."""
-        import pacomind.api.routers.host as host_router
+        import protagine.api.routers.host as host_router
 
         monkeypatch.setattr(host_router, "_session_report_store", None)
         resp = client.post(
@@ -216,19 +216,19 @@ class TestContextDigestEndpoint:
 
     @pytest.fixture
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        from pacomind.api.routers.host import (
+        from protagine.api.routers.host import (
             set_telemetry,
             set_autonomy_loop,
             set_session_report_store,
             set_initiative_store,
         )
-        from pacomind.server import create_app
-        from pacomind.telemetry import TelemetryStore
-        from pacomind.initiatives.store import InitiativeStore
+        from protagine.server import create_app
+        from protagine.telemetry import TelemetryStore
+        from protagine.initiatives.store import InitiativeStore
 
-        from pacomind.api.routers import host as host_mod
+        from protagine.api.routers import host as host_mod
 
-        monkeypatch.setenv("PACOMIND_API_KEY", "test-api-key")
+        monkeypatch.setenv("PROTAGINE_API_KEY", "test-api-key")
 
         # Save module globals — leaking a Mock autonomy loop poisons
         # other test modules (e.g. test_sidecar's not-wired tests).
