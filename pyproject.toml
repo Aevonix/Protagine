@@ -17,7 +17,7 @@ test = ["build>=1.2", "pytest>=8", "setuptools>=77", "wheel"]
 native-memory = ["nemo-relay>=0.8.3,<0.9"]
 
 [project.urls]
-Homepage = "https://protagine.ai"
+Homepage = "https://aevonix.com/protagine"
 Repository = "https://github.com/Aevonix/Protagine"
 
 [project.entry-points."hermes_agent.plugins"]

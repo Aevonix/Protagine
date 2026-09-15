@@ -57,7 +57,7 @@ protagine-skills-sync = "protagine.workers.skills_sync:main"
 protagine-worker = "protagine.workers.protagine_worker:main"
 
 [project.urls]
-Homepage = "https://protagine.ai"
+Homepage = "https://aevonix.com/protagine"
 Repository = "https://github.com/Aevonix/Protagine"
 
 [tool.setuptools.packages.find]
