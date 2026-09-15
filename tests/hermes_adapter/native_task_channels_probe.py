@@ -1,13 +1,16 @@
 """Disposable real gateway, canonical ASGI routes and controlled SDK HTTP only."""
 import asyncio
+from contextvars import ContextVar
 import itertools
 import json
+import logging
 import os
 from pathlib import Path
 import socket
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 installed, sidecar, native, dependencies = sys.argv[1:]
@@ -82,6 +85,7 @@ api.__enter__()
 ledger = get_turn_idempotency_ledger(state)
 wire, generation, foreground_calls, tool_results = [], {'alpha': [], 'beta': [], 'failure': []}, {}, {}
 context_reads = []
+freshness_warnings = []
 held = {name: threading.Event() for name in (
     'alpha', 'beta', 'alpha_next', 'failure_next', 'failure_terminal')}
 release = {name: threading.Event() for name in held}
@@ -202,7 +206,8 @@ def respond(request):
             'task': name, 'step': step, 'native': active.get('native'),
             'closed': supplied._closed, 'blocked': supplied._blocked,
             'failure': supplied.failure, 'bound': list(supplied._bound),
-            'memory_sessions': list(supplied._memory_sessions), 'messages': body['messages']}
+            'memory_sessions': list(supplied._memory_sessions), 'messages': body['messages'],
+            'freshness_warnings': freshness_warnings[-4:]}
         if step == 1:
             assert any(read['status'] == 200 and read['context'] == {
                 'session_id': row['native_session_id'], 'contact_id': owner}
@@ -369,7 +374,35 @@ def no_network(*args, **kwargs):
 socket.socket.connect = no_network
 socket.create_connection = no_network
 from hermes_cli.plugins import get_plugin_manager
+from pacomind_hermes import client as boundary_client, request_memory as boundary_memory
 from pacomind_hermes.task_handoffs import TaskHandoffs
+
+# This fixture qualifies concurrent channels and source ownership, not the
+# latency of an in-process TestClient under CI load. Keep the real erasure
+# routes and SQLite checks, but hold their shared deadline clock during this
+# boundary only. Native task clocks and client calls outside it stay real;
+# dedicated deadline tests exercise the unchanged production 250 ms limit.
+freshness_clock = ContextVar('fixture_freshness_clock', default=None)
+def boundary_monotonic():
+    now = freshness_clock.get()
+    return time.monotonic() if now is None else now
+boundary_client.time = boundary_memory.time = SimpleNamespace(
+    monotonic=boundary_monotonic, time=time.time, sleep=time.sleep)
+original_request_memory = boundary_memory.RequestMemory.__call__
+def controlled_request_memory(self, *args, **kwargs):
+    token = freshness_clock.set(time.monotonic())
+    try:
+        return original_request_memory(self, *args, **kwargs)
+    finally:
+        freshness_clock.reset(token)
+boundary_memory.RequestMemory.__call__ = controlled_request_memory
+
+class FreshnessWarnings(logging.Handler):
+    def emit(self, record):
+        if record.msg == 'request memory freshness unavailable (%s)':
+            freshness_warnings.append(record.getMessage())
+boundary_memory.logger.addHandler(FreshnessWarnings())
+
 original_observe_terminal = TaskHandoffs.observe_terminal
 
 
@@ -609,9 +642,14 @@ async def exercise():
         assert beta['response']['text'] == beta_reply, beta['response']
         assert beta['response']['source_dependencies']['input_refs'] == source_parents['beta']
         retained = beta['response']['source_dependencies']
-        with ledger._connect() as db:
-            canonical = db.execute('SELECT contact_id, messages_json FROM turn_sources WHERE turn_id = ?',
-                (retained['turn_id'],)).fetchone()
+        def captured_beta():
+            with ledger._connect() as db:
+                return db.execute('SELECT contact_id, messages_json FROM turn_sources WHERE turn_id = ?',
+                    (retained['turn_id'],)).fetchone()
+        # The reply retains its durable outbox dependency. Another concurrent
+        # turn's drain can still own delivery of that row to canonical storage.
+        await wait_for(lambda: captured_beta() is not None, 'beta canonical source capture')
+        canonical = captured_beta()
         assert canonical is not None and canonical['contact_id'] == owner, canonical
         assert beta['response']['text'] in canonical['messages_json'], canonical['messages_json']
         people = await contacts.list()
