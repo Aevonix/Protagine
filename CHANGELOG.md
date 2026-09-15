@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.8.6 - diagnose retained model responses
+
+Hermes response observations now retain stop reasons, text/tool/reasoning counts
+and timing when available. `protagine models diagnose` reads an exact execution
+through the existing scoped API and shows each requested and reported model.
+Missing measurements remain unknown. No additional prompt or response text is
+stored, and observations keep their existing seven-day operational retention.
+
+This helps inspect empty responses, malformed tool names and route changes from
+ordinary use. It does not distinguish provider generation from parser loss or
+establish answer quality. No model request, routing change or new service is
+required. Both the sidecar and Hermes adapter are 1.8.6; hostworker remains 0.3.0.
+
 ## v1.8.5-hermes - retain terminal outcomes for ordinary review
 
 The Hermes adapter now retains completed terminal commands with a nonzero exit

@@ -30,6 +30,17 @@ class ExecutionRuntimeObservation(BaseModel):
     retry_count: int | None = Field(default=None, ge=0, le=2147483647)
     started_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     ended_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    # Native-normalized response diagnostics; absent observations stay unknown.
+    finish_reason: str | None = Field(default=None, strict=True, min_length=1, max_length=64,
+                                     pattern=r'^[^\x00-\x1f\x7f-\x9f]+$')
+    assistant_content_chars: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    assistant_tool_call_count: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    assistant_reasoning_chars: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    assistant_reasoning_content_chars: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    assistant_reasoning_details_count: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    assistant_invalid_tool_name_count: int | None = Field(default=None, strict=True, ge=0, le=2147483647)
+    api_duration: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
+    first_chunk_at: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
 
 class ExecutionInputReference(BaseModel):
@@ -142,6 +153,21 @@ def assessments(body: AssessmentRead, request: Request):
     from protagine.self_model.task_assessments import read_assessments
     return read_assessments(registry(), contact_id=person, offset=body.offset, limit=body.limit,
         source_refs=[ref.model_dump() for ref in body.source_refs])
+
+
+@router.get('/model-calls')
+def model_calls(request: Request, contact_id: str,
+                execution_id: str = Query(pattern=r'^[a-f0-9]{64}$'),
+                offset: int = Query(0, ge=0, le=128), limit: int = Query(20, ge=1, le=128)):
+    person, owner = authorized_viewer(request, contact_id, scope='context:read')
+    if not owner:
+        raise HTTPException(403, detail={'code': 'owner_model_diagnostics_required'})
+    from protagine.turns.model_calls import read_model_calls
+    result = read_model_calls(registry(), contact_id=person, execution_id=execution_id,
+                             offset=offset, limit=limit)
+    if result is None:
+        raise HTTPException(404, detail={'code': 'execution_diagnostics_unavailable'})
+    return result
 
 
 @router.get("")

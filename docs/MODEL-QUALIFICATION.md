@@ -126,6 +126,35 @@ Declare separate foreground and durable-work cases before testing, including rep
 
 Comparisons retain failures in denominators and separate roles and boundaries. Identical cases retain their existing comparison path. For `configured-output-v1`, identical tasks and oracles can also be compared with different declared allowances or time envelopes: reports label these `same_task_different_budget_recipes` and show both budgets. Only those two materialized fields may differ; changed questions, case versions, oracles, evaluator identities, evidence modes, runtime versions or consumer/runner implementations reject this comparison. Evaluator module/name/source identity is explicit; a changed rubric cannot masquerade as model improvement. Other implementation changes remain flagged as system changes. Durations are grouped by outcome so immediate setup failures cannot reduce a completion median. Latency differences are shown only for comparable successful outcomes; raw failure durations remain visible. Small samples have descriptive medians and counts, without tail-latency or confidence claims. Changed budgets, hardware or serving settings make this a recipe comparison, not proof of a gain attributable to weights alone.
 
+## Diagnosing ordinary model calls
+
+Use a retained execution ID to inspect an ordinary turn without running another
+model request:
+
+```sh
+protagine models diagnose EXECUTION_ID --contact-id OWNER_ID --credential-file /private/scoped-client.json
+```
+
+The credential file is an existing private client credential with `principal`
+and `secret`, authorized for the configured owner and `context:read`. The command
+uses the normal Protagine URL setting, or an explicit `--url`. It reads
+`GET /v1/host/executions/model-calls`; it cannot change routing or run work.
+Use `--json` for all retained measurements, and `--offset`/`--limit` for paging.
+
+The report preserves each request's configured model and provider, the reported
+response model, stop reason, visible text and tool-call counts, reasoning lengths
+and timing when supplied by Hermes. Missing measurements stay unknown. The
+existing operational ledger retains these observations for seven days; it does
+not store additional prompt, response or reasoning text. Older observations
+cannot acquire measurements they never captured.
+
+These are normalized callback measurements. An empty visible response, malformed
+tool name or length stop can explain why a turn needs attention, but cannot alone
+identify whether the provider or parser caused it. Reasoning fields can overlap;
+their lengths are separate measurements. A fallback answer still needs its own
+task-quality assessment. This report neither qualifies a role nor promotes a
+model automatically.
+
 ## Extending cases
 
 `qualification.records.CaseSpec` is the versioned case record. A consumer is an async function `(inputs, context)` returning `{'output': ..., 'effects': ...}`. It receives an isolated `context.state_dir`, the existing router through `context.router`, and `context.observe(dict)` for additional labelled evidence. It never receives the oracle. An evaluator receives the returned observations and its frozen oracle and returns named `True`, `False` or `None` checks. Unknown checks do not pass. Register these in the existing small case registries; no new service or transport is needed.
