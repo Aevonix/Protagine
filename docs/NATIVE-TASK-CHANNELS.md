@@ -68,6 +68,12 @@ the task has started or completed. Hermes returns that acknowledgement through
 the conversation's normal delivery path without another model call. The
 background task keeps running, and later messages can inspect or steer its ID.
 
+When handoff is supported, the current-request work context clarifies that
+acceptance completes the foreground request while execution and verification
+remain with the worker. The clarification also reaches cached conversations
+through the existing request middleware. It does not change ordinary `submit`
+behavior or establish that a model will choose the correct operation.
+
 Automatic turn completion requires a single successful handoff call whose
 result has been persisted. Mixed tool batches, tool failures, interruptions and
 pending steering keep their ordinary control behavior. An accepted task remains
