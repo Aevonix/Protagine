@@ -4,8 +4,6 @@
   <img alt="Protagine — Proto AGI Engine" src="docs/branding/protagine-primary-light.svg" width="440">
 </picture>
 
-**Proto AGI Engine**
-
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml)
 
