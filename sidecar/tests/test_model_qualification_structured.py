@@ -109,16 +109,23 @@ def test_registry_adds_only_bounded_direct_role_cases():
 
 
 def test_all_new_roles_use_real_cli_router_and_keep_oracles_private(tmp_path, capsys):
+    cap, output = 3072, tmp_path/'run'
+
     def answer(payload):
         # The controlled provider receives exactly the frozen prompt, never
         # any oracle structure or an evaluator-generated expected response.
         case = next(case for case in CASES if case.inputs['messages'] == payload['messages'])
-        assert payload.get('max_tokens', payload.get('max_completion_tokens')) == 1024
+        frozen = next(row for row in read(output/'run.json')['cases'] if row['id'] == case.id)
+        assert frozen['inputs']['messages'] == payload['messages']
+        assert frozen['inputs']['max_output_tokens'] == cap
+        assert frozen['version'] == '1-configured-output-v1'
+        assert payload.get('max_tokens', payload.get('max_completion_tokens')) == cap
         assert 'oracle' not in payload and 'fields' not in payload
         return json.dumps(ANSWERS[case.role])
 
     with endpoint(content=answer) as (url, calls):
         cfg = config(url, url, timeoutSeconds=10, deadlineSeconds=20)
+        cfg['modelPool']['interactive']['maxTokens'] = cap
         cfg['functionRoles']['judging'] = ['deliberate']
         cfg['functionRoles']['coding'] = ['deliberate']
         cfg['taskRoles'] = {'source_claim_extraction': 'reasoning'}
@@ -126,7 +133,7 @@ def test_all_new_roles_use_real_cli_router_and_keep_oracles_private(tmp_path, ca
         path.write_text(json.dumps(cfg))
         original = path.read_bytes()
         args = SimpleNamespace(models_command='evaluate', binding='interactive', config=path,
-            roles='reasoning,planning,judging,coding', suite='standard', output=tmp_path/'run',
+            roles='reasoning,planning,judging,coding', suite='standard', output=output,
             resume=False, evidence_mode='controlled')
         assert run(args) == 0
         assert len(calls) == 4 and path.read_bytes() == original
@@ -141,5 +148,6 @@ def test_all_new_roles_use_real_cli_router_and_keep_oracles_private(tmp_path, ca
             assert observed['selected_binding'] == 'interactive'
             assert observed['configured_model'] == 'openai/fast-neutral'
             assert observed['returned_model'] == 'fast-neutral'
+            assert observed['requested_max_output_tokens'] == observed['client_max_tokens'] == cap
             assert result['qualification_routing']['target_task_role_overrides'] == {}
         assert 'role_completion' in capsys.readouterr().out

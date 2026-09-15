@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.7.2 - quoted preferences and model qualification budgets
+
+Memory formation can retain a standing preference as its exact source quotation.
+A generated paraphrase that is not a literal source span is discarded in favor
+of that quotation and passed through the existing semantic admission review.
+Conditions and exceptions remain attached. Quoted statements retain their source
+history; differing wording alone does not establish a contradiction.
+
+Direct model qualification uses the selected binding's configured output
+allowance, frozen in a versioned recipe before execution. It records the client
+allowance, completion status and available token usage. Truncated replies retain
+bounded partial evidence and remain incomplete results. Domain consumers keep
+their own output limits, and qualification does not change deployed model roles.
+
+These changes repair memory representation and measurement. They do not establish
+that a particular model is qualified or that a deployment has completed Phase 1.
+
 ## v1.7.1 - recollection and proposal repairs
 
 Automatic recollection uses the general plugin's resolved identity for the

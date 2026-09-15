@@ -159,7 +159,7 @@ def test_case_oracles_are_versioned_and_separate_from_consumer_inputs():
         assert record['boundary'] == 'cognition_consumer' and record['role'] == 'extraction'
         assert record['inputs_sha256'] != record['oracle_sha256']
         assert record['provenance'] == 'public' and case.timeout_seconds <= 240
-        assert record['version'] == '4'
+        assert record['version'] == ('5' if case.id == 'memory.formation-quality' else '4')
         assert 'oracle' not in case.inputs and 'claims' not in case.inputs
 
 
@@ -181,6 +181,39 @@ async def test_authored_equivalent_representations_pass_actual_consumers(tmp_pat
         corrected = next(row for row in observed['output']['claims'] if row['operation'] == 'correct')
         assert (corrected['subject'], corrected['subject_key'], corrected['predicate'], corrected['value']) == (
             'The spare sensor', 'the spare sensor', 'storage location', 'the amber cabinet')
+
+
+@pytest.mark.asyncio
+async def test_v5_accepts_only_declared_complete_quoted_preference_with_review(tmp_path):
+    case = CASES[0]
+
+    class QuoteProcessor(Processor):
+        async def complete(self, messages, **kwargs):
+            response = await super().complete(messages, **kwargs)
+            if response.function_role == 'extraction':
+                proposals = json.loads(response.content)
+                for proposal in proposals:
+                    proposal.pop('value')
+                    proposal['representation'] = 'preference'
+                response.content = json.dumps(proposals)
+            return response
+
+    observed = await source_memory(deepcopy(case.inputs), RunContext(QuoteProcessor(), tmp_path, []))
+    assert all(memory_outcomes(observed, case.oracle).values())
+    retained, = observed['output']['claims']
+    assert retained['value'] == retained['evidence'] == case.inputs['turns'][0]['text']
+    assert retained['admission_review']['basis'] == 'model_judgment_unverified'
+    # Version 4's scalar-only alternatives remain a different oracle; their
+    # historical failures must not be retroactively changed by version 5.
+    prior_oracle = deepcopy(case.oracle)
+    prior_oracle['claims'][0]['representations'] = [form for form in
+        prior_oracle['claims'][0]['representations'] if 'representation' not in form]
+    assert memory_outcomes(observed, prior_oracle)['useful_conditional_preference_formed'] is False
+    for change in ({'representation': 'episode'}, {'representation': 'assertion'},
+                   {'value': 'I prefer decaffeinated tea.'}, {'value': ''}):
+        changed = deepcopy(observed)
+        changed['output']['claims'][0].update(change)
+        assert memory_outcomes(changed, case.oracle)['useful_conditional_preference_formed'] is False
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 class _IncompleteFunctionResponse(ValueError):
     """A completed inference did not produce the requested usable output."""
 
+    def __init__(self, reason, response):
+        super().__init__(reason)
+        self.response = response  # Internal evidence; never part of the error text.
+
 
 @dataclass
 class LLMResponse:
@@ -71,6 +75,8 @@ class LLMResponse:
     model_revision: str = "unknown"
     binding: str = ""
     prior_attempts: list[dict[str, str]] = field(default_factory=list)
+    # Resolved client arguments before SDK serialization; server cap unknown.
+    client_max_tokens: int | None = None
 
 
 class LLMRouter:
@@ -400,6 +406,7 @@ class LLMRouter:
         role = snapshot.roles[role_name]
         deadline = time.monotonic() + role.deadline_seconds
         failures = []
+        incomplete = None
         prior_attempts = []
         seen = set()
         for binding in available:
@@ -444,6 +451,8 @@ class LLMRouter:
                     'weight_revision': binding.weight_revision, 'latency_ms': response.latency_ms})
                 return response
             except Exception as exc:
+                if isinstance(exc, _IncompleteFunctionResponse):
+                    incomplete = exc
                 reason = ('RequestBudgetExceeded' if attempt_timeout.expired() else
                           str(exc) if isinstance(exc, _IncompleteFunctionResponse) else type(exc).__name__)
                 failures.append(reason)
@@ -461,7 +470,7 @@ class LLMRouter:
             finally:
                 self._endpoints.release(snapshot, binding, request_id)
         raise RuntimeError('No eligible local model completed function ' + role_name +
-                           '; attempts=' + ','.join(failures))
+                           '; attempts=' + ','.join(failures)) from incomplete
 
     def record_outcome(
         self,
@@ -634,6 +643,13 @@ class LLMRouter:
 
         cost_usd = _estimate_cost(config, usage)
 
+        limit_keys = ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
+        client_limits = {key: kwargs[key] for key in limit_keys if key in kwargs}
+        client_limits.update({key: val for key, val in kwargs.get('extra_body', {}).items() if key in limit_keys})
+        limits = list(client_limits.values())
+        client_limit = limits[0] if limits and all(type(val) is int and val > 0 and val == limits[0]
+                                                   for val in limits) else None
+
         return LLMResponse(
             request_id=request_id,
             tier_used=config.tier,
@@ -643,6 +659,7 @@ class LLMRouter:
             latency_ms=latency_ms,
             cost_usd=cost_usd,
             raw=raw,
+            client_max_tokens=client_limit,
         )
 
     def _emit_cost_event(self, response: LLMResponse) -> None:
@@ -732,7 +749,7 @@ def _require_function_output(response, tools):
     try:
         response.content = final_text(response)
     except ValueError as exc:
-        raise _IncompleteFunctionResponse(str(exc)) from exc
+        raise _IncompleteFunctionResponse(str(exc), response) from exc
 
 
 def _retryable(exc):

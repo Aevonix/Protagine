@@ -89,6 +89,7 @@ def _fact_matches(row, wanted):
         and row.get('memory_quality', {}).get('memory_kind') == wanted['memory_kind']
         and any(all(_same_text(row.get(key), form[key])
                     for key in ('subject', 'subject_key', 'predicate', 'value'))
+                and ('representation' not in form or row.get('representation') == form['representation'])
                 for form in wanted['representations']))
 
 
@@ -173,7 +174,7 @@ _NEW_LOCATION = {'source_id': 'turn-b', 'memory_kind': 'personal_context',
 
 
 CASES = [
-    CaseSpec(id='memory.formation-quality', version='4', role='extraction', boundary='cognition_consumer',
+    CaseSpec(id='memory.formation-quality', version='5', role='extraction', boundary='cognition_consumer',
         target_tasks=('source_claim_extraction',),
         consumer='source_memory', evaluator='memory_outcomes', timeout_seconds=240,
         inputs={'contact_id': 'person', 'recall_session': 'later-conversation',
@@ -189,7 +190,10 @@ CASES = [
             'claims': [{'name': 'useful_conditional_preference_formed', 'source_id': 'turn-a',
                 'memory_kind': 'preference', 'representations': [
                     {'subject': 'I', 'subject_key': 'speaker', 'predicate': 'tea preference', 'value': value}
-                    for value in ('decaffeinated', 'decaffeinated tea')],
+                    for value in ('decaffeinated', 'decaffeinated tea')] + [
+                    {'subject': 'I', 'subject_key': 'speaker', 'predicate': 'tea preference',
+                     'representation': 'preference',
+                     'value': 'I prefer decaffeinated tea after 18:00 because caffeine keeps me awake.'}],
                 'evidence_contains': ['after 18:00', 'caffeine keeps me awake']}],
             'recall_contains': ['decaffeinated tea', 'after 18:00']}),
     CaseSpec(id='memory.corrected-recollection', version='4', role='extraction', boundary='cognition_consumer',

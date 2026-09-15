@@ -325,7 +325,13 @@ class SourceClaimProjection:
                 + _subject_basis_source_sql("json_extract(c.data_json,'$.subject_basis_claim_id')", 's.contact_id') + '))')
             from .value_revision import dependency_sql
             where.append(dependency_sql('c.data_json', 's.contact_id'))
-            columns += ",row_number() OVER (PARTITION BY c.value_key ORDER BY s.ingested_at DESC,c.id) AS value_rank"
+            # Quoted preferences are source statements, not comparable scalar
+            # values. Even repeated words can have distinct source scope or
+            # conditions; retain their witnesses and explicit lifecycle.
+            columns += ",row_number() OVER (PARTITION BY " \
+                "coalesce(json_extract(c.data_json,'$.representation'),'')='preference'," \
+                "CASE WHEN json_extract(c.data_json,'$.representation')='preference' " \
+                "THEN c.id ELSE c.value_key END ORDER BY s.ingested_at DESC,c.id) AS value_rank"
         query = ("SELECT " + columns + " FROM source_claims c JOIN turn_sources s ON s.turn_id=c.turn_id WHERE "
                  + " AND ".join(where))
         if distinct_values:
@@ -438,6 +444,8 @@ class SourceClaimProjection:
                         evidence_basis={**basis, 'source_message_hash': message_hash,
                             'source_version_at_formation': canonical_turn_digest(current_messages)})
                 basis = [source["turn_id"], message_hash, claim["subject_key"], claim["predicate"], claim["value"], claim["evidence"]]
+                if claim.get('representation') == 'preference':
+                    basis.append('preference')
                 if claim.get('subject_basis_claim_id'):
                     basis.append(claim['subject_basis_claim_id'])
                 if claim.get('value_parts'):
@@ -484,7 +492,11 @@ class SourceClaimProjection:
                     VALUES (?,?,?,?,?,?,?,?,?)''', (cid, source["turn_id"], message_hash,
                     claim["subject_key"], claim["predicate"], norm_value(claim["value"]), json.dumps(claim, ensure_ascii=False),
                     claim["valid_from"], claim["valid_to"]))
-                if old and norm_value(old["value"]) != norm_value(claim["value"]):
+                # A reviewed operation selects the quoted statement to retire;
+                # normalized wording is not a test of preference equivalence.
+                if old and (old.get('representation') == 'preference'
+                            or claim.get('representation') == 'preference'
+                            or norm_value(old["value"]) != norm_value(claim["value"])):
                     if claim["operation"] == "correct":
                         conn.execute('UPDATE source_claims SET retracted_by=? WHERE id=?', (cid, old["id"]))
                     elif claim["operation"] == "change" and claim["valid_from"]:
@@ -910,13 +922,17 @@ class SourceClaimProjection:
                 continue
             overflow = len(group) > 8
             group.sort(key=lambda c: (c["valid_from"] or "", c["recorded_at"], c["id"]))
-            # Exact value equality only; substring containment is not agreement.
-            values = {norm_value(c["value"]) for c in group}
+            # Literal scalar values retain their existing comparison. Quoted
+            # preferences cannot establish agreement or contradiction through
+            # wording equality/difference, including beside compact values.
+            scalars = [c for c in group if c.get('representation') != 'preference']
+            quoted_preferences = len(scalars) != len(group)
+            values = {norm_value(c["value"]) for c in scalars}
             def overlaps(a, b):
                 return (not a["valid_to"] or not b["valid_from"] or b["valid_from"] < a["valid_to"]) and (
                     not b["valid_to"] or not a["valid_from"] or a["valid_from"] < b["valid_to"])
             conflict = any(norm_value(a["value"]) != norm_value(b["value"]) and overlaps(a, b)
-                           for i, a in enumerate(group) for b in group[i + 1:])
+                           for i, a in enumerate(scalars) for b in scalars[i + 1:])
             members = [{"claim_id": c["id"], "source": "turn:" + c["turn_id"],
                         "source_message_hash": c["message_hash"], "role": c["role"],
                         "value": c["value"], "quote": c["evidence"], "observed_at": c["observed_at"],
@@ -927,7 +943,8 @@ class SourceClaimProjection:
                         "operation": c["operation"], "prior_claim_id": c.get("prior_claim_id"),
                         **{k: c[k] for k in ('representation', 'evidence_basis', 'epistemic_state', 'source_modality', 'subject_basis', 'value_basis') if k in c}}
                        for c in group]
-            status = "unresolved_conflict" if conflict else ("temporal_history" if len(values) > 1 else "source_assertion")
+            status = ("unresolved_conflict" if conflict else "quoted_preference_statements" if quoted_preferences
+                      else "temporal_history" if len(values) > 1 else "source_assertion")
             source_refs = [(c['turn_id'], c['message_hash']) for c in group]
             source_refs.extend((c['subject_basis']['turn_id'], c['subject_basis']['message_hash'])
                                for c in group if c.get('subject_basis'))
@@ -951,12 +968,17 @@ class SourceClaimProjection:
                             "ranking_text": "\n".join(dict.fromkeys(c["evidence"] for c in group)),
                             **({"validity_status": "query_time_unresolved"}
                                if time_query.mode == "unresolved_time" or key in unresolved_time_keys else {}),
-                            "contradiction_count": len(values) - 1 if conflict else 0, "relevance": 1 / (61 + len(bundles)),
+                            "contradiction_count": len(values) - 1 if conflict else None if quoted_preferences else 0,
+                            "relevance": 1 / (61 + len(bundles)),
                             "content": json.dumps({"subject": group[0]["subject"], "predicate": key[1],
-                                                   "status": status, "assertions": members}, ensure_ascii=False),
+                                                   "status": status, "assertions": members,
+                                                   **({'comparison_basis': 'quoted_preferences_not_compared'}
+                                                      if quoted_preferences else {})}, ensure_ascii=False),
                             **({"excerpt_truncated": True, "content": json.dumps({
                                 "subject": group[0]['subject'], "predicate": key[1],
-                                "status": "incomplete_assertion_history", "distinct_values_at_least": len(values),
+                                "status": "incomplete_assertion_history",
+                                **({'statements_at_least': len(group)} if quoted_preferences else
+                                   {'distinct_values_at_least': len(values)}),
                                 "instruction": "Open assertion history before resolving this property; no value selected."},
                                 ensure_ascii=False)} if overflow else {})}
             contexts = [(claim, complete_message_context(claim)) for claim in group]

@@ -271,7 +271,7 @@ async def test_actual_memory_consumer_result_keeps_supporting_judge_distinct(tmp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('supported', [True, False], ids=['copied-value', 'rejected-value'])
+@pytest.mark.parametrize('supported', [True, False], ids=['copied-evidence', 'rejected-evidence'])
 async def test_actual_memory_rejected_completion_is_retained_without_changing_grade(tmp_path, supported):
     from pacomind.qualification.memory_cases import CASES, CONSUMERS, EVALUATORS, memory_outcomes
     from test_model_qualification_memory import Processor
@@ -287,6 +287,8 @@ async def test_actual_memory_rejected_completion_is_retained_without_changing_gr
                 claims = json.loads(response.content)
                 if claims and not supported:
                     claims[0]['value'] = 'invented coffee'
+                    # Fabricated evidence cannot recover a valid quoted preference.
+                    claims[0]['evidence'] = 'I prefer invented coffee after dinner.'
                     response.content = json.dumps(claims)
             self.responses.append(response)
             return response
@@ -309,9 +311,11 @@ async def test_actual_memory_rejected_completion_is_retained_without_changing_gr
         assert evidence['truncated'] is False
     if not supported:
         assert row['output']['claims'] == []
-        assert json.loads(observations[0]['completion_evidence']['text'])[0]['value'] == 'invented coffee'
+        rejected = json.loads(observations[0]['completion_evidence']['text'])[0]
+        assert rejected['value'] == 'invented coffee'
+        assert rejected['evidence'] == 'I prefer invented coffee after dinner.'
         first_job = next(job for job in row['output']['jobs'] if job['turn_id'] == case.inputs['turns'][0]['id'])
-        assert first_job['diagnostics']['rejection_counts'] == {'value_not_grounded': 1}
+        assert first_job['diagnostics']['rejection_counts'] == {'evidence_not_in_source': 1}
 
 
 @pytest.mark.asyncio

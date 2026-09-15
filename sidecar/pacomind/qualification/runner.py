@@ -1,6 +1,7 @@
 """Finite, sequential attempts with explicit interruption and resume semantics."""
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 import fcntl
 import importlib.metadata
@@ -90,6 +91,35 @@ class ObservedRouter:
     def __getattr__(self, name):
         return getattr(self._router, name)
 
+    def _record_response(self, observation, response, *, complete):
+        raw = value(response, 'raw')
+        choices = value(raw, 'choices') or []
+        choice = choices[0] if choices else None
+        usage = value(raw, 'usage')
+        if usage is not None:
+            observation['usage'] = {k: value(usage, k) for k in
+                ('prompt_tokens', 'completion_tokens', 'total_tokens')}
+            observation['usage']['reasoning_tokens'] = value(
+                value(usage, 'completion_tokens_details'), 'reasoning_tokens')
+        # A rejected response may contain a partial answer. Do not substitute
+        # reasoning scratch text or send this evidence to the case evaluator.
+        evidence = response if complete else {'content': value(value(choice, 'message'), 'content')}
+        finish = value(choice, 'finish_reason')
+        observation.update(selected_binding=value(response, 'binding') or None,
+            role=value(response, 'function_role') or observation['role'],
+            configured_model=value(response, 'model_id') or None,
+            returned_model=value(raw, 'model') or None,
+            weight_revision=value(response, 'model_revision') or None,
+            config_revision=value(response, 'config_revision') or None,
+            request_id=value(response, 'request_id') or None,
+            prior_attempts=value(response, 'prior_attempts'),
+            # Resolved client arguments, not independent wire/server proof.
+            client_max_tokens=value(response, 'client_max_tokens'),
+            finish_reason=finish,
+            completion_truncated=finish in {'length', 'max_tokens'} if finish is not None else None,
+            completion_status='complete' if complete else 'incomplete',
+            completion_evidence=self._completion_evidence(evidence))
+
     async def complete(self, messages, **kwargs):
         started = time.monotonic()
         observation = {'boundary': 'router_complete', 'input_sha256': digest(messages),
@@ -101,29 +131,23 @@ class ObservedRouter:
                        'candidate_binding': self._requested_binding,
                        'qualification_role': self._qualification_role,
                        'configured_model': None, 'returned_model': None,
+                       'requested_max_output_tokens': (kwargs.get('context') or {}).get('max_output_tokens'),
                        'weight_revision': None, 'usage': None, 'prior_attempts': None}
         self._observations.append(observation)
         try:
             response = await self._router.complete(messages, **kwargs)
-            raw = value(response, 'raw')
-            usage = value(raw, 'usage')
-            if usage is not None:
-                observation['usage'] = {k: value(usage, k) for k in
-                    ('prompt_tokens', 'completion_tokens', 'total_tokens')}
-            observation.update(selected_binding=value(response, 'binding') or None,
-                role=value(response, 'function_role') or observation['role'],
-                configured_model=value(response, 'model_id') or None,
-                returned_model=value(raw, 'model') or None,
-                weight_revision=value(response, 'model_revision') or None,
-                config_revision=value(response, 'config_revision') or None,
-                request_id=value(response, 'request_id') or None,
-                prior_attempts=value(response, 'prior_attempts'), outcome='returned',
-                completion_evidence=self._completion_evidence(response))
+            self._record_response(observation, response, complete=True)
+            observation['outcome'] = 'returned'
             return response
         except BaseException as exc:
             observation.update(outcome='error', error_type=type(exc).__name__)
             if failure := router_failure(exc):
                 observation['router_failure'] = failure
+                from pacomind.router.router import _IncompleteFunctionResponse
+                if isinstance(exc.__cause__, _IncompleteFunctionResponse):
+                    rejected = {'role': observation['role'], 'provenance': 'router_rejected_completion'}
+                    self._record_response(rejected, exc.__cause__.response, complete=False)
+                    observation['rejected_completion'] = rejected
             raise
         finally:
             role = observation.get('role')
@@ -180,6 +204,40 @@ def router_for(config, binding, cases):
     router = LLMRouter(tiers={})
     router.configure(selected)
     return router
+
+
+def materialize_role_cases(config, binding, cases):
+    """Freeze configured allowances for direct role cases before dispatch.
+
+    Domain consumers and native cases retain their own contracts. Published
+    case messages/oracles remain unchanged; these are new recipe versions.
+    """
+    policy = {'version': 'configured-output-v1', 'binding': binding, 'cases': {}}
+    direct = [case for case in cases
+              if case.boundary == 'role_completion' and case.consumer == 'role_completion']
+    if not direct:
+        return list(cases), policy
+    selected = router_for(config, binding, direct)._snapshot
+    model = selected.bindings[binding].config
+    limit = model.max_tokens
+    # A conflicting body override would make the declared allowance untrue.
+    for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens'):
+        if key in (model.extra_body or {}) and model.extra_body[key] != limit:
+            raise ValueError('Binding output override conflicts with its configured allowance')
+    derived, budgets = [], {}
+    for case in cases:
+        if case.boundary == 'role_completion' and case.consumer == 'role_completion':
+            role = selected.roles[case.role]
+            case = replace(case, version=case.version + '-configured-output-v1',
+                inputs={**deepcopy(case.inputs), 'max_output_tokens': limit},
+                timeout_seconds=max(case.timeout_seconds, role.deadline_seconds + 5))
+            case.record()  # Reject an envelope outside the existing suite bounds before dispatch.
+            budgets[case.id] = {'max_output_tokens': limit,
+                'request_timeout_seconds': role.timeout_seconds,
+                'role_deadline_seconds': role.deadline_seconds,
+                'case_timeout_seconds': case.timeout_seconds, 'case_overhead_seconds': 5}
+        derived.append(case)
+    return derived, {**policy, 'cases': budgets}
 
 
 async def evaluate(directory, recipe, cases, consumers, evaluators, router_factory, *, resume=False,
@@ -304,6 +362,10 @@ async def evaluate(directory, recipe, cases, consumers, evaluators, router_facto
             except Exception as exc:
                 result.update(outcome='setup_error' if phase == 'setup' else 'error',
                               failure_category=phase + ':' + type(exc).__name__)
+                if failure := router_failure(exc):
+                    reasons = failure['attempt_reasons']
+                    if len(reasons) == 1 and reasons[0] in {'missing_final_answer', 'incomplete_final_answer'}:
+                        result['failure_category'] = reasons[0]
             finally:
                 if temporary is not None and context is not None and not context.state_cleanup_safe:
                     result.update(cleanup='state_directory_retained', retained_state_dir=temporary,
