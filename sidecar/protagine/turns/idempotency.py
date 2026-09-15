@@ -276,12 +276,13 @@ class TurnIdempotencyLedger:
             if not messages:
                 raise SourceErased("source contains only erased messages")
             encoded = json.dumps(messages, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
-            row = conn.execute("SELECT content_sha256 FROM turn_sources WHERE turn_id=?", (turn_id,)).fetchone()
+            row = conn.execute("SELECT content_sha256,contact_id FROM turn_sources WHERE turn_id=?", (turn_id,)).fetchone()
             if row:
                 if row[0] != digest:
                     raise ValueError("source id already contains different evidence")
                 from .source_channels import record as record_channel
-                record_channel(conn, turn_id=turn_id, contact_id=contact_id,
+                # Exact replay must preserve a subsequent reviewed owner correction.
+                record_channel(conn, turn_id=turn_id, contact_id=row[1],
                     messages=messages, occurred_at=occurred_at, channel_id=channel_id)
                 return False
             from protagine.turns.media import normalize_messages, SourceMedia

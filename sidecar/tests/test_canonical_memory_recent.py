@@ -1,10 +1,12 @@
 """Recent conversations use occurrence and exact evidence, not matching old questions."""
 import json
+from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
 from protagine.api.middleware import ApiKeyMiddleware
+from protagine.api.routers import host
 from protagine.contacts.comms import CommsLog
 from protagine.memory.recent import read_recent, MAX_CONTENT
 from protagine.turns import TurnIdempotencyLedger
@@ -61,6 +63,52 @@ def test_channel_capture_does_not_change_versions_and_cannot_rebind(ledger):
     with pytest.raises(ValueError, match='source_channel_conflict'):
         add(ledger, 'source', 'the map', channel='sms:elsewhere')
     assert recent(ledger)['entries'][0]['conversation_id'] == 'whatsapp:conversation'
+
+
+def test_forget_purges_only_fully_deleted_channel_locators(ledger):
+    add(ledger, 'parent', 'the source inventory')
+    refs = ledger.source_references(['parent'], contact_id='person', session_id='chat')
+    add(ledger, 'survivor', '', messages=[{'role':'user','content':'An independent request.'},
+        {'role':'assistant','content':'A source-derived answer.', '_supplied_sources':refs}])
+    ledger.erase_sources(contact_id='person', turn_ids=['parent'])
+    with ledger._connect() as db:
+        rows = db.execute('SELECT turn_id FROM source_channels').fetchall()
+    assert [row[0] for row in rows] == ['survivor']
+    assert 'independent request' in content(recent(ledger))
+    ledger.erase_sources(contact_id='person', turn_ids=['survivor'])
+    with ledger._connect() as db:
+        assert db.execute('SELECT count(*) FROM source_channels').fetchone()[0] == 0
+    # A predecessor application deleting its canonical row also fires cleanup.
+    add(ledger, 'predecessor', 'another source')
+    with ledger._connect() as db:
+        db.execute("DELETE FROM turn_sources WHERE turn_id='predecessor'")
+        assert db.execute('SELECT count(*) FROM source_channels').fetchone()[0] == 0
+
+
+def test_attribution_correction_transfers_channel_lookup_with_canonical_owner(ledger):
+    from protagine.turns.source_attribution import correct
+    add(ledger, 'source', 'a correctly attributed conversation')
+    version = recent(ledger)['source_refs'][0]['source_version']
+    correct(ledger, operation_id='correct-person', performed_by='fixture-admin',
+        old_contact_id='person', contact_id='guest', source_ids=['source'],
+        evidence_refs=['reviewed-fixture'])
+    assert recent(ledger)['entries'] == []
+    corrected = recent(ledger, contact_id='guest')
+    assert corrected['entries'][0]['source_id'] == 'source'
+    assert corrected['entries'][0]['source_version'] == version
+    assert add(ledger, 'source', 'a correctly attributed conversation') is False
+    assert recent(ledger)['entries'] == []
+    assert recent(ledger, contact_id='guest')['entries'][0]['source_version'] == version
+    with ledger._connect() as db:
+        assert db.execute("SELECT contact_id FROM source_channels WHERE turn_id='source'").fetchone()[0] == 'guest'
+
+
+def test_assistant_only_legacy_source_reports_missing_channel_coverage(ledger):
+    add(ledger, 'reply', '', channel=None, messages=[{'role':'assistant','content':'A retained reply.'}])
+    packet = recent(ledger)
+    assert packet['entries'] == []
+    assert packet['coverage']['status'] == 'partial'
+    assert 'legacy_channel_metadata_incomplete' in packet['coverage']['reasons']
 
 
 @pytest.mark.parametrize('predecessor', [False, True])
@@ -244,3 +292,27 @@ async def test_live_turn_capture_preserves_channel_in_source_only_path(source_ap
     packet = recent(ledger)
     assert packet['entries'][0]['conversation_id'] == 'whatsapp:chat'
     assert 'USER: The lantern inventory.' in content(packet)
+
+
+@pytest.mark.asyncio
+async def test_derived_channel_uses_resolved_sender_instead_of_stale_contact(source_app, ledger, monkeypatch):
+    from protagine.identity.participants import ParticipantResolver
+    async def stale_gateway(*args, **kwargs):
+        return 'sms:stale-person'
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(contact_id='person', method='verified_handle', created=False)
+    monkeypatch.setattr(host, '_ensure_channel_id', stale_gateway)
+    monkeypatch.setattr(host, '_contacts_store', SimpleNamespace())
+    monkeypatch.setattr(ParticipantResolver, 'resolve', resolve)
+    observed = []
+    monkeypatch.setattr(host, '_observe_channel', observed.append)
+    payload = {'identity':{'host_id':'fixture'}, 'context':{'contact_id':'stale-person', 'session_id':'chat',
+        'turn_id':'resolved', 'metadata':{'occurred_at':'2026-08-02T12:00:00Z'}},
+        'sender':{'platform':'whatsapp','user_id':'fixture-handle'},
+        'user_message':{'role':'user','content':'A conversation from the actual sender.'}, 'source_only':True}
+    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
+        response = await client.put('/v2/host/turns/source-survivors/resolved', json=payload)
+        assert response.status_code in {200,201}, response.text
+    assert recent(ledger)['entries'][0]['conversation_id'] == 'whatsapp:person'
+    assert recent(ledger, platform='sms')['entries'] == []
+    assert observed == ['whatsapp:person']

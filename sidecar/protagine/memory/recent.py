@@ -58,7 +58,7 @@ def _locators(ledger, *, contact_id, session_id, platform, comms_log):
             AND {valid_sql} AND NOT EXISTS (SELECT 1 FROM source_channels c WHERE c.turn_id=s.turn_id)
             AND coalesce(json_extract(messages_json,'$[0].provenance.kind'),'')!='hermes_history'
             AND EXISTS (SELECT 1 FROM json_each(s.messages_json) m
-                WHERE json_extract(m.value,'$.role')='user') LIMIT 1''',
+                WHERE json_extract(m.value,'$.role') IN ('user','assistant')) LIMIT 1''',
             (contact_id, session_id)).fetchone()
         if unknown:
             reasons.add('legacy_channel_metadata_incomplete')

@@ -13,6 +13,16 @@ def initialize(conn):
         basis TEXT NOT NULL)''')
     conn.execute('''CREATE INDEX IF NOT EXISTS source_channel_recent
         ON source_channels(contact_id,platform,occurred_epoch DESC,ordinal DESC,turn_id)''')
+    # Keep locator lifecycle atomic with its canonical row, including writes
+    # made by a predecessor reader after rolling back the application code.
+    conn.execute('''CREATE TRIGGER IF NOT EXISTS source_channel_delete
+        AFTER DELETE ON turn_sources BEGIN
+            DELETE FROM source_channels WHERE turn_id=OLD.turn_id;
+        END''')
+    conn.execute('''CREATE TRIGGER IF NOT EXISTS source_channel_owner
+        AFTER UPDATE OF contact_id ON turn_sources BEGIN
+            UPDATE source_channels SET contact_id=NEW.contact_id WHERE turn_id=NEW.turn_id;
+        END''')
     # Predecessor imports already contain reviewed provenance. This index makes
     # the compatibility reader participant/platform bounded, without rewriting
     # any imported source or its version.
