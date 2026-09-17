@@ -1,7 +1,9 @@
 """Actual shared SQLite state, scoped HTTP reads, and native-adapter events."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,9 +58,65 @@ def test_lease_expiry_is_unknown_not_completion_and_out_of_order_does_not_refres
     assert stale["items"][0]["liveness"] == "unknown"
     assert stale["items"][0]["observation_age_seconds"] == 180
     assert "unknown" in format_view(stale)
-    assert not store.observe(observation(), principal_id="host", contact_id="contact-a")["accepted"]
+    assert store.observe(observation(), principal_id="host", contact_id="contact-a")["duplicate"]
+    assert store.view(contact_id="owner", owner=True)["items"][0]["liveness"] == "unknown"
     store.observe(observation(sequence=2, phase="model"), principal_id="host", contact_id="contact-a")
     assert store.view(contact_id="owner", owner=True)["items"][0]["liveness"] == "recently_observed"
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+@pytest.mark.parametrize('state,phase', [('observed', 'between_calls'), ('completed', 'ended'),
+                                      ('interrupted', 'ended')])
+def test_lost_observation_reply_can_be_replayed_without_rewriting_or_reopening(store, legacy, state, phase):
+    from protagine.turns.idempotency import source_message_hash
+    message = {'role': 'user', 'content': 'Perform the requested task.'}
+    store.ledger.record_source('input', contact_id='contact-a', session_id='session-a',
+        messages=[message], derive_claims=False)
+    refs = [{'source_id': 'input', 'input_message_hash': source_message_hash('session-a', message)}]
+    experience = {'task_id': 'f' * 64, 'purpose': 'operational', 'origin_platform': 'sms'}
+    start = observation(input_refs=refs, task_experience=experience)
+    store.observe(start, principal_id='host', contact_id='contact-a')
+    sent = {**start, 'sequence': 2, 'state': state, 'phase': phase}
+    store.observe(sent, principal_id='host', contact_id='contact-a')  # The HTTP reply is lost.
+    with closing(store.ledger._connect()) as db, db:
+        if legacy:
+            row = db.execute('SELECT metadata_json FROM execution_runtime_observations').fetchone()
+            metadata = json.loads(row[0])
+            metadata.pop('observation_hash')
+            db.execute('UPDATE execution_runtime_observations SET metadata_json=?', (json.dumps(metadata),))
+        before = tuple(db.execute('SELECT * FROM execution_observations').fetchone())
+        before_metadata = db.execute('SELECT metadata_json FROM execution_runtime_observations').fetchone()[0]
+    reopened = ExecutionRegistry(TurnIdempotencyLedger(store.ledger.db_path))
+    assert reopened.observe(sent, principal_id='host', contact_id='contact-a') == {
+        'accepted': True, 'duplicate': True}
+    for changed in ({'phase': 'model'}, {'state': 'failed'}, {'tool_name': 'changed'},
+                    {'input_refs': [{**refs[0], 'source_id': 'different'}]},
+                    {'task_experience': {**experience, 'purpose': 'qualification'}}):
+        assert not reopened.observe({**sent, **changed}, principal_id='host', contact_id='contact-a')['accepted']
+    with pytest.raises(ValueError, match='execution_scope_conflict'):
+        reopened.observe(sent, principal_id='other-host', contact_id='contact-a')
+    with closing(store.ledger._connect()) as db:
+        assert tuple(db.execute('SELECT * FROM execution_observations').fetchone()) == before
+        assert db.execute('SELECT metadata_json FROM execution_runtime_observations').fetchone()[0] == before_metadata
+    assert not reopened.observe(start, principal_id='host', contact_id='contact-a')['accepted']
+    if state != 'observed':
+        assert not reopened.observe({**start, 'sequence': 3}, principal_id='host', contact_id='contact-a')['accepted']
+
+
+def test_runtime_replay_requires_exact_recorded_payload_and_never_guesses_legacy_events(store):
+    store.observe(observation(), principal_id='host', contact_id='contact-a')
+    sent = observation(sequence=2, phase='model', runtime={
+        'event': 'start', 'request_id': 'request-one', 'requested_model': 'processor-one'})
+    store.observe(sent, principal_id='host', contact_id='contact-a')
+    assert store.observe(sent, principal_id='host', contact_id='contact-a')['duplicate']
+    changed = {**sent, 'runtime': {**sent['runtime'], 'requested_model': 'processor-two'}}
+    assert not store.observe(changed, principal_id='host', contact_id='contact-a')['accepted']
+    with closing(store.ledger._connect()) as db, db:
+        metadata = json.loads(db.execute('SELECT metadata_json FROM execution_runtime_observations').fetchone()[0])
+        metadata.pop('observation_hash')
+        db.execute('UPDATE execution_runtime_observations SET metadata_json=?', (json.dumps(metadata),))
+    assert not store.observe(sent, principal_id='host', contact_id='contact-a')['accepted']
+    assert not store.observe({**sent, 'runtime': None}, principal_id='host', contact_id='contact-a')['accepted']
 
 
 def test_parent_scope_and_writer_are_immutable(store):
