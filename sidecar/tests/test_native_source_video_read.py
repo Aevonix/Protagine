@@ -102,7 +102,7 @@ def test_exact_frame_and_clip_are_distinct_and_metadata_recheck_never_decodes(vi
     assert rt.encoded in json.dumps(rt.middleware(wire, rt.scope)['request'])
     assert rt.decode_calls == 1 and len(rt.calls) == 2
     assert rt.calls[-1]['json']['read_revision'] == rt.opened['read_revision']
-    assert rt.calls[-1]['json']['asset_hash'] == rt.asset and rt.calls[-1]['timeout'] <= .25
+    assert rt.calls[-1]['json']['asset_hash'] == rt.asset and rt.calls[-1]['timeout'] <= 1.0
     if change == 'erasure': rt.ledger.erase_sources(contact_id='owner', turn_ids=['clip'])
     else: rt.changed = change
     checked = rt.middleware(wire, rt.scope)['request']

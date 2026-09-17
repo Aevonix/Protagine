@@ -594,7 +594,7 @@ def test_four_full_erasure_pages_resume_only_unadmitted_current_input(runtime, m
     calls = []
     def post(path, **kwargs):
         assert path == '/v1/host/memory/sources/erasures'
-        assert 0 < kwargs['timeout'] <= .25
+        assert 0 < kwargs['timeout'] <= 1.0
         after = kwargs['json']['after']
         page_events = events[after:after + 250]
         through = page_events[-1]['sequence'] if page_events else after
@@ -647,6 +647,57 @@ def test_four_full_erasure_pages_resume_only_unadmitted_current_input(runtime, m
         assert retry.allowed(scope, fresh=True, rules=rules)
         assert retry.memory_contact('retry') == 'owner' and retry.failure is None
     assert supplied.memory_contact('native') == '' and supplied.result is None
+
+
+@pytest.mark.parametrize('mode', ['cold', 'slow', 'two_pages', 'local_read'])
+def test_freshness_has_one_bounded_budget_including_local_work(runtime, monkeypatch, mode):
+    rt = runtime
+    provenance = importlib.import_module(rt.module.__package__ + '.input_provenance')
+    client_module = importlib.import_module(rt.module.__package__ + '.client')
+    import time
+    now = [1000.0]
+    clock = SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep)
+    monkeypatch.setattr(rt.module, 'time', clock)
+    monkeypatch.setattr(client_module, 'time', clock)
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='native')[0]
+    parent = {'source_id': 'fixture-source', 'input_message_hash':
+              client_module.source_message_hash('original', {'role': 'user', 'content': rt.fact})}
+    scope = SimpleNamespace(contact_id='owner', session_id='native', task_id='native',
+                            turn_id='native', valid_participant=True)
+    calls = []
+    def post(path, **kwargs):
+        calls.append(kwargs['timeout'])
+        assert kwargs['_deadline_monotonic'] == 1001.0
+        now[0] += .35 if mode == 'cold' else (1.01 if mode == 'slow' else .6 if mode == 'two_pages' else 0)
+        response = freshness_response(rt.ledger, path, kwargs['json'])
+        page = response.json()
+        if mode == 'two_pages' and len(calls) == 1:
+            page['complete'] = False
+        return httpx.Response(200, json=page, request=response.request)
+    original_state = rt.outbox.erasure_state
+    reads = []
+    def state(*args, **kwargs):
+        value = original_state(*args, **kwargs)
+        reads.append(True)
+        if mode == 'local_read' and len(reads) == 2:
+            now[0] = 1001.01
+        return value
+    monkeypatch.setattr(rt.outbox, 'erasure_state', state)
+    boundary = rt.module.RequestMemory(SimpleNamespace(post=post), rt.outbox)
+    message = {'role': 'user', 'content': 'Continue the source-bound task.'}
+    boundary.observe(scope, [message], user_message=message['content'])
+    boundary.observe_host_input(scope, [message], message['content'],
+                                text='Exact source handles.', sources=[ref], watermark=0)
+    with provenance.supplied_input(contact_id='owner', session_id='native',
+            input_refs=[parent], source_refs=[ref]) as supplied:
+        supplied.bind(scope)
+        result = boundary({'messages': [message]}, scope)
+        fresh = mode == 'cold'
+        assert result['reason'] == ('source_erasure_checked' if fresh else 'source_erasure_unavailable')
+        assert result['freshness_retryable'] is (not fresh)
+        assert supplied.allowed(scope, fresh=fresh, rules=[],
+                                freshness_retryable=result['freshness_retryable']) is fresh
+        assert calls == pytest.approx([1.0, .4] if mode == 'two_pages' else [1.0])
 
 
 def test_responses_and_detached_tagged_packet_are_filtered(runtime):
