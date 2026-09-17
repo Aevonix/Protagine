@@ -53,6 +53,12 @@ This updates `protagine-hermes` to 1.8.7. The sidecar remains 1.8.6 and hostwork
 0.3.0. Upgrade the adapter in the Hermes environment and restart that gateway
 to load it.
 
+## v1.8.7.post1 - acknowledge retried execution observations
+
+Exact retries of an accepted execution observation now return a duplicate
+acknowledgement without reopening completed work or extending its lease. The
+sidecar-only update preserves the existing execution schema and adapter.
+
 ## v1.8.7 - read recent canonical conversations
 
 Adds participant-scoped `POST /v1/host/memory/recent` for bounded chronological
