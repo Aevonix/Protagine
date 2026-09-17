@@ -240,7 +240,7 @@ def test_committed_terminal_settlement_recovers_without_rewriting_observation(ru
         before = tuple(db.execute('SELECT * FROM execution_observations').fetchone())
     now[0] += 120
     if recovery == 'duplicate_callback':
-        assert not send(runtime, sequence=4, phase='ended', state='completed')['accepted']
+        assert send(runtime, sequence=4, phase='ended', state='completed')['duplicate']
     elif recovery == 'owner_read_after_restart':
         reopened = ExecutionRegistry(TurnIdempotencyLedger(registry.ledger.db_path), clock=lambda: now[0])
         assert reopened.view(contact_id='contact-a', owner=True)['items'] == []
