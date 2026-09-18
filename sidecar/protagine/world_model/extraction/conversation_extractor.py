@@ -4,6 +4,7 @@ Uses rule-based NER and regex patterns. Zero LLM calls.
 MUST complete within 50ms for single-message inputs.
 """
 
+from bisect import bisect_left
 import re
 import time
 from dataclasses import dataclass, field
@@ -140,12 +141,16 @@ class ConversationExtractor:
         seen_spans: List[tuple] = []  # (start, end) to avoid duplicates
 
         def _overlaps(s: int, e: int) -> bool:
-            for a, b in seen_spans:
-                if s < b and e > a:
-                    return True
-            return False
+            # Accepted spans do not overlap, so only the two neighbors can
+            # intersect this candidate. Each finditer pass also emits disjoint
+            # matches: index prior passes once instead of rescanning every
+            # accepted name for every later name in a large source document.
+            index = bisect_left(prior_spans, (s,))
+            return ((index > 0 and prior_spans[index - 1][1] > s)
+                    or (index < len(prior_spans) and prior_spans[index][0] < e))
 
         # ── Emails → person (high confidence) ────────────────────────────────
+        prior_spans = sorted(seen_spans)
         for m in _EMAIL_RE.finditer(message_text):
             if _overlaps(m.start(), m.end()):
                 continue
@@ -166,6 +171,7 @@ class ConversationExtractor:
             seen_spans.append((m.start(), m.end()))
 
         # ── URLs → product/company ─────────────────────────────────────────
+        prior_spans = sorted(seen_spans)
         for m in _URL_RE.finditer(message_text):
             if _overlaps(m.start(), m.end()):
                 continue
@@ -183,6 +189,7 @@ class ConversationExtractor:
             seen_spans.append((m.start(), m.end()))
 
         # ── Org suffix → company ──────────────────────────────────────────
+        prior_spans = sorted(seen_spans)
         for m in _ORG_SUFFIX_RE.finditer(message_text):
             full = m.group().strip()
             if _overlaps(m.start(), m.end()):
@@ -204,6 +211,7 @@ class ConversationExtractor:
             seen_spans.append((m.start(), m.end()))
 
         # ── Capitalized names → person ────────────────────────────────────
+        prior_spans = sorted(seen_spans)
         for m in _CAPITALIZED_NAME_RE.finditer(message_text):
             name = m.group().strip()
             if _overlaps(m.start(), m.end()):
@@ -242,6 +250,7 @@ class ConversationExtractor:
             seen_spans.append((m.start(), m.end()))
 
         # ── Domain names → company ────────────────────────────────────────
+        prior_spans = sorted(seen_spans)
         for m in _DOMAIN_RE.finditer(message_text):
             if _overlaps(m.start(), m.end()):
                 continue
