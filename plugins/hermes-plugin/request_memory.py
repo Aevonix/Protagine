@@ -1022,9 +1022,10 @@ class RequestMemory:
             parents_valid = len(source_refs) <= 512 and len(annotation_checks) <= 512
         except (KeyError, TypeError, ValueError, AttributeError, OSError, sqlite3.Error):
             parents_valid = False
-        # A cold local sidecar can take several hundred milliseconds. Keep one
-        # bounded budget for network, feed persistence and exact-source checks.
-        deadline = time.monotonic() + 1.0
+        # Local source checks can take several seconds under normal contention.
+        # Keep one bounded budget across network, persistence and exact-source
+        # checks; a slow check must not silently become permission to use stale data.
+        deadline = time.monotonic() + 5.0
         watermark, rules, fresh = 0, [], False
         freshness_retryable = False
         try:

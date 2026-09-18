@@ -594,7 +594,7 @@ def test_four_full_erasure_pages_resume_only_unadmitted_current_input(runtime, m
     calls = []
     def post(path, **kwargs):
         assert path == '/v1/host/memory/sources/erasures'
-        assert 0 < kwargs['timeout'] <= 1.0
+        assert 0 < kwargs['timeout'] <= 5.0
         after = kwargs['json']['after']
         page_events = events[after:after + 250]
         through = page_events[-1]['sequence'] if page_events else after
@@ -667,8 +667,8 @@ def test_freshness_has_one_bounded_budget_including_local_work(runtime, monkeypa
     calls = []
     def post(path, **kwargs):
         calls.append(kwargs['timeout'])
-        assert kwargs['_deadline_monotonic'] == 1001.0
-        now[0] += .35 if mode == 'cold' else (1.01 if mode == 'slow' else .6 if mode == 'two_pages' else 0)
+        assert kwargs['_deadline_monotonic'] == 1005.0
+        now[0] += 3.65 if mode == 'cold' else (5.01 if mode == 'slow' else 3 if mode == 'two_pages' else 0)
         response = freshness_response(rt.ledger, path, kwargs['json'])
         page = response.json()
         if mode == 'two_pages' and len(calls) == 1:
@@ -680,7 +680,7 @@ def test_freshness_has_one_bounded_budget_including_local_work(runtime, monkeypa
         value = original_state(*args, **kwargs)
         reads.append(True)
         if mode == 'local_read' and len(reads) == 2:
-            now[0] = 1001.01
+            now[0] = 1005.01
         return value
     monkeypatch.setattr(rt.outbox, 'erasure_state', state)
     boundary = rt.module.RequestMemory(SimpleNamespace(post=post), rt.outbox)
@@ -697,7 +697,7 @@ def test_freshness_has_one_bounded_budget_including_local_work(runtime, monkeypa
         assert result['freshness_retryable'] is (not fresh)
         assert supplied.allowed(scope, fresh=fresh, rules=[],
                                 freshness_retryable=result['freshness_retryable']) is fresh
-        assert calls == pytest.approx([1.0, .4] if mode == 'two_pages' else [1.0])
+        assert calls == pytest.approx([5.0, 2.0] if mode == 'two_pages' else [5.0])
 
 
 def test_responses_and_detached_tagged_packet_are_filtered(runtime):
