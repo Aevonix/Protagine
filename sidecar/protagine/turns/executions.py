@@ -7,6 +7,7 @@ text. A fresh scoped read can associate a root execution with its admitted input
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import sqlite3
 import json
 import time
@@ -51,13 +52,33 @@ class ExecutionRegistry:
         reconcile(self, contact_id)
         now = self.clock()
         immutable = (principal_id, contact_id, value["session_id"], value["turn_id"], value["parent_execution_id"], value["platform"])
+        observation_hash = hashlib.sha256(json.dumps(value, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             previous = conn.execute("SELECT * FROM execution_observations WHERE execution_id=?", (value["execution_id"],)).fetchone()
+            old_runtime = conn.execute('SELECT metadata_json FROM execution_runtime_observations WHERE execution_id=?',
+                                       (value['execution_id'],)).fetchone()
+            old_metadata = json.loads(old_runtime[0]) if old_runtime else None
             if previous:
                 actual = tuple(previous[key] for key in ("principal_id", "contact_id", "session_id", "turn_id", "parent_execution_id", "platform"))
                 if actual != immutable:
                     raise ValueError("execution_scope_conflict")
+                if value['sequence'] == previous['sequence'] and old_metadata is not None:
+                    # Retrying a committed request after its HTTP reply was lost
+                    # acknowledges the same observation, without extending its lease.
+                    same = old_metadata.get('observation_hash') == observation_hash
+                    if 'observation_hash' not in old_metadata:
+                        # Older lifecycle-only rows retain every effective field.
+                        # Runtime callbacks cannot be reconstructed unambiguously.
+                        same = (not value.get('runtime') and not old_metadata.get('first_api')
+                            and not old_metadata.get('requests')
+                            and all(value.get(key) == previous[key]
+                                for key in ('state', 'phase', 'tool_name'))
+                            and all(value.get(key) == old_metadata.get(key)
+                                for key in ('input_refs', 'task_experience')))
+                    if same:
+                        return {'accepted': True, 'duplicate': True}
                 # A late API/tool callback cannot reopen a completed execution.
                 if previous["state"] != "observed" or value["sequence"] <= previous["sequence"]:
                     return {"accepted": False, "reason": "superseded_observation"}
@@ -72,10 +93,7 @@ class ExecutionRegistry:
                   lease_until=excluded.lease_until""",
                 (value["execution_id"], *immutable, value["state"], value["phase"], value["tool_name"], value["sequence"], now, now, now + 120.0))
             from protagine.self_model.execution_forecasts import accumulate
-            old_runtime = conn.execute('SELECT metadata_json FROM execution_runtime_observations WHERE execution_id=?',
-                                       (value['execution_id'],)).fetchone()
-            metadata = accumulate(json.loads(old_runtime[0]) if old_runtime else None,
-                                  value, previous, now)
+            metadata = accumulate(old_metadata, value, previous, now)
             inputs = value.get('input_refs')
             if inputs:
                 if value['parent_execution_id'] or value['platform'] in {'cron', 'background_review'}:
@@ -98,6 +116,7 @@ class ExecutionRegistry:
                     raise ValueError('prospective_root_task_experience_required')
                 else:
                     metadata['task_experience'] = experience
+            metadata['observation_hash'] = observation_hash
             conn.execute('INSERT OR REPLACE INTO execution_runtime_observations VALUES (?,?)',
                          (value['execution_id'], json.dumps(metadata, separators=(',', ':'))))
             # Metadata is operational and bounded in time, not another memory archive.
