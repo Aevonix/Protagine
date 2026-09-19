@@ -27,27 +27,35 @@ async def test_stored_models_projects_metadata_across_real_collections(tmp_path,
     # Observe the real Lance query boundary, not a fake store result. A full
     # scan would decode the large vector/text columns before this check.
     query_type = type(table.query())
-    original_to_arrow = query_type.to_arrow
+    original_to_batches = query_type.to_batches
+    projections = []
     schemas = []
 
     async def inspect_projection(query, *args, **kwargs):
-        result = await original_to_arrow(query, *args, **kwargs)
-        schemas.append(result.column_names)
-        return result
+        projections.append(kwargs.get("max_batch_length"))
+        result = await original_to_batches(query, *args, **kwargs)
 
-    monkeypatch.setattr(query_type, "to_arrow", inspect_projection)
+        async def inspect_batches():
+            async for batch in result:
+                schemas.append(batch.schema.names)
+                yield batch
+
+        return inspect_batches()
+
+    monkeypatch.setattr(query_type, "to_batches", inspect_projection)
 
     async def reject_full_scan(*args, **kwargs):
         pytest.fail("Health must not materialize whole vector records")
 
     monkeypatch.setattr(store, "scan_all", reject_full_scan)
     assert await store.get_stored_models() == ["model-a", "model-b", "model-z"]
-    assert schemas == [["metadata"]] * (len(Collection) - 1)
+    assert schemas and all(schema == ["metadata"] for schema in schemas)
+    assert projections == [1024] * (len(Collection) - 1)
     await store.close()
 
 
 @pytest.mark.asyncio
-async def test_stored_models_includes_model_after_first_256_rows(tmp_path):
+async def test_stored_models_includes_model_after_first_1025_rows(tmp_path):
     store = VectorStore(str(tmp_path / "vectors"))
     await store.connect(2)
     await store.ensure_collections(2)
@@ -59,15 +67,15 @@ async def test_stored_models_includes_model_after_first_256_rows(tmp_path):
                 vector=[1.0, 0.0],
                 metadata={"model_id": "model-early"},
             )
-            for index in range(256)
+            for index in range(1025)
         ])
         # A separately appended row catches accidental search limits or a scan
         # that stops after its first batch instead of inspecting every model.
         await store.add(
-            Collection.MEMORIES, "row-256", "Last stored text", [1.0, 0.0],
+            Collection.MEMORIES, "row-1025", "Last stored text", [1.0, 0.0],
             {"model_id": "model-late"},
         )
-        assert await store.count(Collection.MEMORIES) == 257
+        assert await store.count(Collection.MEMORIES) == 1026
         assert await store.get_stored_models() == ["model-early", "model-late"]
     finally:
         await store.close()
@@ -83,7 +91,7 @@ async def test_stored_model_read_failure_reaches_health_check(tmp_path, monkeypa
     async def unavailable(*args, **kwargs):
         raise OSError("stored metadata unavailable")
 
-    monkeypatch.setattr(type(table.query()), "to_arrow", unavailable)
+    monkeypatch.setattr(type(table.query()), "to_batches", unavailable)
     with pytest.raises(OSError, match="stored metadata unavailable"):
         await store.get_stored_models()
     await store.close()

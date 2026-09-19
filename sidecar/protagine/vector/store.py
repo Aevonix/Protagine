@@ -496,16 +496,16 @@ class VectorStore:
             if col.value not in existing:
                 continue
             table = await db.open_table(col.value)
-            metadata = await table.query().select(["metadata"]).to_arrow()
-            for value in metadata.column("metadata"):
-                meta_str = value.as_py()
-                try:
-                    meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
-                except (json.JSONDecodeError, TypeError):
-                    meta = {}
-                model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
-                if isinstance(model_id, str) and model_id:
-                    models.add(model_id)
+            batches = await table.query().select(["metadata"]).to_batches(max_batch_length=1024)
+            async for batch in batches:
+                for meta_str in batch.column("metadata").to_pylist():
+                    try:
+                        meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
+                    except (json.JSONDecodeError, TypeError):
+                        meta = {}
+                    model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
+                    if isinstance(model_id, str) and model_id:
+                        models.add(model_id)
         return sorted(models)
 
     async def close(self) -> None:

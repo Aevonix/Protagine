@@ -615,6 +615,9 @@ def _background_review_scope(parent, **kwargs) -> _TransportScope:
                            "unresolved", "parent_scope_missing")
 
 
+_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS = 4.0
+
+
 def _resolve_scope(
     client: ProtagineClient,
     *,
@@ -657,7 +660,7 @@ def _resolve_scope(
         response = client.get(
             "/v1/host/contacts/resolve",
             params={"gateway": transport, "address": sender, "create": "false"},
-            timeout=4,
+            timeout=_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS,
         )
         if int(getattr(response, "status_code", 0) or 0) == 200:
             value = response.json()
@@ -688,12 +691,15 @@ def _current_participant(client: ProtagineClient, scope: _TransportScope) -> str
 
     Local system attestation is separate. A network failure is unavailable
     authority, not evidence that somebody else's identity was established.
+    Allow the same service latency as initial resolution, while keeping one
+    absolute deadline and a fresh authority lookup before every dispatch.
     """
     try:
         response = client.get('/v1/host/contacts/resolve', params={
             'gateway': scope.authority_gateway or scope.platform,
             'address': scope.sender_id, 'create': 'false'},
-            timeout=0.5, _deadline_monotonic=time.monotonic() + 0.5)
+            timeout=_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS,
+            _deadline_monotonic=time.monotonic() + _PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS)
         if response.status_code in {401, 403}:
             return 'participant_authority_revoked'
         if response.status_code != 200:

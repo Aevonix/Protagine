@@ -67,6 +67,15 @@ recovery. `state=pending` or an unconfirmed result does not mean that canonical
 memory has saved the observation. A repeated nomination uses the same source
 and the first nomination's reason and input choice.
 
+Retention checks the current erasure feed before enqueueing, with one five-second
+deadline shared by the local cursor read, HTTP request and erasure application.
+An unavailable or incomplete feed cannot authorize publication. Failures identify
+the stage; unexpected failures also report only their exception type and whether
+they are transient. Inspect readiness before retrying. Unexpected exception
+messages and tracebacks are omitted to avoid exposing credentials or observation
+contents. The existing bounded outbox delivery still reports `pending` until
+persistence is confirmed.
+
 The receipt identifies the selected original by its tool name, call ID, native
 message ID and result hash, alongside a bounded execution-argument preview.
 A truncated preview is marked; it does not replace the retained original. It
