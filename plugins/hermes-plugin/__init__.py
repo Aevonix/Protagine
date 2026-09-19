@@ -2817,6 +2817,9 @@ def register(ctx: Any) -> None:
             result['request'] = without_tool(result['request'], 'protagine_task')
         result['request'] = describe(result['request'])
         result = finish_request(result, **kwargs)
+        # Stamp the final controlled projection, not its pre-participant body.
+        # Relay may reuse this erasure check only for these exact content bytes;
+        # rebuilt summaries and later source updates still require a new check.
         native_memory.checked(result['request'], scope)
         return result
 
