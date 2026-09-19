@@ -4,16 +4,23 @@ from contextlib import closing
 import copy
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 import threading
 import time
+
+from httpx import HTTPStatusError, NetworkError, RemoteProtocolError, TimeoutException
 
 from .followups import capture_instruction
 from .request_work import replace_context
 from .request_tool_visibility import without_tool, without_discovery_tool
 
 MAX_BYTES = 16384
+logger = logging.getLogger(__name__)
+# Explicit retention needs the same bounded freshness allowance as a model
+# request. Local sidecar contention can exceed the background drain's 250 ms.
+_ERASURE_REFRESH_SECONDS = 5.0
 # Discovery metadata is already available through the current tool catalog.
 # Retaining it as an observation makes later recall compete with real findings.
 _EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory_retain_observation'}
@@ -343,9 +350,11 @@ class ToolObservations:
                 or not isinstance(args['call_id'], str) or not 1 <= len(args['call_id']) <= 256
                 or not isinstance(args['reason'], str) or not args['reason'].strip() or len(args['reason']) > 512):
             return json.dumps({'accepted': False, 'error': 'Nominate one completed current owner-turn call and a bounded future-use reason'})
+        stage = 'source_admission'
         try:
             if self.request_memory.supplied_snapshot(scope) is None:
                 raise ValueError('Current request source admission is unavailable; check memory/source readiness before retrying')
+            stage = 'request_evidence'
             with self._lock:
                 record = copy.deepcopy(self._turns.get(key, {}).get(args['call_id']))
             if (not record or context.get('api_request_id') not in record['visible']
@@ -357,12 +366,15 @@ class ToolObservations:
             if 'payload' in record:
                 payload = record['payload']  # First nomination owns immutable retry bytes.
             else:
+                stage = 'native_original'
                 record['visible_name'] = record['visible'][context['api_request_id']]
                 content, native = native_original(scope, args['call_id'], record)
+                stage = 'native_input'
                 original_input, input_row = (native_input(scope, args['call_id'], record,
                     result_message_id=native['message_id'], result_content=content)
                     if args.get('include_input', False) else (None, None))
                 ownership = self.request_memory.ownership
+                stage = 'instruction_capture'
                 origins = capture_instruction(scope, self.client,
                     retain_origin=(lambda source_id: ownership.retain_origin(scope, source_id,
                         canonical_user_message=scope.user_message)) if ownership is not None else None)
@@ -379,6 +391,7 @@ class ToolObservations:
                 if original_input is not None:
                     payload['observation']['input'] = original_input
                 if ownership is not None:
+                    stage = 'observation_ownership'
                     # Bind exact native rows before enqueue can publish or a
                     # concurrent erasure page can purge the canonical payload.
                     origin_rows = [{'role':'tool', 'content':content, '_row_id':native['message_id']}]
@@ -387,24 +400,33 @@ class ToolObservations:
                     if not ownership.retain_origin(scope, source_id, messages=origin_rows,
                             row_only_ids=[input_row['_row_id']] if input_row is not None else ()):
                         raise ValueError('Native observation ownership is unavailable; no observation was queued')
+                stage = 'request_evidence'
                 with self._lock:
                     current = self._turns.get(key, {}).get(args['call_id'])
                     if current is None or context.get('api_request_id') not in current['visible']:
                         raise ValueError('The current observation turn ended')
                     payload = current.setdefault('payload', payload)
             # A delivered receipt is historical, not proof the source still exists.
-            deadline = time.monotonic()+.25
+            stage = 'erasure_refresh'
+            deadline = time.monotonic() + _ERASURE_REFRESH_SECONDS
             after = self.outbox.erasure_watermark(scope.contact_id, deadline_monotonic=deadline)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Observation erasure freshness budget expired')
             response = self.client.get('/v1/host/memory/sources/erasures',
-                params={'contact_id': scope.contact_id, 'after': after}, timeout=.25,
+                params={'contact_id': scope.contact_id, 'after': after}, timeout=remaining,
                 _deadline_monotonic=deadline)
             response.raise_for_status()
             page = response.json()
             self.outbox.apply_erasure_page(scope.contact_id, page, deadline_monotonic=deadline)
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Observation erasure freshness budget expired')
             if page.get('complete') is not True:
                 raise ValueError('Current source erasure state is incomplete')
+            stage = 'outbox_enqueue'
             receipt = self.outbox.enqueue(payload['turn_id'], payload)
             if receipt['state'] == 'pending':
+                stage = 'outbox_delivery'
                 self.outbox.drain(lambda stored, timeout_seconds: self.client.sync_turn(
                     **stored, outbox=self.outbox, timeout_seconds=timeout_seconds), limit=16, timeout_seconds=.25)
                 receipt = self.outbox.enqueue(payload['turn_id'], payload)
@@ -415,7 +437,15 @@ class ToolObservations:
                 'selected_call': {**{key: payload['observation']['native'][key] for key in
                     ('tool_call_id', 'tool_name', 'message_id', 'result_sha256')}, **record['arguments']}})
         except ValueError as exc:
-            return json.dumps({'accepted': False, 'source_recorded': False, 'error': str(exc)})
-        except Exception:
             return json.dumps({'accepted': False, 'source_recorded': False,
-                'error': 'Observation persistence is unconfirmed; inspect or retry this same call in the current turn'})
+                'failure_stage': stage, 'error': str(exc)})
+        except Exception as exc:
+            retryable = isinstance(exc, (TimeoutError, TimeoutException, NetworkError, RemoteProtocolError))
+            if isinstance(exc, HTTPStatusError):
+                retryable = exc.response.status_code == 429 or exc.response.status_code >= 500
+            # Exception text, request URLs and tracebacks can contain private
+            # source text or credentials. Report only fixed stages and types.
+            logger.warning('observation retention unavailable (stage=%s, error=%s)', stage, type(exc).__name__)
+            return json.dumps({'accepted': False, 'source_recorded': False,
+                'failure_stage': stage, 'error_type': type(exc).__name__, 'retryable': retryable,
+                'error': 'Observation persistence is unconfirmed; inspect memory/source readiness before retrying'})
