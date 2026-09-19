@@ -487,20 +487,23 @@ class VectorStore:
         return df.to_dict(orient="records")
 
     async def get_stored_models(self) -> list[str]:
-        """Return unique model_id values across all collections."""
+        """Return stored model ids without loading vectors or full collections."""
         models: set[str] = set()
         for col in Collection:
             try:
-                rows = await self.scan_all(col)
-                for row in rows:
-                    meta_str = row.get("metadata", "{}")
-                    try:
-                        meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
-                    except (json.JSONDecodeError, TypeError):
-                        meta = {}
-                    model_id = meta.get("model_id", "")
-                    if model_id:
-                        models.add(model_id)
+                table = await self._table(col)
+                # Health probes need only model provenance. Streaming a projection
+                # avoids materializing every embedding and text in a pandas frame.
+                batches = await table.query().select(["metadata"]).to_batches(max_batch_length=1024)
+                async for batch in batches:
+                    for meta_str in batch.column("metadata").to_pylist():
+                        try:
+                            meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
+                        except (json.JSONDecodeError, TypeError):
+                            meta = {}
+                        model_id = meta.get("model_id", "")
+                        if model_id:
+                            models.add(model_id)
             except Exception:
                 pass
         return sorted(models)
