@@ -51,6 +51,7 @@ dev = [
 
 [project.scripts]
 protagine = "protagine.cli:main"
+protagine-inference-pool = "protagine.inference_pool.server:main"
 protagine-agent-bridge = "protagine.workers.agent_bridge:main"
 protagine-queue-worker = "protagine.workers.queue_worker:main"
 protagine-skills-sync = "protagine.workers.skills_sync:main"

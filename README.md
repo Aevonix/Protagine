@@ -199,6 +199,7 @@ not a prerequisite for the harness approach described above.
 - **Execution:** [shared tasks](docs/NATIVE-TASK-CHANNELS.md),
   [accepted local work](docs/ACCEPTED-LOCAL-WORK.md),
   [model roles](docs/FUNCTION-ROUTING.md),
+  [inference pool](docs/INFERENCE-POOL.md),
   [model qualification](docs/MODEL-QUALIFICATION.md).
 
 ## Development

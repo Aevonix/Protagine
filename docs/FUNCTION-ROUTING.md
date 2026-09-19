@@ -1,5 +1,9 @@
 # Function routing on the existing model pool
 
+For shared capacity limits across native Hermes and supporting model calls, see
+[Shared inference capacity](INFERENCE-POOL.md). Function-role selection and
+request admission are separate: role metadata alone does not reserve capacity.
+
 Protagine's shared `LLMRouter` now selects a named function and tries only that
 function's eligible local candidates. It keeps its object identity when host
 configuration changes, so retained extractors, thinkers, planners and workers

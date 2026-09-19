@@ -61,6 +61,13 @@ The concurrency probe rejects serialized callbacks. Native CI retains the built
 release wheels. Benchmark requests pass credentials through stdin without
 persisting the request payload; general CLI help does not require POSIX locks.
 
+An optional [shared inference capacity](docs/INFERENCE-POOL.md) boundary admits
+OpenAI-compatible requests from native Hermes, Protagine and other clients
+through one proxy. It holds excess requests outside model servers, balances
+qualified replicas by estimated work and reserves request and token capacity
+for configured traffic classes. Endpoints and limits are deployment
+configuration. Existing callers are not switched to it.
+
 Components: `protagine` 1.9.0, `protagine-hermes` 1.9.0 and
 `protagine-hostworker` 0.3.1. This release does not establish an overall
 performance advantage over Hermes or completed autonomous self-improvement.
