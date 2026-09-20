@@ -3,7 +3,7 @@ from copy import deepcopy
 from dataclasses import replace
 from .records import CaseSpec
 
-VERSION = 'native-unified-work-v1'
+VERSION = 'native-unified-work-v2'
 
 
 def case(identifier, scenario, question, answer):

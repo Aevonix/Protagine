@@ -13,6 +13,8 @@ An explicit rendezvous pauses the worker at its provider request boundary until 
 
 The observer records serialized physical provider requests after ordinary middleware. Grading reads the canonical handoff database, update records and retained result separately from the model's answer. A correct-looking answer with no submitted task or no visible correction fails. Successful control acknowledgment alone does not establish model obedience. A cancelled task's repeated native dispatch must not start another model request or retain a reply.
 
+Version 2 retains each request hash and its observed canonical markers in the graded record. This prevents repeated tool schemas from exceeding the evidence limit. A bounded private diagnostic preserves the original native result and log tail; it is never a public artifact. A native turn that exhausts its iteration budget remains incomplete and fails a completion check while retaining its observed task effects. Original version 1 attempts are not rewritten.
+
 Two base-Hermes controls run independent concurrent native sessions without Protagine. The foreground is expected to preserve uncertainty about the other session's work while the worker completes. These controls establish the information available at that boundary. They do not pretend that base Hermes has the Protagine task adapter, and their grounding passes are not equivalent to shared-task functionality passes. There is no meaningful base-Hermes score for a Protagine-specific steer/stop tool.
 
 ## Campaign integration

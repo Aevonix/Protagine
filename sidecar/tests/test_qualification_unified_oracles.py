@@ -4,12 +4,12 @@ from copy import deepcopy
 
 import pytest
 
-from protagine.qualification.native_unified import assess
+from protagine.qualification.native_unified import assess, compact_wire_evidence
 from protagine.qualification.native_unified_cases import cases
 
 
 def effects():
-    return {'gateway_connected': True, 'distinct_sessions': True,
+    return {'gateway_connected': True, 'distinct_sessions': True, 'native_turn_complete': True,
         'durable_before': [{'task_id': 'task-1'}], 'durable_after': [{'task_id': 'task-1'}],
         'foreground_before_release': True, 'foreground_requests': ['task-1 commitment-1'],
         'bootstrap_requests': ['commitment-1'], 'commitment_id': 'commitment-1',
@@ -62,3 +62,19 @@ def test_base_arms_are_distinct_unknown_grounding_controls():
     assert not set(case.id for case in base) & set(case.id for case in cases())
     base[0].inputs.clear()
     assert cases(arm='base_hermes')[0].inputs
+
+
+def test_compaction_preserves_observed_markers_without_creating_missing_evidence():
+    effect = effects()
+    effect['foreground_requests'] = ['x'*1100000+' task-1 commitment-1', 'unrelated']
+    effect['request_observations'][0]['text'] = 'y'*120000
+    case = cases()[0]
+    result = compact_wire_evidence({'output': json.dumps(case.oracle['answer']), 'effects': effect})
+    assert len(json.dumps(result)) < 10000
+    assert effect['uncompacted_result_bytes'] > 1048576
+    assert effect['foreground_requests'] == ['task-1\ncommitment-1', '']
+    assert len(effect['foreground_requests_digests'][0]['sha256']) == 64
+    assert 'text' not in effect['request_observations'][0]
+    assert all(assess(result, case.oracle).values())
+    effect['native_turn_complete'] = False
+    assert not assess(result, case.oracle)['native_turn_completed']

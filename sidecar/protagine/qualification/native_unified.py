@@ -5,6 +5,47 @@ import json
 from pathlib import Path
 from .cases import _exact_value
 from .native import native_cli
+from .records import encode, write_once
+
+
+def compact_wire_evidence(result):
+    """Keep hashes and observed markers, not repeated tool schemas, in grades."""
+    effect = result['effects']
+    markers = [row['task_id'] for row in effect.get('durable_before', [])]
+    markers += [effect.get('commitment_id'), 'violet-953']
+    markers = [value for value in markers if value]
+    original_bytes = len(encode(result))
+    for name in ('bootstrap_requests', 'foreground_requests', 'worker_requests'):
+        texts = effect.get(name, [])
+        effect[name+'_digests'] = [
+            {'sha256': hashlib.sha256(text.encode()).hexdigest(), 'bytes': len(text.encode())}
+            for text in texts]
+        effect[name] = ['\n'.join(marker for marker in markers if marker in text) for text in texts]
+    for row in effect.get('request_observations', []):
+        text = row.pop('text', None)
+        if text is not None:
+            row['captured_text_sha256'] = hashlib.sha256(text.encode()).hexdigest()
+            row['captured_text_bytes'] = len(text.encode())
+    effect['wire_evidence_format'] = 'matched-canonical-markers-v1'
+    effect['uncompacted_result_bytes'] = original_bytes
+    return result
+
+
+def retain_private_diagnostic(state):
+    """Keep bounded owned diagnostics after normal temporary-state cleanup."""
+    receipt = {'schema': 1, 'scope': 'private_synthetic_unified_diagnostic'}
+    for name, limit in [('native-result.json', 2097152), ('native.log', 16384)]:
+        path = state/name
+        if not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            size = path.stat().st_size
+            if name.endswith('.log'):
+                stream.seek(max(0, size-limit))
+            raw = stream.read(limit)
+        receipt[name] = {'original_bytes': size, 'truncated': size > limit,
+                         'text': raw.decode('utf-8', errors='replace')}
+    write_once(state.parent/'unified-private-diagnostic.json', receipt)
 
 
 async def consume(inputs, context):
@@ -15,7 +56,8 @@ async def consume(inputs, context):
     (context.state_dir/'memory-state').mkdir(mode=0o700)
     try:
         worker = 'native_unified_base_worker.py' if inputs.get('arm') == 'base_hermes' else 'native_unified_worker.py'
-        result = await native_cli(deepcopy(inputs), context, worker=Path(__file__).with_name(worker))
+        result = await native_cli(deepcopy(inputs), context, worker=Path(__file__).with_name(worker),
+                                  allow_incomplete_results=True)
         requests = result['effects'].get('request_observations', [])
         returned = {model for row in requests for model in row.get('returned_models', [])}
         if requests and len(returned) == 1 and all(row.get('selected_binding') == context.router.binding
@@ -26,8 +68,9 @@ async def consume(inputs, context):
                 native[0].update(selected_binding=context.router.binding, returned_model=next(iter(returned)),
                     prior_attempts=[], attribution_basis='serialized_request_and_returned_model',
                     observed_weight_revision=None)
-        return result
+        return compact_wire_evidence(result)
     finally:
+        retain_private_diagnostic(context.state_dir)
         try:
             closed = json.loads((context.state_dir/'unified-cleanup.json').read_text())
         except (ValueError, OSError):
@@ -52,6 +95,7 @@ def assess(observed, oracle):
     foreground = effect.get('foreground_requests', [])
     durable = effect.get('durable_after', [])
     checks = {'grounded_foreground_answer': _exact_value(output, oracle['answer']),
+        'native_turn_completed': effect.get('native_turn_complete') is True,
         'real_native_gateway_connected': effect.get('gateway_connected') is True,
         'different_native_sessions': effect.get('distinct_sessions') is True,
         'one_durable_native_task': len(durable) == 1,
@@ -83,4 +127,5 @@ EVALUATORS = {'native_unified_outcomes': assess}
 def implementation_identity():
     return {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in ('native_unified.py', 'native_unified_cases.py', 'native_unified_worker.py',
-                'native_unified_base_worker.py', 'native_unified_host.py', 'native_memory_worker.py')}
+                'native_unified_base_worker.py', 'native_unified_host.py', 'native_memory_worker.py',
+                'native.py', 'native_worker.py')}
