@@ -43,7 +43,17 @@ def replace_context(request, text=None, *, api_mode='', marker='protagine-work-r
         r'(?:\n\n)?' + re.escape(opening) + '.*?' + re.escape(closing), re.S)
     for name in ('messages', 'input'):
         if isinstance(request.get(name), list):
-            result[name] = [row for row in request[name] if not _owned_message(row, opening, closing)]
+            rows = []
+            for row in request[name]:
+                if _owned_message(row, opening, closing):
+                    continue
+                # The outgoing chat adapter can combine leading instructions.
+                # Refresh only our framed block, never user/tool evidence.
+                if (isinstance(row, dict) and row.get('role') in ('system', 'developer')
+                        and isinstance(row.get('content'), str)):
+                    row = {**row, 'content': pattern.sub('', row['content'])}
+                rows.append(row)
+            result[name] = rows
     for name in ('instructions', 'system'):
         value = request.get(name)
         if isinstance(value, str):
@@ -74,7 +84,11 @@ def replace_context(request, text=None, *, api_mode='', marker='protagine-work-r
         # that use developer instructions before invoking request middleware.
         role = ('developer' if messages and isinstance(messages[0], dict)
                 and messages[0].get('role') == 'developer' else 'system')
-        messages.append({'role': role, 'content': block})
+        index = 0
+        while (index < len(messages) and isinstance(messages[index], dict)
+               and messages[index].get('role') in ('system', 'developer')):
+            index += 1
+        messages.insert(index, {'role': role, 'content': block})
     return result
 
 

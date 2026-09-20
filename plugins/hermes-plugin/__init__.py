@@ -2767,6 +2767,9 @@ def register(ctx: Any) -> None:
         else:
             if refreshed is not None:
                 result['request'] = refreshed['request']
+        from .request_layout import compact_instructions
+        result['request'] = compact_instructions(result['request'],
+            api_mode=str(kwargs.get('api_mode') or ''))
         return execution_observer.request_metadata(result, **kwargs) if execution_observer else result
 
     def reconcile_request(request, **kwargs):
@@ -2796,8 +2799,9 @@ def register(ctx: Any) -> None:
         if not is_direct_scope(scope):
             result['request'] = without_tool(result['request'], 'protagine_task')
         result['request'] = describe(result['request'])
+        result = finish_request(result, **kwargs)
         native_memory.checked(result['request'], scope)
-        return finish_request(result, **kwargs)
+        return result
 
     def commitment_work_handler(args=None, **kwargs):
         context = _TOOL_EXECUTION_CONTEXT.get() or {}

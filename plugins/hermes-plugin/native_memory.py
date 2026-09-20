@@ -84,6 +84,10 @@ class NativeMemoryRequests:
                         else self.memory(request.content, scope)['request'])
             if supplied is not None and not supplied.observe_updates(scope, filtered, stage='native_request_visible'):
                 filtered = withheld_request(filtered, failure=supplied.failure)
+            # Iteration summaries can bypass ordinary request middleware.
+            # Keep the same chat layout at this final physical boundary too.
+            from .request_layout import compact_instructions
+            filtered = compact_instructions(filtered)
             if image_observer is not None:
                 try:
                     if not image_observer(filtered, kind=kind):

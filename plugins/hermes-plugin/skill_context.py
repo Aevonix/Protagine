@@ -110,7 +110,9 @@ def _request_note(request, text):
         index = 0
         while index < len(rows) and isinstance(rows[index], dict) and rows[index].get('role') in {'system', 'developer'}:
             index += 1
-        rows.insert(index, {'role': 'system', 'content': text})
+        role = ('developer' if rows and isinstance(rows[0], dict)
+                and rows[0].get('role') == 'developer' else 'system')
+        rows.insert(index, {'role': role, 'content': text})
         result['messages'] = rows
     else:
         return None

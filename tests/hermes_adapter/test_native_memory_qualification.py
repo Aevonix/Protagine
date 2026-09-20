@@ -38,6 +38,11 @@ def test_native_memory_runs_real_formation_injection_and_scope(tmp_path, monkeyp
     def respond(data):
         if data['model'] == 'native-fixture':
             native_requests.append(deepcopy(data))
+            # Exercise a strict native template contract on the actual wire,
+            # without depending on any named model or serving engine.
+            assert data['messages'][0]['role'] == 'system'
+            assert all(row.get('role') not in {'system', 'developer'}
+                       for row in data['messages'][1:])
             return {'role': 'assistant', 'content': json.dumps(original.oracle['answer'])}
         supplied = json.loads(data['messages'][-1]['content'])
         if 'proposals' in supplied:

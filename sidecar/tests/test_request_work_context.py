@@ -280,7 +280,7 @@ def test_handoff_guidance_shares_existing_work_budget(module, monkeypatch):
     result, provenance, current = module.RequestWork(SimpleNamespace(get=get), SimpleNamespace()).prepare(
         {'messages':[{'role':'user','content':'Continue.'}]}, scope())
     assert current is True and provenance is None
-    block = result['messages'][-1]['content']
+    block = result['messages'][0]['content']
     assert 'Compact current work.' in block and 'Large full projection.' not in block
     assert "protagine_task(operation='handoff')" in block and len(block) <= 4200
 
@@ -338,7 +338,7 @@ def test_native_chat_developer_role_is_preserved_and_replaceable(module):
     refresh = module.RequestWork(SimpleNamespace(get=lambda *a, **k: response()))
     first = refresh(original, scope(), api_mode='chat_completions')
     second = refresh(first, scope(), api_mode='chat_completions')
-    assert second['messages'][-1]['role'] == 'developer'
+    assert second['messages'][1]['role'] == 'developer'
     assert all(row['role'] != 'system' for row in second['messages'])
     assert json.dumps(second).count('[protagine-work-request-v1]') == 1
     assert module.replace_context(second) == before
