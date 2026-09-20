@@ -67,4 +67,19 @@ An aggregate delta is available only after every declared episode has two attrib
 
 Accounting reports measured model calls, input/output tokens, background calls and arm wall time when available. Partial subtotals are labeled; missing observations are not zero. The first pilot does not claim complete auxiliary-call accounting, enforced equal compute, peak throughput or latency without competing traffic.
 
+Request timing reports first generated output (including reasoning or tool payload), first nonreasoning text, complete request duration and request output tokens per second. Empty role frames are not first tokens. Output throughput uses provider-reported completion tokens divided by full request time, including queueing and prefill; it is not isolated decode speed. Each metric includes its observed and eligible sample counts. Old receipts without the current timing observer remain unmeasured. Episode wall time also includes tools, settling and container cleanup.
+
+## Publish a result
+
+Author a separate public metadata JSON document with `publication_scope: "public_synthetic"` and a `deployment` object containing `id`, `model` and `profile`. Optional deployment fields describe weights, hardware and the serving recipe using the ordinary qualification publication contract. Do not reuse a private endpoint configuration as metadata.
+
+```sh
+protagine models paired export \
+  --output /private/results/candidate-pilot-01 \
+  --metadata /private/public-deployment.json \
+  --public-output /private/publication/paired-candidate-01
+```
+
+The new snapshot contains a hash-pinned `index.json` and an allowlisted public result in `runs/`. It can be staged under a website's `benchmarks/paired/` directory. Export verifies repository-owned fixture inputs and includes scalar outcomes, resource counts, timings and runtime hashes. It excludes conversation bodies, agent artifacts, endpoint URLs, private policy text and exception logs. Existing snapshots are never overwritten. Original pilot grading is flagged under review and its aggregate score is withheld; controlled fixtures also cannot become a public model score.
+
 No model tier is assigned. These public development episodes do not establish broad generalization, hidden-test performance, concurrent-session correctness, comprehensive authorization, deletion from every store, executable code correctness, or voice/vision/embedding quality. Inspect the per-case limitations and effects alongside the aggregate. The earlier endpoint screen and its raw records remain separate protocols.

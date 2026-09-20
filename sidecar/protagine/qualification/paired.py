@@ -178,10 +178,10 @@ async def run(output, *, resume=False, **resources):
 def add_parser(commands):
     parser = commands.add_parser('paired', help='Compare fresh Hermes and Hermes + Protagine on identical episodes')
     sub = parser.add_subparsers(dest='paired_command', required=True)
-    for command in ('plan', 'run', 'report'):
+    for command in ('plan', 'run', 'report', 'export'):
         item = sub.add_parser(command)
         item.add_argument('--output', type=Path, required=True, help='Private immutable paired-run directory')
-        if command != 'report':
+        if command in {'plan', 'run'}:
             item.add_argument('--native-config', type=Path, required=True, help='Private common Hermes provider configuration')
             item.add_argument('--comparison-policy', type=Path, required=True, help='Versioned budget and environment declarations')
             item.add_argument('--container-image', required=True, help='Same digest-pinned image for both arms')
@@ -194,12 +194,20 @@ def add_parser(commands):
             item.add_argument('--evidence-mode', choices=['actual_inference', 'controlled'], default='actual_inference')
         elif command == 'run':
             item.add_argument('--resume', action='store_true', help='Continue untouched episodes; never replay a started attempt')
-        else:
+        elif command == 'report':
             item.add_argument('--json', action='store_true')
+        else:
+            item.add_argument('--metadata', type=Path, required=True, help='Separately authored public deployment metadata')
+            item.add_argument('--public-output', type=Path, required=True, help='New public snapshot directory')
 
 
 def cli(args):
     from .paired_report import summarize, markdown
+    if args.paired_command == 'export':
+        from .paired_public import publish_record
+        result = publish_record(args.output, read(args.metadata), args.public_output)
+        print(json.dumps(result, indent=2))
+        return 0
     if args.paired_command == 'report':
         result = summarize(args.output)
         print(json.dumps(result, indent=2) if args.json else markdown(result))
