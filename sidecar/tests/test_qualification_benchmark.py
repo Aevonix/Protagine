@@ -153,10 +153,24 @@ def test_changed_recipe_or_grading_rejected_before_requests(tmp_path, monkeypatc
             asyncio.run(benchmark.run(batch, config_path=path))
         assert calls == [] and not (batch / 'runs').exists()
         path.write_text(json.dumps(config(url, url)))
-        monkeypatch.setattr(benchmark, '_identity', lambda: {'changed': 'grading'})
+        identity = benchmark._identity()
+        monkeypatch.setattr(benchmark, '_identity', lambda: {**identity, 'changed': 'grading'})
         with pytest.raises(ValueError, match='identical plan'):
             asyncio.run(benchmark.run(batch, config_path=path))
         assert calls == []
+
+
+def test_batch_freezes_actual_source_projection_payload(monkeypatch):
+    before = benchmark._identity()
+    original = Path.read_bytes
+
+    def changed(path):
+        raw = original(path)
+        return raw + b'\n# changed implementation\n' if path.name == 'source_projection.py' else raw
+
+    monkeypatch.setattr(Path, 'read_bytes', changed)
+    after = benchmark._identity()
+    assert before['protagine_payload_sha256'] != after['protagine_payload_sha256']
 
 
 def test_real_cli_batch_runs_existing_router_once_and_preserves_attempts_on_resume(tmp_path, capsys):

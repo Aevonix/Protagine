@@ -19,7 +19,19 @@ def _identity():
     names = ('benchmark.py', 'benchmark_cases.py', 'cases.py', 'memory_cases.py',
              'structured_cases.py', 'vision_cases.py', 'records.py', 'runner.py', 'report.py',
              'native.py', 'native_worker.py', 'native_identity.py', 'native_reasoning.py', 'native_coding.py')
-    return {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in names}
+    identity = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in names}
+    # Qualification wrappers call the actual router, formation and recall code.
+    # Freeze that payload too, including data/template resources. Test/report
+    # tooling under qualification is covered separately by the explicit list.
+    root = Path(__file__).parent.parent
+    payload = {}
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root)
+        if (path.is_file() and relative.parts[0] != 'qualification'
+                and '__pycache__' not in relative.parts and path.suffix not in {'.pyc', '.pyo'}):
+            payload[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    identity['protagine_payload_sha256'] = digest(payload)
+    return identity
 
 
 def _stable(recipe):
@@ -68,6 +80,8 @@ def prepare(*, config_path, binding, native_config_path=None, native_binding=Non
     direct, policy = materialize_role_cases(host_config, binding,
         [c for c in cases if c.boundary != 'native_hermes'])
     host_recipe = _stable({**host_recipe, 'qualification_output_policy': policy})
+    implementation = _identity()
+    host_recipe['protagine_payload_sha256'] = implementation['protagine_payload_sha256']
     native_selected = [c for c in cases if c.boundary == 'native_hermes']
     native_config, native_recipe = None, None
     if native_selected:
@@ -101,7 +115,7 @@ def prepare(*, config_path, binding, native_config_path=None, native_binding=Non
             'case_sha256': c.record()['sha256'], 'inputs_sha256': c.record()['inputs_sha256'],
             'oracle_sha256': c.record()['oracle_sha256'], 'coverage': LIMITATIONS[c.boundary]}
             for c in cases],
-        'implementation': _identity(), 'coverage': 'Only declared screening cases; not full role or agent qualification.',
+        'implementation': implementation, 'coverage': 'Only declared screening cases; not full role or agent qualification.',
         'unimplemented': ['native_automatic_recollection', 'cross_channel_shared_state',
             'learning_transfer', 'code_execution', 'load_and_streaming_performance',
             'speech_delivery', 'embedding_and_reranking', 'live_authority_enforcement']}

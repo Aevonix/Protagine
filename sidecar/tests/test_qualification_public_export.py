@@ -134,3 +134,30 @@ def test_explicit_public_recipe_annotations_are_bounded(tmp_path):
     assert metadata['limitations'][0] in run['limitations']
     with pytest.raises(ValueError, match='public description'):
         export_records(source, {**metadata, 'limitations': ['/home/private/receipt']})
+
+
+def test_invalid_snapshot_metadata_never_creates_output(tmp_path):
+    runs = export_records(fixture(tmp_path), META)
+    out = tmp_path / 'public'
+    with pytest.raises(ValueError):
+        publish_snapshot(runs, out, published_at='not-a-timestamp')
+    assert not out.exists()
+    with pytest.raises(ValueError):
+        publish_snapshot(runs, out, benchmark={'id': 'invalid/id', 'version': '1',
+            'title': 'Example', 'methodology_version': '1', 'planned_scenarios': 1})
+    assert not out.exists()
+
+
+def test_comparison_tracks_actual_native_payload_and_worker(tmp_path):
+    source = fixture(tmp_path)
+    meta = {**META, 'comparison_protocol': {'id': 'v1', 'budget_policy': 'v1',
+        'supporting_models': {}, 'hardware_policy': 'same-task-budget'}}
+    path = source / 'run.json'
+    run = json.loads(path.read_text())
+    run['recipe']['native_runtime'] = {'native_payload_sha256': 'a' * 64}
+    run['recipe']['native_worker_sha256'] = 'b' * 64
+    path.write_text(json.dumps(run))
+    first = export_records(source, meta)[0]['comparison_key']
+    run['recipe']['native_runtime']['native_payload_sha256'] = 'c' * 64
+    path.write_text(json.dumps(run))
+    assert export_records(source, meta)[0]['comparison_key'] != first

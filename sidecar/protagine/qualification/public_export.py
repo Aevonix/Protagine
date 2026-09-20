@@ -196,6 +196,9 @@ def export_records(directory, metadata):
             comparison = digest({'protocol': protocol, 'suite': suite_hash,
                 'evaluator': evaluator_hash, 'implementation': run['implementation_sha256'],
                 'runtime_version': run.get('recipe', {}).get('runtime_version'),
+                'protagine_payload': run.get('recipe', {}).get('protagine_payload_sha256'),
+                'native_payload': run.get('recipe', {}).get('native_runtime', {}).get('native_payload_sha256'),
+                'native_worker': run.get('recipe', {}).get('native_worker_sha256'),
                 'role': role, 'boundary': boundary, 'phase': phase})
         limits = ['Coverage is limited to the listed cases and consumer boundary.',
                   'Case duration includes consumer overhead; it is not token throughput or first-token latency.',
@@ -254,13 +257,6 @@ def publish_snapshot(runs, output, *, published_at=None, benchmark=None):
     ids = [identifier(run['run_id']) for run in runs]
     if len(set(ids)) != len(ids):
         raise ValueError('Duplicate public run IDs')
-    manifest_runs = []
-    progress = Counter(run['status'] for run in runs)
-    for run in runs:
-        leaf = f"runs/{run['run_id']}.json"
-        write_once(output / leaf, run)
-        manifest_runs.append({'run_id': run['run_id'], 'path': '/benchmarks/data/' + leaf,
-                              'sha256': hashlib.sha256(encode(run)).hexdigest()})
     description = benchmark or {'id': 'agent-benchmark', 'version': '1.0',
                                'title': 'Agent benchmark', 'planned_scenarios': 180,
                                'methodology_version': '1.0'}
@@ -269,8 +265,19 @@ def publish_snapshot(runs, output, *, published_at=None, benchmark=None):
     identifier(description['id'])
     if type(description['planned_scenarios']) is not int or description['planned_scenarios'] < 1:
         raise ValueError('Invalid planned scenario count')
+    publication_time = stamp(published_at or datetime.now(timezone.utc).isoformat())
+    # Validate and serialize before creating any output. Invalid metadata or
+    # non-finite payloads must not leave an unusable half-written snapshot.
+    encoded = [encode(run) for run in runs]
+    manifest_runs = []
+    progress = Counter(run['status'] for run in runs)
+    for run, raw in zip(runs, encoded):
+        leaf = f"runs/{run['run_id']}.json"
+        write_once(output / leaf, run)
+        manifest_runs.append({'run_id': run['run_id'], 'path': '/benchmarks/data/' + leaf,
+                              'sha256': hashlib.sha256(raw).hexdigest()})
     manifest = {'schema_version': 1,
-        'published_at': stamp(published_at or datetime.now(timezone.utc).isoformat()),
+        'published_at': publication_time,
         'benchmark': description,
         'runs': manifest_runs,
         'progress': {'planned': None, 'queued': 0, 'running': 0,
