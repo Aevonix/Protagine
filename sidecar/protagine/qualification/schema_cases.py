@@ -25,7 +25,8 @@ async def consume(inputs, context):
     with patch.object(httpx.AsyncClient, 'send', observe):
         response = await context.router.complete(inputs['messages'], context={
             'function_role': inputs['role'], 'allow_fallback': False,
-            'max_output_tokens': 4096, 'response_schema': deepcopy(inputs['response_schema'])})
+            'max_output_tokens': inputs.get('max_output_tokens', 4096),
+            'response_schema': deepcopy(inputs['response_schema'])})
     return {'output': response.content, 'effects': {'serialized_requests': requests}}
 
 

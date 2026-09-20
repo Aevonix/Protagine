@@ -17,7 +17,8 @@ SCHEMA = 1
 
 def _identity():
     names = ('benchmark.py', 'benchmark_cases.py', 'cases.py', 'memory_cases.py',
-             'structured_cases.py', 'vision_cases.py', 'records.py', 'runner.py', 'report.py',
+             'structured_cases.py', 'vision_cases.py', 'screen_contracts.py', 'schema_cases.py',
+             'records.py', 'runner.py', 'report.py',
              'native.py', 'native_worker.py', 'native_identity.py', 'native_reasoning.py', 'native_coding.py')
     identity = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in names}
     # Qualification wrappers call the actual router, formation and recall code.
@@ -58,10 +59,13 @@ def _shards(cases):
 
 def prepare(*, config_path, binding, native_config_path=None, native_binding=None,
             hermes_python=None, roles=None, boundaries=None, native_deadline_seconds=120,
-            cleanup_seconds=5, evidence_mode='actual_inference', label='candidate'):
+            cleanup_seconds=5, evidence_mode='actual_inference', label='candidate',
+            output_contract='prompt_only'):
     """Resolve and freeze local declarations. Does not query inference endpoints."""
     if evidence_mode not in {'controlled', 'actual_inference'}:
         raise ValueError('Invalid evidence mode')
+    if output_contract not in {'prompt_only', 'json_schema'}:
+        raise ValueError('Invalid screening output contract')
     if not isinstance(label, str) or not label.strip() or len(label) > 120:
         raise ValueError('Provide a nonempty candidate label of at most 120 characters')
     cases = screen_cases(native_deadline_seconds=native_deadline_seconds,
@@ -79,6 +83,10 @@ def prepare(*, config_path, binding, native_config_path=None, native_binding=Non
     host_recipe = inspect_binding(host_config, binding)
     direct, policy = materialize_role_cases(host_config, binding,
         [c for c in cases if c.boundary != 'native_hermes'])
+    suite_version = VERSION
+    if output_contract == 'json_schema':
+        from .screen_contracts import VERSION as suite_version, apply_contracts
+        direct = apply_contracts(direct)
     host_recipe = _stable({**host_recipe, 'qualification_output_policy': policy})
     implementation = _identity()
     host_recipe['protagine_payload_sha256'] = implementation['protagine_payload_sha256']
@@ -105,11 +113,11 @@ def prepare(*, config_path, binding, native_config_path=None, native_binding=Non
             'recipe': recipe, 'case_hashes': {c.id: c.record()['sha256'] for c in members}}
         frozen.append(shard)
         prepared.append((shard, members))
-    manifest = {'schema': SCHEMA, 'kind': 'qualification_batch', 'suite_version': VERSION,
+    manifest = {'schema': SCHEMA, 'kind': 'qualification_batch', 'suite_version': suite_version,
         'stage': 'development_screen', 'label': label, 'evidence_mode': evidence_mode,
         'options': {'binding': binding, 'native_binding': native_binding, 'roles': selected_roles,
             'boundaries': selected_boundaries, 'native_deadline_seconds': native_deadline_seconds,
-            'cleanup_seconds': cleanup_seconds},
+            'cleanup_seconds': cleanup_seconds, 'output_contract': output_contract},
         'available_cases': 24, 'selected_cases': len(cases), 'shards': frozen,
         'cases': [{'case_id': c.id, 'role': c.role, 'boundary': c.boundary, 'version': c.version,
             'case_sha256': c.record()['sha256'], 'inputs_sha256': c.record()['inputs_sha256'],
@@ -181,12 +189,17 @@ async def run(directory, *, config_path, native_config_path=None, hermes_python=
         raise ValueError('Benchmark execution requires identical plan, configurations and implementation')
     from .native import native_cli, native_context
     consumers = {**CONSUMERS, 'native_cli': native_cli}
+    evaluators = EVALUATORS
+    if manifest['options'].get('output_contract') == 'json_schema':
+        from .screen_contracts import CONSUMERS as structured_consumers, EVALUATORS as structured_evaluators
+        consumers = {**consumers, **structured_consumers}
+        evaluators = {**evaluators, **structured_evaluators}
 
     def factory(shard, case):
         return (native_context(native_config, shard['recipe']) if shard['suite'] == 'native'
             else router_for(host_config, manifest['options']['binding'], [case]))
 
-    return await execute_prepared(directory, manifest, prepared, consumers, EVALUATORS, factory,
+    return await execute_prepared(directory, manifest, prepared, consumers, evaluators, factory,
                                   resume=resume)
 
 
@@ -237,6 +250,8 @@ def add_parser(commands):
             item.add_argument('--cleanup-seconds', type=float, default=5)
             item.add_argument('--label', default='candidate')
             item.add_argument('--evidence-mode', choices=['controlled', 'actual_inference'], default='actual_inference')
+            item.add_argument('--output-contract', choices=['prompt_only', 'json_schema'], default='prompt_only',
+                help='Explicit schema transport for direct cases; separate versioned screening cohort')
         if command == 'run':
             item.add_argument('--resume', action='store_true')
 
@@ -251,7 +266,7 @@ def cli(args):
             roles=[v.strip() for v in args.roles.split(',')] if args.roles else None,
             boundaries=[v.strip() for v in args.boundaries.split(',')] if args.boundaries else None,
             native_deadline_seconds=args.native_deadline_seconds, cleanup_seconds=args.cleanup_seconds,
-            label=args.label, evidence_mode=args.evidence_mode)
+            label=args.label, evidence_mode=args.evidence_mode, output_contract=args.output_contract)
     else:
         result = asyncio.run(run(args.output, config_path=args.config,
             native_config_path=args.native_config, hermes_python=args.hermes_python, resume=args.resume))
