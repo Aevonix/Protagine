@@ -43,6 +43,10 @@ Hermes version, `protagine-hermes`, `protagine`, FastAPI and Uvicorn. A new nati
 home, source ledger and API are created for each case and closed before the runner
 removes the owned state directory. The standard Hermes `state.db` path is required
 for native source ownership.
+The output's existing ancestors must satisfy the adapter's private SQLite path
+contract: owned by the current user or root, without group/other write permission
+(root-owned sticky temporary directories are allowed). Planning checks this before
+any inference. It does not change permissions of existing directories.
 
 Planning reads configuration and installed code only. It makes no model request
 and does not deploy or rebind anything. Both commands must use the same arguments

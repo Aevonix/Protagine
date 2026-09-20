@@ -6,7 +6,9 @@ from dataclasses import replace
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 
@@ -19,8 +21,23 @@ from .report import markdown, summarize
 from .runner import evaluate
 
 
+def preflight_output(output):
+    """Check existing ancestors before spending inference on source formation."""
+    for path in (Path(output).absolute(), *Path(output).absolute().parents):
+        try:
+            value = path.lstat()
+        except FileNotFoundError:
+            continue
+        sticky_root = value.st_uid == 0 and bool(value.st_mode & stat.S_ISVTX)
+        if (not stat.S_ISDIR(value.st_mode) or value.st_uid not in {0, os.geteuid()}
+                or (stat.S_IMODE(value.st_mode) & 0o022 and not sticky_root)):
+            raise ValueError('Native memory output requires owner/root directories without '
+                             'group/other write access; incompatible ancestor: ' + str(path))
+
+
 def prepare(args):
     from protagine.router import LLMRouter
+    preflight_output(args.output)
     native_config, recipe = configuration(args.native_config, args.native_binding,
                                           hermes_python=args.hermes_python)
     supporting = read(args.support_config)

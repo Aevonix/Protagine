@@ -152,7 +152,8 @@ def test_frozen_memory_manifest_has_real_consumers_and_fixed_support_roles(tmp_p
         'functionRoles': {'extraction': ['writer'], 'judging': ['writer']}}))
     args = argparse.Namespace(native_config=configured(tmp_path, 'http://127.0.0.1:9/v1'),
         native_binding='fixture', hermes_python=sys.executable, support_config=support,
-        case_ids=None, native_seconds=120, case_seconds=600, label='fixture', evidence_mode='controlled')
+        case_ids=None, native_seconds=120, case_seconds=600, label='fixture', evidence_mode='controlled',
+        output=tmp_path / 'batch')
     manifest, groups, _, _ = prepare(args)
     repeated, _, _, _ = prepare(args)
     assert manifest == repeated
@@ -164,9 +165,19 @@ def test_frozen_memory_manifest_has_real_consumers_and_fixed_support_roles(tmp_p
     assert recipe['memory_runtime']['native']['packages']['protagine_hermes']['files'] > 1
     assert 'private-fixture' not in json.dumps(manifest)
     directory = tmp_path / 'batch'
-    directory.mkdir()
+    directory.mkdir(mode=0o700)
     write_once(directory / 'benchmark.json', manifest)
     assert inspect(directory)['outcomes'] == {'not_run': 12}
     args.case_ids = 'not-a-case'
     with pytest.raises(ValueError, match='installed'):
         prepare(args)
+
+
+def test_native_memory_preflight_rejects_writable_ancestor_before_inference(tmp_path):
+    from protagine.qualification.native_memory_batch import prepare
+    parent = tmp_path / 'shared'
+    parent.mkdir(mode=0o775)
+    parent.chmod(0o775)
+    # Missing configuration arguments prove this stops before loading routers.
+    with pytest.raises(ValueError, match='incompatible ancestor'):
+        prepare(argparse.Namespace(output=parent / 'batch'))
