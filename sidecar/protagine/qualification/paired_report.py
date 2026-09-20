@@ -2,14 +2,32 @@
 from collections import Counter
 import math
 from pathlib import Path
+import statistics
 
 from .records import digest, read
 from .report import summarize as summarize_run
+from .paired_transport import TIMING_PROTOCOL
 
 ARMS = ('base_hermes', 'protagine')
 USAGE_METRICS = ('total_model_calls', 'input_tokens', 'output_tokens', 'background_model_calls')
 OBSERVED_USAGE = {'total_model_calls': 'observed_model_calls', 'input_tokens': 'observed_input_tokens',
                   'output_tokens': 'observed_output_tokens', 'background_model_calls': 'observed_background_model_calls'}
+TIMING_COVERAGE = ('Observed HTTP model requests across foreground and background work; '
+                   'coverage is incomplete and endpoint traffic may be shared. '
+                   'Request timing is not user-turn latency or serving capacity.')
+TIMING_DEFINITIONS = {
+    'first_generated_ms': 'Client-observed first nonempty reasoning, text or tool payload in completed SSE responses. '
+        'Role and empty frames are excluded; this is not server-internal token timing.',
+    'first_content_ms': 'Client-observed first nonempty nonreasoning text in completed SSE responses. '
+        'Tool-only responses have no value; this is not whole-task final-answer latency.',
+    'request_elapsed_ms': 'Client-observed request wall time through response completion/close for completed HTTP 2xx responses, '
+        'including queueing, prefill, generation and client response consumption.',
+    'request_output_tokens_per_second': 'Provider-reported completion tokens divided by client-observed request seconds, '
+        'for completed HTTP 2xx responses with token usage. Counts may include reasoning and tool tokens; '
+        'this is end-to-end output TPS, not decode TPS or aggregate serving throughput.',
+    'episode_elapsed_ms': 'Runner wall time per arm episode, including model calls, tools, fixed settling, '
+        'container startup and cleanup. Observed failed attempts are included.',
+}
 
 
 def load_manifest(directory):
@@ -84,6 +102,40 @@ def _accounting(rows):
     return result
 
 
+def _timing(rows):
+    requests = [request for row in rows for request in (row.get('effects') or {}).get('model_requests', [])
+                if isinstance(request, dict)]
+    instrumented = [request for request in requests if request.get('timing_protocol') == TIMING_PROTOCOL]
+    completed = [request for request in instrumented if request.get('response_complete') is True
+                 and type(request.get('status')) is int and 200 <= request['status'] < 300]
+    streaming = [request for request in completed if request.get('response_mode') == 'sse']
+    with_usage = [request for request in completed if isinstance(request.get('usage'), dict)
+                  and type(request['usage'].get('completion_tokens')) is int
+                  and request['usage']['completion_tokens'] >= 0]
+    metrics = {}
+
+    def add(name, values, eligible, unit='ms'):
+        values = [value for value in values if _number(value)]
+        metrics[name] = {'samples': len(values), 'eligible_samples': eligible,
+            'median': statistics.median(values) if values else None,
+            'min': min(values) if values else None, 'max': max(values) if values else None,
+            'unit': unit, 'definition': TIMING_DEFINITIONS[name]}
+
+    for name in ('first_generated_ms', 'first_content_ms'):
+        add(name, [request.get(name) for request in streaming], len(streaming))
+    add('request_elapsed_ms', [request.get('elapsed_ms') for request in completed], len(completed))
+    add('request_output_tokens_per_second', [request['usage']['completion_tokens'] * 1000 / request['elapsed_ms']
+        for request in with_usage if _number(request.get('elapsed_ms')) and request['elapsed_ms'] > 0],
+        len(completed), 'tokens/s')
+    add('episode_elapsed_ms', [row.get('elapsed_ms') for row in rows], len(rows))
+    return {'protocol': TIMING_PROTOCOL, 'coverage': TIMING_COVERAGE,
+        'requests': {'observed': len(requests), 'instrumented': len(instrumented),
+            'completed': len(completed), 'streaming': sum(request.get('response_mode') == 'sse' for request in instrumented),
+            'with_usage': len(with_usage), 'with_first_generated': metrics['first_generated_ms']['samples'],
+            'with_first_content': metrics['first_content_ms']['samples']},
+        'metrics': metrics, 'decode_tokens_per_second': None}
+
+
 def summarize(directory):
     manifest = load_manifest(directory)
     rows = {arm: [] for arm in ARMS}
@@ -110,7 +162,7 @@ def summarize(directory):
         arms[arm] = {'declared_episodes': declared_count, 'outcomes': dict(Counter(row['outcome'] for row in rows[arm])),
             'observed_completed': observed_completed, 'attributed_completed': completed,
             'completion_percent': 100 * completed / declared_count if full else None,
-            'accounting': _accounting(rows[arm])}
+            'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm])}
     score = None
     if full:
         counts = Counter(pair['comparison'] for pair in pairs)
@@ -164,6 +216,15 @@ def markdown(report):
             row = report['arms'][arm]['accounting'][metric]
             show = lambda value: 'unknown' if value is None else str(value)
             lines.append(f"| {arm} | {metric} | {show(row['total'])} | {show(row['observed_total'])} | {row['coverage']} |")
+    lines.extend(['', '## Observed timings', '', TIMING_COVERAGE, '',
+        '| Arm | Metric | Median | Min | Max | Samples / eligible |', '| --- | --- | --- | --- | --- | --- |'])
+    for arm in ARMS:
+        for name, metric in report['arms'][arm]['timing']['metrics'].items():
+            values = ['unknown' if metric[key] is None else f"{metric[key]:.3f} {metric['unit']}"
+                      for key in ('median', 'min', 'max')]
+            lines.append(f"| {arm} | {name} | {' | '.join(values)} | {metric['samples']}/{metric['eligible_samples']} |")
+    lines.extend(['', 'Decode TPS is unmeasured. Buffered JSON responses do not provide first-payload timing.', ''])
+    lines.extend(f'- `{name}`: {definition}' for name, definition in TIMING_DEFINITIONS.items())
     lines.extend(['', 'No model tier is assigned. Budget enforcement and endpoint isolation require independent evidence.',
                   f"Endpoint usage (self-reported): {report['policy']['environment']['endpoint_usage']}."])
     return '\n'.join(lines) + '\n'

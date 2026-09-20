@@ -262,6 +262,129 @@ def test_transport_ignores_other_endpoints_and_retains_unknown_usage():
     assert usage['observed_input_tokens'] is None and usage['input_tokens'] is None
 
 
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_stream_close_records_semantic_timings_once_even_without_iterator_exhaustion(monkeypatch, asynchronous):
+    clock = {'now': 0.0}
+    monkeypatch.setattr(paired_transport, 'time', SimpleNamespace(monotonic=lambda: clock['now']))
+    def frame(delta, **extra):
+        return b'data: ' + json.dumps({'model': 'served', 'choices': [{'delta': delta}], **extra}).encode() + b'\n\n'
+    chunks = [(.1, frame({'role': 'assistant'})), (.2, frame({'content': ''})),
+        (.4, frame({'reasoning_content': 'consider'})), (.7, frame({'content': 'answer'})),
+        (1.0, b'data: {"model":"served","choices":[{"delta":{},"finish_reason":"stop"}],'
+              b'"usage":{"prompt_tokens":80,"completion_tokens":20}}\n\n'),
+        (1.2, b'data: [DONE]\n\n')]
+    class SyncTimed(httpx.SyncByteStream):
+        def __iter__(self):
+            for timestamp, chunk in chunks:
+                clock['now'] = timestamp
+                yield chunk
+    class AsyncTimed(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for timestamp, chunk in chunks:
+                clock['now'] = timestamp
+                yield chunk
+    def respond(_):
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'},
+            stream=AsyncTimed() if asynchronous else SyncTimed())
+    with paired_transport.observe_requests('http://model.invalid/v1') as observations:
+        if asynchronous:
+            async def query():
+                async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+                    request = client.build_request('POST', 'http://model.invalid/v1/chat/completions',
+                                                   json={'model': 'candidate', 'messages': [], 'stream': True})
+                    response = await client.send(request, stream=True)
+                    async for chunk in response.aiter_raw():
+                        if b'[DONE]' in chunk:
+                            break
+                    await response.aclose()
+                    clock['now'] = 2
+                    await response.aclose()
+            asyncio.run(query())
+        else:
+            with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                request = client.build_request('POST', 'http://model.invalid/v1/chat/completions',
+                                               json={'model': 'candidate', 'messages': [], 'stream': True})
+                response = client.send(request, stream=True)
+                for chunk in response.iter_raw():
+                    if b'[DONE]' in chunk:
+                        break
+                response.close()
+                clock['now'] = 2
+                response.close()
+    row, = observations
+    assert row['first_chunk_ms'] == 100  # Role-only frame remains a legacy diagnostic.
+    assert row['first_generated_ms'] == 400 and row['first_content_ms'] == 700
+    assert row['elapsed_ms'] == 1200 and row['response_complete'] is True
+    assert row['timing_protocol'] == 'paired-transport-2' and row['response_mode'] == 'sse'
+    assert row['usage']['completion_tokens'] == 20
+
+
+def test_payload_timing_distinguishes_tool_arguments_from_role_and_ids():
+    classify = paired_transport._payload_kinds
+    assert classify({'choices': [{'delta': {'role': 'assistant', 'content': ''}}]}) == (False, False)
+    assert classify({'choices': [{'delta': {'tool_calls': [{'index': 0, 'id': 'call-1'}]}}]}) == (False, False)
+    tool = {'tool_calls': [{'function': {'arguments': '{'}}]}
+    assert classify({'choices': [{'delta': tool}]}) == (True, False)
+    assert classify({'choices': [{'delta': {'reasoning': 'consider'}}]}) == (True, False)
+    assert classify({'choices': [{'delta': {'content': 'answer'}}]}) == (True, True)
+    assert classify({'type': 'response.function_call_arguments.delta', 'delta': '{'}) == (True, False)
+    assert classify({'type': 'response.output_text.delta', 'delta': 'answer'}) == (True, True)
+    assert classify({'choices': 1}) == (False, False)
+
+
+def test_buffered_json_never_claims_observed_first_token_timing():
+    with paired_transport.observe_requests('http://model.invalid/v1') as observations:
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200,
+                json={'model': 'served', 'choices': [{'message': {'content': 'answer'}}],
+                      'usage': {'prompt_tokens': 10, 'completion_tokens': 2}}))) as client:
+            client.post('http://model.invalid/v1/chat/completions', json={'messages': []})
+    row, = observations
+    assert row['response_mode'] == 'buffered_json' and row['response_complete'] is True
+    assert row['elapsed_ms'] >= 0
+    assert row['first_generated_ms'] is None and row['first_content_ms'] is None
+
+
+def test_already_buffered_sse_does_not_fabricate_first_payload_latency():
+    raw = (b'data: {"model":"served","choices":[{"delta":{"content":"answer"}}]}\n\n'
+           b'data: [DONE]\n\n')
+    with paired_transport.observe_requests('http://model.invalid/v1') as observations:
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200,
+                headers={'content-type': 'text/event-stream'}, stream=SyncChunks([raw])))) as client:
+            response = client.post('http://model.invalid/v1/chat/completions', json={'messages': []})
+            assert response.content == raw
+    row, = observations
+    assert row['response_mode'] == 'buffered_sse' and row['response_complete'] is True
+    assert row['elapsed_ms'] is not None
+    assert row['first_generated_ms'] is None and row['first_content_ms'] is None
+
+
+def test_early_stream_close_does_not_claim_completed_response():
+    stream = SyncChunks([b'data: {"model":"served","choices":[{"delta":{"content":"partial"}}]}\n\n',
+                         b'data: [DONE]\n\n'])
+    with paired_transport.observe_requests('http://model.invalid/v1') as observations:
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200,
+                headers={'content-type': 'text/event-stream'}, stream=stream))) as client:
+            response = client.send(client.build_request('POST', 'http://model.invalid/v1/chat/completions',
+                json={'messages': [], 'stream': True}), stream=True)
+            next(response.iter_raw())
+            response.close()
+    row, = observations
+    assert row['response_complete'] is False and row['elapsed_ms'] is not None
+    assert row['first_generated_ms'] is not None
+
+
+def test_request_failure_keeps_elapsed_observation_without_a_success_or_token_count():
+    def fail(request):
+        raise httpx.ConnectError('controlled unavailable endpoint', request=request)
+    with paired_transport.observe_requests('http://model.invalid/v1') as observations:
+        with httpx.Client(transport=httpx.MockTransport(fail)) as client:
+            with pytest.raises(httpx.ConnectError):
+                client.post('http://model.invalid/v1/chat/completions', json={'messages': []})
+    row, = observations
+    assert row['elapsed_ms'] is not None and row['termination'] == 'request_error'
+    assert row['response_complete'] is False and row['usage'] is None
+
+
 def test_partial_usage_keeps_known_calls_without_treating_unfinished_calls_as_zero():
     usage = paired_transport.usage_summary([
         {'usage': {'prompt_tokens': 17, 'completion_tokens': 3}},

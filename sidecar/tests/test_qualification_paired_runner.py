@@ -271,6 +271,39 @@ def test_transport_observed_subtotals_are_visible_without_becoming_totals(fixtur
         assert metrics['background_model_calls']['observed_total'] is None
 
 
+def test_timing_report_uses_only_completed_new_observations_and_explicit_denominators():
+    def request(mode, elapsed, tokens, generated=None, content=None, complete=True):
+        return {'timing_protocol': 'paired-transport-2', 'response_mode': mode, 'response_complete': complete,
+                'status': 200, 'elapsed_ms': elapsed, 'usage': {'completion_tokens': tokens},
+                'first_generated_ms': generated, 'first_content_ms': content}
+    rows = [{'elapsed_ms': 10000, 'effects': {'model_requests': [
+        request('sse', 1000, 50, 100, 300), request('sse', 500, 20, 50),
+        request('buffered_json', 2000, 100), request('sse', 100, 1000, 5, complete=False),
+        {'first_chunk_ms': 1, 'elapsed_ms': 1000, 'usage': {'completion_tokens': 500}},
+    ]}}]
+    result = paired_report._timing(rows)
+    assert result['requests'] == {'observed': 5, 'instrumented': 4, 'completed': 3,
+        'streaming': 3, 'with_usage': 3, 'with_first_generated': 2, 'with_first_content': 1}
+    metrics = result['metrics']
+    assert metrics['first_generated_ms']['median'] == 75
+    assert metrics['first_content_ms']['samples'] == 1 and metrics['first_content_ms']['eligible_samples'] == 2
+    assert metrics['request_output_tokens_per_second']['median'] == 50
+    assert metrics['request_output_tokens_per_second']['min'] == 40
+    assert metrics['request_output_tokens_per_second']['samples'] == 3
+    assert metrics['episode_elapsed_ms']['median'] == 10000
+    assert result['decode_tokens_per_second'] is None
+
+
+def test_legacy_first_chunk_is_never_reinterpreted_as_ttft_or_new_tps():
+    result = paired_report._timing([{'elapsed_ms': 3000, 'effects': {'model_requests': [
+        {'first_chunk_ms': 5, 'elapsed_ms': 2000, 'usage': {'completion_tokens': 100}}]}}])
+    assert result['requests']['observed'] == 1 and result['requests']['instrumented'] == 0
+    for name, metric in result['metrics'].items():
+        if name != 'episode_elapsed_ms':
+            assert metric['samples'] == 0 and metric['median'] is None
+    assert result['metrics']['episode_elapsed_ms']['median'] == 3000
+
+
 def test_case_mismatch_is_rejected_before_execution(fixture, monkeypatch):
     from protagine.qualification import paired_cases
     def mismatched(arm, case_ids=None):
