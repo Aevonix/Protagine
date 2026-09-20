@@ -11,7 +11,7 @@ from conftest import ROOT, run_python
 
 
 PROBE = r'''
-import copy, json, os, socket, sys, time
+import copy, hashlib, json, os, socket, sys, time
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0,sys.argv[1]); sys.path.insert(1,sys.argv[2])
@@ -23,7 +23,13 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
 from protagine.turns import get_turn_idempotency_ledger
 from protagine_hermes.client import source_message_hash
-from protagine_hermes.input_provenance import SourceUpdate, transport_input, current
+from protagine_hermes.input_provenance import SourceUpdate, SuppliedInput, transport_input, current
+observed_requests=[]
+original_observe_updates=SuppliedInput.observe_updates
+def record_observed_request(self,scope,request,**kwargs):
+ if kwargs.get('stage')=='native_request_visible':observed_requests.append(copy.deepcopy(request))
+ return original_observe_updates(self,scope,request,**kwargs)
+SuppliedInput.observe_updates=record_observed_request
 import protagine_hermes.client as cm
 import protagine_hermes.request_memory as rm
 import protagine_hermes.request_work as rw
@@ -57,6 +63,16 @@ root_input=[{'source_id':'root-source','input_message_hash':source_message_hash(
 change_input=[{'source_id':'change-source','input_message_hash':source_message_hash(
  'email-input',{'role':'user','content':instruction})}]
 scenario=sys.argv[3];bodies=[];observations=[];granted=True;carrier=change_ref=None
+if scenario=='summary_layout':
+ # An iteration summary bypasses normal request middleware. Supply a neutral
+ # extra leading note on the real memory result to exercise final compaction.
+ original_memory=rm.RequestMemory.__call__
+ def leading_note(self,*args,**kwargs):
+  result=original_memory(self,*args,**kwargs)
+  request=copy.deepcopy(result['request'])
+  request['messages'].insert(0,{'role':'system','content':'Controlled request-layout note.'})
+  return {**result,'request':request}
+ rm.RequestMemory.__call__=leading_note
 if scenario=='ownership_failure':
  from protagine_hermes.native_owned_copies import NativeOwnedCopies
  retain=NativeOwnedCopies._retain_anchor
@@ -131,9 +147,26 @@ def respond(request):
     assert reservations[0]['input_refs']==change_input
     assert instruction not in json.dumps(reservations),'Ownership retained a plaintext copy'
    assert any(row['stage']=='native_request_visible' for row in observations),observations
+   if step==2:
+    visible=[row for row in observations if row['stage']=='native_request_visible']
+    assert len(visible)==1,visible
+    visible_request=observed_requests[-1]
+    request_hash=hashlib.sha256(json.dumps(visible_request,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+    assert visible[0]['request_sha256']==request_hash,('Receipt differs from Relay provider kwargs',visible[0],request_hash)
+    serialized=copy.deepcopy(visible_request)
+    # Hermes adds these exact streaming transport fields after Relay. All
+    # model-visible fields must otherwise equal the physical SDK request.
+    if body.get('stream') is True and 'stream' not in serialized:
+     assert 'stream_options' not in serialized
+     serialized.update(stream=True,stream_options={'include_usage':True})
+    assert serialized==body,('Receipt request changed after observation',
+     [key for key in set(serialized)|set(body) if serialized.get(key)!=body.get(key)])
+    if scenario=='summary_layout':
+     assert body['messages'][0]['content'].startswith('Controlled request-layout note.\n\n')
+     assert all(row.get('role')!='system' for row in body['messages'][1:])
    assert all(row['boundary'] in {'hermes_request_middleware','relay_before_next_call'} for row in observations)
    assert all('instruction' not in row and row['update_id']=='change-one' for row in observations)
-   if scenario=='summary':assert not any(row['stage']=='middleware_visible' for row in observations),observations
+   if scenario in {'summary','summary_layout'}:assert not any(row['stage']=='middleware_visible' for row in observations),observations
    message={'role':'assistant','content':'The checklist label is ORANGE-472.'}
   finish='stop'
   if scenario=='erased_after_visibility' and step==2:
@@ -172,7 +205,7 @@ from run_agent import AIAgent
 from hermes_state import SessionDB
 parent=AIAgent(api_key='fixture',base_url='http://model.fixture/v1',provider='custom',model='fixture',
  quiet_mode=True,skip_context_files=True,skip_memory=False,platform='cli',
- max_iterations=1 if scenario=='summary' else 5,enabled_toolsets=['protagine','delegation'],
+ max_iterations=1 if scenario in {'summary','summary_layout'} else 5,enabled_toolsets=['protagine','delegation'],
  session_db=SessionDB(home/'state.db'))
 parent.save_trajectories=False
 try:
@@ -221,7 +254,7 @@ print(json.dumps({'scenario':scenario,'physical_sdk_requests':len(bodies),
 '''
 
 
-@pytest.mark.parametrize('scenario', ['normal', 'summary', 'erased', 'revoked', 'receipt_failure',
+@pytest.mark.parametrize('scenario', ['normal', 'summary', 'summary_layout', 'erased', 'revoked', 'receipt_failure',
                                       'erased_after_visibility', 'joined_child', 'ownership_failure',
                                       'gateway_envelope', 'gateway_extra_text'])
 def test_native_source_update_sdk_and_failure_boundaries(artifacts, tmp_path, scenario):
