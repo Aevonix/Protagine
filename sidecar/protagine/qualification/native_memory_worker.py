@@ -1,5 +1,5 @@
 """Isolated native memory observation over real plugin/provider and host routes."""
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import json
 import hashlib
 import os
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 
 @contextmanager
-def prepare(request, state, arguments, config):
+def prepare(request, state, arguments, config, *, setup_host=None):
     """Enable only this fixture's private profile and ledger, before agent construction."""
     inputs = request['inputs']
     person = inputs['contact_id']
@@ -53,16 +53,20 @@ def prepare(request, state, arguments, config):
 
     app.include_router(host.router)
     app.include_router(host.v2_router)
-    listener = socket.socket()
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(64)
-    port = listener.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port,
-        lifespan='off', access_log=False, log_level='error'))
-    thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
-    thread.start()
+    host_resources = ExitStack()
+    listener = server = thread = None
     transport_observer = None
     try:
+        if setup_host is not None:
+            host_resources.enter_context(setup_host(app, state, inputs, config))
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(64)
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port,
+            lifespan='off', access_log=False, log_level='error'))
+        thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
+        thread.start()
         started = time.monotonic()
         while not server.started:
             if not thread.is_alive() or time.monotonic() - started > 5:
@@ -70,6 +74,7 @@ def prepare(request, state, arguments, config):
             time.sleep(.01)
         url = f'http://127.0.0.1:{port}'
         config.update(plugins={'enabled': ['protagine'], 'protagine': {
+            **config.get('plugins', {}).get('protagine', {}),
             'url': url, 'api_key': secret, 'owner_contact_id': person,
             'attested_system_platforms': ['cli'], 'turn_writer_platforms': ['cli']}},
             memory={'provider': 'protagine-memory', 'config': {
@@ -161,7 +166,8 @@ def prepare(request, state, arguments, config):
             session_db=SessionDB(state / 'state.db'))
 
         def evidence(agent, response):
-            provider = agent._memory_manager.get_provider('protagine')
+            manager = agent._memory_manager
+            provider = manager.get_provider('protagine') if manager is not None else None
             ledger = get_turn_idempotency_ledger(state / 'memory-state')
             return {'consumer': 'native_protagine_automatic_recollection',
                 'memory_provider_loaded': provider is not None,
@@ -183,10 +189,14 @@ def prepare(request, state, arguments, config):
     finally:
         if transport_observer is not None:
             transport_observer.stop()
-        server.should_exit = True
-        thread.join(5)
-        listener.close()
-        if thread.is_alive():
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(5)
+        if listener is not None:
+            listener.close()
+        host_resources.close()
+        if thread is not None and thread.is_alive():
             raise RuntimeError('Isolated memory API did not stop')
 
 
