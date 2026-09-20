@@ -1,6 +1,7 @@
 """Canonical collection and selection shared by recall and explicit search."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import logging
 import os
@@ -45,7 +46,10 @@ async def collect_sources(ledger, *, query: str, contact_id: str, session_id: st
                                 ledger.erasure_watermark(contact_id) if ledger is not None else None)
     if ledger is None or not query.strip():
         return collected
-    collected.hits = ledger.search_sources(query, contact_id=contact_id, session_id=session_id, limit=10)
+    # The ledger opens its own connection; large lexical scans must not hold
+    # the HTTP event loop while transport intake waits for its response.
+    collected.hits = await asyncio.to_thread(
+        ledger.search_sources, query, contact_id=contact_id, session_id=session_id, limit=10)
     try:
         semantic_hits, collected.media = await SourceVectors(
             ledger, vector_store, embedding_pipeline).search(

@@ -1,6 +1,7 @@
 """Explicit search shares automatic recall's evidence, scope and model projections."""
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
@@ -197,6 +198,44 @@ async def test_unprojected_lance_table_is_not_healthy_empty_search(memory_app, t
         assert 'Friday at nine' in restored['content']
         assert restored['retrieval']['semantic'] == 'ready'
         assert queries == ['unmatched vermilion planet', 'vessel departure identifier']
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_keeps_http_responsive_and_rechecks_erasure(memory_app, monkeypatch):
+    app, ledger = memory_app
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    original = TurnIdempotencyLedger.search_sources
+
+    def blocked_search(self, *args, **kwargs):
+        hits = original(self, *args, **kwargs)
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(timeout=5)
+            return hits
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(TurnIdempotencyLedger, 'search_sources', blocked_search)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
+                           headers={'Authorization': 'Bearer person'}) as client:
+        pending = asyncio.create_task(search(client))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            response = await asyncio.wait_for(client.post('/v1/host/memory/sources/erasures', json={
+                'contact_id': 'person', 'session_id': 'later', 'after': 0,
+                'source_refs': ledger.source_references(['report'], contact_id='person', session_id='later'),
+            }), timeout=2)
+            assert response.status_code == 200, response.text
+            assert response.json()['sources_current'] is True
+            assert not finished.is_set(), 'lexical search blocked another HTTP request'
+            ledger.erase_sources(contact_id='person', turn_ids=['report'])
+        finally:
+            release.set()
+            result = await asyncio.wait_for(pending, timeout=2)
+        assert result['content'] == '' and result['source_refs'] == []
 
 
 @pytest.mark.asyncio
