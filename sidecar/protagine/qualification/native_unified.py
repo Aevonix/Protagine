@@ -48,15 +48,16 @@ def retain_private_diagnostic(state):
     write_once(state.parent/'unified-private-diagnostic.json', receipt)
 
 
-async def consume(inputs, context):
+async def consume(inputs, context, *, worker=None):
     attempts = context.state_dir.parent.parent
     if attempts.name != 'attempts':
         raise ValueError('Native unified work requires an owned qualification attempt')
     attempts.chmod(0o700)
     (context.state_dir/'memory-state').mkdir(mode=0o700)
     try:
-        worker = 'native_unified_base_worker.py' if inputs.get('arm') == 'base_hermes' else 'native_unified_worker.py'
-        result = await native_cli(deepcopy(inputs), context, worker=Path(__file__).with_name(worker),
+        selected_worker = worker or Path(__file__).with_name(
+            'native_unified_base_worker.py' if inputs.get('arm') == 'base_hermes' else 'native_unified_worker.py')
+        result = await native_cli(deepcopy(inputs), context, worker=selected_worker,
                                   allow_incomplete_results=True)
         requests = result['effects'].get('request_observations', [])
         returned = {model for row in requests for model in row.get('returned_models', [])}
