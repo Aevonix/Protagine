@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from protagine.qualification.public_export import export_records, publish_snapshot
+from protagine.qualification.public_export import export_records, failure_stage, publish_snapshot
 from protagine.qualification.records import CaseSpec, encode, write_once
 
 META = {'publication_scope': 'public_synthetic', 'phase': 'screen',
@@ -58,6 +58,10 @@ def test_success_without_primary_attribution_is_not_model_pass(tmp_path):
     assert run['counts']['outcomes'] == {'pass': 1}
     assert run['counts']['primary_passes'] == 0
     assert run['cases'][0]['failure_stage'] == 'attribution'
+
+
+def test_json_contract_failure_is_distinct_from_wrong_facts():
+    assert failure_stage({'outcome': 'fail', 'checks': {'output_is_json': False}}) == 'output_contract'
 
 
 def test_private_fixture_and_unapproved_export_are_rejected(tmp_path):

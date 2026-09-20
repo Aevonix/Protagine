@@ -93,6 +93,8 @@ def failure_stage(row):
         return outcome
     if row.get('failure_category') in {'no_output', 'missing_final_answer', 'incomplete_final_answer'}:
         return 'final_answer'
+    if row.get('checks', {}).get('output_is_json') is False:
+        return 'output_contract'
     if outcome == 'fail':
         return 'case_checks'
     if outcome == 'error':
