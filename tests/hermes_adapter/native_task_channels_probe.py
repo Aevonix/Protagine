@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import socket
 import sys
 import threading
@@ -144,6 +145,19 @@ def existing_task_handoff(body, identity):
         for call in calls]}, 'tool_calls')
 
 
+def request_work_rows(body):
+    # Work instructions can share a leading message with other instructions.
+    # Read only the owned frame, so unrelated JSON cannot satisfy lineage checks.
+    blocks = [block for message in body['messages']
+        if message.get('role') in {'system', 'developer'}
+        and isinstance(message.get('content'), str)
+        for block in re.findall(
+            r'\[protagine-work-request-v1\]\n(.*?)\n\[/protagine-work-request-v1\]',
+            message['content'], re.S)]
+    assert len(blocks) == 1, blocks
+    return [json.loads(line) for line in blocks[0].splitlines() if line.startswith('{')]
+
+
 def respond(request):
     if request.url.host == 'fixture':
         response = api.request(request.method, request.url.path, params=request.url.params,
@@ -209,10 +223,7 @@ def respond(request):
             'memory_sessions': list(supplied._memory_sessions), 'messages': body['messages'],
             'freshness_warnings': freshness_warnings[-4:]}
         if step == 1:
-            work_rows = [json.loads(line) for message in body['messages']
-                if message.get('role') in {'system', 'developer'}
-                and str(message.get('content', '')).startswith('[protagine-work-request-v1]')
-                for line in message['content'].splitlines() if line.startswith('{')]
+            work_rows = request_work_rows(body)
             origin = next((item for item in work_rows
                 if item.get('task_id') == row['id'] and item.get('origin_execution_id')), None)
             assert origin is not None, ('Accepted task lacks its exact admitting execution', work_rows)
@@ -307,10 +318,7 @@ def respond(request):
         assert step <= (3 if tag == 'STATUS_QUEUED' else 2)
         if step == 1:
             if tag == 'STATUS_ERASED':
-                work_rows = [json.loads(line) for message in body['messages']
-                    if message.get('role') in {'system', 'developer'}
-                    and str(message.get('content', '')).startswith('[protagine-work-request-v1]')
-                    for line in message['content'].splitlines() if line.startswith('{')]
+                work_rows = request_work_rows(body)
                 assert not any(item.get('task_id') == task_ids['alpha']
                     and item.get('origin_execution_id') for item in work_rows), work_rows
             return tool(body, 'protagine_task', {'operation': 'status', 'task_id': task_ids['alpha']})

@@ -11,7 +11,7 @@ from conftest import ROOT, run_python
 
 
 PROBE = r'''
-import json, os, socket, sys
+import json, os, re, socket, sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, sys.argv[1]); sys.path.insert(1, sys.argv[2])
@@ -108,8 +108,11 @@ def respond(request):
    assert 'Relevant Memories' in str(current_user['content']),current_user
    assert 'maintenance-record' in str(current_user['content']),current_user
    assert len([row for row in wire if row['path']=='/v1/host/context/assemble'])==1
-   work=next(row['content'] for row in body['messages'] if row.get('role') in ('system','developer')
-    and isinstance(row.get('content'),str) and row['content'].startswith('[protagine-work-request-v1]'))
+   work_blocks=[block for row in body['messages'] if row.get('role') in ('system','developer')
+    and isinstance(row.get('content'),str) for block in re.findall(
+     r'\[protagine-work-request-v1\]\n(.*?)\n\[/protagine-work-request-v1\]', row['content'], re.S)]
+   assert len(work_blocks)==1,work_blocks
+   work=work_blocks[0]
    observed=[json.loads(line) for line in work.splitlines() if line.startswith('{')]
    root=next(row for row in observed if row.get('source')=='execution')
    assert root['request_input']['excerpt']==original,observed
