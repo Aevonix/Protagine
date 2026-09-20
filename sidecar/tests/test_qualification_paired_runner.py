@@ -109,6 +109,26 @@ def test_plan_freezes_identical_tasks_and_alternating_pair_order(fixture):
     assert report['arms']['base_hermes']['outcomes'] == {'not_run': 2}
 
 
+def test_explicit_dataset_version_and_source_hash_survive_plan_and_run(fixture, monkeypatch):
+    from protagine.qualification import paired_cases
+    chosen = []
+    def versioned_cases(arm, case_ids=None, dataset_version=None):
+        chosen.append(dataset_version)
+        assert dataset_version == 'reviewed-fixture-2'
+        return [replace(case, version=dataset_version, inputs={**case.inputs,
+            'dataset': {'version': dataset_version, 'sha256': 'b' * 64}})
+            for case in fixture.cases(arm, case_ids)]
+    monkeypatch.setattr(paired_cases, 'cases', versioned_cases)
+    plan = paired.plan(fixture.output, native_binding='candidate',
+        evidence_mode='controlled', dataset_version='reviewed-fixture-2', **fixture.resources)
+    assert plan['dataset']['version'] == 'reviewed-fixture-2'
+    assert plan['dataset']['source_sha256'] == 'b' * 64
+    result = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    assert chosen == ['reviewed-fixture-2'] * 4
+    assert result['dataset'] == plan['dataset']
+    assert result['paired_score']['episodes'] == 2
+
+
 def test_execution_is_isolated_paired_and_resume_never_replays(fixture):
     freeze(fixture)
     fixture.modes.update({('episode-0', 'base_hermes'): 'fail', ('episode-1', 'protagine'): 'fail'})

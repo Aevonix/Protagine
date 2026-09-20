@@ -1,6 +1,6 @@
 # Paired Hermes and Protagine benchmark
 
-`protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The initial dataset has 18 public development episodes, three in each of six families. It is a pilot for the harness, not a comprehensive model ranking.
+`protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The reviewed development dataset has 60 episodes, ten in each of six families. The original 18-episode pilot remains available under its original version. Neither dataset establishes a comprehensive model ranking.
 
 Both arms use the same configured model, provider settings, immutable container image, initial files, source events, task instructions, output limits and artifact verifier. Hermes keeps its ordinary memory and session tools in the baseline. Protagine adds its normal integration in the other arm. Historical facts arrive through the same episode turns; answers are not preloaded only for Protagine. The verifier's oracle stays outside the agent container.
 
@@ -37,6 +37,7 @@ protagine models paired plan \
   --native-config /private/candidate-hermes.yaml --native-binding candidate \
   --comparison-policy /private/paired-policy.json \
   --container-image registry.example/agent-benchmark@sha256:IMAGE_DIGEST \
+  --dataset-version paired-agent-reviewed-1 \
   --label candidate-pilot-01 --output /private/results/candidate-pilot-01
 
 protagine models paired run \
@@ -48,7 +49,9 @@ protagine models paired run \
 protagine models paired report --output /private/results/candidate-pilot-01
 ```
 
-Replace the example image digest with the actual pinned image. `--docker-host` selects an explicitly configured local or forwarded Docker daemon. There is no local-process fallback. Select a bounded subset with `--case-ids` at plan time; it always selects both arms together. The default runs all installed episodes.
+Replace the example image digest with the actual pinned image. `--docker-host` selects an explicitly configured local or forwarded Docker daemon. There is no local-process fallback. Select a bounded subset with `--case-ids` at plan time; it always selects both arms together. Without `--case-ids`, every episode in the selected dataset runs. Without `--dataset-version`, the original `paired-agent-pilot-1` is selected. A run uses the version frozen in its plan.
+
+Fixture JSON, task instructions and artifact checks are versioned in the repository. A changed task or grading contract gets a new dataset version and content hash; it does not replace an earlier result. The reviewed dataset includes stricter output contracts and checks of both successful and incorrect artifacts. It is still public development data, so improvements measured here need separate held-out validation.
 
 The supplied model URL must be reachable from the container network. A loopback URL names the container itself, not the machine running the CLI or a remote Docker daemon. Use the endpoint's reachable address; the benchmark does not change model listeners or production routing. [Image build instructions](../benchmarks/paired/README.md) describe the pinned source exports and dependencies.
 

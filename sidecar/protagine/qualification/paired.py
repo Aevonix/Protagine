@@ -56,7 +56,7 @@ def _execution_identity(consumers, evaluators):
 
 
 def prepare(*, output, native_config, native_binding, comparison_policy, container_image,
-            docker_host=None, case_ids=None, label='candidate', evidence_mode='actual_inference'):
+            docker_host=None, case_ids=None, dataset_version=None, label='candidate', evidence_mode='actual_inference'):
     """Resolve local recipes and pinned image identity without calling a model."""
     from . import paired_cases, paired_container
     from .native_memory_batch import preflight_output
@@ -77,7 +77,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         variables.update(provider[key] for key in ('key_env', 'api_key_env') if provider.get(key))
     if any(not os.environ.get(name) for name in variables):
         raise ValueError('Selected native provider references an unset credential environment variable')
-    by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids) for arm in ARMS}
+    dataset_options = {'dataset_version': dataset_version} if dataset_version is not None else {}
+    by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, **dataset_options) for arm in ARMS}
     identifiers = [case.id for case in by_arm[ARMS[0]]]
     if not 1 <= len(identifiers) <= 128 or len(set(identifiers)) != len(identifiers):
         raise ValueError('Paired plan requires 1..128 distinct episodes')
@@ -93,8 +94,14 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
                     or case.evaluator not in paired_cases.EVALUATORS):
                 raise ValueError('Invalid paired native case contract')
     tasks = [_task(case) for case in by_arm[ARMS[0]]]
-    dataset = {'version': paired_cases.VERSION, 'sha256': digest(tasks),
-               'source_sha256': getattr(paired_cases, 'DATASET_SHA256', None),
+    declarations = [case.inputs.get('dataset') for case in by_arm[ARMS[0]]]
+    declared = declarations[0]
+    if any(item is not None for item in declarations) and (not isinstance(declared, dict)
+            or any(item != declared for item in declarations)
+            or any(case.version != declared.get('version') for case in by_arm[ARMS[0]])):
+        raise ValueError('Episodes must identify one consistent dataset version and source hash')
+    dataset = {'version': declared['version'] if declared else paired_cases.VERSION, 'sha256': digest(tasks),
+               'source_sha256': declared['sha256'] if declared else getattr(paired_cases, 'DATASET_SHA256', None),
                'split': 'development', 'episode_ids': identifiers}
     implementation = implementation_identity()
     # The candidate recipe is also frozen below. This key declares the shared
@@ -124,7 +131,7 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         'order_policy': 'alternate-first-arm-by-declared-episode-index',
         'state_policy': 'fresh-container-and-state-per-arm-episode; persistence-within-episode',
         'budget_verification': 'declared; accounting/enforcement require execution evidence',
-        'options': {'native_binding': native_binding, 'case_ids': identifiers},
+        'options': {'native_binding': native_binding, 'case_ids': identifiers, 'dataset_version': dataset_version},
         'pairs': pairs, 'implementation': implementation,
         'execution_implementation_sha256': _execution_identity(paired_container.CONSUMERS, paired_cases.EVALUATORS),
         'coverage': 'Development pilot episodes; no held-out, deployment or model-tier qualification.'}
@@ -181,6 +188,7 @@ def add_parser(commands):
             item.add_argument('--docker-host', help='Declared Docker daemon; never mounted inside the benchmark')
         if command == 'plan':
             item.add_argument('--native-binding', required=True)
+            item.add_argument('--dataset-version', help='Explicit installed fixture version; frozen into the plan')
             item.add_argument('--case-ids', help='Comma-separated installed episode IDs; selects both arms together')
             item.add_argument('--label', default='candidate')
             item.add_argument('--evidence-mode', choices=['actual_inference', 'controlled'], default='actual_inference')
@@ -201,6 +209,7 @@ def cli(args):
         ('native_config', 'comparison_policy', 'container_image', 'docker_host')}
     if args.paired_command == 'plan':
         result = plan(args.output, native_binding=args.native_binding,
+            dataset_version=args.dataset_version,
             case_ids=[value.strip() for value in args.case_ids.split(',')] if args.case_ids else None,
             label=args.label, evidence_mode=args.evidence_mode, **resources)
         print(json.dumps(result, indent=2))

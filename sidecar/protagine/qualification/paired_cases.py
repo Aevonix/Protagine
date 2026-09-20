@@ -1,7 +1,7 @@
-"""Small paired native-agent pilot, judged by files rather than reply wording.
+"""Versioned paired native-agent scenarios, judged by files rather than reply wording.
 
-These 18 public development scenarios are bring-up coverage, not a comprehensive
-agent benchmark. Both arms receive identical tasks, initial files and oracles.
+The original 18-case pilot and reviewed 60-case set are public development data,
+not a comprehensive agent benchmark. Both arms receive identical tasks and oracles.
 Memory facts arrive in ordinary turns. Session changes are sequential; disclosure
 tasks test requested artifact scope, not authenticated access control. The Python
 repair case verifies syntax/API shape only, not executable behavior.
@@ -24,7 +24,7 @@ FAMILIES = (
     'crosssession-authority', 'coding-ops', 'extraction-review',
 )
 LIMITATIONS = (
-    'Eighteen public development scenarios; the proposed sixty-case suite is not implemented.',
+    'Public development scenarios; neither dataset establishes comprehensive agent qualification.',
     'Sequential sessions only; no concurrency, scheduling fairness or race coverage.',
     'Disclosure checks inspect requested artifacts, not authenticated authorization or every output channel.',
     'Forgetting checks later output behavior, not deletion from every underlying store.',
