@@ -129,7 +129,7 @@ def _environment(state, config):
     return env
 
 
-async def native_cli(inputs, context, *, worker=None):
+async def native_cli(inputs, context, *, worker=None, allow_incomplete_results=False):
     """Cancel only our child; its SIGTERM handler calls its agent's hard_interrupt."""
     state = context.state_dir
     binding, config = context.router.binding, context.router.native_config
@@ -210,9 +210,12 @@ async def native_cli(inputs, context, *, worker=None):
                 clean and observed['process_exited'] and not observed['forced_termination'])
             observed['elapsed_ms'] = round((time.monotonic()-started)*1000, 3)
             context.observe(observed)
-    if proc.returncode != 0 or result.get('stage') != 'returned':
+    incomplete = (allow_incomplete_results and result.get('stage') == 'incomplete'
+                  and proc.returncode == 1 and result.get('worker_stopped') is True)
+    if not incomplete and (proc.returncode != 0 or result.get('stage') != 'returned'):
         raise RuntimeError('Native qualification did not return a completed result')
     return {'output': result.get('output'), 'effects': {'consumer': 'isolated_native_cli_loop',
+        'native_turn_complete': result.get('stage') == 'returned',
         'process_exited': observed['process_exited'], 'worker_stopped': result['worker_stopped'],
         'agent_close_returned': result['agent_close_returned'],
         **result.get('tool_evidence', {})}}
