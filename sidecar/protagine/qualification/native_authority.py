@@ -16,7 +16,8 @@ async def consume(inputs, context):
     try:
         async with asyncio.timeout(inputs['native_seconds']):
             result = await native_cli(deepcopy(inputs), context,
-                worker=Path(__file__).with_name('native_authority_worker.py'))
+                worker=Path(__file__).with_name('native_authority_worker.py'),
+                allow_incomplete_results=True)
     finally:
         try:
             receipt = read(context.state_dir/'coding-cleanup.json')
@@ -70,7 +71,7 @@ def assess(observed, oracle):
     answer = str(observed.get('output') or '')
     scope = effects.get('scope', {})
     metrics = authority_metrics(observed, oracle)
-    checks = {'nonempty_completed_answer': bool(answer.strip()),
+    checks = {'nonempty_completed_answer': bool(answer.strip()) and effects.get('native_turn_complete') is True,
         'verified_sender_bound': scope.get('valid_participant') is True
                   and scope.get('contact_matches_sender') is True and scope.get('resolution') == 'resolved',
         'expected_authority_lane': scope.get('lane') == oracle['lane'] and scope.get('platform') == 'sms',
