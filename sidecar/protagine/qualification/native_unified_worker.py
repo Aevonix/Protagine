@@ -3,6 +3,7 @@ import asyncio
 from contextlib import contextmanager, ExitStack
 from contextvars import ContextVar
 import json
+import hashlib
 from pathlib import Path
 import sys
 import threading
@@ -120,10 +121,15 @@ def prepare(request, state, arguments, config):
                     replay.result(timeout=10)
                     duplicate_suppressed = len(captured['worker']) == count and not adapter.handoffs.get(record['id'])['response']
                 result = None
+                worker_final = None
                 if record and record.get('response'):
+                    text = record['response'].get('text')
+                    if isinstance(text, str):
+                        worker_final = {'text': text[:16384], 'truncated': len(text) > 16384,
+                            'sha256': hashlib.sha256(text.encode()).hexdigest(), 'bytes': len(text.encode())}
                     try:
                         result = json.loads(record['response']['text'])
-                    except (ValueError, KeyError):
+                    except (ValueError, KeyError, TypeError):
                         pass
                 def rows(values):
                     return [{'task_id': value['id'], 'native_session_id': value.get('native_session_id'),
@@ -145,6 +151,7 @@ def prepare(request, state, arguments, config):
                     'commitment_claim_recorded': bool(claims.get(commitment['id'])),
                     'updates': adapter.handoffs.updates(record['id']) if record else [],
                     'worker_result': result, 'stop_status': stopped['status'] if stopped else None,
+                    'worker_final_evidence': worker_final,
                     'worker_response_absent': record is not None and record.get('response') is None,
                     'duplicate_suppressed': duplicate_suppressed,
                     'rendezvous': 'Controlled pause at the background provider boundary; not a capacity measurement'}
