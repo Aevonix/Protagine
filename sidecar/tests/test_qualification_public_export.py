@@ -178,3 +178,17 @@ def test_native_memory_summary_never_exports_check_suffixes():
     value = mechanism_summary(row, {'consumer': 'native_memory'})
     assert value == 'Requested answer object: 0/1; Required sources visible: 1/1; Junk not promoted: 0/1'
     assert 'SENTINEL' not in value
+
+
+def test_semantic_and_tool_summaries_separate_effects_from_answer_contract():
+    row = {'checks': {'correct_final_answer': False, 'semantic_candidate.PRIVATE': True,
+        'selected_source.PRIVATE': False, 'native_turn_completed': False,
+        'private_status_message': 'PRIVATE'}}
+    summary = mechanism_summary(row, {'consumer': 'native_semantic_recall'})
+    assert 'Expected semantic candidates found: 1/1' in summary
+    assert 'Expected sources selected: 0/1' in summary
+    assert 'Native answer completed: 0/1' in summary
+    assert 'PRIVATE' not in summary
+    recovery = mechanism_summary({'checks': {'grounded_final_answer': False,
+        'actual_inventory_correct': True, 'effect_count_correct': True}}, {'consumer': 'native_recovery'})
+    assert recovery == 'Requested answer object: 0/1; Final inventory correct: 1/1; Correct number of effects: 1/1'

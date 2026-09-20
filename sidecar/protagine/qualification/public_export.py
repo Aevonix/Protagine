@@ -136,8 +136,7 @@ def output_diagnostics(row, spec):
 
 def mechanism_summary(row, spec):
     """Publish fixed labels/counts, never source IDs or arbitrary check text."""
-    if spec['consumer'] != 'native_memory':
-        return None
+    consumer = spec['consumer']
     groups = [('correct_final_answer', 'Requested answer object'),
               ('source_visible.', 'Required sources visible'),
               ('useful_claim_formed.', 'Useful claims retained'),
@@ -146,6 +145,36 @@ def mechanism_summary(row, spec):
               ('durable_erasure.', 'Erasure retained'),
               ('erased_claims_absent.', 'Erased claims absent'),
               ('private_or_erased_absent.', 'Private or erased context absent')]
+    if consumer == 'native_semantic_recall':
+        groups += [('native_turn_completed', 'Native answer completed'),
+                   ('semantic_candidate.', 'Expected semantic candidates found'),
+                   ('selected_source.', 'Expected sources selected'),
+                   ('actual_reranker_observed', 'Reranker exercised'),
+                   ('canonical_erasure.', 'Canonical erasure retained'),
+                   ('erased_vector_not_selected.', 'Erased vectors excluded')]
+    elif consumer == 'native_recovery':
+        groups = [('native_turn_completed', 'Native answer completed'),
+                  ('grounded_final_answer', 'Requested answer object'),
+                  ('actual_inventory_correct', 'Final inventory correct'),
+                  ('effect_count_correct', 'Correct number of effects'),
+                  ('exact_feasible_allocation', 'Feasible allocation executed'),
+                  ('bounded_reserve_attempts', 'Reservation attempts within limit'),
+                  ('required_error_and_receipt_sequence', 'Required receipts observed'),
+                  ('forbidden_operations_absent', 'Forbidden operations absent')]
+    elif consumer == 'native_unified':
+        groups = [('native_turn_completed', 'Native answer completed'),
+                  ('grounded_foreground_answer', 'Requested answer object'),
+                  ('commitment_claim_recorded', 'Commitment claim retained'),
+                  ('different_native_sessions', 'Distinct sessions exercised'),
+                  ('one_durable_native_task', 'One durable task retained'),
+                  ('shared_task_in_actual_request', 'Task visible to foreground'),
+                  ('foreground_finished_while_worker_waited', 'Foreground answered during work'),
+                  ('registered_update', 'Task update retained'),
+                  ('correction_visible_to_worker', 'Correction visible to worker'),
+                  ('stop_durably_finalized', 'Stop finalized'),
+                  ('duplicate_dispatch_did_not_start_model', 'Duplicate dispatch suppressed')]
+    elif consumer != 'native_memory':
+        return None
     fragments = []
     for key, label in groups:
         values = [value for name, value in row.get('checks', {}).items()
@@ -175,7 +204,8 @@ def export_records(directory, metadata):
         identifier(row['case_id'])
         if row['boundary'] not in BOUNDARIES:
             raise ValueError('Unknown consumer boundary')
-        boundary = ('native_protagine' if specs[row['case_id']]['consumer'] == 'native_memory'
+        boundary = ('native_protagine' if specs[row['case_id']]['consumer'] in {
+                        'native_memory', 'native_semantic_recall', 'native_unified', 'native_perspective'}
                     else row['boundary'])
         groups[(row['role'], boundary)].append(row)
     public = []
@@ -233,7 +263,13 @@ def export_records(directory, metadata):
         if boundary == 'cognition_consumer':
             limits.append('This consumer result does not establish native Hermes injection or channel delivery.')
         if boundary == 'native_protagine':
-            limits.append('Isolated native automatic recollection with lexical retrieval; physical channels, embeddings and reranking were not exercised.')
+            consumers = {case['consumer'] for case in selected}
+            if consumers == {'native_memory'}:
+                limits.append('Isolated native automatic recollection with lexical retrieval; physical channels, embeddings and reranking were not exercised.')
+            elif consumers == {'native_semantic_recall'}:
+                limits.append('Isolated native semantic retrieval uses the actual index and reranker; physical channels and live owner data were not exercised.')
+            else:
+                limits.append('Isolated native Protagine mechanisms only; this does not establish live channel delivery or a complete inventory of all running work.')
             limits.append('Requested answer-object checks combine strict format and values. Mechanism checks are shown separately; prose answers are not semantically regraded.')
         if invalid_reason is not None:
             limits.append('Invalid test: ' + invalid_reason)
