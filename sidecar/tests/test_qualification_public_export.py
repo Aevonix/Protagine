@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from protagine.qualification.public_export import export_records, failure_stage, publish_snapshot
+from protagine.qualification.public_export import export_records, failure_stage, output_diagnostics, publish_snapshot
 from protagine.qualification.records import CaseSpec, encode, write_once
 
 META = {'publication_scope': 'public_synthetic', 'phase': 'screen',
@@ -62,6 +62,17 @@ def test_success_without_primary_attribution_is_not_model_pass(tmp_path):
 
 def test_json_contract_failure_is_distinct_from_wrong_facts():
     assert failure_stage({'outcome': 'fail', 'checks': {'output_is_json': False}}) == 'output_contract'
+
+
+def test_fence_diagnostic_does_not_regrade_or_search_arbitrary_prose():
+    spec = {'evaluator': 'json_fields', 'oracle': {'fields': [
+        {'name': 'answer', 'path': ['output', 'answer'], 'equals': 7}]}}
+    row = {'outcome': 'fail', 'output': '```json\n{"answer": 7}\n```'}
+    d = output_diagnostics(row, spec)
+    assert d['format_valid'] is False and d['semantic_pass'] is True
+    assert row['outcome'] == 'fail'
+    assert output_diagnostics({**row, 'output': '```json\n{"answer": 8}\n```'}, spec)['semantic_pass'] is False
+    assert output_diagnostics({**row, 'output': 'Here is my answer: {"answer": 7}'}, spec)['semantic_pass'] is None
 
 
 def test_private_fixture_and_unapproved_export_are_rejected(tmp_path):

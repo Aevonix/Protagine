@@ -104,6 +104,36 @@ def failure_stage(row):
     return None
 
 
+def output_diagnostics(row, spec):
+    """Secondary field/effect checks, never changing the original strict grade.
+
+    A single complete Markdown JSON fence can be inspected without claiming it
+    satisfied a bare-JSON contract. No substring hunting, model judge or retry.
+    This is inapplicable to memory consumers with different evaluator semantics.
+    """
+    if spec['evaluator'] != 'json_fields' or not isinstance(row.get('output'), str):
+        return None
+    raw = row['output']
+    valid, value = True, None
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        valid = False
+        fence = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', raw, re.S | re.I)
+        if fence:
+            try:
+                value = json.loads(fence[1])
+            except (ValueError, TypeError):
+                pass
+    semantic = None
+    if isinstance(value, (dict, list)):
+        from .cases import json_fields
+        checks = json_fields({'output': value, 'effects': row.get('effects', {})}, spec['oracle'])
+        semantic = all(v is True for v in checks.values()) if checks else None
+    return {'format_valid': valid, 'semantic_pass': semantic,
+            'version': 'field-effects-single-fence-diagnostic-v1'}
+
+
 def export_records(directory, metadata):
     """One public record per actual consumer boundary and role, no input bodies."""
     run = read(Path(directory) / 'run.json')
@@ -134,10 +164,13 @@ def export_records(directory, metadata):
             primary = row.get('primary_outcome', 'unverified')
             if primary not in {'pass', 'fail', 'unverified'}:
                 raise ValueError('Invalid primary attribution')
-            cases.append({'case_id': row['case_id'], 'title': row['case_id'],
+            public_case = {'case_id': row['case_id'], 'title': row['case_id'],
                 'outcome': row['outcome'], 'primary_outcome': primary,
                 'failure_stage': failure_stage(row), 'duration_ms': number(row.get('elapsed_ms')),
-                'summary': None})
+                'summary': None}
+            if diagnostics := output_diagnostics(row, specs[row['case_id']]):
+                public_case['diagnostics'] = diagnostics
+            cases.append(public_case)
         counts = Counter(c['outcome'] for c in cases)
         outcomes = {key: counts[key] for key in sorted(OUTCOMES) if counts[key]}
         durations = [c['duration_ms'] for c in cases if c['duration_ms'] is not None]
@@ -165,7 +198,8 @@ def export_records(directory, metadata):
                 'runtime_version': run.get('recipe', {}).get('runtime_version'),
                 'role': role, 'boundary': boundary, 'phase': phase})
         limits = ['Coverage is limited to the listed cases and consumer boundary.',
-                  'Case duration includes consumer overhead; it is not token throughput or first-token latency.']
+                  'Case duration includes consumer overhead; it is not token throughput or first-token latency.',
+                  'Secondary field/effect diagnostics may inspect a single JSON fence; original strict outcomes remain unchanged.']
         if boundary == 'cognition_consumer':
             limits.append('This consumer result does not establish native Hermes injection or channel delivery.')
         if run['evidence_mode'] == 'controlled':
@@ -173,6 +207,13 @@ def export_records(directory, metadata):
         if not deployment['weights_verified']:
             limits.append('Loaded weight identity has not been independently verified for this recipe.')
         budgets = sorted({c['timeout_seconds'] for c in selected})
+        conditions = [{'label': 'Declared case deadlines', 'value': ', '.join(str(v) for v in budgets) + ' seconds'},
+                      {'label': 'Attempts per case', 'value': '1'},
+                      {'label': 'Execution', 'value': 'Cases run sequentially'},
+                      {'label': 'Capacity', 'value': 'Deployment context and slots are configured limits, not validated load results'}]
+        candidate_concurrency = run.get('recipe', {}).get('declared', {}).get('concurrency')
+        if type(candidate_concurrency) is int and candidate_concurrency > 0:
+            conditions.append({'label': 'Candidate client concurrency cap', 'value': str(candidate_concurrency)})
         public.append({'schema_version': 1, 'run_id': public_id,
             'started_at': stamp(run['created_at']),
             'completed_at': max(stamp(r['ended_at']) for r in rows) if completed else None,
@@ -186,8 +227,7 @@ def export_records(directory, metadata):
                 'value': statistics.median(durations) if durations else None, 'unit': 'ms',
                 'samples': len(durations), 'definition': 'All observed attempt durations, including failures; not inference-only latency.'}],
             'cases': cases,
-            'conditions': [{'label': 'Declared case deadlines', 'value': ', '.join(str(v) for v in budgets) + ' seconds'},
-                           {'label': 'Attempts per case', 'value': '1'}],
+            'conditions': conditions,
             'limitations': limits, 'evidence': []})
     return public
 
