@@ -26,7 +26,7 @@ class MemoryRouter:
         return getattr(self._router, name)
 
 
-async def consume(inputs, context, *, worker=None):
+async def consume(inputs, context, *, worker=None, allow_incomplete_results=False):
     from protagine.beliefs.source_projection import SourceClaimProjection
     from protagine.turns import TurnIdempotencyLedger
     # The existing runner creates intermediate directories under the process
@@ -70,7 +70,8 @@ async def consume(inputs, context, *, worker=None):
     # ordinary prefetch obtains and injects them through authenticated host routes.
     async with asyncio.timeout(inputs['native_seconds']):
         result = await native_cli(deepcopy(inputs), context,
-            worker=worker or Path(__file__).with_name('native_memory_worker.py'))
+            worker=worker or Path(__file__).with_name('native_memory_worker.py'),
+            allow_incomplete_results=allow_incomplete_results)
     result['effects']['formation'] = formation
     requests = result['effects'].get('request_observations', [])
     returned = {model for row in requests for model in row.get('returned_models', [])}

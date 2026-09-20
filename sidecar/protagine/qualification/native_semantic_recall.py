@@ -9,7 +9,7 @@ from .records import read, write_once
 async def consume(inputs, context):
     try:
         return await memory_consume(inputs, context,
-            worker=Path(__file__).with_name('native_semantic_worker.py'))
+            worker=Path(__file__).with_name('native_semantic_worker.py'), allow_incomplete_results=True)
     finally:
         result = context.state_dir / 'native-result.json'
         if result.exists():
@@ -21,6 +21,7 @@ async def consume(inputs, context):
 
 def assess(observed, oracle):
     checks = memory_assess(observed, oracle)
+    checks['native_turn_completed'] = observed.get('effects', {}).get('native_turn_complete') is True
     # Session-scoped checkpoints intentionally do not become person claims.
     # Grade their canonical presence/scope, and only demand formation for the
     # source kinds which the shipped writer is intended to promote or reject.
