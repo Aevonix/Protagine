@@ -141,6 +141,7 @@ def mechanism_summary(row, spec):
     groups = [('correct_final_answer', 'Requested answer object'),
               ('source_visible.', 'Required sources visible'),
               ('useful_claim_formed.', 'Useful claims retained'),
+              ('junk_not_promoted.', 'Junk not promoted'),
               ('corrected_claim_retired.', 'Corrected claims retired'),
               ('durable_erasure.', 'Erasure retained'),
               ('erased_claims_absent.', 'Erased claims absent'),

@@ -173,7 +173,8 @@ def test_known_harness_invalid_run_keeps_original_outcomes(tmp_path):
 
 def test_native_memory_summary_never_exports_check_suffixes():
     row = {'checks': {'correct_final_answer': False, 'source_visible.PRIVATE_SENTINEL': True,
+                      'junk_not_promoted.PRIVATE_SENTINEL': False,
                       'arbitrary_PRIVATE_SENTINEL': True}}
     value = mechanism_summary(row, {'consumer': 'native_memory'})
-    assert value == 'Requested answer object: 0/1; Required sources visible: 1/1'
+    assert value == 'Requested answer object: 0/1; Required sources visible: 1/1; Junk not promoted: 0/1'
     assert 'SENTINEL' not in value
