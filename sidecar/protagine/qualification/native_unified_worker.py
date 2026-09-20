@@ -38,6 +38,14 @@ def prepare(request, state, arguments, config):
                 messages=[{'role': 'user', 'content': inputs['commitment']}])
             commitment = host._commitment_store.create(inputs['contact_id'], inputs['commitment'],
                 metadata={'source_turn_id': 'fixture-commitment-source'})
+            # Read-only route preflight must pass before any candidate request.
+            plugin = config['plugins']['protagine']
+            with httpx.Client(base_url=plugin['url'], headers={'Authorization': 'Bearer '+plugin['api_key']}) as client:
+                check = client.post(f"/v1/host/commitments/{commitment['id']}/work", json={
+                    'operation': 'status', 'contact_id': inputs['contact_id'],
+                    'session_id': 'fixture-preflight', 'task_id': 'fixture-preflight', 'turn_id': 'fixture-preflight'})
+                if check.status_code != 200 or check.json().get('accepted') is not True:
+                    raise RuntimeError('Native commitment coordination preflight failed')
             gateway = resources.enter_context(native_gateway(state))
             adapter = next(adapter for platform, adapter in gateway.adapters.items()
                            if platform.value == 'protagine_task')
@@ -121,6 +129,9 @@ def prepare(request, state, arguments, config):
                     return [{'task_id': value['id'], 'native_session_id': value.get('native_session_id'),
                              'has_response': bool(value.get('response')), 'has_stop': bool(value.get('stop'))}
                             for value in values]
+                from protagine.commitments.work import CommitmentWork
+                claims = CommitmentWork(host._commitment_store).for_commitments(
+                    [commitment['id']], contact_id=inputs['contact_id'])
                 return {**observe_memory(agent, response), 'gateway_connected': True,
                     'distinct_sessions': agent.session_id != bootstrap.session_id and bool(record)
                         and record.get('native_session_id') not in {None, agent.session_id, bootstrap.session_id},
@@ -131,6 +142,7 @@ def prepare(request, state, arguments, config):
                     'foreground_requests': list(captured['foreground']), 'worker_requests': list(captured['worker']),
                     'commitment_status': host._commitment_store.get(commitment['id'])['status'],
                     'commitment_id': commitment['id'],
+                    'commitment_claim_recorded': bool(claims.get(commitment['id'])),
                     'updates': adapter.handoffs.updates(record['id']) if record else [],
                     'worker_result': result, 'stop_status': stopped['status'] if stopped else None,
                     'worker_response_absent': record is not None and record.get('response') is None,

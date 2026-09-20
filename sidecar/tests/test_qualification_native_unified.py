@@ -41,9 +41,17 @@ def test_real_shared_task_reaches_other_native_session(tmp_path, case_index, arm
                 if not tools:
                     message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'describe-work',
                         'type': 'function', 'function': {'name': 'tool_describe',
-                            'arguments': json.dumps({'names': ['protagine_task']})}}]}
+                            'arguments': json.dumps({'names': ['protagine_commitment_work', 'protagine_task']})}}]}
                     reason = 'tool_calls'
                 elif len(tools) == 1:
+                    text = json.dumps(body['messages'])
+                    commitment = re.search(r'id=([a-f0-9-]{36});', text).group(1)
+                    message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'claim-work',
+                        'type': 'function', 'function': {'name': 'tool_call', 'arguments': json.dumps({'calls': [{
+                            'name': 'protagine_commitment_work', 'arguments': {'operation': 'claim',
+                            'commitment_id': commitment}}]})}}]}
+                    reason = 'tool_calls'
+                elif len(tools) == 2:
                     message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'submit-work',
                         'type': 'function', 'function': {'name': 'tool_call', 'arguments': json.dumps({'calls': [{
                             'name': 'protagine_task', 'arguments': {'operation': 'submit',

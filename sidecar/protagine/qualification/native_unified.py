@@ -96,6 +96,7 @@ def assess(observed, oracle):
     durable = effect.get('durable_after', [])
     checks = {'grounded_foreground_answer': _exact_value(output, oracle['answer']),
         'native_turn_completed': effect.get('native_turn_complete') is True,
+        'commitment_claim_recorded': effect.get('commitment_claim_recorded') is True,
         'real_native_gateway_connected': effect.get('gateway_connected') is True,
         'different_native_sessions': effect.get('distinct_sessions') is True,
         'one_durable_native_task': len(durable) == 1,

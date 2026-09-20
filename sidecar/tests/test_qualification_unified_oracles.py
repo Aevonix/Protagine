@@ -10,6 +10,7 @@ from protagine.qualification.native_unified_cases import cases
 
 def effects():
     return {'gateway_connected': True, 'distinct_sessions': True, 'native_turn_complete': True,
+        'commitment_claim_recorded': True,
         'durable_before': [{'task_id': 'task-1'}], 'durable_after': [{'task_id': 'task-1'}],
         'foreground_before_release': True, 'foreground_requests': ['task-1 commitment-1'],
         'bootstrap_requests': ['commitment-1'], 'commitment_id': 'commitment-1',

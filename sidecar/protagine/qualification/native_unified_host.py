@@ -6,12 +6,18 @@ import threading
 
 @contextmanager
 def host_state(app, state, inputs, config):
-    from protagine.api.routers import executions, host
+    from protagine.api.routers import commitment_work, executions, host, initiative_work
     from protagine.commitments.store import CommitmentStore
+    from protagine.initiatives.store import InitiativeStore
     app.include_router(executions.router)
+    app.include_router(commitment_work.router)
+    app.include_router(initiative_work.router)
     previous = host._commitment_store
+    previous_initiatives = host._initiative_store
     store = CommitmentStore(state/'memory-state'/'commitments.db')
+    initiatives = InitiativeStore(state/'memory-state')
     host.set_commitment_store(store)
+    host.set_initiative_store(initiatives)
     config.setdefault('plugins', {}).setdefault('protagine', {}).update(
         execution_registry_enabled=True,
         native_tasks={'enabled': True, 'state_path': str(state/'native-tasks.sqlite3')})
@@ -23,6 +29,8 @@ def host_state(app, state, inputs, config):
         yield store
     finally:
         host.set_commitment_store(previous)
+        host.set_initiative_store(previous_initiatives)
+        initiatives.close()
 
 
 @contextmanager
