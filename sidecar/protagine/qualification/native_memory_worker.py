@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 
 @contextmanager
-def prepare(request, state, arguments, config, *, setup_host=None):
+def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
     """Enable only this fixture's private profile and ledger, before agent construction."""
     inputs = request['inputs']
     person = inputs['contact_id']
@@ -38,7 +38,8 @@ def prepare(request, state, arguments, config, *, setup_host=None):
     keyring = state / 'fixture-keyring.json'
     keyring.write_text(json.dumps({'version': 1, 'principals': [{
         'principal': 'benchmark-owner', 'status': 'active', 'viewer_person_id': person,
-        'person_ids': [person], 'scopes': ['context:read', 'turns:write', 'memory:read'],
+        'person_ids': [person], 'scopes': list(scopes) if scopes is not None else
+            ['context:read', 'turns:write', 'memory:read'],
         'audiences': ['viewer'], 'credentials': [{'id': 'fixture', 'secret': secret, 'status': 'active'}]}]}))
     keyring.chmod(0o600)
     app = FastAPI()

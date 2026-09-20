@@ -46,7 +46,7 @@ def _runtime(supplied, explicit_python):
         return {'status': 'unavailable', 'error_type': type(exc).__name__, 'python': str(selected) if selected else None}
 
 
-def configuration(path, binding, *, hermes_python=None):
+def configuration(path, binding, *, hermes_python=None, inspect_runtime=True):
     """Read only the selected provider. Never import a deployed home or auth store."""
     raw = Path(path).read_bytes()
     supplied = yaml.safe_load(raw)
@@ -80,7 +80,8 @@ def configuration(path, binding, *, hermes_python=None):
         selected['providers']['custom'] = defaults
     if isinstance(current, dict) and current.get('provider') == binding and 'context_length' in current:
         selected['model']['context_length'] = current['context_length']
-    runtime = _runtime(supplied, hermes_python)
+    runtime = (_runtime(supplied, hermes_python) if inspect_runtime else
+               {'status': 'not_inspected', 'basis': 'container runtime inspected separately'})
     recipe = {'binding': binding, 'declared': {}, 'configured_model': model,
         'config_sha256': hashlib.sha256(raw).hexdigest(), 'selected_config_sha256': digest(selected),
         'boundary': 'native_hermes', 'consumer': 'isolated_native_cli_loop',
