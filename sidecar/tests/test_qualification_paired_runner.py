@@ -207,6 +207,22 @@ def test_fully_observed_usage_can_have_a_measured_zero(fixture):
         assert metrics['background_model_calls']['coverage'] == 'complete'
 
 
+def test_transport_observed_subtotals_are_visible_without_becoming_totals(fixture):
+    fixture.usage.clear()
+    fixture.usage.update(coverage='partial', total_model_calls=None, input_tokens=None,
+        output_tokens=None, background_model_calls=None, observed_model_calls=3,
+        observed_input_tokens=40, observed_output_tokens=12)
+    freeze(fixture)
+    result = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    for arm in paired.ARMS:
+        metrics = result['arms'][arm]['accounting']
+        assert metrics['total_model_calls']['total'] is None
+        assert metrics['total_model_calls']['observed_total'] == 6
+        assert metrics['input_tokens']['observed_total'] == 80
+        assert metrics['output_tokens']['observed_total'] == 24
+        assert metrics['background_model_calls']['observed_total'] is None
+
+
 def test_case_mismatch_is_rejected_before_execution(fixture, monkeypatch):
     from protagine.qualification import paired_cases
     def mismatched(arm, case_ids=None):

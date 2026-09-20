@@ -8,6 +8,8 @@ from .report import summarize as summarize_run
 
 ARMS = ('base_hermes', 'protagine')
 USAGE_METRICS = ('total_model_calls', 'input_tokens', 'output_tokens', 'background_model_calls')
+OBSERVED_USAGE = {'total_model_calls': 'observed_model_calls', 'input_tokens': 'observed_input_tokens',
+                  'output_tokens': 'observed_output_tokens', 'background_model_calls': 'observed_background_model_calls'}
 
 
 def load_manifest(directory):
@@ -56,10 +58,13 @@ def _accounting(rows):
     result = {}
     for metric in USAGE_METRICS:
         observations = [(row.get('effects') or {}).get('resource_usage') or {} for row in rows]
-        known = [entry[metric] for entry in observations if _number(entry.get(metric))]
-        complete = bool(rows) and len(known) == len(rows) and all(
+        totals = [entry[metric] for entry in observations if _number(entry.get(metric))]
+        known = [entry[metric] if _number(entry.get(metric)) else entry.get(OBSERVED_USAGE[metric])
+                 for entry in observations]
+        known = [value for value in known if _number(value)]
+        complete = bool(rows) and len(totals) == len(rows) and all(
             entry.get('coverage') == 'complete' for entry in observations)
-        result[metric] = {'total': sum(known) if complete else None,
+        result[metric] = {'total': sum(totals) if complete else None,
             'observed_total': sum(known) if known else None, 'observed_episodes': len(known),
             'declared_episodes': len(rows), 'coverage': 'complete' if complete else 'partial' if known else 'unobserved'}
     elapsed = [row['elapsed_ms'] for row in rows if _number(row.get('elapsed_ms'))]
