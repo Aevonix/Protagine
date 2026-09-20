@@ -88,6 +88,14 @@ def test_derived_assignment_keeps_consumed_source_and_known_annotation_checks(
     import protagine.turns
 
     rt = runtime
+    # This qualifies consumed-source lineage through real ASGI/SQLite calls,
+    # not cold CI disk latency against the separate 250 ms freshness budget.
+    # Keep the local deadline clocks aligned; deadline tests retain their own
+    # clock controls and all durable annotation/erasure checks still execute.
+    import time
+    clock = SimpleNamespace(monotonic=lambda: 1000.0, time=time.time, sleep=time.sleep)
+    monkeypatch.setattr(rt.module, 'time', clock)
+    monkeypatch.setattr(importlib.import_module(rt.module.__package__ + '.client'), 'time', clock)
     monkeypatch.setattr(protagine.turns, 'get_turn_idempotency_ledger', lambda *_: rt.ledger)
     @source_app.middleware('http')
     async def owner_authority(request, next_call):
