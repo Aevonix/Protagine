@@ -2,6 +2,8 @@
 
 The opt-in `protagine models` command records bounded observations through existing consumers. It does not select or publish a deployment, start services, change model roles on a running agent, or create an evaluation database.
 
+For frozen batches covering native memory, shared work, authority, planning and other implemented boundaries, see [portable behavioral packs](QUALIFICATION-PACKS.md). These commands reuse the evaluator below and preserve supporting-model attribution.
+
 ```sh
 protagine models inspect interactive --config /private/model-config.json
 protagine models evaluate interactive --config /private/model-config.json --roles chat,extraction --output /private/results/candidate-01

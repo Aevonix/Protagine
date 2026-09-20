@@ -181,18 +181,31 @@ async def run(directory, *, config_path, native_config_path=None, hermes_python=
         raise ValueError('Benchmark execution requires identical plan, configurations and implementation')
     from .native import native_cli, native_context
     consumers = {**CONSUMERS, 'native_cli': native_cli}
+
+    def factory(shard, case):
+        return (native_context(native_config, shard['recipe']) if shard['suite'] == 'native'
+            else router_for(host_config, manifest['options']['binding'], [case]))
+
+    return await execute_prepared(directory, manifest, prepared, consumers, EVALUATORS, factory,
+                                  resume=resume)
+
+
+async def execute_prepared(directory, manifest, prepared, consumers, evaluators, factory, *, resume=False):
+    """Shared immutable batch execution after the caller validates its frozen plan."""
+    directory = Path(directory)
     with (directory / '.benchmark.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not resume and any((directory / shard['path'] / 'run.json').exists() for shard, _ in prepared):
+            raise ValueError('A child run already exists; use --resume to preserve completed attempts')
+        # Native plugin trust checks reject writable ancestors. Do not let the
+        # caller's umask create a permissive intermediate directory.
+        (directory / 'runs').mkdir(mode=0o700, exist_ok=True)
         for shard, cases in prepared:
             target = directory / shard['path']
             existing = (target / 'run.json').exists()
-            if existing and not resume:
-                raise ValueError('A child run already exists; use --resume to preserve completed attempts')
             recipe = shard['recipe']
-            factory = ((lambda _: native_context(native_config, recipe)) if shard['suite'] == 'native'
-                else (lambda case: router_for(host_config, manifest['options']['binding'], [case])))
-            await evaluate(target, recipe, cases, consumers, EVALUATORS, factory,
-                resume=existing, evidence_mode=manifest['evidence_mode'], suite_version=VERSION)
+            await evaluate(target, recipe, cases, consumers, evaluators, lambda case: factory(shard, case),
+                resume=existing, evidence_mode=manifest['evidence_mode'], suite_version=manifest['suite_version'])
             report = summarize(target)
             index = len(list(target.glob('report-*.json'))) + 1
             write_once(target / f'report-{index:03d}.json', report)
