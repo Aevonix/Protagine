@@ -11,9 +11,10 @@ from .records import write_once
 
 
 class LearningRouter(MemoryRouter):
-    def __init__(self, router, native, support_config):
+    def __init__(self, router, native, support_config, *, training_native=None):
         super().__init__(router, native)
         self.support_config = support_config
+        self.training_native = training_native
 
 
 async def consume(inputs, context):
@@ -24,14 +25,42 @@ async def consume(inputs, context):
     from .native_memory_batch import preflight_output
     preflight_output(context.state_dir)
     write_once(context.state_dir / 'support-config.json', context.router.support_config)
-    async with asyncio.timeout(inputs['native_seconds']):
-        result = await native_cli(deepcopy(inputs), context,
-            worker=Path(__file__).with_name('native_learning_worker.py'))
+    original_config = context.router.native_config
+    if inputs.get('processor_swap'):
+        training = context.router.training_native
+        if training is None:
+            raise ValueError('Processor-swap case requires a separately configured training runtime')
+        if training.native_config['model']['default'] == context.router.native_config['model']['default']:
+            raise ValueError('Processor-swap qualification requires distinct declared model identities')
+        write_once(context.state_dir / 'training-config.json',
+            {'binding': training.binding, 'config': training.native_config})
+        # Native launch forwards only explicitly configured credential variables.
+        # Carry the selected training credentials through that same mechanism;
+        # disabled entries cannot become reader fallback routes. Both profiles
+        # are private owned artifacts and the case router is restored afterward.
+        environment_config = deepcopy(original_config)
+        for index, provider in enumerate(training.native_config['providers'].values()):
+            environment_config['providers']['qualification-training-'+str(index)] = {
+                **deepcopy(provider), 'enabled': False}
+        context.router.native_config = environment_config
+    try:
+        async with asyncio.timeout(inputs['native_seconds']):
+            result = await native_cli(deepcopy(inputs), context,
+                worker=Path(__file__).with_name('native_learning_worker.py'))
+    finally:
+        context.router.native_config = original_config
     effects = result['effects']
     for row in effects.get('supporting_observations', []):
         context.observe(row)
-    requests = [request for phase in effects.get('phases', {}).values()
-                for request in phase.get('request_observations', [])]
+    phases = effects.get('phases', {})
+    requests = phases.get('transfer', {}).get('request_observations', [])
+    if inputs.get('processor_swap'):
+        for name, phase in phases.items():
+            if name == 'transfer':
+                continue
+            context.observe({'boundary': 'native_learning_training_processor', 'phase': name,
+                'role': 'learning_training', 'binding_purpose': 'supporting',
+                'request_observations': phase.get('request_observations', [])})
     returned = {model for row in requests for model in row.get('returned_models', [])}
     if requests and len(returned) == 1 and all(row.get('selected_binding') == context.router.binding
             and row.get('returned_models') and not row.get('response_identity_truncated')

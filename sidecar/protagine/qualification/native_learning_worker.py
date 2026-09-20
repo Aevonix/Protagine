@@ -1,6 +1,7 @@
 """Own a bounded native training session and a fresh transfer session."""
 import asyncio
 from contextlib import ExitStack, closing
+from copy import deepcopy
 import json
 from pathlib import Path
 import signal
@@ -39,23 +40,36 @@ def main():
             from protagine.router import LLMRouter
             from protagine.turns import get_turn_idempotency_ledger
             from protagine.beliefs.source_projection import SourceClaimProjection
-            config = load_config()
-            model = config['model']['default']
-            runtime = resolve_runtime_provider(requested=request['binding'], target_model=model)
-            kwargs = {key: runtime[key] for key in ('base_url', 'api_key', 'provider', 'api_mode',
-                'requested_provider', 'request_overrides', 'capabilities') if key in runtime}
-            arguments = dict(model=model, **kwargs, platform='cli', max_iterations=1,
-                max_tokens=inputs['max_output_tokens'], enabled_toolsets=[], quiet_mode=True,
-                skip_context_files=True, skip_memory=False, skip_background_review=True,
-                reasoning_config=resolve_reasoning_config(config, model), fallback_model=None,
-                save_trajectories=False)
-            observe = resources.enter_context(prepare(request, state, arguments, config))
-            if inputs['arm'] == 'base_hermes':
-                config['plugins'] = {'enabled': []}
-                config['memory'] = {'provider': 'builtin'}
-                (state / 'config.yaml').write_text(json.dumps(config))
-                get_plugin_manager().discover_and_load(force=True)
-                arguments['skip_memory'] = True
+            reader_config = load_config()
+            training_record = (json.loads((state/'training-config.json').read_text())
+                if (state/'training-config.json').exists() else
+                {'binding': request['binding'], 'config': reader_config})
+
+            def prepare_phase(config, binding, *, transfer=False):
+                config = deepcopy(config)
+                (state/'config.yaml').write_text(json.dumps(config))
+                model = config['model']['default']
+                runtime = resolve_runtime_provider(requested=binding, target_model=model)
+                kwargs = {key: runtime[key] for key in ('base_url', 'api_key', 'provider', 'api_mode',
+                    'requested_provider', 'request_overrides', 'capabilities') if key in runtime}
+                arguments = dict(model=model, **kwargs, platform='cli', max_iterations=1,
+                    max_tokens=inputs['max_output_tokens'], enabled_toolsets=[], quiet_mode=True,
+                    skip_context_files=True, skip_memory=False, skip_background_review=True,
+                    reasoning_config=resolve_reasoning_config(config, model), fallback_model=None,
+                    save_trajectories=False)
+                lifetime = resources.enter_context(ExitStack())
+                observe = lifetime.enter_context(prepare({**request, 'binding': binding}, state, arguments, config))
+                if inputs['arm'] == 'base_hermes':
+                    config['plugins'] = {'enabled': []}
+                    config['memory'] = {'provider': 'builtin'}
+                    (state/'config.yaml').write_text(json.dumps(config))
+                    get_plugin_manager().discover_and_load(force=True)
+                    arguments['skip_memory'] = True
+                elif transfer and inputs['arm'] == 'recall_disabled':
+                    arguments['skip_memory'] = True
+                return arguments, observe, lifetime
+
+            arguments, observe, training_lifetime = prepare_phase(training_record['config'], training_record['binding'])
 
             def construct():
                 if stop.is_set():
@@ -91,17 +105,30 @@ def main():
             training = construct()
             result.update(stage='running', model=training.model)
             first = phase('baseline', training, inputs['baseline_question'])
-            phase('feedback', training, inputs['feedback'], first['messages'])
+            feedbacks = inputs.get('feedback_messages') or [inputs['feedback']]
+            history = first['messages']
+            for index, feedback in enumerate(feedbacks):
+                response = phase('feedback' if index == 0 else 'feedback-'+str(index+1), training, feedback, history)
+                history = response['messages']
+            training_routes = observe(training, response)['context_routes']
             training.close()
             closed.add(id(training))
             owned['agent'] = None
+            training_lifetime.close()
+            delay_started = time.monotonic()
+            delay = inputs.get('delay_seconds', 0)
+            if not isinstance(delay, (float, int)) or not 0 <= delay <= 30:
+                raise ValueError('Invalid bounded transfer delay')
+            if stop.wait(delay):
+                raise InterruptedError('Qualification stopped between native hosts')
+            delay_elapsed = time.monotonic() - delay_started
             ledger = get_turn_idempotency_ledger(state / 'memory-state')
             projection = SourceClaimProjection(ledger)
             supporting = []
             with closing(ledger._connect()) as db:
                 sources = [dict(row) for row in db.execute('SELECT turn_id,session_id,messages_json FROM turn_sources')]
             feedback_ids = [row['turn_id'] for row in sources if any(message.get('role') == 'user'
-                and message.get('content') == inputs['feedback'] for message in json.loads(row['messages_json']))]
+                and message.get('content') in feedbacks for message in json.loads(row['messages_json']))]
             formation_started = time.monotonic()
             if inputs['arm'] != 'base_hermes':
                 router = LLMRouter(tiers={})
@@ -121,24 +148,27 @@ def main():
             formation_ms = round((time.monotonic() - formation_started) * 1000, 3)
             jobs = projection.status(inputs['contact_id'])
             with closing(ledger._connect()) as db:
-                claims = [dict(json.loads(row['data_json']), source_id=row['turn_id'])
-                          for row in db.execute('SELECT turn_id,data_json FROM source_claims')]
-            if inputs['arm'] == 'recall_disabled':
-                arguments['skip_memory'] = True
+                claims = [dict(json.loads(row['data_json']), source_id=row['turn_id'],
+                    superseded_by=row['superseded_by'], retracted_by=row['retracted_by'])
+                          for row in db.execute('SELECT * FROM source_claims')]
+            arguments, observe, _ = prepare_phase(reader_config, request['binding'], transfer=True)
+            cursor = 0
             transfer = construct()
             # Supporting requests can share the endpoint. They are separately
             # attributed and must not become reader-phase request observations.
             cursor = len(observe(transfer, {})['request_observations'])
             final = phase('transfer', transfer, inputs['messages'][-1]['content'])
             evidence = observe(transfer, final)
-            result.update(stage='returned', output=final.get('final_response'),
+            result.update(stage='returned', model=transfer.model, output=final.get('final_response'),
                 turn={key: final.get(key) for key in ('completed', 'failed', 'interrupted', 'partial')},
                 tool_evidence={'consumer': 'native_feedback_procedure_transfer',
                     'arm': inputs['arm'], 'scenario': inputs['scenario'], 'phases': phases,
                     'feedback_source_ids': feedback_ids, 'claims': claims, 'projection_jobs': jobs,
                     'supporting_observations': supporting, 'training_closed': id(training) in closed,
                     'formation_elapsed_ms': formation_ms,
-                    'context_routes': evidence['context_routes'],
+                    'training_host_closed_before_transfer': True,
+                    'delay_requested_seconds': delay, 'delay_elapsed_seconds': delay_elapsed,
+                    'context_routes': training_routes + evidence['context_routes'],
                     'embedding_and_reranking': 'not_exercised', 'transport_delivery': 'not_exercised'})
         except BaseException as exc:
             result.update(stage='interrupted' if stop.is_set() else 'error', error_type=type(exc).__name__)
