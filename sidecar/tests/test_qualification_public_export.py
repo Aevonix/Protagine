@@ -123,3 +123,14 @@ def test_corrected_public_description_gets_new_artifact_identity(tmp_path):
     second = export_records(source, changed)[0]
     assert first['run_id'] != second['run_id']
     assert first['cases'] == second['cases']
+
+
+def test_explicit_public_recipe_annotations_are_bounded(tmp_path):
+    source = fixture(tmp_path)
+    metadata = {**META, 'conditions': [{'label': 'Runtime commit', 'value': 'abc123'}],
+                'limitations': ['Production background load was not isolated.']}
+    run = export_records(source, metadata)[0]
+    assert metadata['conditions'][0] in run['conditions']
+    assert metadata['limitations'][0] in run['limitations']
+    with pytest.raises(ValueError, match='public description'):
+        export_records(source, {**metadata, 'limitations': ['/home/private/receipt']})

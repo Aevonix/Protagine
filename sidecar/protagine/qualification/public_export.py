@@ -206,6 +206,12 @@ def export_records(directory, metadata):
             limits.append('Controlled fixture evidence is not a real-model benchmark.')
         if not deployment['weights_verified']:
             limits.append('Loaded weight identity has not been independently verified for this recipe.')
+        public_limits = metadata.get('limitations', [])
+        public_conditions = metadata.get('conditions', [])
+        if (not isinstance(public_limits, list) or len(public_limits) > 16
+                or not isinstance(public_conditions, list) or len(public_conditions) > 16):
+            raise ValueError('Too many public annotations')
+        limits.extend(text(value) for value in public_limits)
         budgets = sorted({c['timeout_seconds'] for c in selected})
         conditions = [{'label': 'Declared case deadlines', 'value': ', '.join(str(v) for v in budgets) + ' seconds'},
                       {'label': 'Attempts per case', 'value': '1'},
@@ -214,6 +220,10 @@ def export_records(directory, metadata):
         candidate_concurrency = run.get('recipe', {}).get('declared', {}).get('concurrency')
         if type(candidate_concurrency) is int and candidate_concurrency > 0:
             conditions.append({'label': 'Candidate client concurrency cap', 'value': str(candidate_concurrency)})
+        for condition in public_conditions:
+            if not isinstance(condition, dict) or set(condition) != {'label', 'value'}:
+                raise ValueError('Invalid public condition')
+            conditions.append({key: text(condition[key]) for key in ('label', 'value')})
         public.append({'schema_version': 1, 'run_id': public_id,
             'started_at': stamp(run['created_at']),
             'completed_at': max(stamp(r['ended_at']) for r in rows) if completed else None,
