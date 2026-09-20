@@ -3,6 +3,7 @@ import copy
 import hashlib
 import importlib
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +22,23 @@ from test_turn_source_evidence import source_app
 
 RESULT = '{"operation":"copper synchronization","exit_code":3,"files_written":0}'
 INSTRUCTION = 'Inspect the copper synchronization fixture and retain useful findings.'
+
+
+def observation_hints(request):
+    """Read the framed hint inside its possibly compacted instruction carrier."""
+    opening = '[protagine-observation-candidates-v1]'
+    closing = '[/protagine-observation-candidates-v1]'
+    pattern = re.compile(r'^' + re.escape(opening) + r'\n.*?^' + re.escape(closing)
+                         + r'(?=\n|$)', re.MULTILINE | re.DOTALL)
+    hints = []
+    for row in request['messages']:
+        if row.get('role') not in {'system', 'developer'} or not isinstance(row.get('content'), str):
+            continue
+        content = row['content']
+        matches = pattern.findall(content)
+        assert len(matches) == content.count(opening) == content.count(closing)
+        hints.extend(matches)
+    return hints
 
 
 @pytest.fixture
@@ -221,8 +239,7 @@ def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
         'parameters': {'type': 'object', 'properties': {}}}}})
     n.complete('catalog', catalog, name, {'name': 'fixture_observe'})
     request = n.request().payload
-    hints = [row['content'] for row in request['messages']
-             if str(row.get('content', '')).startswith('[protagine-observation-candidates-v1]')]
+    hints = observation_hints(request)
     assert not any('"call_id": "catalog"' in text for text in hints)
     assert any(row.get('tool_call_id') == 'catalog' and row.get('content') == catalog
                for row in request['messages'])
@@ -492,13 +509,31 @@ def test_actual_native_deferred_catalog_and_completed_call_offer_bounded_hint(na
     schemas = {row['function']['name']: row['function'] for row in request['tools']}
     assert 'protagine_memory_retain_observation' not in schemas
     assert '- protagine_memory_retain_observation: Retain a useful original tool result in persistent memory.' in schemas['tool_search']['description']
-    hints = [row['content'] for row in request['messages'] if row.get('role') == 'system'
-             and str(row.get('content', '')).startswith('[protagine-observation-candidates-v1]')]
+    hints = observation_hints(request)
     assert len(hints) == 1 and len(hints[0]) <= 2048
     assert '"call_id": "call-1"' in hints[0] and '"tool_name": "fixture_observe"' in hints[0]
     assert 'tool_describe' in hints[0] and 'tool_call' in hints[0]
     assert 'not saved memories' in hints[0] and RESULT not in hints[0]
     assert n.messages == before
+    assert [index for index, row in enumerate(request['messages']) if row.get('role') == 'system'] == [0]
+    # Exercise the real SDK serializer against an owned in-process transport.
+    # Compaction must preserve the complete original tool history, schemas and
+    # bounded hint in the request actually handed to the HTTP client.
+    from openai import OpenAI
+    sent = []
+    def receive(outgoing):
+        sent.append(json.loads(outgoing.content))
+        return httpx.Response(200, json={'id': 'fixture', 'object': 'chat.completion',
+            'created': 0, 'model': 'fixture', 'choices': [{'index': 0,
+                'message': {'role': 'assistant', 'content': 'Observed.'}, 'finish_reason': 'stop'}]})
+    with OpenAI(api_key='synthetic-fixture', base_url='http://fixture.invalid/v1',
+                http_client=httpx.Client(transport=httpx.MockTransport(receive))) as sdk:
+        sdk.chat.completions.create(model='fixture', **request)
+    assert len(sent) == 1 and sent[0]['model'] == 'fixture'
+    assert sent[0]['messages'] == request['messages']
+    assert sent[0]['tools'] == request['tools']
+    assert observation_hints(sent[0]) == hints
+    assert [row for row in sent[0]['messages'] if row.get('role') in {'user', 'assistant', 'tool'}] == before
     receipt = n.retain()
     assert receipt['source_recorded'], n.diagnostics(receipt)
 
@@ -937,8 +972,7 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     n.messages[1]['tool_calls'][0]['function']['arguments'] = json.dumps(later)
     request = n.request(anthropic=format == 'anthropic', responses=format == 'responses').payload
     if format == 'chat':
-        hint = next(row['content'] for row in request['messages'] if str(row.get('content', '')).startswith(
-            '[protagine-observation-candidates-v1]'))
+        hint, = observation_hints(request)
     else:
         hint = request['system' if format == 'anthropic' else 'instructions']
     candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
@@ -977,8 +1011,7 @@ def test_argument_previews_are_explicitly_truncated_inside_total_hint_budget(nat
     for number in range(10):
         n.complete(f'call-{number}', f'original-{number}', 'terminal', arguments)
     request = n.request(deferred=True).payload
-    hint = next(row['content'] for row in request['messages'] if str(row.get('content', '')).startswith(
-        '[protagine-observation-candidates-v1]'))
+    hint, = observation_hints(request)
     assert len(hint) <= 2048
     candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
     assert 1 <= len(candidates) <= 8
@@ -997,10 +1030,10 @@ def test_hint_omits_invented_stale_calls_and_disappears_without_available_tool(n
         'name': 'fixture_observe', 'arguments': '{}'}}]},
         {'role': 'tool', 'tool_call_id': 'invented', 'content': RESULT}])
     request = n.request().payload
-    hint = next(row for row in request['messages'] if str(row.get('content', '')).startswith(
-        '[protagine-observation-candidates-v1]'))
-    assert 'invented' not in hint['content'] and '"call_id": "call-1"' in hint['content']
-    n.messages.append(hint)  # Simulate re-processing a request that already has our hint.
+    hint, = observation_hints(request)
+    assert 'invented' not in hint and '"call_id": "call-1"' in hint
+    # Re-process the actual outgoing layout, including the compacted carrier.
+    n.messages[:] = copy.deepcopy(request['messages'])
     no_tools = n.request(tools=False).payload
     assert not any('protagine-observation-candidates-v1' in str(row) for row in no_tools['messages'])
     for row in n.messages:
