@@ -43,8 +43,18 @@ def _row(directory, manifest, member):
 def _completion(row):
     if row.get('cleanup') in {'state_directory_retained', 'unconfirmed', 'failed'}:
         return None
-    if row['outcome'] in {'error', 'timeout'}:
-        return False
+    if row['outcome'] == 'timeout':
+        routing = row.get('qualification_routing') or {}
+        binding, role = routing.get('binding'), row.get('role') or routing.get('role')
+        observations = [item for item in row.get('observations', []) if item.get('role') == role]
+        dispatched = bool(binding and observations) and all(
+            item.get('selected_binding') == binding and item.get('prior_attempts') == []
+            and (item.get('dispatch_observed') is True
+                 or item.get('attribution_basis') == 'serialized_requests_and_returned_models')
+            for item in observations)
+        return False if dispatched else None
+    # An exception in setup, a consumer, or the verifier is not evidence that
+    # the model failed the task. Returned episodes use the ordinary fail outcome.
     if row['outcome'] in {'pass', 'fail'} and row.get('primary_outcome') in {'pass', 'fail'}:
         return row['outcome'] == row['primary_outcome'] == 'pass'
     return None
@@ -113,7 +123,8 @@ def summarize(directory):
             'wins': counts['win'], 'ties': counts['tie'], 'losses': counts['loss'],
             'both_completed': sum(all(pair['completion'].values()) for pair in pairs),
             'neither_completed': sum(not any(pair['completion'].values()) for pair in pairs)}
-    return {'schema': 1, 'kind': 'paired_report', 'manifest_sha256': manifest['sha256'],
+    return {'schema': 1, 'kind': 'paired_report', 'report_protocol': 'paired-attribution-2',
+        'manifest_sha256': manifest['sha256'],
         'comparison_key': manifest['comparison_key'], 'label': manifest['label'],
         'evidence_mode': manifest['evidence_mode'], 'dataset': manifest['dataset'],
         'policy': manifest['comparison']['policy'], 'declared_episodes': declared_count,
@@ -123,8 +134,10 @@ def summarize(directory):
         'qualification_status': 'insufficient_evidence',
         'basis': 'Descriptive development-episode results, not a model ranking or causal performance estimate. '
                  'No aggregate delta until every declared episode has an attributable pair. '
-                 'Timeouts/errors count as noncompletion; unsupported/setup/interrupted/unattributed attempts '
-                 'remain unavailable. Declared budgets do not prove equal total work.'}
+                 'Returned attributable task failures count as noncompletion. Timeouts count only with '
+                 'observed dispatch to the candidate; infrastructure/consumer errors, unsupported, setup, '
+                 'interrupted and unattributed attempts remain unavailable. '
+                 'Declared budgets do not prove equal total work.'}
 
 
 def markdown(report):

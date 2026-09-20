@@ -141,8 +141,10 @@ def process_fixture(monkeypatch, *, block=None, entered=None, release=None, remo
 
 def run_context(tmp_path, selected_config):
     config, _ = native.configuration(selected_config, 'candidate', inspect_runtime=False)
+    state = tmp_path / 'state'
+    state.mkdir()
     context = RunContext(SimpleNamespace(binding='candidate', native_config=config,
-        container_spec={'image': IMAGE, 'image_id': IMAGE, 'docker_host': None}), tmp_path, [])
+        container_spec={'image': IMAGE, 'image_id': IMAGE, 'docker_host': None}), state, [])
     return context
 
 

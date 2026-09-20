@@ -27,6 +27,10 @@ async def controlled_consumer(inputs, context):
         raise RuntimeError('controlled failure')
     if mode == 'timeout':
         raise TimeoutError('controlled deadline')
+    if mode == 'attributed_timeout':
+        context.observe({'role': inputs['role'], 'selected_binding': context.router.binding,
+                         'prior_attempts': [], 'outcome': 'timeout', 'dispatch_observed': True})
+        raise TimeoutError('candidate dispatch exceeded the declared deadline')
     if mode == 'interrupted':
         raise asyncio.CancelledError()
     if mode != 'unattributed':
@@ -154,16 +158,40 @@ def test_unknown_or_partial_resource_usage_is_not_a_zero_or_total(fixture):
     assert 'unknown' in paired_report.markdown(result)
 
 
-def test_complete_accounting_and_failures_are_reported_separately(fixture):
+def test_consumer_error_and_unattributed_timeout_do_not_become_model_losses(fixture):
     fixture.usage.update(coverage='complete', background_model_calls=0)
     freeze(fixture)
     fixture.modes.update({('episode-0', 'base_hermes'): 'timeout', ('episode-1', 'protagine'): 'error'})
     result = asyncio.run(paired.run(fixture.output, **fixture.resources))
     assert result['arms']['base_hermes']['outcomes'] == {'timeout': 1, 'pass': 1}
     assert result['arms']['protagine']['outcomes'] == {'pass': 1, 'error': 1}
-    assert result['paired_score']['wins'] == result['paired_score']['losses'] == 1
+    assert result['paired_score'] is None
+    assert result['comparable_pairs'] == 0
+    assert result['pairs'][0]['completion']['base_hermes'] is None
+    assert result['pairs'][1]['completion']['protagine'] is None
+    assert result['pairs'][1]['results']['protagine']['observations'] == []
     # A failed consumer has no usage record. The successful arm is not charged as its full cost.
     assert result['arms']['base_hermes']['accounting']['input_tokens']['total'] is None
+
+
+def test_observed_candidate_dispatch_timeout_counts_as_noncompletion(fixture):
+    freeze(fixture)
+    fixture.modes[('episode-0', 'base_hermes')] = 'attributed_timeout'
+    result = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    assert result['paired_score']['wins'] == 1 and result['paired_score']['ties'] == 1
+    assert result['paired_score']['delta_percentage_points'] == 50
+    assert result['pairs'][0]['completion']['base_hermes'] is False
+
+
+@pytest.mark.parametrize('observation', [
+    {'selected_binding': 'candidate', 'prior_attempts': []},
+    {'selected_binding': 'other', 'prior_attempts': [], 'dispatch_observed': True},
+    {'selected_binding': 'candidate', 'prior_attempts': ['fallback'], 'dispatch_observed': True},
+])
+def test_timeout_needs_dispatch_evidence_for_the_declared_candidate(observation):
+    row = {'outcome': 'timeout', 'role': 'chat', 'qualification_routing': {'binding': 'candidate'},
+           'cleanup': 'state_directory_removed', 'observations': [{'role': 'chat', **observation}]}
+    assert paired_report._completion(row) is None
 
 
 def test_unattributed_answer_does_not_become_paired_success(fixture):
