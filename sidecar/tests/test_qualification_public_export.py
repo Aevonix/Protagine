@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from protagine.qualification.public_export import export_records, failure_stage, output_diagnostics, publish_snapshot
+from protagine.qualification.public_export import export_records, failure_stage, mechanism_summary, output_diagnostics, publish_snapshot
 from protagine.qualification.records import CaseSpec, encode, write_once
 
 META = {'publication_scope': 'public_synthetic', 'phase': 'screen',
@@ -161,3 +161,19 @@ def test_comparison_tracks_actual_native_payload_and_worker(tmp_path):
     run['recipe']['native_runtime']['native_payload_sha256'] = 'c' * 64
     path.write_text(json.dumps(run))
     assert export_records(source, meta)[0]['comparison_key'] != first
+
+
+def test_known_harness_invalid_run_keeps_original_outcomes(tmp_path):
+    source = fixture(tmp_path, outcome='error', primary='unverified')
+    run = export_records(source, {**META, 'invalid_reason': 'Native process could not initialize.'})[0]
+    assert run['status'] == 'invalid'
+    assert run['counts']['outcomes'] == {'error': 1}
+    assert run['comparison_key'] is None
+
+
+def test_native_memory_summary_never_exports_check_suffixes():
+    row = {'checks': {'correct_final_answer': False, 'source_visible.PRIVATE_SENTINEL': True,
+                      'arbitrary_PRIVATE_SENTINEL': True}}
+    value = mechanism_summary(row, {'consumer': 'native_memory'})
+    assert value == 'Requested answer object: 0/1; Required sources visible: 1/1'
+    assert 'SENTINEL' not in value

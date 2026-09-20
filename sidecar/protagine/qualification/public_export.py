@@ -134,6 +134,26 @@ def output_diagnostics(row, spec):
             'version': 'field-effects-single-fence-diagnostic-v1'}
 
 
+def mechanism_summary(row, spec):
+    """Publish fixed labels/counts, never source IDs or arbitrary check text."""
+    if spec['consumer'] != 'native_memory':
+        return None
+    groups = [('correct_final_answer', 'Requested answer object'),
+              ('source_visible.', 'Required sources visible'),
+              ('useful_claim_formed.', 'Useful claims retained'),
+              ('corrected_claim_retired.', 'Corrected claims retired'),
+              ('durable_erasure.', 'Erasure retained'),
+              ('erased_claims_absent.', 'Erased claims absent'),
+              ('private_or_erased_absent.', 'Private or erased context absent')]
+    fragments = []
+    for key, label in groups:
+        values = [value for name, value in row.get('checks', {}).items()
+                  if name == key or key.endswith('.') and name.startswith(key)]
+        if values:
+            fragments.append(f'{label}: {sum(value is True for value in values)}/{len(values)}')
+    return '; '.join(fragments) or None
+
+
 def export_records(directory, metadata):
     """One public record per actual consumer boundary and role, no input bodies."""
     run = read(Path(directory) / 'run.json')
@@ -154,7 +174,9 @@ def export_records(directory, metadata):
         identifier(row['case_id'])
         if row['boundary'] not in BOUNDARIES:
             raise ValueError('Unknown consumer boundary')
-        groups[(row['role'], row['boundary'])].append(row)
+        boundary = ('native_protagine' if specs[row['case_id']]['consumer'] == 'native_memory'
+                    else row['boundary'])
+        groups[(row['role'], boundary)].append(row)
     public = []
     for (role, boundary), rows in sorted(groups.items()):
         identifier(role)
@@ -167,7 +189,7 @@ def export_records(directory, metadata):
             public_case = {'case_id': row['case_id'], 'title': row['case_id'],
                 'outcome': row['outcome'], 'primary_outcome': primary,
                 'failure_stage': failure_stage(row), 'duration_ms': number(row.get('elapsed_ms')),
-                'summary': None}
+                'summary': mechanism_summary(row, specs[row['case_id']])}
             if diagnostics := output_diagnostics(row, specs[row['case_id']]):
                 public_case['diagnostics'] = diagnostics
             cases.append(public_case)
@@ -177,6 +199,10 @@ def export_records(directory, metadata):
         completed = all(row.get('ended_at') for row in rows)
         status = ('aborted' if not completed or counts['interrupted'] else
                   'failed' if all(c['outcome'] in {'setup_error', 'error'} for c in cases) else 'completed')
+        invalid_reason = metadata.get('invalid_reason')
+        if invalid_reason is not None:
+            invalid_reason = text(invalid_reason)
+            status = 'invalid'
         selected = [specs[r['case_id']] for r in rows]
         suite_hash = digest({'suite_version': run['suite_version'], 'cases': selected})
         evaluator_hash = digest({c['evaluator']: run.get('evaluator_identities', {}).get(c['evaluator'])
@@ -205,6 +231,12 @@ def export_records(directory, metadata):
                   'Secondary field/effect diagnostics may inspect a single JSON fence; original strict outcomes remain unchanged.']
         if boundary == 'cognition_consumer':
             limits.append('This consumer result does not establish native Hermes injection or channel delivery.')
+        if boundary == 'native_protagine':
+            limits.append('Isolated native automatic recollection with lexical retrieval; physical channels, embeddings and reranking were not exercised.')
+            limits.append('Requested answer-object checks combine strict format and values. Mechanism checks are shown separately; prose answers are not semantically regraded.')
+        if invalid_reason is not None:
+            limits.append('Invalid test: ' + invalid_reason)
+            comparison = None
         if run['evidence_mode'] == 'controlled':
             limits.append('Controlled fixture evidence is not a real-model benchmark.')
         if not deployment['weights_verified']:
