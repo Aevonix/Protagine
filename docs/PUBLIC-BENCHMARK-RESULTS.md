@@ -69,6 +69,13 @@ not publish the protocol body. The declaration must describe the fixed
 conditions actually used; a matching hash is a grouping aid, not proof that the
 operator used equal hardware or observed all serving conditions.
 
+Keep prompt-only and explicit JSON-schema screening in separate comparison
+cohorts. The latter uses `agent-screen-2-structured-output`, retains the original
+semantic oracles and requires a serialized schema witness. Its new scores do
+not replace historical grades or show a change in model weights. Publish the
+entire 18-case standard selection, including failures and unsupported cases;
+see [screening output contracts](qualification-screen-output-contracts.md).
+
 This scalar exporter deliberately does not publish synthetic response examples
 yet. Such examples need a separate explicit fixture publication path. Do not
 relax the exporter into mirroring raw result logs to add examples.
