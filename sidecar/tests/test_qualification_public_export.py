@@ -113,3 +113,13 @@ def test_snapshot_hashes_match_and_never_overwrite(tmp_path):
     assert manifest['progress']['completed'] == 1
     with pytest.raises(FileExistsError):
         publish_snapshot(runs, out)
+
+
+def test_corrected_public_description_gets_new_artifact_identity(tmp_path):
+    source = fixture(tmp_path)
+    first = export_records(source, META)[0]
+    changed = deepcopy(META)
+    changed['deployment']['hardware'] = 'Verified example hardware'
+    second = export_records(source, changed)[0]
+    assert first['run_id'] != second['run_id']
+    assert first['cases'] == second['cases']

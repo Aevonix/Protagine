@@ -229,6 +229,10 @@ def export_records(directory, metadata):
             'cases': cases,
             'conditions': conditions,
             'limitations': limits, 'evidence': []})
+    # Derived views have immutable identities too. A later diagnostic or metadata
+    # correction creates a new artifact instead of changing bytes at an old URL.
+    for item in public:
+        item['run_id'] = identifier(item['run_id'] + '-' + digest(item)[:12])
     return public
 
 
