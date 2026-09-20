@@ -1,0 +1,542 @@
+{
+  "version": "agent-coding-effects-v1",
+  "split": "development",
+  "tasks": [
+    {
+      "id": "C01",
+      "title": "Pagination boundaries",
+      "instruction": "Repair solution.solve(items, offset, limit). Offset must be nonnegative and limit positive, otherwise raise ValueError. Return items[offset:offset+limit] and next_offset only when another item exists. The result is a dict with items and next_offset. Edit solution.py only.",
+      "files": {
+        "solution.py": "def solve(items, offset, limit):\n page=items[offset:offset+limit-1]\n return {\"items\":page,\"next_offset\":offset+limit}\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "Pagination boundaries\nRepair solution.solve(items, offset, limit). Offset must be nonnegative and limit positive, otherwise raise ValueError. Return items[offset:offset+limit] and next_offset only when another item exists. The result is a dict with items and next_offset. Edit solution.py only.\n",
+        "test_smoke.py": "import unittest\nfrom solution import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertEqual(solve([1,2,3],0,2)[\"items\"],[1,2])\n"
+      },
+      "editable": [
+        "solution.py"
+      ],
+      "checks": [
+        {
+          "id": "first",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            0,
+            2
+          ],
+          "kwargs": {},
+          "expected": {
+            "items": [
+              0,
+              1
+            ],
+            "next_offset": 2
+          }
+        },
+        {
+          "id": "last",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              0,
+              1,
+              2,
+              3
+            ],
+            2,
+            2
+          ],
+          "kwargs": {},
+          "expected": {
+            "items": [
+              2,
+              3
+            ],
+            "next_offset": null
+          }
+        },
+        {
+          "id": "past_end",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              1
+            ],
+            8,
+            3
+          ],
+          "kwargs": {},
+          "expected": {
+            "items": [],
+            "next_offset": null
+          }
+        },
+        {
+          "id": "invalid_limit",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              1
+            ],
+            0,
+            0
+          ],
+          "exception": "ValueError"
+        },
+        {
+          "id": "negative_offset",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              1
+            ],
+            -1,
+            2
+          ],
+          "exception": "ValueError"
+        }
+      ]
+    },
+    {
+      "id": "C02",
+      "title": "Timezone-aware event order",
+      "instruction": "Repair solution.solve(events), returning event IDs in chronological order. Each event has id and at, an ISO8601 timestamp with Z or an explicit UTC offset. Equal instants retain input order. Reject timezone-naive timestamps with ValueError. Edit solution.py only.",
+      "files": {
+        "solution.py": "def solve(events):\n return [item[\"id\"] for item in sorted(events,key=lambda item:item[\"at\"])]\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "Timezone-aware event order\nRepair solution.solve(events), returning event IDs in chronological order. Each event has id and at, an ISO8601 timestamp with Z or an explicit UTC offset. Equal instants retain input order. Reject timezone-naive timestamps with ValueError. Edit solution.py only.\n",
+        "test_smoke.py": "import unittest\nfrom solution import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertEqual(solve([]),[])\n"
+      },
+      "editable": [
+        "solution.py"
+      ],
+      "checks": [
+        {
+          "id": "offsets",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "id": "east",
+                "at": "2026-01-01T10:00:00+02:00"
+              },
+              {
+                "id": "utc",
+                "at": "2026-01-01T09:00:00Z"
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": [
+            "east",
+            "utc"
+          ]
+        },
+        {
+          "id": "stable_equal",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "id": "a",
+                "at": "2026-01-01T10:00:00+02:00"
+              },
+              {
+                "id": "b",
+                "at": "2026-01-01T08:00:00Z"
+              },
+              {
+                "id": "c",
+                "at": "2026-01-01T09:00:00+01:00"
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": [
+            "a",
+            "b",
+            "c"
+          ]
+        },
+        {
+          "id": "empty",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            []
+          ],
+          "kwargs": {},
+          "expected": []
+        },
+        {
+          "id": "naive",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "id": "x",
+                "at": "2026-01-01T09:00:00"
+              }
+            ]
+          ],
+          "exception": "ValueError"
+        }
+      ]
+    },
+    {
+      "id": "C03",
+      "title": "Bounded retry schedule",
+      "instruction": "Repair solution.solve(attempts, base, cap). Return exactly attempts exponential delays starting at base, doubling each time, capped at cap. Zero attempts returns an empty list. Negative attempts or negative base/cap raise ValueError. Zero base/cap are valid. Edit solution.py only.",
+      "files": {
+        "solution.py": "def solve(attempts, base, cap):\n return [max(cap,base*2**i) for i in range(attempts+1)]\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "Bounded retry schedule\nRepair solution.solve(attempts, base, cap). Return exactly attempts exponential delays starting at base, doubling each time, capped at cap. Zero attempts returns an empty list. Negative attempts or negative base/cap raise ValueError. Zero base/cap are valid. Edit solution.py only.\n",
+        "test_smoke.py": "import unittest\nfrom solution import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertEqual(solve(3,1,8),[1,2,4])\n"
+      },
+      "editable": [
+        "solution.py"
+      ],
+      "checks": [
+        {
+          "id": "cap",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            6,
+            2,
+            9
+          ],
+          "kwargs": {},
+          "expected": [
+            2,
+            4,
+            8,
+            9,
+            9,
+            9
+          ]
+        },
+        {
+          "id": "zero_attempts",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            0,
+            2,
+            9
+          ],
+          "kwargs": {},
+          "expected": []
+        },
+        {
+          "id": "zero_cap",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            3,
+            1,
+            0
+          ],
+          "kwargs": {},
+          "expected": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "negative_attempt",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            -1,
+            1,
+            3
+          ],
+          "exception": "ValueError"
+        },
+        {
+          "id": "negative_base",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            2,
+            -1,
+            3
+          ],
+          "exception": "ValueError"
+        }
+      ]
+    },
+    {
+      "id": "C04",
+      "title": "Exact invoice cents",
+      "instruction": "Repair solution.solve(amounts). Amounts are decimal strings. Round EACH amount to two decimal places using ROUND_HALF_UP, convert to integer cents, then sum. Negative credits use the same rule. Empty input returns 0. Do not use floating-point arithmetic. Edit solution.py only.",
+      "files": {
+        "solution.py": "def solve(amounts):\n return int(sum(float(amount) for amount in amounts)*100)\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "Exact invoice cents\nRepair solution.solve(amounts). Amounts are decimal strings. Round EACH amount to two decimal places using ROUND_HALF_UP, convert to integer cents, then sum. Negative credits use the same rule. Empty input returns 0. Do not use floating-point arithmetic. Edit solution.py only.\n",
+        "test_smoke.py": "import unittest\nfrom solution import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertEqual(solve([\"1.005\"]),101)\n"
+      },
+      "editable": [
+        "solution.py"
+      ],
+      "checks": [
+        {
+          "id": "half_cents",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              "1.005",
+              "2.005"
+            ]
+          ],
+          "kwargs": {},
+          "expected": 302
+        },
+        {
+          "id": "binary_float",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              "0.29",
+              "0.29",
+              "0.29"
+            ]
+          ],
+          "kwargs": {},
+          "expected": 87
+        },
+        {
+          "id": "negative_credit",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              "-1.005",
+              "2.000"
+            ]
+          ],
+          "kwargs": {},
+          "expected": 99
+        },
+        {
+          "id": "empty",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            []
+          ],
+          "kwargs": {},
+          "expected": 0
+        },
+        {
+          "id": "large",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              "90071992547409.93",
+              "0.01"
+            ]
+          ],
+          "kwargs": {},
+          "expected": 9007199254740994
+        }
+      ]
+    },
+    {
+      "id": "C05",
+      "title": "CSV quoting and multiline values",
+      "instruction": "Repair solution.solve(rows). Produce CSV text with header name,note, columns in that order and a final newline. Use LF record endings. Properly quote commas, quotes and embedded newlines. Missing fields become empty strings. Edit solution.py only.",
+      "files": {
+        "solution.py": "def solve(rows):\n return \"name,note\\n\"+\"\\n\".join(row[\"name\"]+\",\"+row[\"note\"] for row in rows)\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "CSV quoting and multiline values\nRepair solution.solve(rows). Produce CSV text with header name,note, columns in that order and a final newline. Use LF record endings. Properly quote commas, quotes and embedded newlines. Missing fields become empty strings. Edit solution.py only.\n",
+        "test_smoke.py": "import unittest\nfrom solution import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertEqual(solve([]),\"name,note\\n\")\n"
+      },
+      "editable": [
+        "solution.py"
+      ],
+      "checks": [
+        {
+          "id": "comma",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "name": "Lee",
+                "note": "one,two"
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": "name,note\nLee,\"one,two\"\n"
+        },
+        {
+          "id": "quote",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "name": "Jo",
+                "note": "said \"yes\""
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": "name,note\nJo,\"said \"\"yes\"\"\"\n"
+        },
+        {
+          "id": "newline",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "name": "A",
+                "note": "line1\nline2"
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": "name,note\nA,\"line1\nline2\"\n"
+        },
+        {
+          "id": "missing",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            [
+              {
+                "name": "A"
+              }
+            ]
+          ],
+          "kwargs": {},
+          "expected": "name,note\nA,\n"
+        },
+        {
+          "id": "empty",
+          "module": "solution",
+          "function": "solve",
+          "args": [
+            []
+          ],
+          "kwargs": {},
+          "expected": "name,note\n"
+        }
+      ]
+    },
+    {
+      "id": "C06",
+      "title": "Configuration precedence across files",
+      "instruction": "Repair settings.parse.parse_bool and settings.config.solve(cli, env, config). Explicit boolean cli wins even when False; otherwise env[ENABLED] wins if present; otherwise config[enabled] or False. Environment parsing accepts true/false, 1/0, yes/no, on/off, case-insensitive with whitespace. Invalid strings raise ValueError. Edit settings/parse.py and settings/config.py only.",
+      "files": {
+        "settings/__init__.py": "",
+        "settings/parse.py": "def parse_bool(value):\n return bool(value)\n",
+        "settings/config.py": "from .parse import parse_bool\ndef solve(cli,env,config):\n return cli or parse_bool(env.get(\"ENABLED\",config.get(\"enabled\",False)))\n",
+        "AGENTS.md": "Work only on the implementation files named in the task. Preserve AGENTS.md, README.md and test_smoke.py. Use Python standard library only. Do not add dependencies or network access.\n",
+        "README.md": "Configuration precedence across files\nRepair settings.parse.parse_bool and settings.config.solve(cli, env, config). Explicit boolean cli wins even when False; otherwise env[ENABLED] wins if present; otherwise config[enabled] or False. Environment parsing accepts true/false, 1/0, yes/no, on/off, case-insensitive with whitespace. Invalid strings raise ValueError. Edit settings/parse.py and settings/config.py only.\n",
+        "test_smoke.py": "import unittest\nfrom settings.config import solve\nclass Smoke(unittest.TestCase):\n def test_example(self):\n  self.assertIs(solve(False,{\"ENABLED\":\"true\"},{}),False)\n"
+      },
+      "editable": [
+        "settings/parse.py",
+        "settings/config.py"
+      ],
+      "checks": [
+        {
+          "id": "explicit_false",
+          "module": "settings.config",
+          "function": "solve",
+          "args": [
+            false,
+            {
+              "ENABLED": "true"
+            },
+            {
+              "enabled": true
+            }
+          ],
+          "kwargs": {},
+          "expected": false
+        },
+        {
+          "id": "env_false",
+          "module": "settings.config",
+          "function": "solve",
+          "args": [
+            null,
+            {
+              "ENABLED": " OFF "
+            },
+            {
+              "enabled": true
+            }
+          ],
+          "kwargs": {},
+          "expected": false
+        },
+        {
+          "id": "env_true",
+          "module": "settings.config",
+          "function": "solve",
+          "args": [
+            null,
+            {
+              "ENABLED": " Yes "
+            },
+            {}
+          ],
+          "kwargs": {},
+          "expected": true
+        },
+        {
+          "id": "config_false",
+          "module": "settings.config",
+          "function": "solve",
+          "args": [
+            null,
+            {},
+            {
+              "enabled": false
+            }
+          ],
+          "kwargs": {},
+          "expected": false
+        },
+        {
+          "id": "invalid_env",
+          "module": "settings.config",
+          "function": "solve",
+          "args": [
+            null,
+            {
+              "ENABLED": "perhaps"
+            },
+            {}
+          ],
+          "exception": "ValueError"
+        }
+      ]
+    }
+  ]
+}
