@@ -262,6 +262,19 @@ def test_transport_ignores_other_endpoints_and_retains_unknown_usage():
     assert usage['observed_input_tokens'] is None and usage['input_tokens'] is None
 
 
+def test_partial_usage_keeps_known_calls_without_treating_unfinished_calls_as_zero():
+    usage = paired_transport.usage_summary([
+        {'usage': {'prompt_tokens': 17, 'completion_tokens': 3}},
+        {'usage': None},
+        {'usage': {'prompt_tokens': True, 'completion_tokens': -1}},
+    ])
+    assert usage['model_calls_with_usage'] == 1
+    assert usage['observed_model_calls'] == 3
+    assert usage['observed_input_tokens'] == 17 and usage['observed_output_tokens'] == 3
+    assert usage['input_tokens'] is None and usage['output_tokens'] is None
+    assert usage['coverage'] == 'partial'
+
+
 def test_workspace_seed_and_snapshot_reject_escape_without_copying_oracles(tmp_path):
     root = tmp_path / 'workspace'
     root.mkdir()

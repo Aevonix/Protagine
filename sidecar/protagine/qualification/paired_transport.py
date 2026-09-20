@@ -6,15 +6,16 @@ from unittest.mock import patch
 
 
 def usage_summary(rows):
-    complete = bool(rows) and all(isinstance(row.get('usage'), dict)
-        and all(type(row['usage'].get(k)) is int for k in ('prompt_tokens', 'completion_tokens'))
-        for row in rows)
+    known = [row for row in rows if isinstance(row.get('usage'), dict)
+        and all(type(row['usage'].get(k)) is int and row['usage'][k] >= 0
+                for k in ('prompt_tokens', 'completion_tokens'))]
     return {'coverage': 'partial', 'basis': 'httpx sync and async model calls only; '
             'other transports and provider-side work are not independently observed',
         'total_model_calls': None, 'input_tokens': None, 'output_tokens': None,
         'background_model_calls': None, 'observed_model_calls': len(rows),
-        'observed_input_tokens': sum(r['usage']['prompt_tokens'] for r in rows) if complete else None,
-        'observed_output_tokens': sum(r['usage']['completion_tokens'] for r in rows) if complete else None,
+        'model_calls_with_usage': len(known),
+        'observed_input_tokens': sum(r['usage']['prompt_tokens'] for r in known) if known else None,
+        'observed_output_tokens': sum(r['usage']['completion_tokens'] for r in known) if known else None,
         'budget_enforcement': 'native per-call caps and episode deadline; total work not enforced'}
 
 
