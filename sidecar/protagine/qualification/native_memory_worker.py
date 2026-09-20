@@ -133,8 +133,10 @@ def prepare(request, state, arguments, config, *, setup_host=None):
             # This instrumentation is confined to the owned subprocess and does
             # not alter request content, responses, policy or endpoint selection.
             observation = None
+            body = None
             if outgoing.method == 'POST' and str(outgoing.url).startswith(provider_prefix):
                 body = json.loads(outgoing.content)
+            if isinstance(body, dict) and any(name in body for name in ('messages', 'input', 'system', 'instructions')):
                 content = {name: body[name] for name in ('messages', 'input', 'system', 'instructions')
                            if name in body}
                 text = json.dumps(content, ensure_ascii=False)
