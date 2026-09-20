@@ -36,7 +36,8 @@ def test_concurrent_observations_do_not_mix_requests_or_retain_text():
     install(client, output.append, answer_sink=answers.append)
     async def main():
         await asyncio.gather(*(client.ASYNC_REQUEST_FUNCS['vllm-chat'](
-            SimpleNamespace(model=name, prompt='synthetic', output_len=100)) for name in ('a', 'b')))
+            request_func_input=SimpleNamespace(model=name, prompt='synthetic', output_len=100),
+            pbar=None) for name in ('a', 'b')))
     asyncio.run(main())
     assert {row['candidate_model'] for row in output} == {'a', 'b'}
     for row in output:

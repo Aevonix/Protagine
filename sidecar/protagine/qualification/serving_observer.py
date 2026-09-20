@@ -16,7 +16,7 @@ import time
 
 CLIENT_SHA256 = '26a4458f64210916716606c50c9d75578c486bcc36ce4f6c89e109fde00e79c3'
 CLIENT_COMMIT = 'e087e662ba1ac4ef7747537e2a9141085efd4561'
-VERSION = 'sglang-content-observation-2'
+VERSION = 'sglang-content-observation-3'
 _active = ContextVar('serving_observation', default=None)
 
 
@@ -79,7 +79,9 @@ def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
                 observe_frame(value, observation, time.perf_counter())
             return value
 
-    async def request(inputs, pbar=None):
+    async def request(request_func_input, pbar=None):
+        # The pinned client dispatches this callback with keyword arguments.
+        inputs = request_func_input
         began = time.perf_counter()
         observation = {'returned_models': set(), 'usage': {}, 'finish_reason': None,
             'first_reasoning_at': None, 'first_content_at': None, 'first_delta_at': None,
