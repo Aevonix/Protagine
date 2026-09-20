@@ -1,8 +1,9 @@
 """Supplement one pinned upstream serving client with content/usage observations.
 
 Requests, responses, tokenization and upstream scoring stay unchanged. The added
-request deadline is explicit. No prompt text, generated content or reasoning is
-written to the supplementary receipt. Official raw output remains private.
+request deadline is explicit. The timing receipt contains no prompt, generated
+content or reasoning. Optional answer receipts contain bounded final-channel
+content for private semantic grading. Neither receipt is a public export.
 """
 import argparse
 import asyncio
@@ -15,7 +16,7 @@ import time
 
 CLIENT_SHA256 = '26a4458f64210916716606c50c9d75578c486bcc36ce4f6c89e109fde00e79c3'
 CLIENT_COMMIT = 'e087e662ba1ac4ef7747537e2a9141085efd4561'
-VERSION = 'sglang-content-observation-1'
+VERSION = 'sglang-content-observation-2'
 _active = ContextVar('serving_observation', default=None)
 
 
@@ -57,9 +58,11 @@ def observe_frame(frame, observation, now):
     if isinstance(content, str):
         observation['content_characters'] += len(content)
         observation['content_prefix'] = (observation['content_prefix'] + content)[:256]
+        if 'answer_content' in observation:
+            observation['answer_content'] = (observation['answer_content'] + content)[:65536]
 
 
-def install(client, sink, *, request_deadline_seconds=300):
+def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
     """Instrument this owned client module, without changing global json behavior."""
     if not 1 <= request_deadline_seconds <= 1800:
         raise ValueError('Declare a request deadline between 1 and 1800 seconds')
@@ -81,6 +84,8 @@ def install(client, sink, *, request_deadline_seconds=300):
         observation = {'returned_models': set(), 'usage': {}, 'finish_reason': None,
             'first_reasoning_at': None, 'first_content_at': None, 'first_delta_at': None,
             'last_delta_at': None, 'content_characters': 0, 'content_prefix': ''}
+        if answer_sink is not None:
+            observation['answer_content'] = ''
         token = _active.set(observation)
         timeout = False
         try:
@@ -97,7 +102,7 @@ def install(client, sink, *, request_deadline_seconds=300):
             def elapsed(name):
                 value = observation[name]
                 return round(max(0, value - start) * 1000, 3) if value is not None else None
-            sink({'version': VERSION, 'candidate_model': inputs.model,
+            receipt = {'version': VERSION, 'candidate_model': inputs.model,
                 'prompt_sha256': hashlib.sha256(json.dumps(inputs.prompt, sort_keys=True).encode()).hexdigest(),
                 'requested_output_tokens': inputs.output_len,
                 'request_deadline_seconds': request_deadline_seconds,
@@ -112,7 +117,16 @@ def install(client, sink, *, request_deadline_seconds=300):
                 'returned_models': sorted(observation['returned_models']),
                 'finish_reason': observation['finish_reason'], 'server_usage': observation['usage'],
                 'usage_missing': 'completion_tokens' not in observation['usage'],
-                'basis': 'Observed server usage, not requested output length; first content is not a semantic usefulness score.'})
+                'basis': 'Observed server usage, not requested output length; first content is not a semantic usefulness score.'}
+            sink(receipt)
+            if answer_sink is not None:
+                answer_sink({'version': VERSION, 'prompt_sha256': receipt['prompt_sha256'],
+                    'candidate_model': inputs.model, 'success': output.success,
+                    'finish_reason': observation['finish_reason'],
+                    'content': observation['answer_content'],
+                    'content_truncated': observation['content_characters'] > len(observation['answer_content']),
+                    'content_contains_think_tag': receipt['content_contains_think_tag'],
+                    'scope': 'Private final-channel receipt; never publish unreviewed content.'})
             return output
         finally:
             _active.reset(token)
@@ -125,6 +139,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
     parser.add_argument('--timing-output', required=True, type=Path)
     parser.add_argument('--request-deadline', type=float, default=300)
+    parser.add_argument('--answers-output', type=Path, help='Optional private final-channel receipts')
     own, upstream = parser.parse_known_args()
     if upstream[:1] == ['--']:
         upstream = upstream[1:]
@@ -138,16 +153,24 @@ def main():
     if '--output-file' not in upstream:
         raise ValueError('Declare an immutable upstream output file')
     destination = Path(upstream[upstream.index('--output-file') + 1])
-    if destination.exists() or own.timing_output.exists():
+    paths = [destination, own.timing_output] + ([own.answers_output] if own.answers_output else [])
+    if any(path.exists() for path in paths) or len({path.resolve() for path in paths}) != len(paths):
         raise FileExistsError('Choose new performance receipt paths')
     if not 1 <= own.request_deadline <= 1800:
         raise ValueError('Invalid declared request deadline')
     own.timing_output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with own.timing_output.open('x') as stream:
+    from contextlib import ExitStack
+    with ExitStack() as resources:
+        stream = resources.enter_context(own.timing_output.open('x'))
+        answers = resources.enter_context(own.answers_output.open('x')) if own.answers_output else None
         def write(row):
             stream.write(json.dumps(row, sort_keys=True) + '\n')
             stream.flush()
-        install(serving, write, request_deadline_seconds=own.request_deadline)
+        def write_answer(row):
+            answers.write(json.dumps(row, sort_keys=True) + '\n')
+            answers.flush()
+        install(serving, write, request_deadline_seconds=own.request_deadline,
+                answer_sink=write_answer if answers is not None else None)
         sys.argv = [sys.argv[0], *upstream]
         serving.cli_main()
 

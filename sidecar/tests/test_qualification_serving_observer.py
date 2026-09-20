@@ -32,8 +32,8 @@ def test_concurrent_observations_do_not_mix_requests_or_retain_text():
         client.json.loads(json.dumps({'model': inputs.model, 'choices': [{'delta': {'content': inputs.model}}]}))
         return SimpleNamespace(start_time=began, latency=.01, success=True)
     client.ASYNC_REQUEST_FUNCS = {'vllm-chat': original}
-    output = []
-    install(client, output.append)
+    output, answers = [], []
+    install(client, output.append, answer_sink=answers.append)
     async def main():
         await asyncio.gather(*(client.ASYNC_REQUEST_FUNCS['vllm-chat'](
             SimpleNamespace(model=name, prompt='synthetic', output_len=100)) for name in ('a', 'b')))
@@ -44,3 +44,6 @@ def test_concurrent_observations_do_not_mix_requests_or_retain_text():
         assert row['usage_missing'] is True and row['server_usage'] == {}
         assert 'content_prefix' not in row
     assert client.json.dumps({'ordinary': True}) == json.dumps({'ordinary': True})
+    assert {row['content'] for row in answers} == {'a', 'b'}
+    assert all(row['content_truncated'] is False for row in answers)
+    assert all('content' not in row for row in output)
