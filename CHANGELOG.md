@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.8.7-hermes - support strict chat instruction layouts
+
+The Hermes adapter now sends consecutive plain instruction blocks as one
+leading message. This fixes Qwen templates rejecting Protagine requests with
+multiple system messages or work instructions after the conversation. The
+change applies to any compatible chat-completion endpoint, without a model-name
+override, serving-template edit or Hermes core patch.
+
+Instruction text, user and tool content, stored history and participant scopes
+are preserved. Native summary calls use the same layout, and the memory check
+cache records the final outgoing request. Structured provider content, distinct
+system/developer roles, Responses and Anthropic layouts keep their existing shape.
+
+Real Qwen validation completed eight Protagine turns without the previous
+template error. Owner-authorized tool access and contact recall passed. The six
+semantic-recall trials still expose separate retrieval, output-contract and
+grounding failures; compatibility is not a model-quality qualification.
+
+This updates `protagine-hermes` to 1.8.7. The sidecar remains 1.8.6 and hostworker
+0.3.0. Upgrade the adapter in the Hermes environment and restart that gateway
+to load it.
+
 ## v1.8.6 - diagnose retained model responses
 
 Hermes response observations now retain stop reasons, text/tool/reasoning counts
