@@ -17,6 +17,8 @@ import re
 from .records import CaseSpec
 
 VERSION = 'paired-agent-pilot-1'
+REVIEWED_VERSION = 'paired-agent-reviewed-1'
+DATASET_VERSIONS = (VERSION, REVIEWED_VERSION)
 FAMILIES = (
     'grounded-evidence', 'planning-toolrecovery', 'persistent-memory',
     'crosssession-authority', 'coding-ops', 'extraction-review',
@@ -48,7 +50,8 @@ def load_dataset(directory=_FIXTURE_DIRECTORY):
     if (len(scenario_raw) != expected['bytes']
             or hashlib.sha256(scenario_raw).hexdigest() != expected['sha256']):
         raise ValueError('Paired dataset checksum mismatch')
-    if manifest['dataset_id'] != VERSION or manifest['version'] != VERSION:
+    if (manifest['dataset_id'] not in DATASET_VERSIONS
+            or manifest['version'] != manifest['dataset_id']):
         raise ValueError('Unsupported paired dataset version')
     scenarios = json.loads(scenario_raw)
     if not isinstance(scenarios, list) or len(scenarios) != manifest['scenario_count']:
@@ -86,23 +89,30 @@ DATASET_MANIFEST, _SCENARIOS, DATASET_SHA256 = load_dataset()
 CASE_IDS = tuple(item['id'] for item in _SCENARIOS)
 
 
-def cases(arm, case_ids=None):
+def cases(arm, case_ids=None, *, dataset_version=VERSION):
     """Return fresh independent declarations; only inputs.arm differs by arm."""
     if arm not in {'base_hermes', 'protagine'}:
         raise ValueError('Use base_hermes or protagine')
-    selected = list(CASE_IDS) if case_ids is None else list(case_ids)
-    if not selected or len(selected) != len(set(selected)) or set(selected) - set(CASE_IDS):
-        raise ValueError('Select distinct installed paired pilot case IDs')
+    if dataset_version not in DATASET_VERSIONS:
+        raise ValueError('Select an installed paired dataset version')
+    if dataset_version == VERSION:
+        scenarios, content_hash = _SCENARIOS, DATASET_SHA256
+    else:
+        _, scenarios, content_hash = load_dataset(_FIXTURE_DIRECTORY.parent / dataset_version)
+    identities = tuple(item['id'] for item in scenarios)
+    selected = list(identities) if case_ids is None else list(case_ids)
+    if not selected or len(selected) != len(set(selected)) or set(selected) - set(identities):
+        raise ValueError('Select distinct installed paired case IDs')
     result = []
-    for scenario in _SCENARIOS:
+    for scenario in scenarios:
         if scenario['id'] not in selected:
             continue
         inputs = {key: copy.deepcopy(scenario[key]) for key in (
             'family', 'scenario', 'role', 'initial_files', 'episodes', 'limitations')}
         inputs.update(arm=arm, max_output_tokens=4096, max_iterations=8,
             cleanup_seconds=5, settle_seconds=5, contact_id='fixture-owner',
-            dataset={'id': VERSION, 'version': VERSION, 'sha256': DATASET_SHA256})
-        result.append(CaseSpec(id=scenario['id'], version=VERSION, role=scenario['role'],
+            dataset={'id': dataset_version, 'version': dataset_version, 'sha256': content_hash})
+        result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
             boundary='native_hermes', consumer='native_paired', evaluator='paired_artifacts',
             inputs=inputs, oracle=copy.deepcopy(scenario['oracle']),
             timeout_seconds=120 * len(scenario['episodes']) + 30,
@@ -168,6 +178,12 @@ def _assertion(actual, rule):
             and all(sum(_same(value, item) for value in actual) == 1 for item in expected))
     if op == 'label_one_of':
         return isinstance(actual, str) and actual.strip().casefold() in {x.casefold() for x in expected}
+    if op == 'labels_set_equals':
+        if not isinstance(actual, list) or any(not isinstance(x, str) for x in actual):
+            return False
+        aliases = rule.get('aliases', {})
+        normalized = [aliases.get(x.strip().casefold(), x.strip().casefold()) for x in actual]
+        return len(normalized) == len(expected) and set(normalized) == set(expected)
     if op == 'keys_equal':
         return isinstance(actual, dict) and set(actual) == set(expected)
     if op == 'schedule':
@@ -186,6 +202,19 @@ def _object(pairs):
 
 def _nonfinite(value):
     raise ValueError('Nonfinite JSON number')
+
+
+def _decoded_strings(value):
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
 
 
 def _artifact_checks(raw, spec):
@@ -208,6 +237,10 @@ def _artifact_checks(raw, spec):
         if spec['format'] != 'json':
             raise ValueError('Unknown paired artifact format')
         value = json.loads(raw, object_pairs_hook=_object, parse_constant=_nonfinite)
+        if spec.get('forbidden_in_decoded_json') and any(
+                marker.casefold() in item.casefold()
+                for item in _decoded_strings(value) for marker in spec.get('forbidden', [])):
+            return False
         return all(_assertion(value, item) for item in spec['assertions'])
     except (ValueError, TypeError, SyntaxError, RecursionError, OverflowError):
         return False
