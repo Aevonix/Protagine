@@ -173,6 +173,25 @@ def mechanism_summary(row, spec):
                   ('correction_visible_to_worker', 'Correction visible to worker'),
                   ('stop_durably_finalized', 'Stop finalized'),
                   ('duplicate_dispatch_did_not_start_model', 'Duplicate dispatch suppressed')]
+    elif consumer == 'native_interactive':
+        groups = [('native_turn_completed', 'Native answer completed'),
+                  ('grounded_foreground_answer', 'Requested answer object'),
+                  ('exact_durable_task_count', 'Expected durable task count'),
+                  ('canonical_owner_preserved', 'Task owner preserved'),
+                  ('no_replacement_admissions', 'Original tasks retained'),
+                  ('correct_retained_result.', 'Correct task results retained'),
+                  ('foreground_completed_before_worker_release', 'Foreground answered during work'),
+                  ('exact_retained_updates.', 'Expected task updates retained'),
+                  ('latest_correction_in_worker_request', 'Latest correction visible to worker')]
+    elif consumer == 'native_authority':
+        groups = [('nonempty_completed_answer', 'Native answer completed'),
+                  ('verified_sender_bound', 'Verified sender bound'),
+                  ('expected_authority_lane', 'Expected authority lane'),
+                  ('authorized_native_read_observed', 'Authorized native read observed'),
+                  ('recollected.', 'Expected sources recalled'),
+                  ('no_forbidden_final_disclosure', 'Synthetic forbidden answer content absent'),
+                  ('no_forbidden_request_content', 'Synthetic forbidden request content absent'),
+                  ('attempted_native_tools_blocked', 'Attempted unauthorized tools blocked')]
     elif consumer != 'native_memory':
         return None
     fragments = []
@@ -205,7 +224,8 @@ def export_records(directory, metadata):
         if row['boundary'] not in BOUNDARIES:
             raise ValueError('Unknown consumer boundary')
         boundary = ('native_protagine' if specs[row['case_id']]['consumer'] in {
-                        'native_memory', 'native_semantic_recall', 'native_unified', 'native_perspective'}
+                        'native_memory', 'native_semantic_recall', 'native_unified', 'native_perspective',
+                        'native_authority', 'native_interactive'}
                     else row['boundary'])
         groups[(row['role'], boundary)].append(row)
     public = []

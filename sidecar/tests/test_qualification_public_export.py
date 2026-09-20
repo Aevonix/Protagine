@@ -13,9 +13,9 @@ META = {'publication_scope': 'public_synthetic', 'phase': 'screen',
         'source_url': 'https://huggingface.co/example/model', 'weights_verified': False}}
 
 
-def fixture(tmp_path, *, outcome='pass', primary='pass', private=False):
-    case = CaseSpec(id='screen.grounding', version='1', role='chat', boundary='role_completion',
-        consumer='example', evaluator='fields', inputs={'content': 'PUBLIC SYNTHETIC'},
+def fixture(tmp_path, *, outcome='pass', primary='pass', private=False, consumer='example', boundary='role_completion'):
+    case = CaseSpec(id='screen.grounding', version='1', role='chat', boundary=boundary,
+        consumer=consumer, evaluator='fields', inputs={'content': 'PUBLIC SYNTHETIC'},
         oracle={'expected': 'ORACLE_SENTINEL'}, provenance='private' if private else 'public').record()
     root = tmp_path / 'source'
     run = {'schema': 1, 'id': 'abc123', 'created_at': '2026-09-20T12:00:00Z',
@@ -192,3 +192,18 @@ def test_semantic_and_tool_summaries_separate_effects_from_answer_contract():
     recovery = mechanism_summary({'checks': {'grounded_final_answer': False,
         'actual_inventory_correct': True, 'effect_count_correct': True}}, {'consumer': 'native_recovery'})
     assert recovery == 'Requested answer object: 0/1; Final inventory correct: 1/1; Correct number of effects: 1/1'
+
+
+@pytest.mark.parametrize('consumer', ['native_authority', 'native_interactive'])
+def test_native_plugin_consumers_report_actual_stack_boundary(tmp_path, consumer):
+    source = fixture(tmp_path, consumer=consumer, boundary='native_hermes')
+    assert export_records(source, META)[0]['boundary'] == 'native_protagine'
+
+
+def test_authority_and_task_summaries_keep_private_identifiers_out():
+    authority = mechanism_summary({'checks': {'verified_sender_bound': True,
+        'recollected.PRIVATE_CONTACT': True, 'canary_PRIVATE_SECRET': False}}, {'consumer': 'native_authority'})
+    assert authority == 'Verified sender bound: 1/1; Expected sources recalled: 1/1'
+    task = mechanism_summary({'checks': {'correct_retained_result.PRIVATE_TASK': False,
+        'latest_correction_in_worker_request': True}}, {'consumer': 'native_interactive'})
+    assert task == 'Correct task results retained: 0/1; Latest correction visible to worker: 1/1'
