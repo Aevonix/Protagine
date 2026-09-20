@@ -1,0 +1,65 @@
+# Paired Hermes and Protagine benchmark
+
+`protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The initial dataset has 18 public development episodes, three in each of six families. It is a pilot for the harness, not a comprehensive model ranking.
+
+Both arms use the same configured model, provider settings, immutable container image, initial files, source events, task instructions, output limits and artifact verifier. Hermes keeps its ordinary memory and session tools in the baseline. Protagine adds its normal integration in the other arm. Historical facts arrive through the same episode turns; answers are not preloaded only for Protagine. The verifier's oracle stays outside the agent container.
+
+Each arm starts a new container with fresh state for each episode. State persists across turns and sessions inside that episode. No owner home, memories, live-agent state or Docker socket is mounted inside the agent. The container can call the selected model endpoint. Sharing an endpoint with a live agent is allowed, but can slow that agent and distort benchmark timings. Prefer running while the agent is not using that endpoint when practical. The benchmark does not stop the live agent or require a reserved endpoint.
+
+## Declare the comparison
+
+Use one private Hermes provider configuration and one policy file for both arms. The image must already exist and be addressed by its immutable digest. Plan inspects the image in a disposable container with networking disabled; it does not call a model or download an image.
+
+```json
+{
+  "version": "paired-policy-1",
+  "budget_mode": "deployment_policy",
+  "budget_policy": {
+    "description": "Same declared episode and per-call limits; ordinary auxiliary processing remains enabled.",
+    "total_work_enforcement": "not_verified"
+  },
+  "environment": {
+    "endpoint_usage": "shared",
+    "hardware_recipe": "Private serving recipe identifier",
+    "supporting_models": "All generative roles use the selected candidate; text-only pilot."
+  }
+}
+```
+
+`endpoint_usage` accepts `idle_declared`, `shared` or `unknown`. This is an operator declaration, not measured endpoint isolation. Record hardware, serving recipe and competing traffic honestly. Policy contents, dataset version and content hash, installed implementation, container identity and selected model configuration are frozen into the run identity. Changing them requires a new plan.
+
+`budget_mode` can be `deployment_policy` or `matched_work`. The latter is a declaration, not proof of equal cost: ordinary memory reviews, extraction, judgment, background work and retries must all be observed and bounded before claiming matched total work. Per-call token limits alone do not establish it. Resource totals remain unknown where coverage is incomplete.
+
+## Plan, run and report
+
+```sh
+protagine models paired plan \
+  --native-config /private/candidate-hermes.yaml --native-binding candidate \
+  --comparison-policy /private/paired-policy.json \
+  --container-image registry.example/agent-benchmark@sha256:IMAGE_DIGEST \
+  --label candidate-pilot-01 --output /private/results/candidate-pilot-01
+
+protagine models paired run \
+  --native-config /private/candidate-hermes.yaml \
+  --comparison-policy /private/paired-policy.json \
+  --container-image registry.example/agent-benchmark@sha256:IMAGE_DIGEST \
+  --output /private/results/candidate-pilot-01
+
+protagine models paired report --output /private/results/candidate-pilot-01
+```
+
+Replace the example image digest with the actual pinned image. `--docker-host` selects an explicitly configured local or forwarded Docker daemon. There is no local-process fallback. Select a bounded subset with `--case-ids` at plan time; it always selects both arms together. The default runs all installed episodes.
+
+Execution is sequential. The first episode runs base Hermes first, the second runs Protagine first, and the order continues alternating. An episode has exactly one attempt per arm. There is no best-of selection or adaptive retry. `--resume` continues only untouched attempts. Interrupted attempts retain their outcome and are never replayed. Unconfirmed container cleanup stops further execution.
+
+The private `paired.json` contains the frozen plan. Ordinary immutable runner records live under `runs/`; numbered reports are additional views and never replace an earlier result. Keep this directory private: it can contain supplied configuration hashes, model outputs and diagnostics.
+
+## Read the result
+
+The report shows each arm's completion counts, separate unsupported/error/timeout outcomes, paired wins/ties/losses and completion delta in percentage points. A win means Protagine completed an episode that baseline Hermes did not. A tie can mean both succeeded or both failed; those counts are also separate.
+
+An aggregate delta is available only after every declared episode has two attributable outcomes. Missing, interrupted, unsupported, setup-failed or unattributed attempts keep it unavailable. Operational errors and timeouts count as noncompletion and remain visible as their own categories. A partial cohort is never promoted into an improvement score.
+
+Accounting reports measured model calls, input/output tokens, background calls and arm wall time when available. Partial subtotals are labeled; missing observations are not zero. The first pilot does not claim complete auxiliary-call accounting, enforced equal compute, peak throughput or latency without competing traffic.
+
+No model tier is assigned. These public development episodes do not establish broad generalization, hidden-test performance, concurrent-session correctness, comprehensive authorization, deletion from every store, executable code correctness, or voice/vision/embedding quality. Inspect the per-case limitations and effects alongside the aggregate. The earlier endpoint screen and its raw records remain separate protocols.

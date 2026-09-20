@@ -33,6 +33,8 @@ def add_parser(sub):
     add_benchmark_parser(commands)
     from .pack_batch import add_parser as add_pack_parser
     add_pack_parser(commands)
+    from .paired import add_parser as add_paired_parser
+    add_paired_parser(commands)
     item = commands.add_parser('diagnose', help='Read retained native model calls; does not invoke a model')
     item.add_argument('execution_id')
     item.add_argument('--contact-id', required=True, help='Configured owner contact ID')
@@ -45,6 +47,9 @@ def add_parser(sub):
 
 
 def run(args):
+    if args.models_command == 'paired':
+        from .paired import cli
+        return cli(args)
     if args.models_command == 'packs':
         from .pack_batch import cli
         return cli(args)
