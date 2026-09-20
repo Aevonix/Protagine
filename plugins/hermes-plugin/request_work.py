@@ -44,12 +44,15 @@ def replace_context(request, text=None, *, api_mode='', marker='protagine-work-r
     for name in ('messages', 'input'):
         if isinstance(request.get(name), list):
             rows = []
-            for row in request[name]:
+            for index, row in enumerate(request[name]):
                 if _owned_message(row, opening, closing):
                     continue
                 # The outgoing chat adapter can combine leading instructions.
                 # Refresh only our framed block, never user/tool evidence.
-                if (isinstance(row, dict) and row.get('role') in ('system', 'developer')
+                if (name == 'messages' and index == 0 and 'input' not in request
+                        and 'system' not in request and api_mode != 'anthropic_messages'
+                        and isinstance(row, dict) and set(row) == {'role', 'content'}
+                        and row.get('role') in ('system', 'developer')
                         and isinstance(row.get('content'), str)):
                     row = {**row, 'content': pattern.sub('', row['content'])}
                 rows.append(row)

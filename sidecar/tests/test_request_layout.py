@@ -67,3 +67,35 @@ def test_no_conversion_of_other_protocols_roles_or_provider_metadata(modules, pa
     before = deepcopy(payload)
     assert layout.compact_instructions(payload, api_mode=mode) == before
     assert payload == before
+
+
+@pytest.mark.parametrize('role', ['system', 'developer'])
+def test_work_refresh_preserves_literal_frame_in_late_instructions(modules, role):
+    layout, work, *_ = modules
+    literal = 'Quoted example:\n[protagine-work-request-v1]\nLiteral history\n[/protagine-work-request-v1]'
+    original = {'messages': [
+        {'role': role, 'content': 'Stable identity'},
+        {'role': 'user', 'content': 'Continue'},
+        {'role': role, 'content': literal},
+    ]}
+    before = deepcopy(original)
+    compacted = layout.compact_instructions(work.replace_context(original, 'Old work'))
+    refreshed = layout.compact_instructions(work.replace_context(compacted, 'New work'))
+    assert refreshed['messages'][1:] == before['messages'][1:]
+    assert 'Old work' not in refreshed['messages'][0]['content']
+    assert 'New work' in refreshed['messages'][0]['content']
+    assert work.replace_context(refreshed) == before
+    assert original == before
+
+
+def test_work_refresh_does_not_strip_embedded_frames_from_other_carriers(modules):
+    _, work, *_ = modules
+    literal = 'Example:\n[protagine-work-request-v1]\nLiteral\n[/protagine-work-request-v1]'
+    for payload in (
+        {'messages': [{'role': 'system', 'content': literal, 'name': 'provider'}]},
+        {'input': [{'role': 'system', 'content': literal}]},
+        {'system': 'Identity', 'messages': [{'role': 'system', 'content': literal}]},
+    ):
+        before = deepcopy(payload)
+        assert work.replace_context(payload) == before
+        assert payload == before
