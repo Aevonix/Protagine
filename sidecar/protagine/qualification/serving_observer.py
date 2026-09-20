@@ -16,7 +16,7 @@ import time
 
 CLIENT_SHA256 = '26a4458f64210916716606c50c9d75578c486bcc36ce4f6c89e109fde00e79c3'
 CLIENT_COMMIT = 'e087e662ba1ac4ef7747537e2a9141085efd4561'
-VERSION = 'sglang-content-observation-3'
+VERSION = 'sglang-content-observation-4'
 _active = ContextVar('serving_observation', default=None)
 
 
@@ -100,6 +100,7 @@ def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
                 output.error = 'Explicit benchmark request deadline exceeded'
                 output.start_time = began
                 output.latency = time.perf_counter() - began
+            finished = time.perf_counter()
             start = output.start_time or began
             def elapsed(name):
                 value = observation[name]
@@ -108,6 +109,9 @@ def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
                 'prompt_sha256': hashlib.sha256(json.dumps(inputs.prompt, sort_keys=True).encode()).hexdigest(),
                 'requested_output_tokens': inputs.output_len,
                 'request_deadline_seconds': request_deadline_seconds,
+                'request_started_monotonic_s': began,
+                'request_finished_monotonic_s': finished,
+                'overlap_basis': 'Client request spans in one process; not observed GPU sequence concurrency.',
                 'success': output.success, 'deadline_exceeded': timeout,
                 'elapsed_ms': round(output.latency * 1000, 3),
                 'first_generated_delta_ms': elapsed('first_delta_at'),

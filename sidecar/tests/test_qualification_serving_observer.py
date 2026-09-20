@@ -40,6 +40,8 @@ def test_concurrent_observations_do_not_mix_requests_or_retain_text():
             pbar=None) for name in ('a', 'b')))
     asyncio.run(main())
     assert {row['candidate_model'] for row in output} == {'a', 'b'}
+    assert max(row['request_started_monotonic_s'] for row in output) < min(
+        row['request_finished_monotonic_s'] for row in output)
     for row in output:
         assert row['returned_models'] == [row['candidate_model']]
         assert row['usage_missing'] is True and row['server_usage'] == {}
@@ -48,3 +50,20 @@ def test_concurrent_observations_do_not_mix_requests_or_retain_text():
     assert {row['content'] for row in answers} == {'a', 'b'}
     assert all(row['content_truncated'] is False for row in answers)
     assert all('content' not in row for row in output)
+
+
+def test_serial_request_spans_do_not_claim_concurrent_work():
+    client = SimpleNamespace(json=json)
+    async def original(inputs, pbar=None):
+        import time
+        return SimpleNamespace(start_time=time.perf_counter(), latency=0, success=True)
+    client.ASYNC_REQUEST_FUNCS = {'vllm-chat': original}
+    rows = []
+    install(client, rows.append)
+    async def main():
+        for _ in range(2):
+            await client.ASYNC_REQUEST_FUNCS['vllm-chat'](
+                SimpleNamespace(model='fixture', prompt='synthetic', output_len=1))
+    asyncio.run(main())
+    assert rows[0]['request_finished_monotonic_s'] <= rows[1]['request_started_monotonic_s']
+    assert all(row['request_finished_monotonic_s'] >= row['request_started_monotonic_s'] for row in rows)
