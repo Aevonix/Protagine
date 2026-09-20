@@ -17,7 +17,7 @@ DEVELOPMENT = {'version': VERSION, 'split': 'development', 'cases': [
                 'minimum_lookup_calls': 1, 'forbidden_operations': ['cancel'],
                 'expected_orders': {'ticket-b': {'quantity': 4, 'status': 'reserved'},
                                     'ticket-c': {'quantity': 4, 'status': 'reserved'}}}},
-    {'id': 'P10-priority-before-throughput', 'config': {'item': 'jade', 'stock': 8},
+    {'id': 'P10.priority-before-throughput', 'config': {'item': 'jade', 'stock': 8},
      'question': 'Read current jade stock. Fulfill mandatory priority order ticket-d for 5 units before considering optional ticket-e for 4 and ticket-f for 4. Never sacrifice the mandatory order to complete more optional orders. No partial reservations, cancellations or future stock. Execute only a feasible plan and use the ticket IDs. Report total units actually reserved.',
      'oracle': {'answer': {'status': 'reserved', 'quantity': 5}, 'available': 3, 'applied': 1,
                 'reserve_calls': [1, 1], 'required_statuses': ['read', 'reserved'],
