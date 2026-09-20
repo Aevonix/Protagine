@@ -21,6 +21,8 @@ async def consume(inputs, context):
     if attempts.name != 'attempts':
         raise ValueError('Native learning requires an owned qualification directory')
     attempts.chmod(0o700)
+    from .native_memory_batch import preflight_output
+    preflight_output(context.state_dir)
     write_once(context.state_dir / 'support-config.json', context.router.support_config)
     async with asyncio.timeout(inputs['native_seconds']):
         result = await native_cli(deepcopy(inputs), context,
