@@ -26,7 +26,7 @@ class MemoryRouter:
         return getattr(self._router, name)
 
 
-async def consume(inputs, context):
+async def consume(inputs, context, *, worker=None):
     from protagine.beliefs.source_projection import SourceClaimProjection
     from protagine.turns import TurnIdempotencyLedger
     # The existing runner creates intermediate directories under the process
@@ -45,6 +45,7 @@ async def consume(inputs, context):
     for turn in turns:
         if not ledger.record_source(turn['id'], contact_id=turn['contact_id'],
             session_id=turn['session_id'], occurred_at=turn['occurred_at'],
+            scope=turn.get('scope', 'person'),
             messages=[{'role': 'user', 'content': turn['text']}]):
             raise ValueError('Fixture source was not retained')
         await projection.process_one(context.router)
@@ -69,7 +70,7 @@ async def consume(inputs, context):
     # ordinary prefetch obtains and injects them through authenticated host routes.
     async with asyncio.timeout(inputs['native_seconds']):
         result = await native_cli(deepcopy(inputs), context,
-            worker=Path(__file__).with_name('native_memory_worker.py'))
+            worker=worker or Path(__file__).with_name('native_memory_worker.py'))
     result['effects']['formation'] = formation
     requests = result['effects'].get('request_observations', [])
     returned = {model for row in requests for model in row.get('returned_models', [])}
