@@ -44,6 +44,7 @@ class _FakeClient:
     """Captures the outgoing payload and returns a canned rerank response."""
 
     sent = None
+    headers = None
 
     def __init__(self, *a, **k):
         pass
@@ -56,6 +57,7 @@ class _FakeClient:
 
     async def post(self, url, json=None, headers=None):
         _FakeClient.sent = json
+        _FakeClient.headers = headers
         return _FakeResponse(
             {"results": [{"index": 1, "relevance_score": 0.97},
                          {"index": 0, "relevance_score": 0.01}]}
@@ -90,3 +92,17 @@ async def test_default_style_sends_raw_strings(monkeypatch):
     await p.rerank("q", ["d1", "d2"], top_k=2)
     assert _FakeClient.sent["query"] == "q"
     assert _FakeClient.sent["documents"] == ["d1", "d2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["", "configured-key"])
+async def test_unauthenticated_endpoint_omits_empty_bearer_header(monkeypatch, key):
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    provider = OpenAIAPIRerankerProvider("fixture")
+    provider.configure("http://127.0.0.1:8093", key)
+    await provider.rerank("q", ["d1", "d2"])
+    if key:
+        assert _FakeClient.headers["Authorization"] == "Bearer configured-key"
+    else:
+        assert "Authorization" not in _FakeClient.headers

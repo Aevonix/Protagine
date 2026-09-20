@@ -416,9 +416,10 @@ class OpenAIAPIRerankerProvider(RerankerProvider):
 
         url = f"{self._base_url}/v1/rerank"
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         payload = {
             "model": self._model_id,
             "query": send_query,
