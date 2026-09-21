@@ -1,5 +1,6 @@
 """Recent conversations use occurrence and exact evidence, not matching old questions."""
 import json
+import sqlite3
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
@@ -36,6 +37,95 @@ def recent(ledger, **kwargs):
 
 def content(packet):
     return '\n'.join(entry['content'] for entry in packet['entries'])
+
+
+def located_source(ledger, log, kind, identifier, text, *, at='2026-08-02T12:00:00Z'):
+    if kind == 'history':
+        add(ledger, identifier, '', channel=None, at=at, messages=[{
+            'role': 'user', 'content': text,
+            'provenance': {'kind': 'hermes_history', 'actor_basis': 'reviewed_direct_session',
+                           'platform': 'whatsapp', 'chat_id': 'fixture', 'message_id': 1}}])
+        # Exercise the reviewed predecessor path without a channel locator.
+        with ledger._connect() as conn:
+            conn.execute('DELETE FROM source_channels WHERE turn_id=?', (identifier,))
+    else:
+        add(ledger, identifier, text, at=at, channel=None if kind == 'comms' else 'whatsapp:fixture')
+        if kind == 'comms':
+            lineage, _ = log.source_input(identifier, 'person')
+            log.log('person', channel='whatsapp:fixture', source_lineage=lineage)
+
+
+@pytest.mark.parametrize('kind,exact_budget', [('channel', False), ('history', False), ('comms', False), ('history', True)])
+def test_recent_hydrates_only_needed_bodies_from_real_sqlite(ledger, tmp_path, monkeypatch, record_property, kind, exact_budget):
+    log = CommsLog(str(tmp_path/'comms.db'), source_ledger=ledger) if kind == 'comms' else None
+    for index in range(24):
+        located_source(ledger, log, kind, f'older-{index}', 'old retained detail ' * 4096)
+    latest = 'X' * (MAX_CONTENT - len('USER: ')) if exact_budget else 'The latest conversation.'
+    located_source(ledger, log, kind, 'latest', latest, at='2026-08-03T12:00:00Z')
+    connect = ledger._connect
+    body_sizes = []
+
+    def observed_connection():
+        conn = connect()
+
+        def observed_row(cursor, values):
+            # Measure actual source bodies crossing the SQLite/Python boundary;
+            # return the real Row unchanged and never replace query results.
+            for column, value in zip(cursor.description, values):
+                if column[0] == 'messages_json' and isinstance(value, str):
+                    body_sizes.append(len(value.encode()))
+            return sqlite3.Row(cursor, values)
+
+        conn.row_factory = observed_row
+        return conn
+
+    monkeypatch.setattr(ledger, '_connect', observed_connection)
+    packet = recent(ledger, limit=2 if exact_budget else 1, comms_log=log)
+    assert [entry['source_id'] for entry in packet['entries']] == ['latest']
+    assert latest in content(packet)
+    if exact_budget:
+        assert len(content(packet)) == MAX_CONTENT
+        assert packet['entries'][0]['complete'] is True
+        assert 'content_limit' in packet['coverage']['reasons']
+    assert body_sizes
+    record_property('canonical_bodies_read', len(body_sizes))
+    record_property('canonical_body_bytes_read', sum(body_sizes))
+    assert sum(body_sizes) < 8 * MAX_CONTENT
+
+
+@pytest.mark.parametrize('kind', ['channel', 'history', 'comms'])
+def test_future_sources_cannot_crowd_current_before_locator_limit(ledger, tmp_path, monkeypatch, kind):
+    from protagine.memory import recent as module
+    log = CommsLog(str(tmp_path/'comms.db'), source_ledger=ledger) if kind == 'comms' else None
+    located_source(ledger, log, kind, 'current', 'The actual latest conversation.')
+    for index in range(module.LOCATOR_LIMIT + 2):
+        located_source(ledger, log, kind, f'future-{index}', 'Future-dated metadata.', at='2099-01-01T00:00:00Z')
+    original = ledger.source_references(['future-0'], contact_id='person', session_id='call')
+    monkeypatch.setattr(module, 'time', SimpleNamespace(time=lambda: 1788825600))
+    packet = recent(ledger, limit=1, comms_log=log)
+    assert [entry['source_id'] for entry in packet['entries']] == ['current']
+    assert 'future_occurrence_time' in packet['coverage']['reasons']
+    assert 'locator_limit' not in packet['coverage']['reasons']
+    assert packet['coverage']['status'] == 'partial'
+    assert ledger.source_references(['future-0'], contact_id='person', session_id='call') == original
+
+
+@pytest.mark.parametrize('kind', ['history', 'comms'])
+def test_invalid_latest_locator_does_not_hide_earlier_valid_source(ledger, tmp_path, kind):
+    log = CommsLog(str(tmp_path/'comms.db'), source_ledger=ledger) if kind == 'comms' else None
+    located_source(ledger, log, kind, 'current', 'An earlier valid conversation.')
+    if kind == 'history':
+        add(ledger, 'invalid', '', channel=None, at='2026-08-03T12:00:00Z', messages=[{
+            'role': 'user', 'content': 'Invalid mixed history.',
+            'provenance': {'kind': 'hermes_history', 'actor_basis': 'reviewed_direct_session',
+                           'platform': 'whatsapp', 'chat_id': chat}} for chat in ('one', 'two')])
+    else:
+        located_source(ledger, log, kind, 'invalid', 'Stale lineage.', at='2026-08-03T12:00:00Z')
+        with log._conn:
+            log._conn.execute('''UPDATE communications SET source_lineage_json=json_set(
+                source_lineage_json,'$.message_hashes',json('["invalid"]'))
+                WHERE json_extract(source_lineage_json,'$.turn_id')='invalid' ''')
+    assert [entry['source_id'] for entry in recent(ledger, limit=1, comms_log=log)['entries']] == ['current']
 
 
 def test_latest_exchange_not_old_matching_question_and_limits_are_chronological(ledger, monkeypatch):
