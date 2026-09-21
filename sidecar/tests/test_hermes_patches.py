@@ -92,6 +92,31 @@ def test_new_upstream_revision_needs_new_qualification(source, tmp_path):
         patches.stage_runtime(root, tmp_path / "staged")
 
 
+def test_ci_can_test_an_unlisted_revision_without_admitting_it_for_install(source, tmp_path):
+    root, _, manifest = source
+    (root/'untouched.py').write_text('upstream_changed = True\n')
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'Upstream update outside the patch surface')
+    revision = git(root, 'rev-parse', 'HEAD').decode().strip()
+    receipt = patches.stage_runtime(root, tmp_path/'candidate', candidate_upstream=True)
+    assert receipt['source_revision'] == revision != manifest['official_revision']
+    assert receipt['source_tree'] == git(root, 'rev-parse', 'HEAD^{tree}').decode().strip()
+    assert receipt['qualification_only'] is True
+    assert receipt['activation_state'] == 'not_activated'
+    with pytest.raises(ValueError, match='Unsupported Hermes revision'):
+        patches.stage_runtime(root, tmp_path/'install')
+
+
+def test_ci_reports_exact_conflicting_files_without_fuzzy_application(source, tmp_path):
+    root, _, _ = source
+    (root/'runtime.py').write_text('upstream_changed_the_interface = True\n')
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'Incompatible upstream interface')
+    with pytest.raises(ValueError, match='preimage conflict: runtime.py'):
+        patches.stage_runtime(root, tmp_path/'candidate', candidate_upstream=True)
+    assert not (tmp_path/'candidate').exists()
+
+
 def test_patch_asset_tampering_is_refused(source, tmp_path):
     root, directory, _ = source
     with (directory / "runtime.patch").open("ab") as handle:

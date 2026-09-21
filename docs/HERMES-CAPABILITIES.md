@@ -92,11 +92,12 @@ The complete release CI result remains the release gate. These controlled tests
 do not establish model quality, physical channel delivery or production health.
 
 The [daily compatibility job](../.github/workflows/hermes-upstream.yml) fetches the
-latest official stable revision and checks it against the packaged contract. An
-unknown revision fails with a requirement to qualify a new bundle. There is no
-fuzzy application, automatic downgrade or live update. For each supported update,
-review upstream changes, regenerate only needed patches and pass both native and
-installed-adapter tests before switching a deployment.
+latest official stable revision. In qualification-only mode it stages an unlisted
+revision if every exact patch preimage still matches, then runs the native and
+installed-adapter tests. Conflicts identify the changed files; nothing is applied
+fuzzily. A successful candidate still needs a versioned bundle before installers
+accept it. There is no automatic downgrade or live update. Review upstream changes,
+regenerate only needed patches and qualify the new bundle before deployment.
 
 Upstream contributions can reduce future patch maintenance. Their acceptance is
 not a release dependency. Remove a patch when the new official source passes its

@@ -61,7 +61,7 @@ jobs:
       - name: Check and stage the shipped patches on the latest official release
         run: |
           python -m pip install --no-deps ./sidecar
-          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions > upstream-patches.json
+          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions --candidate-upstream > upstream-patches.json
       - name: Install adapter and selected native runtime
         id: install
         run: |

@@ -98,8 +98,9 @@ is rechecked before reuse.
 Each Hermes update needs a patchset qualified against that exact official
 revision. Release CI applies the built wheel's patches and runs the full adapter
 suite plus the native patch tests in separate processes. The daily latest-stable
-check reports unsupported revisions; it does not upgrade, downgrade or restart
-a deployment. Upstream acceptance of these interfaces is not required.
+check tests unlisted revisions in a separate qualification directory when exact
+patch preimages match; conflicts name the affected files. It does not upgrade,
+downgrade or restart a deployment. Upstream acceptance is not required.
 
 ## Preserve an explicit model configuration
 

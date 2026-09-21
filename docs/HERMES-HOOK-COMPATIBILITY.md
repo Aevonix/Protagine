@@ -102,9 +102,11 @@ requires. The initial bundle passed all five capability groups, 358 native tests
 plus 10 subtests and 18 installed-adapter memory, reminder, task and review checks.
 The complete release run remains required; these counts are not model benchmarks.
 
-The [daily latest-stable check](../.github/workflows/hermes-upstream.yml) reports an
-unsupported new revision as needing a newly qualified bundle. It never selects an
-older revision silently, applies a patch approximately or updates production.
+The [daily latest-stable check](../.github/workflows/hermes-upstream.yml) can test
+an unlisted revision when its exact patch preimages still match. It reports
+conflicting files or runs the native and installed-adapter suites. Installers
+still require a newly qualified bundle. The job never selects an older revision
+silently, applies a patch approximately or updates production.
 Keep the active runtime until the new official source plus its selected patches
 passes qualification and the deployment's observable checks.
 

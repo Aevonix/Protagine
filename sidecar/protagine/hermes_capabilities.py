@@ -113,7 +113,7 @@ def _probe():
             patch = json.loads(patch_receipt.read_text())
             if patch.get("schema") == "protagine.hermes-patch-stage.v1":
                 result["runtime"]["patchset"] = {key: patch.get(key) for key in
-                    ("patchset_id", "official_revision", "manifest_sha256")}
+                    ("patchset_id", "official_revision", "source_revision", "manifest_sha256", "qualification_only")}
     except Exception as error:
         result["runtime"] = {"version": None, "revision": None, "error_type": type(error).__name__}
 

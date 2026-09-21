@@ -125,12 +125,14 @@ def _git(root: Path, *arguments: str) -> bytes:
 
 
 def stage_runtime(source, destination, patchset_id: str = DEFAULT_PATCHSET, *,
-                  include_regressions: bool = False) -> dict:
+                  include_regressions: bool = False, candidate_upstream: bool = False) -> dict:
     """Copy a clean official Git revision, patch, verify, then publish a new directory.
 
     Untracked files, profiles and virtual environments are never copied. The
     caller owns dependency installation, behavioral qualification and any later
-    activation. Existing destinations and unsupported revisions are untouched.
+    activation. Installers require a qualified revision. CI can stage an unlisted
+    candidate only when every exact preimage matches; it must then run behavior
+    qualification. Neither path alters an existing runtime selection.
     """
     source = Path(source).resolve(strict=True)
     destination = Path(destination).absolute()
@@ -140,13 +142,14 @@ def stage_runtime(source, destination, patchset_id: str = DEFAULT_PATCHSET, *,
     if destination == source or source in destination.parents:
         raise ValueError("Hermes staging destination must be outside the source checkout")
     revision = _git(source, "rev-parse", "HEAD").decode().strip()
-    if revision != manifest["official_revision"]:
+    if revision != manifest["official_revision"] and not candidate_upstream:
         raise ValueError("Unsupported Hermes revision; qualify an updated patchset before upgrading")
     if _git(source, "status", "--porcelain", "--untracked-files=no").strip():
         raise ValueError("Hermes source has tracked modifications; source was not changed")
     inspection = inspect_runtime(source, patchset_id, include_regressions=include_regressions)
     if inspection["status"] != "unpatched":
-        raise ValueError("Hermes source does not match the complete official patch preimage")
+        raise ValueError("Hermes patch preimage conflict: " +
+                         ", ".join(inspection['conflicting_files'] or ['mixed or already patched source']))
     if not destination.parent.is_dir():
         raise ValueError("Hermes staging parent directory must already exist")
     with tempfile.TemporaryDirectory(prefix=".protagine-hermes-", dir=destination.parent) as temporary:
@@ -177,7 +180,9 @@ def stage_runtime(source, destination, patchset_id: str = DEFAULT_PATCHSET, *,
         receipt = inspect_runtime(staged, patchset_id, include_regressions=include_regressions)
         if receipt["status"] != "patched":
             raise ValueError("Staged Hermes postimages do not match the qualified patchset")
-        receipt.update(source_revision=revision, source_tree=manifest["official_tree"],
+        receipt.update(source_revision=revision,
+                       source_tree=_git(source, "rev-parse", "HEAD^{tree}").decode().strip(),
+                       qualification_only=bool(candidate_upstream),
                        patches=[{"path": patch["path"], "sha256": patch["sha256"]}
                                 for patch in _patches(manifest, include_regressions)])
         (staged / ".protagine-patch-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -194,6 +199,8 @@ def main(argv=None) -> int:
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--patchset", default=DEFAULT_PATCHSET)
     parser.add_argument("--include-regressions", action="store_true")
+    parser.add_argument("--candidate-upstream", action="store_true",
+                        help="CI only: stage an unlisted revision with exact matching preimages for qualification; never selects a runtime")
     parser.add_argument("--inspect", action="store_true", help="Check patch preimages/postimages without staging")
     args = parser.parse_args(argv)
     try:
@@ -202,7 +209,8 @@ def main(argv=None) -> int:
                                       include_regressions=args.include_regressions)
         elif args.destination is not None:
             receipt = stage_runtime(args.source, args.destination, args.patchset,
-                                    include_regressions=args.include_regressions)
+                                    include_regressions=args.include_regressions,
+                                    candidate_upstream=args.candidate_upstream)
         else:
             parser.error("--destination is required unless --inspect is selected")
         print(json.dumps(receipt, sort_keys=True))
