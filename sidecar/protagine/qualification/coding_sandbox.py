@@ -148,7 +148,7 @@ print('repository-ready')
 SNAPSHOT = '''import json,pathlib
 root=pathlib.Path('/workspace');files={}
 for p in sorted(root.rglob('*')):
- if '__pycache__' in p.parts or '.git' in p.parts: continue
+ if '__pycache__' in p.parts or '.git' in p.parts or '.pytest_cache' in p.parts: continue
  if p.is_symlink(): raise ValueError('symlink in repository')
  if p.is_file():
   if p.stat().st_size>262144 or len(files)>=64: raise ValueError('repository bound')

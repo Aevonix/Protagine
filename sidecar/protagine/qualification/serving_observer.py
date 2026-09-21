@@ -16,7 +16,7 @@ import time
 
 CLIENT_SHA256 = '26a4458f64210916716606c50c9d75578c486bcc36ce4f6c89e109fde00e79c3'
 CLIENT_COMMIT = 'e087e662ba1ac4ef7747537e2a9141085efd4561'
-VERSION = 'sglang-content-observation-4'
+VERSION = 'sglang-content-observation-5'
 _active = ContextVar('serving_observation', default=None)
 
 
@@ -57,7 +57,10 @@ def observe_frame(frame, observation, now):
             observation['last_delta_at'] = now
     if isinstance(content, str):
         observation['content_characters'] += len(content)
-        observation['content_prefix'] = (observation['content_prefix'] + content)[:256]
+        # Retain only the overlap needed to detect a tag split across deltas.
+        window = observation['content_suffix'] + content.casefold()
+        observation['content_contains_think_tag'] |= '<think>' in window
+        observation['content_suffix'] = window[-6:]
         if 'answer_content' in observation:
             observation['answer_content'] = (observation['answer_content'] + content)[:65536]
 
@@ -85,7 +88,8 @@ def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
         began = time.perf_counter()
         observation = {'returned_models': set(), 'usage': {}, 'finish_reason': None,
             'first_reasoning_at': None, 'first_content_at': None, 'first_delta_at': None,
-            'last_delta_at': None, 'content_characters': 0, 'content_prefix': ''}
+            'last_delta_at': None, 'content_characters': 0, 'content_suffix': '',
+            'content_contains_think_tag': False}
         if answer_sink is not None:
             observation['answer_content'] = ''
         token = _active.set(observation)
@@ -119,7 +123,7 @@ def install(client, sink, *, request_deadline_seconds=300, answer_sink=None):
                 'first_content_delta_ms': elapsed('first_content_at'),
                 'last_generated_delta_ms': elapsed('last_delta_at'),
                 'content_characters': observation['content_characters'],
-                'content_contains_think_tag': '<think>' in observation['content_prefix'].casefold(),
+                'content_contains_think_tag': observation['content_contains_think_tag'],
                 'returned_models': sorted(observation['returned_models']),
                 'finish_reason': observation['finish_reason'], 'server_usage': observation['usage'],
                 'usage_missing': 'completion_tokens' not in observation['usage'],

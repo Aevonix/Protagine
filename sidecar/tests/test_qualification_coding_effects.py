@@ -1,14 +1,16 @@
 """Controlled evaluator checks. These are not model performance results."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
 import pytest
 
 from protagine.qualification.coding import cases, coding_effects, load_pack
-from protagine.qualification.coding_sandbox import validate_files, validate_sandbox
+from protagine.qualification.coding_sandbox import snapshot, validate_files, validate_sandbox
 
 
 SANDBOX = {'image': 'sha256:'+'a'*64, 'docker_host': None}
@@ -114,6 +116,41 @@ def test_model_claims_alone_never_pass_and_effects_require_protected_files():
     for mutation in ({'changed_files': ['solution.py', 'test_smoke.py']}, {'native_tool_calls': []},
                      {'cleanup_verified': False}, {'checks': {}}, {'changed_files': []}):
         assert not all(coding_effects({'effects': {**effects, **mutation}}, case.oracle).values())
+
+
+def test_snapshot_ignores_real_pytest_cache_but_preserves_other_edits(tmp_path):
+    """Run only the hand-written repair/test fixture, never candidate model code."""
+    task = load_pack()['tasks'][0]
+    repaired = {**task['files'], **FIXES[task['id']]}
+    for name, content in repaired.items():
+        (tmp_path / name).write_text(content)
+    env = {**os.environ, 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1', 'PYTEST_ADDOPTS': ''}
+    result = subprocess.run([sys.executable, '-I', '-B', '-m', 'pytest', '-q',
+        '-o', 'cache_dir=.pytest_cache', 'test_smoke.py'], cwd=tmp_path,
+        env=env, text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / '.pytest_cache/v/cache/nodeids').is_file()
+
+    class LocalSnapshotEnvironment:
+        def execute(self, command, timeout):
+            # Execute the production capture command with only its workspace remapped.
+            args = shlex.split(command)
+            assert args[:4] == ['python3', '-I', '-B', '-c']
+            script = args[4].replace("pathlib.Path('/workspace')", f'pathlib.Path({str(tmp_path)!r})')
+            result = subprocess.run([sys.executable, *args[1:4], script],
+                text=True, capture_output=True, timeout=timeout)
+            return {'returncode': result.returncode, 'output': result.stdout}
+
+    local = LocalSnapshotEnvironment()
+    assert snapshot(local) == repaired
+    edits = {'extra.py': 'extra = True\n', '.pytest_cache.py': 'source = True\n',
+             '.pytest_cache_source/extra.py': 'source = True\n',
+             'test_smoke.py': '# unauthorized protected-file edit\n'}
+    for name, content in edits.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    assert snapshot(local) == {**repaired, **edits}
 
 
 @pytest.mark.parametrize('files', [{}, {'../escape.py': ''}, {'/tmp/escape': ''},
