@@ -27,6 +27,16 @@ A completed paired evaluation can contain failed tasks. Its CLI now reports
 execution success separately from model quality, preventing campaign tools from
 mistaking a valid negative result for a failed evaluation.
 
+Native Hermes owner-memory blocks are removed from guest and unresolved
+participants' outgoing requests, including summary calls. Owner files are
+unchanged. A real model-swap demo caught this boundary defect and verified the
+repair alongside corrected recall and continuation of an existing task.
+
+The candidate preserves chronological conversation reads and exact observation
+retries already used by the reference deployment. Embedding health checks now
+read stored model metadata without materializing vector or text payloads; read
+failures remain visible to health reporting.
+
 Candidate components: `protagine` 1.9.0rc1, `protagine-hermes` 1.9.0rc1 and
 `protagine-hostworker` 0.3.1rc1. This candidate does not declare Phase 1 complete
 or an overall performance advantage over Hermes.
