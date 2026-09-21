@@ -118,7 +118,7 @@ def test_v3_projection_is_symmetric_preserves_rows_and_keeps_v2_available(native
     original = deepcopy(row)
     manifest = {'recipe': recipe, 'pairs': [{'episode_id': case['id'],
         'order': list(paired_report.ARMS), 'task_sha256': 'b' * 64, 'oracle_sha256': 'c' * 64,
-        'arms': {arm: {'case': case} for arm in paired_report.ARMS}}],
+        'arms': {arm: {'case': case, 'path': 'runs/' + arm} for arm in paired_report.ARMS}}],
         'sha256': 'd' * 64, 'comparison_key': 'e' * 64, 'label': 'test',
         'evidence_mode': 'actual_inference', 'dataset': {'version': 'test'},
         'comparison': {'policy': {}}}

@@ -1,5 +1,6 @@
 """Paired episode outcomes, without treating partial cohorts as improvement."""
 from collections import Counter
+import json
 import math
 from pathlib import Path
 import statistics
@@ -7,6 +8,7 @@ import statistics
 from .records import digest, read
 from .report import summarize as summarize_run
 from .paired_transport import TIMING_PROTOCOL
+from .paired_trace import PROTOCOL as TRACE_PROTOCOL
 
 ARMS = ('base_hermes', 'protagine')
 REPORT_PROTOCOL = 'paired-attribution-3'
@@ -37,6 +39,14 @@ TIMING_DEFINITIONS = {
     'episode_elapsed_ms': 'Runner wall time per arm episode, including model calls, tools, fixed settling, '
         'container startup and cleanup. Observed failed attempts are included.',
 }
+WORKLOAD_PROTOCOL = 'paired-request-workloads-1'
+WORKLOADS = ('foreground', 'background', 'unknown')
+WORKLOAD_BASIS = (
+    'Request workload is taken from explicit recorded workload metadata, or joined by unique '
+    'trace_request_id to a private model_request event on paired-source-worker (background). '
+    'Generic helper threads do not distinguish Hermes foreground from background review; '
+    'missing, ambiguous or conflicting evidence stays unknown. Coverage describes observed '
+    'HTTP requests only, not all model work. Tokens are resource observations, not monetary cost.')
 
 
 def load_manifest(directory):
@@ -214,16 +224,112 @@ def _timing(rows):
         'metrics': metrics, 'decode_tokens_per_second': None}
 
 
+def _workload_observations(directory, member, row):
+    """Read only thread/ID evidence; do not copy private trace payloads into reports."""
+    requests = [request for request in (row.get('effects') or {}).get('model_requests', [])
+                if isinstance(request, dict)]
+    if not requests:
+        return [], 'no_requests'
+    root = Path(directory).resolve()
+    path = root / member['path'] / 'attempts' / member['case']['id'] / 'private-trace.jsonl'
+    threads, trace_status = {}, 'absent'
+    try:
+        if path.is_symlink() or not path.resolve().is_relative_to(root):
+            raise ValueError('Unsafe diagnostic path')
+        if path.exists():
+            if path.stat().st_size > 8 * 1024 * 1024:
+                raise ValueError('Oversized diagnostic trace')
+            for line in path.read_text().splitlines():
+                event = json.loads(line)
+                if not isinstance(event, dict) or event.get('protocol') != TRACE_PROTOCOL or event.get('kind') != 'model_request':
+                    continue
+                data = event.get('data')
+                if not isinstance(data, dict) or type(data.get('request_id')) is not int:
+                    continue
+                identity = data['request_id']
+                # Duplicate IDs cannot identify a request, even when threads agree.
+                threads[identity] = None if identity in threads else event.get('thread')
+            trace_status = 'read'
+    except (OSError, ValueError, RuntimeError):
+        threads, trace_status = {}, 'invalid'
+    counts = Counter(request.get('trace_request_id') for request in requests
+                     if type(request.get('trace_request_id')) is int)
+    observations = []
+    for request in requests:
+        explicit = request.get('workload')
+        explicit = explicit if isinstance(explicit, str) and explicit in WORKLOADS[:2] else None
+        identity = request.get('trace_request_id')
+        source_worker = (type(identity) is int and counts[identity] == 1
+                         and threads.get(identity) == 'paired-source-worker')
+        if explicit == 'foreground' and source_worker:
+            workload, basis = 'unknown', 'conflicting_evidence'
+        elif explicit:
+            workload, basis = explicit, 'explicit_request_metadata'
+        elif source_worker:
+            workload, basis = 'background', 'source_worker_trace'
+        else:
+            workload, basis = 'unknown', 'unattributed'
+        observations.append((request, workload, basis))
+    return observations, trace_status
+
+
+def _request_usage(requests):
+    def valid_usage(request, key):
+        usage = request.get('usage')
+        return isinstance(usage, dict) and type(usage.get(key)) is int and usage[key] >= 0
+
+    complete = [request for request in requests if request.get('response_complete') is True
+                and type(request.get('status')) is int and 200 <= request['status'] < 300]
+    with_usage = [request for request in requests if all(valid_usage(request, key)
+                  for key in ('prompt_tokens', 'completion_tokens'))]
+    result = {'observed_requests': len(requests), 'completed_requests': len(complete),
+        'incomplete_or_failed_requests': len(requests) - len(complete),
+        'requests_with_usage': len(with_usage), 'requests_missing_usage': len(requests) - len(with_usage),
+        'completed_requests_missing_usage': sum(not all(valid_usage(request, key)
+            for key in ('prompt_tokens', 'completion_tokens')) for request in complete),
+        'usage_coverage': 'complete' if requests and len(with_usage) == len(requests)
+            else 'partial' if any(valid_usage(request, key) for request in requests
+                for key in ('prompt_tokens', 'completion_tokens')) else 'unobserved'}
+    for label, key in (('input_tokens', 'prompt_tokens'), ('output_tokens', 'completion_tokens')):
+        known = [request['usage'][key] for request in requests if valid_usage(request, key)]
+        result[label] = {'observed_total': sum(known) if known else None,
+            'requests_with_observation': len(known), 'requests_missing_observation': len(requests) - len(known)}
+    return result
+
+
+def _workloads(episodes):
+    observations = [item for items, _ in episodes for item in items]
+    attributed = sum(workload != 'unknown' for _, workload, _ in observations)
+    groups = {}
+    for workload in WORKLOADS:
+        requests = [request for request, group, _ in observations if group == workload]
+        timing = _timing([{'effects': {'model_requests': requests}}])
+        # Overlapping request work cannot partition episode wall time.
+        del timing['metrics']['episode_elapsed_ms']
+        timing['coverage'] = WORKLOAD_BASIS
+        groups[workload] = {'usage': _request_usage(requests), 'timing': timing}
+    return {'protocol': WORKLOAD_PROTOCOL, 'basis': WORKLOAD_BASIS,
+        'attribution': {'observed_requests': len(observations), 'attributed_requests': attributed,
+            'unknown_requests': len(observations) - attributed,
+            'coverage': 'complete' if observations and attributed == len(observations)
+                else 'partial' if attributed else 'unobserved',
+            'basis_counts': dict(Counter(basis for _, _, basis in observations)),
+            'trace_episodes': dict(Counter(status for _, status in episodes))},
+        'groups': groups}
+
+
 def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     if report_protocol not in {SOURCE_REPORT_PROTOCOL, REPORT_PROTOCOL}:
         raise ValueError('Unknown paired reporting protocol')
     manifest = load_manifest(directory)
     rows = {arm: [] for arm in ARMS}
+    workloads = {arm: [] for arm in ARMS}
     pairs = []
     for declared in manifest['pairs']:
         results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in ARMS}
         for arm in ARMS:
             rows[arm].append(results[arm])
+            workloads[arm].append(_workload_observations(directory, declared['arms'][arm], results[arm]))
         complete = {arm: _completion(results[arm]) for arm in ARMS}
         projections = {arm: None for arm in ARMS}
         if report_protocol == REPORT_PROTOCOL:
@@ -252,7 +358,8 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
         arms[arm] = {'declared_episodes': declared_count, 'outcomes': dict(Counter(row['outcome'] for row in rows[arm])),
             'observed_completed': observed_completed, 'attributed_completed': completed,
             'completion_percent': 100 * completed / declared_count if full else None,
-            'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm])}
+            'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm]),
+            'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
         counts = Counter(pair['comparison'] for pair in pairs)
@@ -324,6 +431,30 @@ def markdown(report):
             lines.append(f"| {arm} | {name} | {' | '.join(values)} | {metric['samples']}/{metric['eligible_samples']} |")
     lines.extend(['', 'Decode TPS is unmeasured. Buffered JSON responses do not provide first-payload timing.', ''])
     lines.extend(f'- `{name}`: {definition}' for name, definition in TIMING_DEFINITIONS.items())
+    lines.extend(['', '## Observed request workloads', '', WORKLOAD_BASIS, '',
+        'Usage completeness below is only for observed requests. Missing usage is not zero; '
+        'partial token observations include usage reported on incomplete or failed responses.', '',
+        '| Arm | Workload | Requests | Complete responses | Usage missing | Observed input / output tokens | Request latency median ms (samples/eligible) | Output TPS median (samples/eligible) |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |'])
+    workload_notes = []
+    for arm in ARMS:
+        workloads = report['arms'][arm].get('request_workloads')
+        if workloads is None:
+            continue
+        for workload, group in workloads['groups'].items():
+            usage, metrics = group['usage'], group['timing']['metrics']
+            show = lambda value: 'unknown' if value is None else str(round(value, 3))
+            tokens = ' / '.join(show(usage[key]['observed_total']) for key in ('input_tokens', 'output_tokens'))
+            measured = lambda key: (f"{show(metrics[key]['median'])} "
+                f"({metrics[key]['samples']}/{metrics[key]['eligible_samples']})")
+            lines.append(f"| {arm} | {workload} | {usage['observed_requests']} | {usage['completed_requests']} | "
+                f"{usage['requests_missing_usage']} | {tokens} | {measured('request_elapsed_ms')} | "
+                f"{measured('request_output_tokens_per_second')} |")
+        attribution = workloads['attribution']
+        workload_notes.extend(['', f"{arm} workload attribution: {attribution['attributed_requests']}/"
+            f"{attribution['observed_requests']} observed requests; {attribution['unknown_requests']} unknown. "
+            f"Coverage: {attribution['coverage']}.", ''])
+    lines.extend(workload_notes)
     lines.extend(['', 'No model tier is assigned. Budget enforcement and endpoint isolation require independent evidence.',
                   f"Endpoint usage (self-reported): {report['policy']['environment']['endpoint_usage']}."])
     return '\n'.join(lines) + '\n'
