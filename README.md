@@ -187,6 +187,7 @@ not a prerequisite for the harness approach described above.
 ## Documentation
 
 - **Memory:** [quality](docs/MEMORY-QUALITY.md),
+  [model-swap demonstration](docs/MODEL-SWAP-DEMO.md),
   [semantic recall](docs/SOURCE-SEMANTIC-RECALL.md),
   [corrections](docs/SOURCE-ANNOTATIONS.md),
   [erasure](docs/NATIVE-REQUEST-ERASURE.md),
