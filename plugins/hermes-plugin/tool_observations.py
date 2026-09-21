@@ -18,7 +18,8 @@ MAX_BYTES = 16384
 # Retaining those reads recursively makes later recall compete with real findings.
 _EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory_retain_observation',
     'protagine_memory_search', 'protagine_memory_read_source', 'protagine_get_facts',
-    'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments'}
+    'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments',
+    'protagine_list_commitments', 'protagine_query_entities'}
 _HINT_MARKER = 'protagine-observation-candidates-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
 _RETENTION = 'protagine_memory_retain_observation'

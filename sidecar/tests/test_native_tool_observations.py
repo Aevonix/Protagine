@@ -258,7 +258,8 @@ def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
 
 
 @pytest.mark.parametrize('name', ['protagine_memory_search', 'protagine_memory_read_source',
-    'protagine_get_facts', 'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments'])
+    'protagine_get_facts', 'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments',
+    'protagine_list_commitments', 'protagine_query_entities'])
 @pytest.mark.parametrize('content', ['', 'Previously retained copper synchronization evidence.'])
 def test_self_memory_reads_stay_in_history_without_recursive_retention(native, name, content):
     n = native
