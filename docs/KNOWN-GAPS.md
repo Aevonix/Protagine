@@ -103,8 +103,10 @@ than offered as unfinished features:
 - The unused structured-world importer and email-header contact importer.
   Existing connector/populator and supported contact import paths remain.
 
-`gate/pending_dispatch.py` remains a compatibility re-export, not a supported
-public contract. No current caller was found in the public or deployment source.
+The unused `gate/pending_dispatch.py` re-export, default cloud subtask handler,
+inert operations scripts, webhook examples and old patch inventory runner are
+removed. Explicitly registered custom workers remain supported; Hermes runtime
+qualification uses the packaged patch set.
 
 ## Known mechanisms (documented so the log noise is interpretable)
 

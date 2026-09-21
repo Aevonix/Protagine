@@ -1700,46 +1700,9 @@ def test_slash_surface_has_no_dynamic_import_or_mutation_helper_bypass():
     assert "_get_autonomy_status" not in source
 
 
-def test_legacy_ops_and_examples_cannot_bypass_action_mediation(tmp_path):
-    for relative in (
-        "ops/protagine-activity-monitor.py",
-        "ops/hermes-gateway-restart-runner.sh",
-    ):
-        script = PLUGIN_DIR / relative
-        source = script.read_text(encoding="utf-8")
-        assert "LEGACY_EFFECT_WORKER_DISABLED" in source
-        command = (
-            ["bash", str(script)]
-            if script.suffix == ".sh" else [sys.executable, str(script)]
-        )
-        result = subprocess.run(
-            command, text=True, capture_output=True, timeout=5, check=False,
-        )
-        assert result.returncode == 78
-        assert "disabled" in (result.stdout + result.stderr).lower()
-
-    example = (PLUGIN_DIR / "examples/hook-handler.py").read_text(encoding="utf-8")
-    webhook = (PLUGIN_DIR / "examples/webhook-config.yaml").read_text(encoding="utf-8")
-    assert "LEGACY_EFFECT_WORKER_DISABLED = True" in example
-    assert "httpx" not in example
-    assert "routes: {}" in webhook
-
+def test_doctor_cron_does_not_send_messages():
     doctor_cron = (PLUGIN_DIR / "ops/protagine-doctor-cron.sh").read_text(encoding="utf-8")
     assert "hermes send" not in doctor_cron
-    patch_runner = PLUGIN_DIR / "ops/hermes-patch-runner.py"
-    source = patch_runner.read_text(encoding="utf-8")
-    assert "subprocess" not in source
-    denied = subprocess.run(
-        [sys.executable, str(patch_runner), "apply", "--dir", str(tmp_path)],
-        text=True, capture_output=True, timeout=5, check=False,
-    )
-    assert denied.returncode != 0
-    clean = subprocess.run(
-        [sys.executable, str(patch_runner), "status", "--dir", str(tmp_path), "--json"],
-        text=True, capture_output=True, timeout=5, check=False,
-    )
-    assert clean.returncode == 0
-    assert json.loads(clean.stdout)["zero_patch_ready"] is True
 
 
 def test_turn_writer_uses_exact_resolved_participant_and_skips_unknown(runtime):
