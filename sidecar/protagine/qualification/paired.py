@@ -248,5 +248,7 @@ def cli(args):
         return 0
     result = asyncio.run(run(args.output, resume=args.resume, **resources))
     print(markdown(result))
-    return 0 if result['paired_score'] is not None and all(
-        arm['outcomes'] == {'pass': result['declared_episodes']} for arm in result['arms'].values()) else 1
+    # A completed comparison may legitimately find either model inadequate.
+    # Keep task quality in the report; reserve a nonzero status for a cohort
+    # without attributable results, so campaigns do not stop on model failures.
+    return 0 if result['paired_score'] is not None else 1

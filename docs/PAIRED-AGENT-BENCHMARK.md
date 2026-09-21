@@ -103,6 +103,12 @@ Attribution accepts an explicit `workload: "foreground"` or `"background"` field
 
 ## Publish a result
 
+`models paired run` exits successfully when every declared pair has attributable
+results, including failed tasks and attributable timeouts. A nonzero exit means
+the comparison is unavailable or execution failed. Use the recorded scores to
+assess model quality; a successful command does not mean the model passed every
+case, improved on Hermes, or qualified for production.
+
 Author a separate public metadata JSON document with `publication_scope: "public_synthetic"` and a `deployment` object containing `id`, `model` and `profile`. Optional deployment fields describe weights, hardware and the serving recipe using the ordinary qualification publication contract. Do not reuse a private endpoint configuration as metadata.
 
 ```sh

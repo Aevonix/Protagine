@@ -373,3 +373,24 @@ def test_cli_plan_run_report_and_nonblocking_shared_endpoint_warning(fixture, ca
     assert cli_run(parser.parse_args(['models', 'paired', 'report', '--output', str(fixture.output), '--json'])) == 0
     output = capsys.readouterr()
     assert output.err == '' and json.loads(output.out)['paired_score']['ties'] == 2
+
+
+@pytest.mark.parametrize('mode,expected_exit', [
+    ('fail', 0), ('attributed_timeout', 0), ('error', 1), ('unattributed', 1),
+])
+def test_cli_distinguishes_model_failure_from_unavailable_comparison(fixture, capsys, mode, expected_exit):
+    parser = argparse.ArgumentParser()
+    add_parser(parser.add_subparsers())
+    resources = ['--native-config', str(fixture.resources['native_config']),
+        '--comparison-policy', str(fixture.resources['comparison_policy']),
+        '--container-image', fixture.resources['container_image'], '--output', str(fixture.output)]
+    freeze(fixture)
+    fixture.modes['episode-0', 'protagine'] = mode
+    assert cli_run(parser.parse_args(['models', 'paired', 'run', *resources])) == expected_exit
+    report = read(fixture.output / 'report-001.json')
+    assert len(fixture.trace) == 4
+    if expected_exit == 0:
+        assert report['paired_score']['losses'] == 1
+        assert report['arms']['protagine']['attributed_completed'] == 1
+    else:
+        assert report['paired_score'] is None
