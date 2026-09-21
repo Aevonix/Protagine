@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - consolidate initiative execution
+## v1.9.0rc1 - consolidate execution and qualify runtime contracts
 
 Remove the duplicate no-host initiative executor and its startup, preset and
 status surfaces. Hermes keeps ownership of registered reviews and accepted
@@ -12,6 +12,24 @@ Historical procedure win/loss counters are archived once in the existing skill
 database and reset. Retrieval and retention no longer treat runtime completion
 as proof that a procedure worked. Native evaluation receipts remain separate.
 See [migration details](docs/EXECUTOR-RETIREMENT.md).
+
+Attachment now checks actual Hermes capabilities in an offline disposable
+profile. Stock 0.21.3 lacks required core contracts; the documented public
+compatibility build remains necessary. Runtime and adapter receipts make the
+selection explicit. No existing runtime is replaced automatically.
+
+Release CI builds, qualifies and publishes the same wheel, source and container
+artifacts. Installed checks include dependency consistency and the standalone
+hostworker contract. A constraints snapshot and focused lint/type checks make
+the release environment reproducible.
+
+A completed paired evaluation can contain failed tasks. Its CLI now reports
+execution success separately from model quality, preventing campaign tools from
+mistaking a valid negative result for a failed evaluation.
+
+Candidate components: `protagine` 1.9.0rc1, `protagine-hermes` 1.9.0rc1 and
+`protagine-hostworker` 0.3.1rc1. This candidate does not declare Phase 1 complete
+or an overall performance advantage over Hermes.
 
 ## v1.8.7-hermes - support strict chat instruction layouts
 
