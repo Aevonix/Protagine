@@ -7,6 +7,7 @@ operations degrade gracefully when the store is not initialized.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -545,19 +546,35 @@ class VectorStore:
         if self.catalog is None:
             return 0
         selected = {'turn:' + value for value in turn_ids}
+        if not selected:
+            return 0
+
+        def erased_ids(batch, collection):
+            # Arrow conversion, JSON parsing and per-source SQLite checks can
+            # dominate a large scan. Each connection is opened and used by
+            # this worker; none is passed across threads.
+            matched = []
+            for row in batch.to_pylist():
+                meta = json.loads(row['metadata'] or '{}')
+                if meta.get('source_uri') in selected and self.catalog.source_erased(meta):
+                    self.catalog.delete(collection.value, row['id'])
+                    matched.append(row['id'])
+            return matched
+
         deleted = set()
-        for generation in self.catalog.generations():
+        for generation in await asyncio.to_thread(self.catalog.generations):
             db = await self._generation_db(generation)
             names = await db.table_names()
             for collection in Collection:
                 if collection.value not in names:
                     continue
                 table = await db.open_table(collection.value)
-                rows = await table.query().select(['id', 'metadata']).to_list()
-                for row in rows:
-                    meta = json.loads(row['metadata'] or '{}')
-                    if meta.get('source_uri') in selected and self.catalog.source_erased(meta):
-                        self.catalog.delete(collection.value, row['id'])
-                        await table.delete('id = ' + self._quoted(row['id']))
-                        deleted.add((collection.value, row['id']))
+                batches = await table.query().select(['id', 'metadata']).to_batches(max_batch_length=1024)
+                async for batch in batches:
+                    matched = await asyncio.to_thread(erased_ids, batch, collection)
+                    if matched:
+                        # The reader retains its snapshot as each bounded
+                        # deletion commits. Later batches must still be read.
+                        await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
+                        deleted.update((collection.value, value) for value in matched)
         return len(deleted)
