@@ -23,7 +23,7 @@ jobs:
         run: python -m pip install -c requirements/release-py312.txt '.[test,quality]'
       - name: Check fatal errors and the hostworker contract types
         run: |
-          python -m ruff check scripts/qualify_artifacts.py hostworker/protagine_hostworker tests/hermes_adapter/conftest.py tests/hermes_adapter/test_sidecar_distribution.py
+          python -m ruff check sidecar/protagine plugins/hermes-plugin/ops/protagine-doctor.py scripts/qualify_artifacts.py hostworker/protagine_hostworker tests/hermes_adapter/conftest.py tests/hermes_adapter/test_sidecar_distribution.py
           python -m mypy
       - name: Build distributions from source archives
         run: |

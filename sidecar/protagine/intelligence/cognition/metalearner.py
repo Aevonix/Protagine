@@ -10,6 +10,11 @@ import time
 from .types import GapSeverity
 
 if TYPE_CHECKING:
+    from protagine.intelligence.graph.client import ProtagineGraph
+    from .gap_detector import Gap, GapDetector
+    from .metrics_collector import MetricsCollector
+    from .performance_index import CognitivePerformanceIndex, PerformanceIndexComputer
+    from .strategy_adjuster import Adjustment, StrategyAdjuster
     from protagine.vector.embedder import EmbeddingPipeline
     from protagine.vector.store import VectorStore
 

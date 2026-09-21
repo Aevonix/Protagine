@@ -21,7 +21,10 @@ A score of 80+ means Protagine has observed strong, consistent engagement with t
 over time — not merely that the owner considers them important.
 """
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.intelligence.graph.client import ProtagineGraph
 from datetime import datetime, timezone
 import logging
 import math

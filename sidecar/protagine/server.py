@@ -15,6 +15,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # CLI and direct service starts use the same selected private instance.
 from protagine.util.instance import load_environment

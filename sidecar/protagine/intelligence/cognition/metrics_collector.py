@@ -1,6 +1,9 @@
 """Metrics collection for cognitive performance tracking."""
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.intelligence.graph.client import ProtagineGraph
 from datetime import datetime, timedelta
 import statistics
 

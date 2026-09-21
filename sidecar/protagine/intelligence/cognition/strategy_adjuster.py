@@ -1,7 +1,11 @@
 """Strategy adjustment for cognitive gaps."""
 import logging
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.intelligence.graph.client import ProtagineGraph
+    from .gap_detector import Gap
 from datetime import datetime
 from enum import Enum
 
