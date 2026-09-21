@@ -27,7 +27,6 @@ dependencies = [
 
 [project.optional-dependencies]
 graph = ["neo4j>=5.18"]
-neo4j = ["neo4j>=5.18"]
 # Metadata-only health scans use the async streaming query API validated on 0.30.2.
 vectors = ["sentence-transformers>=3.0", "pandas>=2.0", "pyarrow>=15.0", "lancedb>=0.30.2"]
 hermes = ["protagine-hermes>=1.8.4,<2"]

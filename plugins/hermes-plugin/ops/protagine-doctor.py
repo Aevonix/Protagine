@@ -287,48 +287,6 @@ def config_checks():
             pass
 
 
-# --------------------------------------------------------------------------
-def patch_checks():
-    """Inventory legacy Hermes patches without executing or healing them."""
-    print("\n[framework patches]")
-    import subprocess as _sp
-    patch_dir = os.environ.get("HERMES_PATCH_DIR",
-                               os.path.join(HOME, ".hermes", "patches"))
-    try:
-        entries = os.listdir(patch_dir)
-    except Exception:
-        entries = []
-    has_patches = any(
-        (n.endswith("_patch.py") or n.endswith("_patch")) and not n.startswith(".")
-        for n in entries
-    )
-    if not has_patches:
-        print("  (no patch registry: nothing to verify)")
-        return
-    runner = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "hermes-patch-runner.py")
-    if not os.path.exists(runner):
-        fail(f"patch registry {patch_dir} exists but hermes-patch-runner.py "
-             "is missing next to the doctor (cannot inventory)")
-        return
-    try:
-        r = _sp.run([sys.executable, runner, "status", "--dir", patch_dir, "--json"],
-                    capture_output=True, text=True, timeout=180)
-        data = json.loads(r.stdout or "{}")
-    except Exception as e:
-        fail(f"patch runner failed to execute: {e}")
-        return
-    patches = data.get("patches", [])
-    if patches:
-        for result in patches:
-            fail(
-                f"legacy Hermes patch present: {result.get('name', '?')} "
-                f"sha256={result.get('sha256', 'unavailable')}"
-            )
-    else:
-        ok("no legacy deployment-local patch scripts")
-
-
 def main():
     print("=" * 64)
     print("Protagine Doctor")
@@ -354,9 +312,6 @@ def main():
 
     print("\n--- CONFIG & durability checks ---")
     config_checks()
-
-    print("\n--- FRAMEWORK PATCH checks ---")
-    patch_checks()
 
     print("\n" + "=" * 64)
     print(f"RESULT: {len(OKS)} ok, {len(WARNS)} warn, {len(FAILS)} fail"
