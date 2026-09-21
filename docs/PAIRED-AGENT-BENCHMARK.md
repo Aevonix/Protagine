@@ -57,6 +57,10 @@ The supplied model URL must be reachable from the container network. A loopback 
 
 Execution is sequential. The first episode runs base Hermes first, the second runs Protagine first, and the order continues alternating. An episode has exactly one attempt per arm. There is no best-of selection or adaptive retry. `--resume` continues only untouched attempts. Interrupted attempts retain their outcome and are never replayed. Unconfirmed container cleanup stops further execution.
 
+Diagnostic images record bounded private model requests/responses, native turn messages and completion flags, plus context-route statuses in `private-trace.jsonl` next to each attempt's container log. Request headers and configured credentials are excluded or redacted. Each attempt allows 8 MiB total and 512 KiB per event; `container-result.json` records truncation, dropped events and capture errors. Traces are outside the scored workspace and are never included by the public exporter. These observations can affect timing slightly; compare using the same pinned diagnostic image in both arms. Preserve synthetic-only input and private filesystem access when inspecting them.
+
+The isolated single-owner API credential includes the existing `api:access` scope needed by the memory provider's context tools. This changes no live-agent grants or API authorization rules.
+
 The private `paired.json` contains the frozen plan. Ordinary immutable runner records live under `runs/`; numbered reports are additional views and never replace an earlier result. Keep this directory private: it can contain supplied configuration hashes, model outputs and diagnostics.
 
 ## Read the result

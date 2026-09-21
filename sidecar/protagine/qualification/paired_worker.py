@@ -18,6 +18,10 @@ import traceback
 
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 COMMON_TOOLS = ['file', 'memory', 'session_search', 'todo']
+# This key belongs only to the disposable, single-owner fixture API. Provider
+# context tools use the existing api:access contract; live grants are untouched.
+PAIRED_FIXTURE_SCOPES = ['context:read', 'turns:write', 'memory:read',
+                         'memory:search', 'memory:write', 'api:access']
 MEMORY_TOOLS = ['protagine_memory_search', 'protagine_memory_read_source',
                 'protagine_memory_retain_observation', 'protagine_memory_annotate',
                 'protagine_memory_forget']
@@ -30,10 +34,11 @@ SYSTEM = ('Complete the requested work using available evidence and tools. '
 def inspect_payload():
     from .native_identity import inspect_runtime
     from .native_memory_identity import inspect_runtime as inspect_adapters
+    from .paired_trace import PROTOCOL as trace_protocol
     return {'native_runtime': inspect_runtime(), 'adapters': inspect_adapters(),
             'worker_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
-            'treatment_tools': MEMORY_TOOLS}
+            'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol}
 
 
 def seed_workspace(root, files):
@@ -170,6 +175,11 @@ def main():
     agents, histories, rows = {}, {}, []
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0}}
+    from .paired_trace import DiagnosticTrace
+    trace = DiagnosticTrace(secrets=request.get('provider_env', {}).values())
+    request['_diagnostic_recorder'] = trace
+    trace.record('episode', {'arm': arm, 'case_id': inputs.get('case_id'),
+                             'session_ids': [t['session_id'] for t in inputs['episodes']]})
     stop = threading.Event()
 
     def interrupt(_signal, _frame):
@@ -188,6 +198,7 @@ def main():
         config = load_config()
         model = config['model']['default']
         runtime = resolve_runtime_provider(requested=request['binding'], target_model=model)
+        trace.add_secret(runtime.get('api_key'))
         arguments = dict(model=model,
             **{k: runtime[k] for k in ('base_url', 'api_key', 'provider', 'api_mode',
                 'requested_provider', 'request_overrides', 'capabilities') if k in runtime},
@@ -206,8 +217,7 @@ def main():
                 config['plugins'] = {'enabled': ['protagine']}
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
-                    setup_host=source_worker, scopes=['context:read', 'turns:write',
-                        'memory:read', 'memory:search', 'memory:write']))
+                    setup_host=source_worker, scopes=PAIRED_FIXTURE_SCOPES))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
@@ -215,7 +225,7 @@ def main():
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))
             resources.enter_context(workspace_tools(workspace))
-            requests = resources.enter_context(observe_requests(runtime['base_url']))
+            requests = resources.enter_context(observe_requests(runtime['base_url'], diagnostic=trace))
             result['stage'] = 'running'
             for index, turn in enumerate(inputs['episodes']):
                 if stop.is_set():
@@ -229,6 +239,10 @@ def main():
                 histories[session_id] = response.get('messages', [])
                 complete = response.get('completed') is True and not any(
                     response.get(k) for k in ('failed', 'partial', 'interrupted'))
+                trace.record('native_turn', {'index': index, 'session_id': session_id,
+                    'completed': response.get('completed'), 'failed': response.get('failed'),
+                    'partial': response.get('partial'), 'interrupted': response.get('interrupted'),
+                    'messages': response.get('messages'), 'final_response': response.get('final_response')})
                 rows.append({'session_id': session_id, 'completed': complete,
                              'final_response': response.get('final_response')})
                 result['tool_evidence']['turns_completed'] += int(complete)
@@ -241,6 +255,7 @@ def main():
             if observer:
                 # Physical prompt copies are not outcome artifacts. Retaining
                 # them would consume only the treatment arm's output allowance.
+                trace.record('context_routes', treatment.get('context_routes', []))
                 result['tool_evidence']['treatment'] = {
                     'memory_provider_loaded': treatment.get('memory_provider_loaded'),
                     'context_route_successes': sum(row.get('path') == '/v1/host/context/assemble'
@@ -273,6 +288,7 @@ def main():
             except Exception:
                 result['agent_close_returned'] = False
         result['worker_stopped'] = True
+        result['private_diagnostics'] = trace.summary()
         print(RESULT_MARKER + json.dumps(result, allow_nan=False), flush=True)
     return 0 if result['stage'] == 'returned' else 1
 

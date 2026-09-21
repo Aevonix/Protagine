@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import uuid
 
 from .records import read, write_once
+from .paired_trace import MARKER as DIAGNOSTIC_MARKER
 
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 IMAGE_PATTERN = r'(?:[a-zA-Z0-9._:/-]+@)?sha256:[a-f0-9]{64}'
@@ -106,6 +107,26 @@ def _result_from_log(path):
     return json.loads(rows[0])
 
 
+def _extract_diagnostics(log_path):
+    """Keep private traces separately; they never enter scored artifact snapshots."""
+    target = log_path.with_name('private-trace.jsonl')
+    marker = DIAGNOSTIC_MARKER.encode()
+    handle = None
+    try:
+        with log_path.open('rb') as source:
+            for line in source:
+                if not line.startswith(marker):
+                    continue
+                if handle is None:
+                    handle = target.open('xb')
+                    target.chmod(0o600)
+                handle.write(line[len(marker):])
+    finally:
+        if handle is not None:
+            handle.close()
+    return target if handle is not None else None
+
+
 async def consume(inputs, context):
     spec = context.router.container_spec
     state = context.state_dir
@@ -155,6 +176,7 @@ async def consume(inputs, context):
                 stdin=asyncio.subprocess.PIPE, stdout=log, stderr=log))
             proc = await asyncio.shield(spawning)
             await proc.communicate(json.dumps(payload, allow_nan=False).encode())
+        _extract_diagnostics(log_path)
         result = _result_from_log(log_path)
         write_once(state.parent / 'container-result.json', result)
         observation.update(outcome=result.get('stage', 'error'), exit_code=proc.returncode,
@@ -192,6 +214,8 @@ async def consume(inputs, context):
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
+        if log_path.exists() and not log_path.with_name('private-trace.jsonl').exists():
+            _extract_diagnostics(log_path)
         observation.update(container_removed=removed, elapsed_ms=round((time.monotonic()-started)*1000, 3))
         context.state_cleanup_safe = removed
         requests = result.get('tool_evidence', {}).get('model_requests', [])

@@ -1,6 +1,7 @@
 """Observe physical model requests without editing their content or responses."""
 from contextlib import contextmanager, ExitStack
 import json
+from itertools import count
 import time
 from unittest.mock import patch
 
@@ -58,9 +59,10 @@ def usage_summary(rows):
 
 
 @contextmanager
-def observe_requests(base_url):
+def observe_requests(base_url, *, diagnostic=None):
     import httpx
     rows = []
+    request_ids = count(1)
     prefix = base_url.rstrip('/') + '/'
 
     def begin(request):
@@ -77,12 +79,22 @@ def observe_requests(base_url):
                'timing_protocol': TIMING_PROTOCOL, 'response_mode': None,
                'first_generated_ms': None, 'first_content_ms': None,
                'elapsed_ms': None, 'response_complete': False, 'termination': None}
+        if diagnostic is not None:
+            row['trace_request_id'] = next(request_ids)
         rows.append(row)
+        if diagnostic is not None:
+            diagnostic.record('model_request', {'request_id': row['trace_request_id'], 'payload': {
+                key: body[key] for key in ('model', 'messages', 'input', 'tools', 'tool_choice',
+                    'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'seed',
+                    'reasoning', 'reasoning_effort', 'response_format', 'stream',
+                    'chat_template_kwargs') if key in body}})
         return row
 
     class Parser:
         def __init__(self, row, sse, *, live_stream):
             self.row, self.sse, self.buffer = row, sse, b''
+            self.request_id = row.get('trace_request_id')
+            self.trace_events, self.trace_bytes, self.trace_truncated = [], 0, False
             self.live_stream = live_stream
             self.finished, self.terminal_seen, self.json_document_seen = False, False, False
             row['response_mode'] = ('sse' if live_stream else 'buffered_sse') if sse else 'buffered_json'
@@ -97,6 +109,13 @@ def observe_requests(base_url):
                 return
             if not isinstance(value, dict):
                 return
+            if diagnostic is not None:
+                size = len(json.dumps(value).encode())
+                if self.trace_bytes + size <= 384 * 1024:
+                    self.trace_events.append(value)
+                    self.trace_bytes += size
+                else:
+                    self.trace_truncated = True
             self.json_document_seen = True
             envelope = value.get('response') if isinstance(value.get('response'), dict) else value
             model = envelope.get('model')
@@ -144,6 +163,11 @@ def observe_requests(base_url):
                 self.consume(self.buffer.strip()[5:].strip())
             self.row.update(elapsed_ms=round((time.monotonic()-self.row['started_monotonic'])*1000, 3),
                 termination=reason, response_complete=(self.terminal_seen if self.sse else self.json_document_seen))
+            if diagnostic is not None:
+                diagnostic.record('model_response', {'request_id': self.request_id,
+                    'status': self.row.get('status'), 'events': self.trace_events,
+                    'truncated': self.trace_truncated, 'termination': reason,
+                    'complete': self.row['response_complete']})
 
     class SyncStream(httpx.SyncByteStream):
         def __init__(self, stream, parser):
@@ -217,6 +241,9 @@ def observe_requests(base_url):
         if row is not None:
             row.update(elapsed_ms=round((time.monotonic()-row['started_monotonic'])*1000, 3),
                        response_complete=False, termination='request_error')
+            if diagnostic is not None:
+                diagnostic.record('model_request_error', {
+                    'request_id': row['trace_request_id']})
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(httpx.Client, 'send', send))

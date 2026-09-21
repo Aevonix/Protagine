@@ -35,6 +35,9 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
     import httpx
 
     secret = secrets.token_urlsafe(32)
+    diagnostic = request.get('_diagnostic_recorder')
+    if diagnostic is not None:
+        diagnostic.add_secret(secret)
     keyring = state / 'fixture-keyring.json'
     keyring.write_text(json.dumps({'version': 1, 'principals': [{
         'principal': 'benchmark-owner', 'status': 'active', 'viewer_person_id': person,
@@ -50,6 +53,9 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
     async def record_route(req, next_call):
         response = await next_call(req)
         routes.append({'path': req.url.path, 'status': response.status_code})
+        if diagnostic is not None:
+            diagnostic.record('context_route', {'method': req.method,
+                'path': req.url.path, 'status': response.status_code})
         return response
 
     app.include_router(host.router)
