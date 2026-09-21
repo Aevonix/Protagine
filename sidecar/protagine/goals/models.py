@@ -1,7 +1,6 @@
-"""Protagine Goal Engine — core data models.
+"""Persistent goal records and saved subtask history.
 
-Defines Goal, Subtask, GoalDAG and supporting types for the
-Protagine DAG-based goal decomposition and lifecycle management system.
+These types describe stored state; they do not provide an execution planner.
 """
 
 from __future__ import annotations
@@ -16,10 +15,10 @@ from typing import Any, Dict, List, Optional
 class GoalStatus(str, Enum):
     """Goal lifecycle states."""
     PROPOSED   = "proposed"    # Inferred or suggested; awaiting user acceptance
-    ACCEPTED   = "accepted"    # User confirmed; ready for decomposition
-    ACTIVE     = "active"      # Decomposed and executing
+    ACCEPTED   = "accepted"    # Acceptance recorded
+    ACTIVE     = "active"      # Marked active
     BLOCKED    = "blocked"     # Cannot proceed; waiting on external factor
-    COMPLETED  = "completed"   # All subtasks done; outcome achieved
+    COMPLETED  = "completed"   # Completion recorded
     ABANDONED  = "abandoned"   # Given up; reason recorded
 
 

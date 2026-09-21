@@ -39,34 +39,13 @@ for name in {PLANNERS!r}:
     assert not (tmp_path / 'state' / 'protagine-goals.db').exists()
 
 
-def test_explicit_legacy_exports_retain_identity_and_durable_behavior(tmp_path):
-    isolated(tmp_path, '''
-import importlib
-from pathlib import Path
+def test_only_record_exports_remain(tmp_path):
+    isolated(tmp_path, """
+import importlib.util
 import protagine.goals as goals
 assert set(goals.__all__) <= set(dir(goals))
-for name, module in goals._PLANNER_EXPORTS.items():
-    assert getattr(goals, name) is getattr(importlib.import_module('protagine.goals.' + module), name)
-try:
-    goals.NotARealGoalExport
-except AttributeError:
-    pass
-else:
-    raise AssertionError('unknown export must fail')
-engine = goals.GoalEngine(config=goals.GoalEngineConfig(db_path='retained-goals.db'))
-goal = engine.propose_goal('Review the saved workshop report')
-engine.accept_goal(goal.goal_id)
-accepted = engine.activate_goal(goal.goal_id)
-assert accepted.status == goals.GoalStatus.ACCEPTED
-assert accepted.context['dispatch_unavailable'] == 'queue_backend_unconfigured'
-assert engine.get_dag(goal.goal_id) is None
-assert len(engine.get_audit_trail(goal.goal_id)) == 1
-engine._store.close()
-reopened = goals.GoalEngine(config=goals.GoalEngineConfig(db_path='retained-goals.db'))
-assert reopened.get_goal(goal.goal_id).goal_id == goal.goal_id
-assert reopened.complete_task(goal.goal_id)
-assert reopened.complete_task(goal.goal_id)
-assert reopened.get_goal(goal.goal_id).context['completion_basis'] == 'reported_completion'
-assert len(reopened.get_audit_trail(goal.goal_id)) == 2
-reopened._store.close()
-''')
+for name in ('GoalEngine', 'GoalQueueBridge', 'GoalDecomposer', 'ReplanEngine'):
+    assert not hasattr(goals, name), name
+for name in ('engine', 'decomposer', 'inference', 'priority', 'queue_bridge', 'replan', 'config'):
+    assert importlib.util.find_spec('protagine.goals.' + name) is None, name
+""")

@@ -621,16 +621,6 @@ class HostEvent(BaseModel):
 
 # --- Goals ------------------------------------------------------------------
 
-class GoalCreateRequest(BaseModel):
-    identity: HostIdentity
-    context: Optional[HostTurnContext] = None
-    title: str
-    description: Optional[str] = None
-    priority: Optional[str] = "medium"
-    parent_goal_id: Optional[str] = None
-    person_id: Optional[str] = None
-
-
 class GoalUpdateRequest(BaseModel):
     identity: HostIdentity
     status: Optional[str] = None

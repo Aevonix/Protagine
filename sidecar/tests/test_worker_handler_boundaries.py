@@ -19,7 +19,7 @@ from protagine.task_queue.worker import _prepare_embedded_report
 def test_registry_has_real_handlers_and_preserves_historical_job_types():
     from protagine.task_queue.handlers.registry import build_default_handlers
     assert set(build_default_handlers()) == {
-        JobType.MONITORING, JobType.SYSTEM_MAINTENANCE, JobType.CUSTOM}
+        JobType.MONITORING, JobType.SYSTEM_MAINTENANCE}
     for legacy in ("desktop", "browser"):
         assert Job(job_type=legacy).job_type == JobType(legacy)
 

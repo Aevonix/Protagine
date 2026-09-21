@@ -95,7 +95,7 @@ async def handle_list_goals(
         if goals is None:
             return json.dumps({"error": "Goals store not wired", "status": "unavailable"})
 
-        # GoalEngine is sync and exposes list_goals(status, limit, offset)
+        # GoalStore is sync and exposes list_goals(status, limit, offset)
         # returning Goal objects — there is no `list` method and no person_id
         # filter (the old call raised AttributeError on every invocation).
         goal_list = goals.list_goals(status=status, limit=50)
@@ -464,7 +464,8 @@ async def handle_task_complete(
         goals = registry.goals
         if goals is None:
             return json.dumps({"error": "Goals store not wired", "status": "unavailable"})
-        await goals.complete(task_id)
+        if not goals.complete_task(task_id):
+            return json.dumps({"status": "unavailable", "task_id": task_id})
         return json.dumps({"status": "completed", "task_id": task_id})
     except Exception as e:
         logger.error("protagine_task_complete failed: %s", e)
@@ -483,7 +484,8 @@ async def handle_task_snooze(
         goals = registry.goals
         if goals is None:
             return json.dumps({"error": "Goals store not wired", "status": "unavailable"})
-        await goals.snooze(task_id, hours=hours, reason=reason)
+        if not goals.snooze_task(task_id, hours=hours, reason=reason):
+            return json.dumps({"status": "unavailable", "task_id": task_id})
         return json.dumps({"status": "snoozed", "task_id": task_id, "hours": hours})
     except Exception as e:
         logger.error("protagine_task_snooze failed: %s", e)
@@ -501,7 +503,8 @@ async def handle_task_dismiss(
         goals = registry.goals
         if goals is None:
             return json.dumps({"error": "Goals store not wired", "status": "unavailable"})
-        await goals.dismiss(task_id, reason=reason)
+        if not goals.dismiss_task(task_id, reason=reason):
+            return json.dumps({"status": "unavailable", "task_id": task_id})
         return json.dumps({"status": "dismissed", "task_id": task_id, "reason": reason})
     except Exception as e:
         logger.error("protagine_task_dismiss failed: %s", e)

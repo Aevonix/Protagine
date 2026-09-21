@@ -358,70 +358,20 @@ class TestResponseGate:
 
 
 class TestGoals:
-    """Goal lifecycle: create, list, get, block, unblock, abandon."""
+    """Retained records are readable; execution uses native tasks."""
 
-    def test_create_goal(self, client):
-        """Create a new goal."""
-        data = _post(client, "/goals", {
-            "identity": {"host_id": "test"},
-            "title": f"Test goal {uuid.uuid4().hex[:6]}",
-            "description": "Created by integration test",
-        })
-        assert data.get("id") is not None
-        assert data["status"] in ("active", "proposed")
-        assert data["priority"] in ("critical", "high", "normal", "low", "minimal")
+    def test_creation_removed(self, client):
+        response = client.post('/v1/host/goals', json={
+            'identity': {'host_id': 'test'}, 'title': 'Do not create work'})
+        assert response.status_code == 405
 
     def test_list_goals(self, client):
-        """List goals returns a list."""
-        data = _get(client, "/goals")
-        assert "goals" in data
-        assert isinstance(data["goals"], list)
-
-    def test_goal_lifecycle(self, client):
-        """Full lifecycle: create → block → unblock → abandon."""
-        # Create
-        goal = _post(client, "/goals", {
-            "identity": {"host_id": "test"},
-            "title": f"Lifecycle test {uuid.uuid4().hex[:6]}",
-            "description": "Testing state transitions",
-        })
-        goal_id = goal["id"]
-
-        # Get
-        data = _get(client, f"/goals/{goal_id}")
-        assert data["id"] == goal_id
-        assert data["status"] == "active"
-
-        # Block
-        data = client.patch(f"/v1/host/goals/{goal_id}", json={
-            "identity": {"host_id": "test"},
-            "status": "blocked",
-            "notes": "Waiting on dependency",
-        }).json()
-        assert data["status"] == "blocked"
-
-        # Unblock
-        data = client.patch(f"/v1/host/goals/{goal_id}", json={
-            "identity": {"host_id": "test"},
-            "status": "unblocked",
-        }).json()
-        assert data["status"] in ("active", "unblocked")
-
-        # Abandon
-        data = client.patch(f"/v1/host/goals/{goal_id}", json={
-            "identity": {"host_id": "test"},
-            "status": "abandoned",
-            "notes": "No longer needed",
-        }).json()
-        assert data["status"] == "abandoned"
-
-    def test_goal_priority_string(self, client):
-        """Goal priority is returned as a string, not an int."""
-        data = _post(client, "/goals", {
-            "identity": {"host_id": "test"},
-            "title": f"Priority test {uuid.uuid4().hex[:6]}",
-        })
-        assert isinstance(data["priority"], str), f"Priority should be string, got {type(data['priority'])}"
+        data = _get(client, '/goals')
+        assert isinstance(data['goals'], list)
+        for record in data['goals']:
+            assert isinstance(record['priority'], str)
+            retained = _get(client, '/goals/' + record['id'])
+            assert retained['id'] == record['id']
 
 
 # ===========================================================================
@@ -619,11 +569,7 @@ class TestContextAssembly:
 
     def test_assemble_includes_goals(self, client):
         """Context assembly includes active goals when present."""
-        # First ensure at least one active goal exists
-        _post(client, "/goals", {
-            "identity": {"host_id": "test"},
-            "title": f"Context test goal {uuid.uuid4().hex[:6]}",
-        })
+        active_goals = _get(client, "/goals?status_filter=active")["goals"]
         data = _post(client, "/context/assemble", {
             "identity": {"host_id": "test"},
             "context": {"session_id": "s1", "contact_id": "c1"},
@@ -631,7 +577,8 @@ class TestContextAssembly:
             "limit": 10,
         })
         section_ids = [s["id"] for s in data.get("sections", [])]
-        assert "protagine-goals" in section_ids, f"Goals section missing. Got: {section_ids}"
+        if active_goals:
+            assert "protagine-goals" in section_ids, f"Goals section missing. Got: {section_ids}"
 
     def test_assemble_does_not_advertise_internal_executor_skills(self, client):
         """The host's installed skill catalog is separate from sidecar executors."""

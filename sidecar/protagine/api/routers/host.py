@@ -85,7 +85,6 @@ from protagine.api.schemas.host import (
     ExtractionRequest,
     ExtractionResponse,
     ExtractedEntityResponse,
-    GoalCreateRequest,
     GoalListResponse,
     GoalResponse,
     GoalUpdateRequest,
@@ -678,7 +677,7 @@ async def health() -> HostHealthResponse:
     else:
         notes["reasoning"] = "ReasoningLoop not wired — /reasoning/turn returns 501"
     if _goals_store is not None:
-        notes["goals"] = "GoalEngine wired"
+        notes["goals"] = "Goal records available"
     if _contacts_store is not None:
         notes["contacts"] = "ContactsStore wired"
     if _briefings_engine is not None:
@@ -4736,58 +4735,9 @@ async def events_replay(
 
 _goals_store = None
 
-def set_goals_engine(engine) -> None:
+def set_goals_store(store) -> None:
     global _goals_store
-    _goals_store = engine
-
-
-@router.post("/goals", response_model=GoalResponse, deprecated=True)
-async def create_goal(body: GoalCreateRequest) -> GoalResponse:
-    """Create a legacy goal only outside live native cognition.
-
-    Historical goal records remain readable and updatable in every mode. This
-    request does not carry the current owner/session/turn acceptance required
-    to adopt work into the native path.
-    """
-    from protagine.cognition.goal_spine import cognition_spine_exclusive
-
-    if cognition_spine_exclusive():
-        raise HTTPException(status_code=409, detail={
-            "reason": "legacy_goal_creation_unavailable",
-            "next_action": (
-                "For a local draft, use /v1/host/commitments/local-draft through "
-                "the current owner session with an explicit acceptance turn "
-                "and source paths. Other work requires its current supported "
-                "acceptance flow; a legacy goal cannot supply that authority."
-            ),
-        })
-    if _goals_store is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    try:
-        goal = _goals_store.propose_goal(
-            title=body.title,
-            description=body.description or "",
-        )
-        # Auto-accept goals created via API
-        goal = _goals_store.accept_goal(goal.goal_id)
-        goal = _goals_store.activate_goal(goal.goal_id)
-        return GoalResponse(
-            id=goal.goal_id,
-            title=goal.title,
-            description=goal.description,
-            status=goal.status.value if hasattr(goal.status, "value") else str(goal.status),
-            priority=goal.priority.name.lower() if hasattr(goal.priority, "name") else str(goal.priority),
-            progress=goal.progress_pct,
-            parent_goal_id=goal.parent_goal_id,
-            person_id=None,
-            created_at=str(goal.created_at) if goal.created_at else None,
-            updated_at=str(goal.updated_at) if goal.updated_at else None,
-            dispatch_unavailable=goal.context.get('dispatch_unavailable'),
-            completion_basis=goal.context.get('completion_basis'),
-        )
-    except Exception as exc:
-        logger.warning("create_goal failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+    _goals_store = store
 
 
 @router.get("/goals", response_model=GoalListResponse)

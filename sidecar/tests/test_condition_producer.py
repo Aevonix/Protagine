@@ -8,16 +8,13 @@ import pytest
 
 import protagine.autonomy.condition_worker as cw
 from protagine.autonomy.loop import AutonomyLoop
-from protagine.goals.config import GoalEngineConfig
-from protagine.goals.engine import GoalEngine
-from protagine.goals.models import GoalStatus
-from protagine.goals.queue_bridge import GoalQueueBridge, InMemoryQueueBackend
+from protagine.goals.store import GoalStore
+from protagine.goals.models import Goal, GoalStatus
 
 
 def _blocked_goal(engine, condition_type=None, condition_params=None):
-    g = engine.propose_goal(title="await vendor api", description="x")
-    engine.accept_goal(g.goal_id)
-    engine.activate_goal(g.goal_id)
+    g = Goal(title="await vendor api", description="x", status=GoalStatus.ACTIVE)
+    engine.save_goal(g)
     return engine.block_goal(g.goal_id, reason="waiting on vendor",
                              condition_type=condition_type,
                              condition_params=condition_params)
@@ -25,8 +22,7 @@ def _blocked_goal(engine, condition_type=None, condition_params=None):
 
 @pytest.fixture
 def engine(tmp_path):
-    return GoalEngine(queue_bridge=GoalQueueBridge(InMemoryQueueBackend()), config=GoalEngineConfig(
-        db_path=str(tmp_path / "goals.db"), inference_enabled=False))
+    return GoalStore(str(tmp_path / "goals.db"))
 
 
 def _fake_loop_self(engine):
@@ -57,7 +53,7 @@ async def test_sweep_unblocks_when_condition_met(engine, monkeypatch):
     g = _blocked_goal(engine, "api_response", {"url": "http://x"})
     await AutonomyLoop._poll_blocked_goal_conditions(_fake_loop_self(engine))
     assert calls["n"] == 1
-    fresh = engine._store.get_goal(g.goal_id)
+    fresh = engine.get_goal(g.goal_id)
     assert fresh.status == GoalStatus.ACTIVE
     assert "condition_type" not in fresh.context
 
@@ -75,7 +71,7 @@ async def test_sweep_not_met_persists_cadence(engine, monkeypatch):
 
     await AutonomyLoop._poll_blocked_goal_conditions(fake)
     assert calls["n"] == 1
-    fresh = engine._store.get_goal(g.goal_id)
+    fresh = engine.get_goal(g.goal_id)
     assert fresh.status == GoalStatus.BLOCKED
     assert float(fresh.context["condition_last_check"]) > 0
 
@@ -85,7 +81,7 @@ async def test_sweep_not_met_persists_cadence(engine, monkeypatch):
 
     # cadence elapsed: polled again
     fresh.context["condition_last_check"] = time.time() - 3600
-    engine._store.save_goal(fresh)
+    engine.save_goal(fresh)
     await AutonomyLoop._poll_blocked_goal_conditions(fake)
     assert calls["n"] == 2
 
@@ -103,4 +99,4 @@ async def test_goal_blocked_without_condition_is_left_alone(engine, monkeypatch)
     g = _blocked_goal(engine)                     # human-blocked, no condition
     await AutonomyLoop._poll_blocked_goal_conditions(_fake_loop_self(engine))
     assert calls["n"] == 0
-    assert engine._store.get_goal(g.goal_id).status == GoalStatus.BLOCKED
+    assert engine.get_goal(g.goal_id).status == GoalStatus.BLOCKED

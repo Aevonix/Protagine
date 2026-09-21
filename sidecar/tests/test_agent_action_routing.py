@@ -960,7 +960,7 @@ async def test_action_effect_attestation_releases_dependency_and_writeback(
         loop = AutonomyLoop(registry=registry)
         await loop._phase_job_writeback()
         registry.initiative_store.complete.assert_called_once()
-        registry.goals.on_job_completed.assert_called_once()
+        registry.goals.on_job_completed.assert_not_called()
         memory = registry.graph.store_memory.await_args.kwargs
         assert memory["metadata"]["verification_pending"] is False
     finally:

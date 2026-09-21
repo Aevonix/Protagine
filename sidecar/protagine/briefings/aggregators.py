@@ -536,8 +536,8 @@ class DiscovererSynthesisAggregator:
                 if getattr(c, "observation_count", 1) > 1][:5]
 
 
-class GoalEngineAggregator:
-    """Real implementation backed by the GoalEngine (goals are owner-scoped;
+class GoalStoreAggregator:
+    """Real implementation backed by goal records (goals are owner-scoped;
     no person filter). Overdue/blocked/completing-soon read live goal state;
     weekly stats come from created/completed timestamps in the window."""
 
@@ -548,7 +548,7 @@ class GoalEngineAggregator:
         try:
             return self._engine.list_goals(status=status, limit=limit) or []
         except Exception:
-            logger.exception("GoalEngineAggregator list failed")
+            logger.exception("GoalStoreAggregator list failed")
             return []
 
     @staticmethod
