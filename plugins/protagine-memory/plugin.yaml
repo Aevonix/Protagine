@@ -1,5 +1,5 @@
 name: protagine-memory
-version: 1.8.7
+version: 1.9.0rc1
 description: |
   Native Hermes memory provider for participant-scoped recollection and current
   commitments, preferences and self state. Retrieves source evidence through the
