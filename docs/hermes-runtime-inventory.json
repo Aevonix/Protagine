@@ -96,7 +96,13 @@
         "tests/gateway/test_transcript_redaction.py"
       ],
       "upstream_equivalence": "Stock owned_payload_erasure and settled_native_turn probes fail; source-update carriers remain pending.",
-      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass."
+      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass.",
+      "upstream_contribution": {
+        "url": "https://github.com/NousResearch/hermes-agent/pull/118325",
+        "reviewed_head": "81bdf0d258b30eb1e12cb42142943345cfa04987",
+        "base": "bb359ec5c1d5da6a66f00ee11f0ad7a86defaee2",
+        "evidence": "172 relevant native tests passed, installed native/gateway consumers and profile A/B/A; red on base. Upstream acceptance and complete combined Protagine qualification remain outstanding."
+      }
     },
     {
       "commit": "799b647f3494f37d924328bd314d79a2e3567d9a",
@@ -406,7 +412,13 @@
         "tests/hermes_state/test_transcript_payload_redaction.py"
       ],
       "upstream_equivalence": "Stock owned_payload_erasure and settled_native_turn probes fail; source-update carriers remain pending.",
-      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass."
+      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass.",
+      "upstream_contribution": {
+        "url": "https://github.com/NousResearch/hermes-agent/pull/118325",
+        "reviewed_head": "81bdf0d258b30eb1e12cb42142943345cfa04987",
+        "base": "bb359ec5c1d5da6a66f00ee11f0ad7a86defaee2",
+        "evidence": "172 relevant native tests passed, installed native/gateway consumers and profile A/B/A; red on base. Upstream acceptance and complete combined Protagine qualification remain outstanding."
+      }
     },
     {
       "commit": "75f6ea6e50841b5d003e046432fdbba0060b20ac",
@@ -421,7 +433,13 @@
         "tests/agent/test_native_turn_settled.py"
       ],
       "upstream_equivalence": "Stock owned_payload_erasure and settled_native_turn probes fail; source-update carriers remain pending.",
-      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass."
+      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass.",
+      "upstream_contribution": {
+        "url": "https://github.com/NousResearch/hermes-agent/pull/118325",
+        "reviewed_head": "81bdf0d258b30eb1e12cb42142943345cfa04987",
+        "base": "bb359ec5c1d5da6a66f00ee11f0ad7a86defaee2",
+        "evidence": "172 relevant native tests passed, installed native/gateway consumers and profile A/B/A; red on base. Upstream acceptance and complete combined Protagine qualification remain outstanding."
+      }
     },
     {
       "commit": "66372a6bf4b84087060e896aa3d57ea7a21e37e0",
@@ -449,7 +467,13 @@
         "tests/run_agent/test_turn_liveness_watchdog.py"
       ],
       "upstream_equivalence": "Stock owned_payload_erasure and settled_native_turn probes fail; source-update carriers remain pending.",
-      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass."
+      "removal_condition": "Upstream preimage/watermark/lease/cache/FTS/replay tests and complete correction/forget witnesses pass.",
+      "upstream_contribution": {
+        "url": "https://github.com/NousResearch/hermes-agent/pull/118325",
+        "reviewed_head": "81bdf0d258b30eb1e12cb42142943345cfa04987",
+        "base": "bb359ec5c1d5da6a66f00ee11f0ad7a86defaee2",
+        "evidence": "172 relevant native tests passed, installed native/gateway consumers and profile A/B/A; red on base. Upstream acceptance and complete combined Protagine qualification remain outstanding."
+      }
     },
     {
       "commit": "6c33542693e12b1e9df9fea774fb57216a767788",

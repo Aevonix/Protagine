@@ -111,7 +111,7 @@ For fixes not directly exercised by this audit, equivalence is explicitly
 unqualified; absence from the fork commit history alone is not proof of an
 upstream behavioral defect.
 
-Prepare small generic runtime contributions in this order:
+The generic runtime contributions are tracked separately:
 
 1. **Persisted input provenance.** Submitted as
    [upstream PR #118307](https://github.com/NousResearch/hermes-agent/pull/118307),
@@ -125,12 +125,19 @@ Prepare small generic runtime contributions in this order:
    missing persistence, observer-copy isolation and provider-payload separation.
    The PR is not upstream support: installed rotate/compact/delegated supplied-source
    witnesses and the other core interfaces remain release requirements.
-2. **Owned transcript erasure and settlement.** Port the coherent surface from
+2. **Owned transcript erasure and settlement.** Submitted as
+   [upstream PR #118325](https://github.com/NousResearch/hermes-agent/pull/118325),
+   reviewed head `81bdf0d258b`, with 172 relevant tests passing. The contribution
+   preserves the coherent surface from
    `66372a6bf4b`, `e2776186612`, `75f6ea6e508`, `84c7d76a247`: selected row
    snapshots, preimage/watermark rejection, payload/FTS removal, writer leases,
    native/gateway settled observers, profile ownership and cache refresh. Keep
-   unrelated rows and metadata. Include restart/replay, concurrent-writer and
-   changed-selection tests. A SQLite erasure helper alone does not satisfy core.
+   unrelated rows and metadata. Installed native and gateway consumers exercise
+   reconciliation after lease release, A→B→A profile isolation, cached-copy
+   removal and reload; base witnesses reproduce missing storage and hook contracts.
+   A SQLite erasure helper alone does not satisfy core. Selected payload/cache
+   erasure does not cover backups, external summaries or secure file erasure.
+   Acceptance and combined installed-adapter qualification remain outstanding.
 3. **Callback overlap.** Reuse the existing open upstream
    [PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763), head
    `b9c112c83b60b91e918341cbb587a6a913d9d9eb` (checked 2026-09-21), preserving
