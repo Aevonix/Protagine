@@ -43,7 +43,6 @@ LOOP_MODE_ENV = "PROTAGINE_AUTONOMY_MODE"
 PRESETS: Dict[str, Dict[str, str]] = {
     "passive": {
         "PROTAGINE_AUTONOMY_MODE": "reactive",
-        "PROTAGINE_EXECUTOR_ENABLED": "false",
         "PROTAGINE_COGNITION_ENABLED": "false",
         "PROTAGINE_INTROSPECT_ENABLED": "false",
         "PROTAGINE_THINKING_MODE": "off",
@@ -62,7 +61,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     },
     "calibration": {
         "PROTAGINE_AUTONOMY_MODE": "proactive",
-        "PROTAGINE_EXECUTOR_ENABLED": "true",
         "PROTAGINE_COGNITION_ENABLED": "true",
         "PROTAGINE_INTROSPECT_ENABLED": "true",
         "PROTAGINE_THINKING_MODE": "shadow",
@@ -85,7 +83,6 @@ PRESETS: Dict[str, Dict[str, str]] = {
     },
     "autonomous": {
         "PROTAGINE_AUTONOMY_MODE": "proactive",
-        "PROTAGINE_EXECUTOR_ENABLED": "true",
         "PROTAGINE_COGNITION_ENABLED": "true",
         "PROTAGINE_INTROSPECT_ENABLED": "true",
         "PROTAGINE_THINKING_MODE": "live",
@@ -185,7 +182,6 @@ def snapshot() -> Dict[str, str]:
     """Effective value of every preset-managed flag (for doctor/status)."""
     out: Dict[str, str] = {"preset": preset_name() or "(none)"}
     domains = {
-        "PROTAGINE_EXECUTOR_ENABLED": (("true", "false"), "false"),
         "PROTAGINE_COGNITION_ENABLED": (("true", "false"), "false"),
         "PROTAGINE_INTROSPECT_ENABLED": (("true", "false"), "false"),
         "PROTAGINE_THINKING_MODE": (("off", "shadow", "live"), "off"),

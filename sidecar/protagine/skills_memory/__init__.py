@@ -1,17 +1,15 @@
 """Compounding learning: reusable procedure memory (item 3).
 
-Distills a compact Skill (situation, steps, gotchas) from non-trivial
-successes -- success after a retry, or a novel diagnosis -- and retrieves the
-relevant ones into executor/planner prompts so the second encounter with a
-problem class starts from the first one's solution. Failures update a short
-per-domain strategy note (post-mortem memory).
+Stores candidate procedures (situation, steps, gotchas) and retrieves relevant
+ones into project prompts. A historical completion, failure note or model
+assessment does not verify procedure quality. Native skill evaluation retains
+independent source-bound receipts; this store does not infer skill rewards.
 
 Named ``skills_memory`` to avoid clashing with the existing ``skills/``
 executor-skill registry (packaged executable skills). These are prompt-level
 procedure memories for the sidecar's own reasoning loops; they inform
-reasoning and never act, so retrieval is safe to run live
-(PROTAGINE_SKILLS_ENABLED, default true). Distillation costs one LLM call per
-qualifying completion and starts in shadow (PROTAGINE_SKILLS_DISTILL).
+reasoning and never execute directly (PROTAGINE_SKILLS_ENABLED, default true).
+Distillation starts in shadow (PROTAGINE_SKILLS_DISTILL).
 """
 
 from protagine.skills_memory.models import Skill, signature_overlap, situation_signature

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased - consolidate initiative execution
+
+Remove the duplicate no-host initiative executor and its startup, preset and
+status surfaces. Hermes keeps ownership of registered reviews and accepted
+work. Unsupported initiatives remain proposals. An offline reconciliation
+command preserves terminal records and prevents automatic replay of unfinished
+retired-executor work.
+
+Historical procedure win/loss counters are archived once in the existing skill
+database and reset. Retrieval and retention no longer treat runtime completion
+as proof that a procedure worked. Native evaluation receipts remain separate.
+See [migration details](docs/EXECUTOR-RETIREMENT.md).
+
 ## v1.8.7-hermes - support strict chat instruction layouts
 
 The Hermes adapter now sends consecutive plain instruction blocks as one

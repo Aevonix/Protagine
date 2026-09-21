@@ -75,7 +75,6 @@ from protagine.api.routers.host import (
     set_telemetry,
     set_session_report_store,
     set_agent_bridge,
-    set_initiative_executor,
     set_situation_spine,
     set_cognition_evidence,
     set_drive_governance,
@@ -3263,7 +3262,7 @@ async def lifespan(app: FastAPI):
 
     # Wire SubsystemRegistry into ToolExecutor so Protagine-native tools
     # (memory_search, goals, relationships, etc.) are available to the
-    # initiative executor's reasoning loop.
+    # shared internal reasoning API and project analysis steps.
     if registry is not None and locals().get("tool_executor") is not None:
         te = locals()["tool_executor"]
         from protagine.tools.handlers import TOOL_HANDLERS as _protagine_handlers
@@ -3700,27 +3699,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("ConnectorManager init failed: %s", exc)
 
-    # --- 23. Initiative Executor service (autonomous initiative processing) ---
-    try:
-        from protagine.services.initiative_executor import (
-            create_from_env as _create_executor,
-        )
-        from protagine.api.routers.host import get_directive_manager as _get_dm
-        _executor_svc = _create_executor(
-            initiative_store=locals().get("initiative_store"),
-            reasoning_loop=locals().get("reasoning_loop"),
-            tool_executor=locals().get("tool_executor"),
-            directive_manager=_get_dm(),
-            skill_store=_skills_mem_store,
-            self_model=_sm_for_directed,
-        )
-        if _executor_svc is not None:
-            set_initiative_executor(_executor_svc)
-            asyncio.create_task(_executor_svc.start())
-            logger.info("InitiativeExecutorService auto-start scheduled")
-    except Exception as exc:
-        logger.warning("InitiativeExecutorService init failed (non-fatal): %s", exc)
-
     from protagine.telemetry import TelemetryStore
     telemetry = TelemetryStore()
     telemetry.load()  # restore last_*_at across restart (v0.21.0)
@@ -3949,7 +3927,6 @@ async def lifespan(app: FastAPI):
     set_session_store(None)
     set_session_report_store(None)
     set_agent_bridge(None)
-    set_initiative_executor(None)
     # Stop worker node (before queue so in-flight jobs can drain).
     try:
         worker = getattr(app.state, "worker", None)

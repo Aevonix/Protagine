@@ -540,7 +540,6 @@ def _happy_responses(owner="cid-owner-1"):
         # Cognition / autonomy checks (v0.22.0)
         "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
             "preset": "calibration",
-            "PROTAGINE_EXECUTOR_ENABLED": "true",
             "PROTAGINE_PROJECTS_MODE": "shadow",
             "PROTAGINE_THINKING_MODE": "shadow",
             "grant_envelope": {
@@ -569,8 +568,6 @@ def _happy_responses(owner="cid-owner-1"):
             "capacity": 24, "sleeping": False, "concerns": []}),
         "/v1/host/self/expectations": (200, {"available": True,
             "mode": "shadow", "pending": [], "calibration": {}}),
-        "/v1/host/executor/status": (200, {"running": True, "wired": True,
-                                           "stats": {"cycles": 5}}),
         "/v1/host/projects": (200, {"available": True, "mode": "shadow",
                                     "projects": []}),
         "/v1/host/beliefs": (200, {"available": True, "mode": "shadow",
@@ -1022,7 +1019,6 @@ def test_posture_preset_with_reactive_loop_fails(clean_env, monkeypatch):
             "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
                 "preset": preset,
                 "PROTAGINE_AUTONOMY_MODE": "reactive",
-                "PROTAGINE_EXECUTOR_ENABLED": "true",
                 "PROTAGINE_THINKING_MODE": "shadow",
             }}),
         }))
@@ -1104,7 +1100,6 @@ def test_posture_calibration_proactive_passes_labeled_expected(
         "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
             "preset": "calibration",
             "PROTAGINE_AUTONOMY_MODE": "proactive",
-            "PROTAGINE_EXECUTOR_ENABLED": "true",
             "PROTAGINE_THINKING_MODE": "shadow",
             "PROTAGINE_PROJECTS_MODE": "shadow",
         }}),
@@ -1120,7 +1115,6 @@ def test_posture_without_mode_key_unchanged(clean_env, monkeypatch):
     monkeypatch.setattr(doctor, "_http_get", _fake_http({
         "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
             "preset": "calibration",
-            "PROTAGINE_EXECUTOR_ENABLED": "true",
             "PROTAGINE_THINKING_MODE": "shadow",
         }}),
     }))
@@ -1132,7 +1126,6 @@ def test_posture_downgraded_below_preset_warns(clean_env, monkeypatch):
         "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
             "preset": "autonomous",
             "PROTAGINE_AUTONOMY_MODE": "proactive",
-            "PROTAGINE_EXECUTOR_ENABLED": "true",
             "PROTAGINE_THINKING_MODE": "off",       # below preset's "live"
             "PROTAGINE_PROJECTS_MODE": "live",
             "PROTAGINE_SANDBOX_MODE": "dry_run",    # = preset default, expected
@@ -1147,7 +1140,7 @@ def test_posture_downgraded_below_preset_warns(clean_env, monkeypatch):
 def test_posture_all_off_warns(clean_env, monkeypatch):
     monkeypatch.setattr(doctor, "_http_get", _fake_http({
         "/v1/host/autonomy/posture": (200, {"available": True, "posture": {
-            "preset": "(none)", "PROTAGINE_EXECUTOR_ENABLED": "false",
+            "preset": "(none)",
             "PROTAGINE_PROJECTS_MODE": "off", "PROTAGINE_THINKING_MODE": "off",
         }}),
     }))
@@ -1186,15 +1179,6 @@ def test_connectors_mode_without_connectors_warns(clean_env, monkeypatch):
     r = doctor.check_server_connectors(URL, "key", 5)
     assert r.status == WARN
     assert "PROTAGINE_CONNECTOR_FS_PATH" in r.remedy
-
-
-def test_executor_unwired_warns(clean_env, monkeypatch):
-    monkeypatch.setattr(doctor, "_http_get", _fake_http({
-        "/v1/host/executor/status": (200, {"running": False, "wired": False}),
-    }))
-    r = doctor.check_server_executor(URL, "key", 5)
-    assert r.status == WARN
-    assert "PROTAGINE_EXECUTOR_ENABLED" in r.remedy
 
 
 def test_projects_blocked_warns(clean_env, monkeypatch):

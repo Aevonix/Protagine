@@ -58,9 +58,9 @@ Ordinary owner messages remain the main capture path.
 
 The existing competence store retains outcome records and their available
 provenance, including the distinction between recorded and corrected evidence.
-The initiative executor
-records a stable work/attempt reference and the last available model response
-metadata. Unavailable model IDs, roles and weights revisions are `unknown`.
+Historical built-in executor records retain their work/attempt references
+and available model response metadata. That executor is retired; current native
+observations remain bound to their source execution. Unavailable model IDs, roles and weights revisions are `unknown`.
 Runtime completion is not verified semantic task success.
 
 Automatic outcome-derived research weights are retired. Completing a report with
