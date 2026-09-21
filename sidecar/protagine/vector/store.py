@@ -487,22 +487,25 @@ class VectorStore:
         return df.to_dict(orient="records")
 
     async def get_stored_models(self) -> list[str]:
-        """Return unique model_id values across all collections."""
+        """Inspect model metadata without materializing text or vector payloads."""
         models: set[str] = set()
+        db = (await self._generation_db(self.catalog.active())
+              if self.catalog is not None else self._db)
+        existing = set(await db.table_names())
         for col in Collection:
-            try:
-                rows = await self.scan_all(col)
-                for row in rows:
-                    meta_str = row.get("metadata", "{}")
-                    try:
-                        meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
-                    except (json.JSONDecodeError, TypeError):
-                        meta = {}
-                    model_id = meta.get("model_id", "")
-                    if model_id:
-                        models.add(model_id)
-            except Exception:
-                pass
+            if col.value not in existing:
+                continue
+            table = await db.open_table(col.value)
+            metadata = await table.query().select(["metadata"]).to_arrow()
+            for value in metadata.column("metadata"):
+                meta_str = value.as_py()
+                try:
+                    meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
+                if isinstance(model_id, str) and model_id:
+                    models.add(model_id)
         return sorted(models)
 
     async def close(self) -> None:
