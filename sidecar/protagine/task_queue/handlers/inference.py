@@ -511,9 +511,7 @@ class InferenceHandler(JobHandler):
         ):
             raise ValueError("thought output exceeded its token budget")
 
-        # ── GAP-14: Log tier selection + feed RouterSelfLearner ────────────
-        # Logging lets ops trace routing decisions; record_outcome lets the
-        # self-learner improve future tier thresholds from inference-path data.
+        # Record routing and compute telemetry, not an inferred quality label.
         logger.info(
             "Inference tier=%s model=%s tokens=%d cost_usd=%.6f latency_ms=%d job_id=%s",
             response.tier_used.value,
@@ -523,9 +521,6 @@ class InferenceHandler(JobHandler):
             response.latency_ms,
             getattr(job, "job_id", "?"),
         )
-        # Latency/tokens above are telemetry.  Do not self-award a perfect
-        # quality label merely because the model returned; RouterSelfLearner
-        # must wait for downstream or owner evidence.
 
         # Queue inference is an observation path.  It must not hide a world-
         # model mutation behind a read-looking completion.  Entity ingestion

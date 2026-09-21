@@ -15,7 +15,7 @@ from .router import LLMRouter
 async def planning(configuration):
     if 'planning' not in configuration.get('functionRoles', {}):
         raise ValueError('An explicit planning role is required')
-    router = LLMRouter(tiers={}, self_learner=object())
+    router = LLMRouter(tiers={})
     router.configure(configuration)
     snapshot = router._snapshot
     selected = candidates(snapshot, 'planning', {}, has_images=False, has_tools=True)

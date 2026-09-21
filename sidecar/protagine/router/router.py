@@ -1,24 +1,7 @@
-"""LLMRouter — route LLM requests to the appropriate model tier.
+"""Route model requests through configured functions and finite fallbacks.
 
-Wraps LiteLLM's completion API. All Protagine code that calls an LLM
-MUST go through LLMRouter rather than calling LiteLLM directly.
-This centralises cost tracking, fallback logic, and self-learning.
-
-Usage::
-
-    router = LLMRouter()
-
-    # Simple routing — scorer picks the cheapest capable tier
-    response = await router.complete(messages)
-
-    # Force a specific tier
-    response = await router.complete(messages, force_tier=ModelTier.LARGE)
-
-    # Provide task context to improve tier selection
-    response = await router.complete(
-        messages,
-        context={"tools": tool_defs, "user_tier": "developer"},
-    )
+Named functions bind work to declared model capabilities. Explicit tier callers
+retain deterministic complexity selection and their configured provider policy.
 """
 
 from __future__ import annotations
@@ -46,7 +29,6 @@ import litellm  # type: ignore[import]
 
 from protagine.router.complexity_scorer import ComplexityScorer
 from protagine.router.fallback import FallbackHandler
-from protagine.router.self_learning import RouterSelfLearner
 from protagine.router.tiers import DEFAULT_TIERS, ModelTier, TierConfig
 
 logger = logging.getLogger(__name__)
@@ -86,7 +68,6 @@ class LLMRouter:
         self,
         tiers: dict[ModelTier, TierConfig] | None = None,
         scorer: ComplexityScorer | None = None,
-        self_learner: RouterSelfLearner | None = None,
         fallback_handler: FallbackHandler | None = None,
         event_bus: Any | None = None,
     ) -> None:
@@ -102,10 +83,6 @@ class LLMRouter:
         self._scorer = scorer or ComplexityScorer()
         self._fallback = fallback_handler or FallbackHandler()
         self._bus = event_bus
-        # Only the retained legacy tier selector consumes this learner.
-        # Configuring named functions must not open an unrelated legacy DB.
-        self._learner = self_learner
-        self._learner_initialized = self_learner is not None
 
     @property
     def supports_function_routing(self):
@@ -472,49 +449,12 @@ class LLMRouter:
         raise RuntimeError('No eligible local model completed function ' + role_name +
                            '; attempts=' + ','.join(failures)) from incomplete
 
-    def record_outcome(
-        self,
-        request_id: str,
-        tier_used: ModelTier,
-        quality_rating: float,
-        tokens_used: int,
-        latency_ms: int,
-        prompt: str = "",
-    ) -> None:
-        """Record legacy tier outcomes; named functions do not use tier learning."""
-        if self._snapshot is not None:
-            return
-        learner = self._legacy_learner()
-        if learner is None:
-            return
-        config = self._tiers.get(tier_used)
-        cost = 0.0
-        if config:
-            cost = tokens_used * config.cost_per_1k_output / 1000
-
-        score = self._scorer.score(prompt)
-        learner.record(score, tier_used, quality_rating, cost)
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _legacy_learner(self):
-        with self._config_lock:
-            if not self._learner_initialized:
-                self._learner_initialized = True
-                try:
-                    self._learner = RouterSelfLearner()
-                except Exception as exc:
-                    logger.warning("Legacy RouterSelfLearner unavailable: %s", exc)
-        return self._learner
-
     def _select_tier(self, prompt: str, context: dict) -> ModelTier:
-        learner = self._legacy_learner()
-        if learner is not None:
-            small_cutoff, medium_cutoff = learner.get_thresholds()
-        else:
-            small_cutoff, medium_cutoff = 0.3, 0.65
+        small_cutoff, medium_cutoff = 0.3, 0.65
 
         score = self._scorer.score(prompt, context)
         if score < small_cutoff:

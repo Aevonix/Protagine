@@ -236,7 +236,7 @@ def _verify_local_endpoint(endpoint):
     """Declare the selected host and reuse the runtime's address check."""
     from protagine.router.router import LLMRouter
     hosts = [urlsplit(endpoint).hostname]
-    router = LLMRouter(tiers={}, self_learner=object())
+    router = LLMRouter(tiers={})
     router.configure({'provider': 'local', 'baseUrl': endpoint, 'apiKey': 'local-no-key',
                       'models': {'small': 'setup-endpoint-check'}, 'localHosts': hosts})
     if not asyncio.run(router._local_addresses(router._snapshot, router._snapshot.bindings['small'])):

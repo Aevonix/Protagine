@@ -83,7 +83,7 @@ That handler:
 - rejects non-read capabilities;
 - performs no implicit contact lookup unless separately supported;
 - does not update the world model after inference;
-- does not feed an unvalidated result to the router self-learner;
+- does not treat model completion as a verified quality outcome;
 - bypasses the outbound ResponseGate because the result is internal and
   must pass the typed parser instead;
 - suppresses the generic post-task skill-learning write hook;

@@ -1297,7 +1297,7 @@ def test_selected_hostname_is_bound_for_runtime_routing(args, monkeypatch, addre
     assert result == 0
     config = json.loads((Path(args.hermes_home)/'protagine/.protagine-llm-config.json').read_text())
     assert config['localHosts'] == ['model.lan']
-    router = LLMRouter(tiers={}, self_learner=object())
+    router = LLMRouter(tiers={})
     router.configure(config)
     assert router.function_config(context={'function_role': 'extraction'}).base_url == args.model_url
 

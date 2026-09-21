@@ -376,7 +376,7 @@ async def test_local_extraction_disables_router_escalation(monkeypatch):
     from protagine.beliefs.source_claims import local_tier
     from protagine.router.router import LLMRouter
     from protagine.router.tiers import ModelTier
-    router = LLMRouter(self_learner=SimpleNamespace())
+    router = LLMRouter()
     router._litellm_call = AsyncMock(side_effect=TimeoutError())
     router._fallback = SimpleNamespace(should_escalate=lambda *args: True,
                                        next_tier=lambda tier: ModelTier.MEDIUM)

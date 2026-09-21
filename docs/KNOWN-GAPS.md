@@ -58,9 +58,10 @@ general self-improvement simply by recording a successful review.
   goal record migration or deletion is performed by changing this documentation.
   Retire unused exports and readers; actual callers or retained records need
   an explicit disposition, not a permanent compatibility layer.
-- Three-tier routing retains its optional learner only when legacy tier
-  selection/outcome recording is used. Named function routing does not create
-  its database or consume its scores. Existing legacy database files remain.
+- The unused tier learner and quality-outcome API have been removed. Named
+  function routing and configured fallback remain; explicit tier selection uses
+  deterministic thresholds. Old `router_self_learning.db` files are neither read
+  nor written and can be discarded.
 - SQLite is the supported typed world-observation store. The separate optional
   Neo4j memory graph is a different subsystem; its records are not a substitute
   for canonical source memory. Changing databases does not fix memory admission

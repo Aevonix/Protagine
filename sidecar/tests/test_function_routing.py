@@ -67,7 +67,7 @@ def config(first, second, **role):
 
 
 def router(cfg, path=None):
-    r = LLMRouter(tiers={}, self_learner=SimpleNamespace())
+    r = LLMRouter(tiers={})
     r.configure(cfg, config_path=path)
     return r
 
@@ -129,32 +129,23 @@ async def test_invalid_output_contract_and_capability_fail_before_dispatch():
 
 
 @pytest.mark.asyncio
-async def test_named_functions_never_open_the_legacy_learner_database(tmp_path, monkeypatch):
-    from protagine.router import self_learning
-    database = tmp_path / 'must-not-create.db'
-    monkeypatch.setattr(self_learning, '_DEFAULT_DB', database)
+async def test_routing_does_not_open_a_learning_database(monkeypatch):
+    import sqlite3
+    from protagine.router.tiers import ModelTier
+    opened = []
+    def no_database(*args, **kwargs):
+        opened.append(args[0])
+        raise AssertionError('Routing must not open a learning database')
+    monkeypatch.setattr(sqlite3, 'connect', no_database)
     with endpoint() as (url, calls):
         r = LLMRouter(tiers={})
-        # This checks learner isolation, not timeout failover. Allow a cold
-        # HTTP client and a busy CI runner without expiring the first attempt.
         r.configure(config(url, url, timeoutSeconds=10, deadlineSeconds=20))
         result = await complete(r)
-        r.record_outcome(result.request_id, result.tier_used, .9, 12, 1)
         assert result.binding == 'interactive' and len(calls) == 1
-        assert not database.exists() and r._learner is None
-
-
-def test_legacy_routing_still_records_outcomes_lazily(tmp_path, monkeypatch):
-    from protagine.router import self_learning
-    from protagine.router.tiers import ModelTier
-    database = tmp_path / 'legacy.db'
-    monkeypatch.setattr(self_learning, '_DEFAULT_DB', database)
-    r = LLMRouter()
-    assert not database.exists()
-    r.record_outcome('fixture-request', ModelTier.SMALL, .9, 12, 1, prompt='fixture')
-    assert database.exists()
-    assert r._learner._conn.execute('SELECT COUNT(*) FROM outcomes').fetchone()[0] == 1
-    assert r._select_tier('hello', {}) == ModelTier.SMALL
+    # Explicit tier callers still use deterministic selection, independent of
+    # old self-reported quality histories or unrelated persistent state.
+    assert LLMRouter().route('hello')[0] == ModelTier.SMALL
+    assert opened == []
 
 
 @pytest.mark.asyncio
@@ -540,7 +531,7 @@ async def test_declared_tool_throughput_and_context_requirements_and_unknown_wei
 @pytest.mark.asyncio
 async def test_unconfigured_or_invalid_initial_file_never_uses_default_provider(tmp_path, monkeypatch):
     path = tmp_path / 'config.json'; path.write_text('{partial')
-    r = LLMRouter(tiers={}, self_learner=SimpleNamespace())
+    r = LLMRouter(tiers={})
     r.watch_config(path)
     async def never(**kwargs): raise AssertionError('must not call a default model')
     monkeypatch.setattr(r, '_litellm_call', never)
@@ -573,7 +564,7 @@ async def test_obviously_undersized_fallback_is_not_sent_the_large_prompt():
 async def test_ollama_compatibility_requires_explicit_protocol_and_api_root():
     with endpoint() as (address, calls):
         cfg = {'provider': 'ollama', 'baseUrl': address, 'models': {'small': 'neutral-ollama'}}
-        r = LLMRouter(tiers={}, self_learner=SimpleNamespace())
+        r = LLMRouter(tiers={})
         with pytest.raises(ValueError, match='OpenAI-compatible'): r.configure(cfg)
         cfg['protocol'] = 'openai-chat'
         r.configure(cfg)

@@ -287,19 +287,18 @@ async def test_media_requires_explicit_local_vision_capability(tmp_path):
     ledger.record_source('turn', contact_id='c', session_id='s', messages=[message()])
     config = {'provider': 'local', 'baseUrl': 'http://127.0.0.1:8080/v1',
               'models': {'small': {'model': 'text-model', 'supportsVision': True}}}
-    router = LLMRouter(tiers=build_tiers_from_host(config), self_learner=SimpleNamespace())
+    router = LLMRouter(tiers=build_tiers_from_host(config))
     router.complete = AsyncMock()
     assert router.tier_config(ModelTier.VISION) is None
     await media.process_one(router)
     router.complete.assert_not_awaited()
     assert media.status('c')[0]['error'] == 'local_vision_role_unavailable'
     config['models']['vision'] = {'model': 'image-model', 'supportsVision': True}
-    router = LLMRouter(tiers=build_tiers_from_host(config), self_learner=SimpleNamespace())
+    router = LLMRouter(tiers=build_tiers_from_host(config))
     assert router.tier_config(ModelTier.VISION).supports_vision is True
     assert router.tier_config(ModelTier.VISION).model_id == 'openai/image-model'
     for score in (0.1, 0.5, 0.9):
         router._scorer = SimpleNamespace(score=lambda *args: score)
-        router._learner = None
         assert router.route('text query')[0] in {ModelTier.SMALL, ModelTier.MEDIUM, ModelTier.LARGE}
     assert not FallbackHandler().should_escalate(RuntimeError('rate limit'), ModelTier.VISION)
     assert FallbackHandler().next_tier(ModelTier.VISION) is None
