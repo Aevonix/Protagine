@@ -9,6 +9,15 @@ from .report import summarize as summarize_run
 from .paired_transport import TIMING_PROTOCOL
 
 ARMS = ('base_hermes', 'protagine')
+REPORT_PROTOCOL = 'paired-attribution-3'
+SOURCE_REPORT_PROTOCOL = 'paired-attribution-2'
+NO_OUTPUT_RULE = 'returned_native_no_output_noncompletion'
+PROJECTION_BASIS = (
+    'Report-only attribution correction, applied symmetrically to both arms. '
+    'A returned native container with empty output counts as noncompletion only with '
+    'independent serialized candidate requests and returned-model evidence, no fallback, '
+    'confirmed cleanup, and consistent recorded native incomplete turns. '
+    'Saved outcomes, primary attribution and checks are unchanged; artifact grading is not rerun.')
 USAGE_METRICS = ('total_model_calls', 'input_tokens', 'output_tokens', 'background_model_calls')
 OBSERVED_USAGE = {'total_model_calls': 'observed_model_calls', 'input_tokens': 'observed_input_tokens',
                   'output_tokens': 'observed_output_tokens', 'background_model_calls': 'observed_background_model_calls'}
@@ -78,6 +87,75 @@ def _completion(row):
     return None
 
 
+def _no_output_projection(row, recipe, case):
+    """Recover skipped attribution, never rerun a consumer or artifact verifier.
+
+    runner's no_output branch precedes both attribution and artifact assessment.
+    An independently recorded incomplete native turn necessarily fails the frozen
+    all_native_turns_completed check, regardless of any workspace artifact.
+    """
+    if (row.get('outcome') != 'fail' or row.get('failure_category') != 'no_output'
+            or row.get('primary_outcome') != 'unverified' or row.get('checks') != {}
+            or 'output' not in row or row['output'] not in (None, '', {})
+            or row.get('evidence_mode') != 'actual_inference'
+            or row.get('cleanup') != 'state_directory_removed'
+            or recipe.get('consumer') != 'disposable_paired_native_container'
+            or case.get('consumer') != 'native_paired' or case.get('boundary') != 'native_hermes'
+            or case.get('evaluator') != 'paired_artifacts'):
+        return None
+    binding, model = recipe.get('binding'), recipe.get('configured_model')
+    role = case.get('role')
+    routing = row.get('qualification_routing') or {}
+    observations = row.get('observations')
+    if (not binding or not model or not role or row.get('role') != role or not isinstance(routing, dict)
+            or routing.get('binding') != binding or routing.get('role') != role
+            or not isinstance(observations, list) or len(observations) != 1):
+        return None
+    observation = observations[0]
+    image_id = (recipe.get('container') or {}).get('image_id')
+    if (not isinstance(observation, dict) or not image_id
+            or observation.get('boundary') != 'paired_native_container'
+            or observation.get('role') != role or observation.get('selected_binding') != binding
+            or observation.get('outcome') != 'returned'
+            or type(observation.get('exit_code')) is not int or observation['exit_code'] != 0
+            or observation.get('error_type') is not None or observation.get('error_origin_stage') is not None
+            or observation.get('prior_attempts') != [] or observation.get('dispatch_observed') is not True
+            or observation.get('attribution_basis') != 'serialized_requests_and_returned_models'
+            or observation.get('container_removed') is not True or observation.get('image_id') != image_id):
+        return None
+    effects = row.get('effects') or {}
+    if (not isinstance(effects, dict)
+            or effects.get('container_removed') is not True or effects.get('image_id') != image_id
+            or effects.get('state_isolation') != 'fresh_tmpfs_per_arm_and_episode'
+            or observation.get('state_isolation') != effects.get('state_isolation')):
+        return None
+    requests = effects.get('model_requests')
+    returned_model = observation.get('returned_model')
+    if (not isinstance(requests, list) or not requests or not returned_model
+            or any(not isinstance(request, dict) or request.get('model') != model
+                   or not isinstance(request.get('returned_models', []), list)
+                   or any(value != returned_model for value in request.get('returned_models', []))
+                   for request in requests)):
+        return None
+    successful = [request for request in requests if type(request.get('status')) is int
+                  and 200 <= request['status'] < 300]
+    if (not successful or any(not request.get('returned_models') for request in successful)
+            or not any(request.get('response_complete') is True for request in successful)):
+        return None
+    declared, completed = effects.get('declared_turns'), effects.get('turns_completed')
+    turns = effects.get('turns')
+    expected = (case.get('oracle') or {}).get('declared_turns')
+    if (type(declared) is not int or type(completed) is not int or type(expected) is not int
+            or declared != expected or declared != len((case.get('inputs') or {}).get('episodes', []))
+            or not 0 <= completed < declared or not isinstance(turns, list)
+            or len(turns) != completed + 1 or not all(isinstance(turn, dict) for turn in turns)
+            or any(turn.get('completed') is not True for turn in turns[:-1])
+            or turns[-1].get('completed') is not False
+            or turns[-1].get('final_response') != row['output']):
+        return None
+    return {'rule': NO_OUTPUT_RULE, 'source_row_sha256': digest(row)}
+
+
 def _number(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
 
@@ -136,7 +214,9 @@ def _timing(rows):
         'metrics': metrics, 'decode_tokens_per_second': None}
 
 
-def summarize(directory):
+def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
+    if report_protocol not in {SOURCE_REPORT_PROTOCOL, REPORT_PROTOCOL}:
+        raise ValueError('Unknown paired reporting protocol')
     manifest = load_manifest(directory)
     rows = {arm: [] for arm in ARMS}
     pairs = []
@@ -145,6 +225,14 @@ def summarize(directory):
         for arm in ARMS:
             rows[arm].append(results[arm])
         complete = {arm: _completion(results[arm]) for arm in ARMS}
+        projections = {arm: None for arm in ARMS}
+        if report_protocol == REPORT_PROTOCOL:
+            for arm in ARMS:
+                if complete[arm] is None:
+                    projections[arm] = _no_output_projection(
+                        results[arm], manifest['recipe'], declared['arms'][arm]['case'])
+                    if projections[arm] is not None:
+                        complete[arm] = False
         comparable = all(value is not None for value in complete.values())
         difference = int(complete['protagine']) - int(complete['base_hermes']) if comparable else None
         pairs.append({'episode_id': declared['episode_id'], 'order': declared['order'],
@@ -152,6 +240,8 @@ def summarize(directory):
             'results': results, 'completion': complete, 'comparable': comparable,
             'comparison': ('win' if difference > 0 else 'loss' if difference < 0 else 'tie')
                           if difference is not None else 'unavailable'})
+        if report_protocol == REPORT_PROTOCOL:
+            pairs[-1]['completion_projection'] = projections
     declared_count = len(pairs)
     comparable_count = sum(pair['comparable'] for pair in pairs)
     full = declared_count > 0 and comparable_count == declared_count
@@ -175,7 +265,7 @@ def summarize(directory):
             'wins': counts['win'], 'ties': counts['tie'], 'losses': counts['loss'],
             'both_completed': sum(all(pair['completion'].values()) for pair in pairs),
             'neither_completed': sum(not any(pair['completion'].values()) for pair in pairs)}
-    return {'schema': 1, 'kind': 'paired_report', 'report_protocol': 'paired-attribution-2',
+    report = {'schema': 1, 'kind': 'paired_report', 'report_protocol': report_protocol,
         'manifest_sha256': manifest['sha256'],
         'comparison_key': manifest['comparison_key'], 'label': manifest['label'],
         'evidence_mode': manifest['evidence_mode'], 'dataset': manifest['dataset'],
@@ -190,6 +280,15 @@ def summarize(directory):
                  'observed dispatch to the candidate; infrastructure/consumer errors, unsupported, setup, '
                  'interrupted and unattributed attempts remain unavailable. '
                  'Declared budgets do not prove equal total work.'}
+    if report_protocol == REPORT_PROTOCOL:
+        report['completion_projection'] = {
+            'source_protocol': SOURCE_REPORT_PROTOCOL, 'rule': NO_OUTPUT_RULE,
+            'corrected_episodes': sum(value is not None for pair in pairs
+                                      for value in pair['completion_projection'].values()),
+            'raw_results_preserved': True, 'artifact_verifier_reexecuted': False,
+            'basis': PROJECTION_BASIS}
+        report['basis'] += ' ' + PROJECTION_BASIS
+    return report
 
 
 def markdown(report):

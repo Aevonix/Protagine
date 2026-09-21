@@ -98,3 +98,27 @@ def test_cli_export_needs_no_endpoint_and_writes_new_public_snapshot(planned, tm
     captured = capsys.readouterr()
     assert captured.err == ''
     assert read(tmp_path / 'snapshot' / 'index.json')['records']
+
+
+def test_public_v3_projection_is_allowlisted_and_keeps_raw_attribution(planned, monkeypatch):
+    directory, metadata, _, secret = planned
+    report = paired_report.summarize(directory)
+    pair = report['pairs'][0]
+    pair['results']['protagine'].update(outcome='fail', primary_outcome='unverified', output=secret)
+    pair['completion']['protagine'] = False
+    pair['completion_projection']['protagine'] = {'rule': paired_report.NO_OUTPUT_RULE,
+        'source_row_sha256': 'f' * 64, 'private_details': secret}
+    report['completion_projection'].update(corrected_episodes=1, basis=secret)
+    monkeypatch.setattr(paired_report, 'summarize', lambda _: deepcopy(report))
+    record = paired_public.export_record(directory, metadata)
+    projected = record['episodes'][0]['results']['protagine']
+    assert record['report_protocol'] == 'paired-attribution-3'
+    assert record['completion_projection']['corrected_episodes'] == 1
+    assert projected['primary_outcome'] == 'unverified' and projected['completion'] is False
+    assert projected['completion_projection'] == {'rule': paired_report.NO_OUTPUT_RULE,
+                                                 'source_row_sha256': 'f' * 64}
+    assert secret not in json.dumps(record)
+    assert record['paired_score'] is None
+    report['completion_projection']['corrected_episodes'] = 0
+    with pytest.raises(ValueError, match='projection count'):
+        paired_public.export_record(directory, metadata)

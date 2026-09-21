@@ -100,6 +100,7 @@ def export_record(directory, metadata, *, published_at=None):
             'completion_percent': number(source['completion_percent']) if score else None,
             'accounting': _accounting(source['accounting']), 'timing': _timing(source.get('timing'))}
     episodes = []
+    corrected_episodes = 0
     for pair in report['pairs']:
         results = {}
         for arm in paired_report.ARMS:
@@ -108,6 +109,18 @@ def export_record(directory, metadata, *, published_at=None):
                 raise ValueError('Unknown public episode attribution')
             results[arm] = {'outcome': row['outcome'], 'primary_outcome': row['primary_outcome'],
                 'elapsed_ms': number(row.get('elapsed_ms')), 'completion': pair['completion'][arm]}
+            if report['report_protocol'] == paired_report.REPORT_PROTOCOL:
+                projection = pair.get('completion_projection', {}).get(arm)
+                results[arm]['completion_projection'] = None
+                if projection is not None:
+                    if (projection.get('rule') != paired_report.NO_OUTPUT_RULE
+                            or row['outcome'] != 'fail' or row['primary_outcome'] != 'unverified'
+                            or pair['completion'][arm] is not False):
+                        raise ValueError('Invalid public completion projection')
+                    results[arm]['completion_projection'] = {
+                        'rule': paired_report.NO_OUTPUT_RULE,
+                        'source_row_sha256': _hash(projection.get('source_row_sha256'))}
+                    corrected_episodes += 1
         episodes.append({'episode_id': identifier(pair['episode_id']),
             'family': pair['episode_id'].split('.')[1], 'results': results, 'comparison': pair['comparison']})
     recipe = manifest['recipe']
@@ -128,7 +141,7 @@ def export_record(directory, metadata, *, published_at=None):
         'Auxiliary model work is partially observed. Missing observations are not zero.']
     if quality == 'grading_under_review':
         limitations.append('Original pilot grading is under review; aggregate quality scores are withheld.')
-    return {'schema_version': 1, 'kind': 'paired_agent_benchmark',
+    record = {'schema_version': 1, 'kind': 'paired_agent_benchmark',
         'run_id': identifier('paired-' + manifest['sha256'][:24]),
         'published_at': stamp(published_at or datetime.now(timezone.utc).isoformat()),
         'deployment': deployment,
@@ -147,6 +160,16 @@ def export_record(directory, metadata, *, published_at=None):
         'comparable_pairs': _count(report['comparable_pairs']), 'unavailable_pairs': _count(report['unavailable_pairs']),
         'arms': arms, 'paired_score': {key: score[key] for key in SCORES} if score else None,
         'episodes': episodes, 'limitations': limitations}
+    if report['report_protocol'] == paired_report.REPORT_PROTOCOL:
+        if report.get('completion_projection', {}).get('corrected_episodes') != corrected_episodes:
+            raise ValueError('Inconsistent public completion projection count')
+        record['completion_projection'] = {
+            'source_protocol': paired_report.SOURCE_REPORT_PROTOCOL,
+            'rule': paired_report.NO_OUTPUT_RULE, 'corrected_episodes': corrected_episodes,
+            'raw_results_preserved': True, 'artifact_verifier_reexecuted': False,
+            'basis': paired_report.PROJECTION_BASIS}
+        limitations.append(paired_report.PROJECTION_BASIS)
+    return record
 
 
 def publish_record(directory, metadata, output):
