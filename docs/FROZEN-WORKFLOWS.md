@@ -145,6 +145,10 @@ transport, autonomous scheduling, exactly-once message delivery, physical
 erasure from every store, authenticated multiuser authorization, all-channel
 confidentiality, multimodal memory, host recovery or long-term self-improvement.
 The follow-up time is supplied in prompts. Public-scope checks inspect declared
-artifacts, not every assistant message. A worker restart is not a reboot or a
-sidecar-service failure. Those require separate integration and operational
-evidence; adding prose claims to this pack would not supply it.
+artifacts, not every assistant message. Each restart co-restarts Hermes and the
+fixture source worker; it does not
+model an independently running production sidecar or a host reboot. Pending
+and running source-job counts are recorded at shutdown. Interrupted projections
+keep their ordinary leases, so immediate post-restart recollection may precede
+completion. No benchmark-only flush or lease reset is performed. The excluded
+capabilities require separate integration and operational evidence.

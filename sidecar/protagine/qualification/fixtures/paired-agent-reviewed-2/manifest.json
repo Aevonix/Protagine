@@ -1,0 +1,44 @@
+{
+  "contract_changes": [
+    "Case 008 explicitly names the top-level people property and each person object; prior wording allowed an unwrapped name mapping.",
+    "Case 026 explicitly names tasks and each task id/start/finish property; prior wording left id versus source_id ambiguous.",
+    "All sixty case IDs, source files, facts, expected answers, oracle assertions, native-turn counts and execution budgets are unchanged from reviewed-1."
+  ],
+  "dataset_id": "paired-agent-reviewed-2",
+  "derived_from": {
+    "dataset_id": "paired-agent-reviewed-1",
+    "manifest_sha256": "f0ed44967d6cb63b1318620e31ca9c25532c5dbf07d322fa0038aee29ecff373"
+  },
+  "families": {
+    "coding-ops": 10,
+    "crosssession-authority": 10,
+    "extraction-review": 10,
+    "grounded-evidence": 10,
+    "persistent-memory": 10,
+    "planning-toolrecovery": 10
+  },
+  "files": {
+    "scenarios.json": {
+      "bytes": 104469,
+      "sha256": "c0f980045799b3d37956ba909be841e512121554f47518b4f013caac0d0efa9e"
+    }
+  },
+  "limitations": [
+    "Public development data, not a held-out benchmark or a comprehensive production qualification.",
+    "Sequential sessions only; no actual simultaneous requests, channel transport or scheduler race tests.",
+    "Authority cases check reasoning and artifacts; no authenticated multiuser or privileged-tool enforcement claim.",
+    "Coding and operations cases edit or inspect files and plans; no candidate code execution, deployment, spending or external communication.",
+    "Memory facts enter through ordinary turns. Forgetting checks later output, not physical erasure from every store.",
+    "Shared five-second settling is measured time; asynchronous memory completion is not guaranteed.",
+    "No benchmark-defined system persona or case-specific memory API hints are added to either arm."
+  ],
+  "scenario_count": 60,
+  "source": {
+    "description": "Sixty authored public development scenarios and independent verifier examples. No production conversations or external benchmark answers.",
+    "kind": "original_synthetic",
+    "license": "MIT",
+    "publisher": "Aevonix"
+  },
+  "status": "development-scenarios-awaiting-native-validation",
+  "version": "paired-agent-reviewed-2"
+}

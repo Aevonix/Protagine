@@ -5,12 +5,14 @@ file, planning, memory and session-search tools. Protagine's ordinary adapter,
 source writer and projections are enabled only in the treatment arm.
 """
 import asyncio
-from contextlib import ExitStack, asynccontextmanager, contextmanager
+from copy import deepcopy
+from contextlib import ExitStack, asynccontextmanager, closing, contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -145,6 +147,35 @@ def provider_read_lifespan(state):
     return lifespan
 
 
+def candidate_extra_body(runtime):
+    """Keep the candidate's declared wire compatibility in auxiliary calls."""
+    overrides = runtime.get('request_overrides') or {}
+    if not isinstance(overrides, dict) or set(overrides) - {'extra_body'}:
+        raise ValueError('Paired auxiliary profile supports only extra_body request overrides')
+    body = overrides.get('extra_body') or {}
+    if not isinstance(body, dict):
+        raise ValueError('Candidate extra_body must be an object')
+    # These would replace the task, candidate, or frozen output allowance.
+    if set(body) & {'model', 'messages', 'input', 'tools', 'tool_choice',
+                    'max_tokens', 'max_completion_tokens', 'stream', 'response_format'}:
+        raise ValueError('Candidate extra_body cannot replace the frozen task or budget')
+    if runtime.get('extra_headers'):
+        raise ValueError('Paired auxiliary profile does not support extra_headers')
+    return deepcopy(body)
+
+
+def source_job_counts(path):
+    """Observe the stopped fixture worker's backlog without altering its leases."""
+    if not path.is_file():
+        return {'status': 'unavailable'}
+    try:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+            counts = dict(conn.execute('SELECT status,count(*) FROM source_claim_jobs GROUP BY status'))
+        return {'status': 'observed', 'counts': counts}
+    except sqlite3.Error:
+        return {'status': 'unavailable'}
+
+
 @contextmanager
 def source_worker(app, state, inputs, config):
     from protagine.router import LLMRouter
@@ -159,6 +190,7 @@ def source_worker(app, state, inputs, config):
     router.configure({'provider': 'custom', 'protocol': 'openai-chat',
         'modelPool': {'candidate': {'model': config['model']['default'],
             'baseUrl': runtime['base_url'], 'apiKey': runtime.get('api_key', ''),
+            'extraBody': candidate_extra_body(runtime),
             'maxTokens': inputs['max_output_tokens'], 'supportsTools': True,
             'supportsJsonSchema': True}},
         'functionRoles': {role: {'candidates': ['candidate'], 'timeoutSeconds': 60,
@@ -256,6 +288,14 @@ def main():
     trace.record('episode', {'arm': arm, 'case_id': inputs.get('case_id'),
                              'session_ids': [t['session_id'] for t in inputs['episodes']]})
     stop = threading.Event()
+    requests = []
+
+    def close_agents():
+        for agent in agents.values():
+            try:
+                agent.close()
+            except Exception:
+                result['agent_close_returned'] = False
 
     def interrupt(_signal, _frame):
         stop.set()
@@ -273,6 +313,7 @@ def main():
         config = load_config()
         model = config['model']['default']
         runtime = resolve_runtime_provider(requested=request['binding'], target_model=model)
+        candidate_extra_body(runtime)  # Validate the same recipe in both arms.
         trace.add_secret(runtime.get('api_key'))
         arguments = dict(model=model,
             **{k: runtime[k] for k in ('base_url', 'api_key', 'provider', 'api_mode',
@@ -282,7 +323,10 @@ def main():
             quiet_mode=True, skip_context_files=True, skip_memory=False,
             skip_background_review=False, fallback_model=None, save_trajectories=False,
             reasoning_config=resolve_reasoning_config(config, model))
-        with ExitStack() as resources:
+        # Observe before provider setup can start background requests. The
+        # resource stack closes agents and the source worker before observation
+        # ends, including on failures and at each process restart.
+        with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
             observer = None
             toolsets = list(COMMON_TOOLS)
             if arm == 'protagine':
@@ -297,11 +341,11 @@ def main():
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
                 toolsets.append('paired_protagine_memory')
+            resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))
             resources.enter_context(workspace_tools(workspace,
                 workflow_observations=workflow_observations))
-            requests = resources.enter_context(observe_requests(runtime['base_url'], diagnostic=trace))
             result['stage'] = 'running'
             for index, turn in enumerate(inputs['episodes']):
                 global_index = index + (phase['start_turn'] if phase is not None else 0)
@@ -351,8 +395,7 @@ def main():
                     review.request_done.wait(inputs.get('settle_seconds', 5))
                 agent.close()
             result['agent_close_returned'] = True
-            result['tool_evidence'].update(model_requests=requests, resource_usage=usage_summary(requests),
-                artifacts=snapshot_workspace(workspace), native_memory_enabled=True,
+            result['tool_evidence'].update(artifacts=snapshot_workspace(workspace), native_memory_enabled=True,
                 session_search_enabled=True,
                 treatment_loaded=treatment.get('memory_provider_loaded', False), turns=rows,
                 treatment_profile='text-native-memory-and-source-projections',
@@ -365,11 +408,13 @@ def main():
         result.update(error_origin_stage=result['stage'], stage='error', error_type=type(exc).__name__,
                       private_error_traceback=''.join(traceback.format_exception(exc))[-8192:])
     finally:
-        for agent in agents.values():
-            try:
-                agent.close()
-            except Exception:
-                result['agent_close_returned'] = False
+        # Summarize only after worker shutdown: mutable request observations
+        # may gain usage or a cancellation outcome during resource cleanup.
+        from .paired_transport import usage_summary
+        result['tool_evidence'].update(model_requests=requests, resource_usage=usage_summary(requests))
+        if arm == 'protagine':
+            result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
+                home / 'memory-state' / 'turn-idempotency.db')
         result['worker_stopped'] = True
         if workflow_observations is not None:
             result['tool_evidence']['workflow_observations'] = {

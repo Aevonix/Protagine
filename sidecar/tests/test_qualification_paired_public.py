@@ -11,8 +11,8 @@ from protagine.qualification.cli import add_parser, run as cli_run
 from protagine.qualification.records import digest, read
 
 
-@pytest.fixture
-def planned(tmp_path, monkeypatch):
+@pytest.fixture(params=[paired_cases.REVIEWED_VERSION, paired_cases.BASELINE_VERSION])
+def planned(tmp_path, monkeypatch, request):
     secret = 'PRIVATE_SENTINEL_NOT_FOR_PUBLICATION'
     config = tmp_path / 'candidate.json'
     config.write_text(json.dumps({'providers': {'candidate': {'api_key': secret}}}))
@@ -27,7 +27,7 @@ def planned(tmp_path, monkeypatch):
     directory = tmp_path / 'paired'
     manifest = paired.plan(directory, native_config=config, native_binding='candidate',
         comparison_policy=policy, container_image='sha256:' + 'a' * 64,
-        case_ids=[paired_cases.CASE_IDS[0]], dataset_version=paired_cases.REVIEWED_VERSION)
+        case_ids=[paired_cases.CASE_IDS[0]], dataset_version=request.param)
     metadata = {'publication_scope': 'public_synthetic',
         'deployment': {'id': 'candidate', 'model': 'Test candidate', 'profile': 'Paired development'}}
     return directory, metadata, manifest, secret

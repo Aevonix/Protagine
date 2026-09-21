@@ -281,6 +281,8 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
                 'state_after': after, 'state_preserved': preserved,
                 'turns_attempted': len(evidence.get('turns', [])),
                 'turns_completed': evidence.get('turns_completed', 0)}
+            if 'source_jobs_at_shutdown' in evidence:
+                phase_row['source_jobs_at_shutdown'] = evidence['source_jobs_at_shutdown']
             lifecycle['phases'].append(phase_row)
             if (type(observed['pid']) is not int or observed['pid'] <= 0
                     or identity.get('pid') != observed['pid'] or identity.get('index') != phase

@@ -1,6 +1,13 @@
 # Paired Hermes and Protagine benchmark
 
-`protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The reviewed development dataset has 60 episodes, ten in each of six families. The original 18-episode pilot remains available under its original version. Neither dataset establishes a comprehensive model ranking.
+`protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The current development baseline, `paired-agent-reviewed-2`, has 60 episodes, ten in each of six families. The original 18-episode pilot and previous reviewed dataset remain available under their original versions. These datasets do not establish a comprehensive model ranking.
+
+Reviewed-2 changes only two ambiguous output instructions from reviewed-1: case
+008 explicitly requests the top-level `people` property; case 026 explicitly
+names `tasks` and each task's `id`, `start` and `finish` properties. Source data,
+expected answers, graders and budgets are unchanged. Earlier fixture bytes and
+results remain unchanged. Publish fresh results under the new version rather
+than replacing scores or combining versions into a ranking.
 
 The [frozen workflow pack](FROZEN-WORKFLOWS.md) adds twelve eight-turn workflows,
 each with two process restarts and two graded intermediate checkpoints. Select
@@ -47,7 +54,7 @@ protagine models paired plan \
   --native-config /private/candidate-hermes.yaml --native-binding candidate \
   --comparison-policy /private/paired-policy.json \
   --container-image registry.example/agent-benchmark@sha256:IMAGE_DIGEST \
-  --dataset-version paired-agent-reviewed-1 \
+  --dataset-version paired-agent-reviewed-2 \
   --label candidate-pilot-01 --output /private/results/candidate-pilot-01
 
 protagine models paired run \
@@ -82,6 +89,13 @@ An aggregate delta is available only after every declared episode has two attrib
 Accounting reports measured model calls, input/output tokens, background calls and arm wall time when available. Partial subtotals are labeled; missing observations are not zero. The first pilot does not claim complete auxiliary-call accounting, enforced equal compute, peak throughput or latency without competing traffic.
 
 Request timing reports first generated output (including reasoning or tool payload), first nonreasoning text, complete request duration and request output tokens per second. Empty role frames are not first tokens. Output throughput uses provider-reported completion tokens divided by full request time, including queueing and prefill; it is not isolated decode speed. Each metric includes its observed and eligible sample counts. Old receipts without the current timing observer remain unmeasured. Episode wall time also includes tools, settling and container cleanup.
+
+Request observation starts before the fixture source worker and remains active
+until its shutdown. Auxiliary calls retain declared provider `extra_body`
+compatibility settings. Unsupported request overrides, custom headers, and body
+fields that replace the candidate, task or frozen budget are rejected rather
+than silently dropped. Foreground reasoning follows Hermes configuration;
+auxiliary roles follow the declared request body and ordinary router policy.
 
 Private reports also add `arms.<arm>.request_workloads` (`paired-request-workloads-1`) without changing the existing accounting, timing, outcome or score keys. Its foreground/background/unknown groups show observed request counts, per-field token subtotals, missing usage, and the same request timing metrics. Coverage is limited to observed HTTP requests: even complete token usage for those requests does not establish complete system cost. Valid token observations on incomplete or failed responses remain visible; missing usage is never charged as zero. Episode wall time is not partitioned because background and foreground requests can overlap.
 

@@ -18,8 +18,9 @@ from .records import CaseSpec
 
 VERSION = 'paired-agent-pilot-1'
 REVIEWED_VERSION = 'paired-agent-reviewed-1'
+BASELINE_VERSION = 'paired-agent-reviewed-2'
 WORKFLOW_VERSION = 'paired-agent-workflows-1'
-DATASET_VERSIONS = (VERSION, REVIEWED_VERSION, WORKFLOW_VERSION)
+DATASET_VERSIONS = (VERSION, REVIEWED_VERSION, BASELINE_VERSION, WORKFLOW_VERSION)
 WORKFLOW_FAMILIES = ('workflow-recall', 'workflow-correction', 'workflow-recovery', 'workflow-scope')
 FAMILIES = (
     'grounded-evidence', 'planning-toolrecovery', 'persistent-memory',

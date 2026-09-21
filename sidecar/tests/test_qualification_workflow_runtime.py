@@ -286,7 +286,8 @@ def test_trace_budget_is_global_and_ambiguous_request_ids_are_rejected(monkeypat
     assert trace.errors == 1
 
 
-def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('arm', ['base_hermes', 'protagine'])
+def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(tmp_path, monkeypatch, capsys, arm):
     """Exercise the real worker loop with stub native APIs, not its model calls."""
     from protagine.qualification import paired_transport
 
@@ -334,13 +335,35 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
 
     monkeypatch.setitem(sys.modules, 'run_agent', SimpleNamespace(AIAgent=NativeAgent))
 
+    observed = []
+    lifecycle = []
+
     @contextmanager
     def no_model_requests(*_, **kwargs):
-        yield []
+        observed.clear()
+        lifecycle.append('observe-start')
+        try:
+            yield observed
+        finally:
+            lifecycle.append('observe-end')
 
+    @contextmanager
+    def provider_setup(*args, **kwargs):
+        assert lifecycle[-1] == 'observe-start'
+        observed.append({'usage': {'prompt_tokens': 11, 'completion_tokens': 3}})
+        lifecycle.append('source-start')
+        try:
+            yield lambda *args: {'memory_provider_loaded': True}
+        finally:
+            observed.append({'usage': {'prompt_tokens': 19, 'completion_tokens': 7}})
+            lifecycle.append('source-stop')
+
+    monkeypatch.setitem(sys.modules, 'protagine.qualification.native_memory_worker',
+                        SimpleNamespace(prepare=provider_setup))
+    monkeypatch.setitem(sys.modules, 'toolsets', SimpleNamespace(create_custom_toolset=lambda *a, **k: None))
     monkeypatch.setattr(paired_transport, 'observe_requests', no_model_requests)
     payload = request()
-    payload['inputs'].update(max_iterations=8, max_output_tokens=512, settle_seconds=0)
+    payload['inputs'].update(arm=arm, max_iterations=8, max_output_tokens=512, settle_seconds=0)
     for phase in range(2):
         chunk = deepcopy(payload)
         chunk['inputs']['episodes'] = chunk['inputs']['episodes'][phase*2:phase*2+2]
@@ -354,6 +377,11 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         result = json.loads(next(line[len(runtime.RESULT_MARKER):] for line in output.out.splitlines()
                                  if line.startswith(runtime.RESULT_MARKER)))
         assert [turn['index'] for turn in result['tool_evidence']['turns']] == [phase*2, phase*2+1]
+        if arm == 'protagine':
+            assert lifecycle[-4:] == ['observe-start', 'source-start', 'source-stop', 'observe-end']
+            assert result['tool_evidence']['resource_usage']['observed_input_tokens'] == 30
+            assert result['tool_evidence']['resource_usage']['observed_output_tokens'] == 10
+            assert len(result['tool_evidence']['model_requests']) == 2
         observations = result['tool_evidence']['workflow_observations']
         assert observations['snapshots'] == {str(phase*2+1): {
             'source.txt': 'changed-in-turn-' + str(phase*2+1)}}
@@ -361,3 +389,39 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         assert observations['read_recoveries'] == ([] if phase == 0 else [
             {'turn_index': 2, 'path': 'source.txt'}, {'turn_index': 3, 'path': 'source.txt'}])
     assert calls == [0, 1, 2, 3]
+
+
+def test_candidate_compatibility_body_preserved_without_mutating_recipe():
+    recipe = {'request_overrides': {'extra_body': {
+        'chat_template_kwargs': {'enable_thinking': False}, 'reasoning_effort': 'low'}}}
+    body = worker.candidate_extra_body(recipe)
+    assert body == recipe['request_overrides']['extra_body']
+    body['chat_template_kwargs']['enable_thinking'] = True
+    assert recipe['request_overrides']['extra_body']['chat_template_kwargs']['enable_thinking'] is False
+
+
+@pytest.mark.parametrize('recipe', [
+    {'request_overrides': {'extra_body': {'max_tokens': 9999}}},
+    {'request_overrides': {'extra_body': {'model': 'other'}}},
+    {'request_overrides': {'extra_body': ['invalid']}},
+    {'request_overrides': {'temperature': 0.5}},
+    {'extra_headers': {'X-Custom': 'unsupported'}},
+])
+def test_candidate_compatibility_rejects_silently_dropped_or_budget_overriding_fields(recipe):
+    with pytest.raises(ValueError):
+        worker.candidate_extra_body(recipe)
+
+
+def test_shutdown_backlog_is_read_only_and_missing_is_not_empty(tmp_path):
+    import sqlite3
+    path = tmp_path / 'turn-idempotency.db'
+    assert worker.source_job_counts(path) == {'status': 'unavailable'}
+    assert not path.exists()
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE source_claim_jobs (status TEXT,lease_until REAL)')
+        conn.executemany('INSERT INTO source_claim_jobs VALUES (?,?)',
+                         [('running', 1234), ('pending', 0), ('complete', 0), ('complete', 0)])
+    before = path.read_bytes()
+    assert worker.source_job_counts(path) == {'status': 'observed',
+        'counts': {'complete': 2, 'pending': 1, 'running': 1}}
+    assert path.read_bytes() == before
