@@ -622,6 +622,7 @@ async def list_models() -> ModelListResponse:
 # ---------------------------------------------------------------------------
 
 _TEMPORAL_HEALTH_POLICIES = frozenset({"enforce", "advisory"})
+_INDEX_HEALTH_TIMEOUT_SECONDS = 5.0
 
 
 def _temporal_health_policy() -> str:
@@ -645,8 +646,6 @@ async def health() -> HostHealthResponse:
     caps = supported_capabilities()
     notes: dict[str, str] = {}
     embed_model = ""
-    stored_models: list[str] = []
-    model_mismatch = False
 
     # the sidecar's own open-file limit (doctor reads this; a low limit makes
     # LanceDB vector recall fail under load — see check_server_fd_limit)
@@ -697,24 +696,22 @@ async def health() -> HostHealthResponse:
             embed_model = _embedder._provider._config.model_id
         embed_note = f"EmbeddingPipeline wired (model={embed_model})"
 
-        # Check for model mismatch. A probe that itself crashes is a
-        # degradation, never a silent pass — health must not report green
-        # because the check that would have caught the problem threw.
+        # Managed generation identity governs semantic reads/writes. Verify it
+        # and a bounded physical read; per-row legacy metadata discovery is an
+        # explicit audit, not a prerequisite for every readiness request.
         try:
             from protagine.vector import get_store
             store = get_store()
-            if store is not None:
-                stored_models = await store.get_stored_models()
-                if stored_models and embed_model and embed_model not in stored_models:
-                    model_mismatch = True
-                    embed_note += f" [WARNING: stored models {stored_models} differ from current {embed_model}]"
-                elif len(stored_models) > 1:
-                    model_mismatch = True
-                    embed_note += f" [WARNING: multiple stored models: {stored_models}]"
+            if store is None:
+                raise RuntimeError("Managed vector store is unavailable")
+            await asyncio.wait_for(
+                store.check_index_health(_embedder.index_identity),
+                timeout=_INDEX_HEALTH_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             embed_degraded = True
-            embed_note += f" [model-check failed: {exc}]"
-            logger.warning("embed model mismatch probe failed: %s", exc)
+            embed_note += f" [index-check failed: {type(exc).__name__}: {exc}]"
+            logger.warning("embedding index health probe failed: %s", type(exc).__name__)
 
         # Check embedder health
         try:
@@ -790,7 +787,7 @@ async def health() -> HostHealthResponse:
         notes["world_model_backend"] = f"{backend_type} connected"
 
     health_status = "ok"
-    if model_mismatch or embed_degraded or memory_backend_down:
+    if embed_degraded or memory_backend_down:
         health_status = "degraded"
     if (
         _commitment_store is not None

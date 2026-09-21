@@ -508,6 +508,33 @@ class VectorStore:
                         models.add(model_id)
         return sorted(models)
 
+    async def check_index_health(self, expected_identity) -> None:
+        """Check managed provenance and bounded reads of the active index.
+
+        Per-row model labels are legacy annotations, not the managed generation's
+        embedding identity. Exhaustive discovery remains available separately.
+        """
+        from protagine.vector.indexes import EmbeddingIdentity, IncompatibleIndex
+
+        if self.catalog is None or self.identity != expected_identity:
+            raise IncompatibleIndex("Embedding pipeline and managed index identity differ")
+        active = self.catalog.read_generation(expected_identity)
+        if (active["status"] != "ready" or active["identity"] is None
+                or EmbeddingIdentity(**active["identity"]) != expected_identity):
+            raise IncompatibleIndex("Active embedding generation is not verified and ready")
+        db = await self._generation_db(active)
+        existing = set(await db.table_names())
+        collections = [col for col in Collection if col.value in existing]
+        if not collections:
+            raise IncompatibleIndex("Active embedding generation has no readable collections")
+        for col in collections:
+            table = await db.open_table(col.value)
+            schema = await table.schema()
+            if schema.field("vector").type.list_size != expected_identity.dimensions:
+                raise IncompatibleIndex("Active vector width differs from its embedding identity")
+            # Exercise actual storage without streaming all metadata or vectors.
+            await table.query().select(["id"]).limit(1).to_list()
+
     async def close(self) -> None:
         """Release database resources."""
         self._db = None
