@@ -5,18 +5,24 @@ healthy overlapping plugin callbacks to retain each invocation's context and
 result. The pinned public CI target is the explicit Hermes build below. The
 installer does not patch an existing Hermes checkout or change its selection.
 The [capability contract](HERMES-CAPABILITIES.md) defines mandatory core checks,
-optional qualification, the exact 32-commit inventory, and the path back to stock
+optional qualification, the exact 33-commit inventory, and the path back to stock
 upstream. A matching Hermes version string does not establish compatibility.
 
 ## Published qualification target
 
 **SHIPPED source:** [Kurcide/hermes-agent at
-`0a9fa9747c3bb9721404c81e3f8c65e84b0389f0`](https://github.com/Kurcide/hermes-agent/commit/0a9fa9747c3bb9721404c81e3f8c65e84b0389f0),
+`11ee4d48218254f856a4c96aa77fce7252d1e56b`](https://github.com/Kurcide/hermes-agent/commit/11ee4d48218254f856a4c96aa77fce7252d1e56b),
 based on [Hermes v0.21.3, tag `v2026.9.14`,
 `345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/0a9fa9747c3bb9721404c81e3f8c65e84b0389f0/LICENSE).
+under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/11ee4d48218254f856a4c96aa77fce7252d1e56b/LICENSE).
 This is a published compatibility fork, not a claim that the change shipped in
 an upstream Hermes release.
+
+The latest pin adds only a current-input anchor repair and its tests above
+`0a9fa9747c3`. After post-tool compaction, a surviving row identity takes
+precedence over identical later steering; when identity is lost and text matches
+multiple rows, the source descriptor is withheld. The bounded capability checks
+and 129 focused native tests pass. No deployment follows from this pin change.
 
 This build provides a typed `post_tool_batch` hook for explicit terminal
 handoffs. After a single successful tool result is persisted, a trusted plugin

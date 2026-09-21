@@ -4,9 +4,16 @@ Protagine attachment requires native interfaces and behavior, not a Hermes versi
 allowlist. Stock Hermes **0.21.3**, release **v2026.9.14**, commit
 [`345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d)
 does **not** meet the required core contract. The public transitional runtime at
-[`0a9fa9747c3bb9721404c81e3f8c65e84b0389f0`](https://github.com/Kurcide/hermes-agent/commit/0a9fa9747c3bb9721404c81e3f8c65e84b0389f0)
+[`11ee4d48218254f856a4c96aa77fce7252d1e56b`](https://github.com/Kurcide/hermes-agent/commit/11ee4d48218254f856a4c96aa77fce7252d1e56b)
 has the same version string and passes the bounded capability checks. This is the
 existing CI pin; the installer never downloads it or replaces an existing runtime.
+
+This pin adds one focused repair above `0a9fa9747c3`: post-tool compaction
+preserves a surviving current-input row identity; without that identity,
+multiple text-equal rows leave provenance unavailable. The earlier pin could
+select later identical steering. The backport passed 129 middleware, profile,
+SQLite boundary and compaction tests, plus all bounded capability groups. This
+does not replace installed-adapter qualification or qualify a live deployment.
 
 ## Inspect one interpreter
 
@@ -96,7 +103,7 @@ responses, not model-quality scores.
 
 ## Upstream contributions and fork retirement
 
-[The exact 32-commit inventory](hermes-runtime-inventory.json) includes each
+[The exact 33-commit inventory](hermes-runtime-inventory.json) includes each
 commit's purpose, changed interface files, native regression tests, current
 equivalence evidence and removal condition against the official base. It also
 separates merge/test maintenance and unrelated channel fixes from core blockers.
@@ -106,12 +113,18 @@ upstream behavioral defect.
 
 Prepare small generic runtime contributions in this order:
 
-1. **Persisted input provenance.** Port `738593f869e`, `3454fd7b5e5`,
+1. **Persisted input provenance.** Submitted as
+   [upstream PR #118307](https://github.com/NousResearch/hermes-agent/pull/118307),
+   reviewed head `9e117b631e0`, with 407 relevant tests passing and red-on-base
+   installed-consumer evidence. It preserves the original contributions from
+   `738593f869e`, `3454fd7b5e5`,
    `218dad99356`, and `a012d62efab`: exact current persisted row plus compaction,
    durable-row repair and image-anchor preservation. Keep original input separate
-   from the current row and fail closed on a mismatch. Add actual request
-   middleware-path tests; a direct helper test alone is insufficient. Require
-   rotate/compact/delegated supplied-source witnesses and a red-on-base test.
+   from the current row and fail closed on a mismatch or ambiguous compaction
+   anchor. Actual installed request-middleware tests exercise profile A→B→A,
+   missing persistence, observer-copy isolation and provider-payload separation.
+   The PR is not upstream support: installed rotate/compact/delegated supplied-source
+   witnesses and the other core interfaces remain release requirements.
 2. **Owned transcript erasure and settlement.** Port the coherent surface from
    `66372a6bf4b`, `e2776186612`, `75f6ea6e508`, `84c7d76a247`: selected row
    snapshots, preimage/watermark rejection, payload/FTS removal, writer leases,
@@ -134,7 +147,7 @@ Prepare small generic runtime contributions in this order:
 Retire the fork only when an exact public upstream revision passes the required
 core installed-artifact suite **and all Phase 1 features enabled in the intended
 profile**, including task outcomes/recovery. Resolve all skips and unexplained
-failures, record the upstream equivalents/removal decisions for all 32 commits,
+failures, record the upstream equivalents/removal decisions for all 33 commits,
 then change the qualification pin and documentation together. Preserve the
 transitional runtime until that evidence exists; there is no deployment action in
 this contract.

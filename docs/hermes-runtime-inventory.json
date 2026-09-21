@@ -5,8 +5,27 @@
   "upstream_tag": "v2026.9.14",
   "upstream_revision": "345cd2b057a452236de401d3534b8502a7465e8d",
   "transitional_repository": "Kurcide/hermes-agent",
-  "transitional_revision": "0a9fa9747c3bb9721404c81e3f8c65e84b0389f0",
+  "transitional_revision": "11ee4d48218254f856a4c96aa77fce7252d1e56b",
   "commits": [
+    {
+      "commit": "11ee4d48218254f856a4c96aa77fce7252d1e56b",
+      "title": "fix(agent): backport unambiguous current-input anchors",
+      "url": "https://github.com/Kurcide/hermes-agent/commit/11ee4d48218254f856a4c96aa77fce7252d1e56b",
+      "group": "input_identity",
+      "purpose": "Core: retain surviving current-input row identity across post-tool compaction; withhold ambiguous text-only anchors.",
+      "interface_files": [
+        "agent/turn_context.py",
+        "agent/turn_context_compaction.py",
+        "agent/turn_tool_round.py"
+      ],
+      "regression_tests": [
+        "tests/agent/test_native_user_message_boundary.py",
+        "tests/agent/test_native_input_middleware.py",
+        "tests/agent/test_post_tool_compression_attempt_cap.py"
+      ],
+      "upstream_equivalence": "Proposed in NousResearch/hermes-agent PR #118307, head 9e117b631e0; not yet shipped upstream. 129 relevant tests and all bounded capability groups pass on this backport.",
+      "removal_condition": "Exact input survives native middleware and profile A/B/A; identical later steering cannot substitute for current input after compaction. Installed source-capture and compaction witnesses pass."
+    },
     {
       "commit": "0a9fa9747c3bb9721404c81e3f8c65e84b0389f0",
       "title": "Recover reused WhatsApp bridges after connection loss",
