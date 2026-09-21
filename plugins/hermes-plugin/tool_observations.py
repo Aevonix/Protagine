@@ -14,9 +14,11 @@ from .request_work import replace_context
 from .request_tool_visibility import without_tool, without_discovery_tool
 
 MAX_BYTES = 16384
-# Discovery metadata is already available through the current tool catalog.
-# Retaining it as an observation makes later recall compete with real findings.
-_EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory_retain_observation'}
+# Discovery metadata and recalled memory already have their own sources.
+# Retaining those reads recursively makes later recall compete with real findings.
+_EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory_retain_observation',
+    'protagine_memory_search', 'protagine_memory_read_source', 'protagine_get_facts',
+    'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments'}
 _HINT_MARKER = 'protagine-observation-candidates-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
 _RETENTION = 'protagine_memory_retain_observation'
@@ -234,6 +236,20 @@ class ToolObservations:
         self.client, self.outbox, self.request_memory = client, outbox, request_memory
         self._lock, self._turns = threading.RLock(), OrderedDict()
 
+    def _delivered(self, record):
+        """Suppress repeat hints, including delivery by an outbox retry.
+
+        This historical receipt never authorizes retention: handle() still
+        checks current request witnesses and erasures on every explicit retry.
+        """
+        if not record.get('delivered') and 'payload' in record:
+            try:
+                receipt = self.outbox.lookup(record['payload']['turn_id'])
+                record['delivered'] = bool(receipt and receipt['state'] == 'delivered')
+            except Exception:
+                pass  # Unknown delivery remains retryable, never claimed saved.
+        return record.get('delivered', False)
+
     def completed(self, scope, context, value, *, arguments=None):
         key, call_id, name = _key(scope), context.get('tool_call_id'), context.get('tool_name')
         request_id = context.get('api_request_id')
@@ -276,7 +292,8 @@ class ToolObservations:
                         and hashlib.sha256(text.encode()).hexdigest() == record['sha256']):
                     record['visible'][request_id] = name
                     if (record['sources'] is not None
-                            and record['input_sha256'] == hashlib.sha256(scope.user_message.encode()).hexdigest()):
+                            and record['input_sha256'] == hashlib.sha256(scope.user_message.encode()).hexdigest()
+                            and not self._delivered(record)):
                         eligible.append({'call_id': call_id, 'tool_name': name, **record['arguments']})
                 while len(record['visible']) > 8:
                     record['visible'].pop(next(iter(record['visible'])))
@@ -323,6 +340,7 @@ class ToolObservations:
             with self._lock:
                 if any(request_id in record['visible'] and record['sources'] is not None
                        and record['input_sha256'] == hashlib.sha256(scope.user_message.encode()).hexdigest()
+                       and not self._delivered(record)
                        for record in self._turns.get(key, {}).values()):
                     return value
         return without_discovery_tool(value, context, _RETENTION)

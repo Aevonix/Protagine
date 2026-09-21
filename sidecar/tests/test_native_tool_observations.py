@@ -257,6 +257,82 @@ def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
     assert 'copper synchronization' in n.recall()['body']
 
 
+@pytest.mark.parametrize('name', ['protagine_memory_search', 'protagine_memory_read_source',
+    'protagine_get_facts', 'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments'])
+@pytest.mark.parametrize('content', ['', 'Previously retained copper synchronization evidence.'])
+def test_self_memory_reads_stay_in_history_without_recursive_retention(native, name, content):
+    n = native
+    result = json.dumps({'content': content, 'count': int(bool(content)), 'source_refs': []})
+    n.complete('memory-read', result, name, {'query': 'copper synchronization'})
+    request = n.request().payload
+    assert not observation_hints(request)
+    assert 'protagine_memory_retain_observation' not in str(request['tools'])
+    assert any(row.get('tool_call_id') == 'memory-read' and row.get('content') == result
+               for row in request['messages'])
+    receipt = n.retain('memory-read')
+    assert not receipt['accepted'] and not receipt['source_recorded'], receipt
+    assert not n.outbox.snapshot()
+
+
+@pytest.mark.parametrize('name,result', [
+    ('file_search', '{"query":"copper synchronization","matches":[],"count":0}'),
+    ('terminal', 'No matching records in the copper synchronization fixture.\n'),
+])
+def test_external_negative_findings_remain_eligible_and_retain_exact_result(native, name, result):
+    n = native
+    n.complete('negative-finding', result, name, {'target': 'copper synchronization'})
+    hint, = observation_hints(n.request().payload)
+    assert '"call_id": "negative-finding"' in hint
+    receipt = n.retain('negative-finding', reason='Remember which fixture was checked and found empty.')
+    assert receipt['accepted'] and receipt['source_recorded'], n.diagnostics(receipt)
+    stored = n.outbox.lookup(receipt['source_id'])['payload']['observation']
+    assert stored['content'] == result and stored['native']['tool_name'] == name
+
+
+@pytest.mark.parametrize('deferred', [False, True])
+def test_delivered_candidates_disappear_without_losing_other_findings_or_exact_retries(native, deferred):
+    n = native
+    n.complete('first', RESULT)
+    n.complete('second', 'Independent useful finding.')
+    n.request(deferred=deferred)
+    saved = n.retain('first')
+    assert saved['source_recorded'], n.diagnostics(saved)
+    hint, = observation_hints(n.request('api-3', deferred=deferred).payload)
+    assert '"call_id": "first"' not in hint and '"call_id": "second"' in hint
+    retry = n.retain('first', request_id='api-3', reason='Changed retry reason.', include_input=True)
+    assert retry['source_id'] == saved['source_id'] and retry['source_recorded']
+    assert not retry['input_included']  # The first nomination remains immutable.
+    second = n.retain('second', request_id='api-3')
+    assert second['source_recorded'], n.diagnostics(second)
+    request = n.request('api-4', deferred=deferred).payload
+    assert not observation_hints(request)
+    assert 'protagine_memory_retain_observation' not in str(request['tools'])
+    assert len([row for row in n.outbox.snapshot() if row['turn_id'].startswith('native-observation:')]) == 2
+
+
+@pytest.mark.parametrize('surface', ['search', 'describe'])
+def test_discovery_stops_offering_retention_after_delivery_in_same_request(native, monkeypatch, surface):
+    from hermes_cli import middleware
+    from tools import tool_search
+    n = native
+    name = 'protagine_memory_retain_observation'
+    schema = {'type': 'function', 'function': n.context.tools[name]['schema']}
+    config = tool_search.ToolSearchConfig.from_raw({'enabled': 'on', 'defer': [name]})
+    monkeypatch.setattr(tool_search, 'load_config_readonly', lambda: config)
+    args = {'queries': [name]} if surface == 'search' else {'names': [name]}
+    dispatch = tool_search.dispatch_tool_search if surface == 'search' else tool_search.dispatch_tool_describe
+    def discover():
+        return json.loads(middleware.run_tool_execution_middleware(**n.scope, api_request_id='api-2',
+            tool_name='tool_' + surface, tool_call_id='discovery', args=args,
+            next_call=lambda selected: dispatch(selected, current_tool_defs=[schema], config=config)))
+    n.complete()
+    n.request(deferred=True)
+    assert name in discover()['tools']
+    receipt = n.retain()
+    assert receipt['source_recorded'], n.diagnostics(receipt)
+    assert name not in discover()['tools']
+
+
 def test_recipe_original_inputs_and_final_result_open_through_native_reader(native):
     from hermes_cli import middleware as native_middleware
     n = native
@@ -411,10 +487,15 @@ def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexe
     assert any(row['turn_id'] == first['source_id'] and row['state'] == 'pending'
                for row in diagnostic['outbox'])
     assert 'files_written' not in n.recall().get('body','')
+    hint, = observation_hints(n.request('pending-retry').payload)
+    assert '"call_id": "call-1"' in hint
     n.clients[0].outage = False
     n.outbox.drain(lambda stored, timeout_seconds: n.clients[0].sync_turn(
         **stored, outbox=n.outbox, timeout_seconds=timeout_seconds), limit=16, timeout_seconds=.25)
-    receipt = n.retain()
+    delivered = n.request('delivered-retry').payload
+    assert not observation_hints(delivered)
+    assert 'protagine_memory_retain_observation' not in str(delivered['tools'])
+    receipt = n.retain(request_id='delivered-retry')
     assert receipt['source_recorded'], n.diagnostics(receipt)
     assert receipt['input_included'] is include_input
     assert 'files_written' in n.recall()['body']
@@ -1061,12 +1142,13 @@ def test_origin_erasure_removes_observation_and_queued_retry(native):
     n.request()
     result = n.retain()
     assert result['accepted'], n.diagnostics(result)
+    assert not observation_hints(n.request('saved-before-erasure').payload)
     row = next(row for row in n.outbox.snapshot() if row['turn_id']==result['source_id'])
     origin = row['payload']['observation']['origin']['source_id']
     erased = n.ledger.erase_sources(contact_id='cid-owner', turn_ids=[origin])
     assert result['source_id'] in erased['affected_source_ids']
     assert 'files_written' not in n.recall().get('body','')
-    again = n.retain()
+    again = n.retain(request_id='saved-before-erasure')
     assert not again['source_recorded'] and again['state']=='erased', again
     if hasattr(n.db, 'redact_message_payloads'):
         # The instruction span and the observation overlap on the same native
