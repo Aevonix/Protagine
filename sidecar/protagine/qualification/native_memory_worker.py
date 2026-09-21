@@ -17,6 +17,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
     inputs = request['inputs']
     person = inputs['contact_id']
     os.environ.update(PROTAGINE_STATE_DIR=str(state / 'memory-state'),
+        PROTAGINE_EVENT_JOURNAL_DIR=str(state / 'memory-state' / 'events'),
         PROTAGINE_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
         HERMES_BUNDLED_PLUGINS=str(state / 'empty-bundled'), HERMES_ENABLE_PROJECT_PLUGINS='0',
         HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
@@ -71,7 +72,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
         listener.listen(64)
         port = listener.getsockname()[1]
         server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port,
-            lifespan='off', access_log=False, log_level='error'))
+            lifespan='on', access_log=False, log_level='error'))
         thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
         thread.start()
         started = time.monotonic()

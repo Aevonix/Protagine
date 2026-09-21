@@ -5,7 +5,7 @@ file, planning, memory and session-search tools. Protagine's ordinary adapter,
 source writer and projections are enabled only in the treatment arm.
 """
 import asyncio
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 import hashlib
 import json
 import os
@@ -96,6 +96,44 @@ def workspace_tools(root):
 
 
 @contextmanager
+def provider_read_services(state):
+    """Own empty provider stores on the API thread; never seed scenario answers."""
+    from protagine.api.routers import host
+    from protagine.commitments.store import CommitmentStore
+    from protagine.tom.affect import AffectStore
+    from protagine.tom.facts import SharedFactsStore
+    from protagine.turns import get_turn_idempotency_ledger
+
+    directory = state / 'memory-state'
+    directory.mkdir(parents=True, exist_ok=True)
+    ledger = get_turn_idempotency_ledger(directory)
+    with ExitStack() as resources:
+        for name, factory, filename in (
+            ('commitment', CommitmentStore, 'protagine-commitments.db'),
+            ('affect', AffectStore, 'protagine-affect.db'),
+            ('facts', SharedFactsStore, 'protagine-facts.db'),
+        ):
+            store = factory(directory / filename, **(
+                {'source_ledger': ledger} if name != 'commitment' else {}))
+            if hasattr(store, 'close'):
+                resources.callback(store.close)
+            setter = getattr(host, 'set_' + name + '_store')
+            resources.callback(setter, getattr(host, '_' + name + '_store'))
+            setter(store)
+        yield
+
+
+def provider_read_lifespan(state):
+    @asynccontextmanager
+    async def lifespan(app):
+        # SQLite-backed facts/affect stores require construction and shutdown
+        # on the same thread that serves their HTTP handlers.
+        with provider_read_services(state):
+            yield
+    return lifespan
+
+
+@contextmanager
 def source_worker(app, state, inputs, config):
     from protagine.router import LLMRouter
     from protagine.api.routers import host
@@ -113,7 +151,10 @@ def source_worker(app, state, inputs, config):
             'supportsJsonSchema': True}},
         'functionRoles': {role: {'candidates': ['candidate'], 'timeoutSeconds': 60,
                                 'deadlineSeconds': 60} for role in roles}})
-    host.set_llm_router(router)
+    from unittest.mock import patch
+    resources = ExitStack()
+    resources.enter_context(patch.object(host, '_llm_router', router))
+    resources.enter_context(patch.object(app.router, 'lifespan_context', provider_read_lifespan(state)))
     loop = asyncio.new_event_loop()
     ready = threading.Event()
     holder = {}
@@ -132,20 +173,24 @@ def source_worker(app, state, inputs, config):
             loop.close()
 
     thread = threading.Thread(target=run, name='paired-source-worker', daemon=True)
-    thread.start()
-    if not ready.wait(10):
-        raise RuntimeError('Source worker did not start')
     try:
+        thread.start()
+        if not ready.wait(10):
+            raise RuntimeError('Source worker did not start')
         yield
     finally:
-        if not loop.is_closed():
-            loop.call_soon_threadsafe(holder['task'].cancel)
-        thread.join(10)
-        if thread.is_alive():
-            raise RuntimeError('Source worker did not stop')
-        task = holder['task']
-        if task.done() and not task.cancelled() and task.exception() is not None:
-            raise RuntimeError('Source worker failed') from task.exception()
+        try:
+            task = holder.get('task')
+            if task is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
+            if thread.ident is not None:
+                thread.join(10)
+            if thread.is_alive():
+                raise RuntimeError('Source worker did not stop')
+            if task is not None and task.done() and not task.cancelled() and task.exception() is not None:
+                raise RuntimeError('Source worker failed') from task.exception()
+        finally:
+            resources.close()
 
 
 def main():

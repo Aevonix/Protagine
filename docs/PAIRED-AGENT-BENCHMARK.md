@@ -6,6 +6,8 @@ Both arms use the same configured model, provider settings, immutable container 
 
 Each arm starts a new container with fresh state for each episode. State persists across turns and sessions inside that episode. No owner home, memories, live-agent state or Docker socket is mounted inside the agent. The container can call the selected model endpoint. Sharing an endpoint with a live agent is allowed, but can slow that agent and distort benchmark timings. Prefer running while the agent is not using that endpoint when practical. The benchmark does not stop the live agent or require a reserved endpoint.
 
+The Protagine fixture starts empty facts, affect and commitment stores through its own API lifespan, using the same store classes as the normal server. Facts and affect share the fixture source ledger. No scenario answers are preloaded. These stores are created and closed on the API thread, as their SQLite connections require. Authorization checks alone do not establish backend readiness: image validation must exercise the real provider handlers, including retain/search/read/forget, before a cohort runs. Optional work-context lookups remain outside this memory fixture.
+
 ## Declare the comparison
 
 Use one private Hermes provider configuration and one policy file for both arms. The image must already exist and be addressed by its immutable digest. Plan inspects the image in a disposable container with networking disabled; it does not call a model or download an image.
