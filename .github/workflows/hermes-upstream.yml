@@ -59,11 +59,37 @@ jobs:
               stream.write('Built-artifact compatibility only. No deployment or pin is changed.\n')
           PY
       - name: Install adapter and selected native runtime
+        id: install
         run: |
           python -m pip install -e '.[test,native-memory]'
           python -m pip install -e ./.qualification/hermes
           python -m pip install ./sidecar
+      - name: Record core and optional native capabilities
+        run: |
+          python -m protagine.hermes_capabilities --output upstream-capabilities.json
+          python - <<'PY'
+          import json, os
+          report = json.load(open('upstream-capabilities.json'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+              for name, feature in report['features'].items():
+                  status = 'available' if feature['available'] else 'missing: ' + ', '.join(feature['missing'])
+                  stream.write(f'- {name}: {status}\n')
+              stream.write('\nInterface checks do not replace installed-adapter behavior qualification.\n')
+          PY
       - name: Qualify built artifacts against latest stable Hermes
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
-          python -m pytest tests/hermes_adapter -q
+          python -m pytest tests/hermes_adapter -q -ra --junitxml=upstream-adapter.xml
+      - name: Require core interfaces independently of optional feature results
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python -m protagine.hermes_capabilities --require core
+      - name: Retain runtime receipt and every test outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-hermes-qualification
+          path: |
+            upstream-capabilities.json
+            upstream-adapter.xml
+          if-no-files-found: warn

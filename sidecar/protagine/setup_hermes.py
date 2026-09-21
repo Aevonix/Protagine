@@ -28,6 +28,7 @@ import httpx
 import yaml
 
 from .util.instance import plugin_settings
+from .hermes_capabilities import probe_runtime, require_capabilities
 
 
 def _select_state_environment(state):
@@ -252,15 +253,28 @@ def _interpreter(candidate):
         if not candidate:
             candidate = sys.executable
     python = Path(candidate).expanduser().absolute()
-    probe = subprocess.run([str(python), '-I', '-c',
-        'import importlib.metadata,json; import httpx,httpcore,yaml; '
-        'from agent.memory_manager import MemoryManager; '
-        'from hermes_cli.plugins import get_plugin_manager; '
-        'print(json.dumps({"version":importlib.metadata.version("hermes-agent")}))'],
-        capture_output=True, text=True, timeout=30)
-    if probe.returncode or json.loads(probe.stdout.splitlines()[-1]).get('version') not in {'0.21.0', '0.21.1', '0.21.2', '0.21.3'}:
-        raise ValueError('Select the Python interpreter of Hermes 0.21.0, 0.21.1, 0.21.2, or 0.21.3 with its native dependencies installed')
+    require_capabilities(probe_runtime(python))
     return python
+
+
+def _attachment_capabilities(python, config, *, local_work=False, native_goals=False,
+                             native_reviews=False, manifest=None):
+    """Gate enabled behavior before writes; optional interfaces do not become core."""
+    plugin = plugin_settings(config)
+    reviews = native_reviews or (plugin.get('native_reviews') or {}).get('enabled') is True
+    concurrent = (local_work or native_goals or reviews
+                  or ((manifest or {}).get('local_work') or {}).get('executor') == 'kanban'
+                  or (plugin.get('native_tasks') or {}).get('enabled') is True
+                  or bool(plugin.get('native_local_work'))
+                  or (config.get('kanban') or {}).get('dispatch_in_gateway') is True)
+    features = ['core']
+    if concurrent:
+        features.append('concurrent_work')
+    if reviews:
+        features.append('detached_review')
+    report = probe_runtime(python)
+    require_capabilities(report, features)
+    return {**report, 'required_features': features}
 
 
 def _profile_homes(python):
@@ -470,6 +484,10 @@ def refresh_adapter(state, args):
         raise ValueError('Adapter refresh requires a supported local attachment')
     home = Path(manifest['hermes_home'])
     python = _interpreter(getattr(args, 'hermes_python', None) or manifest['hermes_python'])
+    _, runtime_config = _read_hermes_config(home/'config.yaml')
+    capabilities = _attachment_capabilities(python, runtime_config, manifest=manifest,
+        local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
+        native_reviews=getattr(args, 'native_reviews', False))
     resources = _adapter_resources(getattr(args, 'adapter_wheel', None))
     binding = _adapter_binding(python, resources)
     old_binding = manifest['adapter_binding']
@@ -515,7 +533,8 @@ def refresh_adapter(state, args):
             retain_forwarder(worker)
     updated = {**manifest, 'hermes_python':str(python), 'sidecar_python':sys.executable,
         'sidecar_module_root':str(Path(__file__).resolve().parents[1]),
-        'adapter_sha256':_resource_digest(resources), 'adapter_binding':binding}
+        'adapter_sha256':_resource_digest(resources), 'adapter_binding':binding,
+        'hermes_capabilities':capabilities}
     updates.append((path, before, _json(updated).encode()))
     config_paths = [home/'config.yaml']
     lane = manifest.get('local_work') or {}
@@ -658,6 +677,12 @@ def run(root_dir=None, args=None):
             from .setup_skill_reviews import choices as review_choices
             skill_review = review_choices(args, ask, existing=manifest.get('ordinary_skill_review'),
                                            prompt=not getattr(args, 'refresh_adapter', False))
+            capabilities = None
+            if any(getattr(args, name, False) for name in ('local_work', 'native_goals', 'native_reviews')):
+                selected = (getattr(args, 'hermes_python', None) if getattr(args, 'refresh_adapter', False) else None)
+                capabilities = _attachment_capabilities(selected or manifest['hermes_python'], config, manifest=manifest,
+                    local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
+                    native_reviews=getattr(args, 'native_reviews', False))
             if getattr(args, 'native_goals', False):
                 from dotenv import dotenv_values
                 from .setup_native_goals import prepare
@@ -696,6 +721,12 @@ def run(root_dir=None, args=None):
                 configure(state, schedule=retained['schedule'], evaluator_path=retained.get('evaluator_path'))
             if receipt_choice is not None:
                 _write_receipt_preference(home, receipt_choice)
+            if capabilities is not None:
+                path = state/'instance.json'
+                before = path.read_bytes()
+                current = json.loads(before)
+                current['hermes_capabilities'] = capabilities
+                setup._atomic_hermes_config_write(path, before, _json(current).encode())
             _select_state_environment(state)
             print(f'Existing private instance retained: {state}')
             print(f'Use protagine --instance {str(state)!r} start, then status.')
@@ -760,6 +791,8 @@ def run(root_dir=None, args=None):
         native_reviews = bool(getattr(args, 'native_reviews', False))
         if not noninteractive and not native_reviews:
             native_reviews = ask('Enable bounded read-only operational reviews? [y/N]', 'N').lower() in {'y','yes'}
+        capabilities = _attachment_capabilities(python, config, local_work=local_work,
+            native_goals=native_goals, native_reviews=native_reviews)
         from .setup_skill_reviews import choices as review_choices
         skill_review = review_choices(args, ask)
         ordinary_skill_review = skill_review['enabled'] is True
@@ -864,6 +897,7 @@ def run(root_dir=None, args=None):
                 'agent_preferences': agent_preferences,
                 'adapter_sha256': hashlib.sha256(b''.join(name.encode()+resources[name] for name in sorted(resources))).hexdigest(),
                 'adapter_binding': binding,
+                'hermes_capabilities': capabilities,
                 'profile': 'local', 'status': 'configured_not_behaviorally_verified'}
             _private_write(staged/'instance.json', _json(manifest))
             # Prepare the existing config path with the canonical provider helper.
