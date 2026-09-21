@@ -215,9 +215,9 @@ def test_optional_capabilities_gate_only_requested_behavior(monkeypatch):
             {'plugins': {'protagine': {'native_reviews': {'enabled': True}}}})
 
 
-def test_background_setup_requires_overlapping_callbacks(monkeypatch):
-    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt(missing=('overlapping_callbacks',)))
-    with pytest.raises(ValueError, match='overlapping_callbacks'):
+def test_background_setup_requires_concurrent_callback_context(monkeypatch):
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt(missing=('concurrent_callback_context',)))
+    with pytest.raises(ValueError, match='concurrent_callback_context'):
         setup_hermes._attachment_capabilities('/selected/python', {}, native_goals=True)
 
 

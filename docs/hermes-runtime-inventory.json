@@ -576,7 +576,7 @@
       "regression_tests": [
         "tests/hermes_cli/test_plugin_hook_concurrency.py"
       ],
-      "upstream_equivalence": "Stock overlapping_callbacks probe drops second callback; upstream PR 104763 open.",
+      "upstream_equivalence": "Stock concurrent_callback_context probe drops second callback; upstream PR 104763 open.",
       "removal_condition": "Public callback queue preserves caller context, handles recursion/timeout and installed overlap witnesses pass."
     }
   ]

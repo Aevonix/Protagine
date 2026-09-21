@@ -33,7 +33,7 @@ notice routing are excluded. No deployment settings or private data are included
 | Current-input identity | Request middleware receives the exact persisted current-user row and the separate original admission. Compaction preserves surviving row identity; ambiguous text matches do not invent a source. Durable user rows retain their storage coordinates during history repair. |
 | Owned payload erasure | Selected rows use exact preimages and a message watermark. Native writer leases, FTS updates, replay markers and gateway cache refresh keep cleanup consistent while preserving unrelated rows. |
 | Turn settlement | Native and gateway observers run after their owning persistence and leases settle. They let the existing source/outbox machinery finish pending cleanup and record bounded execution outcomes. |
-| Concurrent callbacks | Overlapping calls retain their own context and results instead of dropping the second call. Unload and timeout checks remain in Hermes's dispatcher. |
+| Concurrent caller context | Overlapping calls retain their own context and results. Hermes serializes invocations of the same callback; unload and timeout checks remain in its dispatcher. |
 | Detached review | `on_detached_turn_end` reports execution identity and completion/failure/interruption metadata without ingesting the detached conversation as a new user turn. |
 | Task completion | Typed failures and explicit continuation remain attributable. Delegated children can return to their parent; the actual Kanban worker still completes or blocks its own card. A status is not independent proof of success. |
 | Source reminders | `cron.owned_output` binds retained output to an exact job and execution. Cleanup waits for active senders, removes owned copies and preserves unrelated jobs. |
@@ -47,9 +47,18 @@ Hermes. Native erasure does not retract remote messages or erase backups. The
 [owned-copy contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
 describes the supported retained copies and remaining limits.
 
-Healthy callback overlap may still queue; the change does not promise FIFO
-ordering or a bounded backlog. Hung callbacks remain subject to the existing
-timeout rules. Plugin globals do not become session-local automatically.
+The `concurrent_callback_context` probe checks admission and context isolation,
+not simultaneous execution of one callback. Hermes queues healthy overlapping
+calls; it does not promise FIFO ordering or a bounded backlog. Hung callbacks
+remain subject to the existing timeout rules. Plugin globals do not become
+session-local automatically.
+
+The three cases in `tests/hermes_adapter/test_concurrent_turn_binding.py` run
+real overlapping agent starts, wait for the second callback to queue, and check
+recall, authorized tools and work for an owner, guest and unresolved sender.
+`test_native_task_channels.py` separately checks concurrent tasks and cross-channel
+steering. Requiring the second callback to finish while the first is held would
+test a stronger contract than these integrations require.
 
 ## Optional configuration
 

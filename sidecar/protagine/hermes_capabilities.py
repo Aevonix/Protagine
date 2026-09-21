@@ -27,7 +27,7 @@ SCHEMA = "protagine.hermes-capabilities.v1"
 FEATURES = {
     "core": ("plugin_callbacks", "memory_checkpoint", "request_authority",
              "native_input_identity", "owned_payload_erasure", "settled_native_turn", "durable_tasks"),
-    "concurrent_work": ("overlapping_callbacks", "settled_gateway_turn"),
+    "concurrent_work": ("concurrent_callback_context", "settled_gateway_turn"),
     "detached_review": ("detached_turn_observer",),
     "source_reminders": ("owned_cron_output",),
     "terminal_handoff": ("post_tool_batch",),
@@ -84,11 +84,13 @@ def _check_callbacks(home, *, overlap=False):
     manager = PluginManager(scope_key=str(home))
     context = PluginContext(PluginManifest(name="capability_probe", source="user"), manager)
     marker = contextvars.ContextVar("capability_probe_marker", default="missing")
-    entered, release = threading.Event(), threading.Event()
+    entered, release, admitted = threading.Event(), threading.Event(), threading.Event()
     values, errors = {}, []
     def callback(**kwargs):
         value = marker.get()
-        if overlap and value == "first":
+        if overlap and kwargs.get("session_id") == "second":
+            admitted.set()
+        if overlap and kwargs.get("session_id") == "first":
             entered.set()
             if not release.wait(2):
                 raise AssertionError("probe release timed out")
@@ -106,17 +108,29 @@ def _check_callbacks(home, *, overlap=False):
     if overlap:
         first = threading.Thread(target=invoke, args=("first",), daemon=True)
         second = threading.Thread(target=invoke, args=("second",), daemon=True)
+        # Hermes serializes a callback behind its healthy predecessor. Observe
+        # actual admission to that wait, not just a newly started Python thread.
+        # A dispatcher allowing parallel callbacks can instead admit in callback.
+        condition = getattr(manager, "_hook_timeout_running_cond", None)
+        original_wait = condition.wait if condition is not None else None
+        def observe_wait(timeout=None):
+            if threading.current_thread() is second:
+                admitted.set()
+            return original_wait(timeout)
+        if condition is not None:
+            condition.wait = observe_wait
         first.start()
         try:
-            assert entered.wait(2)
+            assert entered.wait(2), "first callback did not start"
             second.start()
-            second.join(.1)
-            assert not second.is_alive(), "callback invocations are serialized"
+            assert admitted.wait(2), "overlapping caller was neither queued nor invoked"
         finally:
             release.set()
             first.join(3)
             if second.ident is not None:
                 second.join(3)
+            if condition is not None:
+                condition.wait = original_wait
         assert not first.is_alive() and not second.is_alive()
         assert values == {"first": ["first"], "second": ["second"]}, values
     else:
@@ -270,7 +284,7 @@ def _probe():
     check("owned_payload_erasure", erasure, "real SQLite preimage rejection, selective erasure and idempotent replay")
     check("settled_native_turn", lambda: hook("on_native_turn_settled"), "declared post-persistence observer; full suite checks delivery")
     check("durable_tasks", tasks, "real task persistence, duplicate admission/claim rejection, restart and stale-claim recovery")
-    check("overlapping_callbacks", lambda: _check_callbacks(home, overlap=True), "two overlapping native callbacks retain distinct caller context")
+    check("concurrent_callback_context", lambda: _check_callbacks(home, overlap=True), "overlapping callers retain distinct context and results; callbacks may serialize")
     check("settled_gateway_turn", lambda: hook("on_gateway_turn_settled"), "declared gateway-settled observer; full suite checks ownership")
     check("detached_turn_observer", lambda: hook("on_detached_turn_end"), "declared detached-end observer; full suite checks terminal outcomes")
     check("owned_cron_output", cron, "native exact-job snapshot/erase interface; full suite checks retained copies")

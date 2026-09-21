@@ -50,7 +50,7 @@ silently replace a service command. See [local setup](LOCAL-HERMES-SETUP.md).
 | Core | Exact persisted current-user row supplied to request middleware |
 | Core | Selected payload erasure with preimage/watermark checks and replay; post-persistence native settlement observer |
 | Core | Durable task creation, duplicate admission/claim rejection, reopen and stale-claim recovery |
-| Concurrent work | Overlapping callbacks retain each caller; gateway-settled observer |
+| Concurrent work | `concurrent_callback_context`: overlapping callers retain their own context and results, including queued calls; gateway-settled observer |
 | Detached review | Observer-only detached completion |
 | Source reminders | Exact-job output snapshot, fingerprint and erasure |
 | Terminal handoff | Typed `FinishTurn` after a completed tool batch |

@@ -64,18 +64,32 @@ def test_native_probe_failure_has_safe_actionable_diagnostic(monkeypatch, failur
     assert 'PRIVATE_PROBE_CANARY' not in str(error.value)
 
 
-@pytest.mark.parametrize('serialized', [False, True])
-def test_overlap_probe_rejects_serialized_callbacks(monkeypatch, tmp_path, serialized):
-    from contextlib import nullcontext
+@pytest.mark.parametrize('behavior', ['serialized', 'parallel', 'drop', 'wrong_context', 'wrong_result'])
+def test_concurrent_callback_context_checks_admission_and_isolation(monkeypatch, tmp_path, behavior):
+    import contextvars
     import sys
     import threading
     from types import ModuleType
     class Manager:
         def __init__(self, **kwargs):
-            self.lock = threading.Lock()
+            self._hook_timeout_running_cond = threading.Condition()
+            self.running = False
         def invoke_hook(self, name, **kwargs):
-            with self.lock if serialized else nullcontext():
-                return [self.callback(**kwargs)]
+            condition = self._hook_timeout_running_cond
+            with condition:
+                if self.running and behavior == 'drop':
+                    return []
+                while self.running and behavior != 'parallel':
+                    condition.wait()
+                self.running = True
+            try:
+                result = (contextvars.Context().run(self.callback, **kwargs)
+                          if behavior == 'wrong_context' else self.callback(**kwargs))
+                return ['first' if behavior == 'wrong_result' else result]
+            finally:
+                with condition:
+                    self.running = False
+                    condition.notify_all()
     class Context:
         def __init__(self, manifest, manager):
             self.manager = manager
@@ -89,9 +103,9 @@ def test_overlap_probe_rejects_serialized_callbacks(monkeypatch, tmp_path, seria
     monkeypatch.setitem(sys.modules, 'hermes_cli', ModuleType('hermes_cli'))
     monkeypatch.setitem(sys.modules, 'hermes_cli.plugins', plugins)
     monkeypatch.setitem(sys.modules, 'hermes_cli.plugins_manifest', manifests)
-    capabilities._check_callbacks(tmp_path)
-    if serialized:
-        with pytest.raises(AssertionError, match='serialized'):
-            capabilities._check_callbacks(tmp_path, overlap=True)
-    else:
+    if behavior in {'serialized', 'parallel'}:
+        capabilities._check_callbacks(tmp_path)
         capabilities._check_callbacks(tmp_path, overlap=True)
+    else:
+        with pytest.raises(AssertionError):
+            capabilities._check_callbacks(tmp_path, overlap=True)

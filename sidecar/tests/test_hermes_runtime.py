@@ -52,8 +52,8 @@ def test_prepare_qualifies_separate_runtime_and_rechecks_reuse(preparation, monk
 
 def test_failed_behavior_does_not_write_success_receipt(preparation):
     p = preparation
-    p.report['capabilities']['overlapping_callbacks']['available'] = False
-    with pytest.raises(ValueError, match='overlapping_callbacks'):
+    p.report['capabilities']['concurrent_callback_context']['available'] = False
+    with pytest.raises(ValueError, match='concurrent_callback_context'):
         runtime.prepare_runtime(source=p.source, destination=p.root)
     assert not (p.root/'.protagine-runtime.json').exists()
 
