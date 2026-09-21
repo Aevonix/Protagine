@@ -2,7 +2,8 @@
 
 Use canonical adapter resources and one private instance. This is an installer,
 not a release controller: existing instances are retained and runtime upgrades
-remain explicit. No model, container, OS service or Hermes core is downloaded.
+remain explicit. Missing native interfaces can be installed from the shipped
+patchset in a separate runtime; no running process is changed by preparation.
 """
 from __future__ import annotations
 
@@ -243,7 +244,7 @@ def _verify_local_endpoint(endpoint):
     return hosts
 
 
-def _interpreter(candidate):
+def _find_interpreter(candidate):
     if not candidate:
         hermes = shutil.which('hermes')
         if hermes:
@@ -252,8 +253,37 @@ def _interpreter(candidate):
                 candidate = first[2:]
         if not candidate:
             candidate = sys.executable
-    python = Path(candidate).expanduser().absolute()
+    return Path(candidate).expanduser().absolute()
+
+
+def _interpreter(candidate):
+    python = _find_interpreter(candidate)
     require_capabilities(probe_runtime(python))
+    return python
+
+
+def _installation_interpreter(args, default=None):
+    cached = getattr(args, '_prepared_hermes_python', None)
+    if cached:
+        return Path(cached)
+    candidate = getattr(args, 'hermes_python', None) or default
+    source = getattr(args, 'hermes_source', None)
+    explicit = getattr(args, 'prepare_hermes', False) or source is not None
+    if not explicit:
+        try:
+            return _interpreter(candidate)
+        except ValueError as error:
+            from .hermes_runtime import source_for_interpreter
+            try:
+                source = source_for_interpreter(_find_interpreter(candidate))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                raise ValueError(str(error) + ' Use protagine init --prepare-hermes to install the qualified patchset.') from None
+    from .hermes_runtime import prepare_runtime
+    python = prepare_runtime(source=source, destination=getattr(args, 'hermes_runtime_dir', None),
+                             python=_find_interpreter(candidate))
+    if args is not None:
+        args._prepared_hermes_python = str(python)
+        args.hermes_python = str(python)
     return python
 
 
@@ -309,7 +339,7 @@ def _select_home(args, ask):
     explicit = getattr(args, 'hermes_home', None) or os.environ.get('HERMES_HOME')
     if explicit or getattr(args, 'non_interactive', False):
         return setup._resolve_hermes_home(explicit), None
-    python = _interpreter(getattr(args, 'hermes_python', None))
+    python = _installation_interpreter(args)
     homes = _profile_homes(python)
     if homes:
         print('Existing Hermes profiles:')
@@ -483,7 +513,7 @@ def refresh_adapter(state, args):
             or manifest.get('adapter_binding', {}).get('mode') not in {'native-installed', 'private-directory'}):
         raise ValueError('Adapter refresh requires a supported local attachment')
     home = Path(manifest['hermes_home'])
-    python = _interpreter(getattr(args, 'hermes_python', None) or manifest['hermes_python'])
+    python = _installation_interpreter(args, manifest['hermes_python'])
     _, runtime_config = _read_hermes_config(home/'config.yaml')
     capabilities = _attachment_capabilities(python, runtime_config, manifest=manifest,
         local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
@@ -625,7 +655,7 @@ def run(root_dir=None, args=None):
                     'preferences_only', 'preview', 'start', 'refresh_adapter', 'replace_memory_provider',
                     'local_work', 'native_goals', 'native_reviews', 'model_url', 'model', 'model_config', 'agent_name',
                     'agent_values', 'timezone', 'quiet_hours', 'contact_name', 'owner_handle', 'encrypt',
-                    'passphrase', 'claim_genesis')):
+                    'passphrase', 'claim_genesis', 'prepare_hermes', 'hermes_source', 'hermes_runtime_dir')):
                 raise ValueError('--skills-only cannot be combined with instance or preference changes')
             from .setup_skills import prepare, install
             install(prepare(home, _adapter_resources(getattr(args, 'adapter_wheel', None)), refresh=True))
@@ -637,7 +667,7 @@ def run(root_dir=None, args=None):
                     'start', 'refresh_adapter', 'replace_memory_provider', 'local_work',
                     'native_goals', 'native_reviews', 'model_url', 'model', 'model_config', 'adapter_wheel', 'agent_name',
                     'agent_values', 'timezone', 'quiet_hours', 'contact_name', 'owner_handle', 'encrypt',
-                    'passphrase', 'claim_genesis')):
+                    'passphrase', 'claim_genesis', 'prepare_hermes', 'hermes_source', 'hermes_runtime_dir')):
                 raise ValueError('--preferences-only cannot be combined with instance or setup options')
             _write_receipt_preference(home, receipt_choice, preview)
             return 0
@@ -679,7 +709,8 @@ def run(root_dir=None, args=None):
                                            prompt=not getattr(args, 'refresh_adapter', False))
             capabilities = None
             if any(getattr(args, name, False) for name in ('local_work', 'native_goals', 'native_reviews')):
-                selected = (getattr(args, 'hermes_python', None) if getattr(args, 'refresh_adapter', False) else None)
+                selected = (_installation_interpreter(args, manifest['hermes_python'])
+                            if getattr(args, 'refresh_adapter', False) else None)
                 capabilities = _attachment_capabilities(selected or manifest['hermes_python'], config, manifest=manifest,
                     local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
                     native_reviews=getattr(args, 'native_reviews', False))
@@ -748,7 +779,7 @@ def run(root_dir=None, args=None):
             if noninteractive or ask('Another memory provider is selected. Replace only its selection and retain its files? [y/N]', 'N').lower() not in {'y', 'yes'}:
                 raise ValueError('Existing provider retained; choose another --hermes-home or explicitly request --replace-memory-provider')
             replace_provider = True
-        python = selected_python or _interpreter(getattr(args, 'hermes_python', None))
+        python = selected_python or _installation_interpreter(args)
         resources = _adapter_resources(getattr(args, 'adapter_wheel', None))
         _preflight_outbox(home, resources)
         binding = _adapter_binding(python, resources)
@@ -1007,6 +1038,7 @@ def run(root_dir=None, args=None):
             describe(goal_details)
         print(f'Start: protagine --instance {str(state)!r} start --detach')
         print(f'Status: protagine --instance {str(state)!r} status')
+        print(f'Gateway: protagine --instance {str(state)!r} hermes run gateway run')
         print('No existing Hermes process was restarted. Begin a new session to load the adapter.')
         if getattr(args, 'start', False) or (not noninteractive and ask('Start this sidecar now? [Y/n]', 'Y').lower() in {'y','yes'}):
             result = subprocess.run([sys.executable, '-m', 'protagine', '--instance', str(state), 'start', '--detach'], timeout=60)

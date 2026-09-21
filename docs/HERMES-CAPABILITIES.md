@@ -1,160 +1,109 @@
 # Hermes capability contract
 
-Protagine attachment requires native interfaces and behavior, not a Hermes version
-allowlist. Stock Hermes **0.21.3**, release **v2026.9.14**, commit
-[`345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d)
-does **not** meet the required core contract. The public transitional runtime at
-[`11ee4d48218254f856a4c96aa77fce7252d1e56b`](https://github.com/Kurcide/hermes-agent/commit/11ee4d48218254f856a4c96aa77fce7252d1e56b)
-has the same version string and passes the bounded capability checks. This is the
-existing CI pin; the installer never downloads it or replaces an existing runtime.
+The **1.9.0rc1 release candidate** installs the required Hermes interfaces from a
+versioned patchset shipped with Protagine. Installation uses official Hermes
+source. It does not require a fork or acceptance of an upstream pull request.
+These commands are new in this candidate, not the published 1.8 series.
 
-This pin adds one focused repair above `0a9fa9747c3`: post-tool compaction
-preserves a surviving current-input row identity; without that identity,
-multiple text-equal rows leave provenance unavailable. The earlier pin could
-select later identical steering. The backport passed 129 middleware, profile,
-SQLite boundary and compaction tests, plus all bounded capability groups. This
-does not replace installed-adapter qualification or qualify a live deployment.
+The first patchset, `hermes-0.21.3-protagine-1`, targets official Hermes **0.21.3**,
+tag `v2026.9.14`, commit
+[`345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d).
+Unmodified stock 0.21.3 lacks required core interfaces. A matching version number
+alone does not establish compatibility.
 
-## Inspect one interpreter
-
-From an installed Protagine environment:
+## Prepare and select a runtime
 
 ```bash
-python -m protagine.hermes_capabilities \
-  --python /path/to/hermes/venv/bin/python \
-  --output hermes-capabilities.json --require core
+protagine init --prepare-hermes
 ```
 
-The output path must be new. The check launches the selected interpreter with
-isolated imports, a temporary home/profile, empty bundled plugins, no inherited
-credentials, and blocked outbound socket connections. It uses synthetic SQLite
-records; it does not inspect personal conversations, run a model, start a worker,
-or activate an attachment. Failure names the missing interfaces and leaves the
-existing runtime/profile in place. `--require` may be repeated for optional groups.
+This prepares official source plus the packaged patches in a separate environment,
+then attaches the selected profile. Passing an existing official interpreter with
+`--hermes-python` also prepares that candidate when required core interfaces are
+missing. The source checkout must match the qualified official revision and have
+no tracked modifications. An unsupported revision needs a new qualified patchset.
 
-The receipt records the runtime version, available source revision, metadata hash,
-individual check evidence, available feature groups, and `not_activated` probe
-state. Setup retains it as `hermes_capabilities` in the private `instance.json`,
-alongside the exact adapter resource digest and loading binding. The attachment
-remains `configured_not_behaviorally_verified`; an interface pass is not a release
-qualification or proof of live behavior.
+To prepare and inspect a candidate separately:
+
+```bash
+protagine hermes prepare --source /path/to/official/hermes --destination /path/to/new/runtime
+protagine hermes check /path/to/new/runtime
+protagine init --hermes-python /path/to/new/runtime/.venv/bin/python
+protagine --instance /path/to/private/state hermes run gateway run
+```
+
+Omit `--source` to fetch the qualified revision from NousResearch. Preparation
+checks exact patch bytes and file preimages, applies into a new directory, verifies
+postimages, installs native dependencies and probes the result. It excludes
+untracked files and private profiles. Existing source and running processes stay
+in place. Reuse verifies the candidate's source, interpreter and patchset binding.
+
+For a managed deployment, select the prepared interpreter through its existing
+service lifecycle after validation. Preparation does not restart a gateway or
+silently replace a service command. See [local setup](LOCAL-HERMES-SETUP.md).
 
 ## Required core and optional features
 
-| Group | Required native checks | Stock 0.21.3 result |
-| --- | --- | --- |
-| Core | Plugin callback registration/caller context; provider discovery and pre-compression checkpoint v2; request/tool authority middleware | Available in bounded checks |
-| Core | Exact persisted current-user row delivered to request middleware | Missing |
-| Core | Selective payload erasure with preimage/watermark checks and idempotent replay; post-persistence native settlement observer | Missing |
-| Core | Durable task creation, duplicate admission/claim rejection, reopen, stale-claim recovery | Available in bounded checks |
-| Concurrent work | Overlapping callbacks preserve each caller; gateway-settled observer | Missing |
-| Detached review | Observer-only detached completion | Missing |
-| Source reminders | Exact-job output snapshot, fingerprint and erasure | Missing |
-| Terminal handoff | Typed `FinishTurn` after a completed tool batch | Missing |
-
-Core product qualification additionally requires **installed artifact loading,
-profile/participant isolation, source capture, scoped recall, correction/forget
-over every supported retained copy, authority preservation, and durable task
-recovery**. Those end-to-end claims remain in `tests/hermes_adapter`; declaration
-checks of hooks do not prove hook ordering, cache refresh, writer settlement, or
-model-visible recall. They must pass before declaring stock core supported.
-
-New setup and adapter refresh require core. Enabling or retaining native local
-work, native task dispatch or operational review also requires concurrent work;
-operational review requires detached completion. Missing optional interfaces do
-not fail a core-only attachment. The adapter already omits source reminders when
-`cron.owned_output` is unavailable, omits task tools when tasks are not enabled,
-and omits the `handoff` operation without `FinishTurn`. Setup does not silently
-disable requested features to make a runtime pass.
-
-Preferences-only and skills-only operations retain their narrow scope. Repeating
-setup for an unchanged attachment does not force a runtime replacement. Enabling
-features and refreshing the adapter recheck the relevant contract before writes.
-
-## Qualification evidence and gaps
-
-The retained latest-stable run on 2026-09-21 produced **40 failed, 309 passed,
-28 skipped**. It is still a failed qualification. No test was removed, skipped or
-marked expected-failure by this capability work. The full suite remains blocking
-in `hermes-upstream.yml`, with a separate mandatory core gate and JSON/JUnit
-artifacts. The workflow now prints skip reasons as well as preserving every case.
-
-[The failure inventory](hermes-upstream-failures.json) records all 40 exact case
-IDs, observed symptoms and disposition. Its classifications distinguish confirmed
-missing interfaces from fixture assumptions; fixing a probe alone does not resolve
-every failure in a family.
-
-| Cases | Finding and required follow-up |
+| Group | Native contract |
 | --- | --- |
-| 3 overlapping turns + 1 delegated current-work case | Existing witnesses inspect a fork-private condition; three time out and one raises `AttributeError`. The separate public callback probe reproduces dropped overlap on stock. Preserve the behavioral witnesses; remove private fixture coupling when porting the callback change. |
-| 3 named-provider timeout cases | Actual native resolver rejects `requested_provider`; port the resolver correction and retain explicit/default timeout witnesses. |
-| 5 post-turn review cases | Expected terminal review outcomes are absent; detached observer is separately missing. Keep these visible as optional review qualification, including guest isolation. |
-| 2 source-reminder cases | `cron.owned_output` is absent; the tool remains unadvertised until exact-job erasure works. |
-| 2 task submit + 5 task handoff cases | Submit fails supplied-input/session identity; handoff times out without the terminal interface. Task state/recovery stays core; terminal handoff remains optional. |
-| 2 source-update cases | Erasure remains pending and a steering carrier survives. This is a core blocker. |
-| 14 source search/read/annotation/history/media cases | Exact source or annotation identity is withheld; the fixture then lacks a confirmation. Core source identity and retained-copy erasure remain required for supported source types. |
-| 3 supplied-input rotate/compact cases | Missing supplied source or unexpected result shape breaks the controlled transport; retries amplify the failure. Preserve the full compaction/rotation witnesses. |
+| Core | Plugin callback registration and caller context; memory-provider discovery and pre-compression checkpoint v2; request/tool authority middleware |
+| Core | Exact persisted current-user row supplied to request middleware |
+| Core | Selected payload erasure with preimage/watermark checks and replay; post-persistence native settlement observer |
+| Core | Durable task creation, duplicate admission/claim rejection, reopen and stale-claim recovery |
+| Concurrent work | Overlapping callbacks retain each caller; gateway-settled observer |
+| Detached review | Observer-only detached completion |
+| Source reminders | Exact-job output snapshot, fingerprint and erasure |
+| Terminal handoff | Typed `FinishTurn` after a completed tool batch |
 
-The historical log did not retain names/reasons for its **28 skipped cases**.
-They remain **unresolved evidence**, not passes or asserted optional omissions.
-The next stock qualification must inventory those cases from JUnit before any
-stock-support claim. These are software-interface witnesses with controlled
-responses, not model-quality scores.
+New setup and adapter refresh require core. Native local work, task dispatch and
+operational review also require concurrent work; operational review requires
+detached completion. Setup does not silently disable a requested feature to make
+its runtime pass. The first patchset supplies all five groups. Features still need
+their normal profile configuration; installing an interface does not enable them.
 
-## Upstream contributions and fork retirement
+## Inspect without installation
 
-[The exact 33-commit inventory](hermes-runtime-inventory.json) includes each
-commit's purpose, changed interface files, native regression tests, current
-equivalence evidence and removal condition against the official base. It also
-separates merge/test maintenance and unrelated channel fixes from core blockers.
-For fixes not directly exercised by this audit, equivalence is explicitly
-unqualified; absence from the fork commit history alone is not proof of an
-upstream behavioral defect.
+```bash
+python -m protagine.hermes_capabilities \
+  --python /path/to/hermes/.venv/bin/python \
+  --output hermes-capabilities.json --require core
+```
 
-The generic runtime contributions are tracked separately:
+The output path must be new. Repeat `--require` for optional groups. Probes use a
+disposable profile, synthetic SQLite records, no inherited credentials and blocked
+outbound socket connections. They do not run a model or inspect conversations.
 
-1. **Persisted input provenance.** Submitted as
-   [upstream PR #118307](https://github.com/NousResearch/hermes-agent/pull/118307),
-   reviewed head `9e117b631e0`, with 407 relevant tests passing and red-on-base
-   installed-consumer evidence. It preserves the original contributions from
-   `738593f869e`, `3454fd7b5e5`,
-   `218dad99356`, and `a012d62efab`: exact current persisted row plus compaction,
-   durable-row repair and image-anchor preservation. Keep original input separate
-   from the current row and fail closed on a mismatch or ambiguous compaction
-   anchor. Actual installed request-middleware tests exercise profile A→B→A,
-   missing persistence, observer-copy isolation and provider-payload separation.
-   The PR is not upstream support: installed rotate/compact/delegated supplied-source
-   witnesses and the other core interfaces remain release requirements.
-2. **Owned transcript erasure and settlement.** Submitted as
-   [upstream PR #118325](https://github.com/NousResearch/hermes-agent/pull/118325),
-   reviewed head `81bdf0d258b`, with 172 relevant tests passing. The contribution
-   preserves the coherent surface from
-   `66372a6bf4b`, `e2776186612`, `75f6ea6e508`, `84c7d76a247`: selected row
-   snapshots, preimage/watermark rejection, payload/FTS removal, writer leases,
-   native/gateway settled observers, profile ownership and cache refresh. Keep
-   unrelated rows and metadata. Installed native and gateway consumers exercise
-   reconciliation after lease release, A→B→A profile isolation, cached-copy
-   removal and reload; base witnesses reproduce missing storage and hook contracts.
-   A SQLite erasure helper alone does not satisfy core. Selected payload/cache
-   erasure does not cover backups, external summaries or secure file erasure.
-   Acceptance and combined installed-adapter qualification remain outstanding.
-3. **Callback overlap.** Reuse the existing open upstream
-   [PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763), head
-   `b9c112c83b60b91e918341cbb587a6a913d9d9eb` (checked 2026-09-21), preserving
-   authorship rather than duplicating the PR. The local adaptation is
-   `2275129fd5f`. Require context isolation, recursion/timeout behavior and the
-   installed overlapping-turn witnesses.
-4. **Provider policy and optional surfaces.** Keep `7102874d823` (named-provider
-   timeout preservation) separate. Offer detached completion (`09fbad8e4e4`),
-   exact-job cron output provenance (`792f9e89e04`) and typed post-tool handoff
-   (`13dc6c542bb`) as independent interfaces, each with its native regression
-   tests and opt-in behavior. No Protagine policy, storage or sidecar scheduler
-   belongs in these upstream patches.
+The receipt records available interfaces and bounded behavior. Setup retains it
+in the private `instance.json` with the selected interpreter and adapter binding.
+Attachment remains `configured_not_behaviorally_verified` until its actual loops
+are observed. A declared hook does not prove correct delivery or useful recall.
 
-Retire the fork only when an exact public upstream revision passes the required
-core installed-artifact suite **and all Phase 1 features enabled in the intended
-profile**, including task outcomes/recovery. Resolve all skips and unexplained
-failures, record the upstream equivalents/removal decisions for all 33 commits,
-then change the qualification pin and documentation together. Preserve the
-transitional runtime until that evidence exists; there is no deployment action in
-this contract.
+## Qualification and updates
+
+[Release CI](../.github/workflows/ci.yml) checks out the exact official base,
+applies patch bytes from the built Protagine wheel and runs the installed-adapter
+suite. It also runs the packaged native regression files in separate processes,
+as Hermes requires. Tests cover source capture, participant isolation, correction
+and forgetting, task outcomes, overlapping work and the optional interfaces.
+
+The initial patchset passed all five capability groups, 358 native tests plus
+10 subtests, and 18 installed-adapter memory, reminder, task and review checks.
+The complete release CI result remains the release gate. These controlled tests
+do not establish model quality, physical channel delivery or production health.
+
+The [daily compatibility job](../.github/workflows/hermes-upstream.yml) fetches the
+latest official stable revision and checks it against the packaged contract. An
+unknown revision fails with a requirement to qualify a new bundle. There is no
+fuzzy application, automatic downgrade or live update. For each supported update,
+review upstream changes, regenerate only needed patches and pass both native and
+installed-adapter tests before switching a deployment.
+
+Upstream contributions can reduce future patch maintenance. Their acceptance is
+not a release dependency. Remove a patch when the new official source passes its
+behavioral witnesses without it.
+
+The [patch manifest](../sidecar/protagine/hermes_patchsets/hermes-0.21.3-protagine-1/manifest.json)
+records exact source and file hashes. The [compatibility guide](HERMES-HOOK-COMPATIBILITY.md)
+explains the interfaces. The older [stock failure inventory](hermes-upstream-failures.json)
+and [commit inventory](hermes-runtime-inventory.json) retain the evidence behind
+this bundle; their historical fork pins are not installation requirements.

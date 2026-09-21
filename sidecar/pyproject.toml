@@ -67,4 +67,4 @@ include = ["protagine*"]
 exclude = ["*.tests", "*.tests.*", "*.test_*", "*.conftest"]
 
 [tool.setuptools.package-data]
-protagine = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png"]
+protagine = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png", "hermes_patchsets/*/*.patch", "hermes_patchsets/*/LICENSE", "hermes_patchsets/*/NOTICE"]

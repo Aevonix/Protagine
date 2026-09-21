@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Read-only inventory for a legacy Hermes patch registry.
 
-The governed Protagine integration targets zero Hermes core patches.  This tool
-retains the old filename so deployment checks can inventory and hash any
-leftover patch files, but it never executes them and has no apply mode.
+This inventories deployment-local scripts, not the supported versioned bundles
+installed by ``protagine hermes prepare``. It never executes registry scripts.
 """
 
 from __future__ import annotations

@@ -104,6 +104,8 @@ entries = metadata.distribution('protagine-hermes').entry_points
 assert any(e.group == 'hermes_agent.plugins' and e.name == 'protagine' for e in entries)
 assert any(e.group == 'hermes_agent.memory_providers' and e.name == 'protagine-memory' for e in entries)
 print(json.dumps({'installed_imports': True, 'adapter_entry_points': True}))
+from protagine.hermes_patches import describe_patchset
+assert describe_patchset()['official_revision']
 """], cwd=work, env=env)
         run([python, "-I", "-m", "protagine", "--help"], cwd=work, env=env)
         packages = json.loads(run(pip + ["list", "--format=json"], cwd=work, env=env))

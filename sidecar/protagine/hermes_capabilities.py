@@ -108,6 +108,12 @@ def _probe():
         result["runtime"] = {"version": distribution.version,
                              "revision": revision.stdout.strip() if revision.returncode == 0 else None,
                              "metadata_sha256": hashlib.sha256(metadata.encode()).hexdigest()}
+        patch_receipt = root / ".protagine-patch-receipt.json"
+        if patch_receipt.is_file():
+            patch = json.loads(patch_receipt.read_text())
+            if patch.get("schema") == "protagine.hermes-patch-stage.v1":
+                result["runtime"]["patchset"] = {key: patch.get(key) for key in
+                    ("patchset_id", "official_revision", "manifest_sha256")}
     except Exception as error:
         result["runtime"] = {"version": None, "revision": None, "error_type": type(error).__name__}
 

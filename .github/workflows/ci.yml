@@ -69,11 +69,10 @@ jobs:
           path: dist/
       - uses: actions/checkout@v6
         with:
-          # Explicit qualification build; latest unmodified upstream is checked
-          # separately by hermes-upstream.yml. See the compatibility note.
-          repository: Kurcide/hermes-agent
-          ref: 11ee4d48218254f856a4c96aa77fce7252d1e56b
-          path: .qualification/hermes
+          # Same official source + packaged patches used by guided installation.
+          repository: NousResearch/hermes-agent
+          ref: 345cd2b057a452236de401d3534b8502a7465e8d
+          path: .qualification/hermes-official
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -82,7 +81,11 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             sidecar/pyproject.toml
-            .qualification/hermes/pyproject.toml
+            .qualification/hermes-official/pyproject.toml
+      - name: Apply the built distribution's versioned Hermes patches
+        run: |
+          python -m pip install --no-deps dist/protagine-*.whl
+          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions > hermes-patches.json
       - name: Install adapter and pinned native runtime
         run: |
           python -m pip install -e ".[test,native-memory]"
@@ -108,6 +111,11 @@ jobs:
           subprocess.run([sys.executable, '-m', 'pytest', *selected, '-q', '--durations=0',
                           f'--junitxml=hermes-adapter-results-{group}.xml'], check=True)
           PY
+      - name: Require the patched runtime contract
+        if: matrix.group == 'native'
+        run: |
+          python -m protagine.hermes_capabilities --output hermes-capabilities.json --require core --require concurrent_work --require detached_review --require source_reminders --require terminal_handoff
+          python scripts/qualify_hermes_patch_regressions.py --runtime .qualification/hermes --output hermes-patch-regressions
       - name: Require native qualification witnesses
         if: matrix.group == 'native'
         run: |
@@ -157,6 +165,9 @@ jobs:
           path: |
             hermes-adapter-inventory-*.json
             *-results*.xml
+            hermes-patches.json
+            hermes-capabilities.json
+            hermes-patch-regressions/
 
   # Preserve the existing required check name. Both isolated test jobs must
   # succeed; a failed, cancelled or skipped partition cannot satisfy it.

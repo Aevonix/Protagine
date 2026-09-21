@@ -326,7 +326,7 @@ def patch_checks():
                 f"sha256={result.get('sha256', 'unavailable')}"
             )
     else:
-        ok("zero-patch Hermes posture")
+        ok("no legacy deployment-local patch scripts")
 
 
 def main():

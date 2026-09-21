@@ -13,10 +13,21 @@ database and reset. Retrieval and retention no longer treat runtime completion
 as proof that a procedure worked. Native evaluation receipts remain separate.
 See [migration details](docs/EXECUTOR-RETIREMENT.md).
 
-Attachment now checks actual Hermes capabilities in an offline disposable
-profile. Stock 0.21.3 lacks required core contracts; the documented public
-compatibility build remains necessary. Runtime and adapter receipts make the
-selection explicit. No existing runtime is replaced automatically.
+Attachment checks actual Hermes capabilities in an offline disposable profile.
+Stock 0.21.3 lacks required core contracts. The candidate now ships versioned
+patches applied to exact official source in a separate runtime, with file hashes,
+original attribution and native regression tests. No fork or upstream acceptance
+is required. `protagine init --prepare-hermes` prepares this runtime; `protagine
+hermes prepare`, `check` and `run` expose preparation, inspection and the selected
+instance launcher. Existing services are switched through their normal lifecycle.
+Unknown upstream revisions require a newly qualified patchset and leave the active
+runtime in place. These commands are new in 1.9.0rc1.
+
+Release CI applies patches from the built wheel to official Hermes and runs the
+complete adapter suite and isolated native patch regressions. The initial bundle
+passed all five capability groups, 358 native tests plus 10 subtests and 18
+installed-adapter memory, reminder, task and review checks. The daily latest-stable
+job reports compatibility gaps without changing a deployment.
 
 Release CI builds, qualifies and publishes the same wheel, source and container
 artifacts. Installed checks include dependency consistency and the standalone

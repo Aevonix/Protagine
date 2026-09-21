@@ -1,17 +1,23 @@
 # Create or attach a private Hermes agent
 
-The current qualification target uses Hermes **0.21.3**
-([qualification build](HERMES-HOOK-COMPATIBILITY.md)), Python 3.12, and one local
-OpenAI-compatible chat endpoint. Install Hermes separately using its
-[native installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
-Protagine does not patch or download Hermes, models, containers or machine services.
+The **1.9.0rc1 release candidate** prepares official Hermes **0.21.3** plus the
+[packaged compatibility patchset](HERMES-HOOK-COMPATIBILITY.md). You need Python
+3.12, Git and one local OpenAI-compatible chat endpoint. No fork is required.
+The new runtime preparation commands are not available in the published 1.8
+packages. Phase 1 remains in development and validation.
 
-Phase 1 is in development and validation.
+Follow the [Get started commands](../README.md#get-started) from the candidate
+checkout, then run `protagine init --prepare-hermes`. Setup fetches the qualified
+official source, applies exact patches in a separate directory, installs native
+dependencies and checks capabilities before attachment. No manual source edits
+are needed. Models, containers and machine services are not downloaded by this
+runtime preparation, and the existing Hermes installation stays intact.
 
-Follow the [Get started commands](../README.md#get-started) to fetch the current
-published packages in a private Python environment.
-No source edits are needed. The environment may be shared with Hermes; those
-commands keep an existing Hermes installation intact.
+To use an existing official checkout, pass its `--hermes-python`. Missing core
+interfaces trigger preparation from that clean, supported source. An unknown
+revision or tracked source modification is rejected; setup does not silently
+substitute an older version. Explicit `--prepare-hermes` selects the documented
+qualified revision.
 
 Use a Python version supported above. Replace the interpreter placeholder with
 the Python from the Hermes runtime you actually run. The sidecar, Hermes adapter
@@ -48,14 +54,18 @@ configuration is inspected or changed. `--dir` selects private Protagine state,
 otherwise the selected instance or `PROTAGINE_STATE_DIR` is used. New instances
 default to `<selected Hermes home>/protagine`. Both the selected Hermes home and Protagine
 state must stay outside Git checkouts, including when `--dir` is separate.
-Select that same Hermes home when launching Hermes:
+Use the private instance's selected interpreter and home when launching Hermes:
 
 ```bash
-export HERMES_HOME="$HOME/.hermes-orion"
-/path/to/hermes/.venv/bin/hermes
+protagine --instance "$HOME/.hermes-orion/protagine" hermes run gateway run
 ```
 
-Setup checks native runtime imports/version, canonical adapter resources, the
+For an existing managed gateway, update its interpreter through the deployment's
+normal lifecycle after validation. Do not start a second gateway alongside it.
+Preparation and attachment never restart the existing gateway or silently edit
+its service command.
+
+Setup checks native runtime capabilities, canonical adapter resources, the
 selected model with one neutral completion, the free local sidecar port, and
 configuration conflicts before it writes the private instance. `--adapter-wheel`
 can select an already-built canonical wheel instead of an installed
@@ -66,6 +76,30 @@ The selected model hostname is recorded for runtime routing, and setup checks
 its addresses with the router's existing local-network rules. A LAN hostname
 can therefore serve extraction as well as the initial chat probe. Runtime calls
 continue to resolve and check that configured host when its address changes.
+
+## Prepare or inspect Hermes separately
+
+```bash
+protagine hermes prepare \
+  --source /path/to/official/hermes \
+  --destination /path/to/new/runtime
+protagine hermes check /path/to/new/runtime
+protagine init --hermes-python /path/to/new/runtime/.venv/bin/python
+```
+
+Omit `--source` to fetch the exact official revision qualified by the packaged
+patchset. Omit `--destination` to use its directory under
+`~/.local/share/protagine/hermes/`. Preparation copies tracked official source,
+checks patch preimages and postimages, installs an isolated environment and
+records its source and capabilities. Untracked files and private profiles are
+not copied. A failed candidate stays unselected. An existing successful candidate
+is rechecked before reuse.
+
+Each Hermes update needs a patchset qualified against that exact official
+revision. Release CI applies the built wheel's patches and runs the full adapter
+suite plus the native patch tests in separate processes. The daily latest-stable
+check reports unsupported revisions; it does not upgrade, downgrade or restart
+a deployment. Upstream acceptance of these interfaces is not required.
 
 ## Preserve an explicit model configuration
 
@@ -321,8 +355,9 @@ It records the loading mode, package version and source paths in `instance.json`
 A different or incomplete installed adapter is rejected before attachment;
 upgrade it explicitly or select its matching artifact or another interpreter.
 With a separate interpreter lacking those entry points, tiny profile-local
-forwarders load the private adapter copy. Setup does not patch Hermes or install
-competing forwarders that its native precedence would ignore. An explicit later
+forwarders load the private adapter copy. These bindings are separate from
+runtime preparation. Setup does not install competing forwarders that native
+precedence would ignore. An explicit later
 upgrade of a shared installed package affects every home using that interpreter.
 Other profiles and running Hermes sessions are not restarted or modified by
 attachment. Start a new Hermes session afterward.
@@ -343,6 +378,11 @@ lifecycle, then stop this Protagine instance (`protagine --instance /private/pat
 or `service stop` for a managed instance). Complete or cancel in-flight work
 through Hermes before stopping it. Keep the private instance and Hermes home.
 
+If changing Hermes, prepare and qualify its candidate before stopping the active
+services. Select the new interpreter with `--hermes-python` during adapter refresh,
+then update the managed gateway's command through its normal lifecycle. Retain the
+previous interpreter for rollback. Preparation alone does not switch a service.
+
 Fetch the release you intend to use into a source checkout, then update both
 Protagine distributions from that checkout in the environment that runs Protagine:
 
@@ -355,7 +395,7 @@ For a pinned deployment, select the same release tag for both packages.
 A Hermes interpreter with installed Protagine entry points also needs that adapter updated in its
 own environment before refresh. That package update affects all homes using the
 interpreter. Refresh verifies those installed bytes and records the binding;
-it does not copy a second active adapter or install packages itself.
+it does not copy a second active adapter or upgrade that installed adapter package itself.
 Keep the attachment's existing loading mode. Refresh rejects a switch between
 a package installed in Hermes and profile-local directory adapters before
 writing anything.

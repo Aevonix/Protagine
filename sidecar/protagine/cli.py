@@ -23,6 +23,8 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     from protagine.qualification.cli import add_parser as add_model_parser
     add_model_parser(sub)
+    from protagine.hermes_runtime import add_parser as add_hermes_parser
+    add_hermes_parser(sub)
 
     # --- init ---
     init_p = sub.add_parser("init", help="Initialize Protagine identity and setup")
@@ -36,6 +38,9 @@ def main() -> None:
     init_p.add_argument("--agent-harness", choices=["hermes"], help="Connect an existing Hermes installation")
     init_p.add_argument("--hermes-home", default=None, help="Selected Hermes home; guided setup lists native profiles, noninteractive defaults to HERMES_HOME or ~/.hermes")
     init_p.add_argument("--hermes-python", help="Python interpreter of an existing supported Hermes installation")
+    init_p.add_argument("--prepare-hermes", action="store_true", help="Install the qualified official Hermes revision with Protagine patches before attachment")
+    init_p.add_argument("--hermes-source", type=Path, help="Apply the shipped patchset to this clean official Hermes checkout in a separate runtime")
+    init_p.add_argument("--hermes-runtime-dir", type=Path, help="Destination for a prepared Hermes runtime (never overwrites an existing runtime)")
     init_p.add_argument("--agent-name", help="Name for a new private identity; existing SOUL is preserved")
     init_p.add_argument("--agent-values", help="Comma-separated guiding values for a new private agent")
     init_p.add_argument("--timezone", help="Named timezone for the private agent's expectations, for example Europe/Paris")
@@ -267,6 +272,14 @@ def main() -> None:
         os.environ["PROTAGINE_INSTANCE_SELECTED"] = "1"
         os.environ.pop("PROTAGINE_STATE_DIR", None)
         os.environ["PROTAGINE_STATE_DIR"] = str(Path(args.instance).expanduser().resolve())
+
+    if args.command == "hermes":
+        from protagine.hermes_runtime import run
+        try:
+            raise SystemExit(run(args))
+        except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
+            print(f"Hermes runtime operation failed: {exc if isinstance(exc, ValueError) else type(exc).__name__}", file=sys.stderr)
+            raise SystemExit(1) from None
 
     if args.command == "models":
         from protagine.qualification.cli import run
