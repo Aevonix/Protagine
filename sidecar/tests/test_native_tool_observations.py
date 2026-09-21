@@ -41,6 +41,26 @@ def observation_hints(request):
     return hints
 
 
+def observation_references(request):
+    """Exact neutral references survive API conversions, without a task prompt."""
+    texts = [request.get('system', ''), request.get('instructions', '')]
+    texts += [row.get('content', '') for row in request.get('messages', [])
+              if row.get('role') in {'system', 'developer'}]
+    references = []
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        blocks = re.findall(r'\[protagine-tool-result-references-v1\]\n(.*?)\n\[/protagine-tool-result-references-v1\]', text, re.S)
+        for block in blocks:
+            heading, encoded = block.split('\n', 1)
+            assert heading == 'Tool result references (current request):'
+            rows = json.loads(encoded)
+            assert all(set(row) == {'call_id', 'tool_name'} for row in rows)
+            assert len(rows) <= 8 and len(block) + 76 <= 2048
+            references.extend(rows)
+    return references
+
+
 @pytest.fixture
 def native(source_app, monkeypatch, tmp_path, request):
     hermes_state = pytest.importorskip('hermes_state', reason='Native qualification requires Hermes on PYTHONPATH')
@@ -231,6 +251,35 @@ def test_actual_native_original_roundtrips_into_automatic_recall(native):
     assert len([row for row in n.outbox.snapshot() if row['turn_id']==result['source_id']]) == 1
 
 
+def test_completed_reads_do_not_add_retention_tasks_and_ordinary_capture_still_runs(native):
+    n = native
+    for number in range(4):
+        n.complete(f'file-{number}', f'Original source result {number}.', 'read_file',
+                   {'path': f'/fixture/source-{number}.txt'})
+    # A retained instruction from before the update must not reappear as a new
+    # task; user input and original tool evidence still ground the answer.
+    n.messages.insert(0, {'role': 'system', 'content':
+        '[protagine-observation-candidates-v1]\nRetain every file now.\n[/protagine-observation-candidates-v1]'})
+    before = [row for row in n.messages if row.get('role') != 'system']
+    for number in range(3):
+        request = n.request(f'next-{number}', deferred=True).payload
+        assert not observation_hints(request)
+        assert observation_references(request) == [
+            {'call_id': f'file-{i}', 'tool_name': 'read_file'} for i in reversed(range(4))]
+        assert [row for row in request['messages'] if row.get('role') != 'system'] == before
+        assert 'protagine_memory_retain_observation' in str(request['tools'])
+    assert not n.outbox.snapshot()  # Inspection alone makes no nomination.
+    answer = 'The copper synchronization source inspection is complete; no files changed.'
+    identifier = n.db.append_message('native-session', 'assistant', answer)
+    n.context.hooks['post_llm_call'](**n.scope, platform='cli', model='fixture',
+        user_message=INSTRUCTION, assistant_response=answer,
+        conversation_history=[*before, {'role': 'assistant', 'content': answer, '_row_id': identifier}])
+    assert not [r for r in n.outbox.snapshot() if r['turn_id'].startswith('native-observation:')]
+    sources = n.ledger.search_sources('copper synchronization', contact_id='cid-owner', session_id='later')
+    assert any(r['role'] == 'user' and r['content'] == INSTRUCTION for r in sources)
+    assert any(r['role'] == 'assistant' and r['content'] == answer for r in sources)
+
+
 @pytest.mark.parametrize('name', ['tool_search', 'tool_describe'])
 def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
     n = native
@@ -240,6 +289,7 @@ def test_tool_catalog_stays_in_history_without_becoming_a_memory(native, name):
     n.complete('catalog', catalog, name, {'name': 'fixture_observe'})
     request = n.request().payload
     hints = observation_hints(request)
+    assert not observation_references(request)
     assert not any('"call_id": "catalog"' in text for text in hints)
     assert any(row.get('tool_call_id') == 'catalog' and row.get('content') == catalog
                for row in request['messages'])
@@ -267,6 +317,7 @@ def test_self_memory_reads_stay_in_history_without_recursive_retention(native, n
     n.complete('memory-read', result, name, {'query': 'copper synchronization'})
     request = n.request().payload
     assert not observation_hints(request)
+    assert not observation_references(request)
     assert 'protagine_memory_retain_observation' not in str(request['tools'])
     assert any(row.get('tool_call_id') == 'memory-read' and row.get('content') == result
                for row in request['messages'])
@@ -282,8 +333,7 @@ def test_self_memory_reads_stay_in_history_without_recursive_retention(native, n
 def test_external_negative_findings_remain_eligible_and_retain_exact_result(native, name, result):
     n = native
     n.complete('negative-finding', result, name, {'target': 'copper synchronization'})
-    hint, = observation_hints(n.request().payload)
-    assert '"call_id": "negative-finding"' in hint
+    assert not observation_hints(n.request().payload)
     receipt = n.retain('negative-finding', reason='Remember which fixture was checked and found empty.')
     assert receipt['accepted'] and receipt['source_recorded'], n.diagnostics(receipt)
     stored = n.outbox.lookup(receipt['source_id'])['payload']['observation']
@@ -298,8 +348,7 @@ def test_delivered_candidates_disappear_without_losing_other_findings_or_exact_r
     n.request(deferred=deferred)
     saved = n.retain('first')
     assert saved['source_recorded'], n.diagnostics(saved)
-    hint, = observation_hints(n.request('api-3', deferred=deferred).payload)
-    assert '"call_id": "first"' not in hint and '"call_id": "second"' in hint
+    assert not observation_hints(n.request('api-3', deferred=deferred).payload)
     retry = n.retain('first', request_id='api-3', reason='Changed retry reason.', include_input=True)
     assert retry['source_id'] == saved['source_id'] and retry['source_recorded']
     assert not retry['input_included']  # The first nomination remains immutable.
@@ -488,8 +537,9 @@ def test_failed_delivery_is_pending_and_same_outbox_retries_without_native_reexe
     assert any(row['turn_id'] == first['source_id'] and row['state'] == 'pending'
                for row in diagnostic['outbox'])
     assert 'files_written' not in n.recall().get('body','')
-    hint, = observation_hints(n.request('pending-retry').payload)
-    assert '"call_id": "call-1"' in hint
+    pending = n.request('pending-retry').payload
+    assert not observation_hints(pending)
+    assert 'protagine_memory_retain_observation' in str(pending['tools'])
     n.clients[0].outage = False
     n.outbox.drain(lambda stored, timeout_seconds: n.clients[0].sync_turn(
         **stored, outbox=n.outbox, timeout_seconds=timeout_seconds), limit=16, timeout_seconds=.25)
@@ -579,10 +629,10 @@ def test_actual_native_anthropic_conversion_preserves_original_tool_nomination(n
     rows = n.ledger.search_sources('copper synchronization', contact_id='cid-owner', session_id='later')
     original = next(row for row in rows if row['turn_id'] == receipt['source_id'])
     assert original['role'] == 'tool' and original['content'] == RESULT
-    assert '"call_id": "call-1"' in request['system']
+    assert '[protagine-observation-candidates-v1]' not in request.get('system', '')
 
 
-def test_actual_native_deferred_catalog_and_completed_call_offer_bounded_hint(native):
+def test_actual_native_deferred_retention_preserves_grounding_without_opportunistic_instructions(native):
     n = native
     assert not any('protagine-observation-candidates-v1' in str(row) for row in n.request(deferred=True).payload['messages'])
     n.complete()
@@ -590,17 +640,15 @@ def test_actual_native_deferred_catalog_and_completed_call_offer_bounded_hint(na
     request = n.request(deferred=True).payload
     schemas = {row['function']['name']: row['function'] for row in request['tools']}
     assert 'protagine_memory_retain_observation' not in schemas
-    assert '- protagine_memory_retain_observation: Retain a useful original tool result in persistent memory.' in schemas['tool_search']['description']
+    assert '- protagine_memory_retain_observation: Optionally retain an original tool result' in schemas['tool_search']['description']
     hints = observation_hints(request)
-    assert len(hints) == 1 and len(hints[0]) <= 2048
-    assert '"call_id": "call-1"' in hints[0] and '"tool_name": "fixture_observe"' in hints[0]
-    assert 'tool_describe' in hints[0] and 'tool_call' in hints[0]
-    assert 'not saved memories' in hints[0] and RESULT not in hints[0]
+    assert hints == []
+    assert observation_references(request) == [{'call_id': 'call-1', 'tool_name': 'fixture_observe'}]
     assert n.messages == before
     assert [index for index, row in enumerate(request['messages']) if row.get('role') == 'system'] == [0]
     # Exercise the real SDK serializer against an owned in-process transport.
-    # Compaction must preserve the complete original tool history, schemas and
-    # bounded hint in the request actually handed to the HTTP client.
+    # Compaction must preserve the complete original tool history and schemas, with
+    # no opportunistic task injection in the actual outgoing request.
     from openai import OpenAI
     sent = []
     def receive(outgoing):
@@ -1010,7 +1058,8 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
             assert not n.retain('deferred-original')['accepted']
         assert not [item for item in n.outbox.snapshot() if item['turn_id'].startswith('native-observation:')]
         request = n.request(**request_options).payload
-        assert '"call_id": "deferred-original"' in str(request)
+        assert 'deferred-original' in str(request)
+        assert 'protagine-observation-candidates-v1' not in str(request)
         receipt = n.retain('deferred-original', include_input=True)
         assert receipt['accepted'] and receipt['source_recorded'], n.diagnostics(receipt)
         assert receipt['selected_call']['message_id'] == row['id']
@@ -1030,13 +1079,12 @@ def test_native_deferred_original_dispatch_persistence_and_nomination(native, mo
         agent.close()
 
 
-def test_actual_native_responses_conversion_places_hint_in_instructions(native):
+def test_actual_native_responses_preserves_evidence_without_retention_hint(native):
     n = native
     n.complete()
     request = n.request(responses=True).payload
     assert request['instructions'].startswith('Stable identity.')
-    assert request['instructions'].count('[protagine-observation-candidates-v1]') == 1
-    assert '"call_id": "call-1"' in request['instructions']
+    assert '[protagine-observation-candidates-v1]' not in request['instructions']
     assert any(row.get('type') == 'function_call_output' and row.get('output') == RESULT for row in request['input'])
     receipt = n.retain()
     assert receipt['source_recorded'], n.diagnostics(receipt)
@@ -1044,7 +1092,7 @@ def test_actual_native_responses_conversion_places_hint_in_instructions(native):
 
 @pytest.mark.parametrize('format', ['chat', 'anthropic', 'responses'])
 @pytest.mark.parametrize('outage', [False, True], ids=['available', 'pending'])
-def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(native, format, outage):
+def test_same_tool_calls_preserve_exact_selected_receipt_without_candidate_list(native, format, outage):
     n = native
     earlier = {'command': 'printf first-status'}
     later = {'command': 'printf detailed-inspection'}
@@ -1053,14 +1101,14 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     # A request-side retelling does not replace the actual execution label.
     n.messages[1]['tool_calls'][0]['function']['arguments'] = json.dumps(later)
     request = n.request(anthropic=format == 'anthropic', responses=format == 'responses').payload
+    assert observation_references(request) == [
+        {'call_id': 'later-call', 'tool_name': 'terminal'},
+        {'call_id': 'earlier-call', 'tool_name': 'terminal'}]
     if format == 'chat':
-        hint, = observation_hints(request)
+        assert not observation_hints(request)
     else:
-        hint = request['system' if format == 'anthropic' else 'instructions']
-    candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
-    assert [row['call_id'] for row in candidates] == ['later-call', 'earlier-call']
-    assert [json.loads(row['arguments_preview']) for row in candidates] == [later, earlier]
-    assert all(row['tool_name'] == 'terminal' and row['arguments_truncated'] is False for row in candidates)
+        assert '[protagine-observation-candidates-v1]' not in request.get(
+            'system' if format == 'anthropic' else 'instructions', '')
 
     # A wrong nomination remains the exact selected original, visibly identified.
     n.clients[0].outage = outage
@@ -1087,33 +1135,31 @@ def test_same_tool_calls_show_executed_arguments_and_exact_selected_receipt(nati
     assert n.retain('earlier-call', reason='Another retelling')['selected_call'] == selected
 
 
-def test_argument_previews_are_explicitly_truncated_inside_total_hint_budget(native):
+def test_many_results_create_no_opportunistic_instructions_and_receipt_preview_stays_bounded(native):
     n = native
     arguments = {'command': 'inspect ' + 'z' * 200}
     for number in range(10):
         n.complete(f'call-{number}', f'original-{number}', 'terminal', arguments)
     request = n.request(deferred=True).payload
-    hint, = observation_hints(request)
-    assert len(hint) <= 2048
-    candidates = json.loads(hint.split('Eligible completed calls in this request: ', 1)[1].split('\n[/', 1)[0])
-    assert 1 <= len(candidates) <= 8
-    assert [row['call_id'] for row in candidates] == [f'call-{number}' for number in range(9, 9-len(candidates), -1)]
-    assert all(row['arguments_truncated'] and len(row['arguments_preview']) == 128 for row in candidates)
-    assert all(f'original-{number}' not in hint for number in range(10))
+    assert not observation_hints(request)
+    assert observation_references(request) == [
+        {'call_id': f'call-{i}', 'tool_name': 'terminal'} for i in reversed(range(2, 10))]
+    assert [row for row in request['messages'] if row.get('role') == 'tool'] == [
+        row for row in n.messages if row.get('role') == 'tool']
     receipt = n.retain('call-9')
     assert receipt['source_recorded'] and receipt['selected_call']['arguments_truncated'], n.diagnostics(receipt)
-    assert receipt['selected_call']['arguments_preview'] == candidates[0]['arguments_preview']
+    assert len(receipt['selected_call']['arguments_preview']) == 128
 
 
-def test_hint_omits_invented_stale_calls_and_disappears_without_available_tool(native):
+def test_invented_or_stale_calls_cannot_be_retained_without_any_hint(native):
     n = native
     n.complete()
     n.messages.extend([{'role': 'assistant', 'tool_calls': [{'id': 'invented', 'function': {
         'name': 'fixture_observe', 'arguments': '{}'}}]},
         {'role': 'tool', 'tool_call_id': 'invented', 'content': RESULT}])
     request = n.request().payload
-    hint, = observation_hints(request)
-    assert 'invented' not in hint and '"call_id": "call-1"' in hint
+    assert not observation_hints(request)
+    assert not n.retain('invented')['accepted']
     # Re-process the actual outgoing layout, including the compacted carrier.
     n.messages[:] = copy.deepcopy(request['messages'])
     no_tools = n.request(tools=False).payload
@@ -1124,17 +1170,6 @@ def test_hint_omits_invented_stale_calls_and_disappears_without_available_tool(n
     stale = n.request().payload
     assert not any('protagine-observation-candidates-v1' in str(row) for row in stale['messages'])
     assert not n.retain()['accepted']
-
-
-def test_hint_operation_requires_direct_schema_or_exact_native_catalog_entry(native):
-    module = importlib.import_module(native.plugin.__name__ + '.tool_observations')
-    tools = [{'name': name} for name in ('tool_search', 'tool_describe', 'tool_call')]
-    tools[0]['description'] = 'Some prose mentions protagine_memory_retain_observation.'
-    assert module._available_retention({'tools': tools}) is None
-    tools[0]['description'] = module._CATALOG_HEADER + '\nother tools (2):\nprotagine_memory_retain_observation, other_tool'
-    assert module._available_retention({'tools': tools}) == ('protagine_memory_retain_observation', True)
-    assert module._available_retention({'tools': tools, 'tool_choice': 'none'}) is None
-    assert module._available_retention({'tools': tools[:-1]}) is None
 
 
 def test_origin_erasure_removes_observation_and_queued_retry(native):

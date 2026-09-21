@@ -21,6 +21,7 @@ _EXCLUDED = {'session_search', 'tool_search', 'tool_describe', 'protagine_memory
     'protagine_timeline', 'protagine_get_affect', 'protagine_check_commitments',
     'protagine_list_commitments', 'protagine_query_entities'}
 _HINT_MARKER = 'protagine-observation-candidates-v1'
+_REFERENCE_MARKER = 'protagine-tool-result-references-v1'
 _CATALOG_HEADER = 'Deferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):'
 _RETENTION = 'protagine_memory_retain_observation'
 
@@ -238,7 +239,7 @@ class ToolObservations:
         self._lock, self._turns = threading.RLock(), OrderedDict()
 
     def _delivered(self, record):
-        """Suppress repeat hints, including delivery by an outbox retry.
+        """Track completed delivery, including delivery by an outbox retry.
 
         This historical receipt never authorizes retention: handle() still
         checks current request witnesses and erasures on every explicit retry.
@@ -278,6 +279,7 @@ class ToolObservations:
         if not isinstance(request, dict):
             return request
         request = replace_context(request, api_mode=api_mode, marker=_HINT_MARKER)
+        request = replace_context(request, api_mode=api_mode, marker=_REFERENCE_MARKER)
         if key is None or not isinstance(request_id, str) or not request_id:
             return without_tool(request, _RETENTION)
         calls, results = _request_results(request)
@@ -295,36 +297,28 @@ class ToolObservations:
                     if (record['sources'] is not None
                             and record['input_sha256'] == hashlib.sha256(scope.user_message.encode()).hexdigest()
                             and not self._delivered(record)):
-                        eligible.append({'call_id': call_id, 'tool_name': name, **record['arguments']})
+                        eligible.append({'call_id': call_id, 'tool_name': name})
                 while len(record['visible']) > 8:
                     record['visible'].pop(next(iter(record['visible'])))
-        available = _available_retention(request)
         if not eligible or self.request_memory.supplied_snapshot(scope) is None:
             return without_tool(request, _RETENTION)
-        if not available:
+        if not _available_retention(request):
             return request
-        name, deferred = available
-        guidance = (f'For durable findings or meaningful outcomes with likely future use, you may retain '
-            f'an original tool result using {name}(call_id, reason). Skip incidental output, duplicate '
-            'status, transient noise and secrets. These are candidates, not saved memories. '
-            'Match the call ID to its execution arguments; truncated previews require checking the original call. '
-            'For recipe reuse, set include_input=true on the actual workflow/config call when its arguments matter; '
-            'retain a separate final-result call if needed. A locator alone is not a recipe. Inputs may contain secrets; '
-            'skip those calls. Input plus result must fit 16 KiB. ')
-        if deferred:
-            guidance += f'Load {name} with tool_describe, then invoke it with tool_call. '
-        guidance += '\nEligible completed calls in this request: '
-        listed = []
-        wrapper_chars = len(f'[{_HINT_MARKER}]\n\n[/{_HINT_MARKER}]')
+        # Some serving templates omit API call IDs. Preserve neutral exact-call
+        # references so deliberate retention still works; do not introduce a
+        # competing task, tool-discovery instructions or argument summaries.
+        references = []
+        heading = 'Tool result references (current request):\n'
+        wrapper_chars = len(f'[{_REFERENCE_MARKER}]\n\n[/{_REFERENCE_MARKER}]')
         for item in reversed(eligible):
-            encoded = json.dumps([*listed, item], ensure_ascii=True).replace('[/', r'\u005b/')
-            if wrapper_chars + len(guidance) + len(encoded) > 2048 or len(listed) == 8:
+            encoded = json.dumps([*references, item], ensure_ascii=True).replace('[/', r'\u005b/')
+            if wrapper_chars + len(heading) + len(encoded) > 2048 or len(references) == 8:
                 break
-            listed.append(item)
-        if not listed:
+            references.append(item)
+        if not references:
             return request
-        text = guidance + json.dumps(listed, ensure_ascii=True).replace('[/', r'\u005b/')
-        return replace_context(request, text, api_mode=api_mode, marker=_HINT_MARKER)
+        text = heading + json.dumps(references, ensure_ascii=True).replace('[/', r'\u005b/')
+        return replace_context(request, text, api_mode=api_mode, marker=_REFERENCE_MARKER)
 
     def discovery(self, value, scope, context):
         """Filter this completed discovery only, using checked request witnesses.
