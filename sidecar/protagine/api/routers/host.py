@@ -1284,11 +1284,13 @@ async def memory_recent(body: MemoryRecentRequest, request: Request) -> MemoryRe
     _p8_viewer_for_request(request, person)
     from protagine.turns import get_turn_idempotency_ledger
     from protagine.memory.recent import read_recent
-    try:
+    def load_recent():
         ledger = get_turn_idempotency_ledger(get_state_dir())
-        return MemoryRecentResponse(**read_recent(ledger, contact_id=person,
+        return read_recent(ledger, contact_id=person,
             session_id=body.session_id, platform=body.platform, limit=body.limit,
-            comms_log=_comms_log))
+            comms_log=_comms_log)
+    try:
+        return MemoryRecentResponse(**await asyncio.to_thread(load_recent))
     except Exception as exc:
         logger.warning('Recent canonical conversation unavailable (%s)', type(exc).__name__)
         raise HTTPException(status_code=503, detail={

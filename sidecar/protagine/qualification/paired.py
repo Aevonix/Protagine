@@ -1,7 +1,6 @@
 """Frozen, alternating pairs of fresh containerized Hermes episodes."""
 import asyncio
 from copy import deepcopy
-import fcntl
 import hashlib
 import inspect
 import json
@@ -178,6 +177,7 @@ async def run(output, *, resume=False, **resources):
     if expected != manifest:
         raise ValueError('Run requires identical frozen dataset, policy, container and implementation; create a new plan')
     with (output / '.paired.lock').open('a') as lock:
+        import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if not resume and any((output / member['path']).exists() for member, _ in prepared):
             raise ValueError('Use --resume to continue untouched episodes; started attempts are never rerun')

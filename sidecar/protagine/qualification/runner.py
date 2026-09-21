@@ -3,7 +3,6 @@ import asyncio
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
-import fcntl
 import importlib.metadata
 import inspect
 import hashlib
@@ -271,6 +270,7 @@ async def evaluate(directory, recipe, cases, consumers, evaluators, router_facto
     identity['implementation_sha256'] = digest(implementation)
     directory.mkdir(mode=0o700, parents=True, exist_ok=resume)
     with (directory / '.runner.lock').open('a') as lock:
+        import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         manifest_path = directory / 'run.json'
         if resume:

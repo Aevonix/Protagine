@@ -194,6 +194,10 @@ def test_failed_container_removal_keeps_cleanup_unconfirmed(tmp_path, selected_c
     result = asyncio.run(paired_container.consume(paired_cases.cases(arm='base_hermes')[0].inputs, context))
     assert context.state_cleanup_safe is False
     assert result['effects']['container_removed'] is False
+    retained = b'\n'.join(p.read_bytes() for p in tmp_path.rglob('*')
+                          if p.is_file() and p != selected_config)
+    assert b'explicit-fixture-key' not in retained
+    assert b'owner-private-key' not in retained
 
 
 class SyncChunks(httpx.SyncByteStream):

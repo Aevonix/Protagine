@@ -78,6 +78,53 @@ def probe_runtime(python, *, timeout=45):
                              "no existing profile was changed.") from None
 
 
+def _check_callbacks(home, *, overlap=False):
+    from hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_cli.plugins_manifest import PluginManifest
+    manager = PluginManager(scope_key=str(home))
+    context = PluginContext(PluginManifest(name="capability_probe", source="user"), manager)
+    marker = contextvars.ContextVar("capability_probe_marker", default="missing")
+    entered, release = threading.Event(), threading.Event()
+    values, errors = {}, []
+    def callback(**kwargs):
+        value = marker.get()
+        if overlap and value == "first":
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError("probe release timed out")
+        return value
+    registration = context.register_hook("pre_llm_call", callback)
+    assert registration is not None
+    def invoke(value):
+        token = marker.set(value)
+        try:
+            values[value] = manager.invoke_hook("pre_llm_call", session_id=value)
+        except BaseException as error:
+            errors.append(type(error).__name__)
+        finally:
+            marker.reset(token)
+    if overlap:
+        first = threading.Thread(target=invoke, args=("first",), daemon=True)
+        second = threading.Thread(target=invoke, args=("second",), daemon=True)
+        first.start()
+        try:
+            assert entered.wait(2)
+            second.start()
+            second.join(.1)
+            assert not second.is_alive(), "callback invocations are serialized"
+        finally:
+            release.set()
+            first.join(3)
+            if second.ident is not None:
+                second.join(3)
+        assert not first.is_alive() and not second.is_alive()
+        assert values == {"first": ["first"], "second": ["second"]}, values
+    else:
+        invoke("first"); invoke("second")
+        assert values == {"first": ["first"], "second": ["second"]}, values
+    assert not errors
+
+
 def _probe():
     def no_network(*args, **kwargs):
         raise RuntimeError("Capability checks must stay offline")
@@ -116,51 +163,6 @@ def _probe():
                     ("patchset_id", "official_revision", "source_revision", "manifest_sha256", "qualification_only")}
     except Exception as error:
         result["runtime"] = {"version": None, "revision": None, "error_type": type(error).__name__}
-
-    def callbacks(*, overlap=False):
-        from hermes_cli.plugins import PluginContext, PluginManager
-        from hermes_cli.plugins_manifest import PluginManifest
-        manager = PluginManager(scope_key=str(home))
-        context = PluginContext(PluginManifest(name="capability_probe", source="user"), manager)
-        marker = contextvars.ContextVar("capability_probe_marker", default="missing")
-        entered, release = threading.Event(), threading.Event()
-        values, errors = {}, []
-        def callback(**kwargs):
-            value = marker.get()
-            if overlap and value == "first":
-                entered.set()
-                if not release.wait(2):
-                    raise AssertionError("probe release timed out")
-            return value
-        registration = context.register_hook("pre_llm_call", callback)
-        assert registration is not None
-        def invoke(value):
-            token = marker.set(value)
-            try:
-                values[value] = manager.invoke_hook("pre_llm_call", session_id=value)
-            except BaseException as error:
-                errors.append(type(error).__name__)
-            finally:
-                marker.reset(token)
-        if overlap:
-            first = threading.Thread(target=invoke, args=("first",), daemon=True)
-            second = threading.Thread(target=invoke, args=("second",), daemon=True)
-            first.start()
-            try:
-                assert entered.wait(2)
-                second.start()
-                second.join(.1)
-            finally:
-                release.set()
-                first.join(3)
-                if second.ident is not None:
-                    second.join(3)
-            assert not first.is_alive() and not second.is_alive()
-            assert values == {"first": ["first"], "second": ["second"]}, values
-        else:
-            invoke("first"); invoke("second")
-            assert values == {"first": ["first"], "second": ["second"]}, values
-        assert not errors
 
     def memory():
         from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
@@ -261,14 +263,14 @@ def _probe():
         from hermes_cli.tool_completion import FinishTurn
         assert callable(FinishTurn)
 
-    check("plugin_callbacks", callbacks, "native registration and serial caller-context round trip")
+    check("plugin_callbacks", lambda: _check_callbacks(home), "native registration and serial caller-context round trip")
     check("memory_checkpoint", memory, "native provider discovery and checkpoint-v2 interfaces")
     check("request_authority", middleware, "native request/execution middleware and unchanged-request round trip")
     check("native_input_identity", native_input, "real SQLite row identity, mismatched input/index rejection, request wiring")
     check("owned_payload_erasure", erasure, "real SQLite preimage rejection, selective erasure and idempotent replay")
     check("settled_native_turn", lambda: hook("on_native_turn_settled"), "declared post-persistence observer; full suite checks delivery")
     check("durable_tasks", tasks, "real task persistence, duplicate admission/claim rejection, restart and stale-claim recovery")
-    check("overlapping_callbacks", lambda: callbacks(overlap=True), "two overlapping native callbacks retain distinct caller context")
+    check("overlapping_callbacks", lambda: _check_callbacks(home, overlap=True), "two overlapping native callbacks retain distinct caller context")
     check("settled_gateway_turn", lambda: hook("on_gateway_turn_settled"), "declared gateway-settled observer; full suite checks ownership")
     check("detached_turn_observer", lambda: hook("on_detached_turn_end"), "declared detached-end observer; full suite checks terminal outcomes")
     check("owned_cron_output", cron, "native exact-job snapshot/erase interface; full suite checks retained copies")

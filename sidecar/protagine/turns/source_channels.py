@@ -70,8 +70,12 @@ def record(conn, *, turn_id, contact_id, messages, occurred_at, channel_id=None)
         basis = 'reviewed_history'
         ordinal = origins[0].get('message_id', 0)
         ordinal = ordinal if type(ordinal) is int else 0
-    if not isinstance(platform, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_.-]{0,63}', platform):
+    if not isinstance(platform, str):
         return
+    platform = platform.lower()
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_.-]{0,63}', platform):
+        return
+    conversation_id = platform + ':' + conversation
     if platform in AUTOMATION_PLATFORMS:
         return
     existing = conn.execute('SELECT contact_id,platform,conversation_id FROM source_channels WHERE turn_id=?',

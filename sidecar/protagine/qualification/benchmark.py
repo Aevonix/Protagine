@@ -1,7 +1,6 @@
 """Frozen batches over the existing qualification runner; no deployment machinery."""
 import asyncio
 from collections import Counter
-import fcntl
 import hashlib
 import json
 from pathlib import Path
@@ -207,6 +206,7 @@ async def execute_prepared(directory, manifest, prepared, consumers, evaluators,
     """Shared immutable batch execution after the caller validates its frozen plan."""
     directory = Path(directory)
     with (directory / '.benchmark.lock').open('a') as lock:
+        import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if not resume and any((directory / shard['path'] / 'run.json').exists() for shard, _ in prepared):
             raise ValueError('A child run already exists; use --resume to preserve completed attempts')

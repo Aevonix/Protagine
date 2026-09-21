@@ -62,3 +62,36 @@ def test_native_probe_failure_has_safe_actionable_diagnostic(monkeypatch, failur
     with pytest.raises(ValueError, match='Select its Python') as error:
         capabilities.probe_runtime('/selected/python')
     assert 'PRIVATE_PROBE_CANARY' not in str(error.value)
+
+
+@pytest.mark.parametrize('serialized', [False, True])
+def test_overlap_probe_rejects_serialized_callbacks(monkeypatch, tmp_path, serialized):
+    from contextlib import nullcontext
+    import sys
+    import threading
+    from types import ModuleType
+    class Manager:
+        def __init__(self, **kwargs):
+            self.lock = threading.Lock()
+        def invoke_hook(self, name, **kwargs):
+            with self.lock if serialized else nullcontext():
+                return [self.callback(**kwargs)]
+    class Context:
+        def __init__(self, manifest, manager):
+            self.manager = manager
+        def register_hook(self, name, callback):
+            self.manager.callback = callback
+            return 'registered'
+    plugins = ModuleType('hermes_cli.plugins')
+    plugins.PluginManager, plugins.PluginContext = Manager, Context
+    manifests = ModuleType('hermes_cli.plugins_manifest')
+    manifests.PluginManifest = SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'hermes_cli', ModuleType('hermes_cli'))
+    monkeypatch.setitem(sys.modules, 'hermes_cli.plugins', plugins)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.plugins_manifest', manifests)
+    capabilities._check_callbacks(tmp_path)
+    if serialized:
+        with pytest.raises(AssertionError, match='serialized'):
+            capabilities._check_callbacks(tmp_path, overlap=True)
+    else:
+        capabilities._check_callbacks(tmp_path, overlap=True)

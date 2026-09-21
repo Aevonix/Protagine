@@ -142,7 +142,6 @@ async def consume(inputs, context):
                   'HERMES_SKIP_DOTENV', 'PYTHONNOUSERSITE', 'PYTHONUNBUFFERED'}}
     payload = {'binding': context.router.binding, 'config': config,
                'provider_env': forwarded, 'inputs': inputs}
-    write_once(state / 'container-request.json', payload)
     command = [*container_args(spec, name), '-I', '-B', '-m',
                'protagine.qualification.paired_worker']
     command[len(docker_command(spec))] = 'create'

@@ -281,9 +281,10 @@ async def test_http_scope_schema_and_real_annotation_receipt(recent_app, ledger)
 
 
 @pytest.mark.asyncio
-async def test_live_turn_capture_preserves_channel_in_source_only_path(source_app, ledger):
+@pytest.mark.parametrize('channel', ['whatsapp:chat', 'WhatsApp:chat', 'WHATSAPP:chat'])
+async def test_live_turn_capture_preserves_channel_in_source_only_path(source_app, ledger, channel):
     payload = {'identity':{'host_id':'fixture'}, 'context':{'contact_id':'person', 'session_id':'chat',
-        'channel_id':'whatsapp:chat', 'turn_id':'live', 'metadata':{'occurred_at':'2026-08-02T12:00:00Z'}},
+        'channel_id':channel, 'turn_id':'live', 'metadata':{'occurred_at':'2026-08-02T12:00:00Z'}},
         'user_message':{'role':'user','content':'The lantern inventory.'},
         'assistant_message':{'role':'assistant','content':'The list is complete.'}, 'source_only':True}
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
@@ -292,6 +293,36 @@ async def test_live_turn_capture_preserves_channel_in_source_only_path(source_ap
     packet = recent(ledger)
     assert packet['entries'][0]['conversation_id'] == 'whatsapp:chat'
     assert 'USER: The lantern inventory.' in content(packet)
+
+
+@pytest.mark.asyncio
+async def test_recent_read_does_not_hold_request_event_loop(recent_app, ledger, monkeypatch):
+    import asyncio
+    import threading
+    from protagine.memory import recent as module
+    entered, release = threading.Event(), threading.Event()
+    worker_threads = []
+    original = module.read_recent
+    add(ledger, 'source', 'the current plan')
+    def slow_read(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(2), 'event loop could not release the storage reader'
+        return original(*args, **kwargs)
+    monkeypatch.setattr(module, 'read_recent', slow_read)
+    async with AsyncClient(transport=ASGITransport(app=recent_app), base_url='http://test',
+                           headers={'Authorization':'Bearer person'}) as client:
+        pending = asyncio.create_task(client.post('/v1/host/memory/recent', json=body()))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            assert worker_threads == [worker_threads[0]]
+            assert worker_threads[0] != threading.get_ident()
+            assert not pending.done()
+        finally:
+            release.set()
+        response = await pending
+        assert response.status_code == 200, response.text
+        assert response.json()['entries'][0]['source_id'] == 'source'
 
 
 @pytest.mark.asyncio

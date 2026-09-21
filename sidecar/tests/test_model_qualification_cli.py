@@ -12,6 +12,24 @@ from protagine.qualification.runner import evaluate, inspect_binding, router_for
 from test_function_routing import endpoint, config
 
 
+def test_general_cli_help_does_not_require_posix_file_locks():
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, '-c', '''
+import builtins, runpy, sys
+original = builtins.__import__
+def without_posix(name, *args, **kwargs):
+    if name == 'fcntl':
+        raise ModuleNotFoundError('fcntl unavailable on this platform')
+    return original(name, *args, **kwargs)
+builtins.__import__ = without_posix
+sys.argv = ['protagine', '--help']
+runpy.run_module('protagine.cli', run_name='__main__')
+'''], text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'init' in result.stdout and 'models' in result.stdout
+
+
 def test_inspect_never_queries_endpoint_or_exports_credential(tmp_path, capsys):
     with endpoint() as (url, calls):
         cfg = config(url, url)

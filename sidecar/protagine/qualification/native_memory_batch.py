@@ -3,7 +3,6 @@ import argparse
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
-import fcntl
 import hashlib
 import json
 import os
@@ -96,6 +95,7 @@ async def execute(args, manifest, groups, supporting, native_config):
     from protagine.router import LLMRouter
     (args.output / 'runs').mkdir(mode=0o700, exist_ok=True)
     with (args.output / '.benchmark.lock').open('a') as lock:
+        import fcntl
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for shard, cases in groups:
             target = args.output / shard['path']
