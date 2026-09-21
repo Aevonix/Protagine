@@ -7,6 +7,7 @@ import copy
 import hashlib
 import importlib
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -44,7 +45,7 @@ def video_runtime(runtime):
     def post(path, **kw):
         if path.endswith('/sources/erasures'):
             return freshness_response(rt.ledger, path, kw['json'])
-        body = kw['json']; rt.calls.append(copy.deepcopy(kw))
+        body = kw['json']; rt.calls.append({**copy.deepcopy(kw), '_observed_monotonic': time.monotonic()})
         assert body['source_view'] == 'video' and body['asset_hash'] == rt.asset
         assert body['requested_ms'] == 1000
         result = copy.deepcopy(rt.opened)
@@ -102,7 +103,9 @@ def test_exact_frame_and_clip_are_distinct_and_metadata_recheck_never_decodes(vi
     assert rt.encoded in json.dumps(rt.middleware(wire, rt.scope)['request'])
     assert rt.decode_calls == 1 and len(rt.calls) == 2
     assert rt.calls[-1]['json']['read_revision'] == rt.opened['read_revision']
-    assert rt.calls[-1]['json']['asset_hash'] == rt.asset and rt.calls[-1]['timeout'] <= .25
+    recheck = rt.calls[-1]
+    assert recheck['json']['asset_hash'] == rt.asset
+    assert 0 < recheck['_deadline_monotonic'] - recheck['_observed_monotonic'] <= recheck['timeout'] <= 5.0
     if change == 'erasure': rt.ledger.erase_sources(contact_id='owner', turn_ids=['clip'])
     else: rt.changed = change
     checked = rt.middleware(wire, rt.scope)['request']

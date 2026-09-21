@@ -1024,7 +1024,10 @@ class RequestMemory:
             parents_valid = len(source_refs) <= 512 and len(annotation_checks) <= 512
         except (KeyError, TypeError, ValueError, AttributeError, OSError, sqlite3.Error):
             parents_valid = False
-        deadline = time.monotonic() + .25
+        # Local source checks can take several seconds under normal contention.
+        # Keep one bounded budget across network, persistence and exact-source
+        # checks; a slow check must not silently become permission to use stale data.
+        deadline = time.monotonic() + 5.0
         watermark, rules, fresh = 0, [], False
         freshness_retryable = False
         try:
@@ -1049,6 +1052,8 @@ class RequestMemory:
                     page = response.json()
                     self.outbox.apply_erasure_page(contact, page, deadline_monotonic=deadline)
                     watermark, rules = self.outbox.erasure_state(contact, deadline_monotonic=deadline)
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('source_freshness_verification_deadline')
                     fresh = (page.get('complete') is True
                              and int(page['head']) == int(page['through']) <= watermark
                              and (not source_refs or page.get('sources_current') is True))
