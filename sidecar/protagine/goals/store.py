@@ -576,9 +576,6 @@ class GoalStore:
 
     # ── Initiative Task Management (v0.7.10) ──────────────────────────────────
 
-    # Maximum snooze count before auto-dismissal
-    MAX_SNOOZE_COUNT = 3
-
     def complete_task(self, goal_id: str) -> bool:
         """Record reported completion, not proof of an external worker's effect."""
         with self._tx() as conn:
@@ -602,10 +599,7 @@ class GoalStore:
             return True
 
     def snooze_task(self, goal_id: str, hours: int, reason: str = "") -> bool:
-        """Snooze a goal/task for N hours.
-
-        If snooze_count >= MAX_SNOOZE_COUNT, auto-dismiss instead.
-        """
+        """Postpone attention without changing the goal's lifecycle state."""
         try:
             goal = self.get_goal(goal_id)
         except GoalNotFoundError:
@@ -614,22 +608,6 @@ class GoalStore:
         hours = min(hours, 168)  # Cap at 1 week
 
         goal.snooze_count += 1
-        if goal.snooze_count >= self.MAX_SNOOZE_COUNT:
-            # Snooze fatigue: auto-dismiss after too many snoozes
-            goal.status = GoalStatus.ABANDONED
-            goal.abandoned_at = datetime.now(timezone.utc)
-            goal.abandon_reason = f"auto_dismissed: snoozed {goal.snooze_count} times"
-            goal.dismissal_reason = "snooze_fatigue"
-            goal.updated_at = datetime.now(timezone.utc)
-            self.save_goal(goal)
-            self.log_transition(
-                goal_id, goal.status, GoalStatus.ABANDONED,
-                trigger="snooze_fatigue",
-                metadata={"snooze_count": goal.snooze_count},
-            )
-            logger.info("Auto-dismissed goal %s after %d snoozes", goal_id, goal.snooze_count)
-            return True
-
         goal.snoozed_until = datetime.now(timezone.utc) + timedelta(hours=hours)
         goal.updated_at = datetime.now(timezone.utc)
         self.save_goal(goal)
@@ -642,6 +620,7 @@ class GoalStore:
         except GoalNotFoundError:
             return False
 
+        previous_status = goal.status
         goal.status = GoalStatus.ABANDONED
         goal.abandoned_at = datetime.now(timezone.utc)
         goal.abandon_reason = reason
@@ -649,7 +628,7 @@ class GoalStore:
         goal.updated_at = datetime.now(timezone.utc)
         self.save_goal(goal)
         self.log_transition(
-            goal_id, goal.status, GoalStatus.ABANDONED,
+            goal_id, previous_status, GoalStatus.ABANDONED,
             trigger="llm_dismiss", metadata={"reason": reason},
         )
         return True

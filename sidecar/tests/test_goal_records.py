@@ -122,3 +122,24 @@ async def test_record_tools_use_actual_store_methods(records, handler, expected)
     assert result['status'] == expected
     missing = json.loads(await handler({'task_id': 'missing'}, registry))
     assert missing['status'] == 'unavailable'
+
+
+async def test_repeated_snooze_keeps_work_open_until_explicit_dismissal(records):
+    goal = seed(records, GoalStatus.ACTIVE)
+    registry = SimpleNamespace(goals=records)
+    for _ in range(5):
+        result = json.loads(await handle_task_snooze({'task_id': goal.goal_id}, registry))
+        assert result['status'] == 'snoozed'
+    stored = records.get_goal(goal.goal_id)
+    assert stored.status == GoalStatus.ACTIVE
+    assert stored.snooze_count == 5
+    assert stored.snoozed_until is not None
+    assert stored.abandoned_at is None
+    assert records.get_audit_trail(goal.goal_id) == []
+    assert records.get_active_tasks() == []
+
+    result = json.loads(await handle_task_dismiss({'task_id': goal.goal_id}, registry))
+    assert result['status'] == 'dismissed'
+    assert records.get_goal(goal.goal_id).status == GoalStatus.ABANDONED
+    transition, = records.get_audit_trail(goal.goal_id)
+    assert (transition.from_status, transition.to_status) == ('active', 'abandoned')
