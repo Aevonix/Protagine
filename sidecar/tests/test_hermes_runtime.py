@@ -21,6 +21,7 @@ def preparation(tmp_path, monkeypatch):
         assert original == source
         assert destination.parent.is_dir()
         destination.mkdir()
+        (destination/'unpatched_module.py').write_text('value = 1\n')
         calls.append('stage')
     def command(args, **kwargs):
         calls.append([str(value) for value in args])
@@ -108,3 +109,60 @@ def test_explicit_prepare_does_not_require_an_existing_hermes(monkeypatch):
     args = SimpleNamespace(prepare_hermes=True)
     assert setup_hermes._installation_interpreter(args) == Path('/new/python')
     assert calls[0]['source'] is None
+
+
+@pytest.mark.parametrize('change', ['modify', 'delete', 'add'])
+def test_reuse_rejects_changes_outside_patch_files(preparation, monkeypatch, change):
+    p = preparation
+    runtime.prepare_runtime(source=p.source, destination=p.root)
+    before = (p.root/'.protagine-runtime.json').read_bytes()
+    monkeypatch.setattr(runtime, 'inspect_runtime', lambda *a, **k: {'status': 'patched'})
+    source = p.root/'unpatched_module.py'
+    if change == 'modify':
+        source.write_text('value = 2\n')
+    elif change == 'delete':
+        source.unlink()
+    else:
+        (p.root/'injected_module.py').write_text('value = 3\n')
+    p.calls.clear()
+    with pytest.raises(ValueError, match='source tree changed'):
+        runtime.prepare_runtime(destination=p.root)
+    assert p.calls == []
+    assert (p.root/'.protagine-runtime.json').read_bytes() == before
+
+
+def test_reuse_ignores_only_generated_environment_and_cache_files(preparation, monkeypatch):
+    p = preparation
+    runtime.prepare_runtime(source=p.source, destination=p.root)
+    monkeypatch.setattr(runtime, 'inspect_runtime', lambda *a, **k: {'status': 'patched'})
+    for folder in ('.venv', 'hermes_agent.egg-info', '__pycache__', '.pytest_cache'):
+        generated = p.root/folder
+        generated.mkdir()
+        (generated/'generated.py').write_text('cache = True\n')
+    runtime.prepare_runtime(destination=p.root)
+
+
+@pytest.mark.parametrize('feature', ['concurrent_work', 'detached_review'])
+def test_launch_rechecks_required_features_before_starting(preparation, tmp_path, monkeypatch, feature):
+    from protagine.util import instance
+    p = preparation
+    state = tmp_path/'instance'
+    state.mkdir()
+    manifest = {'hermes_python': '/prepared/.venv/bin/python',
+                'hermes_home': str(tmp_path/'home'),
+                'hermes_capabilities': {'required_features': ['core', feature]}}
+    (state/'instance.json').write_text(json.dumps(manifest))
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(state))
+    monkeypatch.setattr(instance, 'load_environment', lambda: None)
+    launches = []
+    monkeypatch.setattr(runtime.subprocess, 'call', lambda *a, **k: launches.append((a, k)) or 0)
+    capability = next(name for name in FEATURES[feature] if name not in FEATURES['core'])
+    p.report['capabilities'][capability]['available'] = False
+    args = SimpleNamespace(hermes_command='run', hermes_args=['--', 'gateway', 'run'])
+    with pytest.raises(ValueError, match=capability):
+        runtime.run(args)
+    assert not launches
+    p.report['capabilities'][capability]['available'] = True
+    assert runtime.run(args) == 0
+    assert launches[0][0][0] == ['/prepared/.venv/bin/hermes', 'gateway', 'run']
+    assert launches[0][1]['env']['HERMES_HOME'] == manifest['hermes_home']

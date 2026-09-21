@@ -88,9 +88,28 @@ jobs:
           python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions > hermes-patches.json
       - name: Install adapter and pinned native runtime
         run: |
-          python -m pip install -e ".[test,native-memory]"
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, sys
+          adapter, = Path('dist').glob('protagine_hermes-*.whl')
+          sidecar, = Path('dist').glob('protagine-*.whl')
+          subprocess.run([sys.executable, '-m', 'pip', 'install',
+              str(adapter) + '[test,native-memory]', str(sidecar) + '[lancedb,video]',
+              'pytest-asyncio>=0.23'], check=True)
+          PY
           python -m pip install -e ./.qualification/hermes
-          python -m pip install './sidecar[lancedb,video]' 'pytest-asyncio>=0.23'
+          python - <<'PY'
+          import importlib.metadata as metadata, json
+          from pathlib import Path
+          for name, pattern in [('protagine', 'protagine-*.whl'),
+                                ('protagine-hermes', 'protagine_hermes-*.whl')]:
+              wheel, = Path('dist').resolve().glob(pattern)
+              installed = metadata.distribution(name)
+              origin = json.loads(installed.read_text('direct_url.json'))
+              assert origin.get('url') == wheel.as_uri(), (name, 'Release wheel is not installed')
+              assert not origin.get('dir_info', {}).get('editable'), name
+              print(name, installed.version, 'installed from qualified wheel')
+          PY
       - name: Qualify built artifacts and profile isolation
         run: |
           export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"

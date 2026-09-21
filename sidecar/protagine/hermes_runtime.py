@@ -5,6 +5,7 @@ or active interpreter selection changes until the caller attaches the result.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,11 +42,35 @@ def source_for_interpreter(python):
     return Path(origin).resolve().parent.parent
 
 
+
+def _source_inventory(root):
+    """Hash the complete staged source, excluding only installer/cache output."""
+    files = {}
+    for folder, directories, names in os.walk(root):
+        base = Path(folder)
+        directories[:] = sorted(name for name in directories
+            if name not in {'__pycache__', '.pytest_cache'}
+            and not (base == root and name in {'.venv', 'hermes_agent.egg-info'}))
+        if any((base/name).is_symlink() for name in directories):
+            raise ValueError('Hermes runtime source contains a directory symlink')
+        for name in sorted(names):
+            if base == root and name == '.protagine-runtime.json':
+                continue
+            path = base/name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('Hermes runtime source contains a non-regular file')
+            with path.open('rb') as stream:
+                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            files[path.relative_to(root).as_posix()] = digest
+    digest = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return {'sha256': digest, 'file_count': len(files)}
+
+
 def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=DEFAULT_PATCHSET):
     """Stage exact source, install native dependencies, then run offline probes.
 
-    A failed candidate remains unselected. Reuse rechecks patch hashes, package
-    consistency and behavior instead of trusting an old success receipt.
+    A failed candidate remains unselected. Reuse rechecks the complete source
+    digest, patch hashes, dependencies and behavior before returning its interpreter.
     """
     manifest = describe_patchset(patchset_id)
     root = Path(destination or default_destination(patchset_id)).expanduser().absolute()
@@ -68,6 +93,9 @@ def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=D
                 or prior.get('patchset') != patchset_id
                 or prior.get('official_revision') != manifest['official_revision']):
             raise ValueError('Existing runtime receipt belongs to a different source or patchset')
+        source_inventory = _source_inventory(root)
+        if source_inventory != prior.get('source_inventory'):
+            raise ValueError('Existing Hermes source tree changed; prepare a new runtime directory')
     else:
         root.parent.mkdir(parents=True, exist_ok=True)
         if source:
@@ -80,6 +108,8 @@ def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=D
                 _run(['git', '-C', checkout, 'fetch', '--depth=1', 'origin', manifest['official_revision']])
                 _run(['git', '-C', checkout, 'checkout', '--detach', 'FETCH_HEAD'])
                 stage_runtime(checkout, root, patchset_id=patchset_id)
+    if not reused:
+        source_inventory = _source_inventory(root)
     native = root/'.venv'/('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
     if reused and prior.get('python') != str(native):
         raise ValueError('Existing runtime receipt selects a different interpreter')
@@ -92,9 +122,12 @@ def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=D
         raise ValueError('Candidate interpreter imports another Hermes source; active runtime retained')
     report = probe_runtime(native)
     require_capabilities(report, manifest['features'])
+    if _source_inventory(root) != source_inventory:
+        raise ValueError('Hermes source changed during qualification; active runtime retained')
     packages = json.loads(_run([native, '-I', '-m', 'pip', 'list', '--format=json']))
     receipt = {'schema': 'protagine.hermes-runtime.v1', 'patchset': patchset_id,
                'official_revision': manifest['official_revision'], 'python': str(native),
+               'source_inventory': source_inventory,
                'capabilities': report, 'packages': packages, 'activation_state': 'not_activated'}
     # A new successful receipt replaces only our own previous receipt.
     fd, temporary = tempfile.mkstemp(prefix='.runtime-receipt-', dir=root)
@@ -150,7 +183,8 @@ def run(args):
     state = Path(os.environ['PROTAGINE_STATE_DIR']).expanduser()
     manifest = json.loads((state/'instance.json').read_text())
     native = Path(manifest['hermes_python'])
-    require_capabilities(probe_runtime(native))
+    features = manifest.get('hermes_capabilities', {}).get('required_features', ['core'])
+    require_capabilities(probe_runtime(native), features)
     environment = {**os.environ, 'HERMES_HOME': manifest['hermes_home'],
                    'VIRTUAL_ENV': str(native.parent.parent),
                    'PATH': str(native.parent)+os.pathsep+os.environ.get('PATH', '')}
