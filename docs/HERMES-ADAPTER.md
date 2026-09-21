@@ -62,6 +62,21 @@ retain their original shape; Responses and Anthropic layouts are unchanged.
 The same layout check covers native iteration-summary requests, and the memory
 check cache records the final outgoing body.
 
+Hermes's builtin `MEMORY.md` and `USER.md` stores belong to its profile, without
+per-contact ownership. Protagine allows their prompt blocks only for a valid
+owner or system scope. Guest and unresolved turns remove them on the outgoing
+request copy, including native Relay summary calls. Files, conversation history
+and ordinary owner access are preserved; participant-scoped Protagine recall is
+handled separately. This closes a demonstrated first-request disclosure through
+the native global user profile, before any tool authorization could apply.
+
+The native prompt currently exposes no ownership descriptor for these blocks.
+The adapter recognizes the native renderer's titled header and exact character
+count; tests use the actual Hermes renderer and request conversions. A recognized
+but malformed or fragmented block withholds its instruction carrier. Runtime
+upgrades must retain this renderer compatibility test. This boundary does not
+classify arbitrary private information placed in custom system instructions.
+
 ## Bundled skills
 
 The adapter wheel includes `protagine-deep-research` for cited investigations and

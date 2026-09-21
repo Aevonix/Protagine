@@ -950,6 +950,8 @@ class RequestMemory:
         return list(refs.values())
 
     def __call__(self, request, scope, *, operational=None, current_work=False):
+        from .native_profile import scope_builtin_memory
+        request = scope_builtin_memory(request, scope)
         from .input_provenance import current as supplied_current, withheld_request
         supplied_input = supplied_current()
         updates = supplied_input.request_updates(scope, request) if supplied_input else []
