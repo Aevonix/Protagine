@@ -1,9 +1,9 @@
 # Hermes capability contract
 
-The **1.9.0rc1 release candidate** installs the required Hermes interfaces from a
+Protagine **1.9.0** installs the required Hermes interfaces from a
 versioned patchset shipped with Protagine. Installation uses official Hermes
 source. It does not require a fork or acceptance of an upstream pull request.
-These commands are new in this candidate, not the published 1.8 series.
+These commands are included in Protagine 1.9.0.
 
 The first patchset, `hermes-0.21.3-protagine-1`, targets official Hermes **0.21.3**,
 tag `v2026.9.14`, commit

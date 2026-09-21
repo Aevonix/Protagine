@@ -1,10 +1,9 @@
 # Hermes runtime compatibility
 
-Protagine **1.9.0rc1** prepares official Hermes source with a versioned interface
+Protagine **1.9.0** prepares official Hermes source with a versioned interface
 patchset packaged in its wheel. The installer stages a separate runtime and
 validates it before attachment. A maintained fork and upstream acceptance are
-not prerequisites. This is release-candidate functionality; the 1.8 packages do
-not contain the new preparation commands.
+not prerequisites. The preparation commands are included in Protagine 1.9.0.
 
 ## Qualified source and patchset
 

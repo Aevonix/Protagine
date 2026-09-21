@@ -1,12 +1,11 @@
 # Create or attach a private Hermes agent
 
-The **1.9.0rc1 release candidate** prepares official Hermes **0.21.3** plus the
+Protagine **1.9.0** prepares official Hermes **0.21.3** plus the
 [packaged compatibility patchset](HERMES-HOOK-COMPATIBILITY.md). You need Python
 3.12, Git and one local OpenAI-compatible chat endpoint. No fork is required.
-The new runtime preparation commands are not available in the published 1.8
-packages. Phase 1 remains in development and validation.
+Phase 1 remains in development and validation.
 
-Follow the [Get started commands](../README.md#get-started) from the candidate
+Follow the [Get started commands](../README.md#get-started) from the source
 checkout, then run `protagine init --prepare-hermes`. Setup fetches the qualified
 official source, applies exact patches in a separate directory, installs native
 dependencies and checks capabilities before attachment. No manual source edits

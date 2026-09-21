@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.9.0rc1 - consolidate execution and qualify runtime contracts
+## v1.9.0 - consolidate execution and qualify runtime contracts
 
 Remove the duplicate no-host initiative executor and its startup, preset and
 status surfaces. Hermes keeps ownership of registered reviews and accepted
@@ -21,7 +21,7 @@ is required. `protagine init --prepare-hermes` prepares this runtime; `protagine
 hermes prepare`, `check` and `run` expose preparation, inspection and the selected
 instance launcher. Existing services are switched through their normal lifecycle.
 Unknown upstream revisions require a newly qualified patchset and leave the active
-runtime in place. These commands are new in 1.9.0rc1.
+runtime in place. These commands are new in 1.9.0.
 
 Release CI applies patches from the built wheel to official Hermes and runs the
 complete adapter suite and isolated native patch regressions. The initial bundle
@@ -49,9 +49,21 @@ the active index's full identity, vector width and bounded storage reads. Routin
 readiness no longer scans every memory record; errors and timeouts still report
 degraded health. Exhaustive model-label discovery remains available for audits.
 
-Candidate components: `protagine` 1.9.0rc1, `protagine-hermes` 1.9.0rc1 and
-`protagine-hostworker` 0.3.1rc1. This candidate does not declare Phase 1 complete
-or an overall performance advantage over Hermes.
+Remove the duplicate goal planner, conversation-synthesis writer, unused tier
+learner and retired compatibility helpers. Existing goal records, named model
+roles and configured fallbacks remain. Snoozing repeatedly no longer abandons
+a goal. Graph baseline reads and updates use their actual queries.
+
+Recent-memory reads run outside the request event loop. Channel indexing
+normalizes accepted platform names. Hermes preparation verifies the full source
+tree before reuse, and launch checks the instance's required feature groups.
+The concurrency probe rejects serialized callbacks. Native CI retains the built
+release wheels. Benchmark requests pass credentials through stdin without
+persisting the request payload; general CLI help does not require POSIX locks.
+
+Components: `protagine` 1.9.0, `protagine-hermes` 1.9.0 and
+`protagine-hostworker` 0.3.1. This release does not establish an overall
+performance advantage over Hermes or completed autonomous self-improvement.
 
 ## v1.8.7-hermes - support strict chat instruction layouts
 

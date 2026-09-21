@@ -315,7 +315,7 @@ async def test_recent_read_does_not_hold_request_event_loop(recent_app, ledger, 
         pending = asyncio.create_task(client.post('/v1/host/memory/recent', json=body()))
         try:
             assert await asyncio.to_thread(entered.wait, 1)
-            assert worker_threads == [worker_threads[0]]
+            assert len(worker_threads) == 1
             assert worker_threads[0] != threading.get_ident()
             assert not pending.done()
         finally:

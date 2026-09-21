@@ -52,7 +52,7 @@ paths), then rerun artifact and native qualification. Commit the candidate
 snapshot with the observed results; do not regenerate it during a release.
 The paired benchmark's separate lock and frozen images remain unchanged.
 
-Quality tooling is deliberately scoped. CI checks fatal Python errors in the
-artifact qualifier and hostworker, plus the packaging tests it changes. Mypy
+CI checks fatal Python errors throughout the sidecar, artifact qualifier and
+hostworker, plus the packaging tests it changes. Mypy
 checks the small hostworker wire contract. This adds no mass formatting change,
 global typing migration, or arbitrary coverage threshold.

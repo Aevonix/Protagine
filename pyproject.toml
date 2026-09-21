@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protagine-hermes"
-version = "1.9.0rc1"
+version = "1.9.0"
 description = "Native Hermes general and memory adapters for Protagine"
 readme = "docs/HERMES-ADAPTER.md"
 requires-python = ">=3.11,<3.14"

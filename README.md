@@ -15,7 +15,7 @@ so an agent can use that state across conversations, channels and model changes.
 Hermes owns conversations, tools, workers and scheduling. Each deployment keeps
 its identity, credentials and device configuration private.
 
-**Development status:** Phase 1 is not complete. The 1.9.0rc1 candidate prepares
+**Development status:** Phase 1 is not complete. Version 1.9.0 prepares
 [official Hermes with packaged compatibility patches](docs/HERMES-HOOK-COMPATIBILITY.md).
 The [known gaps](docs/KNOWN-GAPS.md) track unfinished behavior.
 
@@ -102,8 +102,7 @@ storage layouts. The [known gaps](docs/KNOWN-GAPS.md) and
 You need Python 3.12, Git and one OpenAI-compatible chat endpoint. The minimum
 profile does not require Docker, a graph database or an embedding model.
 
-The new installer is part of **1.9.0rc1**, not the published 1.8 packages.
-From this release candidate checkout:
+Protagine **1.9.0** includes the runtime installer. Install from this checkout:
 
 ```bash
 python3.12 -m venv "$HOME/.local/share/protagine/venv"

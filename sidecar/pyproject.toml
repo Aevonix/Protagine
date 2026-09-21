@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protagine"
-version = "1.9.0rc1"
+version = "1.9.0"
 description = "Persistent identity, memory and autonomy for AI agents"
 readme = "README.md"
 license = "MIT"
