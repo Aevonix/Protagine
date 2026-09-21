@@ -29,10 +29,9 @@ route from an accepted autonomous objective to execution.
 
 - `off`: no P3 behavior and no legacy behavior changes.
 - `shadow`: queue and validate bounded thoughts and record policy decisions,
-  but create no Projects and settle no concerns. Legacy autonomous goal
-  writers continue, so a canary does not stop daily work.
-- `live`: create the one canonical Project and make legacy autonomous goal
-  writers read-only. Explicit owner-created Projects remain available.
+  but create no Projects and settle no concerns.
+- `live`: create the one canonical Project. Explicit owner-created Projects
+  remain available.
 
 The deployed runtime composes P3, workspace, event-reducer, and P7 modes into
 `CognitionRuntimeContractV1`. A live P3 requires a live workspace. Shadow P7
@@ -52,14 +51,13 @@ In live mode:
 - SelfDirectedThinker may only add owner-private workspace candidates;
 - it cannot create or deliver initiatives or Projects;
 - ProjectEngine cannot adopt legacy thinker initiatives;
-- GoalEngine conversation inference and conversation-synthesis goal creation
-  are held;
 - the autonomy loop does not activate or feed legacy goals into new
   initiatives;
 - the legacy direct workspace thinker and `_workspace_act` path are held.
 
-Lifecycle handling of already-running legacy work is not destructively
-rewritten. Reconcile/archive it before live cutover.
+The retired goal planner and conversation-synthesis writer are removed in all
+modes. Retained goal records are not executable task submissions. Lifecycle
+handling of already-running work is not destructively rewritten.
 
 ## ThoughtJobV1 authority
 

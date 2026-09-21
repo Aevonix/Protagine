@@ -17,20 +17,6 @@ general self-improvement simply by recording a successful review.
 
 ## Partially wired (works, with a missing half)
 
-- **Generic goal dispatch**: the default goal engine has no execution backend.
-  API-created goals remain durably `accepted`; activation records
-  `dispatch_unavailable=queue_backend_unconfigured` and creates no DAG or job.
-  A restart preserves that waiting state. The in-memory queue is an explicit
-  test fixture, never an implicit production fallback. Supplying a queue does
-  not establish worker liveness, durable native execution or cancellation of
-  an external worker. Historical goal states are not rewritten by this change.
-  Goal API responses expose `dispatch_unavailable` when a binding is missing.
-  Explicit `done`/`completed` updates record reported completion without
-  accepting or dispatching the goal again. Completion and its transition commit
-  together; replay preserves the first completion time. `completion_basis` is
-  `reported_completion`, which is not independent verification of the outcome
-  or a command to stop a separate worker. Hermes owns executable native tasks;
-  do not add a second planner to make the legacy goal templates run.
 - **Mind-model briefing section**: `HealthSnapshot` (sleep/readiness) and
   predicted-load remain a protocol + stub with NO backing data source in the
   system. Deliberately not wired: fabricating health numbers would violate
@@ -51,13 +37,12 @@ general self-improvement simply by recording a successful review.
 - Desktop/browser task queue workers never shipped. Non-null `desktop_config`
   or `browser_config` now raises an explicit migration error; use the native
   runtime's tools. Persisted `desktop` and `browser` job types remain readable.
-- Legacy goal decomposition/replanning remains in the code and is outside the
-  supported native execution path. Its exports load only when requested. In live native mode,
-  the deprecated creation endpoint returns a conflict directing callers to
-  current acceptance; existing goal reads and updates remain available. No
-  goal record migration or deletion is performed by changing this documentation.
-  Retire unused exports and readers; actual callers or retained records need
-  an explicit disposition, not a permanent compatibility layer.
+- Goal records, saved DAG history, GET/PATCH APIs, context and condition updates
+  remain readable and editable. The duplicate planner, decomposition, queue
+  dispatch, conversation synthesis and goal-creation endpoint are removed.
+  Hermes owns executable tasks. Reported goal completion does not verify an
+  outcome or stop a worker; it preserves its first completion time and commits
+  the record and transition together.
 - The unused tier learner and quality-outcome API have been removed. Named
   function routing and configured fallback remain; explicit tier selection uses
   deterministic thresholds. Old `router_self_learning.db` files are neither read
@@ -114,12 +99,12 @@ than offered as unfinished features:
   validation consumers remain intact.
 - The federation skill marketplace and its unused protocol, plus the unused
   skill schema-version helper. Hermes owns the supported native skill review
-  path; the existing initiative executor registry remains available.
+  path; executable work uses the supported native task bindings.
 - The unused structured-world importer and email-header contact importer.
   Existing connector/populator and supported contact import paths remain.
 
 `gate/pending_dispatch.py` remains a compatibility re-export, not a supported
-public contract. Its actual callers determine the remaining removal work.
+public contract. No current caller was found in the public or deployment source.
 
 ## Known mechanisms (documented so the log noise is interpretable)
 
