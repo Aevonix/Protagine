@@ -110,6 +110,29 @@ class RecallSelector:
             query, candidates, limit, confidence_weighting=False,
             candidate_limit=max(1, 4 * limit))
         ranked.sort(key=lambda row: row.get("relevance", 0), reverse=True)
+        mode = os.environ.get('PROTAGINE_RECALL_RERANK', 'off').strip().lower()
+        if mode != 'shadow' and not any(row.get('rerank_status') == 'scored' for row in ranked):
+            # A source indexed by both producers wins reciprocal-rank fusion
+            # over a freshly captured lexical-only fact. Without a working
+            # reranker, alternate lexical and hybrid ranks without letting
+            # duplicates spend a turn. Neither weak keyword matches nor index
+            # coverage alone should monopolize the character budget. Shadow
+            # mode keeps its original ordering for comparison.
+            lexical = sorted((row for row in ranked if '_lexical_rank' in row),
+                             key=lambda row: row['_lexical_rank'])
+            orders = (iter(lexical), iter(ranked))
+            fallback, seen = [], set()
+            while True:
+                before = len(fallback)
+                for order in orders:
+                    for row in order:
+                        if row['id'] not in seen:
+                            fallback.append(row)
+                            seen.add(row['id'])
+                            break
+                if len(fallback) == before:
+                    break
+            ranked = fallback
         # A semantic reranker can score the identical question highest. Preserve
         # its abstention decisions and substantive order, then place only exact
         # unqualified request repeats after the remaining evidence.
@@ -134,8 +157,9 @@ class RecallSelector:
         candidate order untouched (measure p95 before flipping); ``on`` replaces the
         vector score in the relevance blend with the rerank score. The call
         is inline but hard-capped by PROTAGINE_RECALL_RERANK_TIMEOUT_MS
-        (default 1200). On timeout or error, recall keeps the candidate order
-        and marks selection unavailable. A candidate set that already fits
+        (default 1200). On timeout or error, this method keeps the candidate order
+        and marks selection unavailable; context selection interleaves canonical
+        lexical and hybrid order when available. A candidate set that already fits
         skips reranking only when no calibrated abstention cutoff is active.
         A candidate limit bounds model work, while preserving the full input
         for disabled, shadow and failed selection.
@@ -274,7 +298,7 @@ class RecallSelector:
         if last is None or now - last >= 300:
             self._rerank_warn_at = now
             self.logger.warning(
-                "recall rerank failed (fail-open to ANN order): %s", exc)
+                "recall rerank failed (fallback selection): %s: %s", type(exc).__name__, exc)
         else:
             self.logger.debug(
-                "recall rerank failed (fail-open to ANN order): %s", exc)
+                "recall rerank failed (fallback selection): %s: %s", type(exc).__name__, exc)
