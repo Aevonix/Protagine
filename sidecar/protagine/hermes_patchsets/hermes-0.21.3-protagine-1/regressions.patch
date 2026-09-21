@@ -1,0 +1,3097 @@
+diff --git a/tests/agent/test_api_content_sidecar.py b/tests/agent/test_api_content_sidecar.py
+index 2f65df5c1be59e673440e49c4b39b18894d5e7cc..befe3928130a85a7e4425167d25da37b1f4b8a36 100644
+--- a/tests/agent/test_api_content_sidecar.py
++++ b/tests/agent/test_api_content_sidecar.py
+@@ -847,7 +847,7 @@ class TestMaxIterationsSummaryReplay:
+         CLEAN content and diverges the prefix at the earliest injected
+         message, exactly when the context is largest."""
+         from run_agent import AIAgent
+-        from agent.chat_completion_helpers import handle_max_iterations
++        from agent.iteration_summary import handle_max_iterations
+ 
+         agent = AIAgent(
+             api_key="test-key",
+diff --git a/tests/agent/test_cross_process_turn_lease.py b/tests/agent/test_cross_process_turn_lease.py
+index a248dc319016241036ef0c519fca6279813294a7..ab8fc0a09351d98312a786165e131f8a5e85754c 100644
+--- a/tests/agent/test_cross_process_turn_lease.py
++++ b/tests/agent/test_cross_process_turn_lease.py
+@@ -39,6 +39,9 @@ class _DB:
+     def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+         return True
+ 
++    def get_transcript_redaction_revision(self, session_id):
++        return 0
++
+     def release_session_turn_lease(self, session_id, holder):
+         self.events.append(("release", session_id, holder))
+ 
+diff --git a/tests/agent/test_image_routing.py b/tests/agent/test_image_routing.py
+index f545909e1fa56570177b17c467da6332efef8f1a..ca17778cf4df0b3e7d4245cb7d79719018c4a608 100644
+--- a/tests/agent/test_image_routing.py
++++ b/tests/agent/test_image_routing.py
+@@ -6,6 +6,7 @@ import base64
+ from pathlib import Path
+ from unittest.mock import patch
+ 
++import pytest
+ 
+ from agent.image_routing import (
+     _coerce_capability_bool,
+@@ -57,6 +58,20 @@ class TestExplicitAuxVisionOverride:
+ 
+ class TestDecideImageInputMode:
+ 
++    @pytest.mark.parametrize("capability", [True, False, None])
++    @pytest.mark.parametrize("mode", ["auto", "native_if_supported", "native", "text"])
++    def test_explicit_auxiliary_precedence_is_opt_in(self, capability, mode):
++        cfg = {
++            "agent": {"image_input_mode": mode},
++            "auxiliary": {"vision": {"provider": "dedicated-vision"}},
++        }
++        with patch("agent.image_routing._lookup_supports_vision", return_value=capability):
++            result = decide_image_input_mode("current-provider", "current-model", cfg)
++        expected = "native" if mode == "native" or (
++            mode == "native_if_supported" and capability is True
++        ) else "text"
++        assert result == expected
++
+ 
+ 
+ 
+diff --git a/tests/agent/test_iteration_summary_middleware.py b/tests/agent/test_iteration_summary_middleware.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7312836a6e9515c4494cb574b9fbb542abe4809
+--- /dev/null
++++ b/tests/agent/test_iteration_summary_middleware.py
+@@ -0,0 +1,217 @@
++"""Iteration summaries must obey the request contract after tool-loop exhaustion."""
++
++import copy
++from types import SimpleNamespace
++
++import pytest
++
++
++@pytest.fixture
++def summary_agent(monkeypatch):
++    import httpx
++    from hermes_cli import plugins
++    from run_agent import AIAgent
++
++    def no_network(_transport, request):
++        raise AssertionError(f"Unexpected network request: {request.method} {request.url.host}")
++
++    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", no_network)
++    manager = plugins.PluginManager()
++    manager._discovered = True
++    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
++    agent = AIAgent(
++        api_key="fixture-key", base_url="http://summary.fixture/v1",
++        model="fixture-model", provider="custom", enabled_toolsets=[],
++        quiet_mode=True, skip_context_files=True, skip_memory=True,
++        session_id="summary-session", max_iterations=2, max_tokens=777,
++    )
++    agent._cached_system_prompt = "Stable system context."
++    agent._current_task_id = "bound-task"
++    agent._current_turn_id = "bound-turn"
++    agent.platform = "cli"
++    try:
++        yield agent, manager
++    finally:
++        agent.close()
++
++
++@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages", "codex_responses"])
++@pytest.mark.parametrize("policy", ["refresh", "withhold"])
++def test_summary_rechecks_each_attempt_without_rebinding_the_runtime_nudge(
++        summary_agent, monkeypatch, api_mode, policy):
++    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
++
++    agent, manager = summary_agent
++    agent.api_mode = api_mode
++    agent.reasoning_config = {"enabled": True, "effort": "low"}
++    agent._is_anthropic_oauth = False
++    agent._anthropic_base_url = "http://summary.fixture"
++    requests, callbacks = [], []
++    history = [
++        {"role": "user", "content": "Give a status report.",
++         "api_content": "Give a status report.\nRetired source: old-location."},
++        {"role": "assistant", "tool_calls": [{"id": "lookup-1", "type": "function",
++         "function": {"name": "read_file", "arguments": '{"path":"old-location"}'}}]},
++        {"role": "tool", "tool_call_id": "lookup-1", "content": "Retired source: old-location."},
++    ]
++    original = copy.deepcopy(history)
++
++    def summarize(request):
++        requests.append(copy.deepcopy(request))
++        return "" if len(requests) == 1 else "Checked status."
++
++    client = SimpleNamespace(chat=SimpleNamespace(
++        completions=SimpleNamespace(create=lambda **kw: summarize(kw))))
++    monkeypatch.setattr(agent, "_ensure_primary_openai_client", lambda **_: client)
++    monkeypatch.setattr(agent, "_anthropic_messages_create", summarize)
++    monkeypatch.setattr(agent, "_run_codex_stream", summarize)
++    # Provider-specific builders stay real; only response parsing is irrelevant here.
++    monkeypatch.setattr(agent._get_transport(), "normalize_response",
++                        lambda response, **_: SimpleNamespace(content=response, tool_calls=None))
++
++    def reconcile(**context):
++        callbacks.append(context)
++        request = context["request"]
++        key = "input" if api_mode == "codex_responses" else "messages"
++        request[key] = [{"role": "user", "content": (
++            "Source is unavailable; do not claim completion." if policy == "withhold"
++            else f"Current source revision {context['retry_count']}.")} ]
++        return {"request": request, "source": "fixture-source-policy"}
++
++    manager._middleware["llm_request"] = [reconcile]
++    assert agent._handle_max_iterations(history, 2) == "Checked status."
++    assert len(callbacks) == len(requests) == 2
++    assert [ctx["retry_count"] for ctx in callbacks] == [0, 1]
++    assert len({ctx["api_request_id"] for ctx in callbacks}) == 1
++    for ctx, sent in zip(callbacks, requests):
++        assert (ctx["session_id"], ctx["task_id"], ctx["turn_id"]) == (
++            "summary-session", "bound-task", "bound-turn")
++        assert ctx["platform"] == "cli"
++        assert ctx["api_mode"] == api_mode
++        assert ctx["call_role"] == "iteration_summary"
++        assert ctx["api_call_count"] == 2
++        assert "native_user_message" not in ctx
++        assert "original_user_message" not in ctx
++        key = "input" if api_mode == "codex_responses" else "messages"
++        assert "old-location" not in str(sent[key])
++        assert MAX_ITERATIONS_SUMMARY_REQUEST not in str(sent[key])
++        assert sent[key] == ctx["request"][key]
++        assert "tools" not in sent
++        # The request-policy replacement leaves provider controls byte-for-byte intact.
++        assert {k: v for k, v in sent.items() if k != key} == {
++            k: v for k, v in ctx["original_request"].items() if k != key}
++        assert "old-location" in str(ctx["original_request"][key])
++    assert history[:len(original)] == original
++    assert history[-2]["content"] == MAX_ITERATIONS_SUMMARY_REQUEST
++    assert history[-1]["content"] == "Checked status."
++
++
++def test_budget_exhaustion_preserves_native_turn_scope_through_sdk_request(
++        summary_agent, monkeypatch):
++    import json
++    import httpx
++
++    agent, manager = summary_agent
++    agent.max_iterations = 1
++    agent._disable_streaming = True
++    agent._skip_memory_review = True
++    agent._skip_skill_review = True
++    callbacks, sent = [], []
++
++    def broken_observer(**_):
++        raise RuntimeError("unrelated observer failure")
++
++    def reconcile(**context):
++        callbacks.append(context)
++        if context.get("call_role") == "iteration_summary":
++            # An explicit policy rejection replaces the request, exactly as in
++            # the regular loop; raising in a callback deliberately does not.
++            return {"request": {**context["request"], "messages": [
++                {"role": "user", "content": "Current source access was rejected."}]}}
++
++    manager._middleware["llm_request"] = [broken_observer, reconcile]
++
++    def respond(_transport, request):
++        assert request.url.host == "summary.fixture"
++        if request.url.path == "/v1/models":
++            return httpx.Response(200, json={"data": [{"id": "fixture-model", "context_length": 32768}]})
++        assert request.url.path == "/v1/chat/completions"
++        body = json.loads(request.content)
++        sent.append(body)
++        content = {"role": "assistant", "content": "No current source access."}
++        finish = "stop"
++        if len(sent) == 1:
++            content = {"role": "assistant", "content": None, "tool_calls": [{
++                "id": "unavailable-tool", "type": "function", "function": {
++                    "name": "unavailable_fixture_tool", "arguments": "{}"}}]}
++            finish = "tool_calls"
++        return httpx.Response(200, json={"id": f"attempt-{len(sent)}", "created": 1,
++            "object": "chat.completion", "model": "fixture-model", "choices": [
++                {"index": 0, "message": content, "finish_reason": finish}]})
++
++    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
++    result = agent.run_conversation("Give a status report.", task_id="actual-summary-task")
++    assert result["final_response"] == "No current source access."
++    normal = [ctx for ctx in callbacks if ctx.get("call_role") != "iteration_summary"]
++    summary = [ctx for ctx in callbacks if ctx.get("call_role") == "iteration_summary"]
++    assert len(normal) == len(summary) == 1
++    assert len(sent) == 2
++    assert sent[-1]["messages"] == [{"role": "user", "content": "Current source access was rejected."}]
++    for key in ("session_id", "task_id", "turn_id", "platform"):
++        assert summary[0][key] == normal[0][key]
++    assert summary[0]["task_id"] == "actual-summary-task"
++    assert summary[0]["turn_id"] == result["turn_id"]
++    assert normal[0]["original_user_message"] == "Give a status report."
++    assert "native_user_message" not in summary[0]
++    assert "original_user_message" not in summary[0]
++
++
++@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages", "codex_responses"])
++@pytest.mark.parametrize("enabled", [False, True])
++def test_summary_debug_dump_retains_transformed_sent_body_only_when_enabled(
++        summary_agent, monkeypatch, tmp_path, api_mode, enabled):
++    import json
++
++    agent, manager = summary_agent
++    agent.api_mode = api_mode
++    agent._is_anthropic_oauth = False
++    agent._anthropic_base_url = "http://summary.fixture"
++    agent.logs_dir = tmp_path / "request-logs"
++    agent.logs_dir.mkdir()
++    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1" if enabled else "0")
++    monkeypatch.delenv("HERMES_DUMP_REQUEST_STDOUT", raising=False)
++    sent, retained = [], []
++    key = "input" if api_mode == "codex_responses" else "messages"
++
++    def reconcile(**context):
++        return {"request": {**context["request"], key: [
++            {"role": "user", "content": f"Checked current revision {context['retry_count']}."}]}}
++
++    manager._middleware["llm_request"] = [reconcile]
++
++    def summarize(request):
++        # A dump must already exist at the provider boundary, including retry.
++        dumps = sorted(agent.logs_dir.glob("request_dump_*.json"))
++        assert len(dumps) == (len(sent) + 1 if enabled else 0)
++        if enabled:
++            retained.append(json.loads(dumps[-1].read_text()))
++        sent.append(copy.deepcopy(request))
++        return "" if len(sent) == 1 else "Checked status."
++
++    client = SimpleNamespace(api_key="fixture-key", chat=SimpleNamespace(
++        completions=SimpleNamespace(create=lambda **kw: summarize(kw))))
++    monkeypatch.setattr(agent, "_ensure_primary_openai_client", lambda **_: client)
++    monkeypatch.setattr(agent, "_anthropic_messages_create", summarize)
++    monkeypatch.setattr(agent, "_run_codex_stream", summarize)
++    monkeypatch.setattr(agent._get_transport(), "normalize_response",
++                        lambda response, **_: SimpleNamespace(content=response, tool_calls=None))
++    history = [{"role": "user", "content": "Old context before request reconciliation."}]
++    assert agent._handle_max_iterations(history, 2) == "Checked status."
++    assert len(sent) == 2
++    assert len(retained) == (2 if enabled else 0)
++    for dump, request in zip(retained, sent):
++        assert dump["reason"] == "iteration_summary"
++        assert dump["session_id"] == agent.session_id
++        # timeout is an SDK transport option, not part of the submitted body.
++        assert dump["request"]["body"] == {k: v for k, v in request.items() if k != "timeout"}
++        assert "Old context" not in json.dumps(dump["request"]["body"])
+diff --git a/tests/agent/test_kanban_stop_ownership.py b/tests/agent/test_kanban_stop_ownership.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c09de21e45d5104e0adc539a42cfd03ea402fdd
+--- /dev/null
++++ b/tests/agent/test_kanban_stop_ownership.py
+@@ -0,0 +1,132 @@
++"""A delegated answer returns to its parent; only the claimed worker closes the card."""
++
++import contextvars
++import json
++import os
++import socket
++from concurrent.futures import ThreadPoolExecutor
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++
++from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
++
++
++@pytest.fixture
++def claimed_worker(tmp_path, monkeypatch):
++    from hermes_cli.kanban_db import claim_task, create_task
++    from hermes_cli.kanban_db_connect import connect_closing
++
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
++    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "bundled"))
++    monkeypatch.delenv("HERMES_KANBAN_STOP_NUDGE", raising=False)
++
++    def no_network(*args, **kwargs):
++        raise AssertionError("The native loop fixture must not connect to a network endpoint")
++
++    monkeypatch.setattr(socket.socket, "connect", no_network)
++    with connect_closing() as conn:
++        tid = create_task(conn, title="Read the selected release", assignee="default")
++        task = claim_task(conn, tid, claimer="test-dispatcher")
++    assert task is not None and task.status == "running"
++    for name, value in {
++        "HERMES_KANBAN_TASK": tid,
++        "HERMES_KANBAN_RUN_ID": str(task.current_run_id),
++        "HERMES_KANBAN_CLAIM_LOCK": task.claim_lock,
++    }.items():
++        monkeypatch.setenv(name, value)
++    return task
++
++
++def _response(content, tool_calls=None):
++    return SimpleNamespace(
++        choices=[SimpleNamespace(
++            message=SimpleNamespace(content=content, tool_calls=tool_calls),
++            finish_reason="tool_calls" if tool_calls else "stop",
++        )], model="test/model", usage=None,
++    )
++
++
++def _agent(*, platform, disabled_toolsets=None):
++    from run_agent import AIAgent
++
++    with patch("agent.process_bootstrap.OpenAI"):
++        agent = AIAgent(
++            api_key="test-key", base_url="https://example.invalid/v1",
++            provider="openai-compat", model="test/model", max_iterations=4,
++            quiet_mode=True, skip_context_files=True, skip_memory=True,
++            platform=platform, enabled_toolsets=["kanban"],
++            disabled_toolsets=disabled_toolsets,
++        )
++    agent.save_trajectories = False
++    agent.compression_enabled = False
++    return agent
++
++
++@pytest.mark.parametrize("context", [delegated_child_context, non_dispatcher_owned_context])
++def test_in_process_child_returns_answer_without_claiming_parent_task(claimed_worker, context):
++    from hermes_cli.kanban_db import get_task
++    from hermes_cli.kanban_db_connect import connect_closing
++
++    requests = []
++    with context():
++        child = _agent(platform="subagent", disabled_toolsets=["kanban"])
++        assert not {"kanban_complete", "kanban_block"}.intersection(child.valid_tool_names)
++        child._interruptible_api_call = lambda request: (
++            requests.append(request) or _response("Selected release findings.")
++        )
++        try:
++            # The delegate runner carries the existing ContextVar into its worker thread.
++            with ThreadPoolExecutor(max_workers=1) as pool:
++                result = pool.submit(contextvars.copy_context().run,
++                    child.run_conversation, "Return the release findings to the parent.").result(timeout=30)
++        finally:
++            child.close()
++    assert result["completed"] is True
++    assert result["final_response"] == "Selected release findings."
++    assert len(requests) == 1
++    assert not any(row.get("_kanban_stop_synthetic") for row in result["messages"])
++    assert os.environ["HERMES_KANBAN_TASK"] == claimed_worker.id
++    from agent.kanban_stop import build_kanban_stop_nudge
++    assert build_kanban_stop_nudge(messages=[]) is not None
++    with connect_closing() as conn:
++        assert get_task(conn, claimed_worker.id).status == "running"
++
++
++@pytest.mark.parametrize("terminal", ["kanban_complete", "kanban_block"])
++def test_claimed_parent_must_use_its_terminal_tool(claimed_worker, terminal):
++    from hermes_cli.kanban_db import get_task, latest_run
++    from hermes_cli.kanban_db_connect import connect_closing
++
++    parent = _agent(platform="cli")
++    assert terminal in parent.valid_tool_names
++    requests = []
++
++    def response(request):
++        requests.append(request)
++        if len(requests) == 1:
++            return _response("Work is done.")
++        if len(requests) == 2:
++            with connect_closing() as conn:
++                assert get_task(conn, claimed_worker.id).status == "running"
++            assert any("plain-text reply is NOT" in str(row.get("content", ""))
++                       for row in request["messages"])
++            args = {"summary": "Selected release verified."} if terminal == "kanban_complete" else {
++                "reason": "The required release file is missing."}
++            return _response("", [SimpleNamespace(id="terminal-call", type="function",
++                function=SimpleNamespace(name=terminal, arguments=json.dumps(args)))])
++        return _response("Retained task outcome.")
++
++    parent._interruptible_api_call = response
++    try:
++        result = parent.run_conversation("Finish the assigned release inspection.")
++    finally:
++        parent.close()
++    assert len(requests) == 3
++    assert result["completed"] is True
++    assert result["final_response"] == "Retained task outcome."
++    with connect_closing() as conn:
++        assert get_task(conn, claimed_worker.id).status == (
++            "done" if terminal == "kanban_complete" else "blocked")
++        assert latest_run(conn, claimed_worker.id).id == claimed_worker.current_run_id
+diff --git a/tests/agent/test_length_continuation_tool_boundary.py b/tests/agent/test_length_continuation_tool_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..95942207e7f0123b228c00c8116f9e00fbde41f7
+--- /dev/null
++++ b/tests/agent/test_length_continuation_tool_boundary.py
+@@ -0,0 +1,91 @@
++"""Text fragments stop belonging to the final reply when a tool round intervenes."""
++
++import json
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from tests.agent.test_run_agent import _make_tool_defs, _mock_response, _mock_tool_call
++
++
++@pytest.fixture
++def loop_agent(tmp_path):
++    from run_agent import AIAgent
++    from hermes_state import SessionDB
++
++    state = SessionDB(tmp_path / "state.db")
++    with (
++        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("read_file")),
++        patch("model_tools.check_toolset_requirements", return_value={}),
++        patch("agent.process_bootstrap.OpenAI"),
++    ):
++        agent = AIAgent(
++            model="fixture-model", api_key="fixture-key", base_url="http://fixture.invalid/v1",
++            max_iterations=12, quiet_mode=True, skip_context_files=True, skip_memory=True,
++            skip_background_review=True, save_trajectories=False,
++            session_db=state,
++        )
++    agent.client = MagicMock()
++    agent._cached_system_prompt = "Use the supplied local note."
++    agent._use_prompt_caching = False
++    agent.compression_enabled = False
++    try:
++        yield agent
++    finally:
++        agent.close()
++        state.close()
++
++
++def tool_response(arguments, call_id, name="read_file"):
++    return _mock_response(content="", finish_reason="tool_calls", tool_calls=[
++        _mock_tool_call(name=name, arguments=arguments, call_id=call_id),
++    ])
++
++
++@pytest.mark.parametrize("rounds,arguments_valid", [(1, True), (2, True), (1, False)])
++def test_completed_tool_round_ends_prior_text_segment(loop_agent, tmp_path, rounds, arguments_valid):
++    notes = [tmp_path / f"note-{index}.txt" for index in range(rounds)]
++    for note in notes:
++        note.write_text("The instrument is ready.\n")
++    fragments = [f"Inspecting note {index}." for index in range(rounds)]
++    responses = []
++    for index, fragment in enumerate(fragments):
++        responses.extend([
++            _mock_response(content=fragment, finish_reason="length"),
++            tool_response(json.dumps({"path": str(notes[index])}) if arguments_valid else "[]", f"read-{index}"),
++        ])
++    # A later text-only continuation still belongs to the final answer.
++    responses.extend([
++        _mock_response(content="The observation", finish_reason="length"),
++        _mock_response(content="is complete."),
++    ])
++    loop_agent.client.chat.completions.create.side_effect = responses
++
++    result = loop_agent.run_conversation("Read the local note and report the observation.")
++
++    assert result["completed"] is True
++    assert result["final_response"] == "The observation\nis complete."
++    for messages in (result["messages"], loop_agent._session_db.get_messages(loop_agent.session_id)):
++        assert all(any(message.get("content") == fragment for message in messages) for fragment in fragments)
++        tool_rows = [message for message in messages if message.get("role") == "tool"]
++        assert {row["tool_call_id"] for row in tool_rows} == {f"read-{index}" for index in range(rounds)}
++        assert all(("The instrument is ready." if arguments_valid else "Invalid tool arguments") in row["content"]
++                   for row in tool_rows)
++    assert all(note.read_text() == "The instrument is ready.\n" for note in notes)
++
++
++@pytest.mark.parametrize("rejected", [None, "unknown", "malformed_json"])
++def test_text_continuation_survives_without_an_accepted_tool_round(loop_agent, rejected):
++    responses = [_mock_response(content="The observation", finish_reason="length")]
++    if rejected == "unknown":
++        responses.append(tool_response("{}", "rejected", name="unavailable_fixture_tool"))
++    elif rejected == "malformed_json":
++        responses.append(tool_response("{invalid}", "rejected"))
++    responses.append(_mock_response(content="is complete."))
++    loop_agent.client.chat.completions.create.side_effect = responses
++
++    result = loop_agent.run_conversation("Report the observation.")
++
++    assert result["completed"] is True
++    assert result["final_response"] == "The observation\nis complete."
++    assert len(loop_agent.client.chat.completions.create.call_args_list) == len(responses)
+diff --git a/tests/agent/test_named_custom_timeout_identity.py b/tests/agent/test_named_custom_timeout_identity.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa2324b8058746967b61568dcc412ff221dc9b0b
+--- /dev/null
++++ b/tests/agent/test_named_custom_timeout_identity.py
+@@ -0,0 +1,108 @@
++"""Named-provider timeout policy survives transport canonicalization."""
++import json
++
++import httpx
++import pytest
++
++
++def _config(tmp_path, monkeypatch):
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    config = {
++        "model": {"provider": "custom:local-workers", "default": "fixture-model"},
++        "providers": {
++            "disabled": {
++                "name": "Local Workers", "enabled": False,
++                "base_url": "http://disabled.fixture/v1", "request_timeout_seconds": 11,
++                "stale_timeout_seconds": 7,
++            },
++            "endpointless": {
++                "name": "Local Workers", "request_timeout_seconds": 13,
++                "stale_timeout_seconds": 9,
++            },
++            "local-workers": {
++                "name": "Local Workers", "base_url": "http://model.fixture/v1",
++                "api_key": "disposable-fixture", "request_timeout_seconds": 67,
++                "stale_timeout_seconds": 29,
++                "models": {"fixture-model": {"timeout_seconds": 43, "stale_timeout_seconds": 19}},
++            },
++            "custom": {"request_timeout_seconds": 83, "stale_timeout_seconds": 37},
++            "openrouter": {"request_timeout_seconds": 97, "stale_timeout_seconds": 41},
++        },
++        "agent": {"environment_probe": False},
++        "auxiliary": {"title_generation": {"enabled": False}},
++    }
++    (tmp_path / "config.yaml").write_text(json.dumps(config))
++    return config
++
++
++@pytest.mark.parametrize("first_read_timeout", [False, True])
++def test_named_custom_timeout_reaches_client_and_actual_stream_wire(
++        tmp_path, monkeypatch, first_read_timeout):
++    _config(tmp_path, monkeypatch)
++    requests = []
++
++    def respond(transport, request):
++        assert request.url.host == "model.fixture"
++        if request.url.path == "/v1/models":
++            return httpx.Response(200, json={"data": [{"id": "fixture-model", "context_length": 32768}]})
++        if request.url.path == "/api/show":
++            return httpx.Response(404)
++        assert request.url.path == "/v1/chat/completions"
++        body = json.loads(request.content)
++        requests.append(request)
++        assert body.get("stream") is True
++        if first_read_timeout and len(requests) == 1:
++            raise httpx.ReadTimeout("Controlled first-attempt timeout", request=request)
++        chunk = {"id": "fixture", "object": "chat.completion.chunk", "created": 1,
++                 "model": body["model"], "choices": [{"index": 0,
++                     "delta": {"role": "assistant", "content": "Configured timeout retained."},
++                     "finish_reason": None}]}
++        end = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
++        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=(
++            "data: " + json.dumps(chunk) + "\n\ndata: " + json.dumps(end) + "\n\ndata: [DONE]\n\n").encode())
++
++    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
++    from gateway.run import _resolve_runtime_agent_kwargs
++    from run_agent import AIAgent
++    from agent.chat_completion_helpers import _configured_stale_base
++
++    runtime = _resolve_runtime_agent_kwargs()
++    assert runtime["provider"] == "custom"
++    assert runtime["requested_provider"] == "custom:local-workers"
++    agent = AIAgent(model="fixture-model", **runtime, max_iterations=2,
++                    quiet_mode=True, skip_context_files=True, skip_memory=True,
++                    enabled_toolsets=[], session_id="named-timeout-fixture")
++    try:
++        assert httpx.Timeout(agent.client.timeout).read == 43
++        assert agent._resolved_api_call_timeout() == 43
++        assert agent._resolved_api_call_stale_timeout_base() == (19, False)
++        assert agent._stale_timeout_is_explicit()
++        assert _configured_stale_base(agent) == 19
++        result = agent.run_conversation("Reply with one sentence; no tools needed.")
++        assert result["final_response"] == "Configured timeout retained."
++        assert len(requests) == (2 if first_read_timeout else 1)
++        assert all(request.extensions["timeout"]["read"] == 43 for request in requests)
++        assert all(request.extensions["timeout"]["write"] == 43 for request in requests)
++    finally:
++        agent.close()
++
++
++@pytest.mark.parametrize("provider,requested,model,expected", [
++    ("custom", "local-workers", "fixture-model", (43, 19)),
++    ("custom", "Local Workers", "other-model", (67, 29)),
++    ("custom", "custom:local-workers", "fixture-model", (43, 19)),
++    ("custom:local-workers", None, "fixture-model", (43, 19)),
++    ("custom:Local Workers", None, "other-model", (67, 29)),
++    ("local-workers", "custom:local-workers", "fixture-model", (43, 19)),
++    ("custom", "removed-endpoint", "fixture-model", (83, 37)),
++    ("custom:removed-endpoint", None, "fixture-model", (83, 37)),
++    ("openrouter", "local-workers", "fixture-model", (97, 41)),
++])
++def test_timeout_policy_uses_selected_named_identity_and_preserves_fallback(
++        tmp_path, monkeypatch, provider, requested, model, expected):
++    _config(tmp_path, monkeypatch)
++    from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
++    assert (
++        get_provider_request_timeout(provider, model, requested_provider=requested),
++        get_provider_stale_timeout(provider, model, requested_provider=requested),
++    ) == expected
+diff --git a/tests/agent/test_native_input_middleware.py b/tests/agent/test_native_input_middleware.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..765ca2a5ebc18b2fa3aee2a1f7563c8b1f88da61
+--- /dev/null
++++ b/tests/agent/test_native_input_middleware.py
+@@ -0,0 +1,147 @@
++"""Installed middleware consumes current persisted input in real native turns."""
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++from agent.secret_scope import is_multiplex_active, set_multiplex_active
++from gateway.run import _profile_runtime_scope
++from hermes_cli.plugins import get_plugin_manager
++from hermes_state import SessionDB
++from run_agent import AIAgent
++
++
++def _install_consumer(home: Path) -> None:
++    plugin = home / "plugins" / "input-consumer"
++    plugin.mkdir(parents=True)
++    (plugin / "plugin.yaml").write_text("name: input-consumer\nversion: 0.1.0\n")
++    (home / "config.yaml").write_text(json.dumps({
++        "plugins": {"enabled": ["input-consumer"]},
++        "model": {"context_length": 256000},
++        "auxiliary": {"title_generation": {"enabled": False}},
++    }))
++    (plugin / "__init__.py").write_text('''
++import json
++from hermes_constants import get_hermes_home
++
++def register(ctx):
++    def consume(**context):
++        descriptor = context.get("native_user_message")
++        record = {key: context.get(key) for key in (
++            "session_id", "original_user_message", "native_user_message")}
++        record["descriptor_present"] = "native_user_message" in context
++        with (get_hermes_home() / "input-observations.jsonl").open("a") as stream:
++            stream.write(json.dumps(record) + "\\n")
++        request = context["request"]
++        if descriptor is None:
++            request["messages"][-1]["content"] = "No verified persisted input."
++        else:
++            # Metadata belongs to this observer, not the live row or provider payload.
++            descriptor["content"] = "observer-local change"
++        return {"request": request}
++    ctx.register_middleware("llm_request", consume)
++''')
++
++
++def _agent(home: Path, client: MagicMock, *, durable: bool) -> AIAgent:
++    with (
++        patch("agent.process_bootstrap.OpenAI", return_value=client),
++        patch("model_tools.get_tool_definitions", return_value=[]),
++        patch("model_tools.check_toolset_requirements", return_value={}),
++    ):
++        agent = AIAgent(
++            api_key="test-key", base_url="http://127.0.0.1:1/v1",
++            provider="openai", model="test/model", api_mode="chat_completions",
++            quiet_mode=True, skip_context_files=True, skip_memory=True,
++            enabled_toolsets=[], max_iterations=2, session_id="shared-session",
++            session_db=SessionDB(home / "state.db") if durable else None,
++        )
++    if not durable:
++        agent._session_db = None
++    agent._cached_system_prompt = "Neutral system prompt."
++    agent._use_prompt_caching = False
++    agent._disable_streaming = True
++    agent.compression_enabled = False
++    agent.save_trajectories = False
++    return agent
++
++
++def _client() -> MagicMock:
++    client = MagicMock()
++    client.chat.completions.create.return_value = SimpleNamespace(
++        choices=[SimpleNamespace(message=SimpleNamespace(content="done", tool_calls=None),
++                                 finish_reason="stop")],
++        model="test/model", usage=None,
++    )
++    return client
++
++
++def _observations(home: Path) -> list[dict]:
++    return [json.loads(line) for line in (home / "input-observations.jsonl").read_text().splitlines()]
++
++
++def test_real_turn_input_provenance_follows_profiles_a_b_a(tmp_path, monkeypatch):
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch-profile"))
++    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "empty-plugins"))
++    homes = {name: tmp_path / name for name in ("a", "b")}
++    clients = {name: _client() for name in homes}
++    agents = {}
++    previous = is_multiplex_active()
++    set_multiplex_active(True)
++    try:
++        for name, home in homes.items():
++            _install_consumer(home)
++            with _profile_runtime_scope(home, prepared_secret_scope={}):
++                get_plugin_manager().discover_and_load()
++                agents[name] = _agent(home, clients[name], durable=True)
++        turns = (("a", "first profile A input", "first profile A input"),
++                 ("b", "profile B input", "profile B input"),
++                 ("a", "runtime wrapper for profile A", "second profile A input"))
++        for name, message, original in turns:
++            with _profile_runtime_scope(homes[name], prepared_secret_scope={}):
++                result = agents[name].run_conversation(message, persist_user_message=original)
++                assert result["completed"] is True
++                record = _observations(homes[name])[-1]
++                descriptor = record["native_user_message"]
++                assert record["descriptor_present"] is True
++                assert record["original_user_message"] == original
++                assert descriptor["content"] == original
++                stored = agents[name]._session_db.get_messages(record["session_id"])
++                assert next(row for row in stored if row["id"] == descriptor["_row_id"])["content"] == original
++                wire = clients[name].chat.completions.create.call_args.kwargs
++                assert any(row.get("content") == message for row in wire["messages"])
++                assert "native_user_message" not in wire and "original_user_message" not in wire
++                assert all("_row_id" not in row for row in wire["messages"])
++        assert [row["original_user_message"] for row in _observations(homes["a"])] == [
++            "first profile A input", "second profile A input"]
++        assert [row["original_user_message"] for row in _observations(homes["b"])] == ["profile B input"]
++    finally:
++        for name, agent in agents.items():
++            with _profile_runtime_scope(homes[name], prepared_secret_scope={}):
++                agent.close()
++        set_multiplex_active(previous)
++
++
++def test_missing_persistence_still_reaches_request_middleware(tmp_path, monkeypatch):
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "empty-plugins"))
++    home = tmp_path / "profile"
++    _install_consumer(home)
++    client = _client()
++    with _profile_runtime_scope(home, prepared_secret_scope={}):
++        get_plugin_manager().discover_and_load()
++        agent = _agent(home, client, durable=False)
++        try:
++            result = agent.run_conversation("input without durable provenance")
++            assert result["completed"] is True
++            record = _observations(home)[-1]
++            assert record["descriptor_present"] is True
++            assert record["native_user_message"] is None
++            assert record["original_user_message"] == "input without durable provenance"
++            wire = client.chat.completions.create.call_args.kwargs
++            assert wire["messages"][-1]["content"] == "No verified persisted input."
++        finally:
++            agent.close()
+diff --git a/tests/agent/test_native_turn_settled.py b/tests/agent/test_native_turn_settled.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ee9d2c0d1cf5ee587191293921635f7c18c3ffa
+--- /dev/null
++++ b/tests/agent/test_native_turn_settled.py
+@@ -0,0 +1,231 @@
++"""Settled observers can reconcile native rows after the relevant writer leases exit."""
++
++import asyncio
++import threading
++from pathlib import Path
++
++import pytest
++
++from hermes_cli import plugins
++from gateway.session_state import SessionState, TurnState
++from hermes_cli.plugins import PluginContext, PluginManager
++from hermes_cli.plugins_manifest import PluginManifest
++from hermes_state import SessionDB
++from run_agent import AIAgent
++from tests.gateway.test_transcript_redaction import _runner
++from tests.agent.test_cross_process_turn_lease import _agent_with_db
++
++
++def _context(monkeypatch):
++    manager = PluginManager()
++    manager._discovered = True
++    monkeypatch.setattr(plugins, "_delivery_manager", lambda: manager)
++    return PluginContext(PluginManifest(name="settled-test"), manager)
++
++
++@pytest.mark.parametrize("observed", [True, False])
++def test_native_settled_reports_returned_failure_without_answer_payload(tmp_path, monkeypatch, observed):
++    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
++    ctx = _context(monkeypatch)
++    receipts = []
++    if observed:
++        ctx.register_hook("on_native_turn_settled", lambda **value: receipts.append(value))
++    db = SessionDB(tmp_path / "state.db")
++    db.create_session("failed-source", source="cli")
++    result = {"completed": False, "failed": True, "failure_reason": "timeout",
++              "failure_retryable": True, "final_response": "private runtime advice",
++              "messages": [{"role": "user", "content": "private request"}],
++              "error": "private provider detail"}
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", lambda *_a, **_kw: result)
++    try:
++        agent = _agent_with_db(db, session_id="failed-source", platform="cli")
++        assert AIAgent.run_conversation(agent, "work", task_id="accepted-task") is result
++        assert db.try_acquire_session_turn_lease("failed-source", "after-failure")
++        db.release_session_turn_lease("failed-source", "after-failure")
++        if observed:
++            assert len(receipts) == 1
++            assert receipts[0]["session_id"] == "failed-source"
++            assert receipts[0]["task_id"] == "accepted-task"
++            assert receipts[0]["turn_id"].startswith("failed-source:accepted-task:")
++            assert receipts[0]["outcome"] == {"completed": False, "failed": True,
++                "failure_reason": "timeout", "failure_retryable": True}
++            assert "private" not in str(receipts)
++        else:
++            assert not receipts
++    finally:
++        db.close()
++
++
++def test_native_settled_can_erase_after_persistence_and_release_including_first_turn(tmp_path, monkeypatch):
++    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
++    ctx = _context(monkeypatch)
++    db = SessionDB(tmp_path / "state.db")
++    rows, receipts = {}, []
++    current_thread = threading.get_ident()
++
++    def reconcile(session_id, task_id, turn_id, platform):
++        assert threading.get_ident() == current_thread
++        # The row is persisted and the ordinary turn's durable lease has been released.
++        assert db.try_acquire_session_turn_lease(session_id, "settled-reader")
++        db.release_session_turn_lease(session_id, "settled-reader")
++        expected = db.get_message_redaction_snapshot(session_id, [rows[session_id]])
++        result = db.redact_message_payloads(session_id, expected)
++        receipts.append((session_id, task_id, turn_id, platform, result["status"]))
++
++    ctx.register_hook("on_native_turn_settled", reconcile)
++    failure = None
++
++    def loop(agent, _message, _system, history, *_args, **_kwargs):
++        if db.get_session(agent.session_id) is None:
++            db.create_session(agent.session_id, source="cli")
++        rows[agent.session_id] = db.append_message(
++            agent.session_id, "user", "selected owned payload",
++            turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
++        )
++        if failure is not None:
++            raise failure("original turn failure")
++        return {"final_response": "settled", "messages": history, "failed": False}
++
++    monkeypatch.setattr("agent.conversation_loop.run_conversation", loop)
++    try:
++        for sid, failure in (("existing", None), ("first", None),
++                             ("failed", RuntimeError), ("interrupted", KeyboardInterrupt)):
++            if sid != "first":
++                db.create_session(sid, source="cli")
++            agent = _agent_with_db(db, session_id=sid, platform="cli")
++            if failure is None:
++                result = AIAgent.run_conversation(agent, "work", task_id="accepted-task")
++                assert result["final_response"] == "settled"
++            else:
++                with pytest.raises(failure, match="original turn failure"):
++                    AIAgent.run_conversation(agent, "work", task_id="accepted-task")
++            assert receipts[-1][0:2] == (sid, "accepted-task")
++            assert receipts[-1][2].startswith(f"{sid}:accepted-task:")
++            assert receipts[-1][3:] == ("cli", "redacted")
++            assert "selected owned payload" not in str(db.get_messages(sid))
++        assert len(receipts) == 4
++
++        # Rejected admission never entered a turn and must not announce settlement.
++        agent = _agent_with_db(db, session_id="existing", platform="cli")
++        agent._interrupt_requested = True
++        result = AIAgent.run_conversation(agent, "not admitted")
++        assert result["interrupted"] is True
++        assert len(receipts) == 4
++        # Persistence-disabled internal forks do not become native session events.
++        failure = None
++        agent = _agent_with_db(db, session_id="detached", platform="cli")
++        agent._persist_disabled = True
++        AIAgent.run_conversation(agent, "internal turn")
++        assert len(receipts) == 4
++    finally:
++        db.close()
++
++
++def test_gateway_settled_runs_on_loop_after_release_and_schedules_real_redaction(tmp_path, monkeypatch):
++    ctx = _context(monkeypatch)
++    runner, db = _runner(tmp_path)
++    tasks, receipts = [], []
++    message_id = db.get_messages("source")[0]["id"]
++    expected = db.get_message_redaction_snapshot("source", [message_id])
++
++    def reconcile(session_id, session_key, run_generation, gateway):
++        loop = asyncio.get_running_loop()  # This observer must never run on a timeout worker.
++        assert gateway is runner
++        assert not runner._turn_leases._leases[session_id].lock.locked()
++        tasks.append(loop.create_task(
++            gateway.redact_native_message_payloads(session_key, session_id, expected)
++        ))
++        receipts.append((session_id, session_key, run_generation))
++
++    ctx.register_hook("on_gateway_turn_settled", reconcile)
++
++    async def scenario():
++        token = await runner._turn_leases.acquire("source", owner_key="route:source", generation=7)
++        state = SessionState(turn=TurnState(lease_tokens={7: token}))
++        runner._peek_session_state = lambda key: state if key == "route:source" else None
++        assert runner._release_turn_lease("route:source", 6) is False
++        assert receipts == []
++        assert runner._release_turn_lease("route:source", 7) is True
++        assert runner._release_turn_lease("route:source", 7) is False
++        assert receipts == [("source", "route:source", 7)]
++        result = await tasks[0]
++        assert result["status"] == "redacted"
++        assert "original source payload" not in str(db.get_messages("source"))
++        assert set(runner._agent_cache) == {"route:unrelated"}
++
++    try:
++        asyncio.run(scenario())
++    finally:
++        db.close()
++
++
++def test_settled_hooks_select_owning_profile_and_scheduled_work_keeps_that_scope(tmp_path, monkeypatch):
++    from gateway.run import _profile_runtime_scope
++    from hermes_constants import get_hermes_home
++
++    home = tmp_path / ".hermes"
++    secondary = home / "profiles" / "secondary"
++    secondary.mkdir(parents=True)
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
++    runner, db = _runner(tmp_path)
++    runner.session_store.config.multiplex_profiles = True
++    immediate, deferred, native, tasks, managers = [], [], [], [], {}
++
++    def register(name, profile_home):
++        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
++            manager = plugins.get_plugin_manager()
++            manager._discovered = True
++            managers[name] = manager
++            ctx = PluginContext(PluginManifest(name="settled-profile-test"), manager)
++
++            def gateway_settled(session_key, **_kwargs):
++                immediate.append((name, get_hermes_home(), session_key))
++
++                async def reconciliation():
++                    await asyncio.sleep(0)
++                    deferred.append((name, get_hermes_home(), plugins.get_plugin_manager() is manager))
++
++                tasks.append(asyncio.create_task(reconciliation()))
++
++            ctx.register_hook("on_gateway_turn_settled", gateway_settled)
++            ctx.register_hook("on_native_turn_settled", lambda **_: native.append((name, get_hermes_home())))
++
++    register("default", home)
++    register("secondary", secondary)
++    assert managers["default"] is not managers["secondary"]
++
++    async def release_turn(key, generation):
++        token = await runner._turn_leases.acquire("source", owner_key=key, generation=generation)
++        state = SessionState(turn=TurnState(lease_tokens={generation: token}))
++        runner._peek_session_state = lambda candidate: state if candidate == key else None
++        assert runner._release_turn_lease(key, generation) is True
++
++    async def scenario():
++        secondary_key = "agent:secondary:telegram:dm:owner"
++        default_key = "agent:main:telegram:dm:owner"
++        # Both releases happen after their agent worker's profile scope has exited.
++        assert get_hermes_home() == home
++        await release_turn(secondary_key, 1)
++        await release_turn(default_key, 2)
++        await asyncio.gather(*tasks)
++        assert immediate == [("secondary", secondary, secondary_key), ("default", home, default_key)]
++        assert deferred == [("secondary", secondary, True), ("default", home, True)]
++        assert get_hermes_home() == home
++        # Missing named profiles must not dispatch through the ambient default manager.
++        await release_turn("agent:missing:telegram:dm:owner", 3)
++        assert len(immediate) == 2
++
++    try:
++        asyncio.run(scenario())
++        monkeypatch.setattr("agent.conversation_loop.run_conversation",
++                            lambda *args, **kwargs: {"final_response": "fixture", "messages": [], "failed": False})
++        # CLI facade settlement still runs within its caller's profile; no gateway scope needed.
++        with _profile_runtime_scope(secondary, hydrate_secrets=False):
++            agent = _agent_with_db(db, session_id="source", platform="cli")
++            AIAgent.run_conversation(agent, "settle")
++        assert native == [("secondary", secondary)]
++        assert get_hermes_home() == home
++    finally:
++        db.close()
+diff --git a/tests/agent/test_native_user_message_boundary.py b/tests/agent/test_native_user_message_boundary.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1b3ae1be2abc057e1ac5590a5a04afe40c22f009
+--- /dev/null
++++ b/tests/agent/test_native_user_message_boundary.py
+@@ -0,0 +1,158 @@
++"""Exact persisted current-row metadata for existing request middleware."""
++from types import SimpleNamespace
++
++import pytest
++
++from agent.turn_api_request import _native_user_message
++from hermes_state import SessionDB
++
++
++@pytest.fixture
++def native(tmp_path):
++    db = SessionDB(tmp_path / "state.db")
++    db.create_session("parent", source="cli")
++    db.create_session("child", source="cli", parent_session_id="parent")
++    yield db
++    db.close()
++
++
++def export(db, session, messages, index, original="human request", wrapper="task wrapper"):
++    return _native_user_message(SimpleNamespace(_session_db=db, session_id=session),
++                                messages, index, wrapper, original)
++
++
++def test_initial_override_and_compressed_copy_have_distinct_exact_anchors(native):
++    parent_id = native.append_message("parent", "user", "human request")
++    child_id = native.append_message("child", "user", "task wrapper")
++    parent = {"role": "user", "content": "task wrapper", "_row_id": parent_id}
++    child = {**parent, "_row_id": child_id}
++    assert export(native, "parent", [parent], 0) == {
++        "role": "user", "content": "human request", "_row_id": parent_id}
++    assert export(native, "child", [child], 0) == {
++        "role": "user", "content": "task wrapper", "_row_id": child_id}
++    # Identical text in a parent never resolves the wrong-session coordinate.
++    assert export(native, "child", [parent], 0) is None
++
++
++def test_index_not_last_user_or_text_search_controls_anchor(native):
++    earlier = native.append_message("parent", "user", "human request")
++    current = native.append_message("parent", "user", "human request")
++    steering = native.append_message("parent", "user", "steering instruction")
++    messages = [{"role": "user", "content": "task wrapper", "_row_id": row_id}
++                for row_id in (earlier, current)]
++    messages.append({"role": "user", "content": "steering instruction", "_row_id": steering})
++    assert export(native, "parent", messages, 1)["_row_id"] == current
++    assert export(native, "parent", messages, 2) is None
++    assert export(native, "parent", messages, -1) is None
++    assert export(native, "parent", messages, True) is None
++
++
++def test_changed_or_missing_native_preimage_is_not_exported(native):
++    row_id = native.append_message("parent", "user", "changed unrelated input")
++    row = {"role": "user", "content": "task wrapper", "_row_id": row_id}
++    assert export(native, "parent", [row], 0) is None
++    assert export(native, "parent", [{**row, "_row_id": row_id + 1}], 0) is None
++    assert export(native, "parent", [{**row, "role": "assistant"}], 0) is None
++
++
++def test_multimodal_descriptor_is_an_independent_copy(native):
++    content = [{"type": "text", "text": "human request"},
++               {"type": "image_url", "image_url": {"url": "asset://test"}}]
++    row_id = native.append_message("parent", "user", content)
++    row = {"role": "user", "content": "task wrapper", "_row_id": row_id}
++    result = export(native, "parent", [row], 0, original=content)
++    assert result["content"] == content
++    result["content"][0]["text"] = "modified observer copy"
++    assert content[0]["text"] == "human request"
++
++
++@pytest.mark.parametrize("override", [None, "clean human request"])
++@pytest.mark.parametrize("image_count", [1, 2])
++def test_flushed_image_turn_exports_its_durable_projection(native, override, image_count):
++    from copy import deepcopy
++    from agent.session_persistence import _db_flush_row, _db_flush_write
++
++    content = [{"type": "text", "text": "inspect the attached image"}] + [
++        {"type": "image_url", "image_url": {"url": f"asset://current-{index}"}}
++        for index in range(image_count)]
++    row = {"role": "user", "content": content}
++    agent = SimpleNamespace(_session_db=native, session_id="parent",
++                            _persist_user_message_override=override)
++    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
++    before = deepcopy(row)
++    result = _native_user_message(agent, [row], 0, content, override or content)
++    assert result == {"role": "user", "content": "inspect the attached image" + "\n[screenshot]" * image_count,
++                      "_row_id": row["_row_id"]}
++    assert row == before
++    # Projection validates the turn-owned coordinate, never another session or input.
++    agent.session_id = "child"
++    assert _native_user_message(agent, [row], 0, content, override or content) is None
++    agent.session_id = "parent"
++    changed = [{"type": "text", "text": "unrelated input"}, content[1]]
++    assert _native_user_message(agent, [{**row, "content": changed}], 0,
++                                changed, changed) is None
++
++
++def test_unrepresented_parts_do_not_become_an_empty_native_anchor(native):
++    from agent.session_persistence import _db_flush_row, _db_flush_write
++
++    content = [{"type": "unsupported", "data": "not retained"}]
++    row = {"role": "user", "content": content}
++    agent = SimpleNamespace(_session_db=native, session_id="parent")
++    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
++    assert _native_user_message(agent, [row], 0, content, content) is None
++
++
++def test_unavailable_storage_returns_no_descriptor(native, monkeypatch):
++    row_id = native.append_message("parent", "user", "human request")
++    row = {"role": "user", "content": "task wrapper", "_row_id": row_id}
++    def unavailable(*args, **kwargs):
++        raise OSError("storage unavailable")
++    monkeypatch.setattr(native, "get_messages", unavailable)
++    assert export(native, "parent", [row], 0) is None
++
++
++@pytest.mark.parametrize("identity_retained", [True, False])
++def test_reanchored_descriptor_never_selects_identical_later_steering(native, identity_retained):
++    from agent.turn_context_compaction import _reanchor
++
++    original_id = native.append_message("parent", "user", "same input")
++    original = {"role": "user", "content": "same input", "_row_id": original_id}
++    current_id = original_id if identity_retained else native.append_message("parent", "user", "same input")
++    steering_id = native.append_message("parent", "user", "same input")
++    rebuilt = [{**original, "_row_id": current_id},
++               {**original, "_row_id": steering_id, "display_kind": "steer"}]
++    agent = SimpleNamespace(_session_db=native, session_id="parent")
++    index = (_reanchor(agent, rebuilt, "same input", previous_message=original) if identity_retained
++             else _reanchor(agent, rebuilt, "same input"))
++    descriptor = _native_user_message(agent, rebuilt, index, "same input", "same input")
++    assert index == (0 if identity_retained else -1)
++    assert descriptor == (rebuilt[0] if identity_retained else None)
++
++
++def test_resumed_durable_users_keep_current_anchor_and_merge_only_on_wire(native):
++    from copy import deepcopy
++    from agent.agent_runtime_helpers import (
++        drop_thinking_only_and_merge_users, repair_message_sequence,
++    )
++
++    old_id = native.append_message("parent", "user", "earlier task")
++    current_id = native.append_message("parent", "user", "resume task")
++    # Gateway replay omits historical row IDs; the current turn-start flush
++    # supplies its exact newly persisted coordinate before sequence repair.
++    messages = [
++        {"role": "user", "content": "earlier task", "_db_persisted": True},
++        {"role": "user", "content": "resume task", "_row_id": current_id,
++         "_db_persisted": True},
++    ]
++    before = deepcopy(messages)
++    assert repair_message_sequence(SimpleNamespace(), messages) == 0
++    assert messages == before
++    assert export(native, "parent", messages, 1, original="resume task", wrapper="resume task") == {
++        "role": "user", "content": "resume task", "_row_id": current_id}
++    assert [(row["id"], row["content"]) for row in native.get_messages("parent")] == [
++        (old_id, "earlier task"), (current_id, "resume task")]
++    wire = drop_thinking_only_and_merge_users([
++        {"role": row["role"], "content": row["content"]} for row in messages])
++    assert wire == [{"role": "user", "content": "earlier task\n\nresume task"}]
++    assert messages == before
+diff --git a/tests/agent/test_post_tool_compression_attempt_cap.py b/tests/agent/test_post_tool_compression_attempt_cap.py
+index 63d4558a35e908b09c2a661143782374f05c14ba..cab7269a0eee52aa498f782732b2de4c0ab0f9bb 100644
+--- a/tests/agent/test_post_tool_compression_attempt_cap.py
++++ b/tests/agent/test_post_tool_compression_attempt_cap.py
+@@ -206,3 +206,32 @@ class TestPostToolCompressionAttemptCap:
+ 
+         assert len(first) == 3
+         assert len(second) == 3
++
++
++def test_post_tool_compaction_reanchors_current_row_before_request_middleware(agent):
++    from agent import turn_api_request
++    seen = []
++    observe = turn_api_request._native_user_message
++
++    def capture(agent, messages, index, user_message, original_user_message):
++        seen.append((index, messages[index].get('content')))
++        return observe(agent, messages, index, user_message, original_user_message)
++
++    def compact(messages, system_message, **kwargs):
++        return list(messages[2:]), system_message
++
++    agent.client.chat.completions.create.side_effect = [_tool_response(0), _stop_response()]
++    with (
++        patch.object(agent, '_compress_context', side_effect=compact),
++        patch.object(turn_api_request, '_native_user_message', side_effect=capture),
++        patch.object(agent, '_persist_session'),
++        patch.object(agent, '_save_trajectory'),
++        patch.object(agent, '_cleanup_task_resources'),
++        patch('model_tools.handle_function_call', return_value='{"ok":true}'),
++    ):
++        result = agent.run_conversation('current work', conversation_history=[
++            {'role':'user', 'content':'earlier question'},
++            {'role':'assistant', 'content':'earlier answer'},
++        ])
++    assert result['completed'] is True
++    assert seen == [(2, 'current work'), (0, 'current work')]
+diff --git a/tests/agent/test_tool_turn_completion.py b/tests/agent/test_tool_turn_completion.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3059ebe08a4be257462c1b4b3f005c598148a265
+--- /dev/null
++++ b/tests/agent/test_tool_turn_completion.py
+@@ -0,0 +1,209 @@
++"""A runtime handoff ends only its current, durably completed tool round."""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++
++TOOL = "fixture_background_handoff"
++ARGUMENTS = '{"request": "accepted background work"}'
++TOOL_RESULT = json.dumps({"accepted": True, "task_id": "background-accepted"})
++RECEIPT = "Accepted background task background-accepted."
++
++
++def _response(*, calls=(), text=None):
++    return SimpleNamespace(
++        choices=[SimpleNamespace(
++            message=SimpleNamespace(content=text, tool_calls=list(calls) or None),
++            finish_reason="tool_calls" if calls else "stop",
++        )],
++        model="fixture/model",
++        usage=SimpleNamespace(prompt_tokens=20, completion_tokens=5, total_tokens=25),
++    )
++
++
++def _call(call_id="handoff-1", arguments=ARGUMENTS):
++    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
++        name=TOOL, arguments=arguments,
++    ))
++
++
++@pytest.fixture
++def runtime(tmp_path, monkeypatch):
++    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
++    from hermes_state import SessionDB
++    from run_agent import AIAgent
++
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "0")
++    (tmp_path / "config.yaml").write_text(json.dumps({
++        "auxiliary": {"title_generation": {"enabled": False}},
++        "model": {"context_length": 131072},
++    }), encoding="utf-8")
++    manager = PluginManager()
++    manager._discovered = True
++    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
++    context = PluginContext(PluginManifest(name="handoff-fixture", source="user"), manager)
++    schema = {"name": TOOL, "description": "Accept explicitly scoped background work.",
++              "parameters": {"type": "object", "properties": {"request": {"type": "string"}}}}
++    state = SimpleNamespace(scenario="success", executed=[], callbacks=[], api=[], transforms=[],
++                            finalization_rows=[])
++
++    def handler(args, **kwargs):
++        state.executed.append((args, kwargs))
++        if state.scenario == "steer":
++            state.agent.steer("Also answer my new foreground question.")
++        if state.scenario == "interrupt":
++            state.agent.interrupt()
++        return json.dumps({"error": "Admission failed"}) if state.scenario == "error" else TOOL_RESULT
++
++    registration = context.register_tool(TOOL, "handoff-fixture", schema, handler)
++    assert registration is not None
++    database = SessionDB(tmp_path / "state.db")
++    with (
++        patch("model_tools.get_tool_definitions", return_value=[{"type": "function", "function": schema}]),
++        patch("model_tools.check_toolset_requirements", return_value={}),
++        patch("agent.process_bootstrap.OpenAI"),
++    ):
++        agent = AIAgent(api_key="fixture-key", base_url="https://fixture.invalid/v1",
++                        provider="openai-compat", model="fixture/model", session_id="foreground",
++                        max_iterations=3, quiet_mode=True, skip_context_files=True,
++                        skip_memory=True, skip_background_review=True, session_db=database)
++    state.agent, state.database, state.context = agent, database, context
++    agent.client = MagicMock()
++    agent._cached_system_prompt = "A stable fixture prompt."
++    agent._disable_streaming = True
++    agent._use_prompt_caching = False
++    agent.compression_enabled = False
++    agent.save_trajectories = False
++    agent.tool_delay = 0
++    agent._save_trajectory = lambda *a, **kw: state.finalization_rows.append(database.get_messages(agent.session_id))
++
++    def complete(**kwargs):
++        from hermes_cli.tool_completion import FinishTurn
++
++        state.callbacks.append(kwargs)
++        rows = database.get_messages(agent.session_id)
++        persisted = [row for row in rows if row.get("tool_call_id") == kwargs["tool_call_id"]]
++        assert persisted and persisted[-1]["content"] == kwargs["tool_result"]
++        if state.scenario == "hook_steer":
++            state.agent.steer("Also answer my new foreground question.")
++        if state.scenario == "hook_interrupt":
++            state.agent.interrupt()
++        if state.scenario == "untyped":
++            return {"text": RECEIPT, "tool_call_id": kwargs["tool_call_id"]}
++        return FinishTurn(text=RECEIPT, tool_call_id=(
++            "a-different-call" if state.scenario == "wrong_call" else kwargs["tool_call_id"]))
++
++    context.register_hook("post_tool_batch", complete)
++    context.register_hook("post_api_request", lambda **kwargs: state.api.append(kwargs))
++
++    def transform(**kwargs):
++        state.transforms.append(kwargs)
++        return "Transformed ordinary model answer."
++
++    context.register_hook("transform_llm_output", transform)
++    try:
++        yield state
++    finally:
++        agent.close()
++        manager.unload()
++        database.close()
++
++
++@pytest.mark.parametrize("platform,streaming", [("cli", False), ("telegram", True)])
++def test_runtime_receipt_is_durable_at_budget_limit_and_next_turn_is_normal(runtime, monkeypatch, platform, streaming):
++    agent = runtime.agent
++    agent.platform = platform
++    agent.max_iterations = agent.iteration_budget.max_total = 1
++    agent._disable_streaming = not streaming
++    agent.stream_delta_callback = MagicMock() if streaming else None
++    responses = iter([_response(calls=[_call()]), _response(text="Ordinary model answer.")])
++    provider = MagicMock(side_effect=lambda *a, **kw: next(responses))
++    monkeypatch.setattr(agent, "_interruptible_api_call", provider)
++    monkeypatch.setattr(agent, "_interruptible_streaming_api_call", provider)
++    summary = MagicMock(side_effect=AssertionError("A completed handoff must not ask for a summary"))
++    monkeypatch.setattr(agent, "_handle_max_iterations", summary)
++
++    result = agent.run_conversation("Hand off this entire request.", task_id="foreground-task")
++
++    assert result["final_response"] == RECEIPT
++    assert result["completed"] and not result["failed"] and not result["interrupted"]
++    assert result["turn_exit_reason"] == "tool_handoff"
++    assert result["response_origin"] == "runtime"
++    assert result["api_calls"] == provider.call_count == len(runtime.api) == 1
++    assert not runtime.transforms and not result["response_transformed"]
++    assert len(runtime.executed) == len(runtime.callbacks) == 1
++    observed = runtime.callbacks[0]
++    assert observed["tool_name"] == TOOL and observed["tool_arguments"] == ARGUMENTS
++    assert observed["tool_result"] == TOOL_RESULT and observed["platform"] == platform
++    provenance = {key: observed[key] for key in (
++        "session_id", "task_id", "turn_id", "api_request_id", "tool_name", "tool_call_id")}
++    assert all(provenance.values())
++    assert provenance["task_id"] == "foreground-task"
++    assert result["response_provenance"] == {"type": "tool_handoff", **provenance}
++    rows = runtime.database.get_messages(agent.session_id)
++    assert [row["role"] for row in rows] == ["user", "assistant", "tool", "assistant"]
++    assert rows[-1]["content"] == RECEIPT and rows[-1]["display_kind"] == "runtime_handoff"
++    assert rows[-1]["display_metadata"] == {"response_origin": "runtime", "type": "tool_handoff", **provenance}
++    assert runtime.finalization_rows[0][-1]["id"] == rows[-1]["id"]
++
++    following = agent.run_conversation("Now answer a separate question.", conversation_history=result["messages"])
++    assert following["final_response"] == "Transformed ordinary model answer."
++    assert following.get("response_origin") != "runtime"
++    assert following.get("response_provenance") != result["response_provenance"]
++    assert provider.call_count == len(runtime.api) == 2 and len(runtime.transforms) == 1
++    assert len(runtime.callbacks) == len(runtime.executed) == 1
++    assert len([row for row in runtime.database.get_messages(agent.session_id)
++                if row.get("display_kind") == "runtime_handoff"]) == 1
++    summary.assert_not_called()
++
++
++@pytest.mark.parametrize("scenario", [
++    "mixed", "error", "steer", "interrupt", "hook_steer", "hook_interrupt",
++    "wrong_call", "untyped", "persistence", "receipt_persistence",
++])
++def test_ineligible_or_uncommitted_round_cannot_finish_with_a_runtime_receipt(runtime, monkeypatch, scenario):
++    runtime.scenario = scenario
++    agent = runtime.agent
++    calls = [_call(), _call("sibling-2", '{"request":"another foreground obligation"}')] if scenario == "mixed" else [_call()]
++    responses = iter([_response(calls=calls), _response(text="The foreground still needs an answer.")])
++    provider = MagicMock(side_effect=lambda *a, **kw: next(responses))
++    monkeypatch.setattr(agent, "_interruptible_api_call", provider)
++    if scenario in {"persistence", "receipt_persistence"}:
++        original = runtime.database.append_messages_batch
++
++        def fail_tool_write(*args, **kwargs):
++            rows = kwargs.get("messages", args[1] if len(args) > 1 else [])
++            if any(
++                row.get("role") == "tool" if scenario == "persistence"
++                else row.get("display_kind") == "runtime_handoff"
++                for row in rows
++            ):
++                raise RuntimeError("Controlled SQLite receipt write failure")
++            return original(*args, **kwargs)
++
++        monkeypatch.setattr(runtime.database, "append_messages_batch", fail_tool_write)
++
++    result = agent.run_conversation("Perform these foreground requests.", task_id="foreground-task")
++
++    assert result.get("response_origin") != "runtime"
++    assert result["turn_exit_reason"] != "tool_handoff"
++    assert result["final_response"] != RECEIPT
++    assert not any(row.get("display_kind") == "runtime_handoff"
++                   for row in runtime.database.get_messages(agent.session_id))
++    assert len(runtime.executed) == len(calls)
++    if scenario in {"interrupt", "hook_interrupt", "persistence", "receipt_persistence"}:
++        assert result["interrupted"] or result["failed"]
++        assert provider.call_count == 1
++    else:
++        assert result["completed"] and provider.call_count == 2
++        persisted = runtime.database.get_messages(agent.session_id)
++        assert {row["tool_call_id"] for row in persisted if row["role"] == "tool"} == {call.id for call in calls}
++        if scenario in {"steer", "hook_steer"}:
++            assert any("Also answer my new foreground question." in str(row.get("content")) for row in persisted)
++    assert len(runtime.callbacks) == (1 if scenario in {
++        "wrong_call", "untyped", "hook_steer", "hook_interrupt", "receipt_persistence",
++    } else 0)
+diff --git a/tests/agent/test_transcript_redaction_reload.py b/tests/agent/test_transcript_redaction_reload.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2bf9c31280a572bb2b4a0a338dafb32e2df6b780
+--- /dev/null
++++ b/tests/agent/test_transcript_redaction_reload.py
+@@ -0,0 +1,57 @@
++"""An idle native client must not reintroduce erased history on its next turn."""
++from hermes_state import SessionDB
++from run_agent import AIAgent
++from tests.agent.test_cross_process_turn_lease import _agent_with_db
++
++
++def test_idle_agent_reloads_only_affected_history_before_an_uncontended_turn(tmp_path, monkeypatch):
++    monkeypatch.setattr('agent.turn_liveness.resolve_turn_liveness_settings', lambda _: (None, 1))
++    db = SessionDB(tmp_path / 'state.db')
++    other_writer = SessionDB(tmp_path / 'state.db')
++    try:
++        db.create_session('s1', source='cli')
++        target = db.append_message('s1', 'user', 'forgettoken source')
++        answer = db.append_message('s1', 'assistant', 'forgettoken linked answer')
++        kept = db.append_message('s1', 'user', 'Keep the unrelated task open')
++        db.create_session('other', source='cli')
++        db.append_message('other', 'user', 'Unrelated other session')
++        history = db.get_messages_as_conversation('s1', include_row_ids=True)
++        agent = _agent_with_db(db, session_id='s1', platform='cli')
++        agent._session_messages = history
++        agent._db_flush_scan_prefix = history[:]
++
++        def model_loop(_agent, _message, _system, supplied, *_args, **_kwargs):
++            return {'final_response': 'no inference in this fixture', 'messages': supplied, 'failed': False}
++
++        monkeypatch.setattr('agent.conversation_loop.run_conversation', model_loop)
++
++        def admit():
++            return AIAgent.run_conversation(agent, 'Continue the accepted task',
++                task_id='accepted-task', conversation_history=history)
++
++        first = admit()
++        assert first['messages'] is history
++        # No held lease and no contention callback: another process erased while this agent was idle.
++        expected = other_writer.get_message_redaction_snapshot('s1', [target, answer])
++        other_writer.redact_message_payloads('s1', expected)
++        second = admit()
++        assert second['messages'] is not history
++        assert 'forgettoken' not in str(second['messages'])
++        assert agent._session_messages is second['messages']
++        assert agent._db_flush_scan_prefix is None
++        assert second['messages'][-1]['_row_id'] == kept
++        assert second['messages'][-1]['content'] == 'Keep the unrelated task open'
++        assert agent.session_id == 's1'
++        # A subsequent real native compaction uses the refreshed payload, not the idle copy.
++        db.archive_and_compact('s1', second['messages'], tail_count=len(second['messages']))
++        assert 'forgettoken' not in str(db.get_messages('s1', include_inactive=True))
++
++        # Neither an unchanged revision nor redaction in a different session reloads this turn.
++        history = second['messages']
++        other_id = db.get_messages('other')[0]['id']
++        other_writer.redact_message_payloads('other', other_writer.get_message_redaction_snapshot('other', [other_id]))
++        third = admit()
++        assert third['messages'] is history
++    finally:
++        other_writer.close()
++        db.close()
+diff --git a/tests/agent/test_turn_context.py b/tests/agent/test_turn_context.py
+index a08d6665e2b3198b0a87e946c7f5e42ef80a3fec..6386a559ccbc7f2499081b80ca32906d6d33649c 100644
+--- a/tests/agent/test_turn_context.py
++++ b/tests/agent/test_turn_context.py
+@@ -534,3 +534,165 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
+     overwritten or never read.
+     """
+     assert not _title_turn(platform).called
++
++
++def _curated_agent(home, monkeypatch, *, refresh=True, memory=True, user=True, db=None):
++    import json
++    from agent.agent_init import _init_memory
++    from agent.system_prompt import build_system_prompt
++    from hermes_cli.config import load_config_readonly
++
++    home.mkdir(parents=True, exist_ok=True)
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.chdir(home)
++    settings = {"memory_enabled": memory, "user_profile_enabled": user, "nudge_interval": 0}
++    if refresh is not None:
++        settings["refresh_on_turn"] = refresh
++    (home / "config.yaml").write_text(json.dumps({"memory": settings}), encoding="utf-8")
++    agent = _FakeAgent()
++    agent.enabled_toolsets = ["memory"]
++    agent.load_soul_identity = False
++    agent.skip_context_files = True
++    agent.pass_session_id = True
++    agent._use_prompt_caching = False
++    agent.ephemeral_system_prompt = ""
++    agent._copy_reasoning_content_for_api = lambda *_a: None
++    agent._should_sanitize_tool_calls = lambda: False
++    agent._cached_system_prompt = None
++    agent._session_db = db or SessionDB(db_path=home / "state.db")
++    if db is None:
++        agent._session_db.create_session(agent.session_id, source="cli")
++    _init_memory(agent, load_config_readonly(), skip_memory=False, platform="cli")
++    agent._build_system_prompt = lambda system_message=None: build_system_prompt(agent, system_message)
++    return agent
++
++
++def _curated_turn(agent, history=None):
++    from agent.agent_runtime_helpers import note_turn_persisted
++    from agent.conversation_loop import _restore_or_build_system_prompt
++    ctx = _build(
++        agent, conversation_history=history, task_id="continuing-task",
++        system_message="Keep the caller's task instructions.",
++        restore_or_build_system_prompt=_restore_or_build_system_prompt,
++    )
++    # These fixtures exercise the prologue and wire builder, without running a model loop.
++    note_turn_persisted(agent)
++    return ctx
++
++
++def _curated_wire(agent, ctx):
++    from agent.turn_context import build_api_messages
++    return build_api_messages(
++        agent, ctx.messages, current_turn_user_idx=ctx.current_turn_user_idx,
++        ext_prefetch_cache="", plugin_user_context="", moa_config=None,
++        active_system_prompt=ctx.active_system_prompt,
++    )[0]
++
++
++@pytest.mark.parametrize("refresh", [True, False, None, "false"])
++def test_curated_refresh_crosses_user_turns_but_not_tool_iterations(tmp_path, monkeypatch, refresh):
++    """Native file writes reach the next user request only when explicitly enabled."""
++    import copy
++    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
++    from tools.memory_tool import load_on_disk_store
++
++    agent = _curated_agent(tmp_path / "profile", monkeypatch, refresh=refresh)
++    plugin_calls = []
++    manager = PluginManager()
++    plugin = PluginContext(PluginManifest(name="memory-test", key="memory-test", source="user"), manager)
++
++    def render(info):
++        plugin_calls.append(info["session_id"])
++        return "Keep the delivery plan visible."
++
++    plugin.register_system_prompt_section("memory-test.guidance", render)
++    monkeypatch.setattr("hermes_cli.plugins.render_system_prompt_sections", manager.render_system_prompt_sections)
++    agent._build_system_prompt = MagicMock(wraps=agent._build_system_prompt)
++    writer = load_on_disk_store()
++    assert writer.add("memory", "The delivery uses the east door.")["success"]
++    assert writer.add("user", "The user prefers tea.")["success"]
++    # Match startup: both stores begin with the same file contents.
++    agent._memory_store.load_from_disk()
++    first = _curated_turn(agent)
++    first_wire = _curated_wire(agent, first)
++    original_prompt = first_wire[0]["content"]
++    assert "east door" in original_prompt and "prefers tea" in original_prompt
++    history = first.messages + [{"role": "assistant", "content": "I will prepare the delivery."}]
++    saved_history = copy.deepcopy(history)
++    saved_tools = agent.tools
++    initial_builds = agent._build_system_prompt.call_count
++    initial_plugin_calls = len(plugin_calls)
++    assert initial_plugin_calls > 0
++    stable = _curated_turn(agent, history)
++    assert stable.active_system_prompt is first.active_system_prompt
++    assert agent._build_system_prompt.call_count == initial_builds
++    assert len(plugin_calls) == initial_plugin_calls
++
++    assert writer.replace("memory", "east door", "The delivery uses the west door.")["success"]
++    assert writer.replace("user", "prefers tea", "The user prefers coffee.")["success"]
++    # Model/tool iterations consume their turn's already-built request context.
++    assert _curated_wire(agent, first) == first_wire
++    next_turn = _curated_turn(agent, history)
++    wire = _curated_wire(agent, next_turn)
++    prompt = wire[0]["content"]
++    if refresh is True:
++        assert "west door" in prompt and "prefers coffee" in prompt
++        assert "east door" not in prompt and "prefers tea" not in prompt
++        assert agent._build_system_prompt.call_count == initial_builds + 1
++        assert len(plugin_calls) == initial_plugin_calls + 1
++    else:
++        assert prompt == original_prompt
++    assert "Keep the caller's task instructions." in prompt
++    assert history == saved_history
++    assert wire[1:1 + len(history)] == history
++    assert agent.tools is saved_tools
++    assert agent.session_id == "sess-1" and next_turn.effective_task_id == "continuing-task"
++    assert agent._session_db.get_session(agent.session_id)["system_prompt"] == prompt
++
++
++@pytest.mark.parametrize("memory,user", [(True, True), (False, True), (True, False), (False, False)])
++def test_curated_refresh_resumes_stale_prompt_and_removes_deleted_facts(tmp_path, monkeypatch, memory, user):
++    """A fresh native store must not let an old DB prompt undo corrections or deletions."""
++    from tools.memory_tool import load_on_disk_store
++
++    home = tmp_path / "active-profile"
++    agent = _curated_agent(home, monkeypatch, memory=memory, user=user)
++    writer = load_on_disk_store()
++    if memory:
++        assert writer.add("memory", "The delivery uses the east door.")["success"]
++    if user:
++        assert writer.add("user", "The user prefers tea.")["success"]
++    if agent._memory_store:
++        agent._memory_store.load_from_disk()
++    first = _curated_turn(agent)
++    old_prompt = first.active_system_prompt
++    history = first.messages + [{"role": "assistant", "content": "Understood."}]
++    if memory:
++        assert writer.replace("memory", "east door", "The delivery uses the west door.")["success"]
++    if user:
++        assert writer.replace("user", "prefers tea", "The user prefers coffee.")["success"]
++    # A separate profile's content must never enter this profile's prompt.
++    other = tmp_path / "other-profile" / "memories"
++    other.mkdir(parents=True)
++    (other / "MEMORY.md").write_text("Unrelated profile fact.", encoding="utf-8")
++    resumed = _curated_agent(home, monkeypatch, memory=memory, user=user, db=agent._session_db)
++    resumed._build_system_prompt = MagicMock(wraps=resumed._build_system_prompt)
++    assert resumed._session_db.get_session(resumed.session_id)["system_prompt"] == old_prompt
++    refreshed = _curated_turn(resumed, history)
++    prompt = _curated_wire(resumed, refreshed)[0]["content"]
++    assert ("west door" in prompt) is memory
++    assert ("prefers coffee" in prompt) is user
++    assert "east door" not in prompt and "prefers tea" not in prompt
++    assert "Unrelated profile fact." not in prompt
++    restored_builds = resumed._build_system_prompt.call_count
++    assert restored_builds == int(memory or user)
++    assert _curated_turn(resumed, history).active_system_prompt is refreshed.active_system_prompt
++    assert resumed._build_system_prompt.call_count == restored_builds
++    if memory:
++        assert writer.remove("memory", "west door")["success"]
++    if user:
++        assert writer.remove("user", "prefers coffee")["success"]
++    empty = _curated_turn(resumed, history)
++    assert "west door" not in empty.active_system_prompt
++    assert "prefers coffee" not in empty.active_system_prompt
++    assert resumed._session_db.get_session(resumed.session_id)["system_prompt"] == empty.active_system_prompt
+diff --git a/tests/agent/test_turn_facade_lease.py b/tests/agent/test_turn_facade_lease.py
+index 689a59e57cbede62256cbcff22eb3ed62b714339..726302d9d90cf032a5b59e842746405222d59773 100644
+--- a/tests/agent/test_turn_facade_lease.py
++++ b/tests/agent/test_turn_facade_lease.py
+@@ -25,6 +25,9 @@ class _Db:
+     def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+         return True
+ 
++    def get_transcript_redaction_revision(self, session_id):
++        return 0
++
+     def release_session_turn_lease(self, session_id, holder):
+         self.events.append(("release", session_id, holder))
+ 
+diff --git a/tests/agent/test_turn_finalizer_cleanup_guard.py b/tests/agent/test_turn_finalizer_cleanup_guard.py
+index 25a76a079f94564501caa5e6cc12f5f390bf796c..bcdb87eeb33336228b7d566ccbdb14bb9c848f68 100644
+--- a/tests/agent/test_turn_finalizer_cleanup_guard.py
++++ b/tests/agent/test_turn_finalizer_cleanup_guard.py
+@@ -108,6 +108,8 @@ def _run(
+     final_response=None,
+     api_call_count=3,
+     turn_exit_reason="unknown",
++    interrupted=False,
++    failed=False,
+ ):
+     messages = [
+         {"role": "user", "content": "do a thing"},
+@@ -124,8 +126,8 @@ def _run(
+         agent,
+         final_response=final_response,
+         api_call_count=api_call_count,
+-        interrupted=False,
+-        failed=False,
++        interrupted=interrupted,
++        failed=failed,
+         messages=messages,
+         conversation_history=None,
+         effective_task_id="task-1",
+@@ -166,32 +168,48 @@ def test_clean_turn_has_no_cleanup_errors_key():
+     assert "cleanup_errors" not in result
+ 
+ 
+-@pytest.mark.parametrize(
+-    ("persist_disabled", "expected_calls"),
+-    [
+-        (True, ["transform_llm_output"]),
+-        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+-    ],
+-)
+-def test_persist_disabled_turn_skips_session_end_hook(
+-    persist_disabled, expected_calls
++@pytest.mark.parametrize("persist_disabled", [True, False])
++@pytest.mark.parametrize("outcome", ["completed", "failed", "interrupted"])
++def test_detached_end_observation_does_not_publish_a_session_turn(
++    monkeypatch, persist_disabled, outcome
+ ):
++    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
++
+     agent = _StubAgent(raise_in=())
+     agent._persist_disabled = persist_disabled
++    agent._parent_session_id = agent.session_id if persist_disabled else None
+     calls = []
+-
+-    def capture(name, _logger, **_kwargs):
+-        calls.append(name)
+-        return []
+-
+-    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+-        _run(
+-            agent,
+-            final_response="done",
+-            api_call_count=1,
+-            turn_exit_reason="text_response(stop)",
+-        )
+-
+-    assert calls == expected_calls
+-
+-
++    manager = PluginManager()
++    ctx = PluginContext(PluginManifest(name="completion-observer", version="1.0.0"), manager)
++    for name in ("transform_llm_output", "post_llm_call", "on_session_end", "on_detached_turn_end"):
++        def capture(_name=name, **kwargs):
++            calls.append((_name, kwargs))
++            return {"user_message": "must not be ingested", "completed": False}
++        assert ctx.register_hook(name, capture) is not None
++    # Keep the real finalizer, lifecycle and plugin dispatch. Only substitute
++    # this isolated manager; observer returns must not change the native result.
++    monkeypatch.setattr("hermes_cli.lifecycle._plugin_hooks", manager.invoke_hook)
++    final_response = None if outcome == "interrupted" else "private final response"
++    result = _run(agent, final_response=final_response, api_call_count=1,
++                  interrupted=outcome == "interrupted", failed=outcome == "failed",
++                  turn_exit_reason="text_response(stop)" if outcome == "completed" else outcome)
++
++    end_name = "on_detached_turn_end" if persist_disabled else "on_session_end"
++    expected = [] if outcome == "interrupted" else ["transform_llm_output"]
++    if not persist_disabled and outcome != "interrupted":
++        expected.append("post_llm_call")
++    assert [name for name, _ in calls] == expected + [end_name]
++    payload = calls[-1][1]
++    assert payload["session_id"] == agent.session_id
++    assert payload["task_id"] == "task-1" and payload["turn_id"] == "turn-1"
++    for key in ("completed", "failed", "interrupted", "turn_exit_reason"):
++        assert payload[key] == result[key]
++    assert result["completed"] is (outcome == "completed")
++    if persist_disabled:
++        assert payload["parent_session_id"] == agent.session_id
++        assert set(payload) == {"session_id", "parent_session_id", "task_id", "turn_id",
++                                "completed", "failed", "interrupted", "turn_exit_reason", "model", "platform",
++                                "telemetry_schema_version"}
++        assert all(isinstance(value, (str, bool, int)) for value in payload.values())
++        assert "private final response" not in str(payload)
++        assert "do a thing" not in str(payload)
+diff --git a/tests/agent/test_turn_liveness_watchdog.py b/tests/agent/test_turn_liveness_watchdog.py
+index fd4d9a537677eaeec52c9d1a8ba4d7d5222c6f21..5af4d73881678350d3c548e80a19e59f1e07a2d0 100644
+--- a/tests/agent/test_turn_liveness_watchdog.py
++++ b/tests/agent/test_turn_liveness_watchdog.py
+@@ -46,6 +46,9 @@ class _DB:
+     def get_session(self, session_id):
+         return {"id": session_id} if self.session_exists else None
+ 
++    def get_transcript_redaction_revision(self, session_id):
++        return 0
++
+     def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+         self.events.append(("acquire", session_id, holder))
+         on_wait = kwargs.get("on_wait")
+diff --git a/tests/cron/test_cron_owned_output.py b/tests/cron/test_cron_owned_output.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..c15417dcc91a97fdef663334cdf15076b877faa6
+--- /dev/null
++++ b/tests/cron/test_cron_owned_output.py
+@@ -0,0 +1,309 @@
++"""Exact cron provenance connects stored output to selective native erasure."""
++
++from concurrent.futures import ThreadPoolExecutor
++import json
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from cron import delivery_queue, executions, incidents, jobs, owned_output
++from cron.scheduler_delivery import (
++    _maybe_mirror_cron_delivery,
++    _seed_cron_channel_session,
++    _seed_cron_thread_session,
++)
++from gateway.config import GatewayConfig
++from gateway.session import SessionStore
++import hermes_state
++from hermes_state_registry import acquire, release_or_close
++
++
++@pytest.fixture
++def profile(tmp_path, monkeypatch):
++    home = tmp_path / "profile"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    # The global fixture pins DEFAULT_DB_PATH. Exercise native profile resolution
++    # here, including a cron-store override in a process serving another profile.
++    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
++    db = acquire(home / "state.db")
++    try:
++        with jobs.use_cron_store(home):
++            yield home, db
++    finally:
++        release_or_close(db)
++
++
++def _job():
++    return jobs.create_job("Read the selected local source", "every 1h", name="Shared label",
++                           deliver="local", script="reader.py", no_agent=True)
++
++
++def _rows(db):
++    return {row["id"]: dict(row) for row in db._conn.execute("SELECT * FROM messages ORDER BY id")}
++
++
++def _failed_execution(job, error):
++    run = executions.create_execution(job["id"], source="manual")
++    return executions.finish_execution(run["id"], success=False, error=error)
++
++
++def test_native_mirror_provenance_selects_only_its_job_and_preserves_identical_user_text(profile):
++    home, db = profile
++    owned, other = _job(), _job()
++    db.create_session("conversation", source="telegram", session_key="route:owner")
++    db.record_gateway_session_peer("conversation", source="telegram", session_key="route:owner",
++                                   user_id="owner", chat_id="100", chat_type="dm")
++    text = "Selected source says orchard badge cobalt-716."
++    for job, execution_id in ((owned, "owned-first"), (other, "unrelated-run"),
++                              (owned, "owned-second")):
++        _maybe_mirror_cron_delivery(job | {"execution_id": execution_id}, "telegram", "100",
++                                    text, user_id="owner", enabled=True)
++    mirrors = _rows(db)
++    assert len(mirrors) == 3
++    selected = []
++    for row in mirrors.values():
++        metadata = json.loads(row["display_metadata"])
++        assert row["role"] == "user" and metadata["mirror_source"] == "cron"
++        assert metadata["cron_execution_id"] in {"owned-first", "unrelated-run", "owned-second"}
++        if metadata["cron_job_id"] == owned["id"]:
++            selected.append(row["id"])
++    assert len(selected) == 2
++    identical = db.append_message("conversation", "user", mirrors[selected[0]]["content"])
++    session_meta = db.append_message("conversation", "session_meta", "Retain session routing",
++        display_metadata={"mirror_source": "cron", "cron_job_id": owned["id"]})
++    db.create_session("other-conversation", source="cli")
++    untouched_session = db.append_message("other-conversation", "user", text)
++    # Archived output remains an owned copy even when ordinary replay omits it.
++    db._execute_write(lambda conn: conn.execute(
++        "UPDATE messages SET active=0,compacted=1 WHERE id=?", (selected[0],)))
++    before = _rows(db)
++    session_before = db.get_session("conversation")
++
++    snapshot = owned_output.snapshot(owned["id"])
++    assert snapshot["native_home"] == str(home)
++    assert snapshot["native_db"] == str(db.db_path)
++    assert "cobalt-716" not in json.dumps(snapshot)
++    assert len(snapshot["sessions"]) == 1
++    selection = snapshot["sessions"][0]
++    assert selection["session_id"] == "conversation"
++    assert [row["id"] for row in selection["messages"]] == selected
++    result = db.redact_message_payloads(selection["session_id"], selection["messages"],
++        expected_message_watermark=selection["message_watermark"])
++    assert result["redacted_ids"] == selected
++    after = _rows(db)
++    assert set(after) == set(before)
++    assert {key: row for key, row in after.items() if key not in selected} == {
++        key: row for key, row in before.items() if key not in selected}
++    assert after[identical] == before[identical]
++    assert after[session_meta] == before[session_meta]
++    assert after[untouched_session] == before[untouched_session]
++    assert db.get_session("conversation") == session_before
++    for row_id in selected:
++        assert "cobalt-716" not in json.dumps(after[row_id])
++        assert after[row_id]["role"] == before[row_id]["role"]
++        assert after[row_id]["active"] == before[row_id]["active"]
++    assert owned_output.snapshot(owned["id"])["sessions"] == []
++    assert db.redact_message_payloads(selection["session_id"], selection["messages"])["redacted_ids"] == []
++
++
++@pytest.mark.parametrize("threaded", [False, True], ids=["channel", "thread"])
++def test_native_seed_persists_job_and_execution_provenance_through_real_session_store(profile, threaded):
++    home, db = profile
++    owned, other = _job(), _job()
++    store = SessionStore(home / "sessions", GatewayConfig())
++    adapter = SimpleNamespace(_session_store=store)
++    try:
++        for job, execution_id in ((owned, "owned-seed"), (other, "other-seed")):
++            delivered = job | {"execution_id": execution_id}
++            if threaded:
++                _seed_cron_thread_session(delivered, adapter, "telegram", "100", "20",
++                                          "Same source brief", is_dm=True)
++            else:
++                assert _seed_cron_channel_session(delivered, adapter, "telegram", "100",
++                    "Same source brief", is_dm=True, user_id="owner")
++        before = _rows(db)
++        snapshot = owned_output.snapshot(owned["id"])
++        assert len(snapshot["sessions"]) == 1
++        selection = snapshot["sessions"][0]
++        assert len(selection["messages"]) == 1
++        row_id = selection["messages"][0]["id"]
++        row = before[row_id]
++        metadata = json.loads(row["display_metadata"])
++        assert row["role"] == "user"
++        assert metadata["mirror_source"] == "cron"
++        assert metadata["cron_job_id"] == owned["id"]
++        assert metadata["cron_execution_id"] == "owned-seed"
++        session = db.get_session(selection["session_id"])
++        assert str(session["chat_id"]) == "100"
++        assert session["thread_id"] == ("20" if threaded else None)
++        result = db.redact_message_payloads(selection["session_id"], selection["messages"],
++            expected_message_watermark=selection["message_watermark"])
++        assert result["redacted_ids"] == [row_id]
++        after = _rows(db)
++        assert {key: value for key, value in after.items() if key != row_id} == {
++            key: value for key, value in before.items() if key != row_id}
++        assert owned_output.snapshot(owned["id"])["sessions"] == []
++    finally:
++        store.close_all_db_handles()
++
++
++def test_erase_clears_files_errors_and_delivery_copies_without_changing_another_job(profile):
++    _, db = profile
++    owned, other = _job(), _job()
++    content = "Source-derived orchard badge cobalt-716"
++    paths = {job["id"]: jobs.save_job_output(job["id"], content) for job in (owned, other)}
++    runs = {job["id"]: _failed_execution(job, content) for job in (owned, other)}
++    incident_ids = {job["id"]: incidents.upsert_incident(job["id"], content,
++        output_file=paths[job["id"]])[0] for job in (owned, other)}
++    errors = {key: content for key in (
++        "last_error", "last_delivery_error", "last_delivery_unverified", "last_fire_error")}
++    for job in (owned, other):
++        jobs.update_job(job["id"], errors)
++    delivery_queue.enqueue("owned-failed", owned, content)
++    assert delivery_queue.drain(lambda *_: content) == 1
++    delivery_queue.enqueue("owned-pending", owned | {"prompt": content}, content)
++    delivery_queue.enqueue("other-pending", other | {"prompt": content}, content)
++    other_before = {"job": jobs.get_job(other["id"]),
++        "run": executions.get_execution(runs[other["id"]]["id"]),
++        "incident": incidents.get_incident(incident_ids[other["id"]]),
++        "delivery": delivery_queue.get_status("other-pending")}
++    snapshot = owned_output.snapshot(owned["id"])
++    assert snapshot["files"] and snapshot["retained_errors"] and snapshot["queue_payloads"]
++    assert "cobalt-716" not in json.dumps(snapshot)
++
++    result = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++    assert result["status"] == "erased" and result["cancelled_deliveries"] == 1
++    assert result["messages_erased"] is False
++    assert not paths[owned["id"]].exists()
++    assert paths[other["id"]].read_text() == content
++    assert executions.get_execution(runs[owned["id"]]["id"])["error"] is None
++    incident = incidents.get_incident(incident_ids[owned["id"]])
++    assert content not in incident["error"] and incident["output_file"] is None
++    retained_job = jobs.get_job(owned["id"])
++    assert retained_job["enabled"] is False and retained_job["state"] == "paused"
++    assert all(retained_job[key] is None for key in errors)
++    for execution_id in ("owned-pending", "owned-failed"):
++        queue_row = delivery_queue.get_status(execution_id)
++        assert queue_row["status"] == "failed"
++        assert queue_row["job_json"] == "{}" and queue_row["content"] == ""
++        assert content not in str(queue_row["error"])
++    assert jobs.get_job(other["id"]) == other_before["job"]
++    assert executions.get_execution(runs[other["id"]]["id"]) == other_before["run"]
++    assert incidents.get_incident(incident_ids[other["id"]]) == other_before["incident"]
++    assert delivery_queue.get_status("other-pending") == other_before["delivery"]
++    fresh = owned_output.snapshot(owned["id"])
++    assert not fresh["files"] and not fresh["retained_errors"] and not fresh["queue_payloads"]
++    assert fresh["non_message_artifacts"] is False
++    assert owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])["status"] == "erased"
++
++
++@pytest.mark.parametrize("running", [False, True], ids=["claimed", "running"])
++def test_active_execution_defers_erasure_until_the_real_writer_settles(profile, running):
++    owned = _job()
++    output = jobs.save_job_output(owned["id"], "Original source output")
++    run = executions.create_execution(owned["id"], source="manual")
++    if running:
++        assert executions.mark_execution_running(run["id"])["status"] == "running"
++    delivery_queue.enqueue("waiting-output", owned, "Unsent source output")
++    before = executions.get_execution(run["id"])
++    snapshot = owned_output.snapshot(owned["id"])
++    assert snapshot["active_executions"] == [run["id"]]
++
++    pending = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++    assert pending["status"] == "pending" and pending["active_executions"] == [run["id"]]
++    assert executions.get_execution(run["id"]) == before
++    assert output.read_text() == "Original source output"
++    assert jobs.get_job(owned["id"])["enabled"] is False
++    assert delivery_queue.get_status("waiting-output")["status"] == "failed"
++    assert executions.finish_execution(run["id"], success=False, error="Late source output")
++    result = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++    assert result["status"] == "erased" and not output.exists()
++    assert executions.get_execution(run["id"])["status"] == "failed"
++    assert executions.get_execution(run["id"])["error"] is None
++    assert owned_output.snapshot(owned["id"])["non_message_artifacts"] is False
++
++
++def test_delivery_in_progress_defers_erasure_and_is_never_retried(profile, monkeypatch):
++    owned = _job()
++    output = jobs.save_job_output(owned["id"], "Source output waiting for its sender")
++    delivery_queue.enqueue("sending-output", owned, "Source output")
++    entered, settle = threading.Event(), threading.Event()
++    sends = []
++
++    def send(job, content, for_failure):
++        sends.append((job, content, for_failure))
++        entered.set()
++        assert settle.wait(10), "Test delivery was not released"
++        return "Source-derived delivery error"
++
++    with ThreadPoolExecutor(max_workers=1) as executor:
++        worker = executor.submit(delivery_queue.drain, send)
++        try:
++            assert entered.wait(10), "Native delivery never entered its send"
++            row = delivery_queue.get_status("sending-output")
++            snapshot = owned_output.snapshot(owned["id"])
++            assert snapshot["delivering"] == 1
++            pending = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++            assert pending["status"] == "pending" and pending["delivering"] == 1
++            assert delivery_queue.get_status("sending-output") == row
++            assert output.exists()
++            # A native waiter timing out does not stop a send already in progress.
++            monkeypatch.setattr(delivery_queue, "MAX_TERMINAL_DELIVERIES", 0)
++            delivery_queue._terminalize_wait_timeout("sending-output")
++            uncertain = delivery_queue.get_status("sending-output")
++            assert uncertain["status"] == "unknown"
++            pending = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++            assert pending["status"] == "pending"
++            assert delivery_queue.get_status("sending-output") == uncertain
++            assert output.exists()
++        finally:
++            settle.set()
++        assert worker.result(timeout=10) == 1
++    assert owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])["status"] == "erased"
++    assert delivery_queue.drain(send) == 0 and len(sends) == 1
++    assert not output.exists()
++    assert owned_output.snapshot(owned["id"])["non_message_artifacts"] is False
++
++
++@pytest.mark.parametrize("updates", [{"prompt": "Read a newly selected source"},
++                                     {"deliver": "telegram:200"}])
++def test_changed_job_payload_cannot_be_paused_or_erased_with_an_old_fingerprint(profile, updates):
++    owned = _job()
++    output = jobs.save_job_output(owned["id"], "Retained output")
++    delivery_queue.enqueue("retained-output", owned, "Retained output")
++    snapshot = owned_output.snapshot(owned["id"])
++    # Schedule advancement and outcome recording do not alter execution ownership.
++    jobs.update_job(owned["id"], {"schedule": "every 2h", "last_error": "Retained error"})
++    assert owned_output.snapshot(owned["id"])["payload_fingerprint"] == snapshot["payload_fingerprint"]
++    jobs.update_job(owned["id"], updates)
++    changed_job = jobs.get_job(owned["id"])
++    queue_before = delivery_queue.get_status("retained-output")
++    result = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++    assert result == {"status": "pending", "reason": "cron_job_changed"}
++    assert jobs.get_job(owned["id"]) == changed_job
++    assert delivery_queue.get_status("retained-output") == queue_before
++    assert output.read_text() == "Retained output"
++
++
++def test_cron_store_override_erases_only_its_profile_when_process_home_differs(profile, tmp_path, monkeypatch):
++    owner_home, _ = profile
++    owned = _job()
++    owned_file = jobs.save_job_output(owned["id"], "Selected profile output")
++    delivery_queue.enqueue("owner-output", owned, "Selected profile output")
++    process_home = tmp_path / "another-profile"
++    monkeypatch.setenv("HERMES_HOME", str(process_home))
++    with jobs.use_cron_store(process_home):
++        other = _job()
++        other_file = jobs.save_job_output(other["id"], "Other profile output")
++        other_queue = delivery_queue.enqueue("other-profile-output", other, "Other profile output")
++    snapshot = owned_output.snapshot(owned["id"])
++    assert snapshot["native_home"] == str(owner_home)
++    assert snapshot["native_db"] == str(owner_home / "state.db")
++    result = owned_output.erase(owned["id"], expected_payload_fingerprint=snapshot["payload_fingerprint"])
++    assert result["status"] == "erased" and not owned_file.exists()
++    assert other_file.read_text() == "Other profile output"
++    with jobs.use_cron_store(process_home):
++        assert jobs.get_job(other["id"])["enabled"] is True
++        assert delivery_queue.get_status("other-profile-output") == other_queue
+diff --git a/tests/gateway/test_api_server_active_work_drain.py b/tests/gateway/test_api_server_active_work_drain.py
+index d29985e0061a4588379fcf73c154630d5d6d17c5..2e8ee8ffa0e690940d86c68889cc1a6d3766a60f 100644
+--- a/tests/gateway/test_api_server_active_work_drain.py
++++ b/tests/gateway/test_api_server_active_work_drain.py
+@@ -72,6 +72,59 @@ class TestActiveApiRunCount:
+         assert runner._active_api_run_count() == 0
+ 
+ 
++@pytest.mark.asyncio
++async def test_detailed_health_reads_settled_native_work_without_rewriting_status():
++    """A detached native worker can settle after the last status publication."""
++    from gateway.status import read_runtime_status, write_runtime_status
++    from hermes_constants import get_hermes_home
++
++    runner, _adapter = make_restart_runner()
++    api = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "health-fixture"}))
++    runner.adapters = {Platform.API_SERVER: api}
++    api.gateway_runner = runner
++    app = web.Application()
++    app.router.add_get("/health/detailed", api._handle_health_detailed)
++    gate = asyncio.Event()
++    worker = asyncio.create_task(gate.wait())
++    runner._track_deferred_agent_worker(worker, object())
++    write_runtime_status(gateway_state="running", active_agents=runner._active_work_count())
++    status_path = get_hermes_home() / "gateway_state.json"
++    published = status_path.read_bytes()
++    assert read_runtime_status()["active_agents"] == 1
++    try:
++        async with TestClient(TestServer(app)) as client:
++            assert (await client.get("/health/detailed")).status == 401
++            headers = {"Authorization": "Bearer health-fixture"}
++            live = await (await client.get("/health/detailed", headers=headers)).json()
++            assert live["active_agents"] == 1 and live["gateway_busy"] is True
++
++            gate.set()
++            await worker
++            await asyncio.sleep(0)  # Run the native deferred-worker completion callback.
++            assert runner._active_work_count() == 0
++            settled = await (await client.get("/health/detailed", headers=headers)).json()
++            assert settled["active_agents"] == 0 and settled["gateway_busy"] is False
++            assert settled["gateway_state"] == "running"
++            assert settled["updated_at"] == live["updated_at"]
++            assert status_path.read_bytes() == published
++
++            # New API/cron work is counted even though it has no new status write.
++            import cron.scheduler as scheduler
++            api._pending_agent_requests += 1
++            scheduler._running_job_ids.add("health-fixture-job")
++            try:
++                busy = await (await client.get("/health/detailed", headers=headers)).json()
++                assert busy["active_agents"] == runner._active_work_count() == 2
++                assert busy["gateway_busy"] is True
++                assert status_path.read_bytes() == published
++            finally:
++                api._pending_agent_requests -= 1
++                scheduler._running_job_ids.discard("health-fixture-job")
++    finally:
++        gate.set()
++        await worker
++
++
+ class TestAPIServerAdapterWorkCount:
+ 
+     @pytest.mark.asyncio
+@@ -607,5 +660,3 @@ class TestShutdownSettleWindow:
+             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+         ]
+-
+-
+diff --git a/tests/gateway/test_home_channel_notice_capability.py b/tests/gateway/test_home_channel_notice_capability.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5ef75ba8f4725d49d60d9b0396f5782d7181088
+--- /dev/null
++++ b/tests/gateway/test_home_channel_notice_capability.py
+@@ -0,0 +1,56 @@
++"""First-contact setup notices follow the receiving adapter's delivery capability."""
++import pytest
++
++from gateway.config import GatewayConfig, Platform, PlatformConfig
++from gateway.platforms.base import BasePlatformAdapter, SendResult
++from gateway.run import GatewayRunner
++from gateway.session import SessionStore
++
++
++class RecordingAdapter(BasePlatformAdapter):
++    def __init__(self, config):
++        super().__init__(config, Platform.TELEGRAM)
++        self.sent = []
++
++    async def connect(self, *, is_reconnect=False):
++        return True
++
++    async def disconnect(self):
++        pass
++
++    async def send(self, chat_id, content, reply_to=None, metadata=None):
++        self.sent.append(content)
++        return SendResult(success=True, message_id=str(len(self.sent)))
++
++    async def get_chat_info(self, chat_id):
++        return {"type": "dm"}
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("async_delivery", [True, False])
++async def test_first_contact_home_prompt_requires_async_delivery(monkeypatch, tmp_path, async_delivery):
++    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
++    config = PlatformConfig(enabled=True)
++    adapter = RecordingAdapter(config)
++    if not async_delivery:
++        adapter.supports_async_delivery = False
++    source = adapter.build_source(chat_id="first-dm", chat_type="dm", user_id="person")
++    runner = object.__new__(GatewayRunner)
++    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: config})
++    runner.adapters = {Platform.TELEGRAM: adapter}
++    runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
++    runner.session_store.get_or_create_session(source)
++    runner.session_store.get_or_create_session(
++        adapter.build_source(chat_id="existing-dm", chat_type="dm", user_id="person"))
++
++    await runner._hmwa_first_contact_notes(source, [], [])
++    if async_delivery:
++        assert len(adapter.sent) == 1 and "Type /sethome" in adapter.sent[0]
++    else:
++        assert adapter.sent == []
++
++    # The capability gates only the irrelevant home prompt. Operational errors
++    # and the model's own reply still traverse the same real send boundary.
++    await runner._deliver_platform_notice(source, "The provider is unavailable.")
++    await adapter.send(source.chat_id, "The requested work is complete.")
++    assert adapter.sent[-2:] == ["The provider is unavailable.", "The requested work is complete."]
+diff --git a/tests/gateway/test_image_input_routing_runtime.py b/tests/gateway/test_image_input_routing_runtime.py
+index 2368c5c063e72d4e24a6d51265001e1e19470762..fa2c46693e49487b711514dc40f8185aacf51708 100644
+--- a/tests/gateway/test_image_input_routing_runtime.py
++++ b/tests/gateway/test_image_input_routing_runtime.py
+@@ -81,6 +81,107 @@ def test_pre_turn_named_custom_provider_identity_selects_vision_override(monkeyp
+     ) == "native"
+ 
+ 
++@pytest.mark.asyncio
++@pytest.mark.parametrize("capability", [True, False, None])
++async def test_native_if_supported_preserves_question_pixels_and_auxiliary(
++    tmp_path, monkeypatch, capability,
++):
++    """The gateway and registered tool use the same actual per-turn capability."""
++    import asyncio
++    import base64
++    import json
++    from types import SimpleNamespace
++
++    from agent import image_routing
++    from agent.auxiliary_client import (
++        aux_probe_mode, resolve_vision_provider_client, scoped_runtime_main,
++    )
++    from gateway.run_turn_runner import TurnRunner
++    from hermes_cli.config import load_config
++    from tools import vision_tools
++    from tools.registry import registry
++
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
++    # No catalog network lookup for the deliberately unknown capability control.
++    monkeypatch.setattr(image_routing, "_VISION_PROBES", ())
++    cfg = {
++        "agent": {"image_input_mode": "native_if_supported"},
++        "model": {"provider": "default-provider", "default": "shared-model"},
++        "providers": {
++            "default-provider": {"models": {"shared-model": {"supports_vision": True}}},
++            "session-provider": {"models": {"shared-model": {
++                **({"supports_vision": capability} if capability is not None else {}),
++            }}},
++        },
++        "auxiliary": {"vision": {
++            "provider": "custom", "model": "fallback-vision",
++            "base_url": "http://127.0.0.1:54321/v1", "api_key": "test-key",
++        }},
++    }
++    # Neither false nor unknown on the current provider can borrow the default
++    # provider's capability merely because their model aliases are identical.
++    (tmp_path / "config.yaml").write_text(json.dumps(cfg))
++    assert load_config()["agent"]["image_input_mode"] == "native_if_supported"
++    raw = base64.b64decode(
++        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
++    )
++    image = tmp_path / "view.png"
++    image.write_bytes(raw)
++    question = "Is this view useful for checking the work area? State its limits briefly."
++    runtime = {
++        "provider": "custom", "requested_provider": "session-provider",
++        "model": "shared-model", "base_url": "http://127.0.0.1:54322/v1",
++    }
++    calls = []
++
++    async def auxiliary_response(**kwargs):
++        # Keep native media preparation and configured auxiliary resolution real;
++        # replace only the completion, without opening a server or making inference.
++        with aux_probe_mode():
++            provider, client, model = resolve_vision_provider_client(model=kwargs.get("model"))
++            assert provider == "custom"
++            assert str(client.base_url).rstrip("/") == cfg["auxiliary"]["vision"]["base_url"]
++            assert model == "fallback-vision"
++        assert kwargs["task"] == "vision"
++        calls.append(kwargs)
++        return SimpleNamespace(choices=[SimpleNamespace(
++            message=SimpleNamespace(content="Derived image description.", reasoning_content=None),
++        )])
++
++    monkeypatch.setattr(vision_tools, "async_call_llm", auxiliary_response)
++    runner = _make_runner()
++    monkeypatch.setattr(runner, "_resolve_session_agent_runtime", lambda **_: (
++        runtime["model"], runtime,
++    ))
++    source = _source()
++    session_key = "current-image-session"
++    message = await runner._enrich_inbound_images(source, session_key, question, [str(image)])
++    turn = TurnRunner(runner, SimpleNamespace(session_key=session_key, message=message))
++    prepared = turn._native_image_run_message()
++    with scoped_runtime_main(runtime):
++        result = await asyncio.to_thread(
++            registry.dispatch, "vision_analyze", {"image_url": str(image), "question": question},
++        )
++    if capability is True:
++        assert calls == []
++        assert message == question
++        assert prepared[0]["type"] == "text"
++        assert prepared[0]["text"].startswith(question)
++        assert str(image) in prepared[0]["text"]
++        assert base64.b64decode(prepared[1]["image_url"]["url"].split(",", 1)[1]) == raw
++        assert result["_multimodal"] is True
++        image_part = next(p for p in result["content"] if p["type"] == "image_url")
++        assert base64.b64decode(image_part["image_url"]["url"].split(",", 1)[1]) == raw
++    else:
++        assert len(calls) == 2
++        assert isinstance(prepared, str)
++        assert question in prepared and "Derived image description." in prepared
++        assert json.loads(result)["analysis"] == "Derived image description."
++        assert question in calls[-1]["messages"][0]["content"][0]["text"]
++    assert runner._consume_pending_native_image_paths(session_key) == []
++    assert image.read_bytes() == raw
++
++
+ @pytest.mark.asyncio
+ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypatch):
+     """A slow route-identity check must not block gateway heartbeats."""
+diff --git a/tests/gateway/test_restart_resume_pending.py b/tests/gateway/test_restart_resume_pending.py
+index 89ee4705cd8b18e32cc30285c8d62bd623e9c75a..5f0a145d31c09bb43e621e284746854a9b704f97 100644
+--- a/tests/gateway/test_restart_resume_pending.py
++++ b/tests/gateway/test_restart_resume_pending.py
+@@ -655,7 +655,8 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_reconnect_reschedule_is_platform_scoped():
++@pytest.mark.parametrize('reason', ['restart_interrupted', 'owner_resume'])
++async def test_reconnect_reschedule_is_platform_scoped(reason):
+     """The platform filter limits the pass to that platform's sessions, so
+     reconnecting one platform never resumes another's pending session."""
+     runner, adapter = make_restart_runner()
+@@ -672,7 +673,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
+         platform=Platform.TELEGRAM,
+         chat_type="dm",
+         resume_pending=True,
+-        resume_reason="restart_interrupted",
++        resume_reason=reason,
+         last_resume_marked_at=datetime.now(),
+     )
+     discord_entry = SessionEntry(
+diff --git a/tests/gateway/test_transcript_redaction.py b/tests/gateway/test_transcript_redaction.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c458a53a3d6a1e4cfd860b15e441f5ed7c2dc5d
+--- /dev/null
++++ b/tests/gateway/test_transcript_redaction.py
+@@ -0,0 +1,199 @@
++"""Exact owned-copy redaction preserves unrelated work and settles on cancellation."""
++
++import asyncio
++import json
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from gateway.config import GatewayConfig
++from gateway.run_agent_cache import GatewayAgentCacheMixin
++from gateway.session import SessionStore
++from gateway.turn_lease import SessionTurnLeaseRegistry
++from hermes_state import SessionDB
++
++
++class _Runner(GatewayAgentCacheMixin):
++    def _running_agent_ids(self):
++        return set()
++
++    def _peek_session_state(self, key):
++        return None
++
++    def _spawn_release_thread(self, target, args, name, *, inline_fallback, session_key=None):
++        self.client_cleanups.append((target, args))
++
++
++def _runner(tmp_path):
++    db = SessionDB(tmp_path / "profile" / "state.db")
++    store = SessionStore(tmp_path / "sessions", GatewayConfig())
++    store._db = db
++    runner = _Runner()
++    runner.session_store = store
++    runner._agent_cache_lock = threading.Lock()
++    runner._agent_cache = {}
++    runner.client_cleanups = []
++    runner._turn_leases = SessionTurnLeaseRegistry()
++    for sid, parent in (("source", None), ("child", "source"), ("unrelated", None)):
++        if parent:
++            db.end_session(parent, "compression")
++        db.create_session(sid, source="test", parent_session_id=parent)
++        db.append_message(sid, "user", content=f"original {sid} payload")
++        key = f"route:{sid}"
++        agent = SimpleNamespace(
++            session_id=sid, _session_messages=[{"content": f"cached {sid}"}],
++            _db_flush_scan_prefix=[{"content": f"cached {sid}"}],
++            sandbox=object(), clients_released=False,
++        )
++        agent.release_clients = lambda agent=agent: setattr(agent, "clients_released", True)
++        runner._agent_cache[key] = (agent, "sig", 1, sid)
++        store._entries[key] = SimpleNamespace(session_id=sid)
++    return runner, db
++
++
++def test_busy_and_recovery_copies_defer_then_idle_redaction_preserves_other_work(tmp_path):
++    runner, db = _runner(tmp_path)
++    source = db.get_messages("source")
++    snapshot = db.get_message_redaction_snapshot("source", [source[0]["id"]])
++    unaffected = db.get_messages("unrelated")
++    old_agents = {key: entry[0] for key, entry in runner._agent_cache.items()}
++    sandboxes = {key: agent.sandbox for key, agent in old_agents.items()}
++
++    async def scenario():
++        registry = runner._turn_leases
++        token = await registry.acquire("source", owner_key="ordinary-turn", generation=1)
++        assert registry.rebind(token, "child")
++        result = await runner.redact_native_message_payloads("route:source", "source", snapshot)
++        assert result["status"] == "pending"
++        assert db.get_messages("source") == source
++        registry.release(token)
++
++        runner.session_store._dirty_transcripts["child"] = [{"content": "pending recovery"}]
++        result = await runner.redact_native_message_payloads("route:source", "source", snapshot)
++        assert result["status"] == "pending"
++        runner.session_store._dirty_transcripts.clear()
++
++        spool = db.db_path.parent / "pending_messages" / "pending-trial.json"
++        spool.parent.mkdir()
++        spool.write_text(json.dumps({"session_id": "source", "messages": source}))
++        result = await runner.redact_native_message_payloads("route:source", "source", snapshot)
++        assert result["status"] == "pending"
++        assert spool.exists() and db.get_messages("source") == source
++        spool.unlink()
++
++        assert db.try_acquire_session_turn_lease("child", "other-process")
++        result = await runner.redact_native_message_payloads("route:source", "source", snapshot)
++        assert result["status"] == "pending"
++        db.release_session_turn_lease("child", "other-process")
++
++        result = await runner.redact_native_message_payloads("route:source", "source", snapshot)
++        assert result["status"] == "redacted"
++        assert result["redacted_ids"] == [source[0]["id"]]
++        assert "original source payload" not in json.dumps(db.get_messages("source"))
++        assert db.get_messages("unrelated") == unaffected
++        assert set(runner._agent_cache) == {"route:unrelated"}
++        assert runner._agent_cache["route:unrelated"][0] is old_agents["route:unrelated"]
++        # The receipt precedes daemon client cleanup, but no selected history buffers remain.
++        assert not any(agent.clients_released for agent in old_agents.values())
++        for key in ("route:source", "route:child"):
++            assert old_agents[key]._session_messages == []
++            assert old_agents[key]._db_flush_scan_prefix is None
++        assert all(agent.sandbox is sandboxes[key] for key, agent in old_agents.items())
++        for target, args in runner.client_cleanups:
++            target(*args)
++        assert old_agents["route:source"].clients_released
++        assert old_agents["route:child"].clients_released
++        assert not old_agents["route:unrelated"].clients_released
++        # Both local alias leases and the shared compression durable lease are released.
++        tokens = await registry.try_acquire_many(["source", "child"], owner_key="next", generation=2)
++        assert tokens is not None
++        for token in tokens:
++            registry.release(token)
++        for sid in ("source", "child"):
++            assert db.try_acquire_session_turn_lease(sid, "next")
++            db.release_session_turn_lease(sid, "next")
++
++    try:
++        asyncio.run(scenario())
++    finally:
++        db.close()
++
++
++def test_cancellation_keeps_leases_until_real_worker_and_cache_eviction_settle(tmp_path, monkeypatch):
++    runner, db = _runner(tmp_path)
++    source = db.get_messages("source")
++    snapshot = db.get_message_redaction_snapshot("source", [source[0]["id"]])
++    entered, release = threading.Event(), threading.Event()
++    redact = db.redact_message_payloads
++
++    def delayed(*args, **kwargs):
++        entered.set()
++        if not release.wait(10):
++            raise TimeoutError("test worker was not released")
++        return redact(*args, **kwargs)
++
++    monkeypatch.setattr(db, "redact_message_payloads", delayed)
++
++    async def scenario():
++        task = asyncio.create_task(
++            runner.redact_native_message_payloads("route:source", "source", snapshot)
++        )
++        try:
++            assert await asyncio.to_thread(entered.wait, 10)
++            task.cancel()
++            # Yield through the cancellation handler, then verify the real worker is fenced.
++            await asyncio.sleep(0)
++            assert not task.done()
++            assert not db.try_acquire_session_turn_lease("source", "competitor")
++            assert await runner._turn_leases.try_acquire_many(
++                ["source"], owner_key="competitor", generation=2,
++            ) is None
++            assert "route:source" in runner._agent_cache
++            # A boundary command can install unrelated work under a formerly affected
++            # routing key while the DB worker runs. Never evict the replacement.
++            runner._agent_cache["route:source"] = runner._agent_cache["route:unrelated"]
++        finally:
++            release.set()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++        assert "original source payload" not in json.dumps(db.get_messages("source"))
++        assert set(runner._agent_cache) == {"route:source", "route:unrelated"}
++        assert runner._agent_cache["route:source"] is runner._agent_cache["route:unrelated"]
++        assert db.try_acquire_session_turn_lease("source", "after-settlement")
++        db.release_session_turn_lease("source", "after-settlement")
++
++    try:
++        asyncio.run(scenario())
++    finally:
++        release.set()
++        db.close()
++
++
++def test_gateway_passes_append_guard_and_keeps_cache_until_complete_selection(tmp_path):
++    runner, db = _runner(tmp_path)
++    try:
++        child = db.get_messages('child')
++        expected = db.get_message_redaction_snapshot('child', [child[0]['id']])
++        old_cache = dict(runner._agent_cache)
++        unrelated = db.get_messages('unrelated')
++        late = db.append_message('child', 'assistant', 'Late source-dependent answer')
++
++        async def scenario():
++            with pytest.raises(ValueError, match='redaction transcript changed'):
++                await runner.redact_native_message_payloads('route:child', 'child', expected,
++                    expected_message_watermark=child[0]['id'])
++            assert runner._agent_cache == old_cache
++            assert db.get_messages('child')[-1]['content'] == 'Late source-dependent answer'
++            assert db.try_acquire_session_turn_lease('child', 'after-rejected-selection')
++            db.release_session_turn_lease('child', 'after-rejected-selection')
++            fresh = db.get_message_redaction_snapshot('child', [child[0]['id'], late])
++            result = await runner.redact_native_message_payloads('route:child', 'child', fresh,
++                expected_message_watermark=late)
++            assert result['redacted_ids'] == [child[0]['id'], late]
++            assert db.get_messages('unrelated') == unrelated
++            assert set(runner._agent_cache) == {'route:unrelated'}
++
++        asyncio.run(scenario())
++    finally:
++        db.close()
+diff --git a/tests/hermes_cli/test_plugin_hook_concurrency.py b/tests/hermes_cli/test_plugin_hook_concurrency.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0006481632011d95f21ebf61c81429367a043f30
+--- /dev/null
++++ b/tests/hermes_cli/test_plugin_hook_concurrency.py
+@@ -0,0 +1,84 @@
++"""Healthy overlap must retain each invocation's callback result and context."""
++from concurrent.futures import ThreadPoolExecutor
++from contextvars import ContextVar
++import threading
++
++from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
++
++
++def _overlapping_results(monkeypatch, hook, sessions):
++    monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0)
++    identity = ContextVar("hook_test_identity", default=None)
++    first_entered = threading.Event()
++    release_first = threading.Event()
++
++    class AdmissionLock:
++        """Release the holder only after the peer has inspected the running slot.
++
++        The existing skip path releases on return; serialization releases when
++        waiting. This handshake forces real overlap without a scheduling sleep.
++        """
++        def __init__(self):
++            self.lock = threading.Lock()
++
++        def acquire(self, *args, **kwargs):
++            return self.lock.acquire(*args, **kwargs)
++
++        def release(self):
++            if identity.get() == "second":
++                release_first.set()
++            self.lock.release()
++
++        def __enter__(self):
++            self.acquire()
++            return self
++
++        def __exit__(self, *_args):
++            self.release()
++
++    manager = PluginManager()
++    lock = AdmissionLock()
++    manager._hook_timeout_lock = lock
++    manager._hook_timeout_running_cond = threading.Condition(lock)
++    context = PluginContext(PluginManifest(name="context-observer"), manager)
++    seen = []
++
++    def callback(session_id, tool_call_id):
++        current = identity.get()
++        seen.append((session_id, tool_call_id, current))
++        if current == "first":
++            first_entered.set()
++            assert release_first.wait(5.0), "Peer never reached hook admission"
++        return {"context": current, "session_id": session_id, "tool_call_id": tool_call_id}
++
++    registration = context.register_hook(hook, callback)
++
++    def fire(label, session):
++        token = identity.set(label)
++        try:
++            return manager.invoke_hook(hook, session_id=session, tool_call_id=label)
++        finally:
++            identity.reset(token)
++
++    try:
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            first = pool.submit(fire, "first", sessions[0])
++            assert first_entered.wait(5.0)
++            second = pool.submit(fire, "second", sessions[1])
++            results = [first.result(timeout=10.0), second.result(timeout=10.0)]
++    finally:
++        release_first.set()
++        registration.dispose()
++    assert seen == [(sessions[0], "first", "first"), (sessions[1], "second", "second")]
++    assert results == [
++        [{"context": "first", "session_id": sessions[0], "tool_call_id": "first"}],
++        [{"context": "second", "session_id": sessions[1], "tool_call_id": "second"}],
++    ]
++
++
++def test_independent_sessions_keep_their_hook_results_and_context(monkeypatch):
++    _overlapping_results(monkeypatch, "pre_llm_call", ("session-one", "session-two"))
++
++
++def test_parallel_tools_in_one_session_each_get_a_policy_decision(monkeypatch):
++    _overlapping_results(monkeypatch, "pre_tool_call", ("session-one", "session-one"))
+diff --git a/tests/hermes_state/test_transcript_payload_redaction.py b/tests/hermes_state/test_transcript_payload_redaction.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..612ea6bb23237ecdfc3dceaede2771865cf83fd6
+--- /dev/null
++++ b/tests/hermes_state/test_transcript_payload_redaction.py
+@@ -0,0 +1,173 @@
++"""An explicit forget removes stored payloads without replacing the transcript."""
++import json
++
++import pytest
++
++from hermes_state import SessionDB, SessionCompressionInProgressError
++from hermes_state_errors import SessionTurnLeaseLostError
++
++
++def _rows(db):
++    return {row['id']: dict(row) for row in db._conn.execute('SELECT * FROM messages ORDER BY id')}
++
++
++def test_selected_payloads_and_fts_are_erased_atomically_without_losing_other_turns(tmp_path):
++    db = SessionDB(tmp_path / 'state.db')
++    try:
++        db.create_session('reader', source='cli', session_key='reader-route')
++        untouched = [db.append_message('reader', 'user', 'Keep the meeting at nine'),
++                     db.append_message('reader', 'assistant', 'The meeting remains at nine')]
++        selected = [db.append_message('reader', 'user', [
++            {'type': 'text', 'text': 'Describe forgettoken'},
++            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,forgettoken'}}],
++            api_content='original question plus forgettoken recall',
++            display_metadata={'attachment_caption': 'forgettoken', 'gateway_input_owner': 'accepted-input-1'})]
++        selected.append(db.append_message('reader', 'assistant', None, tool_calls=[{
++            'id': 'read-1', 'type': 'function',
++            'function': {'name': 'read_source', 'arguments': '{"source":"forgettoken"}'}}]))
++        selected.append(db.append_message('reader', 'tool', 'forgettoken original result', tool_call_id='read-1'))
++        selected.append(db.append_message('reader', 'assistant', 'forgettoken is green',
++            reasoning='forgettoken reasoning', reasoning_content='forgettoken chain',
++            reasoning_details=[{'text': 'forgettoken detail'}],
++            codex_message_items=[{'text': 'forgettoken item'}],
++            codex_reasoning_items=[{'text': 'forgettoken summary'}]))
++        untouched.extend([db.append_message('reader', 'user', 'Keep the second task open'),
++                          db.append_message('reader', 'assistant', 'The second task stays open')])
++        # A compaction archive is an owned stored copy even when hidden from ordinary replay.
++        archived = db.append_message('reader', 'assistant', 'forgettoken archived answer')
++        db._execute_write(lambda conn: conn.execute('UPDATE messages SET active=0,compacted=1 WHERE id=?', (archived,)))
++        selected.append(archived)
++        before = _rows(db)
++        session_before = db.get_session('reader')
++        assert db.search_messages('forgettoken', include_inactive=True)
++        expected = db.get_message_redaction_snapshot('reader', selected)
++
++        stale = [dict(row) for row in expected]
++        stale[-1]['sha256'] = '0' * 64
++        with pytest.raises(ValueError, match='preimage changed'):
++            db.redact_message_payloads('reader', stale)
++        assert _rows(db) == before  # earlier rows cannot be partially erased on a later conflict
++
++        assert db.try_acquire_session_turn_lease('reader', 'other-turn')
++        with pytest.raises(SessionTurnLeaseLostError):
++            db.redact_message_payloads('reader', expected)
++        db.release_session_turn_lease('reader', 'other-turn')
++        assert db.try_acquire_compression_lock('reader', 'compressor')
++        with pytest.raises(SessionCompressionInProgressError):
++            db.redact_message_payloads('reader', expected)
++        db.release_compression_lock('reader', 'compressor')
++
++        result = db.redact_message_payloads('reader', expected)
++        after = _rows(db)
++        assert result['status'] == 'redacted' and result['redacted_ids'] == selected
++        assert db.get_transcript_redaction_revision('reader') == 1
++        assert [after[row] for row in untouched] == [before[row] for row in untouched]
++        assert db.get_session('reader') == session_before
++        assert set(after) == set(before)
++        for row_id in selected:
++            assert 'forgettoken' not in json.dumps(after[row_id])
++            for field in ('id', 'session_id', 'role', 'timestamp', 'tool_call_id',
++                          'active', 'compacted', 'platform_message_id'):
++                assert after[row_id][field] == before[row_id][field]
++            # Native display identities hash payloads and are invalidated by the existing
++            # content-update trigger. Stable row/routing IDs, not that old hash, are retained.
++            assert after[row_id]['display_identity'] is None
++        calls = json.loads(after[selected[1]]['tool_calls'])
++        assert calls == [{'id': 'read-1', 'type': 'function',
++                          'function': {'name': 'read_source', 'arguments': '{}'}}]
++        assert db.has_gateway_input_owner('reader', 'accepted-input-1')
++        assert not db.search_messages('forgettoken', include_inactive=True)
++        # The receipt makes replay idempotent without storing the erased payload.
++        assert db.redact_message_payloads('reader', expected)['redacted_ids'] == []
++        assert db.get_transcript_redaction_revision('reader') == 1
++    finally:
++        db.close()
++
++
++def test_compressed_parent_waits_for_child_writer_and_changes_descendant_revision(tmp_path):
++    db = SessionDB(tmp_path / 'state.db')
++    try:
++        db.create_session('parent', source='cli')
++        target = db.append_message('parent', 'user', 'forgettoken parent')
++        db.end_session('parent', 'compression')
++        db.create_session('child', source='cli', parent_session_id='parent')
++        kept = db.append_message('child', 'user', 'Unrelated continued task')
++        db.create_session('fork', source='cli', parent_session_id='parent',
++                          model_config={'_branched_from': 'parent'})
++        fork_row = db.append_message('fork', 'user', 'Independent fork task')
++        assert db.try_acquire_session_turn_lease('fork', 'long-running-unrelated-fork')
++        expected = db.get_message_redaction_snapshot('parent', [target])
++        assert db.get_transcript_dependents('parent') == ['parent', 'child']
++        assert db.try_acquire_session_turn_lease('child', 'active-child')
++        with pytest.raises(SessionTurnLeaseLostError):
++            db.redact_message_payloads('parent', expected)
++        db.release_session_turn_lease('child', 'active-child')
++        before = _rows(db)[kept]
++        fork_before = _rows(db)[fork_row]
++        db.redact_message_payloads('parent', expected)
++        assert _rows(db)[kept] == before
++        assert _rows(db)[fork_row] == fork_before
++        assert db.get_transcript_redaction_revision('fork') == 0
++        assert db.get_transcript_redaction_revision('child') == 1
++        assert db.get_session('child')['parent_session_id'] == 'parent'
++        assert db.get_transcript_dependents('child') == ['parent', 'child']
++        child_target = db.append_message('child', 'assistant', 'forgettoken continued answer')
++        db.redact_message_payloads('child', db.get_message_redaction_snapshot('child', [child_target]))
++        assert db.get_transcript_redaction_revision('parent') == 2
++        db.release_session_turn_lease('fork', 'long-running-unrelated-fork')
++    finally:
++        db.close()
++
++
++def test_recalled_api_payload_is_erased_without_removing_the_human_question(tmp_path):
++    db = SessionDB(tmp_path / 'state.db')
++    try:
++        db.create_session('reader', source='api_server')
++        target = db.append_message('reader', 'user', 'What should we work on next?',
++            api_content='What should we work on next? injected forgettoken reference',
++            display_metadata={'gateway_input_owner': 'accepted-2', 'ordinary': 'keep this context'})
++        before = _rows(db)[target]
++        expected = db.get_message_redaction_snapshot('reader', [target], mode='api_content')
++        db.redact_message_payloads('reader', expected)
++        after = _rows(db)[target]
++        assert after['api_content'] is None
++        for field in before.keys() - {'api_content', 'display_metadata', 'display_identity', 'display_order'}:
++            assert after[field] == before[field]
++        assert json.loads(after['display_metadata'])['ordinary'] == 'keep this context'
++        assert db.has_gateway_input_owner('reader', 'accepted-2')
++        assert 'forgettoken' not in str(db.get_messages_as_conversation('reader'))
++        assert db.redact_message_payloads('reader', expected)['redacted_ids'] == []
++    finally:
++        db.close()
++
++
++@pytest.mark.parametrize('change', ['late_answer', 'edited_anchor'])
++def test_selection_snapshot_rejects_append_and_edit_before_writer_admission(tmp_path, change):
++    with SessionDB(tmp_path / 'state.db') as db:
++        db.create_session('reader', source='cli')
++        anchor = db.append_message('reader', 'user', 'source forgettoken')
++        result = db.append_message('reader', 'tool', 'original result', tool_call_id='read-1')
++        db.create_session('other', source='cli')
++        other = db.append_message('other', 'user', 'Keep unrelated work')
++        before = _rows(db)
++        # These are the exact rows the provider validated, not a second read
++        # performed after ownership checking. Another writer may now settle.
++        rows = [before[anchor], before[result]]
++        watermark = result
++        if change == 'late_answer':
++            assert db.try_acquire_session_turn_lease('reader', 'finishing-writer')
++            late = db.append_message('reader', 'assistant', 'Dependent late forgettoken answer')
++            db.release_session_turn_lease('reader', 'finishing-writer')
++        else:
++            db._execute_write(lambda conn: conn.execute('UPDATE messages SET content=? WHERE id=?',
++                                                       ('New unrelated question', anchor)))
++        selected = [db.message_redaction_snapshot(row) for row in rows]
++        changed = _rows(db)
++        with pytest.raises(ValueError, match='transcript changed|preimage changed'):
++            db.redact_message_payloads('reader', selected, expected_message_watermark=watermark)
++        assert _rows(db) == changed and _rows(db)[other] == before[other]
++        if change == 'late_answer':
++            fresh = db.get_message_redaction_snapshot('reader', [anchor, result, late])
++            receipt = db.redact_message_payloads('reader', fresh, expected_message_watermark=late)
++            assert receipt['redacted_ids'] == [anchor, result, late]
++            assert not db.search_messages('forgettoken', include_inactive=True)
+diff --git a/tests/tools/test_code_kernel.py b/tests/tools/test_code_kernel.py
+index 1e48192bd36ee88caead839500c12706bdc818ce..cb7444328ea825bbb6f1253b0efd703bbdc4589a 100644
+--- a/tests/tools/test_code_kernel.py
++++ b/tests/tools/test_code_kernel.py
+@@ -161,13 +161,28 @@ class TestKernelLifecycle(unittest.TestCase):
+         self.assertIn("alive", fresh["output"])
+ 
+     def test_sys_exit_ends_the_kernel(self):
+-        with _kernel_config():
+-            done = _run("import sys\nsys.exit(0)")
+-            self.assertEqual(done["kernel"].get("ended"), True, done)
+-            self.assertEqual(len(_KERNELS), 0)
+-            fresh = _run("print('respawned')")
+-        self.assertEqual(fresh["kernel"]["reused"], False)
+-        self.assertIn("respawned", fresh["output"])
++        for code, exit_code in [(None, 0), (0, 0), (1, 1), (7, 7), ("cannot complete", 1)]:
++            with self.subTest(code=code), _kernel_config():
++                done = _run(
++                    "state_before_exit = True\nprint('before exit')\n"
++                    "import sys\nprint('cell stderr', file=sys.stderr)\n"
++                    f"raise SystemExit({code!r})"
++                )
++                self.assertEqual(done["kernel"].get("ended"), True, done)
++                self.assertEqual(len(_KERNELS), 0)
++                fresh = _run("print('state_before_exit' in globals())")
++                self.assertEqual(fresh["status"], "success", fresh)
++                self.assertEqual(fresh["kernel"]["reused"], False)
++                self.assertIn("False", fresh["output"])
++                self.assertEqual(done["status"], "error" if exit_code else "success", done)
++                self.assertEqual(done["exit_code"], exit_code, done)
++                self.assertIn("before exit", done["output"])
++                self.assertIn("cell stderr", done["output"])
++                if exit_code:
++                    self.assertIn("SystemExit", done["error"])
++                    self.assertIn(str(code), done["output"])
++                else:
++                    self.assertNotIn("error", done)
+ 
+     def test_subprocess_fd_output_reaches_the_result(self):
+         code = (
+diff --git a/tests/tools/test_code_kernel_remote.py b/tests/tools/test_code_kernel_remote.py
+index f7eabefa0df8bf52ec933901db58c54c6696bfc7..4586a146e58e2910f04828f5751488c4e3448db1 100644
+--- a/tests/tools/test_code_kernel_remote.py
++++ b/tests/tools/test_code_kernel_remote.py
+@@ -8,9 +8,13 @@ kill) was verified live on Windows against a bash-backed env; these tests
+ pin the host-side protocol logic: spawn parsing, liveness handling,
+ state_lost/state_reset reporting, fail-open, and owner isolation.
+ """
++import contextlib
++import io
+ import json
+ import os
+ import sys
++import time
++import traceback
+ import unittest
+ from unittest.mock import patch
+ 
+@@ -23,6 +27,8 @@ from tools.code_kernel_remote import (
+     shutdown_all_remote_kernels,
+     shutdown_remote_kernels_for_owner,
+ )
++from tools.code_kernel import RUNNER_CELL_SOURCE
++from tools.code_execution_tool import _finish_remote_kernel_result
+ 
+ 
+ class ScriptedEnv:
+@@ -104,6 +110,39 @@ class RemoteKernelBase(unittest.TestCase):
+ 
+ 
+ class TestSpawnAndReuse(RemoteKernelBase):
++    def test_sys_exit_reports_status_and_next_call_spawns(self):
++        for code, exit_code in [(None, 0), (0, 0), (1, 1), (7, 7), ("cannot complete", 1)]:
++            with self.subTest(code=code):
++                # Execute the shared runner's real cell handler; only the remote
++                # file transport is scripted, as in the other tests in this file.
++                namespace = {"contextlib": contextlib, "io": io, "traceback": traceback,
++                             "_CAPTURE_LIMIT": 1_000_000}
++                exec(RUNNER_CELL_SOURCE, namespace)
++                cell_code = ("print('before exit')\nimport sys\n"
++                             "print('cell stderr', file=sys.stderr)\n"
++                             f"raise SystemExit({code!r})")
++                payload, _ = namespace["run_cell"]({"id": "000001", "code": cell_code}, 1)
++                env = ScriptedEnv(_spawn_ok_handlers([payload, _cell(stdout="fresh\n")]))
++                raw = _run(env, cell_code)
++                self.assertTrue(raw["kernel"]["ended"])
++                self.assertEqual(len(_REMOTE_KERNELS), 0)
++                fresh = _run(env)
++                self.assertEqual(fresh["status"], "success", fresh)
++                self.assertFalse(fresh["kernel"]["reused"])
++                self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
++                done = json.loads(_finish_remote_kernel_result(
++                    raw, timeout=10, exec_start=time.monotonic()))
++                self.assertEqual(done["status"], "error" if exit_code else "success", done)
++                self.assertEqual(done.get("exit_code"), exit_code, done)
++                self.assertIn("before exit", done["output"])
++                self.assertIn("cell stderr", done["output"])
++                if exit_code:
++                    self.assertIn("SystemExit", done["error"])
++                    self.assertIn(str(code), done["output"])
++                else:
++                    self.assertNotIn("error", done)
++            shutdown_all_remote_kernels()
++
+     def test_first_call_spawns_second_reuses(self):
+         env = ScriptedEnv(_spawn_ok_handlers(
+             [_cell(stdout="one\n"), _cell(stdout="two\n", execution_count=2)],
+diff --git a/tests/tools/test_tool_search_eager.py b/tests/tools/test_tool_search_eager.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e717a211d46b08d0a69706c3a391bbe5a88b4ac6
+--- /dev/null
++++ b/tests/tools/test_tool_search_eager.py
+@@ -0,0 +1,131 @@
++"""Named eager schemas retain native session selection and execution contracts."""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++import yaml
++
++
++@pytest.fixture
++def configured_plugin(tmp_path, monkeypatch):
++    home = tmp_path / "profile"
++    plugin = home / "plugins" / "disclosure_probe"
++    plugin.mkdir(parents=True)
++    (plugin / "plugin.yaml").write_text("name: disclosure_probe\n")
++    (plugin / "__init__.py").write_text('''
++import json
++
++def register(ctx):
++    for name, toolset, available in (
++        ("eager_probe_read", "probe_allowed", True),
++        ("deferred_probe_read", "probe_allowed", True),
++        ("unavailable_probe_read", "probe_allowed", False),
++        ("excluded_probe_read", "probe_excluded", True),
++    ):
++        ctx.register_tool(name=name, toolset=toolset,
++            schema={"name": name, "description": "Read a probe value.", "parameters": {
++                "type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}},
++            check_fn=lambda available=available: available,
++            handler=lambda args, name=name, **kw: json.dumps({"tool": name, **args}))
++
++    def checked(tool_name, args, **kw):
++        if tool_name in {"eager_probe_read", "deferred_probe_read"}:
++            return {"args": {**args, "checked": True}, "source": "disclosure_probe"}
++    ctx.register_middleware("tool_request", checked)
++''')
++    config = {
++        "model": {"context_length": 256000},
++        "plugins": {"enabled": ["disclosure_probe"]},
++        "tools": {"tool_search": {"enabled": "on", "eager": [
++            "eager_probe_read", "eager_probe_read", "unavailable_probe_read",
++            "excluded_probe_read", "unknown_probe_read",
++        ], "defer": ["eager_probe_read"]}},
++    }
++    (home / "config.yaml").write_text(yaml.safe_dump(config))
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    from hermes_cli import plugins
++
++    manager = plugins.PluginManager()
++    manager.discover_and_load()
++    monkeypatch.setattr(plugins, "_plugin_manager", manager)
++    yield home
++    manager.unload()
++
++
++@pytest.fixture
++def native_agent(configured_plugin):
++    from run_agent import AIAgent
++
++    # Only provider construction is replaced; no inference is performed.
++    with patch("agent.process_bootstrap.OpenAI"):
++        agent = AIAgent(
++            api_key="test-key", base_url="https://example.invalid/v1", provider="openrouter",
++            model="test-model", enabled_toolsets=["probe_allowed", "probe_excluded"],
++            disabled_toolsets=["probe_excluded"], quiet_mode=True,
++            skip_context_files=True, skip_memory=True,
++        )
++    try:
++        yield agent
++    finally:
++        agent.close()
++
++
++def test_named_eager_tools_use_real_native_selection_validation_and_middleware(native_agent):
++    from agent.turn_tool_validation import validate_tool_calls
++    import model_tools
++
++    agent = native_agent
++    named = {tool["function"]["name"]: tool["function"] for tool in agent.tools}
++    assert "eager_probe_read" in named
++    assert len(named) == len(agent.tools)
++    assert agent.valid_tool_names == set(named)
++    assert {"tool_search", "tool_describe", "tool_call"} <= named.keys()
++    assert "deferred_probe_read" not in named
++    assert "deferred_probe_read" in named["tool_search"]["description"]
++    assert "eager_probe_read" not in named["tool_search"]["description"]
++    for name in ("unavailable_probe_read", "excluded_probe_read", "unknown_probe_read"):
++        assert name not in named and name not in named["tool_search"]["description"]
++
++    for index, (wire_name, tool_name) in enumerate((
++        ("eager_probe_read", "eager_probe_read"),
++        ("tool_call", "deferred_probe_read"),
++        ("tool_call", "eager_probe_read"),
++    )):
++        arguments = {"value": str(index)}
++        if wire_name == "tool_call":
++            arguments = {"calls": [{"name": tool_name, "arguments": arguments}]}
++        call = SimpleNamespace(id=f"call-{index}", type="function",
++            function=SimpleNamespace(name=wire_name, arguments=json.dumps(arguments)))
++        message = SimpleNamespace(content="", tool_calls=[call])
++        messages = []
++        verdict = validate_tool_calls(agent, message, "tool_calls", messages=messages,
++            conversation_history=[], api_call_count=1, effective_task_id="probe-task")
++        assert verdict.action == "ok"
++        agent._execute_tool_calls_sequential(message, messages, "probe-task")
++        result = json.loads(messages[-1]["content"])
++        assert result == {"tool": tool_name, "value": str(index), "checked": True}
++
++    # Visibility preference cannot admit a tool outside this session's toolsets.
++    excluded = model_tools.get_tool_definitions(enabled_toolsets=[], quiet_mode=True)
++    assert excluded == []
++    denied = json.loads(model_tools.handle_function_call("tool_call", {
++        "calls": [{"name": "excluded_probe_read", "arguments": {"value": "no"}}]},
++        enabled_toolsets=["probe_allowed"]))
++    assert "not available in this session" in json.dumps(denied)
++
++
++def test_empty_or_malformed_eager_setting_preserves_default_disclosure(configured_plugin):
++    import model_tools
++    from tools.tool_search import ToolSearchConfig, assemble_tool_defs
++
++    incoming = model_tools.get_tool_definitions(enabled_toolsets=["probe_allowed"],
++        quiet_mode=True, skip_tool_search_assembly=True)
++    baseline = assemble_tool_defs(incoming, config=ToolSearchConfig.from_raw({"enabled": "on"}))
++    for value in ([], None, "eager_probe_read", [None, {}, 7, " "]):
++        candidate = assemble_tool_defs(incoming,
++            config=ToolSearchConfig.from_raw({"enabled": "on", "eager": value}))
++        assert candidate == baseline
++    assert {tool["function"]["name"] for tool in baseline.tool_defs} == {
++        "tool_search", "tool_describe", "tool_call"}
