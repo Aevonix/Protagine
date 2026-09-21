@@ -25,7 +25,8 @@ def record(ledger, source_id, messages, *, session='fresh', contact='person', sc
     return {'source_id': source_id, 'source_version': canonical_turn_digest(messages)}
 
 
-def test_one_source_erasure_removes_paraphrase_chain_but_retains_user_evidence(tmp_path):
+@pytest.mark.parametrize('reverse_order', [False, True])
+def test_one_source_erasure_removes_paraphrase_chain_but_retains_user_evidence(tmp_path, monkeypatch, reverse_order):
     ledger = TurnIdempotencyLedger(tmp_path / 'sources.db')
     origin = record(ledger, 'origin', [
         {'role': 'user', 'content': 'The fixture lantern is in the violet cabinet.'}], session='old')
@@ -39,6 +40,15 @@ def test_one_source_erasure_removes_paraphrase_chain_but_retains_user_evidence(t
          '_supplied_sources': [answer]}], session='later')
     record(ledger, 'unrelated', [{'role': 'user', 'content': 'The compass is in the cedar chest.'}])
 
+    if reverse_order:
+        connect = ledger._connect
+
+        def reversed_connection():
+            conn = connect()
+            conn.execute('PRAGMA reverse_unordered_selects=ON')
+            return conn
+
+        monkeypatch.setattr(ledger, '_connect', reversed_connection)
     ledger.erase_sources(contact_id='person', turn_ids=['origin'])
     reopened = TurnIdempotencyLedger(ledger.db_path)
     retained = stored(reopened)
@@ -62,6 +72,10 @@ def test_one_source_erasure_removes_paraphrase_chain_but_retains_user_evidence(t
     # required fields still contain the original-session assistant hash.
     with sqlite3.connect(ledger.db_path) as conn:
         assert conn.execute("SELECT count(*) FROM source_erasures WHERE turn_id='answer'").fetchone()[0] == 0
+    before_retry = stored(reopened)
+    head = reopened.erasure_feed('person')['head']
+    assert reopened.erase_sources(contact_id='person', turn_ids=['origin'])['watermark'] == head
+    assert stored(reopened) == before_retry
 
 
 def test_delayed_child_and_identical_replay_keep_user_source_and_projection_job(tmp_path):

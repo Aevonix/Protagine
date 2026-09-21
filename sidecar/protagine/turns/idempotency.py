@@ -438,7 +438,7 @@ class TurnIdempotencyLedger:
         version = canonical_turn_digest(messages)
         if conn.execute('''SELECT 1 FROM source_erasure_revisions WHERE
                 source_turn_id=? AND source_version=? AND whole_source=?''', (turn_id, version, int(whole))).fetchone():
-            return
+            return False
         hashes = {h for row in conn.execute('''SELECT e.message_hashes_json FROM source_erasures e
             LEFT JOIN source_erasure_revisions r USING(sequence)
             WHERE coalesce(r.source_turn_id,e.turn_id)=?''', (turn_id,))
@@ -456,6 +456,8 @@ class TurnIdempotencyLedger:
             conn.execute('''INSERT INTO source_erasure_revisions
                 (sequence,source_turn_id,source_version,source_scope,whole_source) VALUES (?,?,?,?,?)''',
                 (cursor.lastrowid, turn_id, version, scope, int(whole)))
+            return True
+        return False
 
     def source_references(self, turn_ids, *, contact_id, session_id):
         """Structured selected-source revisions, never parsed from generated prose."""
@@ -551,23 +553,28 @@ class TurnIdempotencyLedger:
                     removed=messages, whole=True)
             affected = []
             remaining_rows = {row['turn_id']: dict(row) for row in rows}
+            # BEGIN IMMEDIATE keeps these rules stable until this transaction
+            # adds a partial-copy erasure. Unchanged rows need no fresh query.
+            rules = self._erasure_rules(conn, contact_id)
+            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
             # Each changed row loses at least one message. This finite closure
             # follows only recorded supplied-source revisions, never topic text.
             changed = True
             while changed:
                 changed = False
                 for row in list(remaining_rows.values()):
-                    rules = self._erasure_rules(conn, contact_id)
-                    erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
                     messages = json.loads(row["messages_json"])
                     retained = [] if row["turn_id"] in erased_ids else self._retained_messages(messages, row["session_id"], rules)
                     if retained == messages:
                         continue
                     changed = True
                     if row['turn_id'] not in erased_ids:
-                        self._append_erasure(conn, turn_id=row['turn_id'], contact_id=contact_id,
+                        appended = self._append_erasure(conn, turn_id=row['turn_id'], contact_id=contact_id,
                             session_id=row['session_id'], scope=row['scope'], messages=messages,
                             removed=[message for message in messages if message not in retained], whole=False)
+                        if appended:
+                            rules = self._erasure_rules(conn, contact_id)
+                            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
                     from protagine.beliefs.source_projection import erase_removed
                     erase_removed(conn, row["turn_id"], row["session_id"], retained)
                     from protagine.turns.media import erase_removed as erase_media

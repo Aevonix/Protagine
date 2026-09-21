@@ -3436,7 +3436,8 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
     person = resolve_request_person(request, claimed_person_id=body.contact_id) or body.contact_id
     from protagine.turns import get_turn_idempotency_ledger
     try:
-        result = get_turn_idempotency_ledger(get_state_dir()).erase_sources(
+        ledger = get_turn_idempotency_ledger(get_state_dir())
+        result = await asyncio.to_thread(ledger.erase_sources,
             contact_id=person, turn_ids=body.source_ids,
             old_text=body.old_text, session_id=body.session_id,
         )
