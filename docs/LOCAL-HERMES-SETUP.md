@@ -9,14 +9,17 @@ Protagine does not patch or download Hermes, models, containers or machine servi
 Phase 1 is in development and validation.
 
 Follow the [Get started commands](../README.md#get-started) to fetch the current
-tagged release and install its matching packages in a private Python environment.
+published packages in a private Python environment.
 No source edits are needed. The environment may be shared with Hermes; those
 commands keep an existing Hermes installation intact.
 
 Use a Python version supported above. Replace the interpreter placeholder with
-the Python from the Hermes runtime you actually run. Keeping both Protagine
-packages at the same version avoids attaching an older adapter to a newer
-sidecar. `protagine init --help` lists the wizard's optional and unattended flags.
+the Python from the Hermes runtime you actually run. The sidecar, Hermes adapter
+and hostworker are versioned independently; an adapter-only release does not
+require a sidecar version change. Follow the component versions and compatibility
+notes in the [changelog](../CHANGELOG.md), rather than forcing their version
+numbers to match. `protagine init --help` lists the wizard's optional and
+unattended flags.
 
 A separate Hermes environment needs its own native core dependencies. It does
 not need Protagine's CLI dependency `typer` or a preinstalled Protagine adapter; setup

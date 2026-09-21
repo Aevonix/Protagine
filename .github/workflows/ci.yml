@@ -5,11 +5,52 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A tagged release runs these same checks on its own commit and publishes
+  # the resulting artifacts, rather than rebuilding after qualification.
+  workflow_call:
 
 jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/release-py312.txt
+      - name: Install qualified build and quality tools
+        run: python -m pip install -c requirements/release-py312.txt '.[test,quality]'
+      - name: Check fatal errors and the hostworker contract types
+        run: |
+          python -m ruff check scripts/qualify_artifacts.py hostworker/protagine_hostworker tests/hermes_adapter/conftest.py tests/hermes_adapter/test_sidecar_distribution.py
+          python -m mypy
+      - name: Build distributions from source archives
+        run: |
+          python -m build --no-isolation --outdir dist .
+          python -m build --no-isolation --outdir dist ./sidecar
+          python -m build --no-isolation --outdir dist ./hostworker
+          python -m twine check dist/*
+      - name: Qualify installed artifacts and record resolved dependencies
+        run: |
+          python scripts/qualify_artifacts.py --dist dist --constraints requirements/release-py312.txt --output artifact-qualification
+          python -m pip list --format=json > artifact-qualification/build-packages.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: artifact-qualification
+          path: artifact-qualification/
+          if-no-files-found: warn
+
   hermes-adapter-partition:
     name: hermes-adapter (${{ matrix.group }})
     runs-on: ubuntu-latest
+    needs: artifacts
     strategy:
       fail-fast: false
       matrix:
@@ -19,8 +60,13 @@ jobs:
       PROTAGINE_TEST_HERMES_PATH: ${{ github.workspace }}/.qualification/hermes
       HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
       PROTAGINE_HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
+      PROTAGINE_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
       - uses: actions/checkout@v6
         with:
           # Explicit qualification build; latest unmodified upstream is checked
@@ -49,7 +95,8 @@ jobs:
           import json, os, subprocess, sys
           from pathlib import Path
           group = os.environ['QUALIFICATION_GROUP']
-          # Each matrix job has its own checkout, builds and native install.
+          # Each matrix job has its own checkout/native install and uses the
+          # same prepared release artifacts.
           # Include both default pytest filename patterns so new tests cannot
           # silently fall outside the two complementary groups.
           files = sorted(path for path in Path('tests/hermes_adapter').rglob('*.py')
@@ -142,3 +189,22 @@ jobs:
         with:
           context: ./sidecar
           push: false
+          tags: protagine-qualified:${{ github.sha }}
+          outputs: ${{ startsWith(github.ref, 'refs/tags/') && format('type=docker,dest={0}/sidecar-image.tar', runner.temp) || '' }}
+      - name: Check the release container entry point
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker load --input "${RUNNER_TEMP}/sidecar-image.tar"
+          docker run --rm --network none --entrypoint protagine "protagine-qualified:${GITHUB_SHA}" --help
+          docker image inspect "protagine-qualified:${GITHUB_SHA}" --format '{{.Id}}' > "${RUNNER_TEMP}/sidecar-image-id.txt"
+      - name: Retain the qualified release image
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-container
+          path: |
+            ${{ runner.temp }}/sidecar-image.tar
+            ${{ runner.temp }}/sidecar-image-id.txt
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error

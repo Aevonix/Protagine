@@ -9,21 +9,18 @@ permissions:
   id-token: write
 
 jobs:
+  qualification:
+    uses: ./.github/workflows/ci.yml
+
   # --- Canonical adapter and sidecar → PyPI ---
   pypi:
+    needs: qualification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-      - name: Build adapter, sidecar and hostworker distributions
-        run: |
-          pip install build twine
-          python -m build --outdir dist .
-          python -m build --outdir dist ./sidecar
-          python -m build --outdir dist ./hostworker
-          python -m twine check dist/*
+          name: release-distributions
+          path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -35,25 +32,28 @@ jobs:
 
   # --- Docker image → GHCR ---
   docker:
+    needs: qualification
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-container
+          path: qualified-image/
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
-        with:
-          context: ./sidecar
-          push: true
-          tags: |
-            ghcr.io/aevonix/protagine:latest
-            ghcr.io/aevonix/protagine:${{ github.ref_name }}
+      - name: Publish the image built by qualification
+        run: |
+          docker load --input qualified-image/sidecar-image.tar
+          docker tag "protagine-qualified:${GITHUB_SHA}" "ghcr.io/aevonix/protagine:${GITHUB_REF_NAME}"
+          docker tag "protagine-qualified:${GITHUB_SHA}" ghcr.io/aevonix/protagine:latest
+          docker push "ghcr.io/aevonix/protagine:${GITHUB_REF_NAME}"
+          docker push ghcr.io/aevonix/protagine:latest
 
   # --- GitHub Release ← tag + CHANGELOG ---
   # Runs only after PyPI and GHCR publish, so the Release never points at

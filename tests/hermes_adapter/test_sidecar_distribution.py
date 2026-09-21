@@ -1,14 +1,18 @@
 """Runtime wheels omit repository tests and retain importable product code."""
 import os
+from pathlib import Path
 import zipfile
 
 from conftest import ROOT, run_python
 
 
 def test_sidecar_wheel_contains_product_without_embedded_tests(tmp_path):
-    run_python("-m", "build", "--wheel", "--no-isolation", "--outdir", tmp_path,
-               cwd=ROOT / "sidecar")
-    wheel = next(tmp_path.glob("protagine-*.whl"))
+    prepared = os.environ.get("PROTAGINE_DISTRIBUTIONS_DIR")
+    distributions = Path(prepared).resolve() if prepared else tmp_path
+    if not prepared:
+        run_python("-m", "build", "--wheel", "--no-isolation", "--outdir", tmp_path,
+                   cwd=ROOT / "sidecar")
+    wheel, = distributions.glob("protagine-*.whl")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert not [name for name in names if any(
