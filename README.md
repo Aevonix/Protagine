@@ -86,6 +86,10 @@ The model qualification suite records quality and latency for each tested role.
 Its reports separate useful results from grounding failures and unknown outcomes.
 Automatic fleet enrollment and selection from those measurements remain planned.
 
+[Twelve frozen workflows](docs/FROZEN-WORKFLOWS.md) compare Hermes with and without
+Protagine across restarts, corrections, task recovery and scoped handoffs.
+They include controls where memory is unnecessary and record repeated attempts.
+
 Memory extraction and admission review have separate task mappings. A deployment
 can select their models and deadlines without changing the planning or judging
 roles used elsewhere. Qualification records which role actually reviewed a memory.

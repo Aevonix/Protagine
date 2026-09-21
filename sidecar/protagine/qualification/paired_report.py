@@ -318,6 +318,83 @@ def _workloads(episodes):
         'groups': groups}
 
 
+def _workflow_summary(manifest, pairs):
+    """Repeated attempts share a workflow design; do not pretend they are independent tasks."""
+    grouped = {}
+    for declaration, pair in zip(manifest['pairs'], pairs):
+        case = declaration['arms']['base_hermes']['case']
+        key = case['id']
+        group = grouped.setdefault(key, {'workflow_id': key,
+            'family': case['inputs'].get('family', 'unspecified'),
+            'memory_condition': case['inputs'].get('memory_condition', 'unspecified'),
+            'declared_repetitions': 0, 'comparable_repetitions': 0,
+            'successes': dict.fromkeys(ARMS, 0), 'unavailable': dict.fromkeys(ARMS, 0),
+            'wins': 0, 'ties': 0, 'losses': 0,
+            'checks': {arm: {} for arm in ARMS},
+            '_rows': {arm: [] for arm in ARMS}})
+        group['declared_repetitions'] += 1
+        group['comparable_repetitions'] += int(pair['comparable'])
+        if pair['comparable']:
+            group[{'win': 'wins', 'tie': 'ties', 'loss': 'losses'}[pair['comparison']]] += 1
+        for arm in ARMS:
+            group['_rows'][arm].append(pair['results'][arm])
+            group['successes'][arm] += int(pair['completion'][arm] is True)
+            group['unavailable'][arm] += int(pair['completion'][arm] is None)
+            for name, passed in pair['results'][arm].get('checks', {}).items():
+                if name.startswith(('format:', 'semantic:', 'lifecycle:', 'checkpoint:')):
+                    counter = group['checks'][arm].setdefault(name, {'passed': 0, 'observed': 0})
+                    if type(passed) is bool:
+                        counter['observed'] += 1
+                        counter['passed'] += int(passed)
+    for group in grouped.values():
+        observed = group.pop('_rows')
+        group['accounting'] = {arm: _accounting(observed[arm]) for arm in ARMS}
+        dimensions = {}
+        for dimension, prefixes in {'format': ('format:',), 'semantic': ('semantic:',),
+                'checkpoints': ('checkpoint:',), 'lifecycle': ('lifecycle:',),
+                'native_completion': ('all_native_turns_completed',)}.items():
+            dimensions[dimension] = {}
+            for arm in ARMS:
+                observations = [[v for name, v in row.get('checks', {}).items()
+                                 if name.startswith(prefixes)] for row in observed[arm]]
+                dimensions[dimension][arm] = {
+                    'passed_repetitions': sum(bool(values) and all(v is True for v in values) for values in observations),
+                    'observed_repetitions': sum(bool(values) for values in observations)}
+        group['dimensions'] = dimensions
+    strata = {}
+    for field in ('family', 'memory_condition'):
+        strata[field] = {}
+        for group in grouped.values():
+            target = strata[field].setdefault(group[field], {'unique_workflows': 0,
+                'declared_repetitions': 0, 'comparable_repetitions': 0,
+                'successes': dict.fromkeys(ARMS, 0), 'unavailable': dict.fromkeys(ARMS, 0)})
+            target['unique_workflows'] += 1
+            for key in ('declared_repetitions', 'comparable_repetitions'):
+                target[key] += group[key]
+            for key in ('successes', 'unavailable'):
+                for arm in ARMS:
+                    target[key][arm] += group[key][arm]
+    return {'unique_workflows': len(grouped), 'workflows': list(grouped.values()), 'strata': strata,
+        'basis': 'Descriptive repeat counts grouped by frozen workflow. Repetitions are not independent '
+            'scenario designs. No confidence interval or generalization claim; public cases are not a private holdout.'}
+
+
+def _workflow_exposure(row, case):
+    """A correct task that never encountered its declared fault does not establish recovery."""
+    name = 'lifecycle:declared_faults_exercised'
+    checks = row.get('checks', {})
+    if (case.get('version') != 'paired-agent-workflows-1'
+            or not case.get('inputs', {}).get('workflow', {}).get('read_failures')
+            or row.get('outcome') != 'fail' or row.get('primary_outcome') != 'fail'
+            or not isinstance(checks, dict) or len(checks) < 2
+            or checks.get(name) is not False
+            or not all(value is True for key, value in checks.items() if key != name)):
+        return None
+    return {'rule': 'workflow_fault_exposure_unavailable',
+            'reason': 'Functional task passed, but the declared read failure was not encountered; recovery is untested.',
+            'source_row_sha256': digest(row)}
+
+
 def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     if report_protocol not in {SOURCE_REPORT_PROTOCOL, REPORT_PROTOCOL}:
         raise ValueError('Unknown paired reporting protocol')
@@ -339,6 +416,10 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
                         results[arm], manifest['recipe'], declared['arms'][arm]['case'])
                     if projections[arm] is not None:
                         complete[arm] = False
+        exposure = {arm: _workflow_exposure(results[arm], declared['arms'][arm]['case']) for arm in ARMS}
+        for arm in ARMS:
+            if exposure[arm] is not None:
+                complete[arm] = None
         comparable = all(value is not None for value in complete.values())
         difference = int(complete['protagine']) - int(complete['base_hermes']) if comparable else None
         pairs.append({'episode_id': declared['episode_id'], 'order': declared['order'],
@@ -348,6 +429,8 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
                           if difference is not None else 'unavailable'})
         if report_protocol == REPORT_PROTOCOL:
             pairs[-1]['completion_projection'] = projections
+        if any(value is not None for value in exposure.values()):
+            pairs[-1]['workflow_exposure_projection'] = exposure
     declared_count = len(pairs)
     comparable_count = sum(pair['comparable'] for pair in pairs)
     full = declared_count > 0 and comparable_count == declared_count
@@ -395,6 +478,8 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'raw_results_preserved': True, 'artifact_verifier_reexecuted': False,
             'basis': PROJECTION_BASIS}
         report['basis'] += ' ' + PROJECTION_BASIS
+    if manifest['dataset'].get('split') == 'frozen_public_evaluation' or manifest['dataset'].get('repetitions', 1) > 1:
+        report['workflow_repetitions'] = _workflow_summary(manifest, pairs)
     return report
 
 
@@ -414,6 +499,16 @@ def markdown(report):
     for pair in report['pairs']:
         lines.append(f"| {pair['episode_id']} | {pair['results']['base_hermes']['outcome']} | "
                      f"{pair['results']['protagine']['outcome']} | {pair['comparison']} |")
+    if 'workflow_repetitions' in report:
+        repeated = report['workflow_repetitions']
+        lines.extend(['', '## Workflow repeatability', '', repeated['basis'], '',
+            '| Workflow | Memory needed | Hermes successes | Protagine successes | Comparable repeats |',
+            '| --- | --- | --- | --- | --- |'])
+        for row in repeated['workflows']:
+            count = row['declared_repetitions']
+            lines.append(f"| {row['workflow_id']} | {row['memory_condition']} | "
+                f"{row['successes']['base_hermes']}/{count} | {row['successes']['protagine']}/{count} | "
+                f"{row['comparable_repetitions']}/{count} |")
     lines.extend(['', '## Observed resource use', '',
         'Unknown totals stay unknown. Partial observations are not full-stack cost.', '',
         '| Arm | Metric | Total | Observed subtotal | Coverage |', '| --- | --- | --- | --- | --- |'])

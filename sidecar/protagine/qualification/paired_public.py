@@ -79,15 +79,19 @@ def export_record(directory, metadata, *, published_at=None):
     for arm in paired_report.ARMS:
         expected = paired_cases.cases(arm, manifest['dataset']['episode_ids'], dataset_version=version)
         actual = [pair['arms'][arm]['case'] for pair in manifest['pairs']]
-        if actual != [case.record() for case in expected]:
+        repetitions = manifest['dataset'].get('repetitions', 1)
+        if type(repetitions) is not int or not 1 <= repetitions <= 3:
+            raise ValueError('Invalid public repetition count')
+        if actual != [case.record() for case in expected] * repetitions:
             raise ValueError('Private or changed fixture inputs cannot be publicly exported')
     known = expected[0].inputs['dataset']
     if known['sha256'] != manifest['dataset']['source_sha256']:
         raise ValueError('Dataset source hash does not match repository fixtures')
     fixture_manifest, _, _ = paired_cases.load_dataset(
         Path(paired_cases.__file__).parent / 'fixtures' / version)
-    quality = 'grading_under_review' if version == paired_cases.VERSION else 'development'
-    score = report['paired_score'] if (quality == 'development'
+    quality = ('grading_under_review' if version == paired_cases.VERSION else
+               'frozen_public_evaluation' if version == paired_cases.WORKFLOW_VERSION else 'development')
+    score = report['paired_score'] if (quality in {'development', 'frozen_public_evaluation'}
         and report['evidence_mode'] == 'actual_inference') else None
     arms = {}
     for arm in paired_report.ARMS:
@@ -109,6 +113,15 @@ def export_record(directory, metadata, *, published_at=None):
                 raise ValueError('Unknown public episode attribution')
             results[arm] = {'outcome': row['outcome'], 'primary_outcome': row['primary_outcome'],
                 'elapsed_ms': number(row.get('elapsed_ms')), 'completion': pair['completion'][arm]}
+            exposure = pair.get('workflow_exposure_projection', {}).get(arm)
+            if exposure is not None:
+                if (version != paired_cases.WORKFLOW_VERSION or pair['completion'][arm] is not None
+                        or exposure.get('rule') != 'workflow_fault_exposure_unavailable'):
+                    raise ValueError('Invalid workflow exposure projection')
+                results[arm]['workflow_exposure_projection'] = {
+                    'rule': 'workflow_fault_exposure_unavailable',
+                    'reason': 'Functional task passed; declared read failure was not encountered.',
+                    'source_row_sha256': _hash(exposure['source_row_sha256'])}
             if report['report_protocol'] == paired_report.REPORT_PROTOCOL:
                 projection = pair.get('completion_projection', {}).get(arm)
                 results[arm]['completion_projection'] = None
@@ -145,7 +158,7 @@ def export_record(directory, metadata, *, published_at=None):
         'run_id': identifier('paired-' + manifest['sha256'][:24]),
         'published_at': stamp(published_at or datetime.now(timezone.utc).isoformat()),
         'deployment': deployment,
-        'dataset': {'version': identifier(version), 'split': 'development',
+        'dataset': {'version': identifier(version), 'split': manifest['dataset']['split'],
             'sha256': _hash(report['dataset']['sha256']), 'source_sha256': _hash(known['sha256'])},
         'runtime': {'image_id': image_id,
             'hermes_version': text(native.get('distribution_version'), nullable=True),
@@ -169,6 +182,23 @@ def export_record(directory, metadata, *, published_at=None):
             'raw_results_preserved': True, 'artifact_verifier_reexecuted': False,
             'basis': paired_report.PROJECTION_BASIS}
         limitations.append(paired_report.PROJECTION_BASIS)
+    if 'workflow_repetitions' in report:
+        # Dataset ownership was verified above. Only counts and repository scenario IDs leave.
+        groups = report['workflow_repetitions']
+        record['workflow_repetitions'] = {'unique_workflows': _count(groups['unique_workflows']),
+            'basis': groups['basis'], 'workflows': [{
+                'workflow_id': identifier(row['workflow_id']),
+                'family': identifier(row['family']),
+                'memory_condition': row['memory_condition'],
+                **{key: _count(row[key]) for key in ('declared_repetitions', 'comparable_repetitions', 'wins', 'ties', 'losses')},
+                'successes': {arm: _count(row['successes'][arm]) for arm in paired_report.ARMS},
+                'unavailable': {arm: _count(row['unavailable'][arm]) for arm in paired_report.ARMS},
+                'accounting': {arm: _accounting(row['accounting'][arm]) for arm in paired_report.ARMS},
+                'dimensions': {dimension: {arm: {
+                    'passed_repetitions': _count(counts[arm]['passed_repetitions']),
+                    'observed_repetitions': _count(counts[arm]['observed_repetitions'])}
+                    for arm in paired_report.ARMS} for dimension, counts in row['dimensions'].items()},
+            } for row in groups['workflows']]}
     return record
 
 

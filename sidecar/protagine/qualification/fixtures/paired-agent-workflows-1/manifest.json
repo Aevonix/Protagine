@@ -1,0 +1,61 @@
+{
+  "dataset_id": "paired-agent-workflows-1",
+  "version": "paired-agent-workflows-1",
+  "scenario_count": 12,
+  "families": {
+    "workflow-recall": 3,
+    "workflow-correction": 3,
+    "workflow-recovery": 3,
+    "workflow-scope": 3
+  },
+  "files": {
+    "scenarios.json": {
+      "bytes": 483648,
+      "sha256": "76dba027b3a62eae667a39eb0021fef1dffcc58beed1f262e2deb34a8c1e63a4"
+    }
+  },
+  "source": {
+    "kind": "original_synthetic",
+    "publisher": "Aevonix",
+    "license": "MIT",
+    "description": "Twelve authored public workflow fixtures with synthetic contacts, source histories, explicit local deliverables and independent mistake examples. No production conversations or credentials."
+  },
+  "status": "frozen-public-workflows-awaiting-native-validation",
+  "frozen_on": "2026-09-21",
+  "review": {
+    "method": "Independent trace of every expected value to authored prompts or source records, ambiguity review and hand-authored negative verifier examples.",
+    "native_model_validation": "not yet run",
+    "freeze_policy": "Changed task or oracle contracts require a new dataset version after results exist."
+  },
+  "protocol": {
+    "turns_per_case": 8,
+    "process_restarts_per_case": 2,
+    "memory_relevant_cases": 8,
+    "memory_irrelevant_controls": 4,
+    "release_repetitions": 3,
+    "max_iterations_per_turn": 8,
+    "max_output_tokens_per_call": 4096,
+    "settle_seconds": 5,
+    "workflow_timeout_seconds": 600,
+    "control_matching": "Same family/domain and turn/restart count; not exact causal intervention pairs."
+  },
+  "contract_changes": [
+    "Adds twelve eight-turn cases with two real worker process restarts and fresh session IDs.",
+    "Intermediate snapshots establish pre-clarification and pre-deadline behavior instead of checking only final repaired answers.",
+    "Two workflows inject a one-shot native read_file failure on a named source.",
+    "Every source is explicitly immutable and its exact bytes are checked at both checkpoints and the final artifact capture.",
+    "Controls supply complete current authoritative records; remembered history cannot improve their correct answer.",
+    "Existing 18-case and 60-case fixture bytes are unchanged."
+  ],
+  "limitations": [
+    "Public frozen synthetic workflow, not a secret holdout or unseen-task claim.",
+    "Sessions are sequential. Process restart is real; no host failure, simultaneous-session race or live channel transport is exercised.",
+    "Only declared local artifacts and checkpoints are graded; no external action or scheduled outreach is executed.",
+    "Memory-relevant tasks permit legitimate workspace notes and native session retrieval in both arms; no mechanism is required or rewarded.",
+    "Exactly twelve small workflows do not establish production qualification, real-time autonomy, multimodal competence, statistical superiority or long-term learning.",
+    "Synthetic read fault targets native read_file; alternative legitimate access can bypass it and must be reported rather than credited as fault recovery.",
+    "Foreground output and private stores are outside these artifact checks; no all-channel confidentiality or physical-forgetting claim.",
+    "Source checks detect changed bytes at declared checkpoints and final capture, not a modification restored between snapshots.",
+    "Checkpoints and read faults are part of this versioned protocol. Do not silently edit frozen inputs or graders after inspecting model results."
+  ]
+}

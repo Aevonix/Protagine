@@ -18,7 +18,9 @@ from .records import CaseSpec
 
 VERSION = 'paired-agent-pilot-1'
 REVIEWED_VERSION = 'paired-agent-reviewed-1'
-DATASET_VERSIONS = (VERSION, REVIEWED_VERSION)
+WORKFLOW_VERSION = 'paired-agent-workflows-1'
+DATASET_VERSIONS = (VERSION, REVIEWED_VERSION, WORKFLOW_VERSION)
+WORKFLOW_FAMILIES = ('workflow-recall', 'workflow-correction', 'workflow-recovery', 'workflow-scope')
 FAMILIES = (
     'grounded-evidence', 'planning-toolrecovery', 'persistent-memory',
     'crosssession-authority', 'coding-ops', 'extraction-review',
@@ -57,7 +59,8 @@ def load_dataset(directory=_FIXTURE_DIRECTORY):
     if not isinstance(scenarios, list) or len(scenarios) != manifest['scenario_count']:
         raise ValueError('Paired dataset scenario count mismatch')
     identities = set()
-    counts = dict.fromkeys(FAMILIES, 0)
+    workflow_dataset = manifest['dataset_id'] == WORKFLOW_VERSION
+    counts = dict.fromkeys(WORKFLOW_FAMILIES if workflow_dataset else FAMILIES, 0)
     for item in scenarios:
         identity, family = item['id'], item['family']
         if (family not in counts or identity in identities
@@ -68,7 +71,7 @@ def load_dataset(directory=_FIXTURE_DIRECTORY):
         files, turns, oracle = item['initial_files'], item['episodes'], item['oracle']
         if not isinstance(files, dict) or any(not _leaf_name(k) or not isinstance(v, str) for k, v in files.items()):
             raise ValueError('Initial files require leaf names and text')
-        if (not isinstance(turns, list) or not 1 <= len(turns) <= 4
+        if (not isinstance(turns, list) or not 1 <= len(turns) <= (24 if workflow_dataset else 4)
                 or len(turns) != oracle['declared_turns']
                 or any(set(turn) != {'session_id', 'user'} or not _leaf_name(turn['session_id'])
                        or not isinstance(turn['user'], str) or not turn['user'].strip() for turn in turns)):
@@ -78,8 +81,24 @@ def load_dataset(directory=_FIXTURE_DIRECTORY):
             raise ValueError('Paired scenarios require distinct artifact outcomes')
         if any(not _leaf_name(a['path']) for a in artifacts):
             raise ValueError('Artifact declarations require leaf names')
+        if workflow_dataset:
+            from .paired_workflow_runtime import validate_workflow
+            validate_workflow(item['workflow'], turns)
+            if (len(turns) < 6 or not item['workflow']['restart_before']
+                    or item.get('memory_condition') not in {'relevant', 'irrelevant'}):
+                raise ValueError('Workflows require multi-turn history, restart and memory condition')
+            checkpoints = oracle.get('checkpoints', [])
+            if (not checkpoints or len({c['turn_index'] for c in checkpoints}) != len(checkpoints)
+                    or {c['turn_index'] for c in checkpoints} != set(item['workflow']['snapshot_after'])
+                    or any(not c['artifacts'] or any(not _leaf_name(a['path']) for a in c['artifacts'])
+                           for c in checkpoints)):
+                raise ValueError('Workflow checkpoints must match declared snapshots')
     if counts != manifest['families']:
         raise ValueError('Paired dataset family count mismatch')
+    if workflow_dataset and (counts != dict.fromkeys(WORKFLOW_FAMILIES, 3)
+            or any(sum(s['memory_condition'] == 'irrelevant' for s in scenarios if s['family'] == family) != 1
+                   for family in WORKFLOW_FAMILIES)):
+        raise ValueError('Frozen workflows require three per family with one irrelevant-memory control')
     content_hash = hashlib.sha256(b'manifest\0' + manifest_raw + b'\0scenarios\0' + scenario_raw).hexdigest()
     return manifest, tuple(scenarios), content_hash
 
@@ -112,11 +131,17 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION):
         inputs.update(arm=arm, max_output_tokens=4096, max_iterations=8,
             cleanup_seconds=5, settle_seconds=5, contact_id='fixture-owner',
             dataset={'id': dataset_version, 'version': dataset_version, 'sha256': content_hash})
+        oracle = copy.deepcopy(scenario['oracle'])
+        if dataset_version == WORKFLOW_VERSION:
+            inputs.update(workflow=copy.deepcopy(scenario['workflow']),
+                          memory_condition=scenario['memory_condition'])
+            oracle['workflow_contract'] = copy.deepcopy(scenario['workflow'])
+            inputs['dataset']['split'] = 'frozen_public_evaluation'
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
             boundary='native_hermes', consumer='native_paired', evaluator='paired_artifacts',
-            inputs=inputs, oracle=copy.deepcopy(scenario['oracle']),
-            timeout_seconds=120 * len(scenario['episodes']) + 30,
-            max_output_bytes=262144))
+            inputs=inputs, oracle=oracle,
+            timeout_seconds=600 if dataset_version == WORKFLOW_VERSION else 120 * len(scenario['episodes']) + 30,
+            max_output_bytes=1048576 if dataset_version == WORKFLOW_VERSION else 262144))
     return result
 
 
@@ -262,6 +287,9 @@ def assess(observed, oracle):
         if PurePosixPath(path).name != path or path in {'', '.', '..'}:
             raise ValueError('Artifact declarations must use leaf names')
         checks['artifact:' + path] = _artifact_checks(artifacts.get(path), spec)
+    if 'workflow_contract' in oracle:
+        from .paired_workflow_grading import assess_workflow
+        checks.update(assess_workflow(effects, oracle))
     return checks
 
 

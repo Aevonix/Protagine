@@ -2,6 +2,14 @@
 
 `protagine models paired` runs the same task episodes through fresh Hermes and fresh Hermes with Protagine enabled. It records what the base agent completes, what the combined system completes, and the difference. The reviewed development dataset has 60 episodes, ten in each of six families. The original 18-episode pilot remains available under its original version. Neither dataset establishes a comprehensive model ranking.
 
+The [frozen workflow pack](FROZEN-WORKFLOWS.md) adds twelve eight-turn workflows,
+each with two process restarts and two graded intermediate checkpoints. Select
+`--dataset-version paired-agent-workflows-1 --repetitions 3` at plan time for a
+complete release comparison: 36 pairs and 72 isolated arm executions. This is a
+separate public evaluation dataset, not a private holdout or an extension of the
+60-case score. Repeated attempts alternate which arm runs first and never share
+state. Existing plans default to one repetition.
+
 Both arms use the same configured model, provider settings, immutable container image, initial files, source events, task instructions, output limits and artifact verifier. Hermes keeps its ordinary memory and session tools in the baseline. Protagine adds its normal integration in the other arm. Historical facts arrive through the same episode turns; answers are not preloaded only for Protagine. The verifier's oracle stays outside the agent container.
 
 Each arm starts a new container with fresh state for each episode. State persists across turns and sessions inside that episode. No owner home, memories, live-agent state or Docker socket is mounted inside the agent. The container can call the selected model endpoint. Sharing an endpoint with a live agent is allowed, but can slow that agent and distort benchmark timings. Prefer running while the agent is not using that endpoint when practical. The benchmark does not stop the live agent or require a reserved endpoint.

@@ -441,9 +441,12 @@ def test_native_file_tools_cannot_follow_paths_outside_workspace(tmp_path, monke
 def test_runtime_image_pruning_removes_oracles_and_preserves_execution_helpers(tmp_path, monkeypatch):
     repo = tmp_path / 'protagine'
     qualification = repo / 'sidecar/protagine/qualification'
-    preserved = ['paired_worker.py', 'paired_transport.py', 'native_memory_worker.py',
+    preserved = ['paired_worker.py', 'paired_transport.py', 'paired_trace.py',
+                 'paired_workflow_runtime.py', 'native_memory_worker.py',
                  'native_identity.py', 'native_memory_identity.py', '__init__.py']
-    removed = ['paired_cases.py', 'paired_report.py', 'fixtures/paired-agent-pilot-1/cases.json']
+    removed = ['paired_cases.py', 'paired_report.py', 'paired_workflow_grading.py',
+               'fixtures/paired-agent-pilot-1/cases.json',
+               'fixtures/paired-agent-workflows-1/scenarios.json']
     for name in preserved + removed:
         path = qualification / name
         path.parent.mkdir(parents=True, exist_ok=True)

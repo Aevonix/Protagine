@@ -35,10 +35,14 @@ def inspect_payload():
     from .native_identity import inspect_runtime
     from .native_memory_identity import inspect_runtime as inspect_adapters
     from .paired_trace import PROTOCOL as trace_protocol
+    from . import paired_workflow_runtime
     return {'native_runtime': inspect_runtime(), 'adapters': inspect_adapters(),
             'worker_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
-            'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol}
+            'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
+            'workflow_protocol': paired_workflow_runtime.PROTOCOL,
+            'workflow_runtime_sha256': hashlib.sha256(
+                Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest()}
 
 
 def seed_workspace(root, files):
@@ -68,7 +72,7 @@ def snapshot_workspace(root):
 
 
 @contextmanager
-def workspace_tools(root):
+def workspace_tools(root, *, workflow_observations=None):
     """Constrain the same native file executor in both arms to fixture files."""
     from tools.registry import registry
     import tools.file_tools  # native registration
@@ -80,7 +84,7 @@ def workspace_tools(root):
                 raise RuntimeError('Missing native file tool: ' + name)
             original = entry.handler
 
-            def guarded(args, *rest, _original=original, **kwargs):
+            def guarded(args, *rest, _original=original, _name=name, **kwargs):
                 args = dict(args)
                 raw = args.get('path', '.')
                 if not isinstance(raw, str):
@@ -88,8 +92,16 @@ def workspace_tools(root):
                 target = (root / raw).resolve()
                 if not target.is_relative_to(root.resolve()):
                     return json.dumps({'error': 'Path is outside this task workspace'})
+                if _name == 'read_file' and workflow_observations is not None:
+                    error = workflow_observations.read_failure(
+                        target.relative_to(root.resolve()).as_posix())
+                    if error is not None:
+                        return json.dumps({'error': error})
                 args['path'] = str(target)
-                return _original(args, *rest, **kwargs)
+                result = _original(args, *rest, **kwargs)
+                if _name == 'read_file' and workflow_observations is not None:
+                    workflow_observations.after_read(target.relative_to(root.resolve()).as_posix(), result)
+                return result
 
             stack.enter_context(patch.object(entry, 'handler', guarded))
         yield
@@ -199,20 +211,35 @@ def main():
         return 0
     request = json.load(sys.stdin)
     inputs, config = request['inputs'], request['config']
+    phase = request.get('_workflow_phase')
+    if inputs.get('workflow') is not None and sys.argv[1:] != ['--workflow-phase']:
+        from .paired_workflow_runtime import main as workflow_main
+        return workflow_main(request)
+    if (phase is not None) != (sys.argv[1:] == ['--workflow-phase']):
+        raise ValueError('Workflow phase is supervisor-owned')
+    workflow_observations = None
+    if phase is not None:
+        from .paired_workflow_runtime import TurnObservations
+        workflow_observations = TurnObservations(phase['workflow'],
+            consumed_before=phase.get('prior_read_failures', []))
     arm = inputs['arm']
     if arm not in {'base_hermes', 'protagine'}:
         raise ValueError('Unknown experiment arm')
     home, workspace = Path('/state/home'), Path('/state/workspace')
-    home.mkdir(mode=0o700)
-    workspace.mkdir(mode=0o700)
+    resuming = phase is not None and phase['index'] > 0
+    if resuming and not (home.is_dir() and workspace.is_dir()):
+        raise RuntimeError('Workflow restart lost durable state')
+    home.mkdir(mode=0o700, exist_ok=resuming)
+    workspace.mkdir(mode=0o700, exist_ok=resuming)
     os.environ.update(request.get('provider_env', {}))
     os.environ.update(HOME=str(home), HERMES_HOME=str(home), HERMES_SKIP_DOTENV='1',
         PYTHON_DOTENV_DISABLED='1', HERMES_DISABLE_TELEMETRY='1',
         LITELLM_LOCAL_MODEL_COST_MAP='True',
         HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_ENABLE_PROJECT_PLUGINS='0',
         HERMES_BUNDLED_PLUGINS=str(home / 'empty-bundled'), TERMINAL_CWD=str(workspace))
-    (home / 'empty-bundled').mkdir()
-    seed_workspace(workspace, inputs['initial_files'])
+    (home / 'empty-bundled').mkdir(exist_ok=resuming)
+    if not resuming:
+        seed_workspace(workspace, inputs['initial_files'])
     config.update(plugins={'enabled': [], 'disabled': ['protagine']},
                   terminal={'backend': 'local', 'cwd': str(workspace)})
     (home / 'config.yaml').write_text(json.dumps(config))
@@ -220,6 +247,9 @@ def main():
     agents, histories, rows = {}, {}, []
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0}}
+    if phase is not None:
+        result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
+                                    'start_turn': phase['start_turn']}
     from .paired_trace import DiagnosticTrace
     trace = DiagnosticTrace(secrets=request.get('provider_env', {}).values())
     request['_diagnostic_recorder'] = trace
@@ -269,10 +299,14 @@ def main():
                 toolsets.append('paired_protagine_memory')
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))
-            resources.enter_context(workspace_tools(workspace))
+            resources.enter_context(workspace_tools(workspace,
+                workflow_observations=workflow_observations))
             requests = resources.enter_context(observe_requests(runtime['base_url'], diagnostic=trace))
             result['stage'] = 'running'
             for index, turn in enumerate(inputs['episodes']):
+                global_index = index + (phase['start_turn'] if phase is not None else 0)
+                if workflow_observations is not None:
+                    workflow_observations.turn_index = global_index
                 if stop.is_set():
                     raise InterruptedError('Benchmark interrupted')
                 session_id = turn['session_id']
@@ -284,16 +318,20 @@ def main():
                 histories[session_id] = response.get('messages', [])
                 complete = response.get('completed') is True and not any(
                     response.get(k) for k in ('failed', 'partial', 'interrupted'))
-                trace.record('native_turn', {'index': index, 'session_id': session_id,
+                trace.record('native_turn', {'index': global_index, 'session_id': session_id,
                     'completed': response.get('completed'), 'failed': response.get('failed'),
                     'partial': response.get('partial'), 'interrupted': response.get('interrupted'),
                     'messages': response.get('messages'), 'final_response': response.get('final_response')})
                 rows.append({'session_id': session_id, 'completed': complete,
                              'final_response': response.get('final_response')})
+                if phase is not None:
+                    rows[-1]['index'] = global_index
                 result['tool_evidence']['turns_completed'] += int(complete)
                 # Fixed, declared settling window in both arms, included in wall
                 # time. No manually inserted facts, forced review or hidden oracle.
                 stop.wait(inputs.get('settle_seconds', 5))
+                if workflow_observations is not None:
+                    workflow_observations.after_turn(workspace, snapshot_workspace)
                 if not complete:
                     break
             treatment = observer(agent, response) if observer and agents else {}
@@ -333,6 +371,11 @@ def main():
             except Exception:
                 result['agent_close_returned'] = False
         result['worker_stopped'] = True
+        if workflow_observations is not None:
+            result['tool_evidence']['workflow_observations'] = {
+                'snapshots': workflow_observations.snapshots,
+                'read_failures_consumed': workflow_observations.consumed,
+                'read_recoveries': workflow_observations.read_recoveries}
         result['private_diagnostics'] = trace.summary()
         print(RESULT_MARKER + json.dumps(result, allow_nan=False), flush=True)
     return 0 if result['stage'] == 'returned' else 1

@@ -89,6 +89,38 @@ def freeze(fixture):
     return paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled', **fixture.resources)
 
 
+def test_repeated_pairs_freeze_order_and_keep_every_attempt_in_fresh_state(fixture):
+    manifest = paired.plan(fixture.output, native_binding='candidate', repetitions=3,
+                           evidence_mode='controlled', **fixture.resources)
+    assert manifest['declared_attempts'] == 12
+    assert manifest['dataset']['repetitions'] == 3
+    assert len(manifest['dataset']['episode_ids']) == 2
+    assert len({p['episode_id'] for p in manifest['pairs']}) == 6
+    assert [p['order'][0] for p in manifest['pairs']] == [
+        'base_hermes', 'protagine', 'protagine', 'base_hermes', 'base_hermes', 'protagine']
+    paths = [p['arms'][arm]['path'] for p in manifest['pairs'] for arm in paired.ARMS]
+    assert len(set(paths)) == 12
+    report = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    assert report['paired_score']['episodes'] == 6
+    repeated = report['workflow_repetitions']
+    assert repeated['unique_workflows'] == 2
+    assert all(w['declared_repetitions'] == w['comparable_repetitions'] == 3 for w in repeated['workflows'])
+    assert all(w['successes'] == dict.fromkeys(paired.ARMS, 3) for w in repeated['workflows'])
+    assert len({row[2] for row in fixture.trace}) == 12
+    # Resume must not select or rerun any scored repetition.
+    asyncio.run(paired.run(fixture.output, resume=True, **fixture.resources))
+    assert len(fixture.trace) == 12
+    assert 'Workflow repeatability' in paired_report.markdown(report)
+
+
+@pytest.mark.parametrize('count', [0, 4, True, 1.5, '3'])
+def test_repetition_bound_is_declared_before_any_execution(fixture, count):
+    with pytest.raises(ValueError, match='repetitions'):
+        paired.plan(fixture.output, native_binding='candidate', repetitions=count,
+                    evidence_mode='controlled', **fixture.resources)
+    assert fixture.trace == []
+
+
 def test_plan_freezes_identical_tasks_and_alternating_pair_order(fixture):
     plan = freeze(fixture)
     assert fixture.trace == []
