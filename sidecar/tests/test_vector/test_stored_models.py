@@ -3,6 +3,7 @@
 import pytest
 
 from protagine.vector.collections import Collection
+from protagine.vector.query import VectorItem
 from protagine.vector.store import VectorStore
 
 
@@ -43,6 +44,33 @@ async def test_stored_models_projects_metadata_across_real_collections(tmp_path,
     assert await store.get_stored_models() == ["model-a", "model-b", "model-z"]
     assert schemas == [["metadata"]] * (len(Collection) - 1)
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_stored_models_includes_model_after_first_256_rows(tmp_path):
+    store = VectorStore(str(tmp_path / "vectors"))
+    await store.connect(2)
+    await store.ensure_collections(2)
+    try:
+        await store.add_batch(Collection.MEMORIES, [
+            VectorItem(
+                id=f"row-{index:03d}",
+                text="Stored text",
+                vector=[1.0, 0.0],
+                metadata={"model_id": "model-early"},
+            )
+            for index in range(256)
+        ])
+        # A separately appended row catches accidental search limits or a scan
+        # that stops after its first batch instead of inspecting every model.
+        await store.add(
+            Collection.MEMORIES, "row-256", "Last stored text", [1.0, 0.0],
+            {"model_id": "model-late"},
+        )
+        assert await store.count(Collection.MEMORIES) == 257
+        assert await store.get_stored_models() == ["model-early", "model-late"]
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio
