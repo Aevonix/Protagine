@@ -8,7 +8,8 @@ These files are retained for migration and diagnostics only.
 - `protagine-doctor-cron.sh` writes the doctor result to a local log. It does not
   send a message.
 - `hermes-patch-runner.py` inventories old patch files without executing them.
-  A clean deployment has no Hermes core patch registry.
+  It is no longer called by the doctor. Runtime qualification uses the
+  packaged, versioned patch set described in [PATCHES.md](PATCHES.md).
 - `protagine-activity-monitor.py` and `hermes-gateway-restart-runner.sh` are inert
   compatibility targets. Their former direct notification/restart behavior
   bypassed the action plane.
