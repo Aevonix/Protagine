@@ -1,0 +1,46 @@
+{
+  "contract_changes": [
+    "Weekday-only fields are explicit; no inferred calendar date is requested.",
+    "Room labels accept a trailing room; human preference labels accept capitalization and peanut/peanuts; UTC and Celsius notation accepts equivalent representations.",
+    "Forty-two distinct evidence, planning, memory, handoff, configuration and review scenarios are added.",
+    "Forbidden artifact content is checked after JSON decoding as well as in raw text, including nested keys and values. The pilot raw-only rule is retained only for old protocol reproducibility.",
+    "Preservation instructions are verified on ledger, original proposal, shared task identity and unrelated follow-up fields; restoration begins from a different staged candidate so no-op completion does not pass."
+  ],
+  "dataset_id": "paired-agent-reviewed-1",
+  "derived_from": {
+    "dataset_id": "paired-agent-pilot-1",
+    "manifest_sha256": "516311733cc5048998bd8f0752e0473a97b8709bbc75e5d4f96a38c680c37cbc"
+  },
+  "families": {
+    "coding-ops": 10,
+    "crosssession-authority": 10,
+    "extraction-review": 10,
+    "grounded-evidence": 10,
+    "persistent-memory": 10,
+    "planning-toolrecovery": 10
+  },
+  "files": {
+    "scenarios.json": {
+      "bytes": 104184,
+      "sha256": "d27806af21aaa29ec653cbbacfb7ff90029d7b0137bb095c4b1254c89d70b5de"
+    }
+  },
+  "limitations": [
+    "Public development data, not a held-out benchmark or a comprehensive production qualification.",
+    "Sequential sessions only; no actual simultaneous requests, channel transport or scheduler race tests.",
+    "Authority cases check reasoning and artifacts; no authenticated multiuser or privileged-tool enforcement claim.",
+    "Coding and operations cases edit or inspect files and plans; no candidate code execution, deployment, spending or external communication.",
+    "Memory facts enter through ordinary turns. Forgetting checks later output, not physical erasure from every store.",
+    "Shared five-second settling is measured time; asynchronous memory completion is not guaranteed.",
+    "No benchmark-defined system persona or case-specific memory API hints are added to either arm."
+  ],
+  "scenario_count": 60,
+  "source": {
+    "description": "Sixty authored public development scenarios and independent verifier examples. No production conversations or external benchmark answers.",
+    "kind": "original_synthetic",
+    "license": "MIT",
+    "publisher": "Aevonix"
+  },
+  "status": "development-scenarios-awaiting-native-validation",
+  "version": "paired-agent-reviewed-1"
+}

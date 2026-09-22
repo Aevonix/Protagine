@@ -74,7 +74,7 @@ def test_affect_count_events(tmp_path):
     assert store.count_events(contact_id="c1", source="test") == 7
 
 
-# --- briefings: GoalEngineAggregator reads real goal state -------------------
+# --- briefings: GoalStoreAggregator reads real goal state -------------------
 
 @dataclass
 class _FakeGoal:
@@ -90,7 +90,7 @@ class _FakeGoal:
                 and self.deadline < datetime.now(timezone.utc))
 
 
-class _FakeGoalEngine:
+class _FakeGoalStore:
     def __init__(self, by_status):
         self._by_status = by_status
 
@@ -104,7 +104,7 @@ class _FakeGoalEngine:
 
 
 def test_goal_engine_aggregator(tmp_path):
-    from protagine.briefings.aggregators import GoalEngineAggregator
+    from protagine.briefings.aggregators import GoalStoreAggregator
     now = datetime.now(timezone.utc)
     created = now - timedelta(hours=1)   # explicit: default-now would land after period_end
     overdue = _FakeGoal("g1", "ship the report", deadline=now - timedelta(hours=2),
@@ -117,7 +117,7 @@ def test_goal_engine_aggregator(tmp_path):
     done = _FakeGoal("g5", "already done",
                      created_at=now - timedelta(days=2),
                      completed_at=now - timedelta(days=1))
-    agg = GoalEngineAggregator(_FakeGoalEngine({
+    agg = GoalStoreAggregator(_FakeGoalStore({
         "active": [overdue, soon, later], "blocked": [blocked],
         "completed": [done]}))
 

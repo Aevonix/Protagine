@@ -88,6 +88,14 @@ def test_derived_assignment_keeps_consumed_source_and_known_annotation_checks(
     import protagine.turns
 
     rt = runtime
+    # This qualifies consumed-source lineage through real ASGI/SQLite calls,
+    # not cold CI disk latency against the separate five-second freshness budget.
+    # Keep the local deadline clocks aligned; deadline tests retain their own
+    # clock controls and all durable annotation/erasure checks still execute.
+    import time
+    clock = SimpleNamespace(monotonic=lambda: 1000.0, time=time.time, sleep=time.sleep)
+    monkeypatch.setattr(rt.module, 'time', clock)
+    monkeypatch.setattr(importlib.import_module(rt.module.__package__ + '.client'), 'time', clock)
     monkeypatch.setattr(protagine.turns, 'get_turn_idempotency_ledger', lambda *_: rt.ledger)
     @source_app.middleware('http')
     async def owner_authority(request, next_call):
@@ -569,6 +577,62 @@ def test_partial_feed_never_certifies_freshness_and_makes_bounded_progress(runti
     assert rt.outbox.erasure_watermark('owner') == 1
 
 
+@pytest.mark.parametrize('expire_during_post_read', [False, True])
+def test_source_freshness_budget_covers_contention_but_rejects_late_outbox_read(
+        runtime, monkeypatch, expire_during_post_read):
+    rt = runtime
+    import time
+    clock = SimpleNamespace(now=1000.0, time=time.time, sleep=time.sleep)
+    clock.monotonic = lambda: clock.now
+    monkeypatch.setattr(rt.module, 'time', clock)
+    monkeypatch.setattr(importlib.import_module(rt.module.__package__ + '.client'), 'time', clock)
+    calls = []
+    def post(path, **kwargs):
+        calls.append(kwargs)
+        # Model bounded transport contention without slowing the test or
+        # replacing the real source ledger and durable outbox operations.
+        clock.now += 1.0
+        if clock.now >= kwargs['_deadline_monotonic']:
+            raise TimeoutError('fixture source lookup exceeded its allowance')
+        return freshness_response(rt.ledger, path, kwargs['json'])
+    state_reads = []
+    original_read = rt.outbox.erasure_state
+    def read_state(*args, **kwargs):
+        result = original_read(*args, **kwargs)
+        state_reads.append(kwargs['deadline_monotonic'])
+        if expire_during_post_read and len(state_reads) == 2:
+            # The SQLite read can return a valid value after its final
+            # cooperative timeout check. Publication must check elapsed time.
+            clock.now = kwargs['deadline_monotonic'] + .01
+        return result
+    monkeypatch.setattr(rt.outbox, 'erasure_state', read_state)
+    boundary = rt.module.RequestMemory(SimpleNamespace(post=post), rt.outbox)
+    scope = SimpleNamespace(contact_id='owner', session_id='native', task_id='native',
+                            turn_id='turn', valid_participant=True)
+    current = {'role': 'user', 'content': 'Recall the orchard badge.'}
+    boundary.observe(scope, [current], user_message=current['content'])
+    ref = rt.ledger.source_references(['fixture-source'], contact_id='owner', session_id='native')[0]
+    stamp = json.dumps({'contact_id': 'owner', 'watermark': 0, 'sources': [ref]})
+    current['api_content'] = (current['content'] + '\n\n[protagine-recall-v1 ' + stamp
+                              + ']\n' + rt.fact + '\n[/protagine-recall-v1]')
+    checked = boundary({'messages': [{'role': 'user', 'content': current['api_content']}]}, scope)
+    assert len(calls) == 1 and state_reads == [1005.0, 1005.0]
+    assert calls[0]['timeout'] == 5.0 and calls[0]['_deadline_monotonic'] == 1005.0
+    if expire_during_post_read:
+        assert checked['reason'] == 'source_erasure_unavailable'
+        assert checked['freshness_retryable'] is True
+        assert rt.fact not in json.dumps(checked['request'])
+        assert current['content'] in json.dumps(checked['request'])
+        assert boundary.consumed_snapshot(scope) is None
+        assert boundary.supplied_snapshot(scope) is None
+    else:
+        assert checked['reason'] == 'source_erasure_checked'
+        assert checked['freshness_retryable'] is False
+        assert rt.fact in json.dumps(checked['request'])
+        assert boundary.consumed_snapshot(scope)['source_refs'] == [ref]
+        assert boundary.supplied_snapshot(scope) == [ref]
+
+
 @pytest.mark.parametrize('source_state', ['current', 'invalidated', 'erased', 'malformed'])
 def test_four_full_erasure_pages_resume_only_unadmitted_current_input(runtime, monkeypatch, source_state):
     rt = runtime
@@ -594,7 +658,7 @@ def test_four_full_erasure_pages_resume_only_unadmitted_current_input(runtime, m
     calls = []
     def post(path, **kwargs):
         assert path == '/v1/host/memory/sources/erasures'
-        assert 0 < kwargs['timeout'] <= .25
+        assert 0 < kwargs['timeout'] <= 5.0
         after = kwargs['json']['after']
         page_events = events[after:after + 250]
         through = page_events[-1]['sequence'] if page_events else after

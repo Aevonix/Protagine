@@ -47,10 +47,10 @@ class Skill:
                 f"{self.title} {self.situation}")
 
     def score(self, now: Optional[float] = None) -> float:
-        """Eviction score: confidence + track record - staleness."""
+        """Retention heuristic; old runtime wins/losses are not quality evidence."""
         now = now or time.time()
         age_days = max(0.0, (now - (self.last_used_at or self.created_at)) / 86400.0)
-        return self.confidence + 0.2 * (self.wins - self.losses) - age_days / 180.0
+        return self.confidence - age_days / 180.0
 
     def to_row(self) -> Dict[str, Any]:
         return {

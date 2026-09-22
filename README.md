@@ -7,58 +7,17 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml/badge.svg)](https://github.com/Aevonix/Protagine/actions/workflows/ci.yml)
 
-Protagine is an effort to achieve **Proto-AGI** through persistent memory,
-an evolving identity, autonomous initiative and internal deliberation. It connects
-to [Hermes](https://github.com/NousResearch/hermes-agent) so an agent can carry
-knowledge and unfinished work across conversations, channels and model changes.
+**Persistent memory and shared work for Hermes agents.**
 
-Hermes provides the runtime: conversations, tools, channels and workers.
-Protagine supplies the shared memory and state that let those activities contribute
-to one continuing agent. Each deployment creates its own private identity and
-chooses its models, channels and devices.
+Protagine keeps source-backed memory, corrections, identity and task state
+outside the model. It connects to [Hermes](https://github.com/NousResearch/hermes-agent)
+so an agent can use that state across conversations, channels and model changes.
+Hermes owns conversations, tools, workers and scheduling. Each deployment keeps
+its identity, credentials and device configuration private.
 
-## What we are trying to achieve
-
-We use **Proto-AGI** for a practical goal: an agent that remembers what matters,
-forms and revises its own working judgments, keeps commitments, acts on useful
-opportunities and improves through experience. The owner should be able to keep
-talking to it while it works, correct its understanding and inspect the reasons
-behind its decisions.
-
-Unlocking autonomy means allowing the agent to initiate and complete authorized
-work between messages. **Inner thought** means reviewing events, open questions
-and unfinished tasks through background deliberation, then turning useful
-conclusions into plans, memories or proposed actions. Those processes need to
-produce observable value; running another model call is not evidence of progress.
-
-### Model independence and the agent harness
-
-Our research hypothesis is that **AGI-like behavior can emerge from sufficiently
-intelligent LLMs coordinated through a persistent agent harness**. Protagine
-explores this through memory orchestration, identity, autonomous initiative,
-deliberation and feedback from completed work. The harness determines what the
-agent remembers, how it uses that knowledge, which work it pursues and how
-results inform its next actions.
-
-The goal is to achieve Proto-AGI independently of any particular model,
-provider or fixed suite of models, without requiring new model training or
-fine-tuning. Learning in this approach happens through retained experience and
-changes to the agent's memory, procedures and orchestration. Its continuity and
-identity live outside model weights. Model independence still requires each
-chosen LLM to have the capabilities needed for its assigned role.
-
-**Compute is divided by role.** Conversation, planning and reasoning, memory
-extraction, review, coding and vision can use separate LLMs. A deployment can
-also assign several roles to the same model. Hermes runs conversations, tools
-and workers; Protagine connects those activities through persistent memory and
-shared state, with its own configurable model roles for supporting work.
-
-We call the intended combined system a **"Super Agent"**: one continuing agent
-with a shared identity, body of knowledge and set of commitments, supported by
-replaceable models performing different functions. The research question is
-whether this coordination can produce general, sustained behavior beyond the
-individual model calls. General intelligence remains an ambition, not an
-achieved capability; adding models or orchestration alone does not establish it.
+**Development status:** Phase 1 is not complete. Version 1.9.0 prepares
+[official Hermes with packaged compatibility patches](docs/HERMES-HOOK-COMPATIBILITY.md).
+The [known gaps](docs/KNOWN-GAPS.md) track unfinished behavior.
 
 ## How it works
 
@@ -86,6 +45,10 @@ The model qualification suite records quality and latency for each tested role.
 Its reports separate useful results from grounding failures and unknown outcomes.
 Automatic fleet enrollment and selection from those measurements remain planned.
 
+[Twelve frozen workflows](docs/FROZEN-WORKFLOWS.md) compare Hermes with and without
+Protagine across restarts, corrections, task recovery and scoped handoffs.
+They include controls where memory is unnecessary and record repeated attempts.
+
 Memory extraction and admission review have separate task mappings. A deployment
 can select their models and deadlines without changing the planning or judging
 roles used elsewhere. Qualification records which role actually reviewed a memory.
@@ -99,7 +62,17 @@ authorization, and missed notifications should leave work recoverable.
 See the [architecture guide](docs/ARCHITECTURE.md) for storage ownership and
 integration boundaries.
 
-## Current status
+## Evidence and current status
+
+The [paired benchmark](docs/PAIRED-AGENT-BENCHMARK.md) runs fresh Hermes and
+Hermes plus Protagine installations against the same tasks. Its
+[twelve frozen workflows](docs/FROZEN-WORKFLOWS.md) cover restarts, corrections,
+recovery and scoped handoffs. Failed tasks remain in the results. Quality,
+latency and incomplete resource accounting are reported separately.
+
+The [source-recall experiment](benchmarks/source_recall/README.md) records one
+measured retrieval improvement and its remaining failures. It does not establish
+an overall advantage over Hermes. That claim requires completed paired evidence.
 
 **Phase 1 is in development and validation.** The memory integration, source
 readers, shared task controls, contact preferences, model roles and guided setup
@@ -126,17 +99,16 @@ storage layouts. The [known gaps](docs/KNOWN-GAPS.md) and
 
 ## Get started
 
-You need Python 3.12, Git, a supported Hermes deployment and one OpenAI-compatible
-chat endpoint. The minimum profile does not require Docker, a graph database
-or an embedding model.
+You need Python 3.12, Git and one OpenAI-compatible chat endpoint. The minimum
+profile does not require Docker, a graph database or an embedding model.
 
-Install the current published release:
+Protagine **1.9.0** includes the runtime installer. Install from this checkout:
 
 ```bash
 python3.12 -m venv "$HOME/.local/share/protagine/venv"
 source "$HOME/.local/share/protagine/venv/bin/activate"
-python -m pip install "protagine-hermes[native-memory]" "protagine[hermes]"
-protagine init --hermes-python /path/to/hermes/.venv/bin/python
+python -m pip install ".[native-memory]" "./sidecar[hermes]"
+protagine init --prepare-hermes
 ```
 
 The wizard selects a Hermes profile and asks for identity, owner, model and
@@ -147,21 +119,40 @@ option, or use your instance path:
 ```bash
 protagine --instance /path/to/private/protagine start --detach
 protagine --instance /path/to/private/protagine status
+protagine --instance /path/to/private/protagine hermes run gateway run
 ```
 
 Start a fresh Hermes session, provide a harmless fact and ask for it in another
 session. Check the remembered source as well as the answer. The minimum profile
 provides memory and work observation; background execution needs configuration.
 
-The current qualification target is Hermes 0.21.3. Some concurrent task, review
-and source-reminder interfaces use the [documented compatibility build](docs/HERMES-HOOK-COMPATIBILITY.md).
-Setup does not patch Hermes core or restart a running gateway. The
-[setup guide](docs/LOCAL-HERMES-SETUP.md) covers services, profile attachment,
-tasks and adapter updates.
+The installer stages official Hermes plus versioned patches in a separate
+environment. No fork is required. You can instead pass an existing official
+`--hermes-python`; missing core interfaces trigger the same preparation.
+Unknown revisions require a qualified update. Existing services switch through
+their normal lifecycle; setup never restarts a running gateway. The
+[setup guide](docs/LOCAL-HERMES-SETUP.md) covers profiles, services and updates.
 
 Protagine includes **Deep Research** and **Skill Creator** skills. Hermes lists
 their short descriptions and loads the instructions when needed. They use the
 tools and models configured for that deployment.
+
+## Research mission
+
+We use **Proto-AGI** for the goal of a persistent agent that remembers what
+matters, revises its judgments, keeps commitments and improves through
+experience. The owner should be able to keep talking to it while it works,
+correct it and inspect the evidence behind its actions.
+
+Autonomy means initiating useful work within the deployment's authority.
+Internal deliberation means reviewing events and unfinished tasks, then
+producing a useful plan, memory or action. Neither another model call nor a
+model's claim of success demonstrates learning. Improvements need independently
+observed outcomes.
+
+The approach keeps continuity outside model weights. Models can change and
+serve different roles, provided each passes qualification for its work.
+Broader intelligence and recursive improvement remain research goals.
 
 ## Roadmap
 
@@ -195,6 +186,7 @@ not a prerequisite for the harness approach described above.
 ## Documentation
 
 - **Memory:** [quality](docs/MEMORY-QUALITY.md),
+  [model-swap demonstration](docs/MODEL-SWAP-DEMO.md),
   [semantic recall](docs/SOURCE-SEMANTIC-RECALL.md),
   [corrections](docs/SOURCE-ANNOTATIONS.md),
   [erasure](docs/NATIVE-REQUEST-ERASURE.md),
@@ -207,6 +199,7 @@ not a prerequisite for the harness approach described above.
 - **Execution:** [shared tasks](docs/NATIVE-TASK-CHANNELS.md),
   [accepted local work](docs/ACCEPTED-LOCAL-WORK.md),
   [model roles](docs/FUNCTION-ROUTING.md),
+  [inference pool](docs/INFERENCE-POOL.md),
   [model qualification](docs/MODEL-QUALIFICATION.md).
 
 ## Development
@@ -217,7 +210,8 @@ cd sidecar
 python -m pytest -q tests protagine
 ```
 
-`tests/hermes_adapter` checks built packages against the pinned Hermes runtime.
+`tests/hermes_adapter` checks built packages against official Hermes plus the
+patches shipped in that same build. CI also runs the native patch regressions.
 Deployment validation also needs real inference, attributable sources, work
 across sessions and recovery with the actual configuration. Keep private data,
 credentials and deployment configuration out of public commits and examples.

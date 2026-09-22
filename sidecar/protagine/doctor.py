@@ -70,7 +70,6 @@ SERVER_CHECK_NAMES = (
     "server-grant-envelope",
     "server-self-model",
     "server-adaptive-params",
-    "server-executor",
     "server-projects",
     "server-beliefs",
     "server-workers-governor",
@@ -1696,33 +1695,6 @@ def check_server_adaptive_params(base_url: str, api_key: str, timeout: float) ->
     return CheckResult("server-adaptive-params", PASS, detail=detail)
 
 
-def check_server_executor(base_url: str, api_key: str, timeout: float) -> CheckResult:
-    """21. Initiative executor: the acting brain is wired and cycling."""
-    status, body = _http_get(f"{base_url}/v1/host/executor/status", api_key, timeout)
-    if status == 404:
-        return CheckResult("server-executor", SKIP, detail="endpoint absent (older server)")
-    if status != 200 or not isinstance(body, dict):
-        return CheckResult("server-executor", FAIL, detail=f"HTTP {status}: {body}")
-    if not body.get("wired"):
-        return CheckResult(
-            "server-executor", WARN,
-            detail="initiative executor not wired — initiatives are generated but "
-                   "nothing acts on them with tools",
-            remedy="set PROTAGINE_EXECUTOR_ENABLED=true (or PROTAGINE_AUTONOMY_PRESET="
-                   "calibration) and restart")
-    if not body.get("running"):
-        return CheckResult(
-            "server-executor", WARN,
-            detail="executor wired but not running",
-            remedy="check the sidecar log for executor startup errors")
-    stats = body.get("stats") or {}
-    return CheckResult(
-        "server-executor", PASS,
-        detail=f"running (cycles={stats.get('cycles', 0)}, "
-               f"completed={stats.get('initiatives_completed', 0)}, "
-               f"failed={stats.get('initiatives_failed', 0)})")
-
-
 def check_server_projects(base_url: str, api_key: str, timeout: float) -> CheckResult:
     """22. Goal persistence: project engine mode + blocked projects."""
     status, body = _http_get(f"{base_url}/v1/host/projects", api_key, timeout)
@@ -1985,8 +1957,6 @@ def run_server_checks(base_url: str, api_key: str, timeout: float = 10.0) -> Lis
     results += _run("server-self-model", check_server_self_model,
                     base_url, api_key, timeout)
     results += _run("server-adaptive-params", check_server_adaptive_params,
-                    base_url, api_key, timeout)
-    results += _run("server-executor", check_server_executor,
                     base_url, api_key, timeout)
     results += _run("server-projects", check_server_projects,
                     base_url, api_key, timeout)

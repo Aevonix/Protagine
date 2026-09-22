@@ -88,7 +88,7 @@ persona. `PROTAGINE_AGENT_NAME` supplies the agent's name at compose time.
 New adopters should import `build_system_prompt` and delete their inline
 prompt constants. Existing modules migrate as they are touched (see
 ROADMAP-COGNITION.md program state for which have adopted). Adopted so far:
-executor (initiative executor), thinker (confidence + evidence now
+thinker (confidence + evidence now
 mandatory; ungrounded items dropped), planner (per-step confidence,
 persisted), project step runner, observer (cognition trigger; worked
 examples ride in as `<context>`), narrator (briefing enhancer).

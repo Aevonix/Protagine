@@ -6,17 +6,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import pytest
 import asyncio
-import sys
-
-# Mock websockets before import
-if 'websockets' not in sys.modules:
-    class MockWebsockets:
-        OPEN = 1
-        CLOSED = 3
-        def __getattr__(self, name):
-            return MockWebsockets
-    sys.modules['websockets'] = MockWebsockets()
-
 from protagine.agent import AgentClient, AgentConfig
 from protagine.agent.models import NodeCertificate
 

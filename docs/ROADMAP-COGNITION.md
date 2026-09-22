@@ -1,5 +1,11 @@
 # ROADMAP: Cognition Program (Seven Capabilities)
 
+Current execution correction: the built-in initiative executor is retired.
+Hermes owns registered reviews, accepted local work and follow-up preparation.
+Historical runtime wins/losses are archived and no longer influence procedure
+ranking. The design/history below is not a claim of current production
+activation. See [executor retirement](EXECUTOR-RETIREMENT.md).
+
 Status: PLAN COMMITTED, build not started. This document is the durable source
 of truth for the seven-capability cognition program. It is written so a
 successor agent can resume from this file alone. Update the Program State
@@ -37,8 +43,8 @@ delivery path or the held directed-action dry_run.
   with dedup/cooldown/cap; `self_directed_thinker.py` (mode off/shadow/live).
 - `intelligence/graph/` ProtagineGraph (recall, store_memory, decay, distiller),
   epistemic_state on memories; `intelligence/graph/distiller.py` MemoryDistiller.
-- `services/initiative_executor.py` InitiativeExecutorService (needs_tool loop,
-  boundary gate, repeat-work suppression, resilient run_turn).
+- `initiatives/native_work.py` binds registered internal reviews to native
+  Hermes tasks; unsupported proposals do not execute.
 - `task_queue/` Job/JobStatus/queue_manager/scheduler; `services/agent_bridge.py`
   + `workers/` (currently FORWARD-only to an external webhook; no local handler).
 - `autonomy/registry.py` SubsystemRegistry accessors; `autonomy/loop.py` phased
@@ -138,8 +144,8 @@ Design:
   ready step (deps done), BOUNDARY-CHECK it (`Action(kind=step.action_kind,
   text=step.description, target=project subject)`); if blocked -> project
   blocked + boundary flag path. Dispatch the step by kind:
-  analyze/research -> InitiativeExecutorService-style reasoning turn (reuse
-  the executor's resilient run_turn + tool subset); directed -> create a
+  analyze/research -> the shared internal reasoning API with bounded tool
+  subsets; directed -> create a
   ScopedTask via DirectedActionService (dry_run/approval honored); deliver ->
   proposal via guarded path. Record step result; on failure -> replan the
   remaining steps (bounded replan count). Milestone reports (on step-group or
@@ -189,15 +195,14 @@ Design:
     pass -> STRICT JSON {title, situation, steps, gotchas}; validate; dedup by
     situation-signature similarity (drop if >0.8 overlap with an existing skill,
     bump its uses instead). Cap total skills (`PROTAGINE_SKILLS_MAX`, default 200);
-    evict lowest score = f(confidence, recency, wins-losses).
+    evict using confidence and recency heuristics, without outcome rewards.
   - `retrieve.py`: `relevant_skills(situation, k=3)` by signature/keyword (and
     embedding if available) -> compact bullet block for prompts.
   - Failure post-mortem: on terminal failure, `record_failure` updates a
     per-domain strategy note (short text, capped) surfaced in prompts.
-- Wiring: InitiativeExecutorService and ProjectEngine prepend a "Relevant past
-  procedures" section (retrieve) to the system prompt, and call distill on
-  completion. Purely additive to prompts; no new action path (safe, can go
-  live directly - it only informs reasoning, never acts).
+- Wiring: ProjectEngine retrieves unverified procedure candidates and may
+  distill candidates on completion. Runtime completion alone does not establish
+  procedure quality; the retired executor no longer produces skill rewards.
 - Tools: `recall_skills(situation)` (read), optional. Registry:
   `registry.skill_store`.
 - API: GET /skills (observability).
@@ -641,17 +646,14 @@ the ops layer (doctor, patch runner, restart runner, activity monitor).
   planned, keep server-side enforcement.
 - Item 7 (Beliefs): no native equivalent; proceed as planned.
 
-### Core-patch policy at 0.18
+### Runtime compatibility
 
-The only sanctioned mechanism for altering Hermes behavior beyond
-config/plugins/hooks/middleware is the guarded patch registry
-(plugins/hermes-plugin/ops/hermes-patch-runner.py + PATCHES.md; the doctor
-heals the registry every run and fails loudly on anchor drift). Current
-deployment patches that still lack a native seam: rerouting the background
-review and long-running-heartbeat notifications to a home channel (no
-notification-routing hook exists at 0.18; re-check each release). Patches
-whose behavior 0.18 can express natively (sampling overrides via
-llm_request middleware) should migrate off the registry when next touched.
+Use native configuration, plugins, hooks and middleware where available.
+Missing interfaces are supplied by the versioned patch set against official
+Hermes source. Installation stages a separate runtime; qualification checks
+exact patch inputs and native behavior before promoting an upstream version.
+See [Hermes capabilities](HERMES-CAPABILITIES.md) for the current install and
+update path. The deployment-local script registry is retired.
 
 ## Backlog -> active: self-improvement mining (landed 2026-07-05)
 
@@ -692,7 +694,7 @@ adopted, upstream is unlicensed and immature):
 - 2026-07-04: Plan committed. Build not started.
 - 2026-07-04 (later): Hermes v0.18.0 (v2026.7.1) capability survey + integration
   audit landed (see "Hermes integration" section above). Generic guarded-patch
-  mechanism (ops/hermes-patch-runner.py + PATCHES.md + doctor wiring) shipped;
+  mechanism shipped, later replaced by the versioned runtime patch set;
   deployment patch definitions migrated to the private deployment repo and the
   live registry. Items 1 to 5 have native-capability notes that constrain their
   designs; read that section before building each item.

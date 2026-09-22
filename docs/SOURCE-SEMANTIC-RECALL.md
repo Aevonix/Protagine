@@ -30,6 +30,32 @@ those exact references. Empty results are successful reads; an unavailable
 canonical store or selector returns HTTP 503. Semantic failure keeps current
 lexical evidence and reports the semantic degradation.
 
+`POST /v1/host/memory/recent` reads a conversation by occurrence time without
+semantic ranking or a model call. It requires `memory:read`; supply `identity`,
+`person_id`, `session_id`, a lowercase `platform` such as `whatsapp`, and optional
+`limit` (default 8, maximum 20). The authenticated participant and existing source
+scope still govern every result. It selects the latest recorded sources, then
+returns `entries` in chronological order with user/assistant role labels,
+`occurred_at`, `recorded_at`, `conversation_id`, exact source revisions and
+`read_revision`. Aggregate `content` within entries is bounded to 12,000
+characters. `complete` describes each entry; `coverage` separately reports result
+limits, missing channel/occurrence metadata and unavailable corrections.
+
+Future canonical sources retain an indexed channel locator in the same ledger
+transaction, independently of their message hashes. Older reviewed history
+provenance and exact source-linked communication records can locate existing
+sources. Unlinked communication summaries are never returned. Canonical
+occurrence time determines recency; delayed ingestion does not make an older
+conversation new, and unknown occurrence times remain a coverage gap. Live
+platform/contact channel keys do not establish an actual provider chat ID.
+
+Recent reads return the same `source_refs`, erasure `watermark` and
+`annotation_checks` used by search. Attributed correction bundles remain intact;
+an oversized corrected entry is omitted with partial coverage rather than
+displaying its original without the correction. Consumers must carry these
+receipts into the existing request/playback freshness checks. A historical user
+question remains a user statement, never evidence that its premise is true.
+
 Search and automatic context use canonical evidence without a graph dependency.
 Source claims, attributed
 corrections, media descriptions and scoped contact estimates retain their

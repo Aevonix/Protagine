@@ -7,7 +7,7 @@ defaults and remaining limitations are documented in the README and the linked
 capability guides.
 
 Phase 1 establishes the first supported Protagine baseline. Support targets the
-current installation and its declared Hermes qualification build. Older
+current installation and its qualified official Hermes source plus patchset. Older
 Protagine releases, aliases and database layouts carry no public compatibility
 promise. Retained implementation paths still need their current consumers and
 data accounted for before removal; this document does not claim they are gone.
@@ -110,23 +110,18 @@ effect.
 Attachment selects an exact runtime and profile. Configuration staging,
 activation and observed behavioral readiness are different states. A copied
 plugin or successful health request does not prove the integration is active.
-Unknown or incompatible installations receive an actionable compatibility
-result, not silent core patching.
+Missing host interfaces come from a versioned patchset shipped with Protagine.
+The installer stages a separate copy of exact official Hermes source, verifies
+patch preimages and postimages, then checks its native capabilities. No fork is
+required. Unknown revisions need a new qualified patchset; existing source,
+profiles and service commands are not silently replaced.
 
-Prefer supported runtime interfaces, but do not preserve a core-read-only rule
-by accumulating dependencies on private internals. A small upstream-tracking
-compatibility branch is appropriate when a missing interface prevents required
-behavior and the branch removes more maintenance work than it creates. Keep its
-delta limited to that interface, document the workarounds it replaces and the
-upstream base, and exercise the affected behavior and recovery on upgrades.
-Propose the interface upstream when practical; retire the downstream delta when
-upstream provides an adequate contract. This is an engineering decision within
-the existing release process, not another approval service.
-
-Keep cognition and deployment identity outside that branch. Declare any runtime
-requirement explicitly: an installer must not silently substitute a fork for an
-existing Hermes installation. A compatibility branch does not become the default
-merely because it is available.
+Keep cognition and deployment identity outside the runtime patches. Limit the
+delta to generic interfaces and required correctness repairs, preserve upstream
+attribution, and qualify the built package against official source on each update.
+CI runs installed-adapter behavior and the affected native regressions. Remove a
+patch when official behavior makes it unnecessary. Upstream acceptance can reduce
+maintenance, but is not a release gate or another approval process.
 
 The packaged installer selects one home, preserves unrelated configuration and
 uses the native general-plugin and memory-provider registrations. It can install

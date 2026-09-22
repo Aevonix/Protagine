@@ -6,7 +6,11 @@ flattering values when evidence is absent and it never authorizes a write.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.intelligence.graph.client import ProtagineGraph
+    from .metrics_collector import MetricsCollector
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

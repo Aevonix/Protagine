@@ -2,7 +2,8 @@
 
 Use canonical adapter resources and one private instance. This is an installer,
 not a release controller: existing instances are retained and runtime upgrades
-remain explicit. No model, container, OS service or Hermes core is downloaded.
+remain explicit. Missing native interfaces can be installed from the shipped
+patchset in a separate runtime; no running process is changed by preparation.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import httpx
 import yaml
 
 from .util.instance import plugin_settings
+from .hermes_capabilities import probe_runtime, require_capabilities
 
 
 def _select_state_environment(state):
@@ -234,7 +236,7 @@ def _verify_local_endpoint(endpoint):
     """Declare the selected host and reuse the runtime's address check."""
     from protagine.router.router import LLMRouter
     hosts = [urlsplit(endpoint).hostname]
-    router = LLMRouter(tiers={}, self_learner=object())
+    router = LLMRouter(tiers={})
     router.configure({'provider': 'local', 'baseUrl': endpoint, 'apiKey': 'local-no-key',
                       'models': {'small': 'setup-endpoint-check'}, 'localHosts': hosts})
     if not asyncio.run(router._local_addresses(router._snapshot, router._snapshot.bindings['small'])):
@@ -242,7 +244,7 @@ def _verify_local_endpoint(endpoint):
     return hosts
 
 
-def _interpreter(candidate):
+def _find_interpreter(candidate):
     if not candidate:
         hermes = shutil.which('hermes')
         if hermes:
@@ -251,16 +253,58 @@ def _interpreter(candidate):
                 candidate = first[2:]
         if not candidate:
             candidate = sys.executable
-    python = Path(candidate).expanduser().absolute()
-    probe = subprocess.run([str(python), '-I', '-c',
-        'import importlib.metadata,json; import httpx,httpcore,yaml; '
-        'from agent.memory_manager import MemoryManager; '
-        'from hermes_cli.plugins import get_plugin_manager; '
-        'print(json.dumps({"version":importlib.metadata.version("hermes-agent")}))'],
-        capture_output=True, text=True, timeout=30)
-    if probe.returncode or json.loads(probe.stdout.splitlines()[-1]).get('version') not in {'0.21.0', '0.21.1', '0.21.2', '0.21.3'}:
-        raise ValueError('Select the Python interpreter of Hermes 0.21.0, 0.21.1, 0.21.2, or 0.21.3 with its native dependencies installed')
+    return Path(candidate).expanduser().absolute()
+
+
+def _interpreter(candidate):
+    python = _find_interpreter(candidate)
+    require_capabilities(probe_runtime(python))
     return python
+
+
+def _installation_interpreter(args, default=None):
+    cached = getattr(args, '_prepared_hermes_python', None)
+    if cached:
+        return Path(cached)
+    candidate = getattr(args, 'hermes_python', None) or default
+    source = getattr(args, 'hermes_source', None)
+    explicit = getattr(args, 'prepare_hermes', False) or source is not None
+    if not explicit:
+        try:
+            return _interpreter(candidate)
+        except ValueError as error:
+            from .hermes_runtime import source_for_interpreter
+            try:
+                source = source_for_interpreter(_find_interpreter(candidate))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                raise ValueError(str(error) + ' Use protagine init --prepare-hermes to install the qualified patchset.') from None
+    from .hermes_runtime import prepare_runtime
+    python = prepare_runtime(source=source, destination=getattr(args, 'hermes_runtime_dir', None),
+                             python=_find_interpreter(candidate))
+    if args is not None:
+        args._prepared_hermes_python = str(python)
+        args.hermes_python = str(python)
+    return python
+
+
+def _attachment_capabilities(python, config, *, local_work=False, native_goals=False,
+                             native_reviews=False, manifest=None):
+    """Gate enabled behavior before writes; optional interfaces do not become core."""
+    plugin = plugin_settings(config)
+    reviews = native_reviews or (plugin.get('native_reviews') or {}).get('enabled') is True
+    concurrent = (local_work or native_goals or reviews
+                  or ((manifest or {}).get('local_work') or {}).get('executor') == 'kanban'
+                  or (plugin.get('native_tasks') or {}).get('enabled') is True
+                  or bool(plugin.get('native_local_work'))
+                  or (config.get('kanban') or {}).get('dispatch_in_gateway') is True)
+    features = ['core']
+    if concurrent:
+        features.append('concurrent_work')
+    if reviews:
+        features.append('detached_review')
+    report = probe_runtime(python)
+    require_capabilities(report, features)
+    return {**report, 'required_features': features}
 
 
 def _profile_homes(python):
@@ -295,7 +339,7 @@ def _select_home(args, ask):
     explicit = getattr(args, 'hermes_home', None) or os.environ.get('HERMES_HOME')
     if explicit or getattr(args, 'non_interactive', False):
         return setup._resolve_hermes_home(explicit), None
-    python = _interpreter(getattr(args, 'hermes_python', None))
+    python = _installation_interpreter(args)
     homes = _profile_homes(python)
     if homes:
         print('Existing Hermes profiles:')
@@ -469,7 +513,11 @@ def refresh_adapter(state, args):
             or manifest.get('adapter_binding', {}).get('mode') not in {'native-installed', 'private-directory'}):
         raise ValueError('Adapter refresh requires a supported local attachment')
     home = Path(manifest['hermes_home'])
-    python = _interpreter(getattr(args, 'hermes_python', None) or manifest['hermes_python'])
+    python = _installation_interpreter(args, manifest['hermes_python'])
+    _, runtime_config = _read_hermes_config(home/'config.yaml')
+    capabilities = _attachment_capabilities(python, runtime_config, manifest=manifest,
+        local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
+        native_reviews=getattr(args, 'native_reviews', False))
     resources = _adapter_resources(getattr(args, 'adapter_wheel', None))
     binding = _adapter_binding(python, resources)
     old_binding = manifest['adapter_binding']
@@ -515,7 +563,8 @@ def refresh_adapter(state, args):
             retain_forwarder(worker)
     updated = {**manifest, 'hermes_python':str(python), 'sidecar_python':sys.executable,
         'sidecar_module_root':str(Path(__file__).resolve().parents[1]),
-        'adapter_sha256':_resource_digest(resources), 'adapter_binding':binding}
+        'adapter_sha256':_resource_digest(resources), 'adapter_binding':binding,
+        'hermes_capabilities':capabilities}
     updates.append((path, before, _json(updated).encode()))
     config_paths = [home/'config.yaml']
     lane = manifest.get('local_work') or {}
@@ -606,7 +655,7 @@ def run(root_dir=None, args=None):
                     'preferences_only', 'preview', 'start', 'refresh_adapter', 'replace_memory_provider',
                     'local_work', 'native_goals', 'native_reviews', 'model_url', 'model', 'model_config', 'agent_name',
                     'agent_values', 'timezone', 'quiet_hours', 'contact_name', 'owner_handle', 'encrypt',
-                    'passphrase', 'claim_genesis')):
+                    'passphrase', 'claim_genesis', 'prepare_hermes', 'hermes_source', 'hermes_runtime_dir')):
                 raise ValueError('--skills-only cannot be combined with instance or preference changes')
             from .setup_skills import prepare, install
             install(prepare(home, _adapter_resources(getattr(args, 'adapter_wheel', None)), refresh=True))
@@ -618,7 +667,7 @@ def run(root_dir=None, args=None):
                     'start', 'refresh_adapter', 'replace_memory_provider', 'local_work',
                     'native_goals', 'native_reviews', 'model_url', 'model', 'model_config', 'adapter_wheel', 'agent_name',
                     'agent_values', 'timezone', 'quiet_hours', 'contact_name', 'owner_handle', 'encrypt',
-                    'passphrase', 'claim_genesis')):
+                    'passphrase', 'claim_genesis', 'prepare_hermes', 'hermes_source', 'hermes_runtime_dir')):
                 raise ValueError('--preferences-only cannot be combined with instance or setup options')
             _write_receipt_preference(home, receipt_choice, preview)
             return 0
@@ -658,6 +707,13 @@ def run(root_dir=None, args=None):
             from .setup_skill_reviews import choices as review_choices
             skill_review = review_choices(args, ask, existing=manifest.get('ordinary_skill_review'),
                                            prompt=not getattr(args, 'refresh_adapter', False))
+            capabilities = None
+            if any(getattr(args, name, False) for name in ('local_work', 'native_goals', 'native_reviews')):
+                selected = (_installation_interpreter(args, manifest['hermes_python'])
+                            if getattr(args, 'refresh_adapter', False) else None)
+                capabilities = _attachment_capabilities(selected or manifest['hermes_python'], config, manifest=manifest,
+                    local_work=getattr(args, 'local_work', False), native_goals=getattr(args, 'native_goals', False),
+                    native_reviews=getattr(args, 'native_reviews', False))
             if getattr(args, 'native_goals', False):
                 from dotenv import dotenv_values
                 from .setup_native_goals import prepare
@@ -696,6 +752,12 @@ def run(root_dir=None, args=None):
                 configure(state, schedule=retained['schedule'], evaluator_path=retained.get('evaluator_path'))
             if receipt_choice is not None:
                 _write_receipt_preference(home, receipt_choice)
+            if capabilities is not None:
+                path = state/'instance.json'
+                before = path.read_bytes()
+                current = json.loads(before)
+                current['hermes_capabilities'] = capabilities
+                setup._atomic_hermes_config_write(path, before, _json(current).encode())
             _select_state_environment(state)
             print(f'Existing private instance retained: {state}')
             print(f'Use protagine --instance {str(state)!r} start, then status.')
@@ -717,7 +779,7 @@ def run(root_dir=None, args=None):
             if noninteractive or ask('Another memory provider is selected. Replace only its selection and retain its files? [y/N]', 'N').lower() not in {'y', 'yes'}:
                 raise ValueError('Existing provider retained; choose another --hermes-home or explicitly request --replace-memory-provider')
             replace_provider = True
-        python = selected_python or _interpreter(getattr(args, 'hermes_python', None))
+        python = selected_python or _installation_interpreter(args)
         resources = _adapter_resources(getattr(args, 'adapter_wheel', None))
         _preflight_outbox(home, resources)
         binding = _adapter_binding(python, resources)
@@ -760,6 +822,8 @@ def run(root_dir=None, args=None):
         native_reviews = bool(getattr(args, 'native_reviews', False))
         if not noninteractive and not native_reviews:
             native_reviews = ask('Enable bounded read-only operational reviews? [y/N]', 'N').lower() in {'y','yes'}
+        capabilities = _attachment_capabilities(python, config, local_work=local_work,
+            native_goals=native_goals, native_reviews=native_reviews)
         from .setup_skill_reviews import choices as review_choices
         skill_review = review_choices(args, ask)
         ordinary_skill_review = skill_review['enabled'] is True
@@ -864,6 +928,7 @@ def run(root_dir=None, args=None):
                 'agent_preferences': agent_preferences,
                 'adapter_sha256': hashlib.sha256(b''.join(name.encode()+resources[name] for name in sorted(resources))).hexdigest(),
                 'adapter_binding': binding,
+                'hermes_capabilities': capabilities,
                 'profile': 'local', 'status': 'configured_not_behaviorally_verified'}
             _private_write(staged/'instance.json', _json(manifest))
             # Prepare the existing config path with the canonical provider helper.
@@ -973,6 +1038,7 @@ def run(root_dir=None, args=None):
             describe(goal_details)
         print(f'Start: protagine --instance {str(state)!r} start --detach')
         print(f'Status: protagine --instance {str(state)!r} status')
+        print(f'Gateway: protagine --instance {str(state)!r} hermes run gateway run')
         print('No existing Hermes process was restarted. Begin a new session to load the adapter.')
         if getattr(args, 'start', False) or (not noninteractive and ask('Start this sidecar now? [Y/n]', 'Y').lower() in {'y','yes'}):
             result = subprocess.run([sys.executable, '-m', 'protagine', '--instance', str(state), 'start', '--detach'], timeout=60)

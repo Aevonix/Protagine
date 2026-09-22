@@ -94,7 +94,10 @@ def describe(request):
             return request
         rows = request[key]
         if not any(isinstance(row, dict) and row.get('role') in {'system', 'developer'}
-                   and row.get('content') == _NO_NEW_TOOLS for row in rows):
+                   and isinstance(row.get('content'), str)
+                   and _NO_NEW_TOOLS in row['content'] for row in rows):
             # The original native system/SOUL and the current input stay intact.
-            result[key] = [{'role': 'system', 'content': _NO_NEW_TOOLS}, *rows]
+            role = ('developer' if rows and isinstance(rows[0], dict)
+                    and rows[0].get('role') == 'developer' else 'system')
+            result[key] = [{'role': role, 'content': _NO_NEW_TOOLS}, *rows]
     return result

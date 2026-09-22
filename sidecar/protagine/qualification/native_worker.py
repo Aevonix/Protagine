@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+import traceback
 
 
 def tool_evidence(response, files, state):
@@ -107,6 +108,8 @@ def main(prepare=None):
                 result['tool_evidence'] = tool_evidence(response, request['inputs']['files'], state)
         except BaseException as exc:
             result.update(stage='interrupted' if stop.is_set() else 'error', error_type=type(exc).__name__)
+            # Owned qualification state only; public exporters never copy this.
+            result['private_error_traceback'] = ''.join(traceback.format_exception(exc))[-8192:]
         finally:
             if agent is not None:
                 try:

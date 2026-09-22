@@ -85,7 +85,6 @@ from protagine.api.schemas.host import (
     ExtractionRequest,
     ExtractionResponse,
     ExtractedEntityResponse,
-    GoalCreateRequest,
     GoalListResponse,
     GoalResponse,
     GoalUpdateRequest,
@@ -110,6 +109,8 @@ from protagine.api.schemas.host import (
     MemoryReadResponse,
     MemorySearchRequest,
     MemorySearchResponse,
+    MemoryRecentRequest,
+    MemoryRecentResponse,
     RerankRequest,
     RerankResponse,
     RerankResult,
@@ -620,6 +621,7 @@ async def list_models() -> ModelListResponse:
 # ---------------------------------------------------------------------------
 
 _TEMPORAL_HEALTH_POLICIES = frozenset({"enforce", "advisory"})
+_INDEX_HEALTH_TIMEOUT_SECONDS = 5.0
 
 
 def _temporal_health_policy() -> str:
@@ -643,8 +645,6 @@ async def health() -> HostHealthResponse:
     caps = supported_capabilities()
     notes: dict[str, str] = {}
     embed_model = ""
-    stored_models: list[str] = []
-    model_mismatch = False
 
     # the sidecar's own open-file limit (doctor reads this; a low limit makes
     # LanceDB vector recall fail under load — see check_server_fd_limit)
@@ -677,7 +677,7 @@ async def health() -> HostHealthResponse:
     else:
         notes["reasoning"] = "ReasoningLoop not wired — /reasoning/turn returns 501"
     if _goals_store is not None:
-        notes["goals"] = "GoalEngine wired"
+        notes["goals"] = "Goal records available"
     if _contacts_store is not None:
         notes["contacts"] = "ContactsStore wired"
     if _briefings_engine is not None:
@@ -695,24 +695,22 @@ async def health() -> HostHealthResponse:
             embed_model = _embedder._provider._config.model_id
         embed_note = f"EmbeddingPipeline wired (model={embed_model})"
 
-        # Check for model mismatch. A probe that itself crashes is a
-        # degradation, never a silent pass — health must not report green
-        # because the check that would have caught the problem threw.
+        # Managed generation identity governs semantic reads/writes. Verify it
+        # and a bounded physical read; per-row legacy metadata discovery is an
+        # explicit audit, not a prerequisite for every readiness request.
         try:
             from protagine.vector import get_store
             store = get_store()
-            if store is not None:
-                stored_models = await store.get_stored_models()
-                if stored_models and embed_model and embed_model not in stored_models:
-                    model_mismatch = True
-                    embed_note += f" [WARNING: stored models {stored_models} differ from current {embed_model}]"
-                elif len(stored_models) > 1:
-                    model_mismatch = True
-                    embed_note += f" [WARNING: multiple stored models: {stored_models}]"
+            if store is None:
+                raise RuntimeError("Managed vector store is unavailable")
+            await asyncio.wait_for(
+                store.check_index_health(_embedder.index_identity),
+                timeout=_INDEX_HEALTH_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             embed_degraded = True
-            embed_note += f" [model-check failed: {exc}]"
-            logger.warning("embed model mismatch probe failed: %s", exc)
+            embed_note += f" [index-check failed: {type(exc).__name__}: {exc}]"
+            logger.warning("embedding index health probe failed: %s", type(exc).__name__)
 
         # Check embedder health
         try:
@@ -758,15 +756,6 @@ async def health() -> HostHealthResponse:
             )
         else:
             notes["agent_bridge"] = "AgentBridge wired (not started)"
-    if _initiative_executor is not None:
-        if getattr(_initiative_executor, "is_running", False):
-            s = getattr(_initiative_executor, "stats", {})
-            notes["executor"] = (
-                f"Executor running (done={s.get('initiatives_completed', 0)}, "
-                f"fail={s.get('initiatives_failed', 0)}, tokens={s.get('total_tokens', 0)})"
-            )
-        else:
-            notes["executor"] = "Executor wired (not started)"
     if _session_store is not None:
         notes["sessions"] = "InMemorySessionStore wired"
     if _task_queue is not None:
@@ -797,7 +786,7 @@ async def health() -> HostHealthResponse:
         notes["world_model_backend"] = f"{backend_type} connected"
 
     health_status = "ok"
-    if model_mismatch or embed_degraded or memory_backend_down:
+    if embed_degraded or memory_backend_down:
         health_status = "degraded"
     if (
         _commitment_store is not None
@@ -1286,6 +1275,27 @@ async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySe
             "code": "memory_backend_unavailable",
             "message": "Canonical memory could not be read or selected",
         }) from None
+
+
+@router.post('/memory/recent', response_model=MemoryRecentResponse)
+async def memory_recent(body: MemoryRecentRequest, request: Request) -> MemoryRecentResponse:
+    """Read the caller's latest recorded conversation without semantic ranking."""
+    person = resolve_request_person(request, claimed_person_id=body.person_id)
+    _p8_viewer_for_request(request, person)
+    from protagine.turns import get_turn_idempotency_ledger
+    from protagine.memory.recent import read_recent
+    def load_recent():
+        ledger = get_turn_idempotency_ledger(get_state_dir())
+        return read_recent(ledger, contact_id=person,
+            session_id=body.session_id, platform=body.platform, limit=body.limit,
+            comms_log=_comms_log)
+    try:
+        return MemoryRecentResponse(**await asyncio.to_thread(load_recent))
+    except Exception as exc:
+        logger.warning('Recent canonical conversation unavailable (%s)', type(exc).__name__)
+        raise HTTPException(status_code=503, detail={
+            'code': 'memory_backend_unavailable',
+            'message': 'Recent canonical conversation could not be read'}) from None
 
 
 @router.post("/memory/embed", response_model=MemoryEmbedResponse)
@@ -3426,7 +3436,8 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
     person = resolve_request_person(request, claimed_person_id=body.contact_id) or body.contact_id
     from protagine.turns import get_turn_idempotency_ledger
     try:
-        result = get_turn_idempotency_ledger(get_state_dir()).erase_sources(
+        ledger = get_turn_idempotency_ledger(get_state_dir())
+        result = await asyncio.to_thread(ledger.erase_sources,
             contact_id=person, turn_ids=body.source_ids,
             old_text=body.old_text, session_id=body.session_id,
         )
@@ -3599,6 +3610,7 @@ async def _ingest_turn_idempotently(
                     for message in body.checkpoint_messages],
                 occurred_at=(body.context.metadata or {}).get("occurred_at"),
                 timezone_name=body.context.timezone,
+                channel_id=body.context.channel_id,
             )
         except ValueError as exc:
             from protagine.turns.idempotency import SourceErased
@@ -3896,10 +3908,6 @@ async def _process_turn_sync(
     body.context.channel_id = await _ensure_channel_id(
         body.context, identity=body.identity,
     )
-    # Keep the channel registry alive from real traffic: first sighting
-    # auto-registers, every turn refreshes last_seen_at (channel health).
-    _observe_channel(body.context.channel_id)
-
     # ── Attribution chokepoint (docs/RELATIONSHIPS.md) ──────────────────
     # Resolve WHO said this server-side. A supplied sender overrides the
     # client's contact_id (which goes stale in group sessions); a senderless
@@ -3949,6 +3957,13 @@ async def _process_turn_sync(
     except Exception:
         logger.debug("participant attribution failed; keeping client contact",
                      exc_info=True)
+    if not source_body.context.channel_id and _resolved_human_sender and body.sender is not None:
+        # A stale claimed contact can have another platform's primary handle.
+        # The resolved sender establishes the fallback conversation platform;
+        # explicit conversation keys (including derived work) stay unchanged.
+        body.context.channel_id = f'{body.sender.platform.strip().lower()}:{body.context.contact_id}'
+    # Observe only the final attributed channel, never a stale fallback.
+    _observe_channel(body.context.channel_id)
     _is_system_turn = body.context.contact_id == "system"
 
     # Persist complete attributed messages before derived graph/mining effects.
@@ -3972,6 +3987,7 @@ async def _process_turn_sync(
                 occurred_at=(body.context.metadata or {}).get("occurred_at"),
                 timezone_name=body.context.timezone,
                 derive_claims=not getattr(getattr(request, 'state', None), 'task_instruction_only', False),
+                channel_id=body.context.channel_id,
             )
         except SourceErased:
             return TurnSyncResponse(accepted=False, continuity_updated=False, skipped_reason="source_erased")
@@ -4722,58 +4738,9 @@ async def events_replay(
 
 _goals_store = None
 
-def set_goals_engine(engine) -> None:
+def set_goals_store(store) -> None:
     global _goals_store
-    _goals_store = engine
-
-
-@router.post("/goals", response_model=GoalResponse, deprecated=True)
-async def create_goal(body: GoalCreateRequest) -> GoalResponse:
-    """Create a legacy goal only outside live native cognition.
-
-    Historical goal records remain readable and updatable in every mode. This
-    request does not carry the current owner/session/turn acceptance required
-    to adopt work into the native path.
-    """
-    from protagine.cognition.goal_spine import cognition_spine_exclusive
-
-    if cognition_spine_exclusive():
-        raise HTTPException(status_code=409, detail={
-            "reason": "legacy_goal_creation_unavailable",
-            "next_action": (
-                "For a local draft, use /v1/host/commitments/local-draft through "
-                "the current owner session with an explicit acceptance turn "
-                "and source paths. Other work requires its current supported "
-                "acceptance flow; a legacy goal cannot supply that authority."
-            ),
-        })
-    if _goals_store is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    try:
-        goal = _goals_store.propose_goal(
-            title=body.title,
-            description=body.description or "",
-        )
-        # Auto-accept goals created via API
-        goal = _goals_store.accept_goal(goal.goal_id)
-        goal = _goals_store.activate_goal(goal.goal_id)
-        return GoalResponse(
-            id=goal.goal_id,
-            title=goal.title,
-            description=goal.description,
-            status=goal.status.value if hasattr(goal.status, "value") else str(goal.status),
-            priority=goal.priority.name.lower() if hasattr(goal.priority, "name") else str(goal.priority),
-            progress=goal.progress_pct,
-            parent_goal_id=goal.parent_goal_id,
-            person_id=None,
-            created_at=str(goal.created_at) if goal.created_at else None,
-            updated_at=str(goal.updated_at) if goal.updated_at else None,
-            dispatch_unavailable=goal.context.get('dispatch_unavailable'),
-            completion_basis=goal.context.get('completion_basis'),
-        )
-    except Exception as exc:
-        logger.warning("create_goal failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+    _goals_store = store
 
 
 @router.get("/goals", response_model=GoalListResponse)
@@ -11006,7 +10973,6 @@ _session_store = None
 _task_queue = None
 _session_report_store = None
 _agent_bridge = None
-_initiative_executor = None
 
 def set_autonomy_loop(loop) -> None:
     global _autonomy_loop
@@ -11016,11 +10982,6 @@ def set_autonomy_loop(loop) -> None:
 def set_agent_bridge(bridge) -> None:
     global _agent_bridge
     _agent_bridge = bridge
-
-
-def set_initiative_executor(executor) -> None:
-    global _initiative_executor
-    _initiative_executor = executor
 
 
 _scheduler = None
@@ -11168,21 +11129,6 @@ async def bridge_status() -> dict:
         "running": getattr(_agent_bridge, "is_running", False),
         "wired": True,
         "stats": getattr(_agent_bridge, "stats", {}),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Initiative Executor status
-# ---------------------------------------------------------------------------
-
-@router.get("/executor/status")
-async def executor_status() -> dict:
-    if _initiative_executor is None:
-        return {"running": False, "wired": False}
-    return {
-        "running": getattr(_initiative_executor, "is_running", False),
-        "wired": True,
-        "stats": getattr(_initiative_executor, "stats", {}),
     }
 
 

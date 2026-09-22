@@ -24,14 +24,8 @@ def relevant_skills(store: Optional[SkillStore], situation: str,
         ov = signature_overlap(sig, s.situation_signature)
         if domain and s.domain == (domain or "").lower():
             ov += 0.05
-        # Track-record weighting: skills that historically informed winning
-        # runs rank up, losers rank down. Laplace prior keeps a fresh skill
-        # neutral (factor 1.0); the executor's outcome attribution feeds
-        # wins/losses, so use changes future retrieval.
-        wins = int(getattr(s, "wins", 0) or 0)
-        losses = int(getattr(s, "losses", 0) or 0)
-        win_rate = (wins + 1.0) / (wins + losses + 2.0)
-        ov *= 0.75 + 0.5 * win_rate
+        # Runtime termination did not verify a procedure's quality. Relevance
+        # alone selects these candidates; native evaluations retain evidence.
         if ov >= _MIN_OVERLAP:
             scored.append((ov, s))
     scored.sort(key=lambda t: t[0], reverse=True)
@@ -49,7 +43,7 @@ def format_block(skills: List[Skill], strategy_note: str = "") -> str:
     Empty string when there is nothing to say."""
     lines: List[str] = []
     if skills:
-        lines.append("## Relevant past procedures (learned from your own prior work)")
+        lines.append("## Relevant past procedures (unverified candidates; check against current evidence)")
         for s in skills:
             lines.append(f"- {s.title} -- applies when: {s.situation}")
             for i, step in enumerate(s.steps, 1):
@@ -57,6 +51,6 @@ def format_block(skills: List[Skill], strategy_note: str = "") -> str:
             for g in s.gotchas:
                 lines.append(f"    ! gotcha: {g}")
     if (strategy_note or "").strip():
-        lines.append("## Lessons from past failures in this domain")
+        lines.append("## Lessons from past failures in this domain (historical notes, not verified causes)")
         lines.append(strategy_note.strip())
     return "\n".join(lines)

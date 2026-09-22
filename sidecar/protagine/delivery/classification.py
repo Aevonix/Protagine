@@ -8,8 +8,9 @@ Splits initiative *types* into two disjoint routing classes:
   can compose and send them in its own voice, under the delivery rate limiter
   and approval gates.
 * **internal** -- everything else (self-maintenance, health, research
-  bookkeeping, data quality, capability gaps...). These are processed in-place
-  by the sidecar's own execution backend and never messaged to a person.
+  bookkeeping, data quality, capability gaps...). Registered reviews can be
+  claimed by the native host. Unsupported work remains a visible proposal;
+  this classification does not authorize execution or a message to a person.
 
 The reach-out set is a small, conservative default and is fully overridable
 from the environment so a deployment can widen or narrow it without a code

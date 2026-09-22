@@ -1,5 +1,119 @@
 # Changelog
 
+## v1.9.0 - consolidate execution and qualify runtime contracts
+
+Remove the duplicate no-host initiative executor and its startup, preset and
+status surfaces. Hermes keeps ownership of registered reviews and accepted
+work. Unsupported initiatives remain proposals. An offline reconciliation
+command preserves terminal records and prevents automatic replay of unfinished
+retired-executor work.
+
+Historical procedure win/loss counters are archived once in the existing skill
+database and reset. Retrieval and retention no longer treat runtime completion
+as proof that a procedure worked. Native evaluation receipts remain separate.
+See [migration details](docs/EXECUTOR-RETIREMENT.md).
+
+Attachment checks actual Hermes capabilities in an offline disposable profile.
+Stock 0.21.3 lacks required core contracts. The candidate now ships versioned
+patches applied to exact official source in a separate runtime, with file hashes,
+original attribution and native regression tests. No fork or upstream acceptance
+is required. `protagine init --prepare-hermes` prepares this runtime; `protagine
+hermes prepare`, `check` and `run` expose preparation, inspection and the selected
+instance launcher. Existing services are switched through their normal lifecycle.
+Unknown upstream revisions require a newly qualified patchset and leave the active
+runtime in place. These commands are new in 1.9.0.
+
+Release CI applies patches from the built wheel to official Hermes and runs the
+complete adapter suite and isolated native patch regressions. The initial bundle
+passed all five capability groups, 358 native tests plus 10 subtests and 18
+installed-adapter memory, reminder, task and review checks. The daily latest-stable
+job reports compatibility gaps without changing a deployment.
+
+Release CI builds, qualifies and publishes the same wheel, source and container
+artifacts. Installed checks include dependency consistency and the standalone
+hostworker contract. A constraints snapshot and focused lint/type checks make
+the release environment reproducible.
+
+A completed paired evaluation can contain failed tasks. Its CLI now reports
+execution success separately from model quality, preventing campaign tools from
+mistaking a valid negative result for a failed evaluation.
+
+Native Hermes owner-memory blocks are removed from guest and unresolved
+participants' outgoing requests, including summary calls. Owner files are
+unchanged. A real model-swap demo caught this boundary defect and verified the
+repair alongside corrected recall and continuation of an existing task.
+
+The candidate preserves chronological conversation reads and exact observation
+retries already used by the reference deployment. Embedding health checks verify
+the active index's full identity, vector width and bounded storage reads. Routine
+readiness no longer scans every memory record; errors and timeouts still report
+degraded health. Exhaustive model-label discovery remains available for audits.
+
+Remove the duplicate goal planner, conversation-synthesis writer, unused tier
+learner and retired compatibility helpers. Existing goal records, named model
+roles and configured fallbacks remain. Snoozing repeatedly no longer abandons
+a goal. Graph baseline reads and updates use their actual queries.
+
+Recent-memory reads run outside the request event loop. Channel indexing
+normalizes accepted platform names. Hermes preparation verifies the full source
+tree before reuse, and launch checks the instance's required feature groups.
+The concurrency probe rejects serialized callbacks. Native CI retains the built
+release wheels. Benchmark requests pass credentials through stdin without
+persisting the request payload; general CLI help does not require POSIX locks.
+
+An optional [shared inference capacity](docs/INFERENCE-POOL.md) boundary admits
+OpenAI-compatible requests from native Hermes, Protagine and other clients
+through one proxy. It holds excess requests outside model servers, balances
+qualified replicas by estimated work and reserves request and token capacity
+for configured traffic classes. Endpoints and limits are deployment
+configuration. Existing callers are not switched to it.
+
+Components: `protagine` 1.9.0, `protagine-hermes` 1.9.0 and
+`protagine-hostworker` 0.3.1. This release does not establish an overall
+performance advantage over Hermes or completed autonomous self-improvement.
+
+## v1.8.7-hermes - support strict chat instruction layouts
+
+The Hermes adapter now sends consecutive plain instruction blocks as one
+leading message. This fixes Qwen templates rejecting Protagine requests with
+multiple system messages or work instructions after the conversation. The
+change applies to any compatible chat-completion endpoint, without a model-name
+override, serving-template edit or Hermes core patch.
+
+Instruction text, user and tool content, stored history and participant scopes
+are preserved. Native summary calls use the same layout, and the memory check
+cache records the final outgoing request. Structured provider content, distinct
+system/developer roles, Responses and Anthropic layouts keep their existing shape.
+
+Real Qwen validation completed eight Protagine turns without the previous
+template error. Owner-authorized tool access and contact recall passed. The six
+semantic-recall trials still expose separate retrieval, output-contract and
+grounding failures; compatibility is not a model-quality qualification.
+
+This updates `protagine-hermes` to 1.8.7. The sidecar remains 1.8.6 and hostworker
+0.3.0. Upgrade the adapter in the Hermes environment and restart that gateway
+to load it.
+
+## v1.8.7.post1 - acknowledge retried execution observations
+
+Exact retries of an accepted execution observation now return a duplicate
+acknowledgement without reopening completed work or extending its lease. The
+sidecar-only update preserves the existing execution schema and adapter.
+
+## v1.8.7 - read recent canonical conversations
+
+Adds participant-scoped `POST /v1/host/memory/recent` for bounded chronological
+conversation reads by platform. Selection uses recorded occurrence time and
+canonical source revisions, preserving user/assistant attribution, corrections
+and erasure checks without semantic ranking or a model call. Indexed channel
+locators cover new turns; reviewed history and verified source-linked
+communications locate existing sources without exposing unlinked summaries.
+
+The response carries source and annotation receipts plus explicit coverage for
+missing metadata, omitted corrections and result/content limits. Only the
+sidecar advances to 1.8.7; the unchanged Hermes adapter remains 1.8.6 and
+hostworker remains 0.3.0.
+
 ## v1.8.6 - diagnose retained model responses
 
 Hermes response observations now retain stop reasons, text/tool/reasoning counts

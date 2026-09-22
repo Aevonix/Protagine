@@ -134,12 +134,12 @@ async def test_observation_sync_jobs_tagged_not_memorized():
 
 
 @pytest.mark.asyncio
-async def test_goal_progress_propagates():
+async def test_queue_result_does_not_mutate_retained_goal_records():
     goals = MagicMock()
     job = _job(output={"goal_id": "g1", "subtask_id": "s1"})
     loop, _ = _loop([job], goals=goals)
     await loop._phase_job_writeback()
-    goals.on_job_completed.assert_called_once_with(job.result)
+    goals.on_job_completed.assert_not_called()
 
 
 @pytest.mark.asyncio

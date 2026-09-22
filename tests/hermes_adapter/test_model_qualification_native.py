@@ -17,7 +17,7 @@ from protagine.qualification.records import read
 
 
 @contextmanager
-def endpoint(*, blocked=False, unavailable=False, respond=None):
+def endpoint(*, blocked=False, unavailable=False, respond=None, returned_model='native-fixture'):
     entered, release = threading.Event(), threading.Event()
     requests = []
 
@@ -54,7 +54,7 @@ def endpoint(*, blocked=False, unavailable=False, respond=None):
                     self.send_header('Content-Type', 'text/event-stream')
                     self.end_headers()
                     chunk = {'id': 'native-controlled', 'object': 'chat.completion.chunk',
-                        'created': 1, 'model': 'native-fixture', 'choices': [{'index': 0,
+                        'created': 1, 'model': returned_model, 'choices': [{'index': 0,
                         'delta': {**message, **({'tool_calls': [dict(call, index=index)
                             for index, call in enumerate(message['tool_calls'])]} if message.get('tool_calls') else {})},
                         'finish_reason': None}]}
@@ -64,7 +64,7 @@ def endpoint(*, blocked=False, unavailable=False, respond=None):
                     self.wfile.flush()
                     return
                 self.reply({'id': 'native-controlled', 'object': 'chat.completion', 'created': 1,
-                    'model': 'native-fixture', 'choices': [{'index': 0,
+                    'model': returned_model, 'choices': [{'index': 0,
                     'message': message,
                     'finish_reason': finish}],
                     'usage': {'prompt_tokens': 40, 'completion_tokens': 10, 'total_tokens': 50}})

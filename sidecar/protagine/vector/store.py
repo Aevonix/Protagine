@@ -7,6 +7,7 @@ operations degrade gracefully when the store is not initialized.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -487,23 +488,53 @@ class VectorStore:
         return df.to_dict(orient="records")
 
     async def get_stored_models(self) -> list[str]:
-        """Return unique model_id values across all collections."""
+        """Inspect model metadata without materializing text or vector payloads."""
         models: set[str] = set()
+        db = (await self._generation_db(self.catalog.active())
+              if self.catalog is not None else self._db)
+        existing = set(await db.table_names())
         for col in Collection:
-            try:
-                rows = await self.scan_all(col)
-                for row in rows:
-                    meta_str = row.get("metadata", "{}")
+            if col.value not in existing:
+                continue
+            table = await db.open_table(col.value)
+            batches = await table.query().select(["metadata"]).to_batches(max_batch_length=1024)
+            async for batch in batches:
+                for meta_str in batch.column("metadata").to_pylist():
                     try:
                         meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
                     except (json.JSONDecodeError, TypeError):
                         meta = {}
-                    model_id = meta.get("model_id", "")
-                    if model_id:
+                    model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
+                    if isinstance(model_id, str) and model_id:
                         models.add(model_id)
-            except Exception:
-                pass
         return sorted(models)
+
+    async def check_index_health(self, expected_identity) -> None:
+        """Check managed provenance and bounded reads of the active index.
+
+        Per-row model labels are legacy annotations, not the managed generation's
+        embedding identity. Exhaustive discovery remains available separately.
+        """
+        from protagine.vector.indexes import EmbeddingIdentity, IncompatibleIndex
+
+        if self.catalog is None or self.identity != expected_identity:
+            raise IncompatibleIndex("Embedding pipeline and managed index identity differ")
+        active = self.catalog.read_generation(expected_identity)
+        if (active["status"] != "ready" or active["identity"] is None
+                or EmbeddingIdentity(**active["identity"]) != expected_identity):
+            raise IncompatibleIndex("Active embedding generation is not verified and ready")
+        db = await self._generation_db(active)
+        existing = set(await db.table_names())
+        collections = [col for col in Collection if col.value in existing]
+        if not collections:
+            raise IncompatibleIndex("Active embedding generation has no readable collections")
+        for col in collections:
+            table = await db.open_table(col.value)
+            schema = await table.schema()
+            if schema.field("vector").type.list_size != expected_identity.dimensions:
+                raise IncompatibleIndex("Active vector width differs from its embedding identity")
+            # Exercise actual storage without streaming all metadata or vectors.
+            await table.query().select(["id"]).limit(1).to_list()
 
     async def close(self) -> None:
         """Release database resources."""
@@ -515,19 +546,35 @@ class VectorStore:
         if self.catalog is None:
             return 0
         selected = {'turn:' + value for value in turn_ids}
+        if not selected:
+            return 0
+
+        def erased_ids(batch, collection):
+            # Arrow conversion, JSON parsing and per-source SQLite checks can
+            # dominate a large scan. Each connection is opened and used by
+            # this worker; none is passed across threads.
+            matched = []
+            for row in batch.to_pylist():
+                meta = json.loads(row['metadata'] or '{}')
+                if meta.get('source_uri') in selected and self.catalog.source_erased(meta):
+                    self.catalog.delete(collection.value, row['id'])
+                    matched.append(row['id'])
+            return matched
+
         deleted = set()
-        for generation in self.catalog.generations():
+        for generation in await asyncio.to_thread(self.catalog.generations):
             db = await self._generation_db(generation)
             names = await db.table_names()
             for collection in Collection:
                 if collection.value not in names:
                     continue
                 table = await db.open_table(collection.value)
-                rows = await table.query().select(['id', 'metadata']).to_list()
-                for row in rows:
-                    meta = json.loads(row['metadata'] or '{}')
-                    if meta.get('source_uri') in selected and self.catalog.source_erased(meta):
-                        self.catalog.delete(collection.value, row['id'])
-                        await table.delete('id = ' + self._quoted(row['id']))
-                        deleted.add((collection.value, row['id']))
+                batches = await table.query().select(['id', 'metadata']).to_batches(max_batch_length=1024)
+                async for batch in batches:
+                    matched = await asyncio.to_thread(erased_ids, batch, collection)
+                    if matched:
+                        # The reader retains its snapshot as each bounded
+                        # deletion commits. Later batches must still be read.
+                        await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
+                        deleted.update((collection.value, value) for value in matched)
         return len(deleted)

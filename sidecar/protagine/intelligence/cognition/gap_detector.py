@@ -1,6 +1,9 @@
 """Gap detection for cognitive performance."""
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .performance_index import CPIComponent, CognitivePerformanceIndex
 from enum import Enum
 from datetime import datetime
 

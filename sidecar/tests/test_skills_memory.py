@@ -119,7 +119,6 @@ def test_cap_evicts_lowest_score():
     store = SkillStore()
     keeper = Skill(title="high value", situation="alpha beta gamma",
                    confidence=0.9)
-    keeper.wins = 5
     store.add(keeper)
     for i in range(4):
         store.add(Skill(title=f"low value {i}",

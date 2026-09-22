@@ -10,7 +10,7 @@ from protagine.util import autonomy_preset as ap
 
 _MANAGED = [
     "PROTAGINE_AUTONOMY_PRESET",
-    "PROTAGINE_EXECUTOR_ENABLED", "PROTAGINE_COGNITION_ENABLED",
+    "PROTAGINE_COGNITION_ENABLED",
     "PROTAGINE_INTROSPECT_ENABLED", "PROTAGINE_THINKING_MODE",
     "PROTAGINE_PROJECTS_MODE", "PROTAGINE_BELIEFS_MODE",
     "PROTAGINE_WORLD_POPULATE_MODE", "PROTAGINE_WORLD_LLM_EXTRACT",
@@ -34,7 +34,7 @@ class TestResolution:
     def test_fallback_when_nothing_set(self):
         assert ap.resolve("PROTAGINE_PROJECTS_MODE",
                           ("off", "shadow", "live"), "shadow") == "shadow"
-        assert ap.resolve_bool("PROTAGINE_EXECUTOR_ENABLED", False) is False
+        assert ap.resolve_bool("PROTAGINE_COGNITION_ENABLED", False) is False
 
     def test_preset_fills_unset(self, monkeypatch):
         monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "calibration")
@@ -42,7 +42,7 @@ class TestResolution:
                           ("off", "shadow", "live"), "shadow") == "shadow"
         assert ap.resolve("PROTAGINE_CONNECTORS_MODE",
                           ("off", "shadow", "live"), "off") == "shadow"
-        assert ap.resolve_bool("PROTAGINE_EXECUTOR_ENABLED", False) is True
+        assert ap.resolve_bool("PROTAGINE_COGNITION_ENABLED", False) is True
 
     def test_explicit_env_beats_preset(self, monkeypatch):
         monkeypatch.setenv("PROTAGINE_AUTONOMY_PRESET", "autonomous")

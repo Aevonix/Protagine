@@ -15,8 +15,11 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING
+
+from protagine.intelligence.graph.queries import GET_BASELINE, UPDATE_BASELINE
 
 try:
     from neo4j import AsyncGraphDatabase, AsyncDriver

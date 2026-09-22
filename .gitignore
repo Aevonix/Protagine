@@ -24,4 +24,5 @@ sidecar.pid
 *.db-wal
 
 # Local distribution build trees
+/build/
 hostworker/build/

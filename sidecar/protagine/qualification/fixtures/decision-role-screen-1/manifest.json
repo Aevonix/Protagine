@@ -1,0 +1,65 @@
+{
+  "dataset_id": "decision-role-screen-1",
+  "version": "decision-role-screen-1",
+  "frozen_on": "2026-09-21",
+  "status": "frozen-before-inference",
+  "source": {
+    "kind": "ai_authored_synthetic",
+    "publisher": "Aevonix",
+    "license": "MIT",
+    "description": "AI-authored synthetic cases with explicit evidence rationales; no candidate outputs used as labels; no independent human review. No owner data or production conversations."
+  },
+  "counts": {
+    "base": 24,
+    "perturbation": 8,
+    "overflow": 2,
+    "total": 34
+  },
+  "base_families": {
+    "memory_usefulness": 8,
+    "retrieval_need": 8,
+    "evidence_completion": 8
+  },
+  "files": {
+    "scenarios.json": {
+      "bytes": 88152,
+      "sha256": "1e5f603409063bccf3d563c3a3324437dc004045aea81ff72b95d5ac98afc729"
+    }
+  },
+  "input_contract": {
+    "model_fields": [
+      "state",
+      "question",
+      "evidence_question"
+    ],
+    "host_only_fields": [
+      "expected_label",
+      "expected_evidence_label",
+      "evidence_ids",
+      "evidence_options",
+      "relevant_ids",
+      "rationale",
+      "overflow",
+      "perturbation",
+      "group_id",
+      "family",
+      "kind",
+      "id",
+      "evidence_rationale"
+    ],
+    "question_protocol": "Two independently scored typed-choice questions over the same packet: a decision and a concrete source-identification question. Evidence labels map to exact synthetic source IDs; they do not purport to identify the full logical proof of a classification.",
+    "base_budget": "Target complete serialized state plus each question below 512 tokens; enforce actual selected-tokenizer accounting before dispatch. No silent truncation.",
+    "overflow_policy": "Use the actual endpoint budget; require rejection/explicit abstention before truncation, or complete-input correct answers. No universal context limit."
+  },
+  "limitations": [
+    "AI-authored labels with explicit rationales; no candidate outputs used as labels and no independent human review.",
+    "Authored synthetic screening; not a hidden holdout, native-agent workflow or proof of downstream benefit.",
+    "Twenty-four independent case designs. Perturbations share their parent group and are not independent examples.",
+    "Tiny family counts cannot establish reliable calibration or generalization; keep failures and missing responses visible.",
+    "The evidence menu tests selection among declared source sets, not autonomous citation generation.",
+    "Protected correction and forgetting labels do not grant the classifier control of deterministic memory rules.",
+    "Read-only static decisions do not execute retrieval, erase memories, deliver messages or authenticate participants.",
+    "Overflow cases test admission and abstention; exclude them from ordinary decision-accuracy denominators.",
+    "No candidate-specific examples, probability thresholds, tuning or model results informed this freeze."
+  ]
+}

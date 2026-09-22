@@ -7,19 +7,20 @@ concrete information with future value. The owner does not need to invoke the
 memory tool by name. The reason explains why the result is useful; it is not a
 replacement for its contents.
 
-After eligible completed calls appear in the current request, the adapter adds
-a short request-only hint with their exact call IDs, tool names and bounded
-execution-argument previews. Calls using the same tool can be distinguished by
-what they actually requested. A truncated preview is explicitly marked; check
-the original call when the preview is insufficient. It appears
-only when the retention tool is directly available or explicitly listed in the
-native deferred catalog with its describe/call bridge. This also makes IDs
-readable when a model's chat template omits API call metadata. The hint lists at
-most eight candidates, newest first, within 2,048 characters including the hint
-wrapper; it contains no tool
-result text and does not say anything was saved. It asks the agent to select
-durable findings and skip incidental output. With no eligible calls or no
-available retention tool, the hint is removed. Tool choice remains unchanged.
+Retention is optional. Finish the requested work before considering separate
+preservation work; reading files does not require saving each result. Ordinary
+user/assistant turns already use the existing source-capture path. Retaining an
+original tool result is separate because an assistant's summary is not that
+original evidence.
+
+Eligible completed calls make the explicit retention tool available through the
+normal tool catalog. A neutral reference block supplies exact call IDs and tool
+names because some serving templates hide API call metadata. It contains at
+most eight current references within 2,048 characters, with no argument previews,
+result summaries, recommendation to retain, or instructions to discover tools.
+Existing user input and tool results remain unchanged. The adapter removes its
+older nomination prompt instead of replaying it on each request. No bulk
+ingestion or automatic nomination replaces that prompt.
 
 The adapter checks that the nominated call actually completed in the current
 authorized native turn and that its exact result appeared in the particular
@@ -66,8 +67,18 @@ recovery. `state=pending` or an unconfirmed result does not mean that canonical
 memory has saved the observation. A repeated nomination uses the same source
 and the first nomination's reason and input choice.
 
+Retention checks the current erasure feed before enqueueing, with one five-second
+deadline shared by the local cursor read, HTTP request and erasure application.
+An unavailable or incomplete feed cannot authorize publication. Failures identify
+the stage; unexpected failures also report only their exception type and whether
+they are transient. Inspect readiness before retrying. Unexpected exception
+messages and tracebacks are omitted to avoid exposing credentials or observation
+contents. The existing bounded outbox delivery still reports `pending` until
+persistence is confirmed.
+
 The receipt identifies the selected original by its tool name, call ID, native
-message ID and result hash, alongside the same execution-argument preview. It
+message ID and result hash, alongside a bounded execution-argument preview.
+A truncated preview is marked; it does not replace the retained original. It
 also reports whether input was included. It does not claim that the model's
 reason accurately describes that result. These
 display labels do not change the stored original or its source identity.
@@ -101,6 +112,8 @@ The focused native tests are in `sidecar/tests/test_native_tool_observations.py`
 They need a supported Hermes checkout or installation on `PYTHONPATH` and use
 its middleware/session store without a model. They exercise a harmless local
 fixture command, HTTP ingestion, outbox retries, automatic source recall,
-current-request identity, scoped viewers and erasure. No production service is
+current-request identity, scoped viewers and erasure. They also verify that
+repeated reads create no opportunistic retention instructions, and ordinary
+turn capture still runs without an explicit observation nomination. No production service is
 used. The independent consumer trial additionally measures whether an ordinary
 agent nominates useful evidence, ignores junk and uses its automatic recall.

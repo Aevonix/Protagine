@@ -229,7 +229,7 @@ def test_expired_initial_budget_after_local_read_stays_transient(handoff, monkey
             delayed.append(True)
             # The read completed, but scheduling consumed the remaining
             # initial verification budget before the next request can start.
-            h.clock.advance(.35)
+            h.clock.advance(kwargs['deadline_monotonic'] - h.clock.monotonic() + .1)
         return result
     monkeypatch.setattr(h.module.TurnOutbox, 'erasure_state', checked_then_delayed)
     with h.module.input_provenance.supplied_input(contact_id='owner', session_id='native',

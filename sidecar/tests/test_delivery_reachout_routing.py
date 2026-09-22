@@ -231,24 +231,6 @@ def test_governed_non_owner_missing_verified_dm_never_falls_back_home(
 
 
 # ---------------------------------------------------------------------------
-# Executor default types exclude reach-out
-# ---------------------------------------------------------------------------
-
-def test_executor_defaults_exclude_reachout():
-    from protagine.services.initiative_executor import (
-        _DEFAULT_TYPES, _EXECUTABLE_TYPES,
-    )
-    for t in ("follow_up", "relationship", "introduction",
-              "scheduling", "commitment", "calendar"):
-        assert t not in _DEFAULT_TYPES, f"{t} should not be executor-claimed"
-    # Internal types are still handled.
-    for t in ("system", "capability_gap", "data_quality", "research"):
-        assert t in _DEFAULT_TYPES
-    # And the exclusion is exactly the reach-out set.
-    assert set(_EXECUTABLE_TYPES) - set(_DEFAULT_TYPES) == set(reachout_types())
-
-
-# ---------------------------------------------------------------------------
 # Delivery transport selection (env-driven): gateway vs hermes_webhook
 # ---------------------------------------------------------------------------
 

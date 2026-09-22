@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from protagine.task_queue.models import JobType
 from protagine.task_queue.worker import JobHandler
 from protagine.task_queue.handlers.monitoring import MonitoringHandler
-from protagine.task_queue.handlers.subtask_handler import SubtaskHandler
 from protagine.task_queue.handlers.system_maintenance import SystemMaintenanceHandler
 
 if TYPE_CHECKING:
@@ -28,6 +27,9 @@ def build_default_handlers(
     node_id: str = "",
 ) -> Dict[JobType, JobHandler]:
     """Assemble the default set of job handlers.
+
+    CUSTOM jobs require an explicitly registered handler; goal prose does not
+    select a cloud model or imply permission to execute.
 
     Args:
         router: LLMRouter instance. Required for INFERENCE jobs.
@@ -51,7 +53,6 @@ def build_default_handlers(
     handlers: Dict[JobType, JobHandler] = {
         JobType.MONITORING: MonitoringHandler(),
         JobType.SYSTEM_MAINTENANCE: SystemMaintenanceHandler(),
-        JobType.CUSTOM: SubtaskHandler(),
     }
 
     if router is not None:

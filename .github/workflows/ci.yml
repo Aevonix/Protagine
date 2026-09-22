@@ -5,11 +5,52 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A tagged release runs these same checks on its own commit and publishes
+  # the resulting artifacts, rather than rebuilding after qualification.
+  workflow_call:
 
 jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/release-py312.txt
+      - name: Install qualified build and quality tools
+        run: python -m pip install -c requirements/release-py312.txt '.[test,quality]'
+      - name: Check fatal errors and the hostworker contract types
+        run: |
+          python -m ruff check sidecar/protagine plugins/hermes-plugin/ops/protagine-doctor.py scripts/qualify_artifacts.py hostworker/protagine_hostworker tests/hermes_adapter/conftest.py tests/hermes_adapter/test_sidecar_distribution.py
+          python -m mypy
+      - name: Build distributions from source archives
+        run: |
+          python -m build --no-isolation --outdir dist .
+          python -m build --no-isolation --outdir dist ./sidecar
+          python -m build --no-isolation --outdir dist ./hostworker
+          python -m twine check dist/*
+      - name: Qualify installed artifacts and record resolved dependencies
+        run: |
+          python scripts/qualify_artifacts.py --dist dist --constraints requirements/release-py312.txt --output artifact-qualification
+          python -m pip list --format=json > artifact-qualification/build-packages.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: artifact-qualification
+          path: artifact-qualification/
+          if-no-files-found: warn
+
   hermes-adapter-partition:
     name: hermes-adapter (${{ matrix.group }})
     runs-on: ubuntu-latest
+    needs: artifacts
     strategy:
       fail-fast: false
       matrix:
@@ -19,15 +60,19 @@ jobs:
       PROTAGINE_TEST_HERMES_PATH: ${{ github.workspace }}/.qualification/hermes
       HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
       PROTAGINE_HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
+      PROTAGINE_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
       - uses: actions/checkout@v6
         with:
-          # Explicit qualification build; latest unmodified upstream is checked
-          # separately by hermes-upstream.yml. See the compatibility note.
-          repository: Kurcide/hermes-agent
-          ref: 0a9fa9747c3bb9721404c81e3f8c65e84b0389f0
-          path: .qualification/hermes
+          # Same official source + packaged patches used by guided installation.
+          repository: NousResearch/hermes-agent
+          ref: 345cd2b057a452236de401d3534b8502a7465e8d
+          path: .qualification/hermes-official
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -36,12 +81,35 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             sidecar/pyproject.toml
-            .qualification/hermes/pyproject.toml
+            .qualification/hermes-official/pyproject.toml
+      - name: Apply the built distribution's versioned Hermes patches
+        run: |
+          python -m pip install --no-deps dist/protagine-*.whl
+          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions > hermes-patches.json
       - name: Install adapter and pinned native runtime
         run: |
-          python -m pip install -e ".[test,native-memory]"
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, sys
+          adapter, = Path('dist').glob('protagine_hermes-*.whl')
+          sidecar, = Path('dist').glob('protagine-*.whl')
+          subprocess.run([sys.executable, '-m', 'pip', 'install',
+              str(adapter) + '[test,native-memory]', str(sidecar) + '[lancedb,video]',
+              'pytest-asyncio>=0.23'], check=True)
+          PY
           python -m pip install -e ./.qualification/hermes
-          python -m pip install './sidecar[lancedb,video]' 'pytest-asyncio>=0.23'
+          python - <<'PY'
+          import importlib.metadata as metadata, json
+          from pathlib import Path
+          for name, pattern in [('protagine', 'protagine-*.whl'),
+                                ('protagine-hermes', 'protagine_hermes-*.whl')]:
+              wheel, = Path('dist').resolve().glob(pattern)
+              installed = metadata.distribution(name)
+              origin = json.loads(installed.read_text('direct_url.json'))
+              assert origin.get('url') == wheel.as_uri(), (name, 'Release wheel is not installed')
+              assert not origin.get('dir_info', {}).get('editable'), name
+              print(name, installed.version, 'installed from qualified wheel')
+          PY
       - name: Qualify built artifacts and profile isolation
         run: |
           export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
@@ -49,7 +117,8 @@ jobs:
           import json, os, subprocess, sys
           from pathlib import Path
           group = os.environ['QUALIFICATION_GROUP']
-          # Each matrix job has its own checkout, builds and native install.
+          # Each matrix job has its own checkout/native install and uses the
+          # same prepared release artifacts.
           # Include both default pytest filename patterns so new tests cannot
           # silently fall outside the two complementary groups.
           files = sorted(path for path in Path('tests/hermes_adapter').rglob('*.py')
@@ -61,6 +130,11 @@ jobs:
           subprocess.run([sys.executable, '-m', 'pytest', *selected, '-q', '--durations=0',
                           f'--junitxml=hermes-adapter-results-{group}.xml'], check=True)
           PY
+      - name: Require the patched runtime contract
+        if: matrix.group == 'native'
+        run: |
+          python -m protagine.hermes_capabilities --output hermes-capabilities.json --require core --require concurrent_work --require detached_review --require source_reminders --require terminal_handoff
+          python scripts/qualify_hermes_patch_regressions.py --runtime .qualification/hermes --output hermes-patch-regressions
       - name: Require native qualification witnesses
         if: matrix.group == 'native'
         run: |
@@ -93,7 +167,15 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
         run: |
           python -c "from hermes_state import SessionDB; assert all(callable(getattr(SessionDB, name, None)) for name in ('redact_message_payloads', 'message_redaction_snapshot'))"
-          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_cron_memory_lineage.py sidecar/tests/test_task_execution_judgments.py -q --durations=0 --junitxml=native-memory-results.xml
+          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_native_profile_scope.py sidecar/tests/test_cron_memory_lineage.py sidecar/tests/test_task_execution_judgments.py -q --durations=0 --junitxml=native-memory-results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = [case for case in ET.parse('native-memory-results.xml').iter('testcase')
+                   if case.get('classname', '').endswith('test_native_profile_scope')]
+          assert len(cases) == 41, f'Expected 41 native profile scope witnesses, found {len(cases)}'
+          assert not any(case.find(state) is not None for case in cases
+                         for state in ('skipped', 'failure', 'error')), 'Profile scope witnesses must run and pass'
+          PY
       - name: Retain test inventory and durations
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,6 +184,9 @@ jobs:
           path: |
             hermes-adapter-inventory-*.json
             *-results*.xml
+            hermes-patches.json
+            hermes-capabilities.json
+            hermes-patch-regressions/
 
   # Preserve the existing required check name. Both isolated test jobs must
   # succeed; a failed, cancelled or skipped partition cannot satisfy it.
@@ -142,3 +227,22 @@ jobs:
         with:
           context: ./sidecar
           push: false
+          tags: protagine-qualified:${{ github.sha }}
+          outputs: ${{ startsWith(github.ref, 'refs/tags/') && format('type=docker,dest={0}/sidecar-image.tar', runner.temp) || '' }}
+      - name: Check the release container entry point
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          docker load --input "${RUNNER_TEMP}/sidecar-image.tar"
+          docker run --rm --network none --entrypoint protagine "protagine-qualified:${GITHUB_SHA}" --help
+          docker image inspect "protagine-qualified:${GITHUB_SHA}" --format '{{.Id}}' > "${RUNNER_TEMP}/sidecar-image-id.txt"
+      - name: Retain the qualified release image
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-container
+          path: |
+            ${{ runner.temp }}/sidecar-image.tar
+            ${{ runner.temp }}/sidecar-image-id.txt
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error

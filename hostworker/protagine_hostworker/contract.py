@@ -48,7 +48,7 @@ import hashlib
 import json
 import math
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 class GovernedContractError(ValueError):
@@ -249,7 +249,7 @@ def exact_mapping(
     name: str,
     *,
     allowed: frozenset[str] | set[str],
-    required=(),
+    required: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Return ``dict(value)`` iff keys are strings within/covering the bounds."""
 
@@ -314,7 +314,7 @@ def enum_text(value: Any, name: str, allowed: frozenset[str]) -> str:
 
 
 def bounded_json_value(
-    value: Any, name: str, *, depth: int = 0, counter=None
+    value: Any, name: str, *, depth: int = 0, counter: list[int] | None = None
 ) -> Any:
     """Validate one small JSON value without coercion or exotic numerics."""
 

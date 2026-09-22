@@ -77,16 +77,6 @@ def test_queue_worker_webhook_payload_lifecycle_urls():
     assert inner["api_key_header"] == "X-API-Key"
 
 
-def test_bundled_hermes_job_route_is_retired_and_empty():
-    route = (
-        Path(__file__).resolve().parents[2]
-        / "plugins/hermes-plugin/examples/webhook-config.yaml"
-    ).read_text()
-    assert "routes: {}" in route
-    assert "heartbeat_url" not in route
-    assert "claim_attempt_id" not in route
-
-
 def test_queue_worker_claim_empty_response_is_none(monkeypatch):
     monkeypatch.setattr(queue_worker, "_post", lambda cfg, url, body, timeout=15: {})
     assert queue_worker.claim_job(queue_worker.load_config()) is None

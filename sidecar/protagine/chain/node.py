@@ -16,7 +16,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.chain.local_keys import LocalKeyManager
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,2134 @@
+[
+  {
+    "id": "memory-dock",
+    "group_id": "memory-dock",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "Which loading dock did Orin approve for parcel R?",
+      "current_context": [
+        {
+          "id": "s0",
+          "text": "Parcel Z uses the east reception desk."
+        },
+        {
+          "id": "s1",
+          "text": "Current parcel R record: delivery Tuesday, dock unspecified."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Orin confirmed parcel R must use dock 7, not the visitor gate."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "useful",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "s2 supplies the missing approved dock for the same parcel.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record explicitly reports Orin's dock instruction for parcel R? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e1",
+    "relevant_ids": [
+      "s2"
+    ],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-timezone",
+    "group_id": "memory-timezone",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "Give Lio the meeting time in the timezone they requested.",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "The meeting is at 16:00 UTC; no timezone preference is in current context."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Lio asked that meeting times be stated in UTC."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "useful",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "s2 supplies Lio's requested timezone, absent from current context.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record reports the timezone Lio requested for meeting times? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "relevant_ids": [
+      "s2"
+    ],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-format",
+    "group_id": "memory-format",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "What format did Vera request for the draft?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Vera requested plain text for the draft."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Vera requested the draft in plain text."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "duplicate",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Both records supply the same person, artifact and format.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records each state Vera's requested draft format? Select the set containing both reports. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "relevant_ids": [],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "memory-port",
+    "group_id": "memory-port",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "Which port is the test listener using?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Fresh test-listener status: listening on port 8123."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Earlier test-listener startup: listening on port 8123."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "duplicate",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "The historical value adds nothing to the fresh matching status.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records state the current and earlier test-listener ports? Select both records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e3",
+    "relevant_ids": [],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "memory-namesake",
+    "group_id": "memory-namesake",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "Which paint did that Alex choose?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Target: Alex Chen, project Reed. Paint choice has not been supplied."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Alex Vale chose ochre paint for project Cedar."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "irrelevant",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Different full identities and projects; matching first names do not establish relevance.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records identify the target Alex and the remembered Alex? Select both identity records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e2",
+    "relevant_ids": [],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "memory-empty-search",
+    "group_id": "memory-empty-search",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "What address should we put on parcel K?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Parcel K needs a delivery address; none is currently known."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "A search for parcel K addresses returned no hits. No address was discovered."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "irrelevant",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "An empty search is not evidence of an address and adds no needed fact.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record describes the address-search outcome? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "relevant_ids": [],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-correction",
+    "group_id": "memory-correction",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "When is the review due?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Earlier accepted deadline: Thursday 14:00 UTC."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Owner correction: the review deadline is Friday 14:00 UTC; supersede Thursday."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "protected",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "An explicit correction must be preserved for deterministic supersession.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record contains the instruction revising the review deadline? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e3",
+    "relevant_ids": [
+      "s2"
+    ],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-forget",
+    "group_id": "memory-forget",
+    "family": "memory_usefulness",
+    "kind": "base",
+    "state": {
+      "request": "What pickup phrase should the courier use?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "An earlier source supplied pickup phrase silver kite."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Owner forgetting instruction: remove the pickup phrase silver kite and do not reuse it."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "protected",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "The forgetting marker governs handling even though it removes an apparent answer.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record contains the instruction to remove the pickup phrase? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "relevant_ids": [
+      "s2"
+    ],
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "route-current-status",
+    "group_id": "route-current-status",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Is batch B42 ready to collect now?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Live batch B42 status: ready_to_collect. This is the authoritative current record."
+        },
+        {
+          "id": "s2",
+          "text": "Unrelated archived batch B17 was canceled."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "current",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The current matching record fully answers the request.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record supplies the authoritative current status of batch B42? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-current-policy",
+    "group_id": "route-current-policy",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "What is the current attachment limit?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Approved policy revision 9, effective now: attachment limit 18 MB."
+        },
+        {
+          "id": "s2",
+          "text": "Archive index: attachment policy revisions 1 through 8."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "current",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The question asks current policy and the complete current revision is present.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record supplies the currently approved attachment policy? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e3",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-prior-commitment",
+    "group_id": "route-prior-commitment",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Which supplier did we agree on last week for kiosk W?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "History index: last week kiosk W supplier discussion is archived; decision not included here."
+        },
+        {
+          "id": "s2",
+          "text": "Current weather report: clear."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "history",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The requested past agreement requires opening the identified history.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record locates the archived kiosk W supplier discussion? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-prior-reason",
+    "group_id": "route-prior-reason",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Why did I reject draft J in our previous review?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "History index contains the previous review of draft J; its reasoning is not in this packet."
+        },
+        {
+          "id": "s2",
+          "text": "Current draft J is available, with no rejection rationale."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "history",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "A present draft does not supply the historical reason asked for.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record locates the previous draft J review? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e1",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-budget-change",
+    "group_id": "route-budget-change",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "How much more does current order T cost than the version we approved?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Current order T total: 480 credits."
+        },
+        {
+          "id": "s2",
+          "text": "Archive index: approved earlier order T, with its total; contents require retrieval."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "both",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Comparison needs the present total and the unavailable approved earlier total.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records supply the current order total and locate the earlier approved total? Select both records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e2",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "route-task-change",
+    "group_id": "route-task-change",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Which tasks changed since yesterday's handoff for project Bay?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Current project Bay board: prepare done; inspect running."
+        },
+        {
+          "id": "s2",
+          "text": "History index identifies yesterday's project Bay handoff; prior statuses are not present."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "both",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Identifying changes requires both time points.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records supply the current board and locate yesterday's handoff? Select both records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e1",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "route-ambiguous-person",
+    "group_id": "route-ambiguous-person",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Find Alex's last report.",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Directory: Alex Juno owns report Birch; Alex Sena owns report Alder."
+        },
+        {
+          "id": "s2",
+          "text": "Both reports have recent archived versions. The requester supplied no project or surname."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "clarify",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "Two matching people and reports remain unresolved.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record lists the two Alex identities and their report assignments? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-ambiguous-object",
+    "group_id": "route-ambiguous-object",
+    "family": "retrieval_need",
+    "kind": "base",
+    "state": {
+      "request": "Compare it with what we agreed.",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "This is a new thread with no preceding referent for it."
+        },
+        {
+          "id": "s2",
+          "text": "Available records concern separate venue, catering and equipment agreements."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "clarify",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "Neither the object nor the relevant agreement is identified.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record states whether this thread supplies a referent for it? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e1",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "done-checksum",
+    "group_id": "done-checksum",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Has job Q finished exporting the requested file?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Independent tool receipt for Q: committed file out.csv, checksum 9f2; verification passed."
+        },
+        {
+          "id": "s2",
+          "text": "Earlier assistant note: I will export out.csv."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The matching independent receipt confirms the requested artifact and verification.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the independent export result for job Q? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "done-delivery",
+    "group_id": "done-delivery",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Was notice N delivered to the selected channel?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Assistant draft: notice N prepared."
+        },
+        {
+          "id": "s2",
+          "text": "Channel service receipt for N: delivered; recipient channel matches the request."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "A delivery receipt, not merely a draft, proves the specified effect.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the channel service receipt for notice N? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "done-after-restart",
+    "group_id": "done-after-restart",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Did transfer V finish before the worker restarted?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Durable transfer V ledger: status committed, completed 09:05 UTC."
+        },
+        {
+          "id": "s2",
+          "text": "Worker restart log: 09:06 UTC. No reversal recorded."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "The durable matching completion precedes the restart.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records give transfer V's commitment time and the worker restart time? Select both records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "not-done-failure",
+    "group_id": "not-done-failure",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Did resize job M produce the image?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Worker result for M: failed; input missing; no output written."
+        },
+        {
+          "id": "s2",
+          "text": "Assistant note predating the result: image should be ready soon."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "not_completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The matching result explicitly reports failure without output.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the worker result for resize job M? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e1",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "not-done-running",
+    "group_id": "not-done-running",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Has validation H completed?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Current validation H status: running, 6 of 10 checks executed."
+        },
+        {
+          "id": "s2",
+          "text": "Assistant: I started validation H."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "not_completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "A current running status is affirmative evidence the task is still incomplete.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record gives the current progress of validation H? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "unknown-claim",
+    "group_id": "unknown-claim",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Was package P published?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Assistant message: Package P is published."
+        },
+        {
+          "id": "s2",
+          "text": "No publisher receipt, registry readback or execution ledger is supplied."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "unknown",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "An unsupported assistant assertion and absent independent result do not establish publication.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record describes the availability of independent publication evidence? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "unknown-timeout",
+    "group_id": "unknown-timeout",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Was transaction R committed?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Client request R timed out after submission; server outcome unknown."
+        },
+        {
+          "id": "s2",
+          "text": "No server reconciliation record is available."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "unknown",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "A post-submission timeout is consistent with either commitment or failure.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record describes the client request R result? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "unknown-wrong-job",
+    "group_id": "unknown-wrong-job",
+    "family": "evidence_completion",
+    "kind": "base",
+    "state": {
+      "request": "Has build U9 completed?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Build service receipt: U8 completed successfully."
+        },
+        {
+          "id": "s2",
+          "text": "Requested build U9 has no result record in this packet."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "unknown",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "The success belongs to a different build identifier.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record describes result availability for requested build U9? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "no_sources",
+        "e1": "s1",
+        "e2": "s2",
+        "e3": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [],
+      "e1": [
+        "s1"
+      ],
+      "e2": [
+        "s2"
+      ],
+      "e3": [
+        "s1",
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-dock--source_order",
+    "group_id": "memory-dock",
+    "family": "memory_usefulness",
+    "kind": "perturbation",
+    "state": {
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Orin confirmed parcel R must use dock 7, not the visitor gate."
+        }
+      ],
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Current parcel R record: delivery Tuesday, dock unspecified."
+        },
+        {
+          "id": "s0",
+          "text": "Parcel Z uses the east reception desk."
+        }
+      ],
+      "request": "Which loading dock did Orin approve for parcel R?"
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "useful",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "s2 supplies the missing approved dock for the same parcel. The fixed source_order perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record explicitly reports Orin's dock instruction for parcel R? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e1",
+    "relevant_ids": [
+      "s2"
+    ],
+    "perturbation": {
+      "parent_id": "memory-dock",
+      "type": "source_order"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-timezone--paraphrase",
+    "group_id": "memory-timezone",
+    "family": "memory_usefulness",
+    "kind": "perturbation",
+    "state": {
+      "request": "Which timezone should I use when telling Lio the meeting time?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "The meeting is at 16:00 UTC; no timezone preference is in current context."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Lio asked that meeting times be stated in UTC."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "useful": "Adds needed evidence absent from current context.",
+        "duplicate": "Already supplied by current context.",
+        "irrelevant": "Does not help answer this request.",
+        "protected": "Correction or forgetting marker; preserve for deterministic handling."
+      }
+    },
+    "expected_label": "useful",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "s2 supplies Lio's requested timezone, absent from current context. The fixed paraphrase perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record reports the timezone Lio requested for meeting times? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "relevant_ids": [
+      "s2"
+    ],
+    "perturbation": {
+      "parent_id": "memory-timezone",
+      "type": "paraphrase"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "memory-format--option_order",
+    "group_id": "memory-format",
+    "family": "memory_usefulness",
+    "kind": "perturbation",
+    "state": {
+      "request": "What format did Vera request for the draft?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Vera requested plain text for the draft."
+        }
+      ],
+      "candidate_memories": [
+        {
+          "id": "s2",
+          "text": "Vera requested the draft in plain text."
+        }
+      ]
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify the single candidate for this request. Correction/forgetting markers always need deterministic handling; otherwise compare with current context.",
+      "criteria": {
+        "protected": "Correction or forgetting marker; preserve for deterministic handling.",
+        "irrelevant": "Does not help answer this request.",
+        "duplicate": "Already supplied by current context.",
+        "useful": "Adds needed evidence absent from current context."
+      }
+    },
+    "expected_label": "duplicate",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Both records supply the same person, artifact and format. The fixed option_order perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records each state Vera's requested draft format? Select the set containing both reports. Return only its listed source-set label.",
+      "criteria": {
+        "e3": "s2",
+        "e2": "s1",
+        "e1": "no_sources",
+        "e0": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "relevant_ids": [],
+    "perturbation": {
+      "parent_id": "memory-format",
+      "type": "option_order"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "route-prior-commitment--source_order",
+    "group_id": "route-prior-commitment",
+    "family": "retrieval_need",
+    "kind": "perturbation",
+    "state": {
+      "request": "Which supplier did we agree on last week for kiosk W?",
+      "current_context": [
+        {
+          "id": "s2",
+          "text": "Current weather report: clear."
+        },
+        {
+          "id": "s1",
+          "text": "History index: last week kiosk W supplier discussion is archived; decision not included here."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "history",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The requested past agreement requires opening the identified history. The fixed source_order perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record locates the archived kiosk W supplier discussion? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1, s2",
+        "e1": "no_sources",
+        "e2": "s1",
+        "e3": "s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "perturbation": {
+      "parent_id": "route-prior-commitment",
+      "type": "source_order"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "route-task-change--paraphrase",
+    "group_id": "route-task-change",
+    "family": "retrieval_need",
+    "kind": "perturbation",
+    "state": {
+      "request": "For project Bay, tell me how today's task states differ from yesterday's handoff.",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Current project Bay board: prepare done; inspect running."
+        },
+        {
+          "id": "s2",
+          "text": "History index identifies yesterday's project Bay handoff; prior statuses are not present."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "current": "Current context suffices; no historical lookup.",
+        "history": "Need historical evidence only.",
+        "both": "Need current and historical evidence.",
+        "clarify": "Identify the person, object or task before retrieving."
+      }
+    },
+    "expected_label": "both",
+    "evidence_ids": [
+      "s1",
+      "s2"
+    ],
+    "rationale": "Identifying changes requires both time points. The fixed paraphrase perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which records supply the current board and locate yesterday's handoff? Select both records. Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e1",
+    "perturbation": {
+      "parent_id": "route-task-change",
+      "type": "paraphrase"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1, s2."
+  },
+  {
+    "id": "route-ambiguous-person--option_order",
+    "group_id": "route-ambiguous-person",
+    "family": "retrieval_need",
+    "kind": "perturbation",
+    "state": {
+      "request": "Find Alex's last report.",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Directory: Alex Juno owns report Birch; Alex Sena owns report Alder."
+        },
+        {
+          "id": "s2",
+          "text": "Both reports have recent archived versions. The requester supplied no project or surname."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Choose the evidence route for this request. A prior-history index is not its contents. Clarify only when the target is unidentified.",
+      "criteria": {
+        "clarify": "Identify the person, object or task before retrieving.",
+        "both": "Need current and historical evidence.",
+        "history": "Need historical evidence only.",
+        "current": "Current context suffices; no historical lookup."
+      }
+    },
+    "expected_label": "clarify",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "Two matching people and reports remain unresolved. The fixed option_order perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record lists the two Alex identities and their report assignments? Return only its listed source-set label.",
+      "criteria": {
+        "e3": "s2",
+        "e2": "s1",
+        "e1": "no_sources",
+        "e0": "s1, s2"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1",
+        "s2"
+      ],
+      "e1": [],
+      "e2": [
+        "s1"
+      ],
+      "e3": [
+        "s2"
+      ]
+    },
+    "expected_evidence_label": "e2",
+    "perturbation": {
+      "parent_id": "route-ambiguous-person",
+      "type": "option_order"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "done-checksum--option_order",
+    "group_id": "done-checksum",
+    "family": "evidence_completion",
+    "kind": "perturbation",
+    "state": {
+      "request": "Has job Q finished exporting the requested file?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Independent tool receipt for Q: committed file out.csv, checksum 9f2; verification passed."
+        },
+        {
+          "id": "s2",
+          "text": "Earlier assistant note: I will export out.csv."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "unknown": "No matching independent final result.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "completed": "Matching independent result proves completion."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "The matching independent receipt confirms the requested artifact and verification. The fixed option_order perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the independent export result for job Q? Return only its listed source-set label.",
+      "criteria": {
+        "e3": "no_sources",
+        "e2": "s1, s2",
+        "e1": "s2",
+        "e0": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "perturbation": {
+      "parent_id": "done-checksum",
+      "type": "option_order"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "unknown-claim--distractor",
+    "group_id": "unknown-claim",
+    "family": "evidence_completion",
+    "kind": "perturbation",
+    "state": {
+      "request": "Was package P published?",
+      "current_context": [
+        {
+          "id": "s3",
+          "text": "The meeting-room display brightness was changed to 40 percent."
+        },
+        {
+          "id": "s1",
+          "text": "Assistant message: Package P is published."
+        },
+        {
+          "id": "s2",
+          "text": "No publisher receipt, registry readback or execution ledger is supplied."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "unknown",
+    "evidence_ids": [
+      "s2"
+    ],
+    "rationale": "An unsupported assistant assertion and absent independent result do not establish publication. The fixed distractor perturbation does not change the required evidence or label.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record describes the availability of independent publication evidence? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s2",
+        "e1": "s1, s2",
+        "e2": "no_sources",
+        "e3": "s1"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s2"
+      ],
+      "e1": [
+        "s1",
+        "s2"
+      ],
+      "e2": [],
+      "e3": [
+        "s1"
+      ]
+    },
+    "expected_evidence_label": "e0",
+    "perturbation": {
+      "parent_id": "unknown-claim",
+      "type": "distractor"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s2."
+  },
+  {
+    "id": "overflow-front",
+    "group_id": "overflow-front",
+    "family": "evidence_completion",
+    "kind": "overflow",
+    "state": {
+      "request": "Has job Q finished exporting the requested file?",
+      "current_context": [
+        {
+          "id": "s1",
+          "text": "Independent tool receipt for Q: committed file out.csv, checksum 9f2; verification passed."
+        },
+        {
+          "id": "s3",
+          "text": "Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. "
+        },
+        {
+          "id": "s2",
+          "text": "Earlier assistant note: I will export out.csv."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "Untruncated s1 proves completion. A provider may reject or explicitly abstain before dropping input, or answer correctly after accepting the complete packet. Silent truncation does not pass.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the independent export result for job Q? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "overflow": {
+      "expectation": "reject_or_answer_without_truncation",
+      "design_reference_tokens": 1024,
+      "decisive_evidence_position": "front"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  },
+  {
+    "id": "overflow-back",
+    "group_id": "overflow-back",
+    "family": "evidence_completion",
+    "kind": "overflow",
+    "state": {
+      "request": "Has job Q finished exporting the requested file?",
+      "current_context": [
+        {
+          "id": "s3",
+          "text": "Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. Unrelated crate inventory. "
+        },
+        {
+          "id": "s1",
+          "text": "Independent tool receipt for Q: committed file out.csv, checksum 9f2; verification passed."
+        },
+        {
+          "id": "s2",
+          "text": "Earlier assistant note: I will export out.csv."
+        }
+      ],
+      "candidate_memories": []
+    },
+    "question": {
+      "type": "choice",
+      "instructions": "Classify this task as of the latest record. Agent promises and claims are not independent results; a timeout alone cannot prove failure.",
+      "criteria": {
+        "completed": "Matching independent result proves completion.",
+        "not_completed": "Matching result shows pending work or failure.",
+        "unknown": "No matching independent final result."
+      }
+    },
+    "expected_label": "completed",
+    "evidence_ids": [
+      "s1"
+    ],
+    "rationale": "Untruncated s1 proves completion. A provider may reject or explicitly abstain before dropping input, or answer correctly after accepting the complete packet. Silent truncation does not pass.",
+    "evidence_question": {
+      "type": "choice",
+      "instructions": "Which record is the independent export result for job Q? Return only its listed source-set label.",
+      "criteria": {
+        "e0": "s1",
+        "e1": "s2",
+        "e2": "s1, s2",
+        "e3": "no_sources"
+      }
+    },
+    "evidence_options": {
+      "e0": [
+        "s1"
+      ],
+      "e1": [
+        "s2"
+      ],
+      "e2": [
+        "s1",
+        "s2"
+      ],
+      "e3": []
+    },
+    "expected_evidence_label": "e0",
+    "overflow": {
+      "expectation": "reject_or_answer_without_truncation",
+      "design_reference_tokens": 1024,
+      "decisive_evidence_position": "back"
+    },
+    "evidence_rationale": "The evidence question asks for the named source record(s), independently of the main classification. The exact source set is s1."
+  }
+]

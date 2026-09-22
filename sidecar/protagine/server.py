@@ -15,6 +15,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # CLI and direct service starts use the same selected private instance.
 from protagine.util.instance import load_environment
@@ -37,7 +38,7 @@ from protagine.api.routers.host import (
     set_signal_collector,
     set_embedder,
     set_reranker,
-    set_goals_engine,
+    set_goals_store,
     set_contacts_store,
     set_briefings_engine,
     set_world_store,
@@ -75,7 +76,6 @@ from protagine.api.routers.host import (
     set_telemetry,
     set_session_report_store,
     set_agent_bridge,
-    set_initiative_executor,
     set_situation_spine,
     set_cognition_evidence,
     set_drive_governance,
@@ -1889,18 +1889,16 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("No reranker configured for this tier")
 
-    # --- 7. Goals engine ---
-    goals_engine = None
+    # --- 7. Retained goal records ---
+    goals_store = None
     try:
-        from protagine.goals.engine import GoalEngine
         from protagine.goals.store import GoalStore
         goals_db = os.path.join(state_dir, "protagine-goals.db")
         goals_store = GoalStore(db_path=goals_db)
-        goals_engine = GoalEngine(store=goals_store)
-        set_goals_engine(goals_engine)
-        logger.info("GoalEngine initialized (db=%s)", goals_db)
+        set_goals_store(goals_store)
+        logger.info("Goal records opened (db=%s)", goals_db)
     except Exception as exc:
-        logger.warning("GoalEngine init failed: %s", exc)
+        logger.warning("Goal records unavailable: %s", exc)
 
     # --- 7b. Commitment Store ---
     try:
@@ -2819,9 +2817,9 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.debug("relationship aggregator wiring failed", exc_info=True)
             try:
-                if goals_engine is not None:
-                    from protagine.briefings.aggregators import GoalEngineAggregator
-                    _aggs["goal_aggregator"] = GoalEngineAggregator(goals_engine)
+                if goals_store is not None:
+                    from protagine.briefings.aggregators import GoalStoreAggregator
+                    _aggs["goal_aggregator"] = GoalStoreAggregator(goals_store)
             except Exception:
                 logger.debug("goal aggregator wiring failed", exc_info=True)
             try:
@@ -3263,7 +3261,7 @@ async def lifespan(app: FastAPI):
 
     # Wire SubsystemRegistry into ToolExecutor so Protagine-native tools
     # (memory_search, goals, relationships, etc.) are available to the
-    # initiative executor's reasoning loop.
+    # shared internal reasoning API and project analysis steps.
     if registry is not None and locals().get("tool_executor") is not None:
         te = locals()["tool_executor"]
         from protagine.tools.handlers import TOOL_HANDLERS as _protagine_handlers
@@ -3700,27 +3698,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("ConnectorManager init failed: %s", exc)
 
-    # --- 23. Initiative Executor service (autonomous initiative processing) ---
-    try:
-        from protagine.services.initiative_executor import (
-            create_from_env as _create_executor,
-        )
-        from protagine.api.routers.host import get_directive_manager as _get_dm
-        _executor_svc = _create_executor(
-            initiative_store=locals().get("initiative_store"),
-            reasoning_loop=locals().get("reasoning_loop"),
-            tool_executor=locals().get("tool_executor"),
-            directive_manager=_get_dm(),
-            skill_store=_skills_mem_store,
-            self_model=_sm_for_directed,
-        )
-        if _executor_svc is not None:
-            set_initiative_executor(_executor_svc)
-            asyncio.create_task(_executor_svc.start())
-            logger.info("InitiativeExecutorService auto-start scheduled")
-    except Exception as exc:
-        logger.warning("InitiativeExecutorService init failed (non-fatal): %s", exc)
-
     from protagine.telemetry import TelemetryStore
     telemetry = TelemetryStore()
     telemetry.load()  # restore last_*_at across restart (v0.21.0)
@@ -3734,37 +3711,6 @@ async def lifespan(app: FastAPI):
     session_report_store = SessionReportStore()
     set_session_report_store(session_report_store)
     logger.info("SessionReportStore initialized")
-
-    # Register conversation synthesis task (periodic memory scan for goals)
-    try:
-        if (
-            autonomy_config is not None
-            and getattr(autonomy_config, "conversation_synthesis_enabled", True)
-            and registry is not None
-            and scheduler is not None
-        ):
-            from protagine.autonomy.synthesis import ConversationSynthesisTask
-            _synthesis_task = ConversationSynthesisTask(
-                registry=registry,
-                lookback_hours=getattr(autonomy_config, "conversation_synthesis_lookback_hours", 2.0),
-                min_confidence=getattr(autonomy_config, "conversation_synthesis_min_confidence", 0.35),
-                telemetry=telemetry,
-            )
-            synthesis_interval = int(getattr(autonomy_config, "conversation_synthesis_interval_secs", 1800.0))
-            scheduler.register(
-                "conversation_synthesis",
-                _synthesis_task.run,
-                interval_seconds=synthesis_interval,
-                metadata={"description": "Scan conversation memories for implicit goals and commitments"},
-            )
-            logger.info(
-                "Conversation synthesis registered (lookback=%.1fh, interval=%ds, min_conf=%.2f)",
-                getattr(autonomy_config, "conversation_synthesis_lookback_hours", 2.0),
-                synthesis_interval,
-                getattr(autonomy_config, "conversation_synthesis_min_confidence", 0.35),
-            )
-    except Exception as exc:
-        logger.warning("Conversation synthesis registration failed: %s", exc)
 
     logger.info("Sidecar capabilities: %s", supported_capabilities())
 
@@ -3880,7 +3826,7 @@ async def lifespan(app: FastAPI):
     set_response_gate(None)
     set_signal_collector(None)
     set_embedder(None)
-    set_goals_engine(None)
+    set_goals_store(None)
     set_contacts_store(None)
     set_briefings_engine(None)
     set_world_store(None)
@@ -3949,7 +3895,6 @@ async def lifespan(app: FastAPI):
     set_session_store(None)
     set_session_report_store(None)
     set_agent_bridge(None)
-    set_initiative_executor(None)
     # Stop worker node (before queue so in-flight jobs can drain).
     try:
         worker = getattr(app.state, "worker", None)

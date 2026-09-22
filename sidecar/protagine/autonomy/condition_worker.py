@@ -1,17 +1,6 @@
-"""ConditionWorker — poll external conditions on behalf of blocked goals.
+"""Poll blocked goal records and system conditions from the autonomy loop.
 
-Two consumption paths:
-- The system-level checkers (commitment overdue flip, affect decline,
-  surprise accumulation) run hourly from the autonomy loop's
-  _phase_condition_checks — that is the LIVE path.
-- handle_check_condition remains available as a task-queue handler for
-  per-goal external conditions (email reply, deployment health, ...), but no
-  producer schedules those jobs yet (see docs/KNOWN-GAPS.md); a goal blocked
-  on such a condition is only unblocked when something enqueues the check.
-
-When a per-goal condition is met, the handler calls
-goal_engine.unblock_goal(); when not yet met it returns condition_met=False
-and the caller may reschedule.
+Resolving a condition updates the record; it never dispatches execution.
 """
 
 from __future__ import annotations
@@ -47,8 +36,6 @@ async def handle_check_condition(
       - details: dict (condition-specific)
 
     If condition is not yet met, returns condition_met=False.
-    The loop's _phase_goals() picks up any newly unblocked goals on the
-    next tick.
     """
     goal_id = payload["goal_id"]
     condition_type = payload["condition_type"]

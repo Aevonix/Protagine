@@ -170,13 +170,14 @@ async def test_advisory_policy_does_not_clear_model_degradation(monkeypatch):
 
     class Embedder:
         _provider = Provider()
+        index_identity = object()
 
         async def health_check(self):
             return {"status": "ok"}
 
     class Store:
-        async def get_stored_models(self):
-            return ["stored-model"]
+        async def check_index_health(self, expected_identity):
+            raise ValueError("Stored embedding identity differs from the pipeline")
 
     telemetry = _store(
         last_sync_at=3.0,

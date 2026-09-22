@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -59,7 +58,9 @@ class GoalNotFoundError(KeyError):
 
 
 class GoalStore:
-    """Persistent storage for goals and DAGs (SQLite + optional Neo4j mirror).
+    """Persistent goal records and their saved DAG history.
+
+    This store does not plan, dispatch or execute work.
 
     Thread-safe for single-process use (sqlite3 serialised mode).
     """
@@ -575,9 +576,6 @@ class GoalStore:
 
     # ── Initiative Task Management (v0.7.10) ──────────────────────────────────
 
-    # Maximum snooze count before auto-dismissal
-    MAX_SNOOZE_COUNT = 3
-
     def complete_task(self, goal_id: str) -> bool:
         """Record reported completion, not proof of an external worker's effect."""
         with self._tx() as conn:
@@ -601,10 +599,7 @@ class GoalStore:
             return True
 
     def snooze_task(self, goal_id: str, hours: int, reason: str = "") -> bool:
-        """Snooze a goal/task for N hours.
-
-        If snooze_count >= MAX_SNOOZE_COUNT, auto-dismiss instead.
-        """
+        """Postpone attention without changing the goal's lifecycle state."""
         try:
             goal = self.get_goal(goal_id)
         except GoalNotFoundError:
@@ -613,22 +608,6 @@ class GoalStore:
         hours = min(hours, 168)  # Cap at 1 week
 
         goal.snooze_count += 1
-        if goal.snooze_count >= self.MAX_SNOOZE_COUNT:
-            # Snooze fatigue: auto-dismiss after too many snoozes
-            goal.status = GoalStatus.ABANDONED
-            goal.abandoned_at = datetime.now(timezone.utc)
-            goal.abandon_reason = f"auto_dismissed: snoozed {goal.snooze_count} times"
-            goal.dismissal_reason = "snooze_fatigue"
-            goal.updated_at = datetime.now(timezone.utc)
-            self.save_goal(goal)
-            self.log_transition(
-                goal_id, goal.status, GoalStatus.ABANDONED,
-                trigger="snooze_fatigue",
-                metadata={"snooze_count": goal.snooze_count},
-            )
-            logger.info("Auto-dismissed goal %s after %d snoozes", goal_id, goal.snooze_count)
-            return True
-
         goal.snoozed_until = datetime.now(timezone.utc) + timedelta(hours=hours)
         goal.updated_at = datetime.now(timezone.utc)
         self.save_goal(goal)
@@ -641,6 +620,7 @@ class GoalStore:
         except GoalNotFoundError:
             return False
 
+        previous_status = goal.status
         goal.status = GoalStatus.ABANDONED
         goal.abandoned_at = datetime.now(timezone.utc)
         goal.abandon_reason = reason
@@ -648,7 +628,7 @@ class GoalStore:
         goal.updated_at = datetime.now(timezone.utc)
         self.save_goal(goal)
         self.log_transition(
-            goal_id, goal.status, GoalStatus.ABANDONED,
+            goal_id, previous_status, GoalStatus.ABANDONED,
             trigger="llm_dismiss", metadata={"reason": reason},
         )
         return True
@@ -690,3 +670,77 @@ class GoalStore:
         goal.updated_at = datetime.now(timezone.utc)
         self.save_goal(goal)
         return True
+
+    def abandon_goal(self, goal_id: str, reason: str) -> Goal:
+        """Transition any non-terminal goal to ABANDONED."""
+        goal = self.get_goal(goal_id)
+        if goal.is_terminal():
+            raise ValueError(
+                f"Cannot abandon terminal goal {goal_id} (status={goal.status.value})"
+            )
+
+        old_status = goal.status
+        goal.status = GoalStatus.ABANDONED
+        goal.abandoned_at = datetime.now(timezone.utc)
+        goal.abandon_reason = reason
+        self.save_goal(goal)
+        self.log_transition(goal_id, old_status, GoalStatus.ABANDONED, "user_abandoned",
+                                   metadata={"reason": reason})
+        logger.info("Abandoned goal %s: %s", goal_id, reason)
+
+        return goal
+
+    def block_goal(
+        self,
+        goal_id: str,
+        reason: str,
+        condition_type: Optional[str] = None,
+        condition_params: Optional[Dict[str, Any]] = None,
+    ) -> Goal:
+        """Transition an ACTIVE goal to BLOCKED.
+
+        With a ``condition_type`` (email_reply | deployment_health |
+        delivery_status | api_response | custom), the goal blocks on an
+        EXTERNAL condition: the autonomy loop's condition sweep polls it at
+        the type's cadence and unblocks the goal automatically when it's met.
+        Without one, the goal stays blocked until something explicitly
+        unblocks it."""
+        goal = self.get_goal(goal_id)
+        if goal.status != GoalStatus.ACTIVE:
+            raise ValueError(
+                f"Cannot block goal {goal_id} in state {goal.status.value}"
+            )
+        old_status = goal.status
+        goal.status = GoalStatus.BLOCKED
+        goal.context["block_reason"] = reason
+        if condition_type:
+            goal.context["condition_type"] = condition_type
+            goal.context["condition_params"] = condition_params or {}
+            goal.context.pop("condition_last_check", None)
+        self.save_goal(goal)
+        self.log_transition(goal_id, old_status, GoalStatus.BLOCKED, "blocked",
+                                   metadata={"reason": reason,
+                                             **({"condition_type": condition_type}
+                                                if condition_type else {})})
+        logger.warning("Goal %s blocked: %s%s", goal_id, reason,
+                       f" (awaiting {condition_type})" if condition_type else "")
+        return goal
+
+    def unblock_goal(self, goal_id: str) -> Goal:
+        """Transition a BLOCKED goal back to ACTIVE."""
+        goal = self.get_goal(goal_id)
+        if goal.status != GoalStatus.BLOCKED:
+            raise ValueError(
+                f"Cannot unblock goal {goal_id} in state {goal.status.value}"
+            )
+        old_status = goal.status
+        goal.status = GoalStatus.ACTIVE
+        goal.context.pop("block_reason", None)
+        goal.context.pop("condition_type", None)
+        goal.context.pop("condition_params", None)
+        goal.context.pop("condition_last_check", None)
+        self.save_goal(goal)
+        self.log_transition(goal_id, old_status, GoalStatus.ACTIVE, "unblocked")
+
+        logger.info("Unblocked goal %s", goal_id)
+        return goal

@@ -1,0 +1,259 @@
+{
+  "schema": "protagine.hermes-upstream-failures.v1",
+  "run_date": "2026-09-21",
+  "runtime_revision": "345cd2b057a452236de401d3534b8502a7465e8d",
+  "log_sha256": "09f8ace6538b3d85c259c98a96eb1dadd038c61295cbf6b36d369e6236eebac4",
+  "result": {
+    "failed": 40,
+    "passed": 309,
+    "skipped": 28
+  },
+  "failures": [
+    {
+      "nodeid": "tests/hermes_adapter/test_concurrent_turn_binding.py::test_actual_overlapping_native_starts_preserve_recall_authorized_tools_and_work[owner]",
+      "classification": "fixture_and_missing_overlap",
+      "observed": "Fixture relies on private hook condition; three timeouts and one AttributeError. Separate public callback probe confirms dropped overlap.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_concurrent_turn_binding.py::test_actual_overlapping_native_starts_preserve_recall_authorized_tools_and_work[guest]",
+      "classification": "fixture_and_missing_overlap",
+      "observed": "Fixture relies on private hook condition; three timeouts and one AttributeError. Separate public callback probe confirms dropped overlap.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_concurrent_turn_binding.py::test_actual_overlapping_native_starts_preserve_recall_authorized_tools_and_work[unavailable]",
+      "classification": "fixture_and_missing_overlap",
+      "observed": "Fixture relies on private hook condition; three timeouts and one AttributeError. Separate public callback probe confirms dropped overlap.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_memory_search.py::test_native_search_supplies_excerpts_then_opens_sources_and_rechecks_changes",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_model_qualification_native.py::test_shared_custom_defaults_preserve_actual_native_timeout_resolution[named0-expected0]",
+      "classification": "provider_policy",
+      "observed": "Native resolver rejects requested_provider keyword (TypeError).",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_model_qualification_native.py::test_shared_custom_defaults_preserve_actual_native_timeout_resolution[named1-expected1]",
+      "classification": "provider_policy",
+      "observed": "Native resolver rejects requested_provider keyword (TypeError).",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_model_qualification_native.py::test_shared_custom_defaults_preserve_actual_native_timeout_resolution[named2-expected2]",
+      "classification": "provider_policy",
+      "observed": "Native resolver rejects requested_provider keyword (TypeError).",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_annotation_erasure.py::test_annotation_erasure_owns_creating_call_and_supplied_copy[False-False]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_annotation_erasure.py::test_annotation_erasure_owns_creating_call_and_supplied_copy[True-False]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_annotation_erasure.py::test_annotation_erasure_owns_creating_call_and_supplied_copy[False-True]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_annotation_erasure.py::test_annotation_malformed_receipt_does_not_resubmit_and_shared_call_is_rejected[missing]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_annotation_erasure.py::test_annotation_malformed_receipt_does_not_resubmit_and_shared_call_is_rejected[integer]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_current_work.py::test_actual_native_delegated_return_and_inherited_scope",
+      "classification": "fixture_and_missing_overlap",
+      "observed": "Fixture relies on private hook condition; three timeouts and one AttributeError. Separate public callback probe confirms dropped overlap.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_history_erasure.py::test_native_history_reads_respect_erasure_and_carry_positive_lineage",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_review.py::test_native_post_turn_review_keeps_exact_scope_and_native_skill_history[owner]",
+      "classification": "optional_detached_review",
+      "observed": "Expected completed review observations/skills absent from captured native outcomes; missing observer confirmed separately.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_review.py::test_native_post_turn_review_keeps_exact_scope_and_native_skill_history[owner_failed_read]",
+      "classification": "optional_detached_review",
+      "observed": "Expected completed review observations/skills absent from captured native outcomes; missing observer confirmed separately.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_review.py::test_native_post_turn_review_keeps_exact_scope_and_native_skill_history[guest]",
+      "classification": "optional_detached_review",
+      "observed": "Expected completed review observations/skills absent from captured native outcomes; missing observer confirmed separately.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_review.py::test_native_post_turn_review_keeps_exact_scope_and_native_skill_history[owner_supplied]",
+      "classification": "optional_detached_review",
+      "observed": "Expected completed review observations/skills absent from captured native outcomes; missing observer confirmed separately.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_review.py::test_native_post_turn_review_keeps_exact_scope_and_native_skill_history[owner_erased_history]",
+      "classification": "optional_detached_review",
+      "observed": "Expected completed review observations/skills absent from captured native outcomes; missing observer confirmed separately.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_source_reminders.py::test_native_source_deadline_correction_and_forgetting[]",
+      "classification": "optional_source_reminders",
+      "observed": "ImportError for cron.owned_output.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_source_reminders.py::test_native_source_deadline_correction_and_forgetting[Asia/Tokyo]",
+      "classification": "optional_source_reminders",
+      "observed": "ImportError for cron.owned_output.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-submit]",
+      "classification": "core_task_input_identity",
+      "observed": "Supplied input missing or native session identity mismatch; subprocess exits 70.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[next_turn-submit]",
+      "classification": "core_task_input_identity",
+      "observed": "Supplied input missing or native session identity mismatch; subprocess exits 70.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-handoff]",
+      "classification": "optional_terminal_handoff",
+      "observed": "Timeout; typed terminal-handoff interface absent in separate probe.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-existing_handoff-direct]",
+      "classification": "optional_terminal_handoff",
+      "observed": "Timeout; typed terminal-handoff interface absent in separate probe.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-existing_handoff-deferred]",
+      "classification": "optional_terminal_handoff",
+      "observed": "Timeout; typed terminal-handoff interface absent in separate probe.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-existing_handoff-mixed_direct]",
+      "classification": "optional_terminal_handoff",
+      "observed": "Timeout; typed terminal-handoff interface absent in separate probe.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_native_task_channels.py::test_native_task_channels[tool_batch-existing_handoff-mixed_deferred]",
+      "classification": "optional_terminal_handoff",
+      "observed": "Timeout; typed terminal-handoff interface absent in separate probe.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_annotate.py::test_native_annotation_uses_supplied_revision_and_retries_unknown_ack",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_document_read.py::test_native_document_pages_keep_exact_derivative_and_correction_lineage",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_image_read.py::test_native_owned_pixels_reopen_on_supported_protocols_and_erase",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_read.py::test_native_source_reader_pages_and_reconciles_actual_tool_outputs",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_read.py::test_native_observation_directory_admits_only_returned_refs_and_opens_current_evidence",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_updates.py::test_native_source_update_sdk_and_failure_boundaries[normal]",
+      "classification": "core_erasure",
+      "observed": "Steering carrier survived; erasure pending with zero rows redacted.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_updates.py::test_native_source_update_sdk_and_failure_boundaries[gateway_envelope]",
+      "classification": "core_erasure",
+      "observed": "Steering carrier survived; erasure pending with zero rows redacted.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_video_read.py::test_native_video_frame_reaches_sdk_and_is_withheld_after_correction_and_erasure[False]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_source_video_read.py::test_native_video_frame_reaches_sdk_and_is_withheld_after_correction_and_erasure[True]",
+      "classification": "core_source_identity_erasure",
+      "observed": "Exact-source/annotation call rejected; fixture subsequently lacks confirmation. Separate probe confirms missing identity/erasure interfaces; each witness must pass after port.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_supplied_input_recall.py::test_supplied_native_input_reaches_automatic_recall_and_delegated_source_reader[rotate]",
+      "classification": "core_input_identity_and_fixture",
+      "observed": "Controlled transport sees missing supplied source or non-JSON tool result, then unexpected requests/retries. Full compaction path remains unqualified.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_supplied_input_recall.py::test_supplied_native_input_reaches_automatic_recall_and_delegated_source_reader[compact]",
+      "classification": "core_input_identity_and_fixture",
+      "observed": "Controlled transport sees missing supplied source or non-JSON tool result, then unexpected requests/retries. Full compaction path remains unqualified.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    },
+    {
+      "nodeid": "tests/hermes_adapter/test_supplied_input_recall.py::test_supplied_native_input_reaches_automatic_recall_and_delegated_source_reader[transport_rotate]",
+      "classification": "core_input_identity_and_fixture",
+      "observed": "Controlled transport sees missing supplied source or non-JSON tool result, then unexpected requests/retries. Full compaction path remains unqualified.",
+      "disposition": "retain_required_test; no skip or xfail added"
+    }
+  ],
+  "skipped": {
+    "count": 28,
+    "identities": "unavailable_in_retained_log",
+    "qualification": "unresolved_not_passed",
+    "next_evidence": "Workflow now retains pytest -ra output and JUnit for every future case."
+  }
+}

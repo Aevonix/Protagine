@@ -1,6 +1,7 @@
 """Canonical collection and selection shared by recall and explicit search."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import logging
 import os
@@ -20,6 +21,7 @@ class CollectedSources:
     hits: list[dict[str, Any]] = field(default_factory=list)
     media: list[dict[str, Any]] = field(default_factory=list)
     semantic: str = 'unavailable'
+    lexical_hits: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -45,7 +47,11 @@ async def collect_sources(ledger, *, query: str, contact_id: str, session_id: st
                                 ledger.erasure_watermark(contact_id) if ledger is not None else None)
     if ledger is None or not query.strip():
         return collected
-    collected.hits = ledger.search_sources(query, contact_id=contact_id, session_id=session_id, limit=10)
+    # The ledger opens its own connection; large lexical scans must not hold
+    # the HTTP event loop while transport intake waits for its response.
+    collected.hits = await asyncio.to_thread(
+        ledger.search_sources, query, contact_id=contact_id, session_id=session_id, limit=10)
+    collected.lexical_hits = list(collected.hits)
     try:
         semantic_hits, collected.media = await SourceVectors(
             ledger, vector_store, embedding_pipeline).search(
@@ -117,6 +123,18 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
         quotations = [row for row in quotations if row.get('kind') != 'media_locator'
                       or {key: row['source_read'][key] for key in ('source_id', 'source_version')}
                       in row.get('_annotation_source_refs', [])]
+        # Preserve the independent lexical order through claim/correction
+        # expansion. Only exact, canonically checked message membership can
+        # carry it; another message in the same source does not inherit rank.
+        lexical_ranks = {}
+        for rank, hit in enumerate(collected.lexical_hits):
+            lexical_ranks.setdefault((hit['turn_id'], hit.get('source_message_hash')), rank)
+        for row in beliefs + quotations:
+            ranks = [lexical_ranks[(source_id, message_hash)]
+                     for source_id, hashes in row.get('_annotation_message_hashes', {}).items()
+                     for message_hash in hashes if (source_id, message_hash) in lexical_ranks]
+            if ranks:
+                row['_lexical_rank'] = min(ranks)
     selected, content = await selector.select_context(query, beliefs, quotations, limit=limit,
         current_work_available=current_work_available, max_chars=max_chars)
     if ledger is not None:

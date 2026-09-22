@@ -789,24 +789,14 @@ class AutonomyLoop:
             logger.error("Phase events error: %s", exc, exc_info=True)
 
     async def _phase_goals(self) -> None:
-        """Check goal engine for goals needing attention."""
+        """Count retained records needing attention without dispatching work."""
         goals = self._registry.goals
         if goals is None:
             return
         try:
-            from protagine.cognition.goal_spine import cognition_spine_exclusive
-            legacy_read_only = cognition_spine_exclusive()
             blocked = goals.list_goals(status="blocked", limit=20) if hasattr(goals, "list_goals") else []
             accepted = goals.list_goals(status="accepted", limit=20) if hasattr(goals, "list_goals") else []
             active = goals.list_goals(status="active", limit=50) if hasattr(goals, "list_goals") else []
-
-            for goal in ([] if legacy_read_only else accepted):
-                try:
-                    if hasattr(goals, "activate_goal"):
-                        goals.activate_goal(goal.get("goal_id", goal.get("id")))
-                        logger.info("Loop activated goal: %r", goal.get("title"))
-                except Exception as exc:
-                    logger.warning("Failed to activate goal: %s", exc)
 
             total = len(blocked) + len(accepted) + len(active)
             self.stats.goals_checked += total
@@ -2632,7 +2622,7 @@ class AutonomyLoop:
                                        tags={"memory_synced": "true"})
 
     async def _writeback_one_job(self, job: Any) -> None:
-        """Propagate one finished agent job to goals, memory, initiatives."""
+        """Propagate one finished agent job to memory and initiatives."""
         result = job.result
         payload = job.payload or {}
         reported_succeeded = bool(result is not None and result.succeeded)
@@ -2653,23 +2643,6 @@ class AutonomyLoop:
         succeeded = bool(reported_succeeded and not verification_pending)
         action = payload.get("action_hint") or job.job_type
         description = payload.get("description", "")
-
-        # 1. Goal progress — the engine method existed since v0.13 but
-        # nothing ever called it.
-        goals = self._registry.goals
-        if (goals is not None and result is not None
-                and hasattr(goals, "on_job_completed")):
-            output = result.output or {}
-            if (
-                not verification_pending
-                and output.get("goal_id")
-                and output.get("subtask_id")
-            ):
-                try:
-                    goals.on_job_completed(result)
-                except Exception as exc:
-                    logger.warning("Goal writeback failed for %s: %s",
-                                   job.job_id, exc)
 
         # 2. Episodic memory of what the agent did.
         graph = self._registry.graph
@@ -3681,16 +3654,15 @@ class AutonomyLoop:
                 # RE-LOAD before persisting the poll time: the check may have
                 # awaited a slow network call, and writing the pre-await
                 # object back would clobber any concurrent update (lost
-                # update). GoalEngine exposes no public save; _store is the
-                # sanctioned persistence path here. If the goal is still
+                # update). The store is reloaded before recording cadence. If the goal is still
                 # BLOCKED — condition not met, OR met but unblock failed —
                 # stamp the fresh object so the cadence holds either way (a
                 # failed unblock must not busy-repoll every tick).
-                fresh = goals._store.get_goal(goal.goal_id)
+                fresh = goals.get_goal(goal.goal_id)
                 if fresh is not None and fresh.status == GoalStatus.BLOCKED\
                         and fresh.context.get("condition_type"):
                     fresh.context["condition_last_check"] = now
-                    goals._store.save_goal(fresh)
+                    goals.save_goal(fresh)
             except Exception:
                 logger.debug("condition poll failed for goal %s",
                              getattr(goal, "goal_id", "?"), exc_info=True)

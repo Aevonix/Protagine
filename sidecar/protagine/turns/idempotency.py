@@ -195,6 +195,8 @@ class TurnIdempotencyLedger:
                 initialize_attribution(conn)
                 from protagine.turns.source_annotations import initialize as initialize_annotations
                 initialize_annotations(conn)
+                from protagine.turns.source_channels import initialize as initialize_channels
+                initialize_channels(conn)
             self._initialized = True
 
     def append_source_annotation(self, **kwargs):
@@ -209,6 +211,7 @@ class TurnIdempotencyLedger:
         timezone_name: str | None = None,
         derive_claims: bool = True,
         runtime_judgment: bool = False,
+        channel_id: str | None = None,
     ) -> bool:
         """Atomically retain source JSON and its rebuildable lexical index.
 
@@ -273,10 +276,14 @@ class TurnIdempotencyLedger:
             if not messages:
                 raise SourceErased("source contains only erased messages")
             encoded = json.dumps(messages, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
-            row = conn.execute("SELECT content_sha256 FROM turn_sources WHERE turn_id=?", (turn_id,)).fetchone()
+            row = conn.execute("SELECT content_sha256,contact_id FROM turn_sources WHERE turn_id=?", (turn_id,)).fetchone()
             if row:
                 if row[0] != digest:
                     raise ValueError("source id already contains different evidence")
+                from .source_channels import record as record_channel
+                # Exact replay must preserve a subsequent reviewed owner correction.
+                record_channel(conn, turn_id=turn_id, contact_id=row[1],
+                    messages=messages, occurred_at=occurred_at, channel_id=channel_id)
                 return False
             from protagine.turns.media import normalize_messages, SourceMedia
             messages = normalize_messages(conn, SourceMedia(self).store, turn_id, session_id, messages)
@@ -287,6 +294,9 @@ class TurnIdempotencyLedger:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (turn_id, digest, contact_id, session_id, scope, encoded, occurred_at),
             )
+            from .source_channels import record as record_channel
+            record_channel(conn, turn_id=turn_id, contact_id=contact_id,
+                messages=messages, occurred_at=occurred_at, channel_id=channel_id)
             self._index_messages(conn, turn_id, messages)
             from protagine.beliefs.source_projection import enqueue
             if derive_claims:
@@ -428,7 +438,7 @@ class TurnIdempotencyLedger:
         version = canonical_turn_digest(messages)
         if conn.execute('''SELECT 1 FROM source_erasure_revisions WHERE
                 source_turn_id=? AND source_version=? AND whole_source=?''', (turn_id, version, int(whole))).fetchone():
-            return
+            return False
         hashes = {h for row in conn.execute('''SELECT e.message_hashes_json FROM source_erasures e
             LEFT JOIN source_erasure_revisions r USING(sequence)
             WHERE coalesce(r.source_turn_id,e.turn_id)=?''', (turn_id,))
@@ -446,6 +456,8 @@ class TurnIdempotencyLedger:
             conn.execute('''INSERT INTO source_erasure_revisions
                 (sequence,source_turn_id,source_version,source_scope,whole_source) VALUES (?,?,?,?,?)''',
                 (cursor.lastrowid, turn_id, version, scope, int(whole)))
+            return True
+        return False
 
     def source_references(self, turn_ids, *, contact_id, session_id):
         """Structured selected-source revisions, never parsed from generated prose."""
@@ -541,23 +553,28 @@ class TurnIdempotencyLedger:
                     removed=messages, whole=True)
             affected = []
             remaining_rows = {row['turn_id']: dict(row) for row in rows}
+            # BEGIN IMMEDIATE keeps these rules stable until this transaction
+            # adds a partial-copy erasure. Unchanged rows need no fresh query.
+            rules = self._erasure_rules(conn, contact_id)
+            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
             # Each changed row loses at least one message. This finite closure
             # follows only recorded supplied-source revisions, never topic text.
             changed = True
             while changed:
                 changed = False
                 for row in list(remaining_rows.values()):
-                    rules = self._erasure_rules(conn, contact_id)
-                    erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
                     messages = json.loads(row["messages_json"])
                     retained = [] if row["turn_id"] in erased_ids else self._retained_messages(messages, row["session_id"], rules)
                     if retained == messages:
                         continue
                     changed = True
                     if row['turn_id'] not in erased_ids:
-                        self._append_erasure(conn, turn_id=row['turn_id'], contact_id=contact_id,
+                        appended = self._append_erasure(conn, turn_id=row['turn_id'], contact_id=contact_id,
                             session_id=row['session_id'], scope=row['scope'], messages=messages,
                             removed=[message for message in messages if message not in retained], whole=False)
+                        if appended:
+                            rules = self._erasure_rules(conn, contact_id)
+                            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
                     from protagine.beliefs.source_projection import erase_removed
                     erase_removed(conn, row["turn_id"], row["session_id"], retained)
                     from protagine.turns.media import erase_removed as erase_media

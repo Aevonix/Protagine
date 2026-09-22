@@ -1,43 +1,72 @@
 # Hermes runtime compatibility
 
-Protagine's optional [concurrent background tasks](NATIVE-TASK-CHANNELS.md) require
-healthy overlapping plugin callbacks to retain each invocation's context and
-result. The pinned public CI target is the explicit Hermes build below. The
-installer does not patch an existing Hermes checkout or change its selection.
+Protagine **1.9.0** prepares official Hermes source with a versioned interface
+patchset packaged in its wheel. The installer stages a separate runtime and
+validates it before attachment. A maintained fork and upstream acceptance are
+not prerequisites. The preparation commands are included in Protagine 1.9.0.
 
-## Published qualification target
+## Qualified source and patchset
 
-**SHIPPED source:** [Kurcide/hermes-agent at
-`13dc6c542bb62578d9ab6e14b5632d7920a42e89`](https://github.com/Kurcide/hermes-agent/commit/13dc6c542bb62578d9ab6e14b5632d7920a42e89),
-based on [Hermes v0.21.3, tag `v2026.9.14`,
-`345cd2b057a452236de401d3534b8502a7465e8d`](https://github.com/NousResearch/hermes-agent/commit/345cd2b057a452236de401d3534b8502a7465e8d),
-under the [MIT license](https://github.com/Kurcide/hermes-agent/blob/13dc6c542bb62578d9ab6e14b5632d7920a42e89/LICENSE).
-This is a published compatibility fork, not a claim that the change shipped in
-an upstream Hermes release.
+| Item | Selection |
+| --- | --- |
+| Official source | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) |
+| Base | 0.21.3, tag `v2026.9.14`, commit `345cd2b057a452236de401d3534b8502a7465e8d` |
+| Patchset | `hermes-0.21.3-protagine-1` |
+| License | [MIT](../sidecar/protagine/hermes_patchsets/hermes-0.21.3-protagine-1/LICENSE) |
+| Runtime delta | 39 files; separate 28-file native regression patch |
 
-This build provides a typed `post_tool_batch` hook for explicit terminal
-handoffs. After a single successful tool result is persisted, a trusted plugin
-can return `hermes_cli.tool_completion.FinishTurn` with its actual call ID and
-receipt text. Hermes persists a runtime-authored response and completes the
-foreground turn through normal delivery without another provider call. Mixed
-batches, errors, interruptions and pending steering retain their existing
-control paths. Protagine uses this for the optional `protagine_task` `handoff`
-operation; ordinary `submit` continues to work without the new hook.
+The [manifest](../sidecar/protagine/hermes_patchsets/hermes-0.21.3-protagine-1/manifest.json)
+contains the official revision, patch digests and every changed file's exact
+before/after hash. [Provenance](../sidecar/protagine/hermes_patchsets/hermes-0.21.3-protagine-1/provenance.json)
+preserves original contribution authors and commits. That history is attribution
+and reproduction evidence, not a repository the installer needs to fetch.
 
-The 0.21.3 build retains upstream streaming, summary request construction,
-SQLite connection handling and gateway failure propagation alongside the local
-interfaces. Length-continuation fragments stop accumulating when an accepted
-tool-call/result round begins a new text segment. Pure text continuations still
-join, and transcript/tool evidence remains intact. The gateway's batch lease
-acquisition also binds tokens to the concrete lease required by upstream.
+This first bundle retains the qualified generic interfaces and correctness
+repairs used by Protagine. It is not presented as the smallest possible core-only
+delta. Unrelated WhatsApp recovery, website documentation and agent-specific
+notice routing are excluded. No deployment settings or private data are included.
 
-This build accepts `tools.tool_search.eager`, an optional list of exact tool
-names whose full schemas should remain visible. A name only takes effect when
-that tool is already admitted and available in the session. Other tools retain
-normal discovery, and execution still uses native validation and middleware.
-The native default list is empty. Protagine guided installation and explicit
-adapter refresh append `protagine_task` while preserving existing names and search
-options. For frequent original-source reads, a deployment can additionally select:
+## Interfaces provided
+
+| Area | Behavior |
+| --- | --- |
+| Current-input identity | Request middleware receives the exact persisted current-user row and the separate original admission. Compaction preserves surviving row identity; ambiguous text matches do not invent a source. Durable user rows retain their storage coordinates during history repair. |
+| Owned payload erasure | Selected rows use exact preimages and a message watermark. Native writer leases, FTS updates, replay markers and gateway cache refresh keep cleanup consistent while preserving unrelated rows. |
+| Turn settlement | Native and gateway observers run after their owning persistence and leases settle. They let the existing source/outbox machinery finish pending cleanup and record bounded execution outcomes. |
+| Concurrent caller context | Overlapping calls retain their own context and results. Hermes serializes invocations of the same callback; unload and timeout checks remain in its dispatcher. |
+| Detached review | `on_detached_turn_end` reports execution identity and completion/failure/interruption metadata without ingesting the detached conversation as a new user turn. |
+| Task completion | Typed failures and explicit continuation remain attributable. Delegated children can return to their parent; the actual Kanban worker still completes or blocks its own card. A status is not independent proof of success. |
+| Source reminders | `cron.owned_output` binds retained output to an exact job and execution. Cleanup waits for active senders, removes owned copies and preserves unrelated jobs. |
+| Terminal handoff | After a single successful tool result is persisted, a trusted plugin can return typed `FinishTurn` with its call ID and receipt. Hermes persists and delivers the response without another model call. Mixed batches, errors and pending steering keep their existing paths. |
+| Provider policy | Named custom-provider timeout settings survive transport resolution, including model overrides. These are transport timeouts, not overall task deadlines. |
+| Summary requests | Iteration-limit summaries and their retries pass through the existing request middleware with the active scope. Runtime summary instructions do not become participant evidence. |
+| Runtime correctness | Length-continuation fragments stop at accepted tool boundaries; nonzero kernel exits report failure; detailed health reads the runner's active work; home-channel onboarding respects async-delivery capability. |
+
+These changes do not add a scheduler, memory store or Protagine policy engine to
+Hermes. Native erasure does not retract remote messages or erase backups. The
+[owned-copy contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
+describes the supported retained copies and remaining limits.
+
+The `concurrent_callback_context` probe checks admission and context isolation,
+not simultaneous execution of one callback. Hermes queues healthy overlapping
+calls; it does not promise FIFO ordering or a bounded backlog. Hung callbacks
+remain subject to the existing timeout rules. Plugin globals do not become
+session-local automatically.
+
+The three cases in `tests/hermes_adapter/test_concurrent_turn_binding.py` run
+real overlapping agent starts, wait for the second callback to queue, and check
+recall, authorized tools and work for an owner, guest and unresolved sender.
+`test_native_task_channels.py` separately checks concurrent tasks and cross-channel
+steering. Requiring the second callback to finish while the first is held would
+test a stronger contract than these integrations require.
+
+## Optional configuration
+
+`tools.tool_search.eager` keeps exact, already-admitted tool schemas visible.
+It neither enables missing tools nor bypasses middleware. Protagine setup adds
+`protagine_task` while preserving existing choices. Other tools retain discovery.
+A deployment can select additional frequent tools, measuring request size and
+complete-task latency before expanding the list:
 
 ```yaml
 tools:
@@ -45,248 +74,51 @@ tools:
     eager: [protagine_memory_read_source, protagine_task]
 ```
 
-Merge this into the existing tools configuration. Protagine's installer does not
-replace that configuration or change the Hermes runtime. More direct schemas
-increase the initial request size; measure the full task before adopting a
-larger list. Native tests cover direct and deferred execution, middleware,
-unavailable tools and session scope. Production latency remains a separate
-measurement.
+`agent.image_input_mode: native_if_supported` sends images directly when the
+selected provider/model supports vision. Otherwise it retains the configured
+auxiliary route. Provider identity remains part of capability selection.
+Installation does not select this mode or change existing defaults.
 
-This build also accepts `agent.image_input_mode: native_if_supported`. It uses
-the current provider/model's vision capability to attach the original question
-and image directly, retaining the configured auxiliary vision route for false
-or unknown capabilities. An explicit current provider cannot borrow the default
-provider's capability merely because they share a model alias. The existing
-`auto`, `native` and `text` modes and default remain unchanged. This is an
-opt-in native interface; Protagine does not select it during installation.
-Media ownership and generated-caption provenance keep their existing paths.
-The current-turn source descriptor validates the exact addressed native row
-against Hermes's stored image-to-text projection. This keeps image-bearing
-turns eligible for canonical capture without replacing their original payload
-or treating transcript image markers as pixel identity.
-Native boundary tests establish routing and original-byte preservation, not
-visual factual accuracy or production latency.
+`memory.refresh_on_turn: true` refreshes native MEMORY.md and USER.md snapshots
+when they change, and once after session reconstruction. Unchanged turns retain
+the prompt cache; tool iterations retain their prepared prompt. Changed prompt
+bytes can cost a prefix-cache miss. The default is false. Protagine's per-turn
+source recollection is separate from this native curated-memory setting.
 
-The callback change adapts [upstream PR #104763](https://github.com/NousResearch/hermes-agent/pull/104763),
-specifically [source commit
-`b9c112c83b60b91e918341cbb587a6a913d9d9eb`](https://github.com/NousResearch/hermes-agent/commit/b9c112c83b60b91e918341cbb587a6a913d9d9eb).
-The callback correction preserves the original contributor's authorship and
-retains two synchronized regression tests.
+## Installation and updates
 
-| Runtime file | Purpose |
-| --- | --- |
-| `hermes_cli/plugins.py` | Track the running callback and dispatch generation. |
-| `hermes_cli/plugins_dispatch.py` | Serialize healthy overlap while retaining each caller's copied context; retain timeout suppression for a stuck callback. |
-| `hermes_cli/plugins_ledger.py` | Invalidate waiting dispatches during unload without treating a still-running worker as finished. |
+```bash
+protagine init --prepare-hermes
+```
 
-The unmodified base can skip a callback because another invocation is still
-running. For concurrent Protagine turns, that can omit source binding or lifecycle
-observations. The correction operates within Hermes' existing callback
-dispatcher. It adds no Protagine service, model route, deployment setting or new
-plugin registration API.
+For separate preparation, use `protagine hermes prepare`; supply `--source` for a
+clean official checkout or omit it to fetch the qualified official revision.
+`--destination` selects a new candidate directory. Use `protagine hermes check`
+to inspect its patches and native capabilities. [Local setup](LOCAL-HERMES-SETUP.md)
+explains attachment, existing services and the selected-runtime launcher.
 
-The selected build also retains named custom-provider timeout settings after
-Hermes resolves a named endpoint to its generic transport. It uses the existing
-`requested_provider` identity and timeout schema. Per-model settings take
-precedence over the named provider, then the generic provider fallback. Cached
-agents read changed timeout settings on subsequent requests. No initial output
-cap is restored; native truncation recovery keeps its existing increasing
-budgets. These are per-attempt transport settings, not an overall task deadline.
+Preparation checks all preimages before publishing the candidate, verifies all
+postimages and excludes untracked source files. Modified or unsupported source
+is rejected without changing the original installation. A candidate is not a
+live deployment until its interpreter is selected through the deployment's
+normal lifecycle. Protagine does not restart existing gateways during setup.
 
-Hermes 0.21.2 deliberately omits ordinary persistence hooks for detached review
-forks. The compatibility build adds one `on_detached_turn_end` observer in
-`agent/turn_finalizer.py`, registered in `hermes_cli/plugins.py`. Its payload is
-limited to exact execution/parent identifiers, completion/failure/interruption
-flags, exit reason, model and platform. It carries no conversation or output
-content, ignores callback returns, and preserves the native persistence skips.
-The adapter binds review starts through existing synchronous request middleware.
-This small interface replaces reliance on user-turn hooks for detached work;
-it does not add a scheduler, review service or alternative memory store.
-Unmodified upstream 0.21.2 does not provide this completion observer.
+[Release CI](../.github/workflows/ci.yml) uses the official base and patches from
+the built wheel, then runs the complete adapter suite and the native patch
+regressions. Native files run in separate processes as upstream's test contract
+requires. The initial bundle passed all five capability groups, 358 native tests
+plus 10 subtests and 18 installed-adapter memory, reminder, task and review checks.
+The complete release run remains required; these counts are not model benchmarks.
 
-The build also limits the Kanban completion stop gate to the existing
-dispatcher-owned worker context. A delegated child inherits the task
-environment but owns no Kanban card and cannot call the parent completion
-tools. It can now return its findings to the parent. The actual claimed
-worker still must complete or block its own card before ending. The change
-reuses Hermes' existing delegation ContextVar; it adds no setting or hook.
+The [daily latest-stable check](../.github/workflows/hermes-upstream.yml) can test
+an unlisted revision when its exact patch preimages still match. It reports
+conflicting files or runs the native and installed-adapter suites. Installers
+still require a newly qualified bundle. The job never selects an older revision
+silently, applies a patch approximately or updates production.
+Keep the active runtime until the new official source plus its selected patches
+passes qualification and the deployment's observable checks.
 
-The build adds an optional `memory.refresh_on_turn` setting, default false.
-When enabled, Hermes checks its curated MEMORY.md and USER.md snapshots at each
-user turn. Changed rendered memory triggers the existing prompt rebuild.
-Unchanged resident turns retain the cached prompt and do not rerun plugin
-renderers. A reconstructed conversation refreshes once, since its saved prompt
-can contain an older snapshot than the current files. Tool iterations within
-the same turn retain their prepared prompt. This applies to native curated
-files; Protagine's existing per-turn source recollection remains separate.
-
-The native rebuild also refreshes its other prompt sections. Changed bytes can
-cost a prefix-cache miss. The installer does not enable this setting or alter
-an existing deployment. A deployment that needs immediate curated corrections
-can enable it in the selected Hermes profile after selecting this build.
-
-The build also adds selective native payload redaction with exact preimages,
-native writer leases, FTS updates, replay markers and gateway cache eviction.
-The adapter verifies ownership and selects payloads in one read transaction.
-The writer checks that session's message watermark in its mutation transaction,
-so a late appended answer requires a fresh selection before cleanup can finish.
-`on_native_turn_settled` runs after native persistence and lease release;
-`on_gateway_turn_settled` runs after the outer gateway lease release in the
-owning profile. These hooks let an adapter finish a forget requested during a
-turn. The native settled hook also supplies bounded completion/failure flags and
-a native failure category for an observed task generation, including early
-provider failures. The gateway startup recovery path retains its existing saved
-model override. These observations support explicit same-session task resume;
-they do not discover source ownership or create an erasure scheduler.
-Protagine supplies that lineage through its existing source and outbox machinery.
-The adapter's [storage contract](NATIVE-REQUEST-ERASURE.md#native-owned-copy-reconciliation)
-lists the supported copies and remaining limits.
-
-Request middleware receives `native_user_message`, the exact persisted user row
-at Hermes's validated current-turn index, and `original_user_message`, the
-separate original admission. Compression can clone rows and persist an internal
-task wrapper. The adapter uses the native descriptor for storage ownership and
-keeps the original admission for canonical memory. Missing or changed native
-rows produce no descriptor; the request middleware still runs. Post-tool
-compression also updates the current-turn index through Hermes's existing
-reanchor path, as other compression paths already do.
-Live history repair also preserves separate durable user rows. After a crash,
-merging those rows in place discarded the resumed input's storage coordinate.
-Provider requests still use Hermes's existing merge of the API copy when needed.
-
-Source-dependent cron output uses the native `cron.owned_output` interface.
-Mirrored messages and channel/thread seeds retain the job and execution IDs.
-The interface pauses the exact job and removes its retained files, queue payloads
-and errors, then supplies exact message selections to the existing transcript
-writer. A timed-out delivery can still have a live sender; cleanup remains
-pending until it settles. Protagine's [source reminders](SOURCE-REMINDERS.md) use
-this interface with the existing source-ownership ledger. No second scheduler
-or delivery service is added.
-
-The detailed API health response now reads the attached runner's existing active
-work count when available. Its stored lifecycle and platform diagnostics remain
-unchanged. First-contact onboarding also respects the adapter's existing
-`supports_async_delivery` capability: an adapter that cannot send asynchronously
-does not ask the user to configure it as a home channel.
-
-## What is qualified
-
-The cron ownership change passed 33 focused native checks, including real mirror
-and thread persistence, selective erasure, active delivery timeout and queue
-retention. They establish local output ownership, not remote message retraction.
-
-The durable-row repair passed 65 affected native checks, two unchanged private
-crash-resume cases and three unchanged public transported-input cases.
-
-The current-row interface and post-tool index correction passed ten focused
-native checks. Three installed-adapter cases use the actual compression commit
-with controlled summary output: session rotation, a transported task during
-rotation, and in-place compaction. All preserve recalled context, delegated
-results, canonical input references and the real pre-compression checkpoint.
-Separate native-storage cases verify that old and new row ownership survives
-compaction and that partial erasure distinguishes canonical input from its
-native wrapper. These checks use controlled responses, not model-quality scores.
-
-The two existing compatibility changes were reapplied to the 0.21.2 release
-without conflicts. Their affected native suites passed 275 checks in a native-only
-environment. The detached observer then passed 24 focused checks, including
-successful, failed and interrupted endings, retained persistence-hook skips and
-unchanged ordinary turn endings. These are separate run scopes, not a claim that
-the entire upstream test suite ran.
-
-The delegated-stop correction passed 52 focused checks using controlled
-responses and the actual native Kanban store and completion tools. The
-unmodified qualified base fails both delegated-return cases; the correction
-passes them while retaining actual worker completion and blocking. These
-checks establish the runtime stop boundary, not useful model completion.
-
-The curated-memory change passed 153 affected native checks. Two parameterized
-invariants exercise actual file writes, prompt restoration, plugin rendering,
-the native turn prologue and outgoing message assembly. Corrections and deletions
-reach the next turn; unchanged turns do not rebuild; history and task identity
-remain intact. Four correction/restore cases fail on the previous build. These
-checks use controlled requests without inference and do not establish correct
-model interpretation of dates or useful recall in an ordinary conversation.
-
-The following callback and timeout counts describe their earlier qualification;
-the retained behavior is rechecked on the current native candidate above.
-
-The two synchronized core invariants fail on the unmodified base and pass on
-the selected build. They cover distinct sessions retaining their own callback
-results and parallel tools in one session receiving separate policy decisions.
-The existing plugin, ownership-ledger and event-bus checks also passed, for 132
-affected core tests with file retries disabled.
-
-The timeout correction passed 139 focused native tests, including the pinned
-optional Anthropic SDK. Controlled SDK requests also verify distinct foreground
-and background provider policies, cached-agent refresh, separate-process task
-resume and native truncation recovery. These controlled responses establish
-configuration propagation, not model quality or measured timeout expiration.
-
-Protagine's [actual native task fixture](../tests/hermes_adapter/test_native_task_channels.py)
-uses the installed adapter, real gateway, canonical source/contact APIs and
-controlled SDK responses. It holds two task roots while ordinary conversation
-continues, steers and stops one from another owner channel, and verifies that
-the other task completes with its source parents. Late stopped output is not
-retained. The [source checks](../tests/hermes_adapter/test_task_sources.py)
-also distinguish inherited child authority from a fresh owner instruction.
-
-[Pinned CI](../.github/workflows/ci.yml) selects the exact fork commit and sets
-the native runtime path explicitly. It runs the adapter suite once, then checks
-the JUnit report to require the actual concurrent fixture to have run and
-passed. Missing collection and a skipped fixture both fail qualification.
-
-The separate [daily upstream check](../.github/workflows/hermes-upstream.yml)
-continues to select the latest published stable **NousResearch** release and
-run the adapter suite against it. It is a compatibility signal: an incompatible
-release produces a failing run, without changing the pinned runtime or hiding
-the failure behind the fork. A passing run is evidence for review, not an
-automatic production upgrade.
-
-These checks establish controlled runtime integration. They do not establish
-model instruction following, ordinary-use memory quality, physical channel
-delivery, deployment health or child-process cleanup.
-
-## Remaining limits and removal
-
-Healthy callbacks can accumulate waiting time; the change promises neither
-FIFO ordering nor a bounded backlog. A callback recursively invoking itself
-can still wait until timeout. Genuine hung callbacks remain suppressed, and
-abandoned threads are not terminated. Plugin process globals do not become
-session-scoped automatically.
-
-Replace the fork with an unmodified upstream release when all of these hold:
-
-1. Identify the released commit and review its callback admission, timeout and
-   unload behavior. A PR or temporary merge commit alone is not a release.
-2. Run the two core invariants and affected existing suites against that exact
-   unmodified release, retaining the timeout and context checks.
-3. Pass Protagine's actual concurrent task fixture, including separate roots,
-   ordinary conversation, source receipts, steering and targeted interruption.
-4. Update the pinned CI commit and documentation, then select the runtime
-   through the deployment's normal reversible upgrade path.
-
-Also retain or verify the named-provider timeout behavior before removing that
-part of the compatibility build. Replace the detached observer when upstream
-provides an equivalent exact execution-end contract. Provider response hooks and
-final output transforms alone do not establish failed or interrupted completion.
-
-Also retain the delegated-return and actual-worker completion regressions.
-Remove the stop-gate adjustment when an upstream release satisfies both
-using its own dispatcher/delegation ownership boundary.
-
-Remove the curated-memory extension when upstream provides equivalent opt-in
-freshness for resident and restored sessions. Retain its correction, deletion
-and unchanged-prompt checks; avoid restoring unconditional prompt rebuilding.
-
-Keep the regression tests and upstream attribution after removing the fork
-selection. Do not carry an old dispatcher diff over a newer implementation
-without checking whether the upstream behavior already satisfies the contract.
-
-Iteration-limit summaries use the existing `llm_request` middleware after provider
-request construction, including every retry. They retain the active session, task
-and turn identifiers; the runtime summary instruction is not recorded as a new
-participant input. Chat, Anthropic and Responses modes keep their existing
-provider controls. The existing `HERMES_DUMP_REQUESTS` diagnostic setting also
-records the transformed summary request when enabled. This repairs the summary
-path; it does not add middleware to unrelated auxiliary model calls.
+Upstream equivalents let us remove individual patches while retaining their
+regression tests and attribution. Acceptance of our submitted changes is not a
+Phase 1 gate. The [capability contract](HERMES-CAPABILITIES.md) defines the required
+behavior regardless of whether an interface comes from upstream or this bundle.

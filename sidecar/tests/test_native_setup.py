@@ -181,20 +181,72 @@ def isolated_platform_environment(monkeypatch):
         if not key.startswith(('PROTAGINE_', 'PROTAGINE_')) or key == 'PROTAGINE_TEST_HOME'})
 
 
-@pytest.mark.parametrize('version, supported', [
-    ('0.21.0', True), ('0.21.1', True), ('0.21.2', True), ('0.21.3', True),
-    ('0.20.0', False), ('0.22.0', False),
+def _capability_receipt(*, missing=(), version='future-version'):
+    from protagine.hermes_capabilities import SCHEMA, FEATURES
+    return {'schema': SCHEMA, 'runtime': {'version': version, 'revision': 'fixture'},
+            'activation_state': 'not_activated',
+            'capabilities': {name: {'available': name not in missing}
+                             for names in FEATURES.values() for name in names}}
+
+
+@pytest.mark.parametrize('version, missing', [
+    ('0.21.3', ('owned_payload_erasure',)), ('0.21.3', ()), ('future-version', ()),
 ])
-def test_native_interpreter_requires_a_supported_runtime(version, supported, monkeypatch):
-    probe = Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps({'version': version})))
-    monkeypatch.setattr(setup_hermes.subprocess, 'run', probe)
-    if supported:
-        assert setup_hermes._interpreter('/selected/python') == Path('/selected/python')
-    else:
-        with pytest.raises(ValueError, match='Hermes 0.21.0, 0.21.1, 0.21.2, or 0.21.3'):
+def test_native_interpreter_requires_interfaces_not_version(version, missing, monkeypatch):
+    probe = Mock(return_value=_capability_receipt(version=version, missing=missing))
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', probe)
+    if missing:
+        with pytest.raises(ValueError, match='owned_payload_erasure'):
             setup_hermes._interpreter('/selected/python')
-    assert probe.call_args.args[0][:3] == ['/selected/python', '-I', '-c']
-    assert probe.call_args.kwargs['timeout'] == 30
+    else:
+        assert setup_hermes._interpreter('/selected/python') == Path('/selected/python')
+    probe.assert_called_once_with(Path('/selected/python'))
+
+
+def test_optional_capabilities_gate_only_requested_behavior(monkeypatch):
+    probe = Mock(return_value=_capability_receipt(missing=('detached_turn_observer', 'post_tool_batch')))
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', probe)
+    report = setup_hermes._attachment_capabilities('/selected/python', {})
+    assert report['required_features'] == ['core']
+    with pytest.raises(ValueError, match='detached_turn_observer'):
+        setup_hermes._attachment_capabilities('/selected/python', {}, native_reviews=True)
+    with pytest.raises(ValueError, match='detached_turn_observer'):
+        setup_hermes._attachment_capabilities('/selected/python',
+            {'plugins': {'protagine': {'native_reviews': {'enabled': True}}}})
+
+
+def test_background_setup_requires_concurrent_callback_context(monkeypatch):
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt(missing=('concurrent_callback_context',)))
+    with pytest.raises(ValueError, match='concurrent_callback_context'):
+        setup_hermes._attachment_capabilities('/selected/python', {}, native_goals=True)
+
+
+def test_missing_core_never_creates_attachment_or_changes_profile(args, monkeypatch):
+    home = Path(args.hermes_home)
+    home.mkdir()
+    original = b'model: {default: existing-model}\n'
+    (home/'config.yaml').write_bytes(original)
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt(missing=('owned_payload_erasure',)))
+    assert setup.run_init(None, args) == 1
+    assert (home/'config.yaml').read_bytes() == original
+    assert not (home/'protagine').exists()
+    assert not (home/'plugins').exists()
+
+
+def test_missing_optional_feature_preserves_existing_attachment(args, monkeypatch):
+    assert setup.run_init(None, args) == 0
+    home = Path(args.hermes_home)
+    state = home/'protagine'
+    before = {path: path.read_bytes() for path in (home/'config.yaml', state/'instance.json')}
+    retained = json.loads(before[state/'instance.json'])
+    assert retained['hermes_capabilities']['required_features'] == ['core']
+    assert retained['hermes_capabilities']['activation_state'] == 'not_activated'
+    assert retained['adapter_sha256']
+    args.native_reviews = True
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt(missing=('detached_turn_observer',)))
+    assert setup.run_init(None, args) == 1
+    assert all(path.read_bytes() == content for path, content in before.items())
+    assert not (home/'profiles'/'protagine-reviews').exists()
 
 
 def test_guided_setup_selects_one_native_profile_before_reading_configuration(tmp_path, monkeypatch):
@@ -256,6 +308,7 @@ def args(tmp_path, monkeypatch):
     monkeypatch.delenv('PROTAGINE_STATE_DIR', raising=False)
     monkeypatch.delenv('PROTAGINE_SKIP_DOTENV', raising=False)
     monkeypatch.setattr(setup_hermes, '_interpreter', lambda value: Path('/fixture/python'))
+    monkeypatch.setattr(setup_hermes, 'probe_runtime', lambda *a: _capability_receipt())
     monkeypatch.setattr(setup_hermes, '_adapter_binding', lambda *args: {'mode': 'private-directory'})
     monkeypatch.setattr(setup, '_check_port', lambda port: False)
     monkeypatch.setattr(httpx, 'post', lambda *a, **k: httpx.Response(200,
@@ -1244,7 +1297,7 @@ def test_selected_hostname_is_bound_for_runtime_routing(args, monkeypatch, addre
     assert result == 0
     config = json.loads((Path(args.hermes_home)/'protagine/.protagine-llm-config.json').read_text())
     assert config['localHosts'] == ['model.lan']
-    router = LLMRouter(tiers={}, self_learner=object())
+    router = LLMRouter(tiers={})
     router.configure(config)
     assert router.function_config(context={'function_role': 'extraction'}).base_url == args.model_url
 

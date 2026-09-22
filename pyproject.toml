@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protagine-hermes"
-version = "1.8.6"
+version = "1.9.0"
 description = "Native Hermes general and memory adapters for Protagine"
 readme = "docs/HERMES-ADAPTER.md"
 requires-python = ">=3.11,<3.14"
@@ -14,6 +14,7 @@ dependencies = ["httpx>=0.27,<0.29", "httpcore>=1,<2", "typer>=0.12,<1", "PyYAML
 
 [project.optional-dependencies]
 test = ["build>=1.2", "pytest>=8", "setuptools>=77", "wheel"]
+quality = ["ruff>=0.13,<1", "mypy>=1.18,<3", "twine>=6,<8"]
 native-memory = ["nemo-relay>=0.8.3,<0.9"]
 
 [project.urls]
@@ -41,3 +42,18 @@ protagine_memory = ["plugin.yaml", "SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/hermes_adapter"]
+
+# Start with runtime errors, not a repository-wide formatting/style migration.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["hostworker/protagine_hostworker/contract.py"]
+follow_imports = "silent"
+check_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true

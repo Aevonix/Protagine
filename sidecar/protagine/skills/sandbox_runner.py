@@ -25,7 +25,7 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 def _fallback_repr(value: Any) -> Any:

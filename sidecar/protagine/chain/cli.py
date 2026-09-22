@@ -17,7 +17,11 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from protagine.chain.storage import ChainStore
+    from protagine.chain.transactions import ChainState
 
 _DEFAULT_DB = Path.home() / ".protagine" / "chain.db"
 

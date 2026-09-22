@@ -46,7 +46,7 @@ def _runtime(supplied, explicit_python):
         return {'status': 'unavailable', 'error_type': type(exc).__name__, 'python': str(selected) if selected else None}
 
 
-def configuration(path, binding, *, hermes_python=None):
+def configuration(path, binding, *, hermes_python=None, inspect_runtime=True):
     """Read only the selected provider. Never import a deployed home or auth store."""
     raw = Path(path).read_bytes()
     supplied = yaml.safe_load(raw)
@@ -80,7 +80,8 @@ def configuration(path, binding, *, hermes_python=None):
         selected['providers']['custom'] = defaults
     if isinstance(current, dict) and current.get('provider') == binding and 'context_length' in current:
         selected['model']['context_length'] = current['context_length']
-    runtime = _runtime(supplied, hermes_python)
+    runtime = (_runtime(supplied, hermes_python) if inspect_runtime else
+               {'status': 'not_inspected', 'basis': 'container runtime inspected separately'})
     recipe = {'binding': binding, 'declared': {}, 'configured_model': model,
         'config_sha256': hashlib.sha256(raw).hexdigest(), 'selected_config_sha256': digest(selected),
         'boundary': 'native_hermes', 'consumer': 'isolated_native_cli_loop',
@@ -129,7 +130,7 @@ def _environment(state, config):
     return env
 
 
-async def native_cli(inputs, context, *, worker=None):
+async def native_cli(inputs, context, *, worker=None, allow_incomplete_results=False):
     """Cancel only our child; its SIGTERM handler calls its agent's hard_interrupt."""
     state = context.state_dir
     binding, config = context.router.binding, context.router.native_config
@@ -210,9 +211,12 @@ async def native_cli(inputs, context, *, worker=None):
                 clean and observed['process_exited'] and not observed['forced_termination'])
             observed['elapsed_ms'] = round((time.monotonic()-started)*1000, 3)
             context.observe(observed)
-    if proc.returncode != 0 or result.get('stage') != 'returned':
+    incomplete = (allow_incomplete_results and result.get('stage') == 'incomplete'
+                  and proc.returncode == 1 and result.get('worker_stopped') is True)
+    if not incomplete and (proc.returncode != 0 or result.get('stage') != 'returned'):
         raise RuntimeError('Native qualification did not return a completed result')
     return {'output': result.get('output'), 'effects': {'consumer': 'isolated_native_cli_loop',
+        'native_turn_complete': result.get('stage') == 'returned',
         'process_exited': observed['process_exited'], 'worker_stopped': result['worker_stopped'],
         'agent_close_returned': result['agent_close_returned'],
         **result.get('tool_evidence', {})}}

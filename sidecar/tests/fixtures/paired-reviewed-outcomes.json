@@ -1,0 +1,898 @@
+{
+  "base-path-migration-preserves-external-urls": {
+    "invalid_overrides": {
+      "routes.json": {
+        "api": "/arena/api/events",
+        "app": "/arena/play",
+        "docs": "/arena/https://example.invalid/guide"
+      }
+    },
+    "valid": {
+      "routes.json": {
+        "api": "/arena/api/events",
+        "app": "/arena/play",
+        "docs": "https://example.invalid/guide"
+      }
+    }
+  },
+  "binary-capacity-and-decimal-sizes": {
+    "invalid_overrides": {
+      "fit.json": {
+        "capacity_bytes": 2200000000,
+        "excess_bytes": 0,
+        "fits": true,
+        "total_bytes": 2200000000
+      }
+    },
+    "valid": {
+      "fit.json": {
+        "capacity_bytes": 2147483648,
+        "excess_bytes": 52516352,
+        "fits": false,
+        "total_bytes": 2200000000
+      }
+    }
+  },
+  "bounded-selection-with-blocked-work": {
+    "invalid_overrides": {
+      "selection.json": {
+        "selected_ids": [
+          "a",
+          "d"
+        ],
+        "total_cost": 3
+      }
+    },
+    "valid": {
+      "selection.json": {
+        "selected_ids": [
+          "b",
+          "a"
+        ],
+        "total_cost": 5
+      }
+    }
+  },
+  "capability-routing-with-unavailable-endpoint": {
+    "invalid_overrides": {
+      "bindings.json": {
+        "chat_id": "retired",
+        "vision_id": "retired"
+      }
+    },
+    "valid": {
+      "bindings.json": {
+        "chat_id": "chat",
+        "vision_id": "eyes"
+      }
+    }
+  },
+  "claimed-administrator-is-not-a-grant": {
+    "invalid_overrides": {
+      "access-review.json": {
+        "privileged_grant_exists": true,
+        "public_status_allowed": true,
+        "sender_id": "visitor-9"
+      }
+    },
+    "valid": {
+      "access-review.json": {
+        "privileged_grant_exists": false,
+        "public_status_allowed": true,
+        "sender_id": "visitor-9"
+      },
+      "policy.json": {
+        "privileged_ids": [
+          "owner"
+        ],
+        "public_status_allowed": true
+      }
+    }
+  },
+  "commitment-conflict-across-planning-threads": {
+    "invalid_overrides": {
+      "review-slot.json": {
+        "conflict_detected": false,
+        "end": "11:00",
+        "start": "10:40"
+      }
+    },
+    "valid": {
+      "calendar.json": {
+        "fixed": [
+          {
+            "end": "11:00",
+            "id": "meeting",
+            "start": "10:00"
+          }
+        ]
+      },
+      "review-slot.json": {
+        "conflict_detected": true,
+        "end": "11:20",
+        "start": "11:00"
+      }
+    }
+  },
+  "confirmed-alias-versus-shared-display-name": {
+    "invalid_overrides": {
+      "identity-links.json": {
+        "confirmed_alias_contact": "c1",
+        "new_handle_contact": "c1",
+        "possible_contact_ids": [
+          "c1"
+        ]
+      }
+    },
+    "valid": {
+      "identity-links.json": {
+        "confirmed_alias_contact": "c1",
+        "new_handle_contact": null,
+        "possible_contact_ids": [
+          "c2",
+          "c1"
+        ]
+      }
+    }
+  },
+  "consent-does-not-expand-action-scope": {
+    "invalid_overrides": {
+      "scope.json": {
+        "covered_actions": [
+          "read_status",
+          "restart_staging",
+          "restart_production"
+        ],
+        "needs_new_consent": [
+          "buy_capacity"
+        ]
+      }
+    },
+    "valid": {
+      "scope.json": {
+        "covered_actions": [
+          "restart_staging",
+          "read_status"
+        ],
+        "needs_new_consent": [
+          "buy_capacity",
+          "restart_production"
+        ]
+      }
+    }
+  },
+  "correlation-with-confounded-change": {
+    "invalid_overrides": {
+      "assessment.json": {
+        "after_ms": 120,
+        "before_ms": 200,
+        "model_change_caused_improvement": true,
+        "relative_latency_reduction": 0.4
+      }
+    },
+    "valid": {
+      "assessment.json": {
+        "after_ms": 120,
+        "before_ms": 200,
+        "model_change_caused_improvement": null,
+        "relative_latency_reduction": 0.4
+      }
+    }
+  },
+  "cross-language-recurring-preference": {
+    "invalid_overrides": {
+      "reminders.json": {
+        "interval_days": 7,
+        "time": "14:00",
+        "timezone": "UTC",
+        "weekday": "Tuesday"
+      }
+    },
+    "valid": {
+      "reminders.json": {
+        "interval_days": 14,
+        "time": "14:00",
+        "timezone": "UTC",
+        "weekday": "tuesday"
+      }
+    }
+  },
+  "deferred-commitment-becomes-ready": {
+    "invalid_overrides": {
+      "obligation.json": {
+        "summary_prepared": true,
+        "summary_ready_to_prepare": true,
+        "summary_sent": true
+      }
+    },
+    "valid": {
+      "obligation.json": {
+        "summary_prepared": false,
+        "summary_ready_to_prepare": true,
+        "summary_sent": false
+      }
+    }
+  },
+  "dependency-cycle-with-independent-work": {
+    "invalid_overrides": {
+      "blockers.json": {
+        "all_tasks_schedulable": true,
+        "cycle_ids": [],
+        "runnable_now_ids": [
+          "a",
+          "d"
+        ]
+      }
+    },
+    "valid": {
+      "blockers.json": {
+        "all_tasks_schedulable": false,
+        "cycle_ids": [
+          "c",
+          "a",
+          "b"
+        ],
+        "runnable_now_ids": [
+          "d"
+        ]
+      }
+    }
+  },
+  "direct-denial-versus-reported-speech": {
+    "invalid_overrides": {
+      "approval-facts.json": {
+        "ada_reported_approval": true,
+        "approval_confirmed": true,
+        "ben_directly_denied_approval": true
+      }
+    },
+    "valid": {
+      "approval-facts.json": {
+        "ada_reported_approval": true,
+        "approval_confirmed": false,
+        "ben_directly_denied_approval": true
+      }
+    }
+  },
+  "duration-crosses-calendar-midnight": {
+    "invalid_overrides": {
+      "window.json": {
+        "duration_minutes": 120,
+        "end_utc": "2030-06-01T00:30:00Z",
+        "start_utc": "2030-06-01T22:30:00Z"
+      }
+    },
+    "valid": {
+      "window.json": {
+        "duration_minutes": 120,
+        "end_utc": "2030-06-02T00:30:00Z",
+        "start_utc": "2030-06-01T22:30:00Z"
+      }
+    }
+  },
+  "embedding-revision-invalidates-derived-index": {
+    "invalid_overrides": {
+      "reindex.json": {
+        "can_reuse_index": true,
+        "reindex_ids": []
+      }
+    },
+    "valid": {
+      "canonical.json": [
+        {
+          "id": "f2",
+          "text": "The shelf is metal."
+        },
+        {
+          "id": "f1",
+          "text": "The crate is blue."
+        }
+      ],
+      "reindex.json": {
+        "can_reuse_index": false,
+        "reindex_ids": [
+          "f2",
+          "f1"
+        ]
+      }
+    }
+  },
+  "equally-supported-conflict": {
+    "invalid_overrides": {
+      "site-decision.json": {
+        "alternatives": [
+          "east",
+          "west"
+        ],
+        "needs_clarification": false,
+        "selected_site": "east"
+      }
+    },
+    "valid": {
+      "site-decision.json": {
+        "alternatives": [
+          "west",
+          "east"
+        ],
+        "needs_clarification": true,
+        "selected_site": null
+      }
+    }
+  },
+  "event-history-updates-current-counts": {
+    "invalid_overrides": {
+      "equipment.json": {
+        "available_here": 2,
+        "owned": 4,
+        "still_lent": 2
+      }
+    },
+    "valid": {
+      "equipment.json": {
+        "available_here": 2,
+        "owned": 3,
+        "still_lent": 1
+      }
+    }
+  },
+  "file-restoration-after-failed-check": {
+    "invalid_overrides": {
+      "service.json": {
+        "mode": "steady",
+        "workers": 3
+      }
+    },
+    "valid": {
+      "backup.json": {
+        "mode": "steady",
+        "workers": 2
+      },
+      "rollback.json": {
+        "restored_mode": "steady",
+        "restored_workers": 2
+      },
+      "service.json": {
+        "mode": "steady",
+        "workers": 2
+      }
+    }
+  },
+  "forecast-probability-is-not-observed-outcome": {
+    "invalid_overrides": {
+      "forecast.json": {
+        "outcome_observed": true,
+        "pass_probability": 0.7,
+        "passed": true
+      }
+    },
+    "valid": {
+      "forecast.json": {
+        "outcome_observed": false,
+        "pass_probability": 0.7,
+        "passed": null
+      }
+    }
+  },
+  "half-open-observation-window": {
+    "invalid_overrides": {
+      "window.json": {
+        "event_count": 3,
+        "event_ids": [
+          "b",
+          "c",
+          "d"
+        ]
+      }
+    },
+    "valid": {
+      "window.json": {
+        "event_count": 2,
+        "event_ids": [
+          "c",
+          "b"
+        ]
+      }
+    }
+  },
+  "handoff-plan-is-not-worker-completion": {
+    "invalid_overrides": {
+      "progress.json": {
+        "confirmed_complete_ids": [
+          "a",
+          "b",
+          "c"
+        ],
+        "unconfirmed_ids": []
+      }
+    },
+    "valid": {
+      "progress.json": {
+        "confirmed_complete_ids": [
+          "a"
+        ],
+        "unconfirmed_ids": [
+          "c",
+          "b"
+        ]
+      }
+    }
+  },
+  "hypothetical-change-is-not-life-event": {
+    "invalid_overrides": {
+      "residence.json": {
+        "current_city": "Cedar",
+        "move_completed": true
+      }
+    },
+    "valid": {
+      "residence.json": {
+        "current_city": "harbor",
+        "move_completed": false
+      }
+    }
+  },
+  "idempotent-resume-plan": {
+    "invalid_overrides": {
+      "resume.json": {
+        "runnable_ids": [
+          "a",
+          "b",
+          "c"
+        ],
+        "skip_committed_ids": []
+      }
+    },
+    "valid": {
+      "receipts.json": {
+        "a": "committed",
+        "b": "not_started",
+        "c": "failed_before_commit"
+      },
+      "resume.json": {
+        "runnable_ids": [
+          "c",
+          "b"
+        ],
+        "skip_committed_ids": [
+          "a"
+        ]
+      }
+    }
+  },
+  "independent-resources-critical-path": {
+    "invalid_overrides": {
+      "pipeline.json": {
+        "tasks": [
+          {
+            "finish": 2,
+            "id": "A",
+            "start": 0
+          },
+          {
+            "finish": 3,
+            "id": "B",
+            "start": 0
+          },
+          {
+            "finish": 3,
+            "id": "C",
+            "start": 1
+          },
+          {
+            "finish": 4,
+            "id": "D",
+            "start": 3
+          }
+        ]
+      }
+    },
+    "valid": {
+      "pipeline.json": {
+        "tasks": [
+          {
+            "finish": 5,
+            "id": "D",
+            "start": 4
+          },
+          {
+            "finish": 4,
+            "id": "B",
+            "start": 1
+          },
+          {
+            "finish": 4,
+            "id": "C",
+            "start": 2
+          },
+          {
+            "finish": 2,
+            "id": "A",
+            "start": 0
+          }
+        ]
+      }
+    }
+  },
+  "logging-config-removes-sensitive-fields": {
+    "invalid_overrides": {
+      "logging.json": {
+        "enabled": true,
+        "fields": [
+          "timestamp",
+          "event",
+          "message_body",
+          "status"
+        ],
+        "sample_rate": 0.25
+      }
+    },
+    "valid": {
+      "logging.json": {
+        "enabled": true,
+        "fields": [
+          "timestamp",
+          "event",
+          "status"
+        ],
+        "sample_rate": 0.25
+      }
+    }
+  },
+  "missing-observations-are-not-zero": {
+    "invalid_overrides": {
+      "monitoring.json": {
+        "first_window_max": 0,
+        "second_window_max": 0,
+        "second_window_zero_confirmed": true
+      }
+    },
+    "valid": {
+      "monitoring.json": {
+        "first_window_max": 0,
+        "second_window_max": null,
+        "second_window_zero_confirmed": false
+      }
+    }
+  },
+  "nested-config-change-preserves-unrelated-settings": {
+    "invalid_overrides": {
+      "service.json": {
+        "features": [
+          "memory",
+          "voice"
+        ],
+        "server": {
+          "bind": "0.0.0.0",
+          "port": 8080
+        },
+        "tls": {
+          "enabled": false,
+          "minimum": "1.3"
+        }
+      }
+    },
+    "valid": {
+      "service.json": {
+        "features": [
+          "memory",
+          "voice"
+        ],
+        "server": {
+          "bind": "127.0.0.1",
+          "port": 8080
+        },
+        "tls": {
+          "enabled": true,
+          "minimum": "1.3"
+        }
+      }
+    }
+  },
+  "new-shared-limit-invalidates-old-plan": {
+    "invalid_overrides": {
+      "plan.json": {
+        "selected_ids": [
+          "a",
+          "b"
+        ],
+        "total_cost": 9
+      }
+    },
+    "valid": {
+      "plan.json": {
+        "selected_ids": [
+          "a"
+        ],
+        "total_cost": 6
+      },
+      "policy.json": {
+        "budget": 8
+      }
+    }
+  },
+  "observation-time-beats-file-order": {
+    "invalid_overrides": {
+      "latest.json": {
+        "observed_at": "2030-06-01T09:40:00Z",
+        "reading_id": "r2",
+        "temperature": 24,
+        "unit": "C"
+      }
+    },
+    "valid": {
+      "latest.json": {
+        "observed_at": "2030-06-01T09:50:00Z",
+        "reading_id": "r3",
+        "temperature": 26.0,
+        "unit": "\u00b0C"
+      }
+    }
+  },
+  "one-day-exception-does-not-change-default": {
+    "invalid_overrides": {
+      "pickup-location.json": {
+        "location": "South desk",
+        "used_one_day_exception": true
+      }
+    },
+    "valid": {
+      "pickup-location.json": {
+        "location": "north desk",
+        "used_one_day_exception": false
+      }
+    }
+  },
+  "policy-negation-with-narrow-exception": {
+    "invalid_overrides": {
+      "notification-review.json": {
+        "allowed_ids": [
+          "a",
+          "b",
+          "c"
+        ],
+        "deferred_ids": []
+      }
+    },
+    "valid": {
+      "notification-review.json": {
+        "allowed_ids": [
+          "c",
+          "b"
+        ],
+        "deferred_ids": [
+          "a"
+        ]
+      }
+    }
+  },
+  "response-cancels-only-matching-followup": {
+    "invalid_overrides": {
+      "outbox.json": {
+        "pending_ids": []
+      }
+    },
+    "valid": {
+      "outbox.json": {
+        "pending_ids": [
+          "q2"
+        ]
+      },
+      "requests.json": {
+        "q1": {
+          "answered": true,
+          "topic": "invoice"
+        },
+        "q2": {
+          "answered": false,
+          "topic": "roster"
+        }
+      }
+    }
+  },
+  "retention-plan-respects-active-references": {
+    "invalid_overrides": {
+      "retention-plan.json": {
+        "eligible_delete_ids": [
+          "old-free",
+          "old-used"
+        ],
+        "keep_ids": [
+          "fresh-free"
+        ]
+      }
+    },
+    "valid": {
+      "retention-plan.json": {
+        "eligible_delete_ids": [
+          "old-free"
+        ],
+        "keep_ids": [
+          "fresh-free",
+          "old-used"
+        ]
+      }
+    }
+  },
+  "retry-budget-includes-backoff-time": {
+    "invalid_overrides": {
+      "retry.json": {
+        "attempts": 3,
+        "backoff_seconds": [
+          10,
+          20
+        ],
+        "per_attempt_timeout_seconds": 30,
+        "total_deadline_seconds": 90
+      }
+    },
+    "valid": {
+      "retry.json": {
+        "attempts": 3,
+        "backoff_seconds": [
+          10,
+          20
+        ],
+        "per_attempt_timeout_seconds": 20,
+        "total_deadline_seconds": 90
+      }
+    }
+  },
+  "selective-retraction-preserves-unrelated-memory": {
+    "invalid_overrides": {
+      "gift.json": {
+        "delivery_address": "8 Imaginary Walk",
+        "ribbon_color": "indigo"
+      }
+    },
+    "valid": {
+      "gift.json": {
+        "delivery_address": null,
+        "ribbon_color": "Indigo"
+      }
+    }
+  },
+  "settled-refunds-and-pending-reversals": {
+    "invalid_overrides": {
+      "balance.json": {
+        "net_settled": 45,
+        "pending_refunds": 0,
+        "settled_charges": 75,
+        "settled_refunds": 30
+      }
+    },
+    "valid": {
+      "balance.json": {
+        "net_settled": 65,
+        "pending_refunds": 20,
+        "settled_charges": 75,
+        "settled_refunds": 10
+      }
+    }
+  },
+  "stale-revision-does-not-overwrite-new-work": {
+    "invalid_overrides": {
+      "reconciliation.json": {
+        "applied": true,
+        "revision_conflict": false
+      },
+      "state.json": {
+        "remaining": 10,
+        "revision": 4
+      }
+    },
+    "valid": {
+      "proposal.json": {
+        "expected_revision": 3,
+        "proposed_remaining": 10
+      },
+      "reconciliation.json": {
+        "applied": false,
+        "revision_conflict": true
+      },
+      "state.json": {
+        "remaining": 9,
+        "revision": 4
+      }
+    }
+  },
+  "standing-preference-with-urgent-exception": {
+    "invalid_overrides": {
+      "contact-plan.json": {
+        "channel": "phone",
+        "urgent": false
+      }
+    },
+    "valid": {
+      "contact-plan.json": {
+        "channel": "Email",
+        "urgent": false
+      }
+    }
+  },
+  "superseded-source-does-not-authorize-action": {
+    "invalid_overrides": {
+      "provenance.json": {
+        "active_source_id": "announcement-v1",
+        "may_publish": true,
+        "superseded_source_ids": []
+      }
+    },
+    "valid": {
+      "provenance.json": {
+        "active_source_id": "approval-v2",
+        "may_publish": false,
+        "superseded_source_ids": [
+          "announcement-v1"
+        ]
+      }
+    }
+  },
+  "supported-contradicted-and-unknown-claims": {
+    "invalid_overrides": {
+      "claim-review.json": {
+        "contradicted_ids": [
+          "b",
+          "c"
+        ],
+        "supported_ids": [
+          "a"
+        ],
+        "unknown_ids": []
+      }
+    },
+    "valid": {
+      "claim-review.json": {
+        "contradicted_ids": [
+          "b"
+        ],
+        "supported_ids": [
+          "a"
+        ],
+        "unknown_ids": [
+          "c"
+        ]
+      }
+    }
+  },
+  "timeout-reconciliation-before-retry": {
+    "invalid_overrides": {
+      "retry.json": {
+        "confirmed_committed": false,
+        "observed_effect_count": 0,
+        "request_id": "op-7",
+        "retry_needed": true
+      }
+    },
+    "valid": {
+      "retry.json": {
+        "confirmed_committed": true,
+        "observed_effect_count": 1,
+        "request_id": "op-7",
+        "retry_needed": false
+      },
+      "server-ledger.json": {
+        "effect_count": 1,
+        "request_id": "op-7",
+        "status": "committed"
+      }
+    }
+  },
+  "uncertain-range-does-not-imply-exact-value": {
+    "invalid_overrides": {
+      "estimate.json": {
+        "approximate": false,
+        "max_days": 7,
+        "min_days": 5,
+        "promised_exact_days": 6
+      }
+    },
+    "valid": {
+      "estimate.json": {
+        "approximate": true,
+        "max_days": 7,
+        "min_days": 5,
+        "promised_exact_days": null
+      }
+    }
+  }
+}

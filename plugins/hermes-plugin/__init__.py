@@ -166,7 +166,7 @@ _LOCAL_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "protagine_memory_retain_observation",
-        "description": "Retain a useful original tool result in persistent memory. When a completed result supplies concrete information useful beyond this conversation, nominate its actual call_id from the current request and briefly explain its future use. Prefer durable findings or meaningful task outcomes; skip routine chatter, duplicate status, transient noise and secrets. For a reusable recipe, set include_input=true when the selected workflow/config call's executed arguments are needed; retain separate actual final-result calls when needed. A file locator or your nomination reason is not a complete recipe. The host recovers original executed input by its native call and dispatch hash; you cannot supply replacement facts. Inputs can contain credentials: do not select those calls. Input plus result must fit 16 KiB, or the nomination fails without inventing missing evidence. Result-only retention remains available by default. A tool result remains an observation, not verified external truth. This route supports current ordinary owner conversations, not historical session_search results or background workers. Pending or unconfirmed is not saved. Repeating a nomination uses its first reason, input choice and the same source.",
+        "description": "Optionally retain an original tool result for future use after completing the current request. Ordinary conversation turns are captured separately; do not save every file read or delay a requested deliverable for optional retention. Select an actual completed call_id from this request and give a short reason, not a summary of its contents. Prefer durable findings or meaningful task outcomes; skip routine chatter, duplicate status, transient noise and secrets. For a reusable recipe, set include_input=true when the selected workflow/config call's executed arguments are needed; retain separate actual final-result calls when needed. A file locator or your nomination reason is not a complete recipe. The host recovers original executed input by its native call and dispatch hash; you cannot supply replacement facts. Inputs can contain credentials: do not select those calls. Input plus result must fit 16 KiB, or the nomination fails without inventing missing evidence. Result-only retention remains available by default. A tool result remains an observation, not verified external truth. This route supports current ordinary owner conversations, not historical session_search results or background workers. Pending or unconfirmed is not saved. Repeating a nomination uses its first reason, input choice and the same source.",
         "parameters": _parameters({
             "call_id": {"type": "string", "minLength": 1, "maxLength": 256},
             "reason": {"type": "string", "minLength": 1, "maxLength": 512},
@@ -354,6 +354,8 @@ _ACTION_INTENT_TOOL_NAMES: tuple[str, ...] = tuple(
 
 _OWNER_MESSAGE_TOOL_NAMES: tuple[str, ...] = ("protagine_send_message",)
 _COORDINATION_TOOL_NAMES = ('protagine_accept_local_draft', 'protagine_commitment_work', 'protagine_contacts', 'protagine_followup', 'protagine_reminder', 'protagine_read_work_source', 'protagine_judgments', 'protagine_memory_forget', 'protagine_memory_annotate', 'protagine_memory_retain_observation', 'protagine_memory_read_source', 'protagine_work_initiative', 'protagine_task')
+_GOVERNED_TOOL_NAMES = frozenset({*_READ_TOOL_NAMES, *_ACTION_INTENT_TOOL_NAMES,
+                               *_OWNER_MESSAGE_TOOL_NAMES, *_COORDINATION_TOOL_NAMES})
 
 # No event can be injected until Protagine exposes an exact viewer-attested event
 # projection.  An empty catalog is an intentional security and attribution
@@ -615,6 +617,9 @@ def _background_review_scope(parent, **kwargs) -> _TransportScope:
                            "unresolved", "parent_scope_missing")
 
 
+_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS = 4.0
+
+
 def _resolve_scope(
     client: ProtagineClient,
     *,
@@ -657,7 +662,7 @@ def _resolve_scope(
         response = client.get(
             "/v1/host/contacts/resolve",
             params={"gateway": transport, "address": sender, "create": "false"},
-            timeout=4,
+            timeout=_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS,
         )
         if int(getattr(response, "status_code", 0) or 0) == 200:
             value = response.json()
@@ -688,12 +693,15 @@ def _current_participant(client: ProtagineClient, scope: _TransportScope) -> str
 
     Local system attestation is separate. A network failure is unavailable
     authority, not evidence that somebody else's identity was established.
+    Allow the same service latency as initial resolution, while keeping one
+    absolute deadline and a fresh authority lookup before every dispatch.
     """
     try:
         response = client.get('/v1/host/contacts/resolve', params={
             'gateway': scope.authority_gateway or scope.platform,
             'address': scope.sender_id, 'create': 'false'},
-            timeout=0.5, _deadline_monotonic=time.monotonic() + 0.5)
+            timeout=_PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS,
+            _deadline_monotonic=time.monotonic() + _PARTICIPANT_RESOLUTION_TIMEOUT_SECONDS)
         if response.status_code in {401, 403}:
             return 'participant_authority_revoked'
         if response.status_code != 200:
@@ -744,7 +752,7 @@ def _tool_execution_middleware(**kwargs: Any) -> Any:
         name = snapshot["tool_name"]
         # These exact adapter-owned tools perform their own scope/capability
         # checks and submit effects to the existing mediator. No prefix grant.
-        governed = name in {*_READ_TOOL_NAMES, *_ACTION_INTENT_TOOL_NAMES, *_OWNER_MESSAGE_TOOL_NAMES, *_COORDINATION_TOOL_NAMES}
+        governed = name in _GOVERNED_TOOL_NAMES
         exact = all(snapshot[key] for key in ("session_id", "task_id", "turn_id"))
         scope = _TRANSPORT_SCOPES.for_execution(
             session_id=snapshot["session_id"], task_id=snapshot["task_id"],
@@ -766,8 +774,9 @@ def _tool_execution_middleware(**kwargs: Any) -> Any:
                 return _canonical_json({"error": "Native tool withheld: exact participant authority is unavailable",
                     "status": "unavailable", "effect_performed": False, "approval_created": False})
             if scope.authority_lane not in {"owner", "system"}:
-                return _canonical_json({"error": "Native tool requires owner authorization; use an enabled Protagine action request or ask the owner to perform it",
-                    "status": "requires_authorization", "effect_performed": False, "approval_created": False})
+                return _canonical_json({"error": "Native tool requires owner authorization for the current participant. Do not retry through another tool or private data source; the owner must make the request through an authenticated owner channel.",
+                    "status": "requires_authorization", "reason": "owner_authorization_required",
+                    "retryable": False, "effect_performed": False, "approval_created": False})
             if scope.platform == "background_review" and name == "skill_manage":
                 from .review import stage_skill_change
                 return stage_skill_change(args)
@@ -2767,6 +2776,17 @@ def register(ctx: Any) -> None:
         else:
             if refreshed is not None:
                 result['request'] = refreshed['request']
+        from .request_participant import apply_authority
+        from .request_capabilities import describe
+        scope = _TRANSPORT_SCOPES.for_execution(
+            session_id=str(kwargs.get('session_id') or ''),
+            task_id=str(kwargs.get('task_id') or ''),
+            turn_id=str(kwargs.get('turn_id') or ''))
+        result['request'] = describe(apply_authority(result['request'], scope,
+            _GOVERNED_TOOL_NAMES, api_mode=str(kwargs.get('api_mode') or '')))
+        from .request_layout import compact_instructions
+        result['request'] = compact_instructions(result['request'],
+            api_mode=str(kwargs.get('api_mode') or ''))
         return execution_observer.request_metadata(result, **kwargs) if execution_observer else result
 
     def reconcile_request(request, **kwargs):
@@ -2796,8 +2816,12 @@ def register(ctx: Any) -> None:
         if not is_direct_scope(scope):
             result['request'] = without_tool(result['request'], 'protagine_task')
         result['request'] = describe(result['request'])
+        result = finish_request(result, **kwargs)
+        # Stamp the final controlled projection, not its pre-participant body.
+        # Relay may reuse this erasure check only for these exact content bytes;
+        # rebuilt summaries and later source updates still require a new check.
         native_memory.checked(result['request'], scope)
-        return finish_request(result, **kwargs)
+        return result
 
     def commitment_work_handler(args=None, **kwargs):
         context = _TOOL_EXECUTION_CONTEXT.get() or {}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -55,10 +56,49 @@ class SkillStore:
                     domain TEXT PRIMARY KEY, note TEXT, updated_at REAL
                 )""")
             self._conn.commit()
+            try:
+                self._archive_unverified_counters()
+            except Exception:
+                self._conn.close()
+                raise
+
+    def _archive_unverified_counters(self) -> None:
+        """Retain the old runtime counters once; they never measured skill quality.
+
+        The archive and reset share the existing database transaction. Neither
+        model prose nor an imported counter can recreate verified evidence.
+        Native skill evaluations keep their own source-bound receipts.
+        """
+        with self._conn:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS skill_counter_archive (
+                skill_id TEXT PRIMARY KEY, wins INTEGER NOT NULL,
+                losses INTEGER NOT NULL, archived_at REAL NOT NULL)""")
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS skill_migrations (
+                name TEXT PRIMARY KEY, applied_at REAL NOT NULL, receipt TEXT NOT NULL)""")
+            self._conn.execute('BEGIN IMMEDIATE')
+            name = 'retire-unverified-runtime-counters-v1'
+            if self._conn.execute('SELECT 1 FROM skill_migrations WHERE name=?', (name,)).fetchone():
+                return
+            rows = self._conn.execute('SELECT id,wins,losses FROM skills').fetchall()
+            now = time.time()
+            self._conn.executemany('INSERT INTO skill_counter_archive VALUES (?,?,?,?)',
+                [(row['id'], row['wins'], row['losses'], now) for row in rows])
+            self._conn.execute('UPDATE skills SET wins=0, losses=0')
+            receipt = {'version': 1, 'skills': len(rows),
+                'wins_archived': sum(row['wins'] for row in rows),
+                'losses_archived': sum(row['losses'] for row in rows),
+                'basis': 'runtime termination did not establish procedure quality',
+                'verification': 'unverified', 'quality_credit': False}
+            self._conn.execute('INSERT INTO skill_migrations VALUES (?,?,?)',
+                (name, now, json.dumps(receipt, sort_keys=True)))
 
     # -- skills ----------------------------------------------------------
     def add(self, skill: Skill) -> Skill:
         row = skill.to_row()
+        # Imported counters are not evidence either. Retain procedure content,
+        # but do not resurrect the retired executor's inferred win/loss record.
+        row['wins'] = row['losses'] = 0
+        skill.wins = skill.losses = 0
         with self._lock:
             cols = ", ".join(row); ph = ", ".join(["?"] * len(row))
             self._conn.execute(
@@ -103,13 +143,6 @@ class SkillStore:
             self._conn.execute(
                 "UPDATE skills SET uses=uses+1, last_used_at=? WHERE id=?",
                 (time.time(), skill_id))
-            self._conn.commit()
-
-    def record_outcome(self, skill_id: str, win: bool) -> None:
-        col = "wins" if win else "losses"
-        with self._lock:
-            self._conn.execute(
-                f"UPDATE skills SET {col}={col}+1 WHERE id=?", (skill_id,))
             self._conn.commit()
 
     def evict_to_cap(self, cap: Optional[int] = None) -> int:
@@ -168,5 +201,7 @@ class SkillStore:
             "count": self.count(),
             "cap": skills_max(),
             "distill_mode": skills_distill_mode(),
+            "quality_credit": False,
+            "quality_basis": "unverified procedure candidates; use native evaluation receipts",
             "skills": [s.to_row() for s in self.list(limit=200)],
         }

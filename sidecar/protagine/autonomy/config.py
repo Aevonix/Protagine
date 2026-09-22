@@ -113,13 +113,6 @@ class AutonomyConfig:
     # sends. Real delivery requires proactive_delivery_enabled AND shadow off.
     delivery_shadow_mode: bool = False
 
-    # ── Conversation synthesis (periodic memory scan for goals) ─────────
-    # Scans stored conversation memories for implicit goals and commitments.
-    conversation_synthesis_enabled: bool = True
-    conversation_synthesis_interval_secs: float = 1800.0  # 30 min
-    conversation_synthesis_lookback_hours: float = 2.0
-    conversation_synthesis_min_confidence: float = 0.35
-
     # ── class methods ──────────────────────────────────────────────────
 
     @classmethod
@@ -215,22 +208,6 @@ class AutonomyConfig:
             delivery_shadow_mode=bool(
                 _get("delivery_shadow_mode", defaults.delivery_shadow_mode)
             ),
-            conversation_synthesis_enabled=bool(_get(
-                "conversation_synthesis_enabled",
-                defaults.conversation_synthesis_enabled,
-            )),
-            conversation_synthesis_interval_secs=float(_get(
-                "conversation_synthesis_interval_secs",
-                defaults.conversation_synthesis_interval_secs,
-            )),
-            conversation_synthesis_lookback_hours=float(_get(
-                "conversation_synthesis_lookback_hours",
-                defaults.conversation_synthesis_lookback_hours,
-            )),
-            conversation_synthesis_min_confidence=float(_get(
-                "conversation_synthesis_min_confidence",
-                defaults.conversation_synthesis_min_confidence,
-            )),
         )
 
     @classmethod
@@ -261,10 +238,6 @@ class AutonomyConfig:
             PROTAGINE_OWNER_CONTACT_ID
             PROTAGINE_PROACTIVE_DELIVERY_ENABLED
             PROTAGINE_DELIVERY_SHADOW
-            PROTAGINE_CONVERSATION_SYNTHESIS_ENABLED
-            PROTAGINE_CONVERSATION_SYNTHESIS_INTERVAL_SECS
-            PROTAGINE_CONVERSATION_SYNTHESIS_LOOKBACK_HOURS
-            PROTAGINE_CONVERSATION_SYNTHESIS_MIN_CONFIDENCE
         """
         logger = logging.getLogger(__name__)
 
@@ -404,21 +377,5 @@ class AutonomyConfig:
             delivery_shadow_mode=_bool(
                 "PROTAGINE_DELIVERY_SHADOW",
                 defaults.delivery_shadow_mode,
-            ),
-            conversation_synthesis_enabled=_bool(
-                "PROTAGINE_CONVERSATION_SYNTHESIS_ENABLED",
-                defaults.conversation_synthesis_enabled,
-            ),
-            conversation_synthesis_interval_secs=_float(
-                "PROTAGINE_CONVERSATION_SYNTHESIS_INTERVAL_SECS",
-                defaults.conversation_synthesis_interval_secs,
-            ),
-            conversation_synthesis_lookback_hours=_float(
-                "PROTAGINE_CONVERSATION_SYNTHESIS_LOOKBACK_HOURS",
-                defaults.conversation_synthesis_lookback_hours,
-            ),
-            conversation_synthesis_min_confidence=_float(
-                "PROTAGINE_CONVERSATION_SYNTHESIS_MIN_CONFIDENCE",
-                defaults.conversation_synthesis_min_confidence,
             ),
         )

@@ -15,6 +15,7 @@ from typing import List, Optional
 from protagine.intelligence.mind_model.signal_collector import (
     BaselineStore,
     PersonBaseline,
+    Signal,
 )
 
 logger = logging.getLogger(__name__)

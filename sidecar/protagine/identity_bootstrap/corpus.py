@@ -182,7 +182,7 @@ LAYERS: List[LayerRecord] = [
     ),
     LayerRecord(
         name="Goals",
-        description="DAG-based goal decomposition, lifecycle management, priority queue, replan engine, autonomy loop.",
+        description="Persistent goal records, reported outcomes, and attention state. Native tasks own execution.",
         subsystems=["protagine.goals", "protagine.autonomy"],
         layer_index=4,
     ),
@@ -273,12 +273,10 @@ API_ENDPOINTS: List[EndpointRecord] = [
     EndpointRecord("/v1/gate/pending", "GET", "List messages awaiting manual approval", "gate", tags=["gate"]),
     EndpointRecord("/v1/gate/pending/{pending_id}/approve", "POST", "Approve a pending message", "gate", tags=["gate"]),
     EndpointRecord("/v1/gate/pending/{pending_id}/reject", "POST", "Reject a pending message", "gate", tags=["gate"]),
-    # ── Goals (/v1/goals) ────────────────────────────────────────────────────
-    EndpointRecord("/v1/goals/", "GET", "List goals with optional status/priority filters", "goals", tags=["goals"]),
-    EndpointRecord("/v1/goals/{goal_id}", "GET", "Retrieve a single goal by ID", "goals", tags=["goals"]),
-    EndpointRecord("/v1/goals/", "POST", "Create a new goal", "goals", tags=["goals"]),
-    EndpointRecord("/v1/goals/{goal_id}", "PATCH", "Update a goal's mutable fields", "goals", tags=["goals"]),
-    EndpointRecord("/v1/goals/{goal_id}", "DELETE", "Cancel an active goal", "goals", tags=["goals"]),
+    # ── Goal records (/v1/host/goals) ────────────────────────────────────────────────────
+    EndpointRecord("/v1/host/goals", "GET", "List retained goals with an optional status filter", "goals", tags=["goals"]),
+    EndpointRecord("/v1/host/goals/{goal_id}", "GET", "Retrieve a single goal by ID", "goals", tags=["goals"]),
+    EndpointRecord("/v1/host/goals/{goal_id}", "PATCH", "Update a goal's mutable fields", "goals", tags=["goals"]),
     # ── Memory (/v1/memory) ──────────────────────────────────────────────────
     EndpointRecord("/v1/memory/query", "GET", "Semantic search memory entries", "memory", tags=["memory"]),
     EndpointRecord("/v1/memory/create", "POST", "Store a new memory entry", "memory", tags=["memory"]),

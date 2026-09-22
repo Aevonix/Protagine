@@ -1,7 +1,7 @@
 """Research-to-Artifact Pipeline — 6-stage orchestrator.
 
 Stages:
-  1. DECOMPOSE  — parse goal into sub-tasks with GoalDecomposer
+  1. DECOMPOSE  — validate the research request
   2. GATHER     — collect evidence from web, graph, documents, email
   3. SYNTHESIZE — cross-reference evidence into insights
   4. OUTLINE    — build structured artifact outline
@@ -294,15 +294,6 @@ class ResearchPipeline:
         # Validation: goal must be non-empty
         if not run.goal or not run.goal.strip():
             raise ValueError("Research goal cannot be empty")
-
-        # Optionally use GoalDecomposer to validate / enrich the goal
-        try:
-            from protagine.goals.decomposer import GoalDecomposer
-            decomposer = GoalDecomposer()
-            dag = decomposer.decompose_text(run.goal)
-            run.metadata["goal_dag_id"] = getattr(dag, "id", None)
-        except Exception as exc:
-            logger.debug("GoalDecomposer unavailable (%s), continuing without DAG", exc)
 
         run.stage_durations[PipelineStage.DECOMPOSE.value] = time.monotonic() - t0
         logger.debug("Stage DECOMPOSE: %.2fs", run.stage_durations[PipelineStage.DECOMPOSE.value])

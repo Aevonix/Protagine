@@ -165,26 +165,20 @@ async def phase(sm, items):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('runtime_outcome', ['completed_wrong_count', 'timeout'])
-async def test_actual_runtime_outcomes_do_not_change_priority_or_claim_quality(perspective, source_app, tmp_path, runtime_outcome):
-    from protagine.initiatives.store import InitiativeStore
-    from protagine.reasoning.loop import ReasoningResult
-    from protagine.services.initiative_executor import InitiativeExecutorService
+async def test_historical_runtime_outcomes_do_not_change_priority_or_claim_quality(perspective, source_app, tmp_path, runtime_outcome):
     state, learner, sm = perspective
-    store = InitiativeStore(tmp_path / 'initiatives')
-    executor = InitiativeExecutorService(store, None, None, self_model=sm)
-    executor._find_recent_completion = AsyncMock(return_value=None)
-    executor._maybe_distill = AsyncMock()  # Skill updates are a separate loop.
     model = {'model_role': 'planning', 'model_id': 'fixture-model-a', 'model_revision': 'v1'}
-    result = (ReasoningResult(status='completed', message={'role': 'assistant', 'content': 'The inventory has 17 entries.'}, model_provenance=model)
-              if runtime_outcome == 'completed_wrong_count' else
-              ReasoningResult(status='error', error='TimeoutError: timed out', model_provenance=model))
-    executor._run_turn_resilient = AsyncMock(return_value=result)
+    outcome = 'success' if runtime_outcome == 'completed_wrong_count' else 'timeout'
     original = candidates()
     before = [(item.id, item.priority) for item in await phase(sm, original)]
+    # Historical executor observations remain readable after its retirement.
     for i in range(3):
-        item = store.create(type='research', description=f'Count all {42+i} neutral inventory entries', dedup_key=f'work-{i}')
-        item = store.assign(item.id, 'protagine-executor')
-        await executor._execute_one(item)
+        sm.record('research', outcome, source='initiative_executor',
+                  source_ref=f'work-{i}', event_key=f'work-{i}:0:{outcome}',
+                  evidence_status='observed',
+                  outcome_contract='protagine.initiative-runtime-outcome/v1',
+                  evidence={**model, 'attempt': 0,
+                            'meaning': 'runtime_completed_or_failed; semantic_success_unverified'})
     events = sm.store.events('research')
     assert len(events) == 3 and all(e['source_ref'] and e['event_key'] for e in events)
     assert all(e['evidence']['meaning'].endswith('semantic_success_unverified') for e in events)

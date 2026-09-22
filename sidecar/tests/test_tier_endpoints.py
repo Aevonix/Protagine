@@ -131,7 +131,7 @@ def test_litellm_call_carries_per_tier_kwargs(monkeypatch, tier, expect_base, ex
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
     tiers = build_tiers_from_host(dict(HOST_CFG))
-    router = LLMRouter(tiers=tiers, self_learner=None)
+    router = LLMRouter(tiers=tiers)
 
     asyncio.run(
         router.complete([{"role": "user", "content": "hi"}], force_tier=tier)

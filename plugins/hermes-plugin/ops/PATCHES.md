@@ -1,12 +1,8 @@
-# Hermes core patch migration
+# Hermes patch tools
 
-The canonical Protagine sidecar integration has a zero-patch Hermes target. The
-legacy `hermes-patch-runner.py` is now a read-only inventory command:
+Use `protagine hermes prepare` for supported, versioned patches against official
+Hermes source. See [runtime compatibility](../../../docs/HERMES-CAPABILITIES.md).
 
-```bash
-python hermes-patch-runner.py status --json
-```
-
-It exits `0` only when the registry is empty and never executes a patch. Migrate
-required behavior to a Hermes plugin/config seam or an external Protagine adapter,
-then archive the deployment-specific patch with its rollback evidence.
+`protagine hermes check RUNTIME` verifies a prepared runtime and its required
+capabilities. Update qualification checks exact patch inputs and runs native
+regressions before a new Hermes revision becomes an install target.

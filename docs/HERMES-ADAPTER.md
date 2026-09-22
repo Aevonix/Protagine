@@ -51,6 +51,32 @@ Only `catalog.py` and `contract.py` from `hostworker/protagine_hostworker/` are
 included in the adapter's private catalog package. The source installer forwards
 to the guided, profile-aware installer.
 
+For chat-completion endpoints, request-only work and skill instructions stay
+before the conversation. Consecutive plain instruction messages with the same
+role are combined into one leading message. This supports templates that accept
+only one initial system message, without a model-name override or template patch.
+The adapter preserves instruction text, user and tool messages, and stored
+conversation history. System and developer roles are not combined with each
+other. Structured instruction blocks and provider-specific message metadata
+retain their original shape; Responses and Anthropic layouts are unchanged.
+The same layout check covers native iteration-summary requests, and the memory
+check cache records the final outgoing body.
+
+Hermes's builtin `MEMORY.md` and `USER.md` stores belong to its profile, without
+per-contact ownership. Protagine allows their prompt blocks only for a valid
+owner or system scope. Guest and unresolved turns remove them on the outgoing
+request copy, including native Relay summary calls. Files, conversation history
+and ordinary owner access are preserved; participant-scoped Protagine recall is
+handled separately. This closes a demonstrated first-request disclosure through
+the native global user profile, before any tool authorization could apply.
+
+The native prompt currently exposes no ownership descriptor for these blocks.
+The adapter recognizes the native renderer's titled header and exact character
+count; tests use the actual Hermes renderer and request conversions. A recognized
+but malformed or fragmented block withholds its instruction carrier. Runtime
+upgrades must retain this renderer compatibility test. This boundary does not
+classify arbitrary private information placed in custom system instructions.
+
 ## Bundled skills
 
 The adapter wheel includes `protagine-deep-research` for cited investigations and
