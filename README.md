@@ -185,6 +185,9 @@ not a prerequisite for the harness approach described above.
 
 ## Documentation
 
+- **Proto-AGI development line:** [architecture](docs/proto-agi/PROTO-AGI-ARCHITECTURE.md),
+  [evaluations](docs/proto-agi/PROTO-AGI-EVALS.md),
+  [build plan](docs/proto-agi/PROTO-AGI-BUILD-PLAN.md).
 - **Memory:** [quality](docs/MEMORY-QUALITY.md),
   [model-swap demonstration](docs/MODEL-SWAP-DEMO.md),
   [semantic recall](docs/SOURCE-SEMANTIC-RECALL.md),
