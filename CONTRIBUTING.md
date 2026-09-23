@@ -112,6 +112,10 @@ layers solely to preserve historical names.
    image to GHCR (`ghcr.io/aevonix/protagine`), and creates the GitHub release
    from the changelog entry: all automatically on the tag push
 
+PyPI publishing uses a trusted publisher (OIDC): the `protagine` and
+`protagine-hermes` projects name this repository and `release.yml` as their
+GitHub publisher, so no PyPI API token is stored in the repository's secrets.
+
 ## Architecture notes
 
 The target ownership boundaries and remaining implementation work are in
