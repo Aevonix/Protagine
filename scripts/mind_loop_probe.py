@@ -262,8 +262,11 @@ def ask_path() -> None:
     if len(asked) != 1:
         return
     code = asked[0]["ask_code"]
+    # The notice is matched over the whole outbox, not the slice after the explicit tick: the mind's
+    # own timer can raise the ask first, and the 4-hour notice interval means it is then never
+    # repeated. Matching everything still proves "exactly one notice", which is what this checks.
     notice = wait_for("the ask notice on the capture platform",
-                      lambda: [m for m in outbox()[before:] if f"[{code}]" in m["text"]], timeout=120)
+                      lambda: [m for m in outbox() if f"[{code}]" in m["text"]], timeout=120)
     check("one notice with the code, sent verbatim, no Hermes object",
           bool(notice) and len(notice) == 1 and notice[0]["target"] == "capture:owner" and notice[0]["via"] == "platform"
           and "yes <code>" in notice[0]["text"] and not any(t["key"] == f"mind:{asked[0]['id']}" for t in mind_tasks()),
