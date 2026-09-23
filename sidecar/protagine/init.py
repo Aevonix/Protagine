@@ -729,9 +729,11 @@ def run_store_migrations(home: Path) -> list[str]:
 # State owned by code that no longer exists: the autonomy scheduler, the queue
 # approval ledger, standing grants, the proactive delivery bridge, the task
 # queue, the project engine, the governed action ledger, the directive store,
-# directed tasks, the response guard's ledgers and the agent bridge poller's
-# seen-lists. An upgrade moves them into the backup instead of leaving orphans
-# behind. A directory entry names a whole tree.
+# directed tasks, the response guard's ledgers, the agent bridge poller's
+# seen-lists and (since the drives milestone) the cognitive workspace, the
+# cognition spine, its evidence and drive-governance ledgers, the external
+# event inbox and the surprise store. An upgrade moves them into the backup
+# instead of leaving orphans behind. A directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
@@ -740,9 +742,12 @@ RETIRED_STATE = (
     "protagine-governed-gateway-outcomes.db",
     "task_queue.db",
     "protagine-projects.db",
+    "protagine-workspace.db",
     "protagine-cognition.db",
     "protagine-cognition-evidence.db",
     "cognition-drive-governance.db",
+    "external-cognition-events.db",
+    "protagine-surprise.db",
     "governed-actions",
     "protagine-directives.db",
     "protagine-directed.db",
@@ -751,6 +756,14 @@ RETIRED_STATE = (
     "protagine-tom2-taint.db",
     "bridge",
 )
+# Tables inside surviving stores whose code was deleted: the goal subtask and DAG
+# tables (agent goals are intention rows) and the legacy perspective tables (the
+# automatic opinion revisions and the attention snapshot). The backup taken before
+# the migrations keeps their rows; the upgrade drops them from the live store.
+RETIRED_TABLES: dict[str, tuple[str, ...]] = {
+    "protagine-goals.db": ("subtasks", "goal_dag_versions"),
+    "turn-idempotency.db": ("self_opinion_revisions", "self_attention"),
+}
 INITIATIVES_DB = "initiatives.db"
 
 
@@ -772,6 +785,35 @@ def retire_state(home: Path, backup_dir: Path) -> list[str]:
                 if source.exists():
                     shutil.move(str(source), str(destination / (name + suffix)))
         notes.append(f"retired {name} (moved to {destination})")
+    return notes
+
+
+def retired_tables_present(home: Path) -> list[str]:
+    """``store:table`` for every retired table that still exists in a surviving store."""
+    present: list[str] = []
+    for name, tables in RETIRED_TABLES.items():
+        path = home / name
+        if not path.is_file():
+            continue
+        try:
+            with sqlite3.connect(path) as connection:
+                existing = {row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        except sqlite3.DatabaseError:
+            continue
+        present.extend(f"{name}:{table}" for table in tables if table in existing)
+    return present
+
+
+def retire_tables(home: Path) -> list[str]:
+    """Drop the retired tables (the backup taken first keeps their rows)."""
+    notes: list[str] = []
+    for item in retired_tables_present(home):
+        name, table = item.split(":", 1)
+        with sqlite3.connect(home / name) as connection:
+            rows = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
+            connection.execute(f"DROP TABLE IF EXISTS {table}")  # noqa: S608
+        notes.append(f"retired table {table} in {name} ({rows} rows kept in the backup)")
     return notes
 
 
@@ -1158,7 +1200,7 @@ def run_upgrade(args) -> int:
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
-                              + retired_state_present(home))
+                              + retired_state_present(home) + retired_tables_present(home))
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
@@ -1169,6 +1211,7 @@ def run_upgrade(args) -> int:
         notes.extend("migration applied: " + item for item in run_store_migrations(home))
         notes.extend(migrate_initiatives(home))
         notes.extend(retire_state(home, backup))
+        notes.extend(retire_tables(home))
         if binding_changed:
             cfg.data["hermes"]["python"] = str(python)
             cfg.data["hermes"]["home"] = str(hermes_home)

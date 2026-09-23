@@ -68,14 +68,11 @@ class ActionJournal:
                event_key: Optional[str] = None) -> int:
         """Append one journal entry; returns its row id. Never raises.
 
-        Each entry carries the active charter PROMPT_VERSION so behavior
-        shifts are attributable to prompt changes.
+        The ``prompt_version`` column stays for older rows; nothing writes a
+        prompt version any more.
         """
         try:
-            try:
-                from protagine.cognition.charter import PROMPT_VERSION
-            except Exception:
-                PROMPT_VERSION = ""
+            PROMPT_VERSION = ""
             event_key = str(event_key or "").strip()[:512] or None
             with self._lock:
                 cur = self._conn.execute(

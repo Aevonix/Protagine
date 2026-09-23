@@ -8,7 +8,6 @@ Covers all 8 intelligence components:
     - ResearchOrchestrator
     - PreferenceLearner
     - AnomalyDetector
-    - InitiativeEngine
 """
 
 import asyncio
@@ -51,11 +50,6 @@ from protagine.intelligence.components.anomaly_detector import (
     Anomaly,
     AnomalyDetector,
     AnomalyType,
-)
-from protagine.intelligence.components.initiative_engine import (
-    Initiative,
-    InitiativeEngine,
-    InitiativeType,
 )
 
 
@@ -690,165 +684,6 @@ class TestAnomalyDetector:
 # ===========================================================================
 
 
-class TestInitiativeModel:
-    """Test Initiative data model."""
-
-    def test_basic_construction(self):
-        i = Initiative(
-            id="init-1",
-            type=InitiativeType.FOLLOW_UP,
-            description="Follow up with Alex on lab",
-            priority=0.8,
-            rationale="No contact in 5 days",
-        )
-        assert i.type == InitiativeType.FOLLOW_UP
-        assert i.priority == 0.8
-        assert i.action_hint is None
-        assert i.entity_id is None
-
-    def test_with_expiry(self):
-        expires = datetime.now() + timedelta(hours=24)
-        i = Initiative(
-            id="init-2",
-            type=InitiativeType.HEALTH,
-            description="Review Oura data",
-            priority=0.6,
-            rationale="Weekly check",
-            expires_at=expires,
-        )
-        assert i.expires_at == expires
-
-    def test_initiative_type_values(self):
-        assert InitiativeType.FOLLOW_UP == "follow_up"
-        assert InitiativeType.RELATIONSHIP == "relationship"
-        assert InitiativeType.HEALTH == "health"
-        assert InitiativeType.SCHEDULING == "scheduling"
-
-
-class TestParseNeo4jDatetime:
-    """_parse_neo4j_datetime must always return tz-aware UTC so callers can
-    subtract it from datetime.now(timezone.utc) without TypeError (the bug that
-    silently dropped all blocked-goal / pending-research initiatives)."""
-
-    def test_naive_iso_string_normalized_to_utc(self):
-        dt = InitiativeEngine._parse_neo4j_datetime("2026-06-12T01:00:00")
-        assert dt.tzinfo is not None
-        assert dt.utcoffset() == timedelta(0)
-
-    def test_zulu_string_is_aware(self):
-        dt = InitiativeEngine._parse_neo4j_datetime("2026-06-12T01:00:00Z")
-        assert dt.tzinfo is not None
-
-    def test_naive_datetime_normalized(self):
-        dt = InitiativeEngine._parse_neo4j_datetime(datetime(2026, 6, 12, 1, 0, 0))
-        assert dt.tzinfo is not None
-        assert dt.utcoffset() == timedelta(0)
-
-    def test_aware_datetime_preserved(self):
-        src = datetime(2026, 6, 12, 1, 0, 0, tzinfo=timezone.utc)
-        assert InitiativeEngine._parse_neo4j_datetime(src) == src
-
-    def test_neo4j_to_native_naive_normalized(self):
-        class _FakeNeo4jDT:
-            def to_native(self):
-                return datetime(2026, 6, 12, 1, 0, 0)  # naive, like neo4j.time.DateTime
-        dt = InitiativeEngine._parse_neo4j_datetime(_FakeNeo4jDT())
-        assert dt.tzinfo is not None
-
-    def test_none_returns_none(self):
-        assert InitiativeEngine._parse_neo4j_datetime(None) is None
-
-    def test_result_subtractable_from_aware_now(self):
-        # The actual production crash: now(utc) - parsed must not raise.
-        for value in ("2026-06-12T01:00:00", datetime(2026, 6, 12, 1, 0, 0)):
-            parsed = InitiativeEngine._parse_neo4j_datetime(value)
-            delta = datetime.now(timezone.utc) - parsed  # would TypeError if naive
-            assert delta.days >= 0
-
-
-class TestInitiativeEngine:
-    """Test InitiativeEngine functionality."""
-
-    @pytest.mark.asyncio
-    async def test_generate_returns_empty_placeholder(
-        self, mock_graph, mock_event_bus, mock_mind_model
-    ):
-        ie = InitiativeEngine(mock_graph, mock_event_bus, mock_mind_model)
-        initiatives = await ie.generate()
-
-        # Placeholder implementations return empty lists
-        assert initiatives == []
-
-    @pytest.mark.asyncio
-    async def test_generate_with_type_filter(
-        self, mock_graph, mock_event_bus, mock_mind_model
-    ):
-        ie = InitiativeEngine(mock_graph, mock_event_bus, mock_mind_model)
-        initiatives = await ie.generate(types=[InitiativeType.HEALTH])
-
-        assert isinstance(initiatives, list)
-
-    @pytest.mark.asyncio
-    async def test_dismiss_initiative(
-        self, mock_graph, mock_event_bus, mock_mind_model
-    ):
-        ie = InitiativeEngine(mock_graph, mock_event_bus, mock_mind_model)
-
-        # Manually add an initiative
-        ie._initiatives.append(
-            Initiative(
-                id="init-test",
-                type=InitiativeType.FOLLOW_UP,
-                description="Test",
-                priority=0.8,
-                rationale="Testing",
-            )
-        )
-
-        await ie.dismiss("init-test")
-        active = await ie.get_active()
-        assert not any(i.id == "init-test" for i in active)
-
-    @pytest.mark.asyncio
-    async def test_get_active_filters_expired(
-        self, mock_graph, mock_event_bus, mock_mind_model
-    ):
-        ie = InitiativeEngine(mock_graph, mock_event_bus, mock_mind_model)
-
-        # Add expired initiative
-        ie._initiatives.append(
-            Initiative(
-                id="expired",
-                type=InitiativeType.HEALTH,
-                description="Expired",
-                priority=0.9,
-                rationale="Old",
-                expires_at=datetime.now() - timedelta(hours=1),
-            )
-        )
-        # Add active initiative
-        ie._initiatives.append(
-            Initiative(
-                id="active",
-                type=InitiativeType.HEALTH,
-                description="Active",
-                priority=0.9,
-                rationale="Current",
-                expires_at=datetime.now() + timedelta(hours=1),
-            )
-        )
-
-        active = await ie.get_active()
-        ids = [i.id for i in active]
-        assert "active" in ids
-        assert "expired" not in ids
-
-
-# ===========================================================================
-# Package imports
-# ===========================================================================
-
-
 class TestPackageImports:
     """Verify all components are importable from the package."""
 
@@ -875,9 +710,6 @@ class TestPackageImports:
             AnomalyDetector,
             Anomaly,
             AnomalyType,
-            InitiativeEngine,
-            Initiative,
-            InitiativeType,
         )
 
         # Smoke check that they're actual classes
@@ -888,4 +720,3 @@ class TestPackageImports:
         assert callable(ResearchOrchestrator)
         assert callable(PreferenceLearner)
         assert callable(AnomalyDetector)
-        assert callable(InitiativeEngine)

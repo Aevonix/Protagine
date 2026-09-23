@@ -795,11 +795,6 @@ class ExtractionResponse(BaseModel):
 
 # --- Cognition --------------------------------------------------------------
 
-class CognitionCycleRequest(BaseModel):
-    identity: HostIdentity
-    context: Optional[HostTurnContext] = None
-
-
 class CognitivePerformanceIndex(BaseModel):
     overall: float = 0.0
     memory: float = 0.0
@@ -814,12 +809,6 @@ class CognitionGap(BaseModel):
     domain: str
     severity: float
     description: Optional[str] = None
-
-
-class CognitionCycleResponse(BaseModel):
-    cpi: Optional[CognitivePerformanceIndex] = None
-    gaps: List[CognitionGap] = []
-    adjustments: List[Dict[str, Any]] = []
 
 
 # --- Research ---------------------------------------------------------------
@@ -1146,18 +1135,6 @@ class ConcernResolveRequest(BaseModel):
 # Cognition Substrate
 # ---------------------------------------------------------------------------
 
-class CognitionTriggerRequest(BaseModel):
-    trigger_type: Literal["turn_sync", "signal_ingest", "anomaly", "manual"]
-    context: Dict[str, Any]
-    priority: Literal["high", "normal", "low"] = "normal"
-
-
-class CognitionTriggerResponse(BaseModel):
-    accepted: bool = True
-    message: str = "Cognition trigger accepted"
-    throttle_seconds: Optional[int] = None
-
-
 # ---------------------------------------------------------------------------
 # Theory of Mind — Affect
 # ---------------------------------------------------------------------------
@@ -1291,38 +1268,6 @@ class PatternExtractResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Surprise Engine
 # ---------------------------------------------------------------------------
-
-class SurpriseCreateRequest(BaseModel):
-    observation: str
-    expected: Optional[str] = None
-    surprise_score: Optional[float] = Field(None, ge=0.0, le=1.0)
-    pattern_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-    auto_score: bool = False
-
-
-class SurpriseResponse(BaseModel):
-    id: str
-    observation: str
-    expected: Optional[str] = None
-    surprise_score: float
-    pattern_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-    timestamp: str
-    resolved: bool = False
-    resolution: Optional[str] = None
-
-
-class SurpriseListResponse(BaseModel):
-    surprises: List[SurpriseResponse] = []
-    total: int
-    limit: int
-    offset: int
-
-
-class SurpriseResolveRequest(BaseModel):
-    resolution: Optional[str] = None
-
 
 # ---------------------------------------------------------------------------
 # ToM LLM Extraction

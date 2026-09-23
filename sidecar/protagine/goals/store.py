@@ -1,4 +1,4 @@
-"""GoalStore — SQLite-backed persistence for Goals and GoalDAGs.
+"""GoalStore — SQLite-backed persistence for Goal records.
 
 Uses synchronous sqlite3 for simplicity (goals are not high-throughput).
 WAL mode enabled for safe concurrent reads.
@@ -18,14 +18,11 @@ from protagine import get_state_dir
 
 from protagine.goals.models import (
     Goal,
-    GoalDAG,
     GoalOutcome,
     GoalPriority,
     GoalSource,
     GoalStatus,
     GoalTransitionRecord,
-    Subtask,
-    SubtaskStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -330,204 +327,6 @@ class GoalStore:
             snoozed_until=_parse_dt(row["snoozed_until"]),
             snooze_count=row["snooze_count"],
             dismissal_reason=row["dismissal_reason"],
-        )
-
-    # ── Subtask CRUD ───────────────────────────────────────────────────────────
-
-    def save_subtask(self, subtask: Subtask, dag_version: int = 1) -> None:
-        with self._tx() as conn:
-            conn.execute(
-                """
-                INSERT INTO subtasks (
-                    subtask_id, goal_id, title, job_type,
-                    payload_json, capabilities_json, depends_on_json,
-                    status, job_id, result_json,
-                    depth, is_critical_path, retry_count, max_retries,
-                    estimated_hours, started_at, completed_at, error, dag_version
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(subtask_id) DO UPDATE SET
-                    title=excluded.title,
-                    job_type=excluded.job_type,
-                    payload_json=excluded.payload_json,
-                    capabilities_json=excluded.capabilities_json,
-                    depends_on_json=excluded.depends_on_json,
-                    status=excluded.status,
-                    job_id=excluded.job_id,
-                    result_json=excluded.result_json,
-                    depth=excluded.depth,
-                    is_critical_path=excluded.is_critical_path,
-                    retry_count=excluded.retry_count,
-                    max_retries=excluded.max_retries,
-                    estimated_hours=excluded.estimated_hours,
-                    started_at=excluded.started_at,
-                    completed_at=excluded.completed_at,
-                    error=excluded.error,
-                    dag_version=excluded.dag_version
-                """,
-                (
-                    subtask.subtask_id,
-                    subtask.goal_id,
-                    subtask.title,
-                    subtask.job_type,
-                    json.dumps(subtask.payload),
-                    json.dumps(subtask.capabilities),
-                    json.dumps(subtask.depends_on),
-                    subtask.status.value if hasattr(subtask.status, 'value') else subtask.status,
-                    subtask.job_id,
-                    json.dumps(subtask.result) if subtask.result else None,
-                    subtask.depth,
-                    1 if subtask.is_critical_path else 0,
-                    subtask.retry_count,
-                    subtask.max_retries,
-                    subtask.estimated_hours,
-                    subtask.started_at.isoformat() if subtask.started_at else None,
-                    subtask.completed_at.isoformat() if subtask.completed_at else None,
-                    subtask.error,
-                    dag_version,
-                ),
-            )
-
-    def get_subtasks(self, goal_id: str, dag_version: Optional[int] = None) -> List[Subtask]:
-        conn = self._get_conn()
-        if dag_version is not None:
-            rows = conn.execute(
-                "SELECT * FROM subtasks WHERE goal_id = ? AND dag_version = ?",
-                (goal_id, dag_version),
-            ).fetchall()
-        else:
-            # Latest version for each subtask_id
-            rows = conn.execute(
-                """
-                SELECT * FROM subtasks WHERE goal_id = ?
-                AND dag_version = (
-                    SELECT MAX(dag_version) FROM subtasks s2
-                    WHERE s2.goal_id = subtasks.goal_id
-                )
-                """,
-                (goal_id,),
-            ).fetchall()
-        return [self._subtask_from_row(r) for r in rows]
-
-    def _subtask_from_row(self, row: sqlite3.Row) -> Subtask:
-        return Subtask(
-            subtask_id=row["subtask_id"],
-            goal_id=row["goal_id"],
-            title=row["title"],
-            job_type=row["job_type"],
-            payload=json.loads(row["payload_json"] or "{}"),
-            capabilities=json.loads(row["capabilities_json"] or "[]"),
-            depends_on=json.loads(row["depends_on_json"] or "[]"),
-            status=SubtaskStatus(row["status"]),
-            job_id=row["job_id"],
-            result=json.loads(row["result_json"]) if row["result_json"] else None,
-            depth=row["depth"],
-            is_critical_path=bool(row["is_critical_path"]),
-            retry_count=row["retry_count"],
-            max_retries=row["max_retries"],
-            estimated_hours=row["estimated_hours"],
-            started_at=_parse_dt(row["started_at"]),
-            completed_at=_parse_dt(row["completed_at"]),
-            error=row["error"],
-        )
-
-    # ── DAG CRUD ───────────────────────────────────────────────────────────────
-
-    def save_dag(self, dag: GoalDAG) -> None:
-        """Persist a GoalDAG (subtasks + version snapshot)."""
-        # Save each subtask
-        for subtask in dag.subtasks.values():
-            self.save_subtask(subtask, dag_version=dag.version)
-
-        # Persist full DAG snapshot for version history
-        dag_dict = {
-            "goal_id": dag.goal_id,
-            "root_ids": dag.root_ids,
-            "leaf_ids": dag.leaf_ids,
-            "critical_path": dag.critical_path,
-            "max_depth": dag.max_depth,
-            "version": dag.version,
-            "created_at": dag.created_at.isoformat(),
-            "subtasks": {
-                sid: {
-                    "subtask_id": s.subtask_id,
-                    "goal_id": s.goal_id,
-                    "title": s.title,
-                    "job_type": s.job_type,
-                    "payload": s.payload,
-                    "capabilities": s.capabilities,
-                    "depends_on": s.depends_on,
-                    "status": s.status.value if hasattr(s.status, 'value') else s.status,
-                    "job_id": s.job_id,
-                    "result": s.result,
-                    "depth": s.depth,
-                    "is_critical_path": s.is_critical_path,
-                    "retry_count": s.retry_count,
-                    "max_retries": s.max_retries,
-                    "estimated_hours": s.estimated_hours,
-                    "started_at": s.started_at.isoformat() if s.started_at else None,
-                    "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-                    "error": s.error,
-                }
-                for sid, s in dag.subtasks.items()
-            },
-        }
-        with self._tx() as conn:
-            conn.execute(
-                """
-                INSERT INTO goal_dag_versions (goal_id, version, dag_json, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(goal_id, version) DO UPDATE SET dag_json=excluded.dag_json
-                """,
-                (dag.goal_id, dag.version, json.dumps(dag_dict), _now_iso()),
-            )
-
-    def get_dag(self, goal_id: str) -> Optional[GoalDAG]:
-        """Retrieve the latest DAG for a goal."""
-        conn = self._get_conn()
-        row = conn.execute(
-            """
-            SELECT dag_json FROM goal_dag_versions
-            WHERE goal_id = ?
-            ORDER BY version DESC LIMIT 1
-            """,
-            (goal_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._dag_from_json(json.loads(row["dag_json"]))
-
-    def _dag_from_json(self, d: Dict[str, Any]) -> GoalDAG:
-        subtasks = {}
-        for sid, s in d.get("subtasks", {}).items():
-            subtasks[sid] = Subtask(
-                subtask_id=s["subtask_id"],
-                goal_id=s["goal_id"],
-                title=s["title"],
-                job_type=s.get("job_type", "custom"),
-                payload=s.get("payload", {}),
-                capabilities=s.get("capabilities", []),
-                depends_on=s.get("depends_on", []),
-                status=SubtaskStatus(s.get("status", "pending")),
-                job_id=s.get("job_id"),
-                result=s.get("result"),
-                depth=s.get("depth", 0),
-                is_critical_path=bool(s.get("is_critical_path", False)),
-                retry_count=s.get("retry_count", 0),
-                max_retries=s.get("max_retries", 2),
-                estimated_hours=s.get("estimated_hours"),
-                started_at=_parse_dt(s.get("started_at")),
-                completed_at=_parse_dt(s.get("completed_at")),
-                error=s.get("error"),
-            )
-        return GoalDAG(
-            goal_id=d["goal_id"],
-            subtasks=subtasks,
-            root_ids=d.get("root_ids", []),
-            leaf_ids=d.get("leaf_ids", []),
-            critical_path=d.get("critical_path", []),
-            max_depth=d.get("max_depth", 0),
-            version=d.get("version", 1),
-            created_at=_parse_dt(d.get("created_at")) or datetime.now(timezone.utc),
         )
 
     # ── Audit Log ──────────────────────────────────────────────────────────────

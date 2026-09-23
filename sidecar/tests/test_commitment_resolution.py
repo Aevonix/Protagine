@@ -2,7 +2,7 @@
 commitment cascade), re-raise suppression, dedup, and the learning signals.
 
 The scenario that motivated all of this: an overdue commitment is ingested
-into the workspace as a concern; the owner resolves the concern on the deck;
+into the mind's concerns; the owner resolves it on the deck;
 nothing settles the commitment, so the next ingest tick re-raises the concern
 and the resolve is silently undone. These tests pin the whole chain shut.
 """
@@ -23,18 +23,11 @@ from protagine.commitments.store import (
     CommitmentResolutionConflict, CommitmentStore, _normalize_desc, _similar_desc,
 )
 from protagine.self_model import settlement
-from protagine.self_model.workspace import ConcernStore, WorkspaceEngine
 
 
 @pytest.fixture
 def store(tmp_path):
     return CommitmentStore(db_path=tmp_path / "commitments.db")
-
-
-@pytest.fixture
-def ws(tmp_path):
-    cs = ConcernStore(db_path=str(tmp_path / "ws.db"))
-    return WorkspaceEngine(cs), cs
 
 
 @pytest.fixture(autouse=True)
@@ -335,51 +328,11 @@ class TestSettlement:
         assert result[0]["error"] == "operation_unverified"
 
 
-# --- workspace re-raise suppression ------------------------------------------
-
-class TestResolveSuppression:
-    def test_resolved_key_not_recreated_within_ttl(self, ws):
-        engine, cs = ws
-        c = engine.bump(kind="goal", summary="overdue commitment: recap",
-                        dedup_key="commitment:cm1", salience=0.7)
-        cs.record_thought(c.concern_id, "owner resolved", resolved=True,
-                          salience=0.0)
-        again = engine.bump(kind="goal", summary="overdue commitment: recap",
-                            dedup_key="commitment:cm1", salience=0.7)
-        assert again.concern_id == c.concern_id
-        assert again.status == "resolved"
-        assert cs.active() == []                     # stays off her mind
-
-    def test_suppression_expires(self, ws, monkeypatch):
-        monkeypatch.setenv("PROTAGINE_WORKSPACE_RESOLVED_TTL_HOURS", "1")
-        engine, cs = ws
-        c = engine.bump(kind="goal", summary="s", dedup_key="k", salience=0.5)
-        cs.record_thought(c.concern_id, "done", resolved=True, salience=0.0)
-        with cs._lock:
-            cs._conn.execute(
-                "UPDATE concerns SET last_touched=? WHERE concern_id=?",
-                (time.time() - 2 * 3600, c.concern_id))
-            cs._conn.commit()
-        again = engine.bump(kind="goal", summary="s", dedup_key="k", salience=0.5)
-        assert again.concern_id != c.concern_id      # source still open -> back
-        assert len(cs.active()) == 1
-
-    def test_resolve_by_dedup(self, ws):
-        engine, cs = ws
-        c = engine.bump(kind="goal", summary="s", dedup_key="commitment:cm9",
-                        salience=0.5)
-        n = cs.resolve_by_dedup("commitment:cm9", "commitment fulfilled")
-        assert n == 1
-        assert cs.get(c.concern_id).status == "resolved"
-        assert cs.resolve_by_dedup("commitment:cm9", "again") == 0
-
-
 # --- API: the full loop, shut ------------------------------------------------
 
 @asynccontextmanager
-async def _client(ws_engine, cstore):
-    orig_ws, orig_cs = host_mod._workspace, host_mod._commitment_store
-    host_mod._workspace = ws_engine
+async def _client(cstore):
+    orig_cs = host_mod._commitment_store
     host_mod._commitment_store = cstore
     app = FastAPI()
     @app.middleware("http")
@@ -392,7 +345,6 @@ async def _client(ws_engine, cstore):
                                base_url="http://test") as c:
             yield c
     finally:
-        host_mod._workspace = orig_ws
         host_mod._commitment_store = orig_cs
 
 
@@ -425,92 +377,11 @@ def _wire_commitment_settler(cstore):
     settlement.register_settler("commitment", _settle, retry_safe=True)
 
 
-async def test_deck_resolve_settles_commitment_and_stays_resolved(tmp_path):
-    """The original bug, end to end: deck resolve must settle the source
-    commitment, and the next ingest tick must NOT resurface the concern."""
-    cstore = CommitmentStore(db_path=tmp_path / "c.db")
-    cs = ConcernStore(db_path=str(tmp_path / "w.db"))
-    engine = WorkspaceEngine(cs)
-    _wire_commitment_settler(cstore)
-
-    cm = _overdue(cstore)
-    concern = engine.bump(kind="goal",
-                          summary=f"overdue commitment: {cm['description']}",
-                          dedup_key=f"commitment:{cm['id']}", salience=0.7,
-                          sources=[f"commitment:{cm['id']}"])
-
-    async with _client(engine, cstore) as c:
-        r = await c.post(f"/v1/host/self/workspace/{concern.concern_id}/resolve",
-                         json={"note": "owner says handled", "outcome": "done",
-                               "resolved_by": "owner"})
-        assert r.status_code == 200
-        body = r.json()
-        assert len(body["settled_sources"]) == 1
-        settled = body["settled_sources"][0]
-        assert {
-            key: settled[key]
-            for key in ("source", "settled", "kind", "status")
-        } == {
-            "source": f"commitment:{cm['id']}", "settled": True,
-            "kind": "commitment", "status": "fulfilled",
-        }
-        assert settled["operation_id"].startswith("concern-source-operation:")
-        assert settled["outcome"] == "done"
-
-    # the source is settled...
-    assert cstore.get(cm["id"])["status"] == "fulfilled"
-    assert cstore.get_overdue() == []
-    # ...and even if an ingest-shaped bump arrives again, nothing resurfaces
-    engine.bump(kind="goal", summary="overdue commitment: recap",
-                dedup_key=f"commitment:{cm['id']}", salience=0.7,
-                sources=[f"commitment:{cm['id']}"])
-    assert cs.active() == []
-
-
-async def test_deck_resolve_invalid_cancels_commitment(tmp_path):
-    cstore = CommitmentStore(db_path=tmp_path / "c.db")
-    cs = ConcernStore(db_path=str(tmp_path / "w.db"))
-    engine = WorkspaceEngine(cs)
-    _wire_commitment_settler(cstore)
-    cm = _overdue(cstore)
-    concern = engine.bump(kind="goal", summary="x",
-                          dedup_key=f"commitment:{cm['id']}", salience=0.7,
-                          sources=[f"commitment:{cm['id']}"])
-    async with _client(engine, cstore) as c:
-        r = await c.post(f"/v1/host/self/workspace/{concern.concern_id}/resolve",
-                         json={"outcome": "invalid", "note": "was never a real ask"})
-        assert r.status_code == 200
-    row = cstore.get(cm["id"])
-    assert row["status"] == "cancelled"
-    assert row["metadata"]["resolution"]["outcome"] == "invalid"
-
-
-async def test_patch_outcome_reverse_cascades_to_concern(tmp_path):
-    """Resolving the commitment directly (agent tool / MCP) must clear the
-    linked workspace concern too."""
-    cstore = CommitmentStore(db_path=tmp_path / "c.db")
-    cs = ConcernStore(db_path=str(tmp_path / "w.db"))
-    engine = WorkspaceEngine(cs)
-    cm = _overdue(cstore)
-    engine.bump(kind="goal", summary="x",
-                dedup_key=f"commitment:{cm['id']}", salience=0.7,
-                sources=[f"commitment:{cm['id']}"])
-    async with _client(engine, cstore) as c:
-        r = await c.patch(f"/v1/host/commitments/{cm['id']}",
-                          json={"outcome": "done", "reason": "sent it",
-                                "resolved_by": "agent"})
-        assert r.status_code == 200
-        assert r.json()["status"] == "fulfilled"
-    assert cs.active() == []
-    row = cstore.get(cm["id"])
-    assert row["metadata"]["resolution"]["by"] == "agent"
-
-
 async def test_create_dedupe_returns_existing(tmp_path):
     cstore = CommitmentStore(db_path=tmp_path / "c.db")
     first = cstore.create(person_id="owner",
                           description="Send Sam the build recap")
-    async with _client(None, cstore) as c:
+    async with _client(cstore) as c:
         r = await c.post("/v1/host/commitments",
                          json={"person_id": "owner",
                                "description": "send sam the build recap",
@@ -529,7 +400,7 @@ async def test_resolution_stats_endpoint(tmp_path):
     cstore = CommitmentStore(db_path=tmp_path / "c.db")
     a = cstore.create(person_id="o", description="a", source_type="introspection")
     cstore.resolve(a["id"], outcome="invalid", note="bad extraction")
-    async with _client(None, cstore) as c:
+    async with _client(cstore) as c:
         r = await c.get("/v1/host/commitments/stats/resolution")
         assert r.status_code == 200
         body = r.json()

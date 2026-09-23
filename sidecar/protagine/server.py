@@ -52,7 +52,6 @@ from protagine.api.routers.host import (
     set_comms_log,
     set_preference_learner,
     set_pattern_store,
-    set_surprise_store,
     set_tom_extractor,
     # Multi-Agent v0.7.0
     set_agent_store,
@@ -63,7 +62,6 @@ from protagine.api.routers.host import (
     set_telemetry,
     set_session_report_store,
     set_situation_spine,
-    set_external_event_intake,
     supported_capabilities,
 )
 
@@ -333,27 +331,6 @@ async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
     state_dir = _state_dir()
     _p8_wiring = None
-
-    # --- Phase C external text/system evidence intake ---
-    _external_event_intake = None
-    set_external_event_intake(None)
-    try:
-        from protagine.cognition.external_events import (
-            ExternalEventInboxStore,
-            ExternalEventIntake,
-        )
-        _external_event_intake = ExternalEventIntake(
-            ExternalEventInboxStore(
-                str(state_dir / "external-cognition-events.db")
-            )
-        )
-        set_external_event_intake(_external_event_intake)
-        logger.info(
-            "External cognition event intake initialized (text/system only; db=%s)",
-            state_dir / "external-cognition-events.db",
-        )
-    except Exception as exc:
-        logger.error("External cognition event intake failed: %s", exc)
 
     # --- 0. Adaptive parameters (meta-learning read-back path) ---
     # Created first so downstream consumers (consolidator, graph recall,
@@ -995,81 +972,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Expectation engine init failed: %s", exc)
 
-    # --- Cognitive workspace (Mind M2): continuity of thought ---
-    try:
-        from protagine.self_model.workspace import (
-            ConcernStore, WorkspaceEngine, workspace_enabled, workspace_mode,
-        )
-        from protagine.self_model.thinker import build_thinker
-        from protagine.self_model.event_concerns import (
-            ConversationTurnConcernReducer,
-            EventConcernReducer,
-            ExternalEventConcernReducer,
-            event_concerns_enabled,
-            event_concern_mode,
-            external_event_concerns_enabled,
-            external_event_concern_mode,
-            turn_concerns_enabled,
-            turn_concern_channels,
-            turn_concern_mode,
-        )
-        from protagine.api.routers.host import set_workspace
-        if workspace_enabled():
-            _concern_store = ConcernStore(
-                db_path=str(state_dir / "protagine-workspace.db"))
-            _thinker = (build_thinker(llm_router, graph=graph)
-                        if llm_router is not None else None)
-            _ws_journal = None
-            try:
-                from protagine.api.routers.host import _self_model as _sm_ws
-                _ws_journal = getattr(_sm_ws, "journal", None)
-            except Exception:
-                _ws_journal = None
-            _workspace = WorkspaceEngine(
-                _concern_store, thinker=_thinker, journal=_ws_journal)
-            if event_concerns_enabled():
-                _workspace.event_reducer = EventConcernReducer(_concern_store)
-                logger.info(
-                    "Durable event-to-concern reducer ready (mode=%s, bootstrap=%s)",
-                    event_concern_mode(),
-                    os.environ.get("PROTAGINE_EVENT_CONCERNS_BOOTSTRAP", "tail"),
-                )
-            if external_event_concerns_enabled():
-                _workspace.external_event_reducer = ExternalEventConcernReducer(
-                    _concern_store,
-                )
-                logger.info(
-                    "External event-to-concern reducer ready "
-                    "(mode=%s, bootstrap=replay)",
-                    external_event_concern_mode(),
-                )
-            if turn_concerns_enabled():
-                _workspace.turn_event_reducer = ConversationTurnConcernReducer(
-                    _concern_store,
-                )
-                logger.info(
-                    "Conversation turn-to-concern reducer ready "
-                    "(mode=%s, bootstrap=%s, channels=%s)",
-                    turn_concern_mode(),
-                    os.environ.get("PROTAGINE_TURN_CONCERNS_BOOTSTRAP", "tail"),
-                    ",".join(turn_concern_channels()) or "<none>",
-                )
-            set_workspace(_workspace)
-            logger.info("Cognitive workspace ready (mode=%s, db=%s)",
-                        workspace_mode(), state_dir / "protagine-workspace.db")
-        else:
-            logger.info("Cognitive workspace disabled (PROTAGINE_WORKSPACE=off)")
-            if external_event_concerns_enabled():
-                logger.warning(
-                    "External event concerns requested but workspace is disabled"
-                )
-            if turn_concerns_enabled():
-                logger.warning(
-                    "Conversation turn concerns requested but workspace is disabled"
-                )
-    except Exception as exc:
-        logger.warning("Workspace init failed: %s", exc)
-
     # --- Skills memory (procedure memory, item 3) ---
     _skills_mem_store = None
     try:
@@ -1141,31 +1043,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Repo mirror init failed: %s", exc)
 
-    # --- Pattern Extraction + Surprise ---
+    # --- Pattern Extraction ---
     try:
         from protagine.patterns.store import PatternStore
-        from protagine.surprise.store import SurpriseStore
 
         patterns_db = state_dir / "protagine-patterns.db"
         pattern_store = PatternStore(db_path=patterns_db)
         set_pattern_store(pattern_store)
         logger.info("PatternStore initialized (db=%s)", patterns_db)
-
-        surprise_db = state_dir / "protagine-surprise.db"
-        surprise_store = SurpriseStore(db_path=surprise_db)
-        set_surprise_store(surprise_store)
-        logger.info("SurpriseStore initialized (db=%s)", surprise_db)
-
-        # Close the surprise loop: the condition worker's
-        # surprise.accumulation event now lands as a workspace concern
-        # (the consumer checks workspace enablement at event time, so this
-        # registration is unconditional and a clean no-op when it is off).
-        from protagine.surprise.accumulation import (
-            register as register_surprise_consumer,
-        )
-        register_surprise_consumer()
     except Exception as exc:
-        logger.warning("Pattern/Surprise init failed: %s", exc)
+        logger.warning("Pattern init failed: %s", exc)
 
     # --- ToM LLM Extractor ---
     try:
@@ -1662,7 +1549,7 @@ async def lifespan(app: FastAPI):
         from protagine.mind import Mind
         from protagine.api.routers.mind import set_mind
         from protagine.api.routers import host as _host_for_mind
-        from protagine.config import load_config, update_config
+        from protagine.config import load_config, load_identity, update_config
         from protagine.identity import get_owner_contact_id
         from protagine.turns import get_turn_idempotency_ledger
 
@@ -1674,6 +1561,16 @@ async def lifespan(app: FastAPI):
         if _host_for_mind._commitment_store is not None:
             from protagine.initiatives.temporal_followup import TemporalFollowups
             _mind_followups = TemporalFollowups(_host_for_mind._commitment_store)
+        _mind_owner = get_owner_contact_id()
+        _mind_appraisals = None
+        if _mind_owner:
+            try:
+                from protagine.self_model.appraisals import AppraisalStore
+                _mind_appraisals = AppraisalStore(get_turn_idempotency_ledger(state_dir), owner_id=_mind_owner)
+            except Exception:
+                logger.debug("appraisal store unavailable to the mind", exc_info=True)
+        _mind_identity = load_identity(_mind_cfg.home) if _mind_cfg.exists else {}
+        _mind_interests = [str(item) for item in (_mind_identity.get("agent") or {}).get("interests") or []]
 
         def _persist_mind_setting(changes: dict) -> None:
             try:
@@ -1683,10 +1580,11 @@ async def lifespan(app: FastAPI):
 
         mind = Mind(
             config=_mind_cfg.get("mind") or {}, store=_mind_store, state_dir=state_dir,
-            owner_id=get_owner_contact_id(), commitments=_host_for_mind._commitment_store,
+            owner_id=_mind_owner, commitments=_host_for_mind._commitment_store,
             followups=_mind_followups, feedback=_host_for_mind._feedback_store,
             expectations=_host_for_mind._expectations, contacts=contacts_store,
-            ledger=get_turn_idempotency_ledger(state_dir),
+            ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
+            interests=_mind_interests,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
             persist=_persist_mind_setting)
         set_mind(mind)
@@ -1787,15 +1685,6 @@ async def lifespan(app: FastAPI):
             pass
 
     # Shutdown — close connections
-    set_external_event_intake(None)
-    if _external_event_intake is not None:
-        try:
-            _external_event_intake.close()
-        except Exception:
-            logger.debug(
-                "external cognition event intake shutdown failed",
-                exc_info=True,
-            )
     # Stop the mind tick before any store it uses is closed: its in-flight
     # tick must finish.
     try:
@@ -1874,7 +1763,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("presence store shutdown failed", exc_info=True)
     set_pattern_store(None)
-    set_surprise_store(None)
     set_tom_extractor(None)
     if channel_store is not None:
         try:

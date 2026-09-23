@@ -299,26 +299,8 @@ async def test_query_entities_forwards_the_type_filter(client, monkeypatch):
 # Cognition
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_cognition_cycle_no_backend(client):
-    resp = await client.post("/v1/host/cognition/cycle", json={
-        "identity": {"host_id": "test"},
-    })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["cpi"]["deprecated"] is True
-    assert data["cpi"]["canonical_endpoint"] == "/v1/host/self/benchmark"
-    assert "memory" not in data["cpi"]
 
 
-@pytest.mark.asyncio
-async def test_cpi_no_backend(client):
-    resp = await client.get("/v1/host/cognition/cpi")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["deprecated"] is True
-    assert data["canonical_endpoint"] == "/v1/host/self/benchmark"
-    assert "overall" not in data
 
 
 # ---------------------------------------------------------------------------

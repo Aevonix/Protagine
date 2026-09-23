@@ -1,7 +1,9 @@
-"""Owner task reply waits and independently observed native review bindings.
+"""Owner task reply waits.
 
 Transport producers call the ledger directly with their actual receipt. This
 API intentionally provides no model-callable 'a message was sent' assertion.
+The mind's duty drive turns a due wait into a follow-up intention; the native
+review bindings of the old plugin are gone with it.
 """
 from contextlib import closing
 import hashlib
@@ -16,17 +18,8 @@ from protagine.api.auth import request_authority
 from protagine.api.routers.executions import authorized_viewer
 from protagine.commitments.work import CommitmentWork
 from protagine.initiatives.temporal_followup import TemporalFollowups, encoded
-from protagine.turns.hermes_kanban import task_snapshot, observed_boards
 
 router = APIRouter(prefix='/v1/host/temporal-followups', tags=['commitments'])
-
-
-class ReviewBinding(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    contact_id: str = Field(min_length=1, max_length=256)
-    native_board: str = Field(pattern='^default$')
-    native_task_id: str = Field(min_length=1, max_length=128)
-    contract_sha256: str = Field(pattern='^[a-f0-9]{64}$')
 
 
 class ExpectedReply(BaseModel):
@@ -58,12 +51,6 @@ class WaitChange(BaseModel):
     operation: Literal['cancel', 'defer']
     evidence_ref: str = Field(min_length=1, max_length=256)
     until: float | None = Field(default=None, gt=0)
-
-
-class WaitEvidence(ReviewBinding):
-    native_run_id: int = Field(gt=0)
-    native_claim_lock: str = Field(min_length=1, max_length=256)
-    source: int = Field(default=0, ge=0, le=40)
 
 
 def ledger(request, contact_id, *, write=False):
@@ -143,15 +130,10 @@ def review_contract(row):
 
 
 def value(store, row):
-    home, boards, _ = observed_boards()
-    if home is None or 'default' not in boards:
-        raise ValueError('selected_native_followup_board_required')
     from protagine.self_model import reply_forecasts
     return {**row, 'id': row['wait_id'], 'status': {'done':'completed', 'archived':'cancelled', 'cancelled':'cancelled', 'failed':'failed'}[row['native_terminal_status']] if row.get('native_terminal_observed') else 'cancelled' if row['state'] in {'cancelled', 'expired'} else 'assigned' if row['native_task_id'] else 'pending',
             'reply_forecast': reply_forecasts.safe(reply_forecasts.project, row['wait_id']),
-            'review': review_contract(row), 'execution': {'native_board': 'default', 'worker_profile': 'protagine-reviews',
-            'source_home_id': hashlib.sha256(str(home).encode()).hexdigest()},
-            'effect_authorized': False}
+            'review': review_contract(row), 'effect_authorized': False}
 
 
 @router.post('')
@@ -217,86 +199,3 @@ def change(wait_id: str, body: WaitChange, request: Request):
         owned(store, wait_id, person)
         return store.cancel(wait_id, evidence_ref=body.evidence_ref) if body.operation == 'cancel' else store.defer(wait_id, until=body.until, evidence_ref=body.evidence_ref)
     return guarded(apply)
-
-
-def native(store, wait_id, person, body):
-    row = owned(store, wait_id, person)
-    binding, state = task_snapshot(wait_id, person, body.model_dump(), followup=True)
-    if state['contract_sha256'] != body.contract_sha256 or body.contract_sha256 != review_contract(row)['sha256']:
-        raise ValueError('native_followup_contract_mismatch')
-    if row['native_task_id'] and row['native_task_id'] != body.native_task_id:
-        raise ValueError('native_followup_association_mismatch')
-    return row, binding, state
-
-
-@router.post('/{wait_id}/evidence')
-def evidence(wait_id: str, body: WaitEvidence, request: Request):
-    store, person = ledger(request, body.contact_id)
-    def read():
-        row, _, _ = native(store, wait_id, person, body)
-        if row['native_task_id'] != body.native_task_id:
-            raise ValueError('bound_native_followup_required')
-        status = store.preflight(wait_id)
-        row = store.get(wait_id)
-        parent = store.store.get(row['commitment_id'])
-        if body.source:
-            if not status['review_allowed']:
-                raise ValueError('followup_evidence_no_longer_due')
-            if body.source > len(row['source_refs']):
-                raise ValueError('source_not_registered_for_review')
-            from protagine import get_state_dir
-            from protagine.turns import get_turn_idempotency_ledger
-            from protagine.turns.source_read import read as read_source
-            source_id = row['source_refs'][body.source-1]
-            return read_source(get_turn_idempotency_ledger(get_state_dir()), contact_id=person,
-                session_id=row['source_session_id'], source_id=source_id,
-                source_version=row['source_versions'][source_id])
-        return {'source': 'current_followup', 'review_allowed': status['review_allowed'],
-            'reason': status['reason'],
-            'wait': {key: row.get(key) for key in ('wait_id', 'state', 'revision', 'contact_id',
-                'outbound_ref', 'expected_at', 'expires_at', 'dispatch_receipt_ref',
-                'dispatch_occurred_at', 'reply', 'followup_receipt_ref', 'resolution_ref')},
-            'parent': {key: parent.get(key) for key in ('id', 'person_id', 'description', 'status')},
-            'sources': [{'source': index, 'source_id': sid,
-                'source_version': row['source_versions'][sid]}
-                for index, sid in enumerate(row['source_refs'], 1)],
-            'coverage': 'Current task reply state. Source reads are bounded canonical excerpts. '
-                'A missing reply is not evidence about a person’s character. '
-                'A local review neither sends a message nor fulfills the parent commitment.'}
-    return guarded(read)
-
-
-@router.post('/{wait_id}/native-task')
-def attach(wait_id: str, body: ReviewBinding, request: Request):
-    store, person = ledger(request, body.contact_id, write=True)
-    def bind():
-        row, _, state = native(store, wait_id, person, body)
-        if not row['native_task_id'] and (state['status'] != 'blocked' or state['attempt_count']):
-            raise ValueError('prospective_blocked_native_task_required')
-        return store.bind_native_task(wait_id, native_task_id=body.native_task_id)
-    return guarded(bind)
-
-
-@router.post('/{wait_id}/prepare')
-def prepare(wait_id: str, body: ReviewBinding, request: Request):
-    store, person = ledger(request, body.contact_id, write=True)
-    def check():
-        row, _, _ = native(store, wait_id, person, body)
-        if row['native_task_id'] != body.native_task_id:
-            raise ValueError('bound_native_followup_required')
-        return store.preflight(wait_id)
-    return guarded(check)
-
-
-@router.post('/{wait_id}/observe')
-def observe(wait_id: str, body: ReviewBinding, request: Request):
-    store, person = ledger(request, body.contact_id, write=True)
-    def reconcile():
-        row, _, state = native(store, wait_id, person, body)
-        if row['native_task_id'] != body.native_task_id:
-            raise ValueError('bound_native_followup_required')
-        if state['status'] in {'done', 'archived', 'cancelled'} or state.get('gave_up'):
-            row = store.observe_native_terminal(wait_id, native_task_id=body.native_task_id, native_status='failed' if state.get('gave_up') else state['status'])
-        return {**value(store, row), 'native_observation': state,
-                'result_authority': 'native operational report; external effects unverified'}
-    return guarded(reconcile)

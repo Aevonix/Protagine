@@ -165,3 +165,46 @@ def test_upgrade_retires_old_stores_and_adds_the_intention_columns(installed, ca
     assert init.pending_initiative_columns(home) == [] and init.retired_state_present(home) == []
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_retires_the_drives_milestone_stores_and_tables(installed, capsys):
+    """The workspace, cognition, evidence, drive-governance, external-event and surprise
+    stores move into the backup; the goal subtask and DAG tables and the legacy perspective
+    tables are dropped from their surviving stores after the backup keeps their rows."""
+    import sqlite3
+    home, _ = installed
+    for name in ("protagine-workspace.db", "protagine-cognition.db", "protagine-surprise.db"):
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x TEXT)")
+    with sqlite3.connect(home / "protagine-goals.db") as db:
+        db.execute("CREATE TABLE goals (goal_id TEXT PRIMARY KEY, title TEXT)")
+        db.execute("CREATE TABLE subtasks (subtask_id TEXT PRIMARY KEY, goal_id TEXT)")
+        db.execute("CREATE TABLE goal_dag_versions (id INTEGER PRIMARY KEY, goal_id TEXT)")
+        db.execute("INSERT INTO goals VALUES ('g-1', 'keep me')")
+        db.execute("INSERT INTO subtasks VALUES ('s-1', 'g-1')")
+    with sqlite3.connect(home / "turn-idempotency.db") as db:
+        db.execute("CREATE TABLE self_preference_events (id INTEGER PRIMARY KEY, owner_id TEXT)")
+        db.execute("CREATE TABLE self_attention (slot INTEGER PRIMARY KEY, snapshot_json TEXT, observed_at REAL)")
+        db.execute("INSERT INTO self_attention VALUES (1, '{}', 1.0)")
+    assert {"protagine-workspace.db", "protagine-cognition.db", "protagine-surprise.db"} <= set(init.retired_state_present(home))
+    assert set(init.retired_tables_present(home)) == {"protagine-goals.db:subtasks", "protagine-goals.db:goal_dag_versions",
+                                                      "turn-idempotency.db:self_attention"}
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    assert "retired protagine-workspace.db" in out and "retired table subtasks in protagine-goals.db (1 rows" in out
+    for name in ("protagine-workspace.db", "protagine-cognition.db", "protagine-surprise.db"):
+        assert not (home / name).exists()
+    with sqlite3.connect(home / "protagine-goals.db") as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "goals" in tables and "subtasks" not in tables and "goal_dag_versions" not in tables
+        assert db.execute("SELECT title FROM goals").fetchone()[0] == "keep me"
+    with sqlite3.connect(home / "turn-idempotency.db") as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "self_preference_events" in tables and "self_attention" not in tables
+    backup = next(p for p in (home / "backups").iterdir() if (p / "protagine-goals.db").exists())
+    with sqlite3.connect(backup / "protagine-goals.db") as db:
+        assert db.execute("SELECT count(*) FROM subtasks").fetchone()[0] == 1   # the rows survive in the backup
+    assert init.retired_tables_present(home) == [] and init.retired_state_present(home) == []
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    assert "nothing to do" in capsys.readouterr().out

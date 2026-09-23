@@ -58,7 +58,8 @@ class _Transport:
 
 def test_every_subcommand_parses():
     for command in mind_cli.COMMANDS:
-        extra = {"why": ["abc"], "yes": ["K7F"], "no": ["K7F"], "rate": ["abc", "useful"], "reset": ["owner"]}.get(command, [])
+        extra = {"why": ["abc"], "yes": ["K7F"], "no": ["K7F"], "rate": ["abc", "useful"], "reset": ["owner"],
+                 "interest": ["local history"]}.get(command, [])
         args = _parse(["mind", command, *extra])
         assert args.mind_command == command
     assert _parse(["mind", "level", "trusted"]).autonomy == "trusted"

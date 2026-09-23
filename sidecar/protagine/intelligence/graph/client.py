@@ -230,7 +230,6 @@ class ProtagineGraph:
                     ("delivery_bridge", "Delivery Bridge"),
                     ("event_bus", "Event Bus"),
                     ("graph_client", "Graph Client"),
-                    ("initiative_engine", "Initiative Engine"),
                     ("mind_model", "Mind Model"),
                 ]
                 for sub_id, sub_name in subsystems:

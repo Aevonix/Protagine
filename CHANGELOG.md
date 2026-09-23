@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased - drives, concerns, deliberation and agent-owned goals
+
+One ranked producer replaces the parallel producers of self-initiated work.
+Every tick the five drives (`P/mind/drives.py`: duty, curiosity, mastery,
+upkeep, and the social framework that proposes nothing until the people
+milestone) read one snapshot of stored state and raise concerns in `mind.db`
+(`P/mind/concerns.py`): repeats bump by `dedup_key`, salience decays with a
+12 h half-life, the workspace holds 24 concerns, and anti-rumination scales
+salience by 0.9 after progress and 0.6 without. The top 3 concerns are the
+broadcast set: the only deliberation candidates, rendered in the owner's Mind
+section (at most 600 characters) and added to the recall query. Deliberation
+(`P/mind/deliberate.py`) makes at most one tool-less router call per tick, for
+open-ended concerns only; templates cover the rest, and an active intention
+is reconsidered only on a matching event. Curiosity and mastery may adopt an
+agent-owned goal (`P/mind/goals.py`, at most `budgets.open_goals`), whose
+steps run as kanban tasks with `goal_mode` and which closes when its check
+passes, its task budget is spent or its horizon passes. A finished research
+task stores its finding as an autobiography entry a later turn recalls; a
+done outcome satiates its drive. Duty reads stale owner tasks and stalled
+Hermes goals from the body's board observations. Each faculty has one binary
+flag (`mind.faculties.drives|deliberation|goals|broadcast`) and each drive
+weight can be 0; the paired harness gains the `full`, `full-drives`,
+`full-broadcast` and per-drive arms. New: `protagine mind concerns|goals|
+interest`, `GET /v1/mind/concerns|goals`, `POST /v1/mind/interests`, and
+`agent.interests` in `identity.yaml`. See [docs/MIND.md](docs/MIND.md).
+
+Deleted with their tests and docs, as the build plan's M4 sweep: the
+initiative engine and the self-directed thinker, the rest of the `protagine.cognition`
+package (external events, charter, trigger, prompt), the cognitive workspace, the thinker and
+the event-concern reducers, the `/cognition/*`, `/self/workspace*` and
+`/surprises*` routes, the surprise store, the goal subtask and DAG tables, the
+sidecar's direct reads of Hermes' kanban database (the work view now reads the
+body's board observations), the native review and native kanban binding
+routes of the old plugin, and the legacy perspective tables (owner-preference
+capture stays). `protagine upgrade` moves the retired stores into the backup
+and drops the retired tables after it.
+
 ## Unreleased - the dormant executor and the ceremony are gone
 
 Nothing on a default install ran the second executor once the mind loop

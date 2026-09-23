@@ -176,6 +176,8 @@ class Budgets:
     llm_tokens_per_day: int = 200000
     learn_share: float = 0.25
     open_goals: int = 2
+    goal_tasks: int = 4            # steps an agent-owned goal may spend
+    goal_horizon_days: int = 7     # the longest horizon an adopted goal may have
     task_max_runtime_s: int = 600
     task_max_retries: int = 1
 
@@ -336,7 +338,14 @@ class Authority:
             hour_ago = now - timedelta(hours=1)
             if self.store.count_transitions(self.BUDGET_ACTION, hour_ago, kind="task") >= budgets.tasks_per_hour:
                 return f"budget: {budgets.tasks_per_hour} tasks per hour reached"
-            running = len(self.store.intentions(status=["approved", "dispatched"], kind=["task", "goal"], limit=1000))
+            if kind == "goal":
+                # A goal owns no Hermes object (its steps are tasks); only the goal count is budgeted.
+                open_goals = len(self.store.intentions(status=["approved", "asked", "proposed"], kind=["goal"],
+                                                       limit=1000))
+                if open_goals >= budgets.open_goals:
+                    return f"budget: {budgets.open_goals} open goals reached"
+                return None
+            running = len(self.store.intentions(status=["approved", "dispatched"], kind=["task"], limit=1000))
             if running >= budgets.concurrent_tasks:
                 return f"budget: {budgets.concurrent_tasks} concurrent tasks reached"
             return None

@@ -1,8 +1,8 @@
 """Specialized intelligence components.
 
-Eight domain-specific components that provide tool learning, self-reflection,
-task planning, session continuity, research orchestration, preference learning,
-anomaly detection, and proactive initiative generation.
+Seven domain-specific components that provide tool learning, self-reflection,
+task planning, session continuity, research orchestration, preference learning
+and anomaly detection. Self-initiated work is the mind's (``protagine.mind``).
 
 Public API:
     - ``ToolLearner`` / ``ToolUsage`` / ``ToolPreference`` — learn tool preferences
@@ -12,7 +12,6 @@ Public API:
     - ``ResearchOrchestrator`` / ``ResearchReport`` / ``ResearchResult`` / ``ResearchSource`` / ``SourceType`` — multi-source research
     - ``PreferenceLearner`` / ``Preference`` — user preference extraction
     - ``AnomalyDetector`` / ``Anomaly`` / ``AnomalyType`` — unusual pattern detection
-    - ``InitiativeEngine`` / ``Initiative`` / ``InitiativeType`` — proactive suggestions
 """
 
 from .tool_learner import ToolLearner, ToolPreference, ToolUsage
@@ -28,7 +27,6 @@ from .research_orchestrator import (
 )
 from .preference_learner import Preference, PreferenceLearner
 from .anomaly_detector import Anomaly, AnomalyDetector, AnomalyType
-from .initiative_engine import Initiative, InitiativeEngine, InitiativeType
 
 __all__ = [
     # Tool learning
@@ -59,8 +57,4 @@ __all__ = [
     "AnomalyDetector",
     "Anomaly",
     "AnomalyType",
-    # Initiative
-    "InitiativeEngine",
-    "Initiative",
-    "InitiativeType",
 ]

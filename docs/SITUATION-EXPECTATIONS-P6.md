@@ -65,11 +65,6 @@ relationship/contact. It deliberately ignores `summary`, `description`, and
 other narrative fields. A conversation turn is evidence of a recent
 participant and channel, not proof of physical room occupancy.
 
-The adapter also revalidates the exact
-`cognition.external.service_state` V2 journal projection before unpacking its
-typed `service` and `state` attributes. Its summary and free-form detail never
-become situation facts.
-
 Shared/public scope in an event is honored only when the boundary supplies
 `boundary_attested=true`; otherwise the adapter downgrades it to
 owner-private.

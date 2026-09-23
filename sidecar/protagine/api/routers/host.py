@@ -44,7 +44,6 @@ from protagine.api.schemas.host import (
     BriefingResponse,
     ChainVerifyRequest,
     ChainVerifyResponse,
-    CognitionCycleRequest,
     ContactCreateRequest,
     ContactIntroRequest,
     ContactIntroResponse,
@@ -138,8 +137,6 @@ from protagine.api.schemas.host import (
     CommitmentResponse,
     CommitmentUpdateRequest,
     ConcernResolveRequest,
-    CognitionTriggerRequest,
-    CognitionTriggerResponse,
     AffectEventCreateRequest,
     AffectEventResponse,
     AffectStateResponse,
@@ -153,10 +150,6 @@ from protagine.api.schemas.host import (
     PatternListResponse,
     PatternUpdateRequest,
     PatternExtractResponse,
-    SurpriseCreateRequest,
-    SurpriseResponse,
-    SurpriseListResponse,
-    SurpriseResolveRequest,
     TomExtractRequest,
     TomExtractResponse,
     WorldEntityCreateRequest,
@@ -337,6 +330,31 @@ def _mind():
     return get_mind()
 
 
+def _mind_section() -> str:
+    """The owner's Mind section: broadcast concerns, open goals and open asks, or nothing."""
+    mind = _mind()
+    if mind is None:
+        return ""
+    try:
+        return str(mind.section() or "")
+    except Exception:
+        logger.debug("mind section unavailable", exc_info=True)
+        return ""
+
+
+def _mind_recall_query(query_text: str) -> str:
+    """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
+    mind = _mind()
+    if mind is None or not query_text:
+        return query_text
+    try:
+        extra = " ".join(concern.summary for concern in mind.broadcast())[:400]
+    except Exception:
+        logger.debug("mind broadcast unavailable", exc_info=True)
+        return query_text
+    return f"{query_text} {extra}".strip() if extra else query_text
+
+
 def _mind_posture() -> tuple[str, bool]:
     """(autonomy level, running) for the status routes that used to read the loop."""
     mind = _mind()
@@ -425,16 +443,12 @@ def supported_capabilities() -> List[str]:
         caps.append("tom_p8_shadow")
     if _pattern_store is not None:
         caps.append("patterns")
-    if _surprise_store is not None:
-        caps.append("surprises")
     if _reranker is not None:
         caps.append("rerank")
     if _world_store is not None:
         caps.append("context")
         caps.append("world_model_api")
     caps.append("event_journal")
-    if _external_event_intake is not None:
-        caps.append("external_cognition_events")
     caps.append("skill_sandbox")
     caps.append("security_scanner")
     caps.append("tom_extract")
@@ -712,8 +726,6 @@ async def health() -> HostHealthResponse:
         notes["tom_p8"] = "P8 scoped context + outbound shadow observer wired"
     if _pattern_store is not None:
         notes["patterns"] = "PatternStore wired"
-    if _surprise_store is not None:
-        notes["surprises"] = "SurpriseStore wired"
     if _world_store is not None and hasattr(_world_store, '_backend') and _world_store._backend is not None:
         backend_type = type(_world_store._backend).__name__
         notes["world_model_backend"] = f"{backend_type} connected"
@@ -1914,6 +1926,7 @@ async def context_assemble(
     # Read authenticated work before recall selection. Native requests still
     # refresh this observation at their existing model boundary.
     current_work_available = False
+    _owner_turn = False
     # --- Scoped execution observations (not a commitment lock) ---
     try:
         from protagine.api.routers.executions import authorized_viewer, with_queue_work
@@ -1921,6 +1934,7 @@ async def context_assemble(
         person, owner = authorized_viewer(request, body.context.contact_id, scope="context:read")
         # Public/guest turns do not get cross-session activity. The owner view
         # is sealed from existing exact person grants, never a body owner flag.
+        _owner_turn = bool(owner)
         if owner:
             # Initial work is metadata only. Source-backed input excerpts belong
             # to the native request refresh, which carries their freshness guards.
@@ -1991,7 +2005,10 @@ async def context_assemble(
             from protagine.vector import get_store, get_pipeline
             source_ledger = (get_turn_idempotency_ledger(get_state_dir())
                 if (Path(get_state_dir()) / "turn-idempotency.db").exists() else None)
-            collected = await collect_sources(source_ledger, query=query_text,
+            # The broadcast set expands the owner's recall query (architecture 4.5); the
+            # section itself is rendered below, never for a guest.
+            recall_query = _mind_recall_query(query_text) if _owner_turn else query_text
+            collected = await collect_sources(source_ledger, query=recall_query,
                 contact_id=body.context.contact_id, session_id=body.context.session_id,
                 vector_store=get_store(), embedding_pipeline=get_pipeline())
             contact_tz = None
@@ -2178,6 +2195,10 @@ async def context_assemble(
                 if waiting_brief:
                     sections.append(ContextSection(id='protagine-waiting', title='Expected replies',
                         body=waiting_brief, priority=74))
+                # --- The Mind section (architecture 3.1): at most 600 characters, owner only ---
+                mind_text = _mind_section()
+                if mind_text:
+                    sections.append(ContextSection(id='protagine-mind', title='Mind', body=mind_text, priority=77))
                 if _situation_store is not None and re.search(r'\b(hardware|machine|server|model|endpoint|cluster|offline|online|running|doing|status)\b', query_text, re.I):
                     from protagine.world_model.observations import compact_situation
                     snapshot = _situation_store.snapshot(subject_person_id=person, viewer_scope='owner')
@@ -2268,7 +2289,7 @@ async def context_assemble(
                         source_ids=working_sources)
                     if working_brief:
                         sections.append(ContextSection(id='protagine-self-perspective',
-                            title='Current working judgments and attention', body=working_brief, priority=87,
+                            title='Current working judgments', body=working_brief, priority=87,
                             citations=perspective.ledger.source_references(working_sources,
                                 contact_id=contact_id, session_id=body.context.session_id)))
         except Exception as exc:
@@ -2449,21 +2470,6 @@ async def context_assemble(
         except Exception as exc:
             logger.debug("context_assemble comms landscape failed: %s", exc)
 
-    # --- Unresolved Surprises ---
-    if _legacy_global_allowed and _surprise_store is not None:
-        try:
-            surprises = _surprise_store.get_unresolved(limit=3)
-            if surprises:
-                lines = [f"- [{s.get('surprise_score', 0) if isinstance(s, dict) else s.surprise_score:.1f}] {s.get('observation', '') if isinstance(s, dict) else s.observation}" for s in surprises]
-                sections.append(ContextSection(
-                    id="protagine-surprises",
-                    title="Unexpected Observations",
-                    body="\n".join(lines),
-                    priority=75,
-                ))
-        except Exception as exc:
-            logger.warning("context_assemble surprises failed: %s", exc)
-
     if _telemetry is not None:
         try:
             await _telemetry.touch("last_prefetch_at")
@@ -2605,168 +2611,12 @@ async def signals_ingest(body: SignalIngestRequest) -> SignalIngestResponse:
             except Exception as exc:
                 logger.warning("signals_ingest raw signal failed: %s", exc)
 
-    # Fire cognition trigger for high-priority signals (best-effort)
-    if recorded > 0:
-        try:
-            from protagine.cognition.trigger import trigger_cognition, _cognition_enabled
-            if _cognition_enabled():
-                content = ""
-                if incoming and incoming.content:
-                    content = incoming.content[:500]
-                _spawn_task(trigger_cognition(
-                    trigger_type="signal_ingest",
-                    context={
-                        "signal_type": "engagement",
-                        "signal_data": {"content": content},
-                        "person_id": body.context.contact_id if body.context else "",
-                    },
-                    priority="low",
-                ))
-        except Exception:
-            logger.debug("cognition trigger from signal_ingest failed", exc_info=True)
-
     return SignalIngestResponse(accepted=True, signals_recorded=recorded)
 
 
 # ---------------------------------------------------------------------------
 # Turns
 # ---------------------------------------------------------------------------
-
-def _conversation_turn_concern_metadata(
-    body: TurnSyncRequest,
-    request: Request | None,
-    *,
-    resolved_human_sender: bool,
-    dynamic_contact_grant_attested: bool,
-) -> Dict[str, Any]:
-    """Seal optional concern metadata from server-side authority only.
-
-    ``HostTurnContext.metadata`` and every caller-provided privacy/authority
-    claim are deliberately ignored.  The key attests the owner contact it is
-    bound to; a structured sender attests the server-side resolver result.
-    Anonymous development mode, client-only contact claims, and the system
-    sentinel all fail closed while the ordinary timeline event remains
-    unchanged.
-    """
-
-    from protagine.self_model.event_concerns import turn_concerns_enabled
-
-    if not turn_concerns_enabled():
-        return {}
-    authority = request_authority(request)
-    subject = str(body.context.contact_id or "").strip()
-    scoped = bool(authority.authenticated and not authority.anonymous)
-    static_subject_granted = bool(
-        scoped
-        and subject
-        and (
-            subject == str(authority.viewer_person_id or "")
-            or subject in authority.person_ids
-        )
-    )
-    within_static_grant = bool(body.sender is None and static_subject_granted)
-    claimed_sender_platform = (
-        str(body.sender.platform or "").strip().lower()
-        if body.sender is not None else ""
-    )
-    source_platform = ""
-    if body.sender is not None and re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", claimed_sender_platform):
-        source_platform = claimed_sender_platform
-    source_platform_attested = bool(scoped and source_platform)
-    resolved_static_grant = bool(
-        scoped
-        and resolved_human_sender
-        and body.sender is not None
-        and static_subject_granted
-    )
-    resolved_dynamic_sender = bool(
-        scoped
-        and resolved_human_sender
-        and body.sender is not None
-        and source_platform
-        and dynamic_contact_grant_attested
-    )
-    resolved_sender_attested = bool(
-        resolved_static_grant or resolved_dynamic_sender
-    )
-    identity_attested = bool(
-        subject != "system"
-        and (within_static_grant or resolved_sender_attested)
-    )
-    owner = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-    )
-    scope_attested = bool(identity_attested and owner)
-    if scope_attested and subject == owner:
-        viewer_scope, shareability = "owner", "owner_private"
-    elif scope_attested:
-        viewer_scope, shareability = f"person:{subject}", "subject_private"
-    else:
-        viewer_scope, shareability = "", ""
-    attribution_method = (
-        "resolved_sender"
-        if resolved_dynamic_sender else
-        "resolved_static_grant"
-        if resolved_static_grant else
-        "authority_binding"
-        if within_static_grant else
-        "unattested"
-    )
-    canonical_turn_id = str(body.context.turn_id or "").strip()
-    turn_id_source = "client_idempotency_key" if canonical_turn_id else "missing"
-    if (
-        not canonical_turn_id
-        and identity_attested
-        and scope_attested
-        and str(body.context.session_id or "").strip()
-    ):
-        # This digest is only immutable lineage/deduplication. Content cannot
-        # contribute identity, privacy scope, capability, or effect authority.
-        turn_material = {
-            "schema": "ServerDerivedConversationTurnIdV1",
-            "source_principal_id": str(authority.principal_id or ""),
-            "subject_person_id": subject,
-            "session_id": str(body.context.session_id or ""),
-            "channel_id": str(body.context.channel_id or ""),
-            "source_platform": source_platform,
-            "summary": str(body.summary or ""),
-            "user_message": (
-                str(body.user_message.content or "")
-                if body.user_message is not None else ""
-            ),
-            "assistant_message": (
-                str(body.assistant_message.content or "")
-                if body.assistant_message is not None else ""
-            ),
-        }
-        encoded = json.dumps(
-            turn_material,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        canonical_turn_id = "server-turn-" + hashlib.sha256(encoded).hexdigest()
-        turn_id_source = "server_digest"
-    return {
-        "turn_scope_schema": "ConversationTurnJournalScopeV1",
-        "turn_id": canonical_turn_id,
-        "turn_id_source": turn_id_source,
-        "turn_id_attested": bool(
-            canonical_turn_id and identity_attested and scope_attested
-        ),
-        "subject_person_id": subject,
-        "identity_attested": identity_attested,
-        "scope_attested": scope_attested,
-        "attribution_method": attribution_method,
-        "source_principal_id": str(authority.principal_id or ""),
-        "source_platform": source_platform,
-        "source_platform_attested": source_platform_attested,
-        "viewer_scope": viewer_scope,
-        "shareability": shareability,
-        # A completed turn never attests widening to shared/public.
-        "boundary_attested": False,
-    }
 
 class SourceForgetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -3557,28 +3407,6 @@ async def _process_turn_sync(
             graph_error = f"record_turn failed: {type(exc).__name__}: {exc}"
             logger.warning("turns_sync failed: %s", exc)
 
-    # Fire cognition trigger (best-effort, non-blocking)
-    try:
-        from protagine.cognition.trigger import trigger_cognition, _cognition_enabled
-        if _cognition_enabled():
-            _spawn_task(trigger_cognition(
-                trigger_type="turn_sync",
-                context={
-                    "conversation_text": body.summary or "",
-                    # verbatim turn so introspection can see an owed deliverable
-                    # ("text me the result") and whether the assistant already did it;
-                    # a condensed summary often drops both.
-                    "user_message": (getattr(body.user_message, "content", "") or "")
-                                    if body.user_message else "",
-                    "assistant_message": (getattr(body.assistant_message, "content", "") or "")
-                                         if body.assistant_message else "",
-                    "person_id": body.context.contact_id,
-                    "session_id": body.context.session_id,
-                },
-                priority="normal",
-            ))
-    except Exception:
-        logger.debug("cognition trigger from turn_sync failed", exc_info=True)
 
     # Commitment capture runs in the projection worker (commitments/extract.py) on the router.
 
@@ -3661,12 +3489,6 @@ async def _process_turn_sync(
                 "topics": (body.topics or [])[:10],
                 "tools_used": (body.tools_used or [])[:20],
             }
-            turn_event_data.update(_conversation_turn_concern_metadata(
-                body,
-                request,
-                resolved_human_sender=_resolved_human_sender,
-                dynamic_contact_grant_attested=_contact_grant_attested,
-            ))
             append_event("conversation.turn", turn_event_data)
         except Exception:
             logger.debug("journal conversation.turn failed", exc_info=True)
@@ -5782,59 +5604,6 @@ def set_metalearner(learner) -> None:
     _metalearner = learner
 
 
-@router.post("/cognition/cycle")
-async def cognition_cycle(body: CognitionCycleRequest) -> dict:
-    """Run the legacy detector cycle but publish the canonical benchmark.
-
-    The detector still consumes its internal CPI object until it is retired;
-    the public API must not manufacture the historical memory/reasoning/social
-    dimensions when their evidence is unavailable.
-    """
-    from protagine.self_model.benchmark import legacy_cpi_payload
-
-    canonical_cpi = legacy_cpi_payload(_benchmark)
-    if _metalearner is None:
-        return {"cpi": canonical_cpi, "gaps": [], "adjustments": []}
-    try:
-        result = await _metalearner.run_cycle()
-        gaps = []
-        if result and hasattr(result, "gaps"):
-            for g in result.gaps:
-                severity = getattr(g, "severity", 0.0)
-                if hasattr(severity, "value"):
-                    severity = severity.value
-                gaps.append({
-                    "gap_id": getattr(g, "id", str(uuid.uuid4())),
-                    "domain": getattr(g, "domain", "general"),
-                    "severity": severity,
-                    "description": getattr(g, "description", None),
-                })
-        adjustments = []
-        if result and hasattr(result, "adjustments"):
-            for a in result.adjustments:
-                adjustments.append({"domain": getattr(a, "domain", ""), "action": getattr(a, "action", "")})
-        return {"cpi": canonical_cpi, "gaps": gaps,
-                "adjustments": adjustments}
-    except Exception as exc:
-        logger.warning("cognition_cycle failed: %s", exc)
-        return {"cpi": canonical_cpi, "gaps": [], "adjustments": [],
-                "error": str(exc)}
-
-
-@router.get("/cognition/cpi")
-async def get_cpi() -> dict:
-    """Deprecated compatibility surface backed by SelfhoodBenchmark."""
-    from protagine.self_model.benchmark import legacy_cpi_payload
-
-    try:
-        return legacy_cpi_payload(_benchmark)
-    except Exception as exc:
-        logger.warning("get_cpi failed: %s", exc)
-        return {"deprecated": True, "available": False,
-                "canonical_endpoint": "/v1/host/self/benchmark",
-                "error": str(exc)}
-
-
 # ---------------------------------------------------------------------------
 # Research
 # ---------------------------------------------------------------------------
@@ -6908,20 +6677,8 @@ def set_toolsmith(t) -> None:
     _toolsmith = t
 
 
-_workspace = None
-_external_event_intake = None
 _situation_store = None
 _situation_reducer = None
-def set_workspace(w) -> None:
-    global _workspace
-    _workspace = w
-
-
-def set_external_event_intake(intake) -> None:
-    """Publish or clear the strict Phase C external evidence intake."""
-
-    global _external_event_intake
-    _external_event_intake = intake
 
 
 def set_situation_spine(store, reducer) -> None:
@@ -6930,70 +6687,6 @@ def set_situation_spine(store, reducer) -> None:
     global _situation_store, _situation_reducer
     _situation_store = store
     _situation_reducer = reducer
-
-
-class ExternalCognitionEventRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    event_id: str = Field(min_length=8, max_length=192)
-    kind: str = Field(min_length=1, max_length=64)
-    occurred_at: str = Field(min_length=20, max_length=64)
-    summary: str = Field(min_length=1, max_length=1000)
-    attributes: Dict[str, Any] = Field(default_factory=dict)
-
-
-@router.post("/cognition/events")
-async def ingest_external_cognition_event(
-    body: ExternalCognitionEventRequest,
-    request: Request,
-) -> dict:
-    """Accept bounded text/system evidence under server-derived authority."""
-
-    from protagine.cognition.external_events import (
-        ExternalCognitionEventV1,
-        ExternalEventConflict,
-        ExternalEventProjectionError,
-        ExternalEventValidationError,
-    )
-
-    if _external_event_intake is None:
-        raise HTTPException(
-            status_code=503, detail="external cognition intake is unavailable",
-        )
-    authority = request_authority(request)
-    if (
-        not authority.authenticated
-        or authority.anonymous
-        or not authority.viewer_person_id
-        or not authority.principal_id
-        or not authority.credential_id
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "external_event_authority_required",
-                "message": (
-                    "scoped principal with an exact viewer binding is required"
-                ),
-            },
-        )
-    try:
-        event = ExternalCognitionEventV1.from_authority(
-            body.model_dump(), authority=authority,
-        )
-        return _external_event_intake.ingest(event)
-    except ExternalEventConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ExternalEventValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ExternalEventProjectionError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "external_event_projection_retryable",
-                "message": str(exc),
-            },
-        ) from exc
 
 
 _expectations = None
@@ -7076,223 +6769,6 @@ async def get_expectations(limit: int = 50) -> dict:
         return out
     except Exception as exc:
         return {"available": True, "error": str(exc)}
-
-
-@router.get("/self/workspace")
-async def get_workspace(request: Request, limit: int = 24) -> dict:
-    """Cognitive workspace: the concerns currently on her mind, most salient
-    first, with each concern's last thought and how much thinking it has had.
-    Real concerns only (Mind M2)."""
-    if _workspace is None:
-        return {"available": False}
-    try:
-        authority = request_authority(request)
-        owner_person_id = (
-            os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-            or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-            or "owner"
-        )
-        out = {"available": True}
-        out.update(_workspace.snapshot(
-            limit=max(1, min(200, limit)),
-            unrestricted=authority.authenticated and not authority.anonymous,
-            viewer_person_id=authority.viewer_person_id or "",
-            owner_person_id=owner_person_id,
-            audiences=authority.audiences,
-        ))
-        return out
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-def _owner_workspace_concern(concern_id: str, request: Request):
-    """Load one concern without disclosing it outside the owner lane."""
-
-    concern = _workspace.store.get(concern_id)
-    if concern is None:
-        raise HTTPException(status_code=404, detail="no concern with that id")
-    authority = request_authority(request)
-    if authority.authenticated and not authority.anonymous:
-        return concern
-    owner_person_id = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    if authority.viewer_person_id != owner_person_id or not concern.visible_to(
-        viewer_person_id=authority.viewer_person_id or "",
-        owner_person_id=owner_person_id,
-        audiences=authority.audiences,
-    ):
-        raise HTTPException(status_code=404, detail="no concern with that id")
-    return concern
-
-
-@router.get("/self/workspace/{concern_id}/resolution")
-async def get_concern_resolution(concern_id: str, request: Request) -> dict:
-    """Return the immutable owner-visible receipt for one terminal concern."""
-
-    if _workspace is None:
-        return {"available": False}
-    _owner_workspace_concern(concern_id, request)
-    receipt = _workspace.store.get_resolution(concern_id)
-    if receipt is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "concern_resolution_not_found",
-            "message": "no immutable resolution receipt exists for that concern",
-        })
-    return {
-        "available": True,
-        "resolved": concern_id,
-        "outcome": receipt["outcome"],
-        "cascade_status": receipt["cascade_evidence"]["status"],
-        "resolution": receipt,
-    }
-
-
-@router.post("/self/workspace/{concern_id}/resolve")
-async def resolve_concern(
-    concern_id: str,
-    request: Request,
-    body: Optional[ConcernResolveRequest] = None,
-    note: str = "resolved by owner",
-) -> dict:
-    """Settle a concern so it leaves her mind — and, with cascade (default),
-    settle the sources it was raised from. Without the cascade, an ingest
-    loop re-raises the concern from the still-open source on the next tick
-    and the resolve is silently undone. Accepts a JSON body (note, outcome,
-    cascade, resolved_by); the bare `note` query param remains for old
-    callers. A terminal exact replay performs no callback. An exact replay of
-    a durable pending cascade may recover only through source settlers that
-    prove the same operation-bound transition; unsafe recovery is a 409. A
-    different terminal claim conflicts with the first immutable receipt."""
-    if _workspace is None:
-        return {"available": False}
-    req = body or ConcernResolveRequest(note=note)
-    c = _owner_workspace_concern(concern_id, request)
-    if c.status not in ("active", "resolved"):
-        raise HTTPException(status_code=404, detail="no active concern with that id")
-    from protagine.self_model.workspace import ConcernResolutionConflict
-    try:
-        receipt, created = _workspace.store.resolve_with_owner_record(
-            concern_id,
-            outcome=req.outcome,
-            note=req.note,
-            cascade=req.cascade,
-            resolved_by=req.resolved_by,
-        )
-    except ConcernResolutionConflict as exc:
-        existing = _workspace.store.get_resolution(concern_id)
-        code = "concern_resolution_replay_conflict"
-        if existing and existing.get("provenance") == "legacy_unrecorded":
-            code = "legacy_concern_resolution_conflict"
-        raise HTTPException(status_code=409, detail={
-            "code": code,
-            "message": str(exc),
-            "resolution": existing,
-        }) from exc
-    already_resolved = not created
-    settled: list = []
-    recovery_attempted = False
-    cascade_state = receipt["cascade_evidence"]
-    if cascade_state["status"] == "pending":
-        cascade_error = None
-        if created:
-            try:
-                from protagine.self_model.settlement import settle_sources
-                settled = settle_sources(
-                    cascade_state["source_refs"],
-                    outcome=receipt["outcome"],
-                    note=receipt["note"],
-                    resolved_by=receipt["resolved_by"],
-                    operation_root=cascade_state["intent_id"],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "concern source settlement failed (%s)", type(exc).__name__,
-                )
-                cascade_error = exc
-        else:
-            recovery_attempted = True
-            from protagine.self_model.settlement import (
-                SettlementRetryUnsafe,
-                retry_safe_settle_sources,
-            )
-            try:
-                settled = retry_safe_settle_sources(
-                    cascade_state["source_refs"],
-                    operation_root=cascade_state["intent_id"],
-                    outcome=receipt["outcome"],
-                    note=receipt["note"],
-                    resolved_by=receipt["resolved_by"],
-                )
-            except SettlementRetryUnsafe as exc:
-                raise HTTPException(status_code=409, detail={
-                    "code": "concern_cascade_reconciliation_required",
-                    "message": "one or more sources do not support safe recovery",
-                    "unsafe_sources": exc.sources,
-                    "resolution": receipt,
-                }) from exc
-            except Exception as exc:
-                logger.warning(
-                    "concern cascade recovery failed (%s)", type(exc).__name__,
-                )
-                cascade_error = exc
-            recovery_proved = (
-                cascade_error is None
-                and len(settled) == len(cascade_state["source_refs"])
-                and [entry.get("source") for entry in settled]
-                == cascade_state["source_refs"]
-                and all(
-                    entry.get("settled") is True and not entry.get("error")
-                    for entry in settled
-                )
-            )
-            if not recovery_proved:
-                raise HTTPException(status_code=409, detail={
-                    "code": "concern_cascade_reconciliation_required",
-                    "message": "cascade recovery did not prove every source operation",
-                    "settled_sources": settled,
-                    "resolution": receipt,
-                })
-        try:
-            receipt = _workspace.store.finalize_owner_cascade(
-                concern_id, results=settled, error=cascade_error,
-            )
-            cascade_state = receipt["cascade_evidence"]
-        except Exception as exc:
-            logger.error(
-                "concern cascade outcome persistence failed",
-                exc_info=True,
-            )
-            raise HTTPException(status_code=500, detail={
-                "code": "concern_cascade_evidence_unavailable",
-                "message": "cascade outcome could not be recorded",
-            }) from exc
-        if recovery_attempted and cascade_state["status"] != "succeeded":
-            raise HTTPException(status_code=409, detail={
-                "code": "concern_cascade_reconciliation_required",
-                "message": "cascade recovery did not prove every source operation",
-                "settled_sources": settled,
-                "resolution": receipt,
-            })
-    journal = getattr(_workspace, "_journal", None)
-    if journal is not None and created:
-        try:
-            journal.record(
-                "workspace",
-                f"concern resolved by {req.resolved_by} ({req.outcome}): "
-                f"{c.summary[:80]}",
-                reasoning=req.note[:300], decision="resolved",
-                outcome=req.outcome)
-        except Exception:
-            logger.debug("concern resolve journal write failed", exc_info=True)
-    return {"available": True, "resolved": concern_id,
-            "outcome": receipt["outcome"],
-            "already_resolved": already_resolved,
-            "cascade_status": cascade_state["status"],
-            "recovery_attempted": recovery_attempted,
-            "settled_sources": settled, "resolution": receipt}
 
 
 @router.get("/self/tools")
@@ -7753,9 +7229,7 @@ async def get_autonomy_posture(request: Request) -> dict:
         from protagine.config import env_bool, env_choice
         posture = {}
         for name, valid, fallback in (
-            ("PROTAGINE_COGNITION_ENABLED", ("true", "false"), "false"),
             ("PROTAGINE_INTROSPECT_ENABLED", ("true", "false"), "false"),
-            ("PROTAGINE_THINKING_MODE", ("off", "shadow", "live"), "off"),
             ("PROTAGINE_BELIEFS_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_WORLD_POPULATE_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_WORLD_LLM_EXTRACT", ("off", "shadow", "live"), "off"),
@@ -7764,7 +7238,6 @@ async def get_autonomy_posture(request: Request) -> dict:
             ("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off"),
             ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
             ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "on"),
-            ("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off"),
         ):
             if valid == ("true", "false"):
                 posture[name] = str(env_bool(name, fallback == "true")).lower()
@@ -8071,12 +7544,6 @@ def set_pattern_store(store):
     _pattern_store = store
 
 
-_surprise_store = None
-
-
-def set_surprise_store(store):
-    global _surprise_store
-    _surprise_store = store
 _skill_executor = None
 
 def set_skills_registry(registry) -> None:
@@ -8674,22 +8141,6 @@ async def get_commitment(commitment_id: str) -> CommitmentResponse:
     return CommitmentResponse(**result)
 
 
-def _resolve_linked_concerns(commitment_id: str, note: str) -> None:
-    """Reverse cascade: a commitment settled directly (agent tool, MCP, API)
-    must also leave the workspace, or the deck keeps showing a concern for an
-    item that no longer exists as open work."""
-    if _workspace is None:
-        return
-    try:
-        n = _workspace.store.resolve_by_dedup(
-            f"commitment:{commitment_id}", note)
-        if n:
-            logger.info("resolved %d workspace concern(s) linked to commitment %s",
-                        n, commitment_id)
-    except Exception:
-        logger.debug("linked-concern resolve failed", exc_info=True)
-
-
 @router.patch("/commitments/{commitment_id}", response_model=CommitmentResponse)
 async def update_commitment(commitment_id: str, body: CommitmentUpdateRequest) -> CommitmentResponse:
     """Update a commitment. With `outcome` set this is a resolution: status
@@ -8712,8 +8163,6 @@ async def update_commitment(commitment_id: str, body: CommitmentUpdateRequest) -
             raise HTTPException(status_code=422, detail=str(e))
         if result is None:
             raise HTTPException(status_code=404, detail="Commitment not found")
-        _resolve_linked_concerns(
-            commitment_id, f"commitment settled ({body.outcome})")
         return CommitmentResponse(**result)
 
     try:
@@ -8751,9 +8200,6 @@ async def update_commitment(commitment_id: str, body: CommitmentUpdateRequest) -
             })
         except Exception:
             pass
-
-    if body.status in ("fulfilled", "cancelled"):
-        _resolve_linked_concerns(commitment_id, f"commitment {body.status}")
 
     return CommitmentResponse(**result)
 
@@ -8795,24 +8241,6 @@ async def delete_commitment(commitment_id: str):
 # ---------------------------------------------------------------------------
 # Cognition Substrate
 # ---------------------------------------------------------------------------
-
-@router.post("/cognition/trigger", response_model=CognitionTriggerResponse)
-async def cognition_trigger(body: CognitionTriggerRequest) -> CognitionTriggerResponse:
-    """Trigger a cognition cycle via OpenClaw subagent spawn.
-
-    The sidecar emits a cognition.requested event with the built prompt.
-    The Protagine plugin picks this up and calls sessions_spawn with the
-    configured model and restricted tool allowlist.
-    """
-    from protagine.cognition.trigger import trigger_cognition
-
-    result = await trigger_cognition(
-        trigger_type=body.trigger_type,
-        context=body.context,
-        priority=body.priority,
-    )
-    return CognitionTriggerResponse(**result)
-
 
 # ---------------------------------------------------------------------------
 # Theory of Mind — Affect
@@ -9183,122 +8611,6 @@ async def extract_patterns_endpoint() -> PatternExtractResponse:
     except Exception:
         pass
     return PatternExtractResponse(**result)
-
-
-# ---------------------------------------------------------------------------
-# Surprise Engine
-# ---------------------------------------------------------------------------
-
-@router.post("/surprises", response_model=SurpriseResponse, status_code=status.HTTP_201_CREATED)
-async def create_surprise(body: SurpriseCreateRequest) -> SurpriseResponse:
-    """Record a surprise observation."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-
-    score = body.surprise_score
-    expected = body.expected
-    # Auto-score if requested.
-    if body.auto_score and _pattern_store is not None:
-        from protagine.surprise.scorer import compute_surprise
-        scored = compute_surprise(body.observation, pattern_store=_pattern_store)
-        if score is None:
-            score = scored["surprise_score"]
-        if expected is None:
-            expected = scored.get("expected")
-    elif score is None:
-        score = 0.5
-
-    try:
-        result = _surprise_store.create_surprise(
-            observation=body.observation,
-            expected=expected,
-            surprise_score=score,
-            pattern_id=body.pattern_id,
-            context=body.context,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # Emit high surprise event.
-    if result["surprise_score"] >= 0.8:
-        try:
-            from protagine.events.broadcaster import emit as _emit
-            _emit("surprise.high", {
-                "surprise_id": result["id"],
-                "observation": result["observation"],
-                "score": result["surprise_score"],
-            })
-        except Exception:
-            pass
-
-    return SurpriseResponse(**result)
-
-
-@router.get("/surprises", response_model=SurpriseListResponse)
-async def list_surprises(
-    min_score: float = Query(0.0, ge=0.0, le=1.0),
-    resolved: Optional[bool] = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-) -> SurpriseListResponse:
-    """List surprises with optional filters."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-    result = _surprise_store.list_surprises(
-        min_score=min_score,
-        resolved=resolved,
-        limit=limit,
-        offset=offset,
-    )
-    return SurpriseListResponse(
-        surprises=[SurpriseResponse(**s) for s in result["surprises"]],
-        total=result["total"],
-        limit=result["limit"],
-        offset=result["offset"],
-    )
-
-
-@router.get("/surprises/unresolved", response_model=List[SurpriseResponse])
-async def list_unresolved_surprises(
-    min_score: float = Query(0.5, ge=0.0, le=1.0),
-    limit: int = Query(10, ge=1, le=50),
-) -> List[SurpriseResponse]:
-    """Get unresolved high-score surprises."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-    results = _surprise_store.get_unresolved(min_score=min_score, limit=limit)
-    return [SurpriseResponse(**s) for s in results]
-
-
-@router.get("/surprises/{surprise_id}", response_model=SurpriseResponse)
-async def get_surprise(surprise_id: str) -> SurpriseResponse:
-    """Get a specific surprise."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-    result = _surprise_store.get_surprise(surprise_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Surprise not found")
-    return SurpriseResponse(**result)
-
-
-@router.patch("/surprises/{surprise_id}", response_model=SurpriseResponse)
-async def resolve_surprise(surprise_id: str, body: SurpriseResolveRequest) -> SurpriseResponse:
-    """Resolve/acknowledge a surprise."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-    result = _surprise_store.resolve_surprise(surprise_id, resolution=body.resolution)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Surprise not found")
-    return SurpriseResponse(**result)
-
-
-@router.delete("/surprises/{surprise_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_surprise(surprise_id: str):
-    """Delete a surprise."""
-    if _surprise_store is None:
-        raise HTTPException(status_code=501, detail="Surprise engine not initialized")
-    if not _surprise_store.delete_surprise(surprise_id):
-        raise HTTPException(status_code=404, detail="Surprise not found")
 
 
 # ---------------------------------------------------------------------------
@@ -9752,13 +9064,6 @@ def _wm_rel_to_response(rel) -> WorldRelationshipResponse:
 _agent_store = None
 _invite_store = None
 _initiative_store = None
-_initiative_engine = None
-
-
-def set_initiative_engine(engine) -> None:
-    """The volatile-context rebuilder; unwired until the drives milestone."""
-    global _initiative_engine
-    _initiative_engine = engine
 _assignment_engine = None
 _websocket_manager = None
 
@@ -10336,11 +9641,8 @@ async def refresh_initiative_context(initiative_id: str) -> InitiativeResponse:
 
     from protagine.initiatives.context_freshness import DURABLE, durability_for
 
-    engine = _initiative_engine
-
+    # No per-entity context loader remains: the mind's concerns carry their own evidence.
     fresh = None
-    if engine is not None and hasattr(engine, "rebuild_context"):
-        fresh = await engine.rebuild_context(initiative.type, initiative.entity_id)
 
     if fresh is None:
         if durability_for(initiative.type) == DURABLE:

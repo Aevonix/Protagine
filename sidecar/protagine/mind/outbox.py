@@ -186,10 +186,10 @@ class Outbox:
         return self.store.get_by_dedup_key(f"digest:{local_date}") is not None
 
     def build_digest(self, *, since: datetime, level: str, breaker_states: List[Dict[str, Any]] | None = None,
-                     suggestions: List[StoredInitiative] | None = None) -> str:
+                     suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None) -> str:
         rows = self.store.intentions(since=since, limit=500)
         rows = [row for row in rows if row.type not in NOTICE_TYPES]
-        acted = [row for row in rows if row.decision == "act" and row.kind in {"task", "message"}]
+        acted = [row for row in rows if row.decision == "act" and row.kind in {"task", "message", "goal"}]
         asks = [row for row in self.store.intentions(status=["asked"], limit=200)]
         uncertain = [row for row in rows if row.status == "uncertain"]
         failed = [row for row in rows if row.outcome == "failed"]
@@ -210,6 +210,9 @@ class Outbox:
                 lines.append(f"- [{row.ask_code}] {_clip(row.description, 120)}")
         for row in suggestions or []:
             lines.append(f"- suggestion: {_clip(row.description, 120)}")
+        if goals:
+            lines.append(f"Goals I am pursuing ({len(goals)}):")
+            lines += [f"- {_clip(item, 140)}" for item in goals[:4]]
         if uncertain:
             lines.append(f"Delivery uncertain ({len(uncertain)}), not resent:")
             for row in uncertain[:6]:

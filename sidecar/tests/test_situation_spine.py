@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.cognition.external_events import ExternalCognitionEventV1
 from protagine.self_model.situation import (
     AppropriatenessGate,
     JournalSituationAdapter,
@@ -191,97 +190,6 @@ def test_negative_service_state_remains_visible_to_policy():
     assert items[0].active is True
 
 
-def test_external_service_projection_is_revalidated_and_unpacked(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    authority = SimpleNamespace(
-        authenticated=True,
-        legacy=False,
-        anonymous=False,
-        principal_id="service-observer",
-        credential_id="credential-current",
-        viewer_person_id="person-owner",
-        audiences=frozenset({"owner"}),
-        scopes=frozenset({"cognition:events-ingest"}),
-        has_scope=lambda scope: scope == "cognition:events-ingest",
-    )
-    event = ExternalCognitionEventV1.from_authority(
-        {
-            "event_id": "external-service-state-0001",
-            "kind": "service_state",
-            "occurred_at": "2027-01-15T08:00:00+00:00",
-            "summary": "Free-form summary must not become situation state",
-            "attributes": {
-                "service": "gateway",
-                "state": "degraded",
-                "detail": "Free-form detail must also remain excluded",
-                "latency_ms": 850,
-                "observed_samples": 3,
-            },
-        },
-        authority=authority,
-        now=datetime(2027, 1, 15, 8, 1, tzinfo=timezone.utc),
-    )
-    projected = journal_event(
-        "cognition.external.service_state",
-        event.journal_payload(),
-    )
-    projected["occurredAt"] = "2027-01-15T08:01:00+00:00"
-
-    items, disposition, _ = JournalSituationAdapter.adapt(projected)
-
-    assert disposition == "projected"
-    assert len(items) == 1
-    item = items[0]
-    assert item.category == "service"
-    assert item.entity_id == "gateway"
-    assert item.state == "degraded"
-    assert item.active is True
-    assert item.observed_at == datetime(
-        2027, 1, 15, 8, 0, tzinfo=timezone.utc,
-    ).timestamp()
-    assert item.subject_person_id == "person-owner"
-    assert item.viewer_scope == "owner"
-    assert item.shareability == "owner_private"
-    assert item.evidence_refs == ("journal:7:event-7",)
-    assert dict(item.attributes) == {
-        "event_type": "cognition.external.service_state",
-        "latency_ms": 850,
-        "observed_samples": 3,
-    }
-    assert "Free-form" not in str(item.payload())
-
-
-def test_external_service_projection_rejects_invalid_typed_state(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    authority = SimpleNamespace(
-        authenticated=True,
-        legacy=False,
-        anonymous=False,
-        principal_id="service-observer",
-        credential_id="credential-current",
-        viewer_person_id="person-owner",
-        audiences=frozenset({"owner"}),
-        scopes=frozenset({"cognition:events-ingest"}),
-        has_scope=lambda scope: scope == "cognition:events-ingest",
-    )
-    event = ExternalCognitionEventV1.from_authority(
-        {
-            "event_id": "external-service-state-0002",
-            "kind": "service_state",
-            "occurred_at": "2027-01-15T08:00:00+00:00",
-            "summary": "Gateway probe",
-            "attributes": {"service": "gateway", "state": "healthy"},
-        },
-        authority=authority,
-        now=datetime(2027, 1, 15, 8, 1, tzinfo=timezone.utc),
-    )
-    payload = event.journal_payload()
-    payload["attributes"]["state"] = "owner-says-healthy"
-
-    with pytest.raises(ValueError, match="unsupported"):
-        JournalSituationAdapter.adapt(
-            journal_event("cognition.external.service_state", payload),
-        )
 
 
 def test_current_outreach_channel_field_is_supported():

@@ -13,7 +13,7 @@ from . import paired_arms
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
-                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
+                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
                             TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
@@ -29,7 +29,18 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'base-curator': {'plugin': False, 'overlay': {}, 'curator': True},
             # The treatment arm of mind-initiative-1: the plugin with the mind on
             # (autonomy standard, only the initiative faculty), ticked by the body tick.
-            'protagine-initiative': {'plugin': True, 'overlay': {}, 'initiative': True}}
+            'protagine-initiative': {'plugin': True, 'overlay': {}, 'initiative': True},
+            # The drives family (evals section 6.6): every faculty at its release-candidate
+            # value, the flat-priority ablation (weights 1, no satiation, no goal adoption), the
+            # broadcast ablation, and one diagnostic per drive (its weight set to 0).
+            'full': {'plugin': True, 'overlay': {}, 'full': True},
+            'full-drives': {'plugin': True, 'overlay': {}, 'full': True, 'minus_drives': True},
+            'full-broadcast': {'plugin': True, 'overlay': {}, 'full': True, 'minus_broadcast': True},
+            'full-duty': {'plugin': True, 'overlay': {}, 'full': True, 'minus_duty': True},
+            'full-curiosity': {'plugin': True, 'overlay': {}, 'full': True, 'minus_curiosity': True},
+            'full-mastery': {'plugin': True, 'overlay': {}, 'full': True, 'minus_mastery': True},
+            'full-upkeep': {'plugin': True, 'overlay': {}, 'full': True, 'minus_upkeep': True},
+            'full-social': {'plugin': True, 'overlay': {}, 'full': True, 'minus_social': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
@@ -196,8 +207,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         raise ValueError('Arm profiles beyond the built-in pair require an image whose worker applies profiles')
     if any(labels[arm].get('heartbeat') for arm in labels) and payload.get('heartbeat_prompt_sha256') != HEARTBEAT['prompt_sha256']:
         raise ValueError('The heartbeat arm requires an image whose worker carries the same heartbeat prompt')
-    if any(labels[arm].get('initiative') for arm in labels) and payload.get('mind_tick') != MIND_TICK_PROTOCOL:
-        raise ValueError('The initiative arm requires an image whose worker serves the mind and ticks it')
+    if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
+            and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
+        raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)

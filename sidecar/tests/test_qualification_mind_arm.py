@@ -50,16 +50,59 @@ def test_the_initiative_arm_needs_an_image_whose_worker_serves_the_mind(fixture,
 
 
 def test_mind_section_is_off_in_the_plugin_arm_and_initiative_only_in_the_treatment():
-    assert worker.mind_section(False) == {'enabled': False}
+    assert worker.mind_section(False) == {'enabled': False} == worker.mind_section(None)
     section = worker.mind_section(True)
+    assert section == worker.mind_section({'initiative': True})
     assert section['enabled'] is True and section['autonomy'] == 'standard'
-    assert section['faculties'] == {'initiative': True, 'people': False, 'affect': False, 'opinions': False,
-                                    'broadcast': False, 'semantic_recall': False, 'consolidation': False,
-                                    'self_narrative': False, 'lessons': False, 'skills': False}
+    assert section['faculties'] == {name: name == 'initiative' for name in worker.MIND_FACULTIES}
+    assert {'drives', 'deliberation', 'goals', 'broadcast'} <= set(section['faculties'])
     assert section['quiet_hours'] == '' and section['digest_hour'] == 24
     from protagine.mind.authority import Policy
     policy = Policy.from_config(section)
     assert policy.level == 'standard' and policy.enabled is True and policy.quiet_hours == ''
+
+
+def test_the_drives_family_arms_are_full_and_its_binary_ablations(fixture):
+    from protagine.config import DEFAULTS
+    arms = ['base-heartbeat', 'full', 'full-drives', 'full-broadcast']
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled', arms=arms,
+                           reference_arm='full', **fixture.resources)
+    profiles = manifest['comparison']['profiles']
+    assert profiles['full'] == {'name': 'full', 'plugin': True, 'overlay': {}, 'full': True}
+    assert profiles['full-drives'] == {'name': 'full-drives', 'plugin': True, 'overlay': {}, 'full': True,
+                                       'minus_drives': True}
+    # The per-drive diagnostics (evals section 6.6) are their own 8-arm plan against full.
+    diagnostics = ['full', 'full-duty', 'full-curiosity', 'full-mastery', 'full-upkeep', 'full-social']
+    diagnostic_plan = paired.plan(fixture.output / 'diagnostics', native_binding='candidate',
+                                  evidence_mode='controlled', arms=diagnostics, reference_arm='full',
+                                  **fixture.resources)
+    profiles.update(diagnostic_plan['comparison']['profiles'])
+    for arm in [*arms[1:], *diagnostics[1:]]:
+        pairs = (manifest if arm in arms else diagnostic_plan)['pairs']
+        assert paired_worker.arm_profile(pairs[0]['arms'][arm]['case']['inputs'])['full'] is True
+        assert paired_worker.mind_switches(profiles[arm])
+    assert paired_worker.mind_switches({'plugin': True, 'overlay': {}}) is None
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-3'
+    assert set(paired_worker.MIND_SWITCHES) <= set(paired_worker.PROFILE_SWITCHES)
+
+    full = worker.mind_section(paired_worker.mind_switches(profiles['full']))
+    assert full['faculties'] == {name: bool(DEFAULTS['mind']['faculties'].get(name, False))
+                                 for name in worker.MIND_FACULTIES}
+    assert full['faculties']['drives'] and full['faculties']['broadcast'] and not full['faculties']['skills']
+    assert full['drives'] == DEFAULTS['mind']['drives'] and full['budgets'] == DEFAULTS['mind']['budgets']
+    flat = worker.mind_section(paired_worker.mind_switches(profiles['full-drives']))
+    assert flat['faculties']['drives'] is False and flat['faculties']['broadcast'] is True
+    no_broadcast = worker.mind_section(paired_worker.mind_switches(profiles['full-broadcast']))
+    assert no_broadcast['faculties']['broadcast'] is False and no_broadcast['faculties']['drives'] is True
+    for name in ('duty', 'curiosity', 'mastery', 'upkeep', 'social'):
+        section = worker.mind_section(paired_worker.mind_switches(profiles[f'full-{name}']))
+        assert section['drives'][name] == 0.0
+        assert all(section['drives'][other] == DEFAULTS['mind']['drives'][other]
+                   for other in section['drives'] if other != name)
+    from protagine.mind.drives import weights
+    assert weights(flat['drives'], faculty_on=flat['faculties']['drives']) == {
+        'duty': 1.0, 'social': 1.0, 'curiosity': 1.0, 'mastery': 1.0, 'upkeep': 1.0}
+    assert weights(full['drives'], faculty_on=full['faculties']['drives']) == DEFAULTS['mind']['drives']
 
 
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):

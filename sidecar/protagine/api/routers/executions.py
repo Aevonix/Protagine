@@ -199,7 +199,7 @@ async def with_queue_work(view, *, owner, limit=8):
     import asyncio
     from protagine.turns.hermes_work import cron_view
     from protagine.turns.local_work import local_work_view
-    from protagine.turns.hermes_kanban import kanban_view
+    from protagine.turns.board_observations import kanban_view
     from protagine.turns.reported_workers import reported_worker_view
     from protagine.turns.executions import work_source_coverage
     import time

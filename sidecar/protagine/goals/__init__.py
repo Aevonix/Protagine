@@ -1,13 +1,13 @@
 """Durable goal records; execution belongs to native tasks and commitments."""
 
 from .models import (
-    Goal, GoalDAG, GoalOutcome, GoalPriority, GoalSource, GoalStatus,
-    GoalSummary, GoalTransitionRecord, Subtask, SubtaskStatus,
+    Goal, GoalOutcome, GoalPriority, GoalSource, GoalStatus,
+    GoalSummary, GoalTransitionRecord,
 )
 from .store import GoalNotFoundError, GoalStore
 
 __all__ = [
-    "Goal", "GoalDAG", "GoalOutcome", "GoalPriority", "GoalSource", "GoalStatus",
-    "GoalSummary", "GoalTransitionRecord", "Subtask", "SubtaskStatus",
+    "Goal", "GoalOutcome", "GoalPriority", "GoalSource", "GoalStatus",
+    "GoalSummary", "GoalTransitionRecord",
     "GoalNotFoundError", "GoalStore",
 ]

@@ -106,35 +106,6 @@ class NativeWorkFinish(NativeWorkRun):
     result: LocalDraftResult
 
 
-class NativeTaskBinding(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    contact_id: str = Field(min_length=1, max_length=256)
-    native_board: str = Field(pattern=r'^[a-z0-9][a-z0-9_-]{0,63}$')
-    native_task_id: str = Field(min_length=1, max_length=128)
-
-
-class NativeKanbanRun(NativeTaskBinding):
-    native_run_id: int = Field(ge=1)
-    native_claim_lock: str = Field(min_length=1, max_length=256)
-
-
-class NativeKanbanFinish(NativeKanbanRun):
-    result: LocalDraftResult
-
-
-def accepted_native(body, initiative_id, person):
-    from protagine.turns.hermes_kanban import task_snapshot
-    try:
-        # An accepted transition can wait briefly for a native writer, including
-        # Hermes' DELETE-journal fallback. Ordinary work projections stay fast.
-        return task_snapshot(initiative_id, person,
-                             body.model_dump(exclude={'contact_id', 'result'}), read_timeout=2.)
-    except (OSError, sqlite3.Error):
-        raise HTTPException(503, detail='native_board_unavailable') from None
-    except (ValueError, KeyError, TypeError) as error:
-        raise HTTPException(409, detail=str(error)) from None
-
-
 def local_store(request, contact_id, *, enabled=False):
     person, owner = authorized_viewer(request, contact_id, scope='turns:write')
     if not owner:
@@ -213,30 +184,6 @@ def pending_native_drafts(contact_id: str, request: Request):
     return store.native_pending(person)
 
 
-@router.post('/local-work/{initiative_id}/native-task')
-def attach_native_draft(initiative_id: str, body: NativeTaskBinding, request: Request):
-    store, person = local_store(request, body.contact_id, enabled=True)
-    native, _ = accepted_native(body, initiative_id, person)
-    try:
-        return store.attach_native_task(initiative_id, person, native)
-    except KeyError:
-        raise HTTPException(404, detail='unknown_local_work') from None
-    except ValueError as error:
-        raise HTTPException(409, detail=str(error)) from None
-
-
-@router.post('/local-work/{initiative_id}/native-run')
-def bind_native_draft(initiative_id: str, body: NativeKanbanRun, request: Request):
-    store, person = local_store(request, body.contact_id, enabled=True)
-    native, state = accepted_native(body, initiative_id, person)
-    try:
-        return store.bind_native_run(initiative_id, person, native, attempt_count=state['attempt_count'])
-    except KeyError:
-        raise HTTPException(404, detail='unknown_local_work') from None
-    except ValueError as error:
-        raise HTTPException(409, detail=str(error)) from None
-
-
 @router.get('/local-work/{initiative_id}')
 def local_draft_status(initiative_id: str, contact_id: str, request: Request):
     store, person = local_store(request, contact_id)
@@ -247,10 +194,9 @@ def local_draft_status(initiative_id: str, contact_id: str, request: Request):
 
 
 @router.post('/local-work/{initiative_id}/finish')
-def finish_local_draft(initiative_id: str, body: NativeWorkFinish | NativeKanbanFinish, request: Request):
+def finish_local_draft(initiative_id: str, body: NativeWorkFinish, request: Request):
     store, person = local_store(request, body.contact_id)
-    native, _ = (accepted_native(body, initiative_id, person) if isinstance(body, NativeKanbanFinish)
-                 else native_run(body, finishing=True))
+    native, _ = native_run(body, finishing=True)
     result = body.result.model_dump()
     if result['status'] == 'draft_created':
         if not result['report_sha256'] or not Path(result['report_path']).is_absolute() or not result['sources']:

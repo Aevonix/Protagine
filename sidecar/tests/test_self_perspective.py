@@ -132,45 +132,6 @@ async def test_ordinary_correction_survives_reopen_and_cannot_be_overwritten_or_
             assert conn.execute('SELECT count(*) FROM self_preference_events WHERE source_turn_id=?', ('correction',)).fetchone()[0] == 0
 
 
-def candidates():
-    return [SimpleNamespace(id='research-next', type='research', priority=0.8),
-            SimpleNamespace(id='follow-up', type='follow_up', priority=0.77),
-            SimpleNamespace(id='urgent', type='commitment', priority=0.95)]
-
-
-def test_legacy_opinions_and_evidence_corrections_remain_inspectable_but_inactive(perspective):
-    state, _, sm = perspective
-    sm.store.record('research', 'success', source='worker', source_ref='work', event_key='attempt',
-                    outcome_contract='runtime/v1', evidence={'model_id': 'old-model'})
-    event = sm.store.events('research')[0]
-    old_basis = json.dumps([{'event_id': event['id'], 'fingerprint': event['fingerprint'], 'model_id': 'old-model'}])
-    with sqlite3.connect(state.ledger.db_path) as conn:
-        for weight in (.95, 1.2):
-            conn.execute('INSERT INTO self_opinion_revisions(domain,weight,basis_json,basis_digest,reason,updated_at,version) VALUES (?,?,?,?,?,?,?)',
-                ('research', weight, old_basis, 'old-digest', 'LEGACY_ABILITY_CLAIM', 1, 'operational-perspective-v1'))
-        conn.execute('INSERT OR REPLACE INTO self_attention VALUES (1,?,?)',
-            (json.dumps({'version':'operational-perspective-v1','ordered_ids':['legacy-ranked'],'decisions':[]}), 1))
-        original_rows = conn.execute('SELECT * FROM self_opinion_revisions ORDER BY id').fetchall()
-    assert state.status()['attention']['historical_only'] is True
-    assert 'legacy-ranked' not in state.brief() and 'LEGACY_ABILITY_CLAIM' not in state.brief()
-    original = candidates()
-    state.rank(original, competence=sm.store)
-    assert next(item for item in state.rank(original) if item.id == 'research-next').priority == .8
-    status = state.status()
-    assert status['automatic_weighting'] == 'retired'
-    assert len(status['opinion_history']) == 2
-    assert all(row['status'] == 'legacy_non_governing' and row['governing'] is False for row in status['opinion_history'])
-    assert status['opinion_history'][0]['basis'][0]['model_id'] == 'old-model'
-    sm.store.apply_reconciliation({'schema':'protagine.competence-reconciliation/v1','created_by':'test-reviewer',
-        'reason':'Recorded output failed its count check','provenance':{'criterion':'exact inventory count'},
-        'event_corrections':[{'event_id':event['id'],'target_fingerprint':event['fingerprint'],'disposition':'invalidate'}]})
-    assert sm.store.events('research') == [] and len(sm.store.reconciliation_ledger()) == 1
-    assert [(i.id,i.priority) for i in state.rank(original)] == [(i.id,i.priority) for i in sorted(original,key=lambda i:-i.priority)]
-    with sqlite3.connect(state.ledger.db_path) as conn:
-        assert conn.execute('SELECT * FROM self_opinion_revisions ORDER BY id').fetchall() == original_rows
-    assert sm.store.inspect_events('research', 0, time.time()+1)[0]['recorded_outcome'] == 'success'
-
-
 @pytest.mark.parametrize('text', ['Stop using bullet points.', 'Be concise and detailed.',
     'Use prose rather than bullets.', 'Alice says be formal.', 'Should you be concise?',
     'Use the code example to explain this bug.', 'I prefer brief meetings.',

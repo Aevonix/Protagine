@@ -70,12 +70,12 @@ def test_join_identities_survive_projection_without_claim_tokens_or_task_text():
 
 @pytest.mark.asyncio
 async def test_reader_failure_is_isolated(tmp_path, monkeypatch):
-    from protagine.turns import hermes_work, hermes_kanban, local_work, reported_workers
+    from protagine.turns import hermes_work, board_observations, local_work, reported_workers
     monkeypatch.setattr(local_work, 'local_work_view', lambda **_: records('draft', 8))
     monkeypatch.setattr(hermes_work, 'cron_view', lambda **_: records('cron'))
     def broken(**_):
         raise RuntimeError('PRIVATE_DRIVER_ERROR')
-    monkeypatch.setattr(hermes_kanban, 'kanban_view', broken)
+    monkeypatch.setattr(board_observations, 'kanban_view', broken)
     monkeypatch.setattr(reported_workers, 'reported_worker_view', lambda **_: None)
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
     store = ExecutionRegistry(TurnIdempotencyLedger(tmp_path / 'turns.db'))

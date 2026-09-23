@@ -11,23 +11,46 @@ import time
 from unittest.mock import patch
 
 
-MIND_FACULTIES = ('initiative', 'people', 'affect', 'opinions', 'broadcast', 'semantic_recall',
-                  'consolidation', 'self_narrative', 'lessons', 'skills')
+MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'opinions', 'broadcast',
+                  'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills')
 WORKER_PROFILE = 'protagine-act'
 
 
-def mind_section(enabled):
-    """The ``mind`` section of the disposable ``protagine.yaml``.
+def mind_section(switches):
+    """The ``mind`` section of the disposable ``protagine.yaml`` for a profile's mind switches.
 
-    Off in the plain plugin arm. The initiative arm turns the mind on at
-    autonomy ``standard`` with only the initiative faculty; quiet hours and the
-    daily digest are off because an episode's clock advance would otherwise
-    hold or add owner notices that have nothing to do with the scenario.
+    Off (``None`` or ``False``) in the plain plugin arm. ``{'initiative': True}``
+    (or ``True``) turns the mind on at autonomy ``standard`` with only the
+    initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
+    faculty flag and drive weight to its release-candidate value from the
+    shipped defaults; a ``minus_drives`` or ``minus_broadcast`` switch turns
+    that faculty off and a ``minus_<drive>`` switch sets that drive's weight
+    to 0 (evals section 3, the ``full-X`` arms). Quiet hours and the daily
+    digest are off in every mind arm because an episode's clock advance would
+    otherwise hold or add owner notices that have nothing to do with the
+    scenario.
     """
-    if not enabled:
+    if not switches:
         return {'enabled': False}
-    return {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24,
-            'faculties': {name: name == 'initiative' for name in MIND_FACULTIES}}
+    if switches is True:
+        switches = {'initiative': True}
+    section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24}
+    if not switches.get('full'):
+        section['faculties'] = {name: name == 'initiative' for name in MIND_FACULTIES}
+        return section
+    from copy import deepcopy
+    from protagine.config import DEFAULTS
+    defaults = DEFAULTS['mind']
+    faculties = {name: bool(defaults['faculties'].get(name, False)) for name in MIND_FACULTIES}
+    drives = deepcopy(defaults['drives'])
+    for name in ('drives', 'broadcast'):
+        if switches.get(f'minus_{name}'):
+            faculties[name] = False
+    for name in drives:
+        if switches.get(f'minus_{name}'):
+            drives[name] = 0.0
+    section.update(faculties=faculties, drives=drives, budgets=deepcopy(defaults['budgets']))
+    return section
 
 
 def mind_clock():
@@ -57,12 +80,14 @@ def serve_mind(app, state, person, section):
     directory.mkdir(parents=True, exist_ok=True)
     store = InitiativeStore(state_dir=directory)
     try:
+        # The arm's own router (the endpoint the plan pinned) serves the one deliberation call per tick.
         mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
                     commitments=host._commitment_store,
                     feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
                     expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
                     contacts=getattr(host, '_contacts_store', None),
-                    ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False)
+                    ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
+                    router=getattr(host, '_llm_router', None))
         mind_router.set_mind(mind)
         yield mind
     finally:
@@ -87,13 +112,13 @@ def install_worker_profile(home):
 
 
 @contextmanager
-def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, overlay=None, mind=False):
+def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, overlay=None, mind=None):
     """Enable only this fixture's private profile and ledger, before agent construction.
 
     An arm profile overlay is applied after the forced flags below and before
     the plugin loads, so a frozen profile can flip any fixture default. With
-    ``mind`` the arm also serves ``/v1/mind`` over a real Mind (the initiative
-    profile).
+    ``mind`` (the profile's mind switches, see ``mind_section``) the arm also
+    serves ``/v1/mind`` over a real Mind.
     """
     inputs = request['inputs']
     person = inputs['contact_id']

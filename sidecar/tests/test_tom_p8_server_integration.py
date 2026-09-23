@@ -107,7 +107,7 @@ def _restore_host_globals(monkeypatch, tmp_path):
         "_p8_runtime", "_facts_store", "_graph", "_tom2_store",
         "_relationship_profiler", "_embedder", "_goals_store",
         "_initiative_store", "_briefings_engine", "_world_store",
-        "_surprise_store", "_contacts_store",
+        "_contacts_store",
         "_connection_discoverer", "_metalearner", "_commitment_store",
         "_preference_learner", "_affect_store", "_engagement_store",
         "_comms_log",
@@ -129,7 +129,7 @@ class _LegacyGlobalContextSpies:
             name: 0 for name in (
                 "goals", "initiatives", "briefings", "world",
                 "directive_ack", "directive_pending", "directive_brief",
-                "surprises", "insights", "contacts_list", "cognition",
+                "insights", "contacts_list", "cognition",
             )
         }
 
@@ -178,14 +178,6 @@ class _LegacyGlobalContextSpies:
                 outer.calls["directive_brief"] += 1
                 return "owner-global-directive-brief"
 
-        class Surprises:
-            def get_unresolved(self, *args, **kwargs):
-                outer.calls["surprises"] += 1
-                return [{
-                    "surprise_score": 0.9,
-                    "observation": "owner-global-surprise",
-                }]
-
         class Contacts:
             async def get(self, _contact_id):
                 return None
@@ -221,7 +213,6 @@ class _LegacyGlobalContextSpies:
         self.initiatives = Initiatives()
         self.briefings = Briefings()
         self.directives = Directives()
-        self.surprises = Surprises()
         self.contacts = Contacts()
         self.insights = Insights()
         self.cognition = Cognition()
@@ -233,7 +224,6 @@ class _LegacyGlobalContextSpies:
         class World:
             async def property_views(self, *args, **kwargs): return []
         host._world_store = World()
-        host._surprise_store = self.surprises
         host._contacts_store = self.contacts
         host._connection_discoverer = self.insights
         host._metalearner = self.cognition
@@ -433,10 +423,10 @@ async def test_p8_exact_owner_retains_untyped_global_context(
     rendered = repr(assembled)
     for marker in (
         "owner-global-goal", "owner-global-initiative",
-        "owner-global-world-entity", "owner-global-surprise",
+        "owner-global-world-entity",
     ):
         assert marker in rendered
-    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives", "world", "surprises"))
+    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives", "world"))
     projection = assembled.projection_attestation
     assert projection is not None
     assert projection.viewer_person_id == "owner"

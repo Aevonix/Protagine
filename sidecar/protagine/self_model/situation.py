@@ -1087,44 +1087,6 @@ class JournalSituationAdapter:
         raw_digest = _digest({
             "type": event_type, "occurred_at": occurred, "data": data,
         })
-        if event_type == "cognition.external.service_state":
-            from protagine.cognition.external_events import (
-                validate_external_journal_projection,
-            )
-
-            projection = validate_external_journal_projection(event_type, data)
-            external = projection["attributes"]
-            entity = str(external["service"])
-            state = str(external["state"])
-            subject, viewer, sharing = _validate_scope(
-                str(projection["subject_person_id"]),
-                str(projection["viewer_scope"]),
-                str(projection["shareability"]),
-            )
-            evidence = (f"journal:{seq}:{event_id}",)
-            attributes: Dict[str, Any] = {"event_type": event_type}
-            for key in ("latency_ms", "observed_samples"):
-                if key in external:
-                    attributes[key] = external[key]
-            observation = SituationObservationV1.create(
-                observation_id=(
-                    f"so-{_digest((event_id, 'service', entity))[:24]}"
-                ),
-                category="service",
-                entity_id=entity,
-                state=state,
-                active=cls._active("service", state),
-                observed_at=projection["external_occurred_at"],
-                ttl_seconds=_DEFAULT_TTLS["service"],
-                evidence_refs=evidence,
-                source_kind=source_kind,
-                subject_person_id=subject,
-                viewer_scope=viewer,
-                shareability=sharing,
-                attributes=attributes,
-            )
-            return (observation,), "projected", raw_digest
-
         category = cls._category(event_type)
         if category is None:
             return (), "unmapped_event_type", raw_digest

@@ -22,14 +22,26 @@ import traceback
 from . import paired_arms, paired_body
 
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
-# Version 2 adds the binary comparator switches heartbeat and curator to a profile.
-ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-2'
-PROFILE_SWITCHES = ('heartbeat', 'curator', 'initiative')
-# The initiative switch: the plugin arm with the mind on (autonomy standard, only the
-# initiative faculty), served in-process next to the host routes; the body tick calls
-# the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox, reconciliation and
-# observations) before cron and kanban dispatch.
+# Version 2 added the binary comparator switches heartbeat and curator to a profile; version 3
+# adds the mind switches of the drives family (full and the minus_* ablations).
+ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-3'
+# The mind switches: the plugin arm with the mind on, served in-process next to the host
+# routes; the body tick calls the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox,
+# reconciliation and observations) before cron and kanban dispatch. ``initiative`` turns on
+# only the initiative faculty (mind-initiative-1); ``full`` sets every faculty flag and drive
+# weight to its release-candidate value (native_memory_worker.mind_section), and each
+# ``minus_*`` switch turns one faculty off or one drive weight to 0 (evals section 3).
+MIND_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_duty', 'minus_curiosity', 'minus_mastery',
+                  'minus_upkeep', 'minus_social')
+MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS)
+PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'
+
+
+def mind_switches(profile):
+    """The mind switches a profile turns on, or None when its mind is off."""
+    switches = {name: True for name in MIND_SWITCHES if profile.get(name)}
+    return switches or None
 # Plans written before arm profiles carried only the arm label.
 LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
@@ -491,7 +503,7 @@ def main():
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
                     setup_host=partial(source_worker, temperature=temperature),
-                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=bool(profile.get('initiative'))))
+                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind_switches(profile)))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)

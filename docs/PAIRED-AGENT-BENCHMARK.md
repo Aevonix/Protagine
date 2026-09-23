@@ -78,14 +78,22 @@ Execution is sequential. With the default two arms the first episode runs base H
 
 An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
-flags, before the plugin loads, and the binary comparator switches that are on
-(`heartbeat`, `curator`, `initiative`; a switch is listed only when it is on).
-The built-in profiles are `base_hermes` (plugin off) and `protagine` (plugin on,
-the mind off), the default arm set, the two comparators `base-heartbeat` and
-`base-curator` described below, and `protagine-initiative`, the treatment arm
-of `mind-initiative-1`: the plugin with the mind on (`autonomy: standard`, only
-the `initiative` faculty, quiet hours and the daily digest off), served in the
-worker next to the host routes and ticked by the body tick. `--arms` selects two to eight profiles by name; repeating a name runs the
+flags, before the plugin loads, and the binary switches that are on
+(`heartbeat`, `curator`, and the mind switches `initiative`, `full` and the
+`minus_*` ablations; a switch is listed only when it is on). The built-in
+profiles are `base_hermes` (plugin off) and `protagine` (plugin on, the mind
+off), the default arm set, the two comparators `base-heartbeat` and
+`base-curator` described below, `protagine-initiative`, the treatment arm of
+`mind-initiative-1` (the plugin with the mind on at `autonomy: standard`, only
+the `initiative` faculty, quiet hours and the daily digest off), and the
+drives-family arms: `full` (every `mind.faculties` flag and drive weight at its
+release-candidate value from the shipped defaults), `full-drives` (the flat
+priority ablation: `faculties.drives` off, so every weight is 1, nothing
+satiates and no goal is adopted), `full-broadcast` (`faculties.broadcast` off)
+and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
+`full-upkeep` and `full-social` (that drive's weight set to 0). Every mind arm
+is served in the worker next to the host routes and ticked by the body tick.
+`--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
 which measures the noise floor. `--reference-arm` names the comparator; it
 defaults to the first arm and every other arm is contrasted against it.

@@ -1,13 +1,14 @@
-"""Source-backed preferences and inspectable attention.
+"""Source-backed owner preferences.
 
 This is a portable working perspective, not feelings, a worldview or authority.
-Original owner words stay in the canonical source ledger. Only explicit owner
-preferences adjust optional research priority; prior automatic weights are history.
+Original owner words stay in the canonical source ledger. Explicit owner
+preferences are captured here; the legacy automatic opinion revisions and the
+attention snapshot left with the drives milestone (``protagine upgrade`` drops
+their tables after the backup).
 """
 from __future__ import annotations
 
 from contextlib import closing
-from copy import copy
 from datetime import datetime, timezone
 import json
 import re
@@ -30,13 +31,6 @@ def initialize(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS self_preference_keys (
         owner_id TEXT NOT NULL,pref_key TEXT NOT NULL,latest_event_id INTEGER,latest_source_at TEXT NOT NULL,
         PRIMARY KEY(owner_id,pref_key))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS self_opinion_revisions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
-        weight REAL NOT NULL, basis_json TEXT NOT NULL, basis_digest TEXT NOT NULL,
-        reason TEXT NOT NULL, updated_at REAL NOT NULL, version TEXT NOT NULL)''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS self_attention (
-        slot INTEGER PRIMARY KEY CHECK(slot=1), snapshot_json TEXT NOT NULL,
-        observed_at REAL NOT NULL)''')
 
 
 def erase_removed(conn, turn_id, session_id, retained):
@@ -48,9 +42,6 @@ def erase_removed(conn, turn_id, session_id, retained):
     for row in rows:
         if row['message_hash'] not in hashes:
             conn.execute('DELETE FROM self_preference_events WHERE id=?', (row['id'],))
-    # Attention contains correction references/weights; do not retain a stale
-    # derived snapshot after deleting its source. The next decision rebuilds it.
-    conn.execute('DELETE FROM self_attention')
 
 
 def _json(value):
@@ -173,60 +164,15 @@ class SelfPerspective:
         with closing(self.ledger._connect()) as conn:
             return {r[0] for r in conn.execute('SELECT pref_key FROM self_preference_keys WHERE owner_id=?', (self.owner_id,))}
 
-    def opinions(self, *, history=False):
-        """Retained automatic revisions are inspectable, never governing."""
-        with closing(self.ledger._connect()) as conn:
-            query = ('SELECT * FROM self_opinion_revisions ORDER BY id DESC LIMIT 100' if history else
-                     'SELECT * FROM self_opinion_revisions WHERE id IN (SELECT max(id) FROM self_opinion_revisions GROUP BY domain) ORDER BY domain')
-            rows = conn.execute(query).fetchall()
-        return [dict(row) | {'basis': json.loads(row['basis_json']),
-                'status': 'legacy_non_governing', 'governing': False} for row in rows]
-
-    def rank(self, initiatives, *, competence=None, load=None):
-        # competence is retained as a call-compatibility argument, never consumed.
-        initiatives = [copy(item) for item in initiatives]  # no compounding on cached engine candidates
-        with closing(self.ledger._connect()) as conn, conn:
-            conn.execute('BEGIN IMMEDIATE')
-            overrides = {row['pref_key'].removeprefix('initiative.'): row for row in self.preferences() if row['pref_key'].startswith('initiative.')}
-            decisions = []
-            for item in initiatives:
-                domain = getattr(item.type, 'value', str(item.type))
-                original = float(item.priority)
-                override = overrides.get(domain)
-                weight = float(override['value']) if override else 1.0
-                # Due/urgent and non-research work keeps its existing urgency.
-                applied = override is not None and domain in DOMAINS and original < 0.9
-                item.priority = round(max(0.0, min(0.89, original * weight)), 4) if applied else original
-                decisions.append({'initiative_id': str(item.id), 'domain': domain, 'original_priority': original,
-                    'description': str(getattr(item, 'description', '') or '')[:500],
-                    'priority': item.priority, 'weight': weight if applied else 1.0,
-                    'basis': 'owner_correction' if override and applied else 'unchanged',
-                    'correction_id': override['id'] if override and applied else None,
-                    'opinion_revision': None})
-            ranked = sorted(initiatives, key=lambda item: -item.priority)
-            snapshot = {'version': VERSION, 'load': dict(load or {}), 'decisions': decisions,
-                        'ordered_ids': [str(item.id) for item in ranked], 'authority_changed': False,
-                        'load_coverage': 'existing initiative/project/queue probes; missing sources are not proven idle'}
-            conn.execute('INSERT OR REPLACE INTO self_attention VALUES (1,?,?)', (_json(snapshot), self.clock()))
-            return ranked
-
     def status(self):
-        with closing(self.ledger._connect()) as conn:
-            row = conn.execute('SELECT * FROM self_attention WHERE slot=1').fetchone()
-        attention = None
-        if row is not None:
-            snapshot = json.loads(row['snapshot_json'])
-            attention = snapshot | {'observed_at': row['observed_at'],
-                'age_seconds': max(0, round(self.clock() - row['observed_at'], 1)),
-                'historical_only': snapshot.get('version') != VERSION}
         return {'kind': 'operational_working_perspective', 'preferences': self.preferences(),
-                'corrections': self.preferences(history=True), 'opinions': self.opinions(),
+                'corrections': self.preferences(history=True),
                 'judgments_enabled': self.judgments.enabled,
                 'judgments': self.judgments.revisions(), 'judgment_history': self.judgments.revisions(history=True),
                 'judgment_processing': self.judgments.processing(),
                 'appraisals': self.appraisals.view(self.owner_id, viewer_contact_id=self.owner_id,
                                                   history=True, limit=10),
-                'opinion_history': self.opinions(history=True), 'automatic_weighting': 'retired', 'attention': attention}
+                'automatic_weighting': 'retired'}
 
     def brief(self, query='', *, source_ids=None):
         lines = []
@@ -235,9 +181,6 @@ class SelfPerspective:
                 lines.append(f"Owner correction: {pref['pref_key']} priority weight {pref['value']:.2f}; source turn:{pref['source_turn_id']}; applies only to optional research ordering.")
                 if source_ids is not None:
                     source_ids.append(pref['source_turn_id'])
-        state = self.status()['attention']
-        if state is not None and not state['historical_only']:
-            lines.append(f"Last initiative ranking, {state['age_seconds']:g}s ago: " + ', '.join(state['ordered_ids'][:8]) + '. This is a decision snapshot, not current liveness.')
         if lines:
             lines.append('Only explicit owner preferences adjust these priorities. Runtime history establishes neither output quality nor the competence of the current model; it grants no authority.')
         judgments = self.judgments.brief(query, source_ids=source_ids)

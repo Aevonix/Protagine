@@ -44,6 +44,8 @@ DEFAULTS: dict[str, Any] = {
             "llm_tokens_per_day": 200000,
             "learn_share": 0.25,
             "open_goals": 2,
+            "goal_tasks": 4,          # steps an agent-owned goal may spend
+            "goal_horizon_days": 7,   # the longest horizon an adopted goal may have
             "task_max_runtime_s": 600,
             "task_max_retries": 1,
         },
@@ -52,9 +54,14 @@ DEFAULTS: dict[str, Any] = {
         "breaker": {"failures": 3, "window_hours": 24, "demotion_hours": 72},
         "act_threshold": 0.6,   # the ranker's effective-score floor (architecture 3.2)
         "digest_hour": 8,       # local hour after which the daily digest goes out
+        # Drive weights: 0 turns a drive off (architecture 4.5).
         "drives": {"duty": 1.0, "social": 0.5, "curiosity": 0.5, "mastery": 1.0, "upkeep": 1.0},
+        # One binary flag per faculty; each is one benchmark arm (architecture 4, evals section 3).
         "faculties": {
             "initiative": True,
+            "drives": True,         # weights, satiation and goal adoption; off = flat priority
+            "deliberation": True,   # the one tool-less call per tick; off = templates only
+            "goals": True,          # agent-owned goals
             "people": True,
             "affect": True,
             "opinions": True,
@@ -177,6 +184,13 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     for name, value in list(budgets.items()):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"mind.budgets.{name} must be a number")
+    drives = mind.get("drives")
+    if not isinstance(drives, dict):
+        raise ConfigError("mind.drives must be a mapping of drive weights")
+    for name, value in list(drives.items()):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"mind.drives.{name} must be a non-negative number (0 turns the drive off)")
+        drives[name] = float(value)
     try:
         mind["act_threshold"] = float(mind.get("act_threshold", 0.6))
     except (TypeError, ValueError):

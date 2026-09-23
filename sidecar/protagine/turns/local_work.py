@@ -77,15 +77,6 @@ def local_work_view(*, limit=8, now=None):
             assessment = _semantic_review(context,result)
             if assessment is not None:
                 item['semantic_review'] = assessment
-            from .hermes_kanban import project_accepted
-            native = project_accepted(row['id'], row['entity_id'], context)
-            if native is not None:
-                item['native_work'] = native
-                item['execution_backend'] = 'kanban'
-                if native.get('available'):
-                    item.update({key: native[key] for key in ('native_board', 'native_task_id', 'native_run_id', 'attempt_count')})
-                    item['native_status'] = native['status']
-                    item['liveness'] = native['liveness']
             return item
         return {**view, 'available':True, 'items':[project(row) for row in active],
                 'recent':[project(row) for row in recent], 'total':total, 'truncated':total>len(active),

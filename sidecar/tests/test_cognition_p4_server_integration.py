@@ -177,33 +177,3 @@ async def test_correction_is_persisted_before_continuous_learning(
     assert learner.corrections[0].context_hash == "response:owner:42"
 
 
-@pytest.mark.asyncio
-async def test_cpi_and_cycle_publish_truthful_legacy_payload(
-    tmp_path, monkeypatch,
-):
-    state_dir = tmp_path / "state"
-    _configure(monkeypatch, state_dir)
-    params = _params(state_dir)
-    _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
-    host.set_metalearner(None)
-    app = _app(tmp_path)
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        cpi = await client.get(
-            "/v1/host/cognition/cpi", headers=_headers("reader"))
-        cycle = await client.post(
-            "/v1/host/cognition/cycle",
-            headers=_headers(),
-            json={"identity": {"host_id": "test"}},
-        )
-
-    assert cpi.status_code == 200
-    assert cpi.json()["deprecated"] is True
-    assert cpi.json()["available"] is True
-    assert "memory" not in cpi.json()
-    assert cycle.status_code == 200
-    assert cycle.json()["cpi"]["canonical"] == "selfhood_benchmark"
-    assert "reasoning" not in cycle.json()["cpi"]

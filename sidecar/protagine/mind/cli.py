@@ -22,7 +22,8 @@ from .authority import CLASSES, LEVELS
 from .outcomes import VERDICTS
 from .tick import OFF_MARKER
 
-COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats")
+COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
+            "concerns", "goals", "interest")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -54,6 +55,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     commands.add_parser("tick", help="Run one tick now")
     stats = commands.add_parser("stats", help="The in-vivo panel over the audit log")
     stats.add_argument("--days", type=int, default=7)
+    concerns = commands.add_parser("concerns", help="What is on the mind: open concerns and the broadcast set")
+    concerns.add_argument("--limit", type=int, default=24)
+    commands.add_parser("goals", help="The agent-owned goals that are open")
+    interest = commands.add_parser("interest", help="Seed an interest for the curiosity drive")
+    interest.add_argument("topic")
+    interest.add_argument("--why", default="")
 
 
 class Sidecar:
@@ -175,6 +182,17 @@ def run(args: argparse.Namespace) -> int:
         elif command == "stats":
             value = sidecar.call("GET", "/v1/mind/stats")
             _emit(value, as_json=as_json, text=render_stats({k: v for k, v in value.items() if k != "text"}))
+        elif command == "concerns":
+            value = sidecar.call("GET", "/v1/mind/concerns", params={"limit": args.limit})
+            drives = ", ".join(f"{name}={item['effective']:g} (level {item['level']:g})"
+                               for name, item in (value.get("drives") or {}).items())
+            _emit(value, as_json=as_json, text=f"drives: {drives}\n{value.get('text')}")
+        elif command == "goals":
+            value = sidecar.call("GET", "/v1/mind/goals")
+            _emit(value, as_json=as_json, text=value.get("text"))
+        elif command == "interest":
+            value = sidecar.call("POST", "/v1/mind/interests", json_body={"topic": args.topic, "why": args.why, "by": "cli"})
+            _emit(value, as_json=as_json, text=f"interest: {value.get('topic')} (weight {value.get('weight')})")
         else:
             print(f"unknown mind command {command}", file=sys.stderr)
             return 2

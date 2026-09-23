@@ -40,7 +40,6 @@ async def runtime(ingress, tmp_path, monkeypatch, request):
              _principal(principal='owner-agent', secret='fixture-owner-agent', viewer='owner')]
     _write_keyring(tmp_path/'keys.json', keys)
     ingress.client._transport.app.include_router(temporal_followups.router)
-    monkeypatch.setattr(temporal_followups, 'observed_boards', lambda:(tmp_path, ['default'], {}))
     messages = [{'role':'user','content':'Obtain the agreed neutral report and track its reply.'}]
     ingress.ledger.record_source('owner-task', contact_id='owner', session_id='owner-session',
         messages=messages, scope=getattr(request, 'param', 'person'))

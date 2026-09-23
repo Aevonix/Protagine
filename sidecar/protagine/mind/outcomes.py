@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -32,6 +33,10 @@ STATUS_TO_OUTCOME: Dict[str, Optional[str]] = {
 TERMINAL_OUTCOMES = frozenset({"done", "failed", "expired", "denied", "cancelled", "uncertain"})
 IMPLICIT_VERDICT = {"cancelled": "dismissed", "expired": "ignored", "denied": "dismissed"}
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
+# Task types whose completion summary is a finding the agent keeps (architecture 4.5): research and
+# investigations write what they learned as an autobiography entry a later turn recalls.
+FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step"})
+FINDING_CHARS = 800
 
 
 class Autobiography:
@@ -65,11 +70,13 @@ class Autobiography:
 
 
 def evaluate_check(check: Any, *, commitments: Any = None, followups: Any = None,
-                   summary: str = "", result: Any = None) -> Optional[bool]:
+                   summary: str = "", result: Any = None, steps_done: int | None = None) -> Optional[bool]:
     """A deterministic check over state the mind can observe without tools.
 
     Returns True or False when the check ran, None when it cannot run (an
     unknown kind or a store that is not wired), so ``verified`` stays honest.
+    ``steps_done`` is the number of finished steps of an agent-owned goal,
+    for the ``steps_done`` check kind.
     """
     if isinstance(check, str):
         try:
@@ -105,7 +112,15 @@ def evaluate_check(check: Any, *, commitments: Any = None, followups: Any = None
             return None
         if isinstance(result, dict) and field in result:
             return bool(result[field])
-        return f"{field}:" in (summary or "") or f'"{field}"' in (summary or "")
+        text = summary or ""
+        return bool(re.search(rf"(?im)(^|[\s\"'*_]){re.escape(field)}\s*[:=]", text)) or f'"{field}"' in text
+    if kind == "steps_done":
+        if steps_done is None:
+            return None
+        try:
+            return int(steps_done) >= int(check.get("count") or 1)
+        except (TypeError, ValueError):
+            return None
     return None
 
 
@@ -148,6 +163,7 @@ class Outcomes:
         self.autobiography = autobiography
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.on_breaker_trip = None  # callable(cls, state) set by the tick
+        self.on_settled = None       # callable(row, outcome, check_result) set by the tick: concerns and satiation
 
     # -- reconciliation -------------------------------------------------------------
 
@@ -214,6 +230,8 @@ class Outcomes:
         status = {"done": "done", "failed": "failed", "expired": "expired", "denied": "cancelled",
                   "cancelled": "cancelled", "uncertain": "uncertain"}[outcome]
         metadata = dict(row.result_metadata or {})
+        if result is not None:
+            metadata["result"] = result   # the structured report; a parent goal's check reads it too
         if check_result is not None:
             metadata["check"] = {"passed": check_result, "at": now.isoformat()}
         if isinstance(run, dict):
@@ -243,6 +261,14 @@ class Outcomes:
         if self.autobiography is not None and updated is not None:
             self.autobiography.record(updated.id, f"outcome_{outcome}", self._narrate(updated, check_result),
                                       outcome=outcome, verified=verifier)
+            if outcome == "done" and updated.type in FINDING_TYPES and str(summary or "").strip():
+                self.autobiography.record(updated.id, "finding", self._finding(updated, summary),
+                                          topic=self._topic(updated), verified=verifier)
+        if callable(self.on_settled) and updated is not None:
+            try:
+                self.on_settled(updated, outcome, check_result)
+            except Exception as error:
+                logger.warning("settle hook failed for %s (%s)", updated.id, type(error).__name__)
         return updated
 
     # -- owner verdicts ---------------------------------------------------------------
@@ -314,6 +340,16 @@ class Outcomes:
                 self.on_breaker_trip(row.cls, state)
 
     @staticmethod
+    def _topic(row: StoredInitiative) -> str:
+        context = row.context if isinstance(row.context, dict) else {}
+        return str(context.get("topic") or context.get("concern") or row.description)[:120]
+
+    @classmethod
+    def _finding(cls, row: StoredInitiative, summary: str) -> str:
+        text = " ".join(str(summary).split())[:FINDING_CHARS]
+        return f"What I learned about {cls._topic(row)}: {text}"
+
+    @staticmethod
     def _narrate(row: StoredInitiative, check_result: Optional[bool]) -> str:
         what = {"task": "task", "message": "message", "goal": "goal", "note": "note"}.get(row.kind or "", "intention")
         text = f"My {what} '{row.description}' ended {row.outcome}"
@@ -332,5 +368,5 @@ class Outcomes:
         return text
 
 
-__all__ = ["Autobiography", "IMPLICIT_VERDICT", "Outcomes", "STATUS_TO_OUTCOME", "TERMINAL_OUTCOMES",
-           "VERDICTS", "evaluate_check", "invalidation_reason"]
+__all__ = ["Autobiography", "FINDING_TYPES", "IMPLICIT_VERDICT", "Outcomes", "STATUS_TO_OUTCOME",
+           "TERMINAL_OUTCOMES", "VERDICTS", "evaluate_check", "invalidation_reason"]

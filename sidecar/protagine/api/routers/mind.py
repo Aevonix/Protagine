@@ -21,6 +21,8 @@ text in docs/HERMES-ADAPTER.md):
                                                                                 -> {allow, action, reason}
   POST /decide                    {code, answer: yes|no, contact_id?, session_id?, message?} -> {ok, ...}
   GET  /log, /log/{id}, /why/{id}, /asks, /state (/status), /stats
+  GET  /concerns, /goals          the workspace (open concerns, the broadcast set) and the open goals
+  POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
 """
@@ -169,6 +171,13 @@ class ResetBody(BaseModel):
     cls: str = Field(min_length=1, max_length=16)
 
 
+class InterestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    topic: str = Field(min_length=1, max_length=160)
+    why: str = Field(default="", max_length=400)
+    by: str = Field(default="owner", max_length=64)
+
+
 # -- state --------------------------------------------------------------------------------
 
 @router.get("/state")
@@ -186,6 +195,39 @@ async def status() -> Dict[str, Any]:
 async def stats() -> Dict[str, Any]:
     value = _require().stats()
     return {**value, "text": audit.render_stats(value)}
+
+
+@router.get("/concerns")
+async def concerns(limit: int = 24) -> Dict[str, Any]:
+    """The workspace: open concerns by salience, and the broadcast set (architecture 4.5)."""
+    mind = _require()
+    rows = [c.as_dict() for c in mind.concerns.open(limit=max(1, min(int(limit), 200)))]
+    broadcast = [c.id for c in mind.broadcast()]
+    lines = [f"{'*' if c['id'] in broadcast else ' '} {c['salience']:.2f} {c['drive']}/{c['kind']}: {c['summary']}"
+             for c in rows]
+    return {"concerns": rows, "broadcast": broadcast, "drives": mind.state()["drives"],
+            "text": "\n".join(lines) if lines else "(nothing on my mind)"}
+
+
+@router.get("/goals")
+async def goals() -> Dict[str, Any]:
+    """The agent-owned goals that are open (at most ``budgets.open_goals``)."""
+    mind = _require()
+    rows = [mind.goals.render(goal) for goal in mind.goals.open()]
+    lines = [f"{g['id'][:8]}  {g['title']} ({g['steps_done']}/{g['tasks']} steps, until {str(g['horizon'])[:10]})"
+             for g in rows]
+    return {"goals": rows, "open_goals": mind.policy.budgets.open_goals,
+            "text": "\n".join(lines) if lines else "(no open goals)"}
+
+
+@router.post("/interests")
+async def interests(body: InterestBody) -> Dict[str, Any]:
+    """Seed an interest for the curiosity drive (the CLI's ``protagine mind interest <topic>``)."""
+    try:
+        value = _require().add_interest(body.topic, why=body.why, by=body.by)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={"code": "invalid_interest", "message": str(error)}) from None
+    return {"ok": True, **value}
 
 
 # -- the body's pull protocol (6.2) -------------------------------------------------------
