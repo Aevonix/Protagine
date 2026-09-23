@@ -11,7 +11,10 @@ import sys
 
 from . import paired_arms
 from .pack_batch import implementation_identity
-from .paired_worker import ARM_PROFILE_PROTOCOL, PROFILE_SWITCHES
+from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
+                            ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
+                            MESSAGE_TIMESTAMPS_PROTOCOL, PROFILE_SWITCHES, TOOL_LOADING_MODES,
+                            TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -29,6 +32,18 @@ BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
              'extra_toolsets': list(paired_arms.HEARTBEAT_EXTRA_TOOLSETS),
              'deliver': paired_arms.HEARTBEAT_DELIVER}
+# What a dataset's declared tool loading means inside the image, recorded in the
+# plan when a dataset declares one; the same Hermes config keys in every arm.
+TOOL_LOADING = {'eager': {'protocol': TOOL_LOADING_PROTOCOL, 'mode': 'eager',
+                          'config': {'tools': deepcopy(EAGER_TOOLS_CONFIG)}}}
+# The body clock every model-facing turn carries (owner turns, inbound messages
+# and cron prompts alike), in the stock gateway message timestamp format.
+MESSAGE_TIMESTAMPS = {'gateway': {'protocol': MESSAGE_TIMESTAMPS_PROTOCOL, 'mode': 'gateway',
+                                  'format': MESSAGE_TIMESTAMP_FORMAT}}
+# The description of the body every turn's system message and every cron run carries.
+ENVIRONMENT_NOTE = {mode: {'protocol': ENVIRONMENT_NOTE_PROTOCOL, 'mode': mode, 'text': text,
+                           'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
+                    for mode, text in ENVIRONMENT_NOTES.items()}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
@@ -113,6 +128,14 @@ def _task(case):
     return value
 
 
+def declared_mode(by_arm, key, modes, what):
+    """The one value every episode of every arm declares for ``key`` (a known mode), or None."""
+    declared = {case.inputs.get(key) for cases in by_arm.values() for case in cases}
+    if len(declared) != 1 or (declared - {None} and next(iter(declared)) not in modes):
+        raise ValueError(f'Every episode of every arm declares the same {what}, or none')
+    return next(iter(declared))
+
+
 def _execution_identity(consumers, evaluators):
     """Match the ordinary runner's source identity without replacing its grading."""
     source = Path(__file__).with_name('runner.py')
@@ -181,6 +204,16 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if dataset_dir is not None and payload.get('body_protocol') != paired_body.PROTOCOL:
         raise ValueError('Generated families require an image whose worker runs the body tick')
     first = reference
+    tool_loading = declared_mode(by_arm, 'tool_loading', TOOL_LOADING_MODES, 'tool loading')
+    if tool_loading is not None and payload.get('tool_loading') != TOOL_LOADING_PROTOCOL:
+        raise ValueError('Eager tool loading requires an image whose worker applies it to every arm')
+    message_timestamps = declared_mode(by_arm, 'message_timestamps', MESSAGE_TIMESTAMPS_MODES,
+                                       'message timestamps')
+    if message_timestamps is not None and payload.get('message_timestamps') != MESSAGE_TIMESTAMPS_PROTOCOL:
+        raise ValueError('Message timestamps require an image whose worker stamps every arm')
+    environment_note = declared_mode(by_arm, 'environment_note', tuple(ENVIRONMENT_NOTES), 'environment note')
+    if environment_note is not None and payload.get('environment_note') != ENVIRONMENT_NOTE_PROTOCOL:
+        raise ValueError('An environment note requires an image whose worker carries it to every arm')
     identifiers = [case.id for case in by_arm[first]]
     if not 1 <= len(identifiers) <= 128 or len(set(identifiers)) != len(identifiers):
         raise ValueError('Paired plan requires 1..128 distinct episodes')
@@ -217,6 +250,12 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
                   'container_recipe_sha256': digest(recipe), 'evidence_mode': evidence_mode,
                   'arms': list(labels), 'reference_arm': reference, 'profiles': labels,
                   'temperature': temperature, 'seeds': seeds, 'rule': RULE, 'heartbeat': HEARTBEAT}
+    if tool_loading is not None:
+        comparison['tool_loading'] = deepcopy(TOOL_LOADING[tool_loading])
+    if message_timestamps is not None:
+        comparison['message_timestamps'] = deepcopy(MESSAGE_TIMESTAMPS[message_timestamps])
+    if environment_note is not None:
+        comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,

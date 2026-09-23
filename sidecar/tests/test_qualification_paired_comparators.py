@@ -1,5 +1,6 @@
 """Comparator profiles and generated families in the plan; deterministic consumers, no model."""
 import asyncio
+import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -96,6 +97,54 @@ def test_generated_family_directory_is_frozen_into_the_plan(fixture, monkeypatch
     with pytest.raises(ValueError, match='checksum'):
         paired.prepare(output=fixture.output, **manifest['options'], label=manifest['label'],
                        evidence_mode=manifest['evidence_mode'], **fixture.resources)
+
+
+def test_generated_family_plans_record_eager_tool_loading_and_need_an_image_that_applies_it(fixture, monkeypatch, tmp_path):
+    from protagine.qualification import paired_cases, paired_container, paired_worker
+    monkeypatch.setattr(paired_cases, 'cases', real_cases)
+    directory, _ = generated_family(tmp_path)
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                           arms=['base-heartbeat', 'protagine'], dataset_dir=directory, **fixture.resources)
+    assert manifest['comparison']['tool_loading'] == {
+        'protocol': 'paired-tool-loading-1', 'mode': 'eager',
+        'config': {'tools': {'tool_search': {'enabled': 'off'}}}}
+    assert manifest['comparison']['tool_loading']['config']['tools'] == paired_worker.EAGER_TOOLS_CONFIG
+    # Every model-facing turn carries the body clock in the stock gateway format, in every arm.
+    assert manifest['comparison']['message_timestamps'] == {
+        'protocol': 'paired-message-timestamps-1', 'mode': 'gateway', 'format': '[%a %Y-%m-%d %H:%M:%S %Z]'}
+    # And the same description of the body in every turn's system message and cron run.
+    note = manifest['comparison']['environment_note']
+    assert note['protocol'] == 'paired-environment-note-1' and note['mode'] == 'messaging'
+    assert note['text'] == paired_worker.ENVIRONMENT_NOTES['messaging']
+    assert note['text_sha256'] == hashlib.sha256(note['text'].encode()).hexdigest()
+    for pair in manifest['pairs']:
+        for arm in ('base-heartbeat', 'protagine'):
+            assert pair['arms'][arm]['case']['inputs']['tool_loading'] == 'eager'
+            assert pair['arms'][arm]['case']['inputs']['message_timestamps'] == 'gateway'
+            assert pair['arms'][arm]['case']['inputs']['environment_note'] == 'messaging'
+    original = paired_container.configuration
+
+    def image_without(key):
+        def older_image(*args, **kwargs):
+            supplied, recipe = original(*args, **kwargs)
+            recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != key}
+            return supplied, recipe
+        return older_image
+    for key, message in (('tool_loading', 'Eager tool loading'), ('message_timestamps', 'Message timestamps'),
+                         ('environment_note', 'environment note')):
+        monkeypatch.setattr(paired_container, 'configuration', image_without(key))
+        with pytest.raises(ValueError, match=message):
+            paired.plan(tmp_path / 'again', native_binding='candidate', evidence_mode='controlled',
+                        arms=['base-heartbeat', 'protagine'], dataset_dir=directory, **fixture.resources)
+        assert not (tmp_path / 'again').exists()
+    # Frozen datasets declare no tool loading, so the same older image still plans them.
+    frozen = paired.plan(tmp_path / 'frozen', native_binding='candidate', evidence_mode='controlled',
+                         dataset_version=paired_cases.BASELINE_VERSION,
+                         case_ids=[paired_cases.cases('base_hermes', dataset_version=paired_cases.BASELINE_VERSION)[0].id],
+                         **fixture.resources)
+    for key in ('tool_loading', 'message_timestamps', 'environment_note'):
+        assert key not in frozen['comparison']
+        assert key not in frozen['pairs'][0]['arms']['base_hermes']['case']['inputs']
 
 
 def test_generated_family_needs_a_body_capable_image_and_one_dataset_selector(fixture, monkeypatch, tmp_path):

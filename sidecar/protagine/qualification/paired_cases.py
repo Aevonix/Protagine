@@ -112,6 +112,16 @@ CASE_IDS = tuple(item['id'] for item in _SCENARIOS)
 # frozen fixtures. Their scenarios may hold body events and body oracles.
 GENERATOR_PROTOCOL = 'paired-generator-1'
 GENERATED_SPLITS = ('dev', 'heldout')
+# Generated families run with every enabled Hermes tool loaded eagerly in every
+# arm (paired_worker.EAGER_TOOLS_CONFIG); the frozen datasets keep stock loading.
+GENERATED_TOOL_LOADING = 'eager'
+# Every model-facing turn of a generated family carries the body clock in the stock
+# gateway message timestamp format (paired_worker.MESSAGE_TIMESTAMP_FORMAT); the
+# frozen datasets keep bare turns.
+GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
+# Every turn and cron run of a generated family carries the same description of
+# the body (paired_worker.ENVIRONMENT_NOTES); the frozen datasets carry none.
+GENERATED_ENVIRONMENT_NOTE = 'messaging'
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
 
@@ -208,6 +218,9 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['dataset']['split'] = 'frozen_public_evaluation'
         if split is not None:
             inputs['dataset']['split'] = split
+            inputs['tool_loading'] = GENERATED_TOOL_LOADING
+            inputs['message_timestamps'] = GENERATED_MESSAGE_TIMESTAMPS
+            inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],

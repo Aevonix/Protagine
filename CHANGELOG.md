@@ -27,6 +27,33 @@ families with fixed-width contact ids into byte-hashed datasets that
 the repository. The dev family `mind-initiative-1` ships with warranted and
 control templates.
 
+The self-initiative family is made a valid instrument. Its setup turns are
+statements in plain words that say nothing is needed now, never requests that
+send the agent after a cron or clock tool it does not have; the background
+state a scenario needs (contact records, a contact's complete reply, the
+horizon) is seeded as a workspace file, an `inbound` event and an
+`advance_clock`. Generated families declare `tool_loading: eager`, and the
+worker writes the stock Hermes key `tools.tool_search.enabled: off` into every
+arm's config so `session_search`, `todo_list` and `cronjob_manage` are loaded
+directly instead of behind the `tool_search` bridge that spent the frozen
+iteration budget; the plan records it as `comparison.tool_loading` and
+refuses an image whose worker lacks the protocol. The frozen datasets keep
+stock loading and their hashes. The dev split's content hashes for seeds 7 and
+11 are pinned in the generator README and tests. Generated families also
+declare `message_timestamps: gateway`: every owner turn, inbound message and
+cron (heartbeat) prompt is prefixed with the body clock in the stock gateway
+message-timestamp format, in every arm, because the stock system prompt gives
+only the conversation's start date and sends the model to a terminal for the
+time; the plan records it as `comparison.message_timestamps` and each attempt
+records the applied mode. Frozen datasets keep bare turns. They also declare
+`environment_note: messaging`: every turn's system message and every cron run
+carries the same short description of the body (a messaging session whose
+messages carry their arrival time, `p-NN` ids are contacts listed in
+`contacts.json`, no terminal, clock, timer or scheduler tool), recorded in the
+plan as `comparison.environment_note` with its text hash; frozen datasets
+carry none. The dev family's reply-arrived message is the contact's answer
+itself and names no attachment or file.
+
 ## v1.9.0 - consolidate execution and qualify runtime contracts
 
 Remove the duplicate no-host initiative executor and its startup, preset and

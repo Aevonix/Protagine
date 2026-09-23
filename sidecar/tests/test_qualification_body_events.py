@@ -160,7 +160,7 @@ def stubbed_hermes(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'hermes_constants', SimpleNamespace(resolve_reasoning_config=lambda *_: {}))
     monkeypatch.setitem(sys.modules, 'hermes_state', SimpleNamespace(SessionDB=lambda _: None))
     monkeypatch.setitem(sys.modules, 'hermes_time', SimpleNamespace(now=lambda: datetime(2027, 3, 4, 9)))
-    calls = []
+    calls, systems = [], []
 
     class NativeAgent:
         def __init__(self, **kwargs):
@@ -168,12 +168,21 @@ def stubbed_hermes(tmp_path, monkeypatch):
 
         def run_conversation(self, user, *, system_message, conversation_history):
             calls.append((self.session_id, self.platform, user))
+            systems.append(system_message)
             return {'completed': True, 'messages': [], 'final_response': 'Reply to ' + user.splitlines()[-1]}
 
         def close(self):
             pass
 
     monkeypatch.setitem(sys.modules, 'run_agent', SimpleNamespace(AIAgent=NativeAgent))
+
+    class StubCronAgent(dict):
+        """What cron constructs: its keyword arguments, plus the run the scheduler calls."""
+        def run_conversation(self, prompt, **kwargs):
+            cron_prompts.append(prompt)
+            cron_systems.append(kwargs.get('system_message'))
+            return {'completed': True}
+
     # Cron builds its agent through this seam; the worker pins the frozen runtime and limits on it.
     cron = SimpleNamespace(scheduler=SimpleNamespace(
         _construct_cron_agent=lambda AIAgent, job, config, setup, **kwargs: AIAgent(model='cron-model')))
@@ -185,7 +194,7 @@ def stubbed_hermes(tmp_path, monkeypatch):
         yield []
 
     monkeypatch.setattr(paired_transport, 'observe_requests', no_model_requests)
-    events, cron_agents = [], []
+    events, cron_agents, cron_prompts, cron_systems = [], [], [], []
     offset = [0.0]
     monkeypatch.setattr(paired_body, 'install_clock', lambda seconds: events.append(('install', seconds)))
     monkeypatch.setattr(paired_body, 'clock_offset', lambda: offset[0])
@@ -201,15 +210,18 @@ def stubbed_hermes(tmp_path, monkeypatch):
         # What a cron job firing in this tick would construct its agent with.
         setup = SimpleNamespace(runtime={'base_url': 'http://model.invalid/v1'}, max_iterations=None)
         agent = sys.modules['cron.scheduler']._construct_cron_agent(
-            lambda **kwargs: kwargs, {}, {}, setup, workdir=None, session_id='cron', session_db=None)
+            StubCronAgent, {}, {}, setup, workdir=None, session_id='cron', session_db=None)
         cron_agents.append({'runtime': setup.runtime, 'max_iterations': setup.max_iterations, 'agent': agent})
+        # The prompt a cron run would hand its agent, as the worker's seam presents it.
+        agent.run_conversation('[Heartbeat]\nCheck.')
         recorded = paired_body.read_outbox(outbox) or []
         return {'outbox_before': len(recorded), 'outbox_after': len(recorded), 'cron_jobs_run': 0,
                 'dispatch': {'spawned': 0}, 'workers': [], 'kanban': [], 'created_task_ids': [], 'arm_tick': None}
 
     monkeypatch.setattr(paired_body, 'advance_clock', advance)
     monkeypatch.setattr(paired_body, 'run_tick', run_tick)
-    return SimpleNamespace(calls=calls, events=events, cron_agents=cron_agents, root=tmp_path)
+    return SimpleNamespace(calls=calls, systems=systems, events=events, cron_agents=cron_agents,
+                           cron_prompts=cron_prompts, cron_systems=cron_systems, root=tmp_path)
 
 
 def run_worker(monkeypatch, capsys, request):

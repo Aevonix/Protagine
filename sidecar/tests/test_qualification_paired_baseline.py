@@ -51,6 +51,10 @@ def test_both_baseline_arms_keep_identical_inputs_oracles_and_existing_budgets()
         assert before.max_output_bytes == left.max_output_bytes == right.max_output_bytes
         for name in ('max_output_tokens', 'max_iterations', 'settle_seconds', 'cleanup_seconds'):
             assert before.inputs[name] == left.inputs[name]
+        # Frozen datasets keep stock Hermes tool loading and bare turns; only generated
+        # families declare eager loading and message timestamps.
+        for key in ('tool_loading', 'message_timestamps', 'environment_note'):
+            assert key not in left.inputs and key not in before.inputs
 
 
 @pytest.mark.parametrize('scenario,path,valid,invalid', [

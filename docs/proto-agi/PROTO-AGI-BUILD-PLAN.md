@@ -261,7 +261,8 @@ learning. The audit log, asks and off switch work. The four dead paths are fixed
 - the feedback multiplier
 - the loop that never ticks
 
-**Frozen before merge.** `mind-initiative-1`: dev and held-out templates, the pilot and the plan.
+**Frozen before merge.** `mind-initiative-1`: dev and held-out templates, the pilot and the plan
+([families/mind-initiative-1.md](families/mind-initiative-1.md)).
 
 **Scope: add** (`P/mind/`, about 1.7k lines)
 

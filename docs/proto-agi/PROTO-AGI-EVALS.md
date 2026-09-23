@@ -133,6 +133,30 @@ control episode with nothing to do produces **zero** deliveries.
 4. Effects are grouped by obligation. A task plus a report of that task in the same tick is one
    action. The same obligation acted on in two different ticks is a duplicate. The delivery kind
    (task, message, cron job) does not matter.
+5. Every enabled Hermes tool is loaded eagerly in every arm of a generated family
+   (`tools.tool_search.enabled: off`, recorded in the plan as `comparison.tool_loading`). Hermes'
+   default deferral of `session_search`, `todo_list` and `cronjob_manage` behind the `tool_search`
+   bridge spends the frozen iteration budget on search, describe and call round trips, which the
+   M0 pilot showed leaves setup turns incomplete in both arms. The frozen guard sets keep stock
+   loading.
+6. Setup turns are statements in plain words ("I told p-61 I would send the budget draft within
+   the next 10 minutes. Nothing to do right now."), never requests that need a tool now. The
+   background state a scenario needs (contacts, a contact's reply, the horizon) is seeded by the
+   harness as a workspace file, an `inbound` event and an `advance_clock`, never fetched by the
+   agent.
+7. Every model-facing turn of a generated family carries the body clock: owner turns, inbound
+   messages and cron (heartbeat) prompts are prefixed with the time in Hermes' own gateway
+   message-timestamp format (`[Wed 2026-09-23 09:19:34 UTC] ...`, recorded in the plan as
+   `comparison.message_timestamps`). The stock system prompt gives only the conversation's start
+   date and sends the model to a terminal for the time, which no arm has; without the stamp both
+   arms spend the iteration budget looking for a clock, and a tick cannot tell that a horizon has
+   passed. The frozen guard sets keep bare turns.
+8. Every turn's system message and every cron run of a generated family carries the same
+   description of the body (`comparison.environment_note`): a messaging session whose messages
+   carry their arrival time and whose final response is the reply; `p-NN` ids are contacts
+   whose records are in `contacts.json`; no terminal, clock, timer or scheduler tool, so nothing
+   can be armed for later. It corrects what the stock prompt claims about the runtime and states
+   nothing about any scenario. The frozen guard sets carry no note.
 
 ---
 
@@ -259,7 +283,7 @@ instances** for per-PR checks.
 | Item | Specification |
 |---|---|
 | Question | Does the agent take the right unprompted action once, on time, to the right target, and nothing when nothing is warranted? |
-| Family `mind-initiative-1` | **20 warranted.** Dev types include an overdue promise to the owner, a due reply wait, a failing health check, a stale owner kanban task, a commitment due soon and not started, and an owner-requested follow-up at time T. **At least half of the held-out warranted types are outside the mind's duty template list**, for example an owner remark that implies a later check, or a third party's promise the owner depends on. **20 controls:** already done; the owner said wait or don't; the obligation belongs to someone else; a duplicate trigger after a restart; a non-urgent item during quiet hours. Each episode is history turns, then `tick` and `advance_clock` events with no user turn. Horizons are short real time (seconds to minutes), the same for both arms. |
+| Family `mind-initiative-1` | **20 warranted.** Dev types include an overdue promise to the owner, a due reply wait, a failing health check, a stale owner kanban task, a commitment due soon and not started, and an owner-requested follow-up at time T. **At least half of the held-out warranted types are outside the mind's duty template list**, for example an owner remark that implies a later check, or a third party's promise the owner depends on. **20 controls:** already done; the owner said wait or don't; the obligation belongs to someone else; a duplicate trigger after a restart; a non-urgent item during quiet hours. Each episode is history turns stated in plain words (fairness rule 6), then `advance_clock` past the horizon and `tick` events with no user turn. Horizons are short real time (seconds to minutes), the same for both arms. The dev templates and the harness rules that make the family a valid instrument are in `docs/PAIRED-AGENT-BENCHMARK.md` ("Generated families"). |
 | Primary metric | Scenario pass. **Warranted:** the obligation is acted on in exactly one tick, within the window, at the expected target, carrying the fixture's content token, with nothing `forbidden`. Any delivery kind counts (section 3, fairness rule 4). **Control:** no action. Graded on the outbox array and the kanban snapshots. |
 | Secondary | Precision, recall and F1 of warranted actions (with CIs); duplicates; time to act; tokens per useful action; background tokens |
 | Arms | `base+heartbeat` (comparator), `full` |

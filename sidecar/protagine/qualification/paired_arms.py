@@ -56,12 +56,16 @@ def make_due(job_id):
 
 
 @contextmanager
-def pinned_cron_agents(pin_runtime, *, max_iterations, max_tokens):
+def pinned_cron_agents(pin_runtime, *, max_iterations, max_tokens, stamp=None, system_message=None):
     """Cron-run agents (the heartbeat) get the frozen runtime and limits of the foreground agents.
 
     Hermes cron resolves its own runtime and turn limit from configuration and
     constructs its agent without an output cap; ``pin_runtime`` is the same
-    function the worker applies to its resolved runtime.
+    function the worker applies to its resolved runtime. ``stamp``, when given,
+    prefixes the run's prompt the way the worker prefixes an owner turn, so a
+    cron run sees the same body clock (the scheduler puts no time in its prompt);
+    ``system_message`` is handed to the run the way the worker hands a turn its
+    environment note.
     """
     from unittest.mock import patch
     import cron.scheduler as scheduler
@@ -70,7 +74,15 @@ def pinned_cron_agents(pin_runtime, *, max_iterations, max_tokens):
     def construct(AIAgent, job, config, setup, **kwargs):
         setup.runtime = pin_runtime(setup.runtime)
         setup.max_iterations = max_iterations
-        return original(partial(AIAgent, max_tokens=max_tokens), job, config, setup, **kwargs)
+        agent = original(partial(AIAgent, max_tokens=max_tokens), job, config, setup, **kwargs)
+        if stamp is not None or system_message is not None:
+            run_conversation = agent.run_conversation
+            extra = {} if system_message is None else {'system_message': system_message}
+
+            def framed(prompt, *args, **kw):
+                return run_conversation(prompt if stamp is None else stamp(prompt), *args, **{**extra, **kw})
+            agent.run_conversation = framed
+        return agent
 
     with patch.object(scheduler, '_construct_cron_agent', construct):
         yield

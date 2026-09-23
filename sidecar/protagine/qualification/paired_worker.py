@@ -30,6 +30,45 @@ LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'over
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
 COMMON_TOOLS = ['file', 'memory', 'session_search', 'todo']
 KANBAN_WORKER_TOOLS = ['kanban']
+# Hermes 0.21.3 defers session_search, todo_list and cronjob_manage behind the
+# tool_search bridge by default (tools/tool_search.py: _DEFAULT_DEFERRED_TOOLS is
+# consulted before the core-tool exemption in is_deferrable_tool_name), so each
+# use costs a search, a describe and a call out of the frozen iteration budget.
+# A generated family declares eager loading through the stock key
+# tools.tool_search.enabled: off, under which assemble_tool_defs passes every
+# enabled tool through untouched. It is applied to every arm alike and recorded
+# in the plan; the frozen datasets keep the stock deferral.
+TOOL_LOADING_PROTOCOL = 'paired-tool-loading-1'
+TOOL_LOADING_MODES = ('eager',)
+EAGER_TOOLS_CONFIG = {'tool_search': {'enabled': 'off'}}
+# Nothing in a benchmark turn tells the model what time it is: the stock system
+# prompt carries only the date the conversation started and sends the model to a
+# terminal for the time (agent/prompt_builder.py, mandatory_tool_use), and no
+# arm has one. A generated family therefore declares message_timestamps:
+# gateway, and every owner turn, inbound message and cron (heartbeat) prompt is
+# prefixed with the body clock in the format Hermes' own gateway renders when
+# gateway.message_timestamps is enabled (gateway/message_timestamps.py,
+# format_message_timestamp): "[Wed 2026-09-23 09:19:34 UTC] text". The clock is
+# the shifted one every arm shares, so a stamp after an advance_clock reads
+# past the horizon. Frozen datasets declare nothing and keep bare turns.
+MESSAGE_TIMESTAMPS_PROTOCOL = 'paired-message-timestamps-1'
+MESSAGE_TIMESTAMPS_MODES = ('gateway',)
+MESSAGE_TIMESTAMP_FORMAT = '[%a %Y-%m-%d %H:%M:%S %Z]'
+# The stock prompt describes a runtime the benchmark body does not provide (a
+# terminal for the time, cron directories under the profile) and says nothing
+# about what a contact id or an arrival time is, so the second pilot still spent
+# setup turns treating p-NN as a profile, writing sleep scripts and polling. A
+# generated family declares environment_note: messaging, and every turn's
+# system message and every cron (heartbeat) run carries this description of the
+# body, identically in every arm. It states what the session is, never what to
+# do about any scenario.
+ENVIRONMENT_NOTE_PROTOCOL = 'paired-environment-note-1'
+ENVIRONMENT_NOTES = {'messaging': (
+    'This is a messaging session: each message carries its arrival time in brackets, and your '
+    'final response is your reply to it. Ids like p-07 are contacts (people); their channel and '
+    'address are in contacts.json in the workspace. There is no terminal, clock, timer or '
+    'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
+    'handled when a later message arrives.')}
 # This key belongs only to the disposable, single-owner fixture API. Provider
 # context tools use the existing api:access contract; live grants are untouched.
 PAIRED_FIXTURE_SCOPES = ['context:read', 'turns:write', 'memory:read',
@@ -53,6 +92,9 @@ def inspect_payload():
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
             'arm_profiles': ARM_PROFILE_PROTOCOL,
             'heartbeat_prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
+            'tool_loading': TOOL_LOADING_PROTOCOL,
+            'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
+            'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
             'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
@@ -62,16 +104,52 @@ def inspect_payload():
                 (paired_body.plugin_source() / '__init__.py').read_bytes()).hexdigest()}
 
 
-def turn_message(entry, kind):
+def message_stamp():
+    """The body clock as the gateway's message timestamp prefix, e.g. ``[Wed 2026-09-23 09:19:34 UTC]``."""
+    import hermes_time
+    now = hermes_time.now()
+    return now.strftime(MESSAGE_TIMESTAMP_FORMAT).replace(' ]', ']')
+
+
+def stamp_message(text, mode):
+    """``text`` as the model sees it under the dataset's declared message timestamps; None keeps it bare."""
+    if mode is None:
+        return text
+    if mode not in MESSAGE_TIMESTAMPS_MODES:
+        raise ValueError('Unknown message timestamps mode')
+    return f'{message_stamp()} {text}'
+
+
+def environment_note(mode):
+    """The dataset's declared description of the body for every turn and cron run; None keeps stock."""
+    if mode is None:
+        return None
+    if mode not in ENVIRONMENT_NOTES:
+        raise ValueError('Unknown environment note mode')
+    return ENVIRONMENT_NOTES[mode]
+
+
+def turn_message(entry, kind, timestamps=None):
     """The text an agent turn receives and the platform it arrives on."""
     if kind == 'user':
-        return entry['user'], 'cli'
+        return stamp_message(entry['user'], timestamps), 'cli'
     if kind == 'owner_reaction':
         # An ordinary owner turn in every arm; no arm gets a structured channel.
-        return entry['owner_reaction']['text'], 'cli'
+        return stamp_message(entry['owner_reaction']['text'], timestamps), 'cli'
     inbound = entry['inbound']
-    return (f"[Message from contact {inbound['contact']} on {inbound['channel']}]\n{inbound['text']}",
-            paired_body.PLUGIN)
+    text = f"[Message from contact {inbound['contact']} on {inbound['channel']}]\n{inbound['text']}"
+    return stamp_message(text, timestamps), paired_body.PLUGIN
+
+
+def install_tool_loading(config, mode):
+    """Apply the dataset's declared tool loading to the shared Hermes config; None keeps stock."""
+    if mode is None:
+        return None
+    if mode not in TOOL_LOADING_MODES:
+        raise ValueError('Unknown tool loading mode')
+    tools = config.get('tools')
+    config['tools'] = {**(tools if isinstance(tools, dict) else {}), **deepcopy(EAGER_TOOLS_CONFIG)}
+    return mode
 
 
 def seed_workspace(root, files):
@@ -324,6 +402,13 @@ def main():
                   terminal={'backend': 'local', 'cwd': str(workspace)})
     outbox = Path('/state/outbox.json')
     capture = paired_body.install_capture_platform(home, config, outbox)
+    # The same tool loading in every arm: the dataset declares it, never the profile.
+    tool_loading = install_tool_loading(config, inputs.get('tool_loading'))
+    # The same message timestamps in every arm, from the same declaration; validated up front.
+    message_timestamps = inputs.get('message_timestamps')
+    stamp_message('', message_timestamps)
+    note = environment_note(inputs.get('environment_note'))
+    turn_system = SYSTEM if note is None else f'{SYSTEM}\n{note}'
     if profile.get('curator'):
         paired_arms.install_curator(config)
     (home / 'config.yaml').write_text(json.dumps(config))
@@ -335,7 +420,9 @@ def main():
     agents, histories, rows, ticks = {}, {}, [], []
     tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
-              'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0}}
+              'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
+                                'tool_loading': tool_loading, 'message_timestamps': message_timestamps,
+                                'environment_note': inputs.get('environment_note')}}
     if phase is not None:
         result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
                                     'start_turn': phase['start_turn']}
@@ -411,10 +498,14 @@ def main():
             resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))
-            # Cron jobs (the heartbeat) run under the same frozen temperature and limits.
+            # Cron jobs (the heartbeat) run under the same frozen temperature and limits;
+            # their prompt carries the body clock and their run the environment note,
+            # the way the owner turns do.
             resources.enter_context(paired_arms.pinned_cron_agents(
                 lambda resolved: pinned_runtime(resolved, temperature),
-                max_iterations=inputs['max_iterations'], max_tokens=inputs['max_output_tokens']))
+                max_iterations=inputs['max_iterations'], max_tokens=inputs['max_output_tokens'],
+                stamp=(lambda prompt: stamp_message(prompt, message_timestamps))
+                if message_timestamps is not None else None, system_message=note))
             resources.enter_context(workspace_tools(workspace,
                 workflow_observations=workflow_observations))
             # The arm's own step of every tick, run before cron and dispatch.
@@ -492,11 +583,11 @@ def main():
                     rows.append(row)
                 else:
                     session_id = entry['session_id']
-                    message, platform = turn_message(entry, kind)
+                    message, platform = turn_message(entry, kind, message_timestamps)
                     if session_id not in agents:
                         agents[session_id] = AIAgent(**{**arguments, 'platform': platform}, session_id=session_id)
                     agent = agents[session_id]
-                    response = agent.run_conversation(message, system_message=SYSTEM,
+                    response = agent.run_conversation(message, system_message=turn_system,
                         conversation_history=histories.get(session_id))
                     histories[session_id] = response.get('messages', [])
                     complete = response.get('completed') is True and not any(

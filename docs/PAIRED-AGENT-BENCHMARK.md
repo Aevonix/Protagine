@@ -237,6 +237,88 @@ the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the
 repository's frozen fixtures.
 
+**Setup turns are statements.** A history turn tells the agent a fact or a
+promise in plain words and says that nothing is needed now ("I told p-61 I
+would send the budget draft within the next 10 minutes. Nothing to do right
+now. If that time passes and I have not said it went out, that is when I want
+a reminder."). No turn asks the agent to set up a reminder, read a file, look
+up the time or fetch anything, so the turn completes conversationally within
+the frozen iteration budget in every arm. The background state a scenario
+needs is seeded by the harness instead: contact records as a workspace file,
+a contact's reply as an `inbound` event whose text carries the item itself,
+and the horizon as an `advance_clock` past the stated minutes. The obligation
+falls due only after the clock advance; the ticks then observe whether the
+agent acts on its own. The pilot `hb-m0-a9c335dc-initiative-dev-7` showed why
+this matters: turns phrased as requests ("chase me", "remind me in N
+minutes") sent the model hunting for a cron or clock tool it does not have,
+the first owner turn never completed, and the body checks went unobserved in
+both arms.
+
+**Eager tool loading.** Hermes 0.21.3 defers `session_search`, `todo_list` and
+`cronjob_manage` behind its `tool_search` bridge by default
+(`tools/tool_search.py`, `_DEFAULT_DEFERRED_TOOLS`, consulted before the
+core-tool exemption), so every use of one of them costs a `tool_search`, a
+`tool_describe` and a `tool_call` round trip out of the eight frozen
+iterations. A generated family therefore declares `tool_loading: eager` on
+every episode, and the worker writes the stock key
+`tools.tool_search.enabled: off` into the shared Hermes config of every arm,
+under which `assemble_tool_defs` passes every enabled tool through untouched.
+The plan records it as `comparison.tool_loading` (protocol, mode and the
+config keys) and refuses an image whose worker does not carry the protocol;
+each attempt records the applied mode under `tool_evidence.tool_loading`.
+The frozen datasets (`paired-agent-reviewed-2`, `paired-agent-workflows-1`)
+declare nothing and keep stock loading, so their case records and hashes are
+unchanged.
+
+**The body clock on every turn.** Nothing in a benchmark turn tells the model
+what time it is: the stock system prompt carries only the date the
+conversation started and its `mandatory_tool_use` guidance sends the model to
+a terminal for the current time (`agent/prompt_builder.py`), and no arm has
+one; Hermes cron puts no time in a job's prompt either. A generated family
+therefore declares `message_timestamps: gateway` on every episode, and the
+worker prefixes every owner turn, inbound message and cron (heartbeat) prompt
+with the body clock in the format Hermes' own gateway renders when
+`gateway.message_timestamps` is enabled (`gateway/message_timestamps.py`,
+`format_message_timestamp`): `[Wed 2026-09-23 09:19:34 UTC] I told p-61 I
+would send the budget draft within the next 10 minutes. ...`. The clock is
+the shifted one every arm shares, so a stamp after an `advance_clock` reads
+past the stated horizon and the ticks that follow can tell that a promise is
+overdue without a tool. The plan records it as `comparison.message_timestamps`
+(protocol, mode and format) and refuses an image whose worker does not carry
+the protocol; each attempt records the applied mode under
+`tool_evidence.message_timestamps`. The frozen datasets declare nothing and
+keep bare turns. The first pilot of the restated family
+(`hb-m2-137f6033-initiative-dev-7-i1`) showed why this is needed: with eager
+tools and statement-shaped turns, a relative horizon ("17 minutes from now")
+still sent the model reading `/proc/stat` and `/etc/timezone` for the time and
+searching for a cron directory, and the first owner turn hit the iteration cap
+in 2 of the first 5 base episodes.
+
+**The environment note.** The stock prompt describes a runtime the body does
+not provide (a terminal for the time, cron directories under the profile) and
+says nothing about what a contact id or an arrival time is. With the clock in
+place, the second pilot (`hb-m2-73d1e37e-initiative-dev-7-i2`) still lost 3 of
+21 base setup episodes to the model treating `p-50` as a session profile and
+searching for it, writing sleep scripts to "arm" a reminder, or hunting the
+file system for a contact's answer. A generated family therefore declares
+`environment_note: messaging`, and every turn's system message and every cron
+(heartbeat) run carries the same short description of the body
+(`paired_worker.ENVIRONMENT_NOTES`): it is a messaging session whose messages
+carry their arrival time and whose final response is the reply; ids like
+`p-07` are contacts whose records are in `contacts.json`; there is no
+terminal, clock, timer or scheduler tool, so nothing can be armed for later and
+what falls due later is handled when a later message arrives. It describes the
+session, never any scenario or what to do about it, and it is identical in
+every arm. The plan records the protocol, mode, text and text hash as
+`comparison.environment_note` and refuses an image whose worker lacks the
+protocol; each attempt records the applied mode. The frozen datasets carry no
+note, and a cron run in a frozen dataset gets no system message, as before.
+
+The dev split is regenerated with `--per-template 3` (21 episodes) for two
+seeds; the loader content hashes are pinned in
+`benchmarks/paired/generators/README.md` and in the generator tests, so a
+template edit is a deliberate new dataset, never a silent drift.
+
 ## Read the result
 
 The report shows each arm's completion counts, separate unsupported/error/timeout outcomes, paired wins/ties/losses and completion delta in percentage points. A win means Protagine completed an episode that baseline Hermes did not. A tie can mean both succeeded or both failed; those counts are also separate.
