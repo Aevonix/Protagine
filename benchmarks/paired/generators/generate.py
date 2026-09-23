@@ -6,14 +6,18 @@ the same draws. The output is the frozen fixture shape, ``manifest.json`` and
 ``scenarios.json``, byte-hashed the way the loader hashes it. Dev templates
 live in this directory. Held-out templates are a Python file outside the
 repository, named by ``--heldout-templates`` or ``PROTAGINE_HELDOUT_TEMPLATES``,
-and are never committed.
+and are never committed. A template may also render a process-restart contract
+(``workflow``) and seeded conversation history (``history``).
 
     python benchmarks/paired/generators/generate.py --family initiative \
         --split dev --seed 7 --per-template 3 --output /private/families/initiative-dev-7
+    python benchmarks/paired/generators/generate.py --family memory \
+        --split dev --seed 7 --per-template 3 --output /private/families/mind-memory-1-dev-7
 
-A template may also render ``workflow`` (``restart_before``, ``snapshot_after``)
-and ``checkpoints`` (artifact checks on a snapshot), the frozen workflow
-contract, for a family whose probe follows a restart.
+A template may also render ``workflow`` (``restart_before``, ``snapshot_after``),
+the frozen workflow contract, for a family whose probe follows a restart, with
+``checkpoints`` (artifact checks on a snapshot), and ``history`` (seeded
+conversation sessions the worker imports before the first turn).
 """
 import argparse
 import hashlib
@@ -32,7 +36,11 @@ REPOSITORY = HERE.parents[2]
 # Every family module in this directory; ``--family`` is the module's stem.
 FAMILIES = {path.stem: path for path in sorted(HERE.glob('*.py')) if path.stem != Path(__file__).stem}
 MAX_PER_TEMPLATE = 16
-RENDERED_KEYS = {'initial_files', 'episodes', 'body', 'artifacts', 'workflow', 'checkpoints'}
+# What a template may render besides the fixture files, the episode and its oracle: a
+# process-restart contract with checkpoint artifacts, and seeded conversation history
+# (paired_cases).
+RENDERED_KEYS = {'initial_files', 'episodes', 'body', 'artifacts', 'self_report', 'workflow', 'checkpoints',
+                 'history'}
 _LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
 
 
@@ -105,21 +113,24 @@ def render(module, seed, per_template):
             rendered = template(Draw(instance))
             if (not isinstance(rendered, dict) or not {'initial_files', 'episodes'} <= set(rendered)
                     or set(rendered) - RENDERED_KEYS
-                    or not ('body' in rendered or rendered.get('artifacts'))
+                    or not ('body' in rendered or 'self_report' in rendered or rendered.get('artifacts'))
                     or ('checkpoints' in rendered and 'workflow' not in rendered)):
-                raise ValueError('A template renders initial_files, episodes and a body or artifacts oracle')
+                raise ValueError('A template renders initial_files, episodes and a body, self_report '
+                                 'or artifacts oracle')
             oracle = {'declared_turns': len(rendered['episodes']), 'artifacts': list(rendered.get('artifacts', []))}
-            if 'body' in rendered:
-                oracle['body'] = rendered['body']
+            for key in ('body', 'self_report'):
+                if key in rendered:
+                    oracle[key] = rendered[key]
             if 'checkpoints' in rendered:
                 oracle['checkpoints'] = list(rendered['checkpoints'])
             scenario = {'id': f'{name}.{index:02d}', 'family': group, 'scenario': name, 'seed': instance,
                         'role': role, 'initial_files': rendered['initial_files'],
                         'episodes': rendered['episodes'], 'limitations': [], 'oracle': oracle}
-            if 'workflow' in rendered:
-                # A restart (fresh worker process over the same state) before the probe, and
-                # workspace snapshots the oracle's checkpoints grade as of that turn.
-                scenario['workflow'] = rendered['workflow']
+            # A restart (fresh worker process over the same state) before the probe, workspace
+            # snapshots the oracle's checkpoints grade as of that turn, and seeded history.
+            for key in ('workflow', 'history'):
+                if key in rendered:
+                    scenario[key] = rendered[key]
             scenarios.append(scenario)
     return scenarios
 
@@ -128,7 +139,8 @@ def encode(value):
     return (json.dumps(value, indent=1, sort_keys=True, ensure_ascii=False) + '\n').encode()
 
 
-def manifest_for(module, scenarios, *, split, seed, per_template, template_path, scenario_bytes):
+def manifest_for(module, scenarios, *, split, seed, per_template, template_path, scenario_bytes, extra=None):
+    """``extra`` is recorded under ``generator`` (an anchor names its source and renderer there)."""
     counts = {}
     for item in scenarios:
         counts[item['family']] = counts.get(item['family'], 0) + 1
@@ -140,7 +152,8 @@ def manifest_for(module, scenarios, *, split, seed, per_template, template_path,
                           'per_template': per_template,
                           'templates': {name: per_template for name in sorted(module.TEMPLATES)},
                           'template_source_sha256': hashlib.sha256(Path(template_path).read_bytes()).hexdigest(),
-                          'engine_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
+                          'engine_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                          **(extra or {})},
             'source': {'kind': 'generated_synthetic',
                        'description': 'Seeded template instances with synthetic fixed-width contacts; '
                                       'no production conversations, names, hosts or credentials.'},
@@ -148,7 +161,7 @@ def manifest_for(module, scenarios, *, split, seed, per_template, template_path,
                             'A dev split is public development data, never a held-out result.']}
 
 
-def write(directory, module, seed, split, per_template, template_path):
+def write(directory, module, seed, split, per_template, template_path, extra=None):
     """Write manifest.json and scenarios.json once; return the loader's content hash."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -158,7 +171,7 @@ def write(directory, module, seed, split, per_template, template_path):
     scenarios = render(module, seed, per_template)
     scenario_bytes = encode(scenarios)
     manifest_bytes = encode(manifest_for(module, scenarios, split=split, seed=seed, per_template=per_template,
-                                         template_path=template_path, scenario_bytes=scenario_bytes))
+                                         template_path=template_path, scenario_bytes=scenario_bytes, extra=extra))
     targets[0].write_bytes(manifest_bytes)
     targets[1].write_bytes(scenario_bytes)
     return hashlib.sha256(b'manifest\0' + manifest_bytes + b'\0scenarios\0' + scenario_bytes).hexdigest()

@@ -77,13 +77,25 @@ alike.
 
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
 selected by its stem (`--family initiative`, `--family drives`, `--family
-people`, `--family affect`, `--family opinions`). Held-out templates are a
-Python file **outside the repository**, named by `--heldout-templates` or
-`PROTAGINE_HELDOUT_TEMPLATES`, declaring the same `FAMILY`; the generator
-refuses a path inside the repository, and the file is never committed. Every
-family's gate arms are built-in profiles of the harness (`paired.PROFILES`,
-`docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and profiles"); the one arm still
-declared in a file is the affect mechanism arm (`affect_profiles.json`).
+people`, `--family affect`, `--family opinions`, `--family memory`, `--family
+identity`). Held-out templates are a Python file **outside the repository**,
+named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
+same `FAMILY`; the generator refuses a path inside the repository, and the
+file is never committed. Every family's gate arms are built-in profiles of the
+harness (`paired.PROFILES`, `docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and
+profiles"); the one arm still declared in a file is the affect mechanism arm
+(`affect_profiles.json`).
+
+Besides `initial_files`, `episodes` and a `body`, `artifacts` or `self_report`
+oracle, a template may render `workflow` (a process-restart contract in the
+frozen workflows' shape, `{"restart_before": [i], "snapshot_after": [],
+"read_failures": []}`; the probe session after a restart uses a fresh session
+id), `checkpoints` (artifact checks graded on a declared snapshot) and
+`history` (earlier owner sessions, `[{"id", "at", "messages": [{"role",
+"content"}]}]`, imported by the worker into Hermes `state.db` in every arm and
+into the Protagine ledger in plugin arms before the first turn, without model
+calls). The LongMemEval_S anchor (`benchmarks/paired/anchors/longmemeval_s.py`)
+renders its questions this way into an `anchor` split.
 
 - `initiative.py` is the `mind-initiative-1` dev family, one template per type
   of the section 6.2 taxonomy (evals plan, plus the mechanisms the M2 held-out
@@ -150,6 +162,19 @@ declared in a file is the affect mechanism arm (`affect_profiles.json`).
   the formation turn checks the stance was formed from the records; the
   probe's `decision.json` is graded by `label_one_of` on the plan and the
   deciding source id. Its arms are `base_hermes`, `full` and `full-opinions`.
+- `memory.py` is the `mind-memory-1` dev family (evals section 6.1, plan in
+  `docs/proto-agi/families/mind-memory-1.md`): six `recall` templates (a fact
+  after a restart, a fact across two owner sessions, a knowledge update whose
+  stale value is forbidden, a scoped correction, a standing preference applied
+  after distractors, the agent's own earlier result) and two `abstain`
+  templates (never said, a contradiction answered with a question), each
+  graded on an `answer.json` the probe asks for. Its arms are `base_hermes`,
+  `full`, `full-semantic_recall` and `full-consolidation`.
+- `identity.py` is the `mind-self-1` dev family (evals section 6.7, the same
+  plan): a stance asked for after a restart, a false and a true premise about
+  the agent's own actions, and two self-report templates graded by the
+  `self_report` oracle against the action ids the harness observed. Its arms
+  are `full-self_narrative`, `full` and `base_hermes`.
 
 Decision-turn rule (affect): the decision turn is the only turn that asks for
 work, it comes last, it restates the standing default in neutral words (which
@@ -209,8 +234,9 @@ values are pinned in each family's tests:
 `sidecar/tests/test_qualification_paired_generators.py` (initiative),
 `sidecar/tests/test_qualification_paired_drives.py` (drives),
 `sidecar/tests/test_qualification_people_family.py` (people),
-`sidecar/tests/test_qualification_paired_affect_family.py` (affect) and
-`sidecar/tests/test_qualification_opinions_family.py` (opinions).
+`sidecar/tests/test_qualification_paired_affect_family.py` (affect),
+`sidecar/tests/test_qualification_opinions_family.py` (opinions) and
+`sidecar/tests/test_qualification_paired_memory_self.py` (memory, identity).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
@@ -218,16 +244,22 @@ per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
 (10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 39
 episodes (18 treatment, 21 control). `opinions`, `--per-template 3`: 36
 episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
+`memory`, `--per-template 3`: 24 episodes (18 recall, 6 abstain). `identity`,
+`--per-template 3`: 15 episodes (9 narrative, 6 premise).
 
 | Family | Per template | Seed | Content hash | `scenarios.json` sha256 |
 | --- | --- | --- | --- | --- |
-| initiative | 3 | 7 | `a78a767ab4d1b02a474f9a30fd446f7e40d6ab219e2307c2fca8b82a87e5343b` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
-| initiative | 3 | 11 | `c06287898efb74f4100ddd196ef445eec2abea70122991bfa844ceb0cd719236` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
-| drives | 3 | 7 | `57aee52a984e2f4801122ac82ee90f87c6850a91e726c99811304aa8c8d5fa9b` | `90413dcff98ecaa3c80c8befe7dd51dfc9b4e1ac5d75bfd91b13831abede69e2` |
-| drives | 3 | 11 | `853cb4d25a5933ef88b2663496864bb4879c77794e9ca2061557da6a43176545` | `906e439b2c3d9c89273cafcbe564928a5187f9331ba6a0012d3d7f4a783f78e6` |
-| people | 2 | 7 | `cd2979cdc298f9250195e65b32fa8d9ce29399c9227ca80df01063af5d467b5b` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
-| people | 2 | 11 | `9d2d703a278db0ebe7f76657f3cfada3023d6ebbb353a666ebd9e572142fbf07` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
-| affect | 3 | 7 | `19fe948794166d2b31d2e1755c0188f627d422ac4e792e99842440e1de6133db` | `3349702498368fd36ecbd54d5a032c42e1e259a25aa577e39bd907a0f1c18703` |
-| affect | 3 | 11 | `0f5c668b9f42b2d75b13ddefed9a8b1c9753aeef0cc3b01c6436a0d2b6e10550` | `2941da04abf76e885a7a75f5ec4590076898b84007ead932ca3024a14820601c` |
-| opinions | 3 | 7 | `059c45ad1ca013cb8477e1f6d0f4d3d0bfca2467ad7733036973e4fe30b0591a` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
-| opinions | 3 | 11 | `a10c0588b7ed23979e0e43567c1cb19b68a2b5c82a3cb9667f5248ae58405a90` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |
+| initiative | 3 | 7 | `eff4ffb8d82a001c4ee66af040a255957150c633013c939e6133d46ee18daa93` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
+| initiative | 3 | 11 | `92c04d250399706b84770e51339967942a102b86b70164235e6fdfaf86d60c54` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
+| drives | 3 | 7 | `c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439` | `90413dcff98ecaa3c80c8befe7dd51dfc9b4e1ac5d75bfd91b13831abede69e2` |
+| drives | 3 | 11 | `9095a0bb188a530875540e8a4e3b1f130d767058cb38a86487dafc821f9180d8` | `906e439b2c3d9c89273cafcbe564928a5187f9331ba6a0012d3d7f4a783f78e6` |
+| people | 2 | 7 | `34fba589d88ab54692264824664d3b93b267c868fba6fd5cf6a05ad28bdbc89a` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
+| people | 2 | 11 | `5a32be07f96e4292ded949756ddc88bba942c2cd20eedd1acc6e793ab0b0c73a` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
+| affect | 3 | 7 | `518b0dedaa8042de85118c609aeb5d7ff586421d0f2dc59008b08895e338dbdc` | `3349702498368fd36ecbd54d5a032c42e1e259a25aa577e39bd907a0f1c18703` |
+| affect | 3 | 11 | `0f5a9c90fff6ca3965194272913b1f56c805dd3eee451adcf1b440acb26baf5e` | `2941da04abf76e885a7a75f5ec4590076898b84007ead932ca3024a14820601c` |
+| opinions | 3 | 7 | `8dca5fd169f109cd98d833f0207d01a0e0230671211c8190ca47cf0dbd8cbdc1` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
+| opinions | 3 | 11 | `adfd8420b3531fe7e919af7bb4c4804e201230768b98749c71d455a2c00f8794` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |
+| memory | 3 | 7 | `855a8d4e6ab0075cf78e8e3393e313eca3c2b8c3f4e57877cf3d8eccefc6c8b3` | `18b2ed5741dd0bbaa441d48d85083c099c1133bd74fd8a907b26a18264f267d7` |
+| memory | 3 | 11 | `7873b8a212af57364f74e162f75f8fb9550f1d59123b8e0a84ffd0f80aed3a9b` | `15595ff53f321be18125bcc91db852a42871c19fe83e197669d2de7ab383937b` |
+| identity | 3 | 7 | `7adcbd5b230f47f2c61b304bb14b9ed6f3cbf171527a704a9cc3da989d463b2a` | `b6e780c0b4cb69e2b3173ffb5e315ab9126f16f3569398a0bd595c3d3908080c` |
+| identity | 3 | 11 | `65a4248f58dc3247394715b09718b4627ba328c3a28fbf37c8d8e0dc7de06e99` | `80dde9c5b4936d863967809b5932d400b0bfc948d9d40f4bfabd0ad39297e1f3` |

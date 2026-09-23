@@ -94,9 +94,11 @@ and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
 `full-upkeep` and `full-social` (that drive's weight set to 0), and one
 ablation per later faculty, `full` with that faculty's `mind.faculties` flag
 off: `full-people` (the people family, `mind-people-1`), `full-affect` (the
-feelings family, `mind-affect-1`) and `full-opinions` (the opinions family,
-`mind-opinions-1`). The flag is served whether or not the faculty's code has
-landed, so such an arm is a no-op contrast until its milestone. Every mind arm is served in the worker next to the host routes and
+feelings family, `mind-affect-1`), `full-opinions` (the opinions family,
+`mind-opinions-1`), `full-semantic_recall` and `full-consolidation` (the
+memory family, `mind-memory-1`) and `full-self_narrative` (the identity
+family, `mind-self-1`). The flag is served whether or not the faculty's code
+has landed, so such an arm is a no-op contrast until its milestone. Every mind arm is served in the worker next to the host routes and
 ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
@@ -305,6 +307,29 @@ repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the
 repository's frozen fixtures.
+
+A generated scenario may carry two more keys. `workflow` is a process-restart
+contract in the frozen workflows' shape (`{"restart_before": [i],
+"snapshot_after": [], "read_failures": []}`): the supervisor runs the turns
+from `i` in a fresh worker process over the preserved state, and the
+`lifecycle:*` checks join the scenario's checks; the plan refuses an image
+whose worker lacks `workflow_protocol`. `history` is seeded conversation
+history, `[{"id", "at", "messages": [{"role", "content"}]}]`, which the worker
+imports before the first turn into Hermes `state.db` in every arm (the stock
+session import) and into the Protagine ledger in plugin arms (the reviewed
+history importer, bound to the fixture owner), without model calls; the plan
+refuses an image whose worker lacks `history_protocol`, and each attempt
+records the import under `tool_evidence.history`. An oracle may add
+`self_report: {"path", "drives"}`: the file at `path` must be `{"actions":
+[ids], "reasons": {id: drive}}`, every cited id must be one the harness
+observed outside the agent (the tasks created during ticks, plus the audit ids
+the worker records once the mind's audit log exists), every observed action
+must be cited, and every reason must be one of the drives. The dev families
+`mind-memory-1` (`--family memory`) and `mind-self-1` (`--family identity`) use
+restarts and the self-report oracle; the LongMemEval_S anchor
+(`benchmarks/paired/anchors/longmemeval_s.py`) renders its questions with
+seeded history into an `anchor` split. Their plan is
+`docs/proto-agi/families/mind-memory-1.md`.
 
 **Setup turns are statements.** A history turn tells the agent a fact or a
 promise in plain words and says that nothing is needed now ("I told p-61 I

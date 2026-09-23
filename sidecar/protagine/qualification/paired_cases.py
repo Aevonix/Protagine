@@ -111,7 +111,9 @@ CASE_IDS = tuple(item['id'] for item in _SCENARIOS)
 # Seeded template families (benchmarks/paired/generators) are written outside the
 # frozen fixtures. Their scenarios may hold body events and body oracles.
 GENERATOR_PROTOCOL = 'paired-generator-1'
-GENERATED_SPLITS = ('dev', 'heldout')
+# An anchor split is public external data rendered into the fixture shape (the
+# LongMemEval_S anchor); it is reported descriptively, never as a held-out gate.
+GENERATED_SPLITS = ('dev', 'heldout', 'anchor')
 # Generated families run with every enabled Hermes tool loaded eagerly in every
 # arm (paired_worker.EAGER_TOOLS_CONFIG); the frozen datasets keep stock loading.
 GENERATED_TOOL_LOADING = 'eager'
@@ -124,9 +126,12 @@ GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
 GENERATED_ENVIRONMENT_NOTE = 'messaging'
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
-# A generated scenario may carry the frozen workflow contract (a restart before its
-# probe, snapshots) and checkpoint artifacts graded on those snapshots.
-GENERATED_OPTIONAL_KEYS = frozenset({'workflow'})
+# A generated scenario may also declare a process-restart contract (``workflow``, the
+# frozen workflows' shape) with checkpoint artifacts graded on its snapshots, and seeded
+# conversation history (``history``, paired_history) that the worker imports before the
+# first turn.
+GENERATED_OPTIONAL_KEYS = frozenset({'workflow', 'history'})
+GENERATED_ORACLE_KEYS = frozenset({'declared_turns', 'artifacts', 'body', 'checkpoints', 'self_report'})
 
 
 def _validate_checkpoints(checkpoints, workflow):
@@ -161,7 +166,8 @@ def load_generated_dataset(directory):
     if (not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 128
             or len(scenarios) != manifest['scenario_count']):
         raise ValueError('Generated dataset scenario count mismatch')
-    from .paired_body_grading import validate_body_oracle
+    from .paired_body_grading import validate_body_oracle, validate_self_report_oracle
+    from .paired_history import validate_history
     from .paired_workflow_runtime import validate_episodes, validate_workflow
     identities, counts = set(), {}
     for item in scenarios:
@@ -178,16 +184,23 @@ def load_generated_dataset(directory):
             raise ValueError('Initial files require leaf names and text')
         kinds = validate_episodes(item['episodes'])
         workflow = validate_workflow(item['workflow'], item['episodes']) if 'workflow' in item else None
+        if 'history' in item:
+            validate_history(item['history'])
+            sessions = {entry['session_id'] for entry in item['episodes'] if 'session_id' in entry}
+            if any(session['id'] in sessions for session in item['history']):
+                raise ValueError('History session ids must differ from the episode session ids')
         artifacts = oracle.get('artifacts') if isinstance(oracle, dict) else None
-        if (not isinstance(oracle, dict) or set(oracle) - {'declared_turns', 'artifacts', 'body', 'checkpoints'}
+        if (not isinstance(oracle, dict) or set(oracle) - GENERATED_ORACLE_KEYS
                 or oracle.get('declared_turns') != len(kinds) or not isinstance(artifacts, list)
                 or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in artifacts)
                 or len({a['path'] for a in artifacts}) != len(artifacts)
-                or not (artifacts or 'body' in oracle)
+                or not (artifacts or 'body' in oracle or 'self_report' in oracle)
                 or ('checkpoints' in oracle and workflow is None)):
-            raise ValueError('Generated scenarios need artifact or body outcomes')
+            raise ValueError('Generated scenarios need artifact, body or self-report outcomes')
         if 'body' in oracle:
             validate_body_oracle(oracle['body'])
+        if 'self_report' in oracle:
+            validate_self_report_oracle(oracle['self_report'])
         if 'checkpoints' in oracle:
             _validate_checkpoints(oracle['checkpoints'], workflow)
     if counts != manifest['families']:
@@ -247,6 +260,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
                 contract = validate_workflow(scenario['workflow'], scenario['episodes'])
                 inputs['workflow'] = copy.deepcopy(contract)
                 oracle['workflow_contract'] = copy.deepcopy(contract)
+            if 'history' in scenario:
+                inputs['history'] = copy.deepcopy(scenario['history'])
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
@@ -405,6 +420,9 @@ def assess(observed, oracle):
     if 'body' in oracle:
         from .paired_body_grading import assess_body
         checks.update(assess_body(effects, oracle['body']))
+    if 'self_report' in oracle:
+        from .paired_body_grading import assess_self_report
+        checks.update(assess_self_report(effects, oracle['self_report']))
     return checks
 
 

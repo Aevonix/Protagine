@@ -70,8 +70,8 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: 'a78a767ab4d1b02a474f9a30fd446f7e40d6ab219e2307c2fca8b82a87e5343b',
-                     11: 'c06287898efb74f4100ddd196ef445eec2abea70122991bfa844ceb0cd719236'}
+PINNED_DEV_SPLITS = {7: 'eff4ffb8d82a001c4ee66af040a255957150c633013c939e6133d46ee18daa93',
+                     11: '92c04d250399706b84770e51339967942a102b86b70164235e6fdfaf86d60c54'}
 # The scenario bytes of those splits: an engine edit (a new family, a new draw) moves the
 # manifest's engine hash and with it the content hash, never the scenarios.
 PINNED_DEV_SCENARIOS = {7: '4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3',
@@ -319,7 +319,7 @@ def test_heldout_templates_must_live_outside_the_repository(generate, tmp_path, 
 
 
 def test_draws_give_fixed_width_ids_distinct_across_contacts_and_sources(generate):
-    assert {'initiative', 'drives', 'people', 'affect', 'opinions'} <= set(generate.FAMILIES)
+    assert {'initiative', 'drives', 'people', 'affect', 'opinions', 'memory', 'identity'} <= set(generate.FAMILIES)
     draw = generate.Draw(3)
     identities = [draw.contact() for _ in range(40)] + [draw.source() for _ in range(40)]
     assert len(set(identities)) == 80

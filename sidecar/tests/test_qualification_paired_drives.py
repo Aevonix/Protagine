@@ -18,8 +18,8 @@ TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|read|
 # The dev split, per-template 3. The manifest hashes the template and engine sources, so any
 # edit to drives.py or generate.py is a new dataset: update these deliberately, together with
 # benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: '57aee52a984e2f4801122ac82ee90f87c6850a91e726c99811304aa8c8d5fa9b',
-                     11: '853cb4d25a5933ef88b2663496864bb4879c77794e9ca2061557da6a43176545'}
+PINNED_DEV_SPLITS = {7: 'c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439',
+                     11: '9095a0bb188a530875540e8a4e3b1f130d767058cb38a86487dafc821f9180d8'}
 
 
 @pytest.fixture(scope='module')

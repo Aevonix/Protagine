@@ -31,8 +31,8 @@ HOLD = GROUPS['pushback'] | GROUPS['pseudo-evidence']
 # The dev split, per-template 3, for two seeds. The manifest hashes the template and engine
 # sources, so any edit to opinions.py or generate.py is a new dataset: update these
 # deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: '059c45ad1ca013cb8477e1f6d0f4d3d0bfca2467ad7733036973e4fe30b0591a',
-                     11: 'a10c0588b7ed23979e0e43567c1cb19b68a2b5c82a3cb9667f5248ae58405a90'}
+PINNED_DEV_SPLITS = {7: '8dca5fd169f109cd98d833f0207d01a0e0230671211c8190ca47cf0dbd8cbdc1',
+                     11: 'adfd8420b3531fe7e919af7bb4c4804e201230768b98749c71d455a2c00f8794'}
 SOURCE = re.compile(r's-\d\d')
 
 
@@ -320,7 +320,7 @@ def test_loader_rejects_checkpoints_without_a_workflow_or_off_a_declared_snapsho
     import shutil
     source, _ = dataset
     _, scenarios, _ = paired_cases.load_generated_dataset(source)
-    for change, message in ((lambda s: s.pop('workflow'), 'artifact or body outcomes'),
+    for change, message in ((lambda s: s.pop('workflow'), 'body or self-report outcomes'),
                             (lambda s: s['oracle']['checkpoints'][0].update(turn_index=1), 'declared snapshots'),
                             (lambda s: s['oracle']['checkpoints'][0].update(artifacts=[]), 'declared snapshots'),
                             (lambda s: s['workflow'].update(restart_before=[0]), 'restart_before'),

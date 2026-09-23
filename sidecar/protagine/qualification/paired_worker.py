@@ -19,7 +19,7 @@ import threading
 import time
 import traceback
 
-from . import paired_arms, paired_body
+from . import paired_arms, paired_body, paired_history
 
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 # Version 2 added the binary comparator switches heartbeat and curator to a profile; version 3
@@ -35,7 +35,8 @@ ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
 # ``minus_<faculty>`` switch turns that faculty's flag off and each ``minus_<drive>`` switch
 # sets that drive's weight to 0 (evals section 3, the full-X arms). A faculty whose code has
 # not landed yet still has its flag written, so its ablation is a no-op contrast until then.
-MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect', 'minus_opinions')
+MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect', 'minus_opinions',
+                          'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative')
 MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
 MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS)
@@ -120,6 +121,7 @@ def inspect_payload():
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
             'body_protocol': paired_body.PROTOCOL,
+            'history_protocol': paired_history.PROTOCOL,
             'capture_platform_sha256': hashlib.sha256(
                 (paired_body.plugin_source() / '__init__.py').read_bytes()).hexdigest()}
 
@@ -521,6 +523,13 @@ def main():
                 toolsets.append('paired_protagine_memory')
             else:
                 os.environ.update(overlay)
+            # Seeded history enters every arm's state.db (and a plugin arm's ledger) once,
+            # before the first turn; a restarted phase finds it already there.
+            history = inputs.get('history')
+            if history and not resuming:
+                result['tool_evidence']['history'] = paired_history.seed(
+                    home, history, session_db=SessionDB, contact_id=inputs['contact_id'], ledger=plugin)
+                trace.record('history', result['tool_evidence']['history'])
             resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))

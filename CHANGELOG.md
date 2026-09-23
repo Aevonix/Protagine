@@ -32,6 +32,25 @@ and `Draw.source()` yields fixed-width `s-NN` source ids. Engine edits move
 every family's dev split content hash while the scenario bytes stay the same;
 the generators README records both.
 
+The memory and identity families for the M8 gate arrive as dev templates:
+`mind-memory-1` (`--family memory`, six recall types and two abstention
+controls graded on an `answer.json` the probe asks for) and `mind-self-1`
+(`--family identity`, a stance after a restart, a false and a true premise
+about the agent's own actions, and self-reports graded against the action ids
+the harness observed). Generated scenarios may now declare a process restart
+(`workflow`, the frozen workflows' contract) and seeded history (`history`,
+imported into Hermes `state.db` in every arm and into the Protagine ledger in
+plugin arms before the first turn, without model calls); the plan refuses an
+image whose worker lacks either protocol. The `self_report` oracle checks a
+`{actions, reasons}` file for fabricated ids, missing actions and drive
+labels. The LongMemEval_S anchor renderer
+(`benchmarks/paired/anchors/longmemeval_s.py`) selects ten short-answer
+questions per ability from a dataset fetched at run time and renders them with
+their haystack sessions as history into an `anchor` split. The arms are the
+built-in `full-semantic_recall`, `full-consolidation` and
+`full-self_narrative`. The frozen plan is
+`docs/proto-agi/families/mind-memory-1.md`.
+
 ## Unreleased - initiative quality: capture that lands before the mind decides
 
 The self-initiative gate (`docs/proto-agi/PROTO-AGI-EVALS.md` 6.2) came out
