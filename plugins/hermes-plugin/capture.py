@@ -127,6 +127,13 @@ class SessionMap:
         return info.contact_id
 
 
+# A hook writes one row before the reply returns, while the body thread reads the same file.
+# Five seconds of busy waiting was not enough under a burst of concurrent turns.
+BUSY_TIMEOUT_SECONDS = 30
+ENQUEUE_ATTEMPTS = 4
+ENQUEUE_RETRY_SECONDS = 0.05
+
+
 class TurnOutbox:
     """Durable SQLite ledger of captured turns shared across Hermes processes.
 
@@ -146,8 +153,16 @@ class TurnOutbox:
                 if not self.path.exists():
                     self.path.touch(mode=0o600)
                 os.chmod(self.path, 0o600)
-        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        connection = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        # WAL keeps the body thread's reads from blocking a hook's write: with the rollback
+        # journal, a few dozen turns arriving at once made writers wait on readers until the
+        # busy timeout expired and the turn was dropped. A filesystem without shared memory
+        # refuses the mode and keeps the old one, which still works.
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError:
+            pass
         connection.execute("PRAGMA synchronous=FULL")
         with self._lock:
             if not self._ready:
@@ -173,19 +188,28 @@ class TurnOutbox:
             raise ValueError("turn payload exceeds 8 MiB")
         digest = hashlib.sha256(encoded.encode()).hexdigest()
         now = time.time()
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT state FROM turn_outbox WHERE turn_id = ?", (turn_id,)).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO turn_outbox (turn_id, envelope_sha256, payload_json, state, attempts,"
-                    " created_at, updated_at) VALUES (?, ?, ?, 'pending', 0, ?, ?)",
-                    (turn_id, digest, encoded, now, now))
-            connection.execute("COMMIT")
-            return {"turn_id": turn_id, "state": row["state"] if row else "pending", "new": row is None}
-        finally:
-            connection.close()
+        for attempt in range(ENQUEUE_ATTEMPTS):
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute("SELECT state FROM turn_outbox WHERE turn_id = ?", (turn_id,)).fetchone()
+                if row is None:
+                    connection.execute(
+                        "INSERT INTO turn_outbox (turn_id, envelope_sha256, payload_json, state, attempts,"
+                        " created_at, updated_at) VALUES (?, ?, ?, 'pending', 0, ?, ?)",
+                        (turn_id, digest, encoded, now, now))
+                connection.execute("COMMIT")
+                return {"turn_id": turn_id, "state": row["state"] if row else "pending", "new": row is None}
+            except sqlite3.OperationalError as error:
+                # A busy database is the one failure worth retrying here: losing the row loses
+                # the turn, and with it anything the person committed to in it.
+                if "locked" not in str(error) and "busy" not in str(error):
+                    raise
+                if attempt == ENQUEUE_ATTEMPTS - 1:
+                    raise
+                time.sleep(ENQUEUE_RETRY_SECONDS * (attempt + 1))
+            finally:
+                connection.close()
 
     def pending_count(self) -> int:
         connection = self._connect()
@@ -286,7 +310,8 @@ class Capture:
         try:
             receipt = self._capture(**kwargs)
         except Exception as error:  # capture must never disturb the reply
-            logger.warning("turn capture failed (%s)", type(error).__name__)
+            logger.warning("turn capture failed for %s (%s: %s)",
+                           kwargs.get("turn_id") or "?", type(error).__name__, error)
             return None
         if receipt and receipt.get("new") and self.on_enqueue is not None:
             try:
