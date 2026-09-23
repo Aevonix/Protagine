@@ -81,6 +81,11 @@ jobs:
           HERMES_SRC: ${{ github.workspace }}/.qualification/hermes
           DIST_DIR: ${{ github.workspace }}/dist
         run: bash scripts/ci_recall_probe.sh
+      - name: The first closed loop on stock Hermes (build plan M2 acceptance)
+        env:
+          HERMES_SRC: ${{ github.workspace }}/.qualification/hermes
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: bash scripts/ci_mind_loop.sh
 
   hermes-adapter:
     runs-on: ubuntu-latest

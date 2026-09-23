@@ -193,19 +193,6 @@ class _FakeRegistry:
         self.anomalies = _FakeAnomalies()
         self.benchmark = _FakeBench()
 
-def test_ingest_from_all_sources(tmp_path):
-    from protagine.autonomy.loop import AutonomyLoop
-    ws, store = make(tmp_path)
-    fake_self = type("S", (), {"_registry": _FakeRegistry()})()
-    AutonomyLoop._workspace_ingest(fake_self, ws)
-    summaries = [c.summary for c in store.active()]
-    # one per source; latency regression is excluded (lower is better there)
-    assert any("overdue commitment" in s for s in summaries)
-    assert any("gateway latency spike" in s for s in summaries)
-    assert any("recall.fact_coverage regressed" in s for s in summaries)
-    assert not any("latency.jobs_p50_secs" in s for s in summaries)
-    assert len(store.active()) == 3
-
 
 # --- API -------------------------------------------------------------------
 

@@ -726,6 +726,58 @@ def run_store_migrations(home: Path) -> list[str]:
     return applied
 
 
+# State owned by code that no longer exists: the autonomy scheduler, the queue
+# approval ledger, standing grants and the proactive delivery bridge. An
+# upgrade moves them into the backup instead of leaving orphans behind.
+RETIRED_STATE = (
+    "approval_authority.db",
+    "schedules.db",
+    "standing_approvals.json",
+    "protagine-delivery-rate-limit.db",
+    "protagine-governed-gateway-outcomes.db",
+)
+INITIATIVES_DB = "initiatives.db"
+
+
+def retired_state_present(home: Path) -> list[str]:
+    return [name for name in RETIRED_STATE if (home / name).exists()]
+
+
+def retire_state(home: Path, backup_dir: Path) -> list[str]:
+    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``."""
+    notes: list[str] = []
+    destination = backup_dir / "retired"
+    for name in retired_state_present(home):
+        destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            source = home / (name + suffix)
+            if source.exists():
+                shutil.move(str(source), str(destination / (name + suffix)))
+        notes.append(f"retired {name} (moved to {destination})")
+    return notes
+
+
+def pending_initiative_columns(home: Path) -> list[str]:
+    """The intention and audit columns an existing initiatives store still lacks."""
+    path = home / INITIATIVES_DB
+    if not path.is_file():
+        return []
+    from protagine.initiatives.store import missing_mind_columns
+    with sqlite3.connect(path) as connection:
+        return [f"{INITIATIVES_DB}:{column}" for column in missing_mind_columns(connection)]
+
+
+def migrate_initiatives(home: Path) -> list[str]:
+    """Add the intention and audit columns in place (architecture 5.2)."""
+    pending = pending_initiative_columns(home)
+    if not pending:
+        return []
+    from protagine.initiatives.store import InitiativeStore
+    store = InitiativeStore(state_dir=home)
+    store.close()
+    return [f"migration applied: {item}" for item in pending]
+
+
 # ---------------------------------------------------------------------------
 # 1.9.0 migration
 # ---------------------------------------------------------------------------
@@ -933,7 +985,7 @@ def _collect_autonomy(args, current: str, non_interactive: bool, *, fresh: bool)
     if explicit:
         level = str(explicit).strip().lower()
     elif fresh and not non_interactive:
-        level = _ask("Autonomy level (off, suggest, standard, trusted)", current or "standard", non_interactive).lower()
+        level = _ask("Autonomy level (off, suggest, standard, trusted)", current or "suggest", non_interactive).lower()
     else:
         level = current or "standard"
     if level not in AUTONOMY_LEVELS:
@@ -1087,14 +1139,18 @@ def run_upgrade(args) -> int:
         profile_pending = worker_profile_pending(
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
-        migrations_pending = pending_store_migrations(home)
+        migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
+                              + retired_state_present(home))
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
             return 0
         if not any(note.startswith("backup taken") for note in notes):
-            notes.insert(0, f"backup taken in {backup_instance(home)}")
+            backup = backup_instance(home)
+            notes.insert(0, f"backup taken in {backup}")
         notes.extend("migration applied: " + item for item in run_store_migrations(home))
+        notes.extend(migrate_initiatives(home))
+        notes.extend(retire_state(home, backup))
         if binding_changed:
             cfg.data["hermes"]["python"] = str(python)
             cfg.data["hermes"]["home"] = str(hermes_home)
@@ -1187,7 +1243,7 @@ def add_parsers(sub) -> None:
     init_p.add_argument("--agent-values", help="Comma-separated guiding values")
     init_p.add_argument("--timezone", help="Named time zone, for example Europe/Paris")
     init_p.add_argument("--quiet-hours", help="Local quiet window, HH:MM-HH:MM")
-    init_p.add_argument("--autonomy", choices=AUTONOMY_LEVELS, help="Autonomy level (default: standard)")
+    init_p.add_argument("--autonomy", choices=AUTONOMY_LEVELS, help="Autonomy level (default: suggest)")
     init_p.add_argument("--hermes-home", help="Hermes home (default: $HERMES_HOME or ~/.hermes)")
     init_p.add_argument("--hermes-python", help="Interpreter that runs 'hermes' (default: read from the executable)")
     init_p.add_argument("--host", help="Sidecar bind address (default 127.0.0.1)")

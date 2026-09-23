@@ -27,7 +27,6 @@ from protagine.server import (
     _cognition_owner_spec,
     _cognition_worker_profile,
 )
-from protagine.autonomy.loop import _record_p3_thinker_candidates
 
 
 NOW = datetime(2026, 7, 12, 18, 0, tzinfo=timezone.utc)
@@ -365,33 +364,6 @@ def test_configured_cognition_attachment_failure_never_selects_generic_worker():
     assert _cognition_worker_profile(
         configured_mode="off", attached=False,
     ) == "generic"
-
-
-@pytest.mark.asyncio
-async def test_self_directed_shadow_provenance_is_not_laundered_by_live_workspace(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_WORKSPACE", "live")
-    concerns = ConcernStore(str(tmp_path / "workspace.db"))
-    workspace = SimpleNamespace()
-    from protagine.self_model.workspace import WorkspaceEngine
-
-    workspace = WorkspaceEngine(concerns)
-    initiative = SimpleNamespace(
-        dedup_key="thinking:test",
-        description="Consider a bounded investigation",
-        priority=0.7,
-    )
-    assert _record_p3_thinker_candidates(workspace, [initiative]) == 1
-    item = concerns.active(limit=1)[0]
-    assert item.producer_name == "self_directed_thinker"
-    assert item.producer_mode == "shadow"
-    assert item.producer_revision == "self-directed-thinker:v1"
-
-    spine = _spine(tmp_path, concerns, runtime=_runtime())
-    held = await spine.process_concern(item.concern_id, now=NOW)
-    assert held["status"] == "cognition_held"
-    assert held["reason"] == "concern_provenance_requires_promotion"
 
 
 @pytest.mark.asyncio

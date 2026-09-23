@@ -114,7 +114,7 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     # Step 2: the instance files.
     cfg = load_config(home, environ={})
     assert cfg.get("sidecar.port") == 7901
-    assert cfg.get("mind.autonomy") == "standard"
+    assert cfg.get("mind.autonomy") == "suggest"
     assert cfg.get("hermes.python") == HERMES_PYTHON
     assert cfg.get("owner.contact_id")
     assert read_api_key(home, environ={})

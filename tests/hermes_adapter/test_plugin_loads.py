@@ -29,7 +29,7 @@ emit(hooks=hooks, middleware=middleware, valid=[h for h in hooks if h not in VAL
     assert set(result["tools"]) == TOOLS
     assert result["platforms"] == []
     # Registration performs no sidecar I/O.
-    assert sidecar.requests == [] or all(r["path"] == "/v1/mind/status" for r in sidecar.requests)
+    assert sidecar.requests == [] or all(r["path"] == "/v1/mind/state" for r in sidecar.requests)
 
 
 def test_registration_reads_key_file_and_sidecar_url(home, sidecar):

@@ -65,6 +65,7 @@ def fixture(tmp_path, monkeypatch):
             'config_sha256': digest(supplied), 'native_runtime': {'status': 'ready', 'scope': 'container'},
             'container_payload': {'arm_profiles': paired.ARM_PROFILE_PROTOCOL,
                                   'heartbeat_prompt_sha256': paired.HEARTBEAT['prompt_sha256'],
+                                  'mind_tick': paired.MIND_TICK_PROTOCOL,
                                   'body_protocol': paired_body.PROTOCOL,
                                   'tool_loading': paired.TOOL_LOADING_PROTOCOL,
                                   'message_timestamps': paired.MESSAGE_TIMESTAMPS_PROTOCOL,

@@ -9,7 +9,6 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from protagine.api.routers import host
-from protagine.autonomy.loop import AutonomyLoop
 from protagine.intelligence.components.preference_learner import PreferenceLearner
 from protagine.self_model.perspective import SelfPerspective
 from protagine.self_model.store import CompetenceStore, SelfModel
@@ -133,68 +132,10 @@ async def test_ordinary_correction_survives_reopen_and_cannot_be_overwritten_or_
             assert conn.execute('SELECT count(*) FROM self_preference_events WHERE source_turn_id=?', ('correction',)).fetchone()[0] == 0
 
 
-
-
 def candidates():
     return [SimpleNamespace(id='research-next', type='research', priority=0.8),
             SimpleNamespace(id='follow-up', type='follow_up', priority=0.77),
             SimpleNamespace(id='urgent', type='commitment', priority=0.95)]
-
-
-async def phase(sm, items):
-    engine = SimpleNamespace(clear_context=lambda: None, generate=AsyncMock(return_value=items), _context={})
-    loop = AutonomyLoop(SimpleNamespace(self_model=sm, initiative_engine=engine))
-    for name in ('_feed_pending_tasks', '_feed_neglected_contacts', '_feed_commitment_reminders', '_feed_introduction_candidates'):
-        setattr(loop, name, AsyncMock())
-    loop._in_quiet_hours = lambda: False
-    await loop._phase_initiative()
-    return loop._pending_initiatives
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('runtime_outcome', ['completed_wrong_count', 'timeout'])
-async def test_historical_runtime_outcomes_do_not_change_priority_or_claim_quality(perspective, source_app, tmp_path, runtime_outcome):
-    state, learner, sm = perspective
-    model = {'model_role': 'planning', 'model_id': 'fixture-model-a', 'model_revision': 'v1'}
-    outcome = 'success' if runtime_outcome == 'completed_wrong_count' else 'timeout'
-    original = candidates()
-    before = [(item.id, item.priority) for item in await phase(sm, original)]
-    # Historical executor observations remain readable after its retirement.
-    for i in range(3):
-        sm.record('research', outcome, source='initiative_executor',
-                  source_ref=f'work-{i}', event_key=f'work-{i}:0:{outcome}',
-                  evidence_status='observed',
-                  outcome_contract='protagine.initiative-runtime-outcome/v1',
-                  evidence={**model, 'attempt': 0,
-                            'meaning': 'runtime_completed_or_failed; semantic_success_unverified'})
-    events = sm.store.events('research')
-    assert len(events) == 3 and all(e['source_ref'] and e['event_key'] for e in events)
-    assert all(e['evidence']['meaning'].endswith('semantic_success_unverified') for e in events)
-    assert all(e['evidence']['model_id'] == 'fixture-model-a' for e in events)
-    assert {e['outcome'] for e in events} == ({'success'} if runtime_outcome == 'completed_wrong_count' else {'timeout'})
-    assert [(item.id, item.priority) for item in await phase(sm, original)] == before
-    assert state.opinions() == []
-    # History remains readable, but cannot become a competence claim about a replacement model.
-    brief = sm.brief()
-    assert 'Recorded runtime outcomes:' in brief
-    assert 'do not verify output quality' in brief and "current model's ability" in brief
-    assert 'You reliably complete' not in brief and 'You often fail at' not in brief
-    reopened = SelfPerspective(TurnIdempotencyLedger(state.ledger.db_path), owner_id='contact-a')
-    assert [(item.id, item.priority) for item in reopened.rank(original)] == before
-    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
-        await tell(client, 'Deprioritize research initiatives.', 'override')
-        ranked = await phase(sm, original)
-        assert [i.id for i in ranked] == ['urgent', 'follow-up', 'research-next']
-        assert ranked[-1].priority == .64
-        trace = state.status()['attention']
-        assert trace['authority_changed'] is False
-        assert trace['decisions'][0]['basis'] == 'owner_correction'
-        assert 'turn:override' in await context(client, 'model-swapped')
-        erased = await client.post('/v1/host/memory/sources/forget', headers={'Authorization': 'Bearer ' + KEY},
-            json={'contact_id': 'contact-a', 'source_ids': ['override']})
-        assert erased.status_code == 200
-        assert [(item.id, item.priority) for item in await phase(sm, original)] == before
-        assert len(sm.store.events('research')) == 3
 
 
 def test_legacy_opinions_and_evidence_corrections_remain_inspectable_but_inactive(perspective):

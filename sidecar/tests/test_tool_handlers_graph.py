@@ -108,5 +108,5 @@ async def test_query_entities_passes_specific_type():
 
 @pytest.mark.asyncio
 async def test_registry_exposes_world_model():
-    from protagine.autonomy.registry import SubsystemRegistry
+    from protagine.tools.subsystems import SubsystemRegistry
     assert hasattr(SubsystemRegistry, "world_model")

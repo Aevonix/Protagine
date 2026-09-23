@@ -1053,6 +1053,7 @@ async def test_old_applied_job_waits_for_semantic_attestation_before_prune(
         job_type=JobType.AGENT_ACTION,
         payload={
             "action_hint": "commitment_mark_complete",
+            "risk": "mutating",
             "ID": "retained-applied-reconciliation",
             "initiative_id": "retention-test",
         },
@@ -1428,6 +1429,7 @@ async def test_verified_applied_remains_compatible_with_current_attesters(
             job_type=JobType.AGENT_ACTION,
             payload={
                 "action_hint": "commitment_mark_complete",
+                "risk": "mutating",
                 "ID": "work-control-attester",
                 "initiative_id": "initiative-attester",
             },

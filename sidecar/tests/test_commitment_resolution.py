@@ -537,66 +537,71 @@ async def test_resolution_stats_endpoint(tmp_path):
         assert body["recent_rejections"][0]["description"] == "a"
 
 
-# --- introspection dedup ------------------------------------------------------
-
-class _FakeResp:
-    def __init__(self, content):
-        self._content = content
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
+# --- commitment extraction dedup ----------------------------------------------
 
 
-class _FakeAsyncClient:
-    payload = "[]"
+class _FakeRouter:
+    """A router that answers the commitment_extract function task with canned JSON."""
 
-    def __init__(self, *a, **k):
-        pass
+    supports_function_routing = True
 
-    async def __aenter__(self):
-        return self
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
 
-    async def __aexit__(self, *a):
-        return False
+    def function_deadline_seconds(self, *, context=None):
+        return 20
 
-    async def post(self, *a, **k):
-        return _FakeResp(self.payload)
+    async def complete(self, messages, *, context=None, **_):
+        self.calls.append((messages, context))
+        return type("Response", (), {"content": self.payload})()
 
 
-async def test_introspection_skips_open_and_rejected_duplicates(tmp_path, monkeypatch):
+async def test_extraction_skips_open_and_rejected_duplicates(tmp_path, monkeypatch):
     """The extractor must not re-record an item that is already open, nor one
-    recently rejected as invalid/duplicate — code-enforced, not prompt-hoped."""
-    from protagine.cognition import introspection as intro
+    recently rejected as invalid/duplicate: code-enforced, not prompt-hoped."""
+    from protagine.commitments import extract
+    from protagine.turns.idempotency import TurnIdempotencyLedger
 
     cstore = CommitmentStore(db_path=tmp_path / "c.db")
-    existing = cstore.create(person_id="owner",
-                             description="Send Sam the build recap")
-    monkeypatch.setenv("PROTAGINE_INTROSPECT_MODEL", "fake-model")
-    _FakeAsyncClient.payload = (
+    existing = cstore.create(person_id="p-01", description="Send Sam the build recap")
+    rejected = cstore.create(person_id="p-01", description="Water the plants")
+    cstore.resolve(rejected["id"], outcome="invalid", note="not a commitment")
+    ledger = TurnIdempotencyLedger(tmp_path / "ledger.db")
+    ledger.record_source("turn-1", contact_id="p-01", session_id="s-1", messages=[
+        {"role": "user", "content": "did you ever send that recap? also email Bob the quarterly report"},
+        {"role": "assistant", "content": "Not yet, it is still on my list. I'll email Bob the report."}])
+    router = _FakeRouter(
         '[{"description": "send Sam the build recap", "due_at": null,'
         '  "priority": 70, "source_type": "cognition", "metadata": null},'
         ' {"description": "Water the plants every day", "due_at": null,'
         '  "priority": 40, "source_type": "cognition", "metadata": null},'
         ' {"description": "Email Bob the quarterly report", "due_at": null,'
         '  "priority": 60, "source_type": "cognition", "metadata": null}]')
-    monkeypatch.setattr(intro.httpx, "AsyncClient", _FakeAsyncClient)
-
-    out = await intro.run_turn_introspection(
-        user_message="did you ever send that recap?",
-        assistant_message="Not yet - it is still on my list.",
-        conversation_text="",
-        person_id="owner",
-        existing_commitments=[existing],
-        commitment_store=cstore,
-        recent_rejections=[{"description": "water the plants", "outcome": "invalid"}],
-    )
-    assert out["ok"] is True
-    assert out["skipped_duplicates"] == 2
-    assert len(out["created"]) == 1
-    open_now = cstore.get_pending_for_person("owner")
+    extractor = extract.CommitmentExtractor(ledger, lambda: cstore)
+    assert await extractor.process_one(router) is True
+    assert router.calls[0][1]["task"] == "commitment_extract"
+    assert await extractor.process_one(router) is False  # the job is done; nothing left to claim
+    open_now = cstore.get_pending_for_person("p-01")
     descs = sorted(c["description"] for c in open_now)
-    assert descs == ["Email Bob the quarterly report",
-                     "Send Sam the build recap"]
+    assert descs == ["Email Bob the quarterly report", "Send Sam the build recap"]
+
+
+def test_extraction_imports_an_already_due_promise_as_overdue(tmp_path):
+    """Deadlines resolve against the turn time; a job processed after the deadline (an outage, a
+    backlog) still records the promise, overdue, with its original deadline."""
+    from datetime import datetime, timedelta, timezone
+    from protagine.commitments import extract
+
+    cstore = CommitmentStore(db_path=tmp_path / "c.db")
+    past = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(microsecond=0)
+    result = extract.record_items(
+        [{"description": "Send Sam the recap", "due_at": past.isoformat(), "priority": 70,
+          "source_type": "cognition", "metadata": None}],
+        person_id="p-01", commitment_store=cstore, existing=[], rejections=[])
+    assert len(result["created"]) == 1
+    row = cstore.get(result["created"][0])
+    assert row["status"] == "overdue" and row["due_at"] == past.isoformat()
+    assert [c["id"] for c in cstore.get_pending_for_person("p-01")] == [row["id"]]
+    with pytest.raises(ValueError):
+        cstore.create(person_id="p-01", description="a manual one", due_at=past.isoformat())

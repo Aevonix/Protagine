@@ -27,8 +27,6 @@ from protagine.api.routers.host import (
     router as host_router,
     v2_router as host_v2_router,
     set_llm_router,
-    set_autonomy_loop,
-    set_scheduler,
     set_chain_manager,
     set_reasoning_loop,
     set_tool_executor,
@@ -46,7 +44,6 @@ from protagine.api.routers.host import (
     set_metalearner,
     set_research_pipeline,
     set_search_orchestrator,
-    set_delivery_bridge,
     set_connection_discoverer,
     set_insight_store,
     set_learner,
@@ -292,13 +289,6 @@ def _build_research_pipeline(*, graph, p8_runtime):
         graph=graph,
         allow_fallback_graph=False,
     )
-
-
-async def _governed_autonomy_stop_signal(autonomy_loop) -> None:
-    """Request a prompt stop without awaiting the host route's task join."""
-
-    if autonomy_loop is not None:
-        await autonomy_loop.stop()
 
 
 def _work_order_runtime_hold_reason(job, project_store, concern_store) -> str:
@@ -1228,9 +1218,6 @@ def _attach_drive_governance(
         DriveRanker,
         drive_governance_mode,
     )
-    from protagine.initiatives.approval_authority import (
-        ApprovalAuthorityStore,
-    )
 
     set_drive_governance(None, None, None)
     mode = drive_governance_mode()
@@ -1265,11 +1252,9 @@ def _attach_drive_governance(
 
     store = DriveGovernanceStore(state_dir / "cognition-drive-governance.db")
     try:
-        shared_authority = approval_authority
-        if mode in {"bootstrap", "live"} and shared_authority is None:
-            shared_authority = ApprovalAuthorityStore(
-                state_dir / "approval_authority.db"
-            )
+        # The approval ledger is gone; charter transitions that need one
+        # raise approval_store_required until the mind's asks cover them.
+        shared_authority = None
         governance = DriveGovernance(store, shared_authority, mode=mode)
         ranker = DriveRanker(
             store,
@@ -1325,9 +1310,6 @@ def _initialize_controlled_learning(
         set_experiments,
         set_learning_feedback_store,
     )
-    from protagine.initiatives.approval_authority import (
-        ApprovalAuthorityStore,
-    )
     from protagine.intelligence.learning.feedback_store import (
         FeedbackStore,
     )
@@ -1366,9 +1348,9 @@ def _initialize_controlled_learning(
         if benchmark is None:
             raise RuntimeError(
                 "P4 experiments require the canonical SelfhoodBenchmark")
-        # This is the same approval_authority.db used by the queue approval
-        # routes.  Do not create an experiment-specific authority ledger.
-        approval_authority = ApprovalAuthorityStore()
+        # There is no approval ledger any more: live mutations outside a
+        # pregranted range have no approval path and never start.
+        approval_authority = None
         experiments = ExperimentEngine(
             ExperimentStore(
                 db_path=str(state_dir / "protagine-experiments.db")),
@@ -1412,25 +1394,6 @@ def _wire_controlled_learning_pipeline(
             experiments)
 
 
-def _scheduler_health_check(autonomy_loop) -> dict:
-    """Periodic health_check task body (module-level so it is testable).
-
-    Reports the actual wiring state instead of an unconditional
-    ``{"status": "ok"}``. No blanket try/except: an exception here must
-    surface as a scheduler failure receipt, never be swallowed into green.
-    """
-    import protagine.api.routers.host as _h
-    wired = 0
-    for _n in ("_commitment_store", "_goals_store", "_affect_store",
-               "_contacts_store", "_delivery_bridge", "_workspace",
-               "_metalearner"):
-        if getattr(_h, _n, None) is not None:
-            wired += 1
-    return {"status": "ok" if wired else "degraded",
-            "subsystems_wired": wired,
-            "autonomy_running": bool(getattr(autonomy_loop, "_running", False))}
-
-
 async def _initialize_contacts_store():
     """Open the canonical contact store without graph backfill or pruning."""
     from protagine.contacts.config import ContactsConfig
@@ -1447,41 +1410,6 @@ async def _initialize_contacts_store():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
-    from protagine.initiatives.approval_authority import (
-        GRANT_MAX_TTL_ENV,
-        GRANT_MAX_USES_ENV,
-        GRANT_UNLIMITED_SENTINEL,
-        resolve_grant_envelope,
-    )
-
-    try:
-        grant_envelope = resolve_grant_envelope()
-    except RuntimeError as exc:
-        logger.error(
-            "INVALID APPROVAL GRANT ENVELOPE — refusing startup: %s", exc,
-        )
-        raise
-    app.state.grant_envelope = grant_envelope
-    if grant_envelope.standing_dimensions:
-        descriptions = []
-        if grant_envelope.max_ttl_seconds is None:
-            descriptions.append(f"{GRANT_MAX_TTL_ENV} (no expiry)")
-        if grant_envelope.max_uses is None:
-            descriptions.append(f"{GRANT_MAX_USES_ENV} (no use cap)")
-        logger.warning(
-            "STANDING APPROVAL AUTHORITY ENABLED — %s configured as %r; "
-            "exact-scope grants persist in those dimensions until revoked",
-            "; ".join(descriptions),
-            GRANT_UNLIMITED_SENTINEL,
-        )
-    else:
-        logger.info(
-            "Approval grant envelope bounded: %s=%s, %s=%s",
-            GRANT_MAX_TTL_ENV,
-            grant_envelope.max_ttl_seconds,
-            GRANT_MAX_USES_ENV,
-            grant_envelope.max_uses,
-        )
     state_dir = _state_dir()
     _p8_wiring = None
     # Clear stale process authority before any queue/worker can be constructed.
@@ -2167,7 +2095,7 @@ async def lifespan(app: FastAPI):
             set_self_model, _feedback_store as _fb_for_trust,
         )
         if self_model_enabled():
-            from protagine.autonomy.registry import SubsystemRegistry as _Reg
+            from protagine.tools.subsystems import SubsystemRegistry as _Reg
             _competence = CompetenceStore(
                 db_path=str(state_dir / "protagine-self-model.db"))
             _journal = ActionJournal(
@@ -2216,9 +2144,8 @@ async def lifespan(app: FastAPI):
                 "Selfhood benchmark disabled (PROTAGINE_BENCHMARK_ENABLED=false)")
         if _controlled_learning["experiments"] is not None:
             logger.info(
-                "Controlled experiment framework ready (db=%s, shared_authority=%s)",
+                "Controlled experiment framework ready (db=%s)",
                 state_dir / "protagine-experiments.db",
-                state_dir / "approval_authority.db",
             )
         else:
             logger.info(
@@ -2449,13 +2376,13 @@ async def lifespan(app: FastAPI):
         logger.info("RepoMirrorManager initialized (%d repo(s) configured)", _n_repos)
 
         async def _directed_deliver(payload: dict) -> bool:
-            # Late-bound: route through the autonomy loop's guarded delivery
-            # (boundary + sanitize + rate + shadow), same as every reach-out.
+            # The reach-out path: a message request goes through the mind's
+            # authority into the outbox, which the plugin sends verbatim.
             try:
-                from protagine.api.routers.host import _autonomy_loop, _delivery_bridge
-                if _autonomy_loop is not None and _delivery_bridge is not None:
-                    return await _autonomy_loop._route_reachout_delivery(
-                        payload, _delivery_bridge)
+                from protagine.api.routers.mind import get_mind
+                mind = get_mind()
+                if mind is not None:
+                    return await mind.request_message(payload, source="directed")
             except Exception:
                 logger.debug("directed deliver failed", exc_info=True)
             return False
@@ -2757,103 +2684,76 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("ResearchPipeline init failed: %s", exc, exc_info=True)
 
-    # --- 13. Delivery bridge ---
+    # --- 13. Briefings: persistence and schedule (no proactive gateway) ---
+    # The delivery bridge and its /internal/deliver path are gone; owner
+    # messages go through the mind's outbox. Briefings keep their store and
+    # schedule and are read through their API until the package audit.
     try:
-        from protagine.delivery.bridge import ProactiveDeliveryBridge
-        from protagine.delivery.channels import ChannelRegistry
-        channel_registry = ChannelRegistry.load(contacts_store=contacts_store, channel_store=channel_store)
-        delivery = ProactiveDeliveryBridge(channel_registry=channel_registry)
-        set_delivery_bridge(delivery)
-        logger.info("Delivery bridge initialized")
+        from pathlib import Path as _P
 
-        # Adaptive daily cap (Amendment 1.6): the trust engine can EARN the
-        # per-recipient cap upward with a proven delivery track record.
+        from protagine.briefings.config import BriefingConfig
+        from protagine.briefings.engine import BriefingEngine
+        from protagine.briefings.scheduler import BriefingScheduler
+        from protagine.briefings.store import BriefingStore
+
+        b_cfg = BriefingConfig()
+        b_cfg.daily.time = os.environ.get("PROTAGINE_BRIEFING_DAILY_TIME", b_cfg.daily.time)
+        b_cfg.daily.timezone = os.environ.get("PROTAGINE_BRIEFING_TZ", b_cfg.daily.timezone)
+        b_cfg.weekly.timezone = b_cfg.daily.timezone
+        b_cfg.delivery_gateway = os.environ.get("PROTAGINE_BRIEFING_GATEWAY", "whatsapp")
+        b_cfg.lm_enhancement_enabled = (
+            os.environ.get("PROTAGINE_BRIEFING_LM_ENHANCE", "0") not in ("0", "false", "no")
+        )
+        _b_state_dir = os.environ.get("PROTAGINE_STATE_DIR", ".")
+        b_store = BriefingStore(db_path=str(_P(_b_state_dir) / "briefings.db"))
+        # Real aggregators where the backing subsystem exists — without
+        # them the composer silently falls back to stubs and every data
+        # section of every briefing is empty. Calendar/anomaly/mind/
+        # synthesis still lack concrete aggregators (see docs/KNOWN-GAPS.md).
+        _aggs = {}
         try:
-            _trust_for_cap = getattr(_sm_for_directed, "trust", None)
-            if (_trust_for_cap is not None
-                    and getattr(delivery, "_rate_limiter", None) is not None):
-                delivery._rate_limiter._cap_provider = _trust_for_cap.delivery_cap
-                logger.info("Delivery rate cap wired to trust engine "
-                            "(adaptive, max=%s)",
-                            os.environ.get("PROTAGINE_TRUST_DELIVERY_CAP_MAX", "6"))
+            if graph is not None:
+                from protagine.briefings.aggregators import RelationshipAggregator
+                _aggs["relationship_aggregator"] = RelationshipAggregator(
+                    scorer=None, graph=graph)
         except Exception:
-            logger.debug("adaptive cap wiring failed", exc_info=True)
-
-        # --- 13b. Briefings: full wiring (delivery + persistence + schedule) ---
-        # The bare engine from section 9 can compose briefings but has no gateway, no
-        # persistent store, and no scheduler -- proactive output never reaches anyone.
-        # Rebuild it here, now that the delivery bridge exists: the bridge-backed
-        # gateway auto-registers when a home channel is configured, the store persists
-        # under PROTAGINE_STATE_DIR, and the scheduler fires daily/weekly briefings and
-        # drains pending deliveries. All deployment specifics come from env.
+            logger.debug("relationship aggregator wiring failed", exc_info=True)
         try:
-            from pathlib import Path as _P
-
-            from protagine.briefings.config import BriefingConfig
-            from protagine.briefings.engine import BriefingEngine
-            from protagine.briefings.scheduler import BriefingScheduler
-            from protagine.briefings.store import BriefingStore
-
-            b_cfg = BriefingConfig()
-            b_cfg.daily.time = os.environ.get("PROTAGINE_BRIEFING_DAILY_TIME", b_cfg.daily.time)
-            b_cfg.daily.timezone = os.environ.get("PROTAGINE_BRIEFING_TZ", b_cfg.daily.timezone)
-            b_cfg.weekly.timezone = b_cfg.daily.timezone
-            b_cfg.delivery_gateway = os.environ.get("PROTAGINE_BRIEFING_GATEWAY", "whatsapp")
-            b_cfg.lm_enhancement_enabled = (
-                os.environ.get("PROTAGINE_BRIEFING_LM_ENHANCE", "0") not in ("0", "false", "no")
-            )
-            _b_state_dir = os.environ.get("PROTAGINE_STATE_DIR", ".")
-            b_store = BriefingStore(db_path=str(_P(_b_state_dir) / "briefings.db"))
-            # Real aggregators where the backing subsystem exists — without
-            # them the composer silently falls back to stubs and every data
-            # section of every briefing is empty. Calendar/anomaly/mind/
-            # synthesis still lack concrete aggregators (see docs/KNOWN-GAPS.md).
-            _aggs = {}
-            try:
-                if graph is not None:
-                    from protagine.briefings.aggregators import RelationshipAggregator
-                    _aggs["relationship_aggregator"] = RelationshipAggregator(
-                        scorer=None, graph=graph)
-            except Exception:
-                logger.debug("relationship aggregator wiring failed", exc_info=True)
-            try:
-                if goals_store is not None:
-                    from protagine.briefings.aggregators import GoalStoreAggregator
-                    _aggs["goal_aggregator"] = GoalStoreAggregator(goals_store)
-            except Exception:
-                logger.debug("goal aggregator wiring failed", exc_info=True)
-            try:
-                # Both resolve their subsystems lazily off host globals at
-                # call time (the anomaly detector doesn't even exist until
-                # the autonomy registry builds it, well after this point).
-                from protagine.briefings.aggregators import (
-                    AnomalyDetectorAggregator, DiscovererSynthesisAggregator)
-                _aggs["anomaly_aggregator"] = AnomalyDetectorAggregator()
-                _aggs["synthesis_aggregator"] = DiscovererSynthesisAggregator()
-            except Exception:
-                logger.debug("anomaly/synthesis aggregator wiring failed", exc_info=True)
-            try:
-                # resolves the enabled calendar connector instance(s) — base
-                # or per-account — at call time; harmless when none enabled
-                from protagine.briefings.aggregators import ConnectorCalendarAggregator
-                _aggs["calendar_aggregator"] = ConnectorCalendarAggregator()
-            except Exception:
-                logger.debug("calendar aggregator wiring failed", exc_info=True)
-            briefings = BriefingEngine(config=b_cfg, store=b_store,
-                                       delivery_bridge=delivery, **_aggs)
-            set_briefings_engine(briefings)
-            if os.environ.get("PROTAGINE_BRIEFINGS_SCHEDULE", "1") not in ("0", "false", "no"):
-                b_sched = BriefingScheduler(config=b_cfg, engine=briefings, store=b_store)
-                briefings.attach_scheduler(b_sched)
-                b_sched.start()
-            logger.info(
-                "BriefingEngine rewired: gateway=%s daily=%s %s scheduler=on",
-                b_cfg.delivery_gateway, b_cfg.daily.time, b_cfg.daily.timezone,
-            )
-        except Exception as exc:
-            logger.warning("Briefing delivery wiring failed: %s", exc)
+            if goals_store is not None:
+                from protagine.briefings.aggregators import GoalStoreAggregator
+                _aggs["goal_aggregator"] = GoalStoreAggregator(goals_store)
+        except Exception:
+            logger.debug("goal aggregator wiring failed", exc_info=True)
+        try:
+            # Both resolve their subsystems lazily off host globals at
+            # call time (the anomaly detector doesn't even exist until
+            # the autonomy registry builds it, well after this point).
+            from protagine.briefings.aggregators import (
+                AnomalyDetectorAggregator, DiscovererSynthesisAggregator)
+            _aggs["anomaly_aggregator"] = AnomalyDetectorAggregator()
+            _aggs["synthesis_aggregator"] = DiscovererSynthesisAggregator()
+        except Exception:
+            logger.debug("anomaly/synthesis aggregator wiring failed", exc_info=True)
+        try:
+            # resolves the enabled calendar connector instance(s) — base
+            # or per-account — at call time; harmless when none enabled
+            from protagine.briefings.aggregators import ConnectorCalendarAggregator
+            _aggs["calendar_aggregator"] = ConnectorCalendarAggregator()
+        except Exception:
+            logger.debug("calendar aggregator wiring failed", exc_info=True)
+        briefings = BriefingEngine(config=b_cfg, store=b_store,
+                                   delivery_bridge=None, **_aggs)
+        set_briefings_engine(briefings)
+        if os.environ.get("PROTAGINE_BRIEFINGS_SCHEDULE", "1") not in ("0", "false", "no"):
+            b_sched = BriefingScheduler(config=b_cfg, engine=briefings, store=b_store)
+            briefings.attach_scheduler(b_sched)
+            b_sched.start()
+        logger.info(
+            "BriefingEngine rewired: gateway=%s daily=%s %s scheduler=on",
+            b_cfg.delivery_gateway, b_cfg.daily.time, b_cfg.daily.timezone,
+        )
     except Exception as exc:
-        logger.warning("ProactiveDeliveryBridge init failed: %s", exc)
+        logger.warning("Briefing delivery wiring failed: %s", exc)
 
     # --- 14. Synthesis (ConnectionDiscoverer) ---
     try:
@@ -3075,159 +2975,55 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Multi-Agent System init failed: %s", exc)
 
-    # --- 21. Autonomy loop ---
-    autonomy_config = None
-    registry = None
-    scheduler = None
-    autonomy_loop = None
+    # --- 21. The mind tick (architecture 3.2) ---
+    # Replaces the autonomy loop and its scheduler: health_check became the
+    # tick's upkeep probes, digest_flush became the outbox digest, and the
+    # other scheduled jobs went with their modules.
+    mind = None
     try:
-        from protagine.autonomy.loop import AutonomyLoop
-        from protagine.autonomy.config import AutonomyConfig
-        from protagine.autonomy.registry import SubsystemRegistry
-        from protagine.autonomy.scheduler import AutonomyScheduler
-        autonomy_config = AutonomyConfig.from_env()
+        from protagine.mind import Mind
+        from protagine.api.routers.mind import set_mind
+        from protagine.api.routers import host as _host_for_mind
+        from protagine.config import load_config, update_config
+        from protagine.identity import get_owner_contact_id
+        from protagine.turns import get_turn_idempotency_ledger
 
-        registry = SubsystemRegistry()
+        _mind_store = locals().get("initiative_store")
+        if _mind_store is None:
+            raise RuntimeError("the initiative store is not wired")
+        _mind_cfg = load_config()
+        _mind_followups = None
+        if _host_for_mind._commitment_store is not None:
+            from protagine.initiatives.temporal_followup import TemporalFollowups
+            _mind_followups = TemporalFollowups(_host_for_mind._commitment_store)
 
-        # Wire scheduler BEFORE the loop so the loop gets a direct reference.
-        scheduler = AutonomyScheduler(db_path=str(state_dir / "schedules.db"))
-        set_scheduler(scheduler)
-        logger.info("AutonomyScheduler initialized")
-
-        autonomy_loop = AutonomyLoop(
-            registry=registry,
-            config=autonomy_config,
-            scheduler=scheduler,
-        )
-        set_autonomy_loop(autonomy_loop)
-
-        # Register default periodic tasks. Every registered task does REAL
-        # work or reports skipped — a no-op lambda returning {"status":"ok"}
-        # makes the loop count a subsystem as running when it never does
-        # (signal ingest happens inline at the API; briefings are fired by
-        # the BriefingScheduler wired in section 13b — neither needs a task
-        # here, so neither gets a fake one).
-        def _run_health_check():
-            return _scheduler_health_check(autonomy_loop)
-
-        scheduler.register("health_check", _run_health_check, interval_seconds=300, metadata={"description": "Subsystem health check (reports wired count)"})
-
-        async def _run_memory_consolidate():
-            from protagine.api.routers.host import _consolidator as c
-            if c is None:
-                return {"status": "skipped", "reason": "consolidator_not_wired"}
-            result = await c.run()
-            # ConsolidationResult exposes pairs_merged, not merged_count — the
-            # old attr name silently reported merged:0 every run.
-            return {"status": "ok", "merged": getattr(result, "pairs_merged", 0)}
-
-        scheduler.register("memory_consolidate", _run_memory_consolidate, interval_seconds=3600, metadata={"description": "Deduplicate and merge near-duplicate memories"})
-
-        async def _run_cpi_track():
-            from protagine.api.routers.host import _metalearner as ml
-            if ml is None:
-                return {"status": "skipped", "reason": "metalearner_not_wired"}
-            cpi = await ml.evaluate()
-            return {"status": "ok", "overall": round(float(getattr(cpi, "overall", 0.0)), 4)}
-
-        scheduler.register("cpi_track", _run_cpi_track, interval_seconds=86400, metadata={"description": "Calculate Cognitive Performance Index"})
-
-        async def _run_world_model_prune():
-            from protagine.api.routers.host import _world_store as ws
-            if ws is None:
-                return {"status": "skipped", "reason": "world_model_not_wired"}
-            return await ws.prune()
-
-        scheduler.register("world_model_prune", _run_world_model_prune, interval_seconds=86400, metadata={"description": "Remove stale low-confidence world model entities (config TTL)"})
-
-        async def _run_mining_prune():
-            from protagine.api.routers.mining import get_mining_store
-            store = get_mining_store()
-            if store is None:
-                return {"status": "skipped", "reason": "mining_not_wired"}
+        def _persist_mind_setting(changes: dict) -> None:
             try:
-                retention_days = int(os.environ.get(
-                    "PROTAGINE_MINING_RETENTION_DAYS", "0"))
-                max_turns = int(os.environ.get(
-                    "PROTAGINE_MINING_MAX_TURNS", "0"))
-            except ValueError:
-                retention_days = max_turns = 0
-            if retention_days <= 0 and max_turns <= 0:
-                # Default posture: the verbatim turn bank is unbounded
-                # unless a deployment opts into retention.
-                return {"status": "skipped", "reason": "retention_unbounded"}
-            return {"status": "ok", **store.prune_turns(
-                retention_days=retention_days, max_turns=max_turns)}
+                update_config(changes)
+            except Exception:
+                logger.warning("mind setting not written to protagine.yaml", exc_info=True)
 
-        scheduler.register("mining_prune", _run_mining_prune, interval_seconds=86400, metadata={"description": "Prune banked mining turns per PROTAGINE_MINING_RETENTION_DAYS / PROTAGINE_MINING_MAX_TURNS (0 = keep everything)"})
-
-        # Daily pattern extraction (U25): the pattern store fed compute_surprise
-        # but only ever filled via the manual /patterns/extract endpoint, so
-        # surprise scoring ran against an empty store. Flag-gated off by
-        # default; registered only when on so the loop never counts a
-        # deliberately-disabled subsystem as running.
-        if os.environ.get("PROTAGINE_PATTERNS_SCHEDULE",
-                          "off").strip().lower() == "on":
-            async def _run_pattern_extract():
-                from protagine.api.routers.host import (
-                    _pattern_store as ps, _world_store as ws,
-                )
-                if ws is None or ps is None:
-                    return {"status": "skipped",
-                            "reason": "stores_not_wired"}
-                from protagine.patterns.extract import extract_patterns
-                return {"status": "ok",
-                        **extract_patterns(world_store=ws, pattern_store=ps)}
-
-            scheduler.register("pattern_extract", _run_pattern_extract, interval_seconds=86400, metadata={"description": "Extract world-model patterns into the pattern store (PROTAGINE_PATTERNS_SCHEDULE=on)"})
-
-        async def _run_surprise_ttl():
-            from protagine.api.routers.host import _surprise_store as ss
-            if ss is None:
-                return {"status": "skipped",
-                        "reason": "surprise_store_not_wired"}
-            try:
-                ttl_days = float(os.environ.get(
-                    "PROTAGINE_SURPRISE_TTL_DAYS", "14"))
-            except ValueError:
-                ttl_days = 14.0
-            if ttl_days <= 0:
-                return {"status": "skipped", "reason": "ttl_disabled"}
-            return {"status": "ok", "auto_resolved": ss.resolve_stale(ttl_days)}
-
-        scheduler.register("surprise_ttl", _run_surprise_ttl, interval_seconds=86400, metadata={"description": "Auto-resolve surprises unaddressed past PROTAGINE_SURPRISE_TTL_DAYS (default 14; 0 disables)"})
-
-        async def _run_digest_flush():
-            from protagine.api.routers.host import _delivery_bridge as bridge
-            if bridge is None:
-                return {"status": "skipped", "reason": "delivery_bridge_not_wired"}
-            header = os.environ.get("PROTAGINE_DIGEST_HEADER", "Daily digest")
-            return await bridge.flush_digests_to_gateway(header=header)
-
-        digest_interval = int(os.environ.get("PROTAGINE_DIGEST_INTERVAL_SECONDS", "86400"))
-        scheduler.register(
-            "digest_flush",
-            _run_digest_flush,
-            interval_seconds=digest_interval,
-            metadata={"description": "Bundle and deliver accumulated DIGEST-channel items"},
-        )
-
-        logger.info(
-            "AutonomyLoop initialized (tick=%ds, scheduler=%d tasks)",
-            autonomy_config.tick_interval_secs,
-            len(scheduler.list_schedules()),
-        )
-
-        # Auto-start the autonomy loop as a background task
-        asyncio.create_task(autonomy_loop.start())
-        logger.info("AutonomyLoop auto-start scheduled")
+        mind = Mind(
+            config=_mind_cfg.get("mind") or {}, store=_mind_store, state_dir=state_dir,
+            owner_id=get_owner_contact_id(), commitments=_host_for_mind._commitment_store,
+            followups=_mind_followups, feedback=_host_for_mind._feedback_store,
+            expectations=_host_for_mind._expectations, contacts=contacts_store,
+            ledger=get_turn_idempotency_ledger(state_dir),
+            timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
+            persist=_persist_mind_setting)
+        set_mind(mind)
+        mind.start()
+        logger.info("Mind tick started (autonomy=%s, enabled=%s, owner=%s)",
+                    mind.level, mind.enabled, "set" if mind.owner_id else "unset")
     except Exception as exc:
-        logger.warning("AutonomyLoop init failed: %s", exc)
+        logger.warning("Mind init failed: %s", exc)
 
-    # Wire SubsystemRegistry into ToolExecutor so Protagine-native tools
+    # Wire the subsystem registry into ToolExecutor so Protagine-native tools
     # (memory_search, goals, relationships, etc.) are available to the
     # shared internal reasoning API and project analysis steps.
-    if registry is not None and locals().get("tool_executor") is not None:
+    if locals().get("tool_executor") is not None:
+        from protagine.tools.subsystems import SubsystemRegistry
+        registry = SubsystemRegistry()
         te = locals()["tool_executor"]
         from protagine.tools.handlers import TOOL_HANDLERS as _protagine_handlers
         for _tname, _thandler in _protagine_handlers.items():
@@ -3255,13 +3051,13 @@ async def lifespan(app: FastAPI):
         )
 
         async def _project_deliver(payload: dict) -> bool:
+            # The reach-out path: a message request goes through the mind's
+            # authority into the outbox, which the plugin sends verbatim.
             try:
-                from protagine.api.routers.host import (
-                    _autonomy_loop, _delivery_bridge,
-                )
-                if _autonomy_loop is not None and _delivery_bridge is not None:
-                    return await _autonomy_loop._route_reachout_delivery(
-                        payload, _delivery_bridge)
+                from protagine.api.routers.mind import get_mind
+                mind = get_mind()
+                if mind is not None:
+                    return await mind.request_message(payload, source="project")
             except Exception:
                 logger.debug("project deliver failed", exc_info=True)
             return False
@@ -3463,13 +3259,13 @@ async def lifespan(app: FastAPI):
         from protagine.task_queue.governor import WorkerGovernor, workers_mode
 
         async def _worker_deliver(payload: dict) -> bool:
+            # The reach-out path: a message request goes through the mind's
+            # authority into the outbox, which the plugin sends verbatim.
             try:
-                from protagine.api.routers.host import (
-                    _autonomy_loop, _delivery_bridge,
-                )
-                if _autonomy_loop is not None and _delivery_bridge is not None:
-                    return await _autonomy_loop._route_reachout_delivery(
-                        payload, _delivery_bridge)
+                from protagine.api.routers.mind import get_mind
+                mind = get_mind()
+                if mind is not None:
+                    return await mind.request_message(payload, source="worker")
             except Exception:
                 logger.debug("worker deliver failed", exc_info=True)
             return False
@@ -3545,7 +3341,6 @@ async def lifespan(app: FastAPI):
         )
         agent_bridge_service = _create_bridge(
             initiative_store=locals().get("initiative_store"),
-            autonomy_loop=autonomy_loop,
             task_queue=(task_queue if queue_execution_ready else None),
             observation_store=locals().get("observation_store"),
         )
@@ -3696,15 +3491,23 @@ async def lifespan(app: FastAPI):
             GovernedActionService,
         )
 
+        from protagine.api.routers.mind import get_mind as _get_mind_for_actions
+
         async def _autonomy_enable():
-            await _host_actions.autonomy_start()
+            current = _get_mind_for_actions()
+            if current is None:
+                raise RuntimeError("the mind is not running")
+            current.on(by="governed_action")
 
         async def _autonomy_disable():
-            await _governed_autonomy_stop_signal(_host_actions._autonomy_loop)
+            current = _get_mind_for_actions()
+            if current is None:
+                raise RuntimeError("the mind is not running")
+            current.off(reason="governed_action", by="governed_action")
 
         def _autonomy_running():
-            loop = _host_actions._autonomy_loop
-            return bool(loop is not None and loop.is_running)
+            current = _get_mind_for_actions()
+            return bool(current is not None and current.enabled)
 
         governed_action_service = GovernedActionService(
             GovernedActionLedger(
@@ -3735,7 +3538,8 @@ async def lifespan(app: FastAPI):
         from protagine.api.routers import host as source_claim_host
         source_claim_task = asyncio.create_task(run_source_claim_worker(
             get_turn_idempotency_ledger(state_dir), lambda: source_claim_host._llm_router,
-            claims_enabled=claims_enabled))
+            claims_enabled=claims_enabled,
+            commitments_provider=lambda: source_claim_host._commitment_store))
     yield
 
     if source_claim_task is not None:
@@ -3771,15 +3575,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Agent bridge shutdown error", exc_info=True)
     # Stop the rest of the background work before any store it uses is
-    # closed: the autonomy loop first (it enqueues work and its in-flight
-    # tick must finish), then the execution worker and queue maintenance.
+    # closed: the mind tick first (its in-flight tick must finish), then the
+    # execution worker and queue maintenance.
     try:
-        from protagine.api.routers.host import _autonomy_loop
-        if _autonomy_loop is not None and _autonomy_loop.is_running:
-            await _autonomy_loop.stop(join_timeout=10.0)
+        from protagine.api.routers.mind import get_mind as _get_mind_for_shutdown, set_mind as _set_mind
+        _running_mind = _get_mind_for_shutdown()
+        if _running_mind is not None:
+            await _running_mind.stop()
+        _set_mind(None)
     except Exception:
-        logger.warning("Autonomy loop shutdown failed")
-    set_autonomy_loop(None)
+        logger.warning("Mind shutdown failed")
     # Stop worker node (before queue so in-flight jobs can drain).
     try:
         worker = getattr(app.state, "worker", None)
@@ -3863,7 +3668,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("controlled learning shutdown failed", exc_info=True)
     set_research_pipeline(None)
-    set_delivery_bridge(None)
     set_connection_discoverer(None)
     set_learner(None)
     set_skills_registry(None)
@@ -4008,12 +3812,12 @@ def create_app() -> FastAPI:
 
     app.include_router(host_router)
     app.include_router(host_v2_router)
+    from protagine.api.routers import mind as mind_router
+    app.include_router(mind_router.router)
     from protagine.api.routers import executions as executions_router
     app.include_router(executions_router.router)
     from protagine.api.routers import commitment_work as commitment_work_router
     app.include_router(commitment_work_router.router)
-    from protagine.api.routers import initiative_work as initiative_work_router
-    app.include_router(initiative_work_router.router)
     from protagine.api.routers import social_state as social_state_router
     app.include_router(social_state_router.router)
     from protagine.api.routers import temporal_followups as temporal_followups_router

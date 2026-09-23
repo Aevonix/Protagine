@@ -83,13 +83,7 @@ class SessionMap:
             return self._sessions.get(str(session_id or ""))
 
     def _owner_handles(self, platform: str) -> set[str]:
-        owner = self.settings.identity().get("owner")
-        handles = owner.get("handles") if isinstance(owner, Mapping) else None
-        if not isinstance(handles, Mapping):
-            return set()
-        value = handles.get(platform.lower()) or handles.get(platform)
-        values = value if isinstance(value, (list, tuple, set)) else [value]
-        return {str(item).strip().lower() for item in values if item}
+        return {item.lower() for item in self.settings.owner_handles().get(platform.lower(), [])}
 
     def is_owner(self, session_id: str) -> bool | None:
         """True for the owner, False for anyone else, None for an unknown session."""

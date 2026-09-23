@@ -40,27 +40,9 @@ logger = logging.getLogger(__name__)
 
 STAGES = ("shadow", "ask_first", "act_first")
 
-# Immutable floor (Amendment 1.6): kept SMALL and principled
-# (irreversibility x blast radius). Matched conservatively on action text.
-_FLOOR_PATTERNS: Dict[str, re.Pattern] = {
-    "money_movement": re.compile(
-        r"\b(?:wire|transfer|send|move)\s+(?:\$|money|funds|payment)|"
-        r"\b(?:purchase|buy|pay|spend|subscribe)\b.{0,30}\$|"
-        r"\bpayment\s+(?:of|for)\b|\$\d{2,}", re.IGNORECASE),
-    "irreversible_deletion": re.compile(
-        r"\b(?:rm\s+-rf|drop\s+(?:table|database)|delete\s+permanently|"
-        r"wipe|purge\s+all|force[- ]?push|erase\s+(?:all|everything))\b",
-        re.IGNORECASE),
-    "credential_change": re.compile(
-        r"\b(?:rotate|change|reset|revoke|create)\b.{0,40}\b(?:credential|"
-        r"password|api[_ ]?key|secret|token|ssh[- ]?key|certificate)\b|"
-        r"\bsecurity\s+settings?\b", re.IGNORECASE),
-    "bulk_third_party_messaging": re.compile(
-        r"\b(?:bulk|mass|broadcast|blast|everyone|all\s+contacts)\b.{0,40}"
-        r"\b(?:message|text|email|sms|dm)\b|"
-        r"\b(?:message|text|email|sms|dm)\b.{0,40}\b(?:bulk|mass|broadcast|"
-        r"blast|everyone|all\s+contacts)\b", re.IGNORECASE),
-}
+# The immutable floor moved to P/mind/authority.py (architecture 7.3); the
+# same four classes are matched here on action text.
+from protagine.mind.authority import FLOOR_PATTERNS as _FLOOR_PATTERNS, floor_class  # noqa: E402
 
 
 def _fenv(name: str, default: float) -> float:
@@ -80,15 +62,6 @@ def _ienv(name: str, default: int) -> int:
 def autograduate_enabled() -> bool:
     return os.environ.get(
         "PROTAGINE_TRUST_AUTOGRADUATE", "true").strip().lower() != "false"
-
-
-def floor_class(text: str) -> Optional[str]:
-    """The immutable-floor class this action text falls into, if any."""
-    t = (text or "")
-    for name, pat in _FLOOR_PATTERNS.items():
-        if pat.search(t):
-            return name
-    return None
 
 
 class TrustEngine:

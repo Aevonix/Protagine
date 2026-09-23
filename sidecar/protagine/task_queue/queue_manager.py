@@ -93,6 +93,76 @@ class _ReentrantAsyncLock:
         return False
 
 
+DECISION_KEY_FILE = "queue-decision.key"
+DECISION_TAGS = ("approval_decision_id", "approval_decision", "approval_decided_at",
+                 "approval_authority", "approval_authority_mode", "approval_signature")
+
+
+def decision_secret() -> bytes:
+    """The per-instance secret that signs direct owner decisions (file mode 0600).
+
+    The approval ledger is gone; what makes ``approved_by`` execution
+    authority is this HMAC, which only the server computes. A client cannot
+    set the tags (they are reserved) and a same-process tag mutation without
+    the signature is held again at the claim boundary.
+    """
+    import secrets as _secrets
+    from protagine import get_state_dir
+
+    path = Path(get_state_dir()) / DECISION_KEY_FILE
+    try:
+        value = path.read_bytes().strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    value = _secrets.token_hex(32).encode("ascii")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_bytes().strip() or value
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(value + b"\n")
+    return value
+
+
+def _decision_material(job_id: str, tags: Dict[str, Any]) -> bytes:
+    return "|".join(str(tags.get(key) or "") for key in (
+        "approval_decision_id", "approval_decision", "approval_decided_at", "approval_authority",
+    )).join((f"{job_id}|", "")).encode("utf-8")
+
+
+def decision_tags(job_id: str, *, decision: str, decision_id: str, actor: str, at: str) -> Dict[str, str]:
+    """The tags the approve or reject route writes for a direct owner decision."""
+    import hmac as _hmac
+
+    tags = {
+        "approval_decision_id": decision_id,
+        "approval_decision": decision,
+        "approval_decided_at": at,
+        "approval_authority": actor,
+        "approval_authority_mode": "direct",
+    }
+    tags["approval_signature"] = _hmac.new(decision_secret(), _decision_material(job_id, tags), "sha256").hexdigest()
+    if decision == "approve":
+        tags.update({"approved_by": actor, "approved_at": at})
+    else:
+        tags.update({"rejected_by": actor, "rejected_at": at})
+    return tags
+
+
+def decision_valid(job_id: str, tags: Dict[str, Any]) -> bool:
+    """True when the decision tags carry the server's signature over this job."""
+    import hmac as _hmac
+
+    signature = str(tags.get("approval_signature") or "")
+    if not signature or not tags.get("approval_decision_id") or not tags.get("approval_authority"):
+        return False
+    expected = _hmac.new(decision_secret(), _decision_material(job_id, tags), "sha256").hexdigest()
+    return _hmac.compare_digest(signature, expected)
+
+
 def _serialized_mutation(method):
     """Keep every multi-statement write/rollback isolated on the connection."""
 
@@ -922,87 +992,16 @@ class QueueManager:
 
     @staticmethod
     def _server_approval_provenance_valid(job: Job) -> bool:
-        """Verify durable owner/grant evidence or recomputable policy output."""
+        """A direct owner decision recorded by the approve route, and nothing else.
 
-        # ApprovalRelayCanaryV1 is a calibration object, never executable
-        # authority.  Even a durable APPROVE or a matching bounded grant must
-        # remain invalid at the worker-claim boundary.
-        from protagine.task_queue.approval_relay_canary import (
-            is_exact_job as is_exact_approval_relay_canary,
-        )
-
-        if is_exact_approval_relay_canary(job):
-            return False
+        The approval ledger and its grants are gone. The approve route writes
+        the decision tags with an HMAC over them under the instance's decision
+        key, so neither a client nor a same-process tag mutation can mint
+        execution authority by writing ``approved_by``.
+        """
 
         tags = getattr(job, "tags", {}) or {}
-        approved_by = str(tags.get("approved_by") or "").strip()
-        policy = str(tags.get("auto_approved_by_policy") or "").strip()
-
-        try:
-            from protagine.initiatives.approval_authority import (
-                build_action_binding,
-            )
-
-            current_binding = build_action_binding(
-                job_id=job.job_id,
-                job_type=job.job_type.value,
-                payload=job.payload,
-            )
-        except Exception:
-            return False
-        captured_digest = str(tags.get("action_digest") or "").strip()
-        if captured_digest and captured_digest != current_binding.action_digest:
-            return False
-
-        if not approved_by and policy != "bounded_grant":
-            # Policy classification is not execution authority. Read-only
-            # jobs never enter this verifier because they declare no effect;
-            # every mutation/disclosure/outbound effect must bind to the
-            # canonical direct-decision or exact grant-use ledger below.
-            return False
-
-        try:
-            from protagine.initiatives.approval_authority import (
-                ApprovalAuthorityStore,
-                build_action_binding,
-            )
-
-            binding = current_binding
-            if str(tags.get("action_digest") or "") != binding.action_digest:
-                return False
-            store = ApprovalAuthorityStore()
-            direct_request = store.get_request_for_job(job.job_id)
-            if policy == "bounded_grant":
-                # Historical partial transitions may contain both a target
-                # request and a grant use. The target's first-valid direct
-                # request always wins; grant tags cannot bypass it.
-                if direct_request is not None:
-                    return False
-                use = store.get_grant_use(binding.action_digest)
-                return bool(
-                    use is not None
-                    and str(use.get("grant_id") or "")
-                    == str(tags.get("bounded_grant_id") or "")
-                    and str(use.get("operation_id") or "") == job.job_id
-                )
-
-            request_id = str(tags.get("approval_request_id") or "")
-            request = store.get_request(request_id) if request_id else None
-            return bool(
-                request is not None
-                and direct_request is not None
-                and direct_request.get("request_id") == request.get("request_id")
-                and request.get("status") == "approved"
-                and request.get("decision") == "approve"
-                and str(request.get("job_id") or "") == job.job_id
-                and str(request.get("action_digest") or "")
-                == binding.action_digest
-                and str(request.get("decision_id") or "")
-                == str(tags.get("approval_decision_id") or "")
-                and str(request.get("decided_by") or "") == approved_by
-            )
-        except Exception:
-            return False
+        return decision_valid(job.job_id, tags) and tags.get("approval_decision") == "approve"
 
     @staticmethod
     def _hold_for_missing_approval(job: Job) -> None:
@@ -1011,7 +1010,8 @@ class QueueManager:
             "bounded_grant_id", "bounded_grant_expires_at",
             "bounded_grant_ttl_state", "bounded_grant_uses_state",
             "approval_source_request_id", "approval_decision_id",
-            "approval_provenance",
+            "approval_provenance", "approval_decision", "approval_decided_at",
+            "approval_authority", "approval_authority_mode", "approval_signature",
             "outbound_target",
         ):
             job.tags.pop(key, None)
@@ -1030,206 +1030,12 @@ class QueueManager:
 
     @staticmethod
     def _materialize_effect_approval(job: Job) -> None:
-        """Resolve canonical authority before an approval-held row is visible."""
+        """An approval-held row waits for the owner's direct decision.
 
-        from protagine.initiatives.approval_authority import (
-            ApprovalAuthorityStore,
-            build_action_binding,
-            build_approval_presentation,
-            prepare_action_approval,
-        )
-        from protagine.task_queue.approval_relay_canary import (
-            is_exact_job as is_exact_approval_relay_canary,
-        )
-
-        store = ApprovalAuthorityStore()
-        relay_canary = is_exact_approval_relay_canary(job)
-        if relay_canary:
-            from protagine.task_queue.approval_relay_canary import (
-                APPROVAL_TTL_SECONDS,
-            )
-
-            # The canary deliberately bypasses reusable grants.  Creating its
-            # exact request first preserves queue-first crash safety while
-            # ensuring resolve_action_gate() can only reuse that request. Its
-            # attended calibration window is deliberately shorter than the
-            # generic approval lifetime; an idempotent replay keeps the exact
-            # original request and expiry.
-            binding = build_action_binding(
-                job_id=job.job_id,
-                job_type=job.job_type.value,
-                payload=job.payload,
-            )
-            presentation = build_approval_presentation(
-                job_id=job.job_id,
-                job_type=job.job_type.value,
-                payload=job.payload,
-                deadline=job.deadline,
-            )
-            store.ensure_request(
-                job_id=job.job_id,
-                binding=binding,
-                ttl_seconds=APPROVAL_TTL_SECONDS,
-                presentation=presentation,
-            )
-        authority = prepare_action_approval(
-            store,
-            job_id=job.job_id,
-            job_type=job.job_type.value,
-            payload=job.payload,
-            deadline=job.deadline,
-            approval_started_at=job.posted_at,
-        )
-        job.tags.update(authority["tags"])
-        state = authority["state"]
-        if relay_canary:
-            for key in (
-                "auto_approved_by_policy", "bounded_grant_id",
-                "bounded_grant_expires_at", "approval_source_request_id",
-                "bounded_grant_ttl_state", "bounded_grant_uses_state",
-            ):
-                job.tags.pop(key, None)
-            if state == "pending":
-                return
-            if state in {"authorized_direct", "rejected"}:
-                winner = authority["request"] or {}
-                decision = str(winner.get("decision") or "")
-                if decision not in {"approve", "reject"}:
-                    raise RuntimeError(
-                        "approval relay canary winner has an invalid decision"
-                    )
-                for key in (
-                    "hold_kind", "blocked_reason", "awaiting_owner_approval",
-                ):
-                    job.tags.pop(key, None)
-                job.tags.update({
-                    "approval_relay_canary_decision": decision,
-                    "approval_relay_canary_terminalized": "true",
-                    "external_effect": "false",
-                })
-                job.status = JobStatus.CANCELLED
-                return
-            if state == "authorized_grant":
-                # This should be unreachable because ensure_request() wins
-                # before grant resolution.  Keep an older/corrupt ledger
-                # fail-closed rather than ever projecting QUEUED.
-                job.status = JobStatus.BLOCKED
-                job.tags.update({
-                    "hold_kind": "approval",
-                    "blocked_reason": "approval_relay_canary_grant_forbidden",
-                    "awaiting_owner_approval": "true",
-                })
-                return
-            if state in {"expired", "superseded"}:
-                for key in (
-                    "hold_kind", "blocked_reason", "awaiting_owner_approval",
-                ):
-                    job.tags.pop(key, None)
-                job.status = JobStatus.FAILED
-                return
-            raise RuntimeError(
-                "approval relay canary resolver returned an invalid state"
-            )
-        if state == "pending":
-            return
-        for key in ("hold_kind", "blocked_reason", "awaiting_owner_approval"):
-            job.tags.pop(key, None)
-        if state in {"authorized_grant", "authorized_direct"}:
-            job.status = JobStatus.QUEUED
-        elif state == "rejected":
-            job.status = JobStatus.CANCELLED
-        elif state in {"expired", "superseded"}:
-            job.status = JobStatus.FAILED
-        else:
-            raise RuntimeError("canonical approval resolver returned an invalid state")
-
-    @_serialized_mutation
-    async def repair_approval_relay_canary_terminal(self, job_id: str) -> bool:
-        """Converge an exact decided canary to inert CANCELLED state.
-
-        This is intentionally stronger than the generic status transition:
-        it repairs historical QUEUED/CLAIMED crash-window rows, clears every
-        claim lease, and derives the winner only from the canonical approval
-        ledger.  Pending/expired canaries are not reported as successful
-        decisions.
+        There is no ledger to materialize from; the hold stands until the
+        approve or reject route records the decision in the job's tags.
         """
-
-        assert self._db is not None
-        from protagine.task_queue.approval_relay_canary import (
-            assert_exact_job,
-        )
-
-        job = await self.get_job(job_id)
-        if job is None:
-            return False
-        assert_exact_job(job)
-        old_status = job.status
-        old_attempt_id = job.claim_attempt_id
-        self._materialize_effect_approval(job)
-        if job.status is not JobStatus.CANCELLED:
-            return False
-        decision = str(
-            job.tags.get("approval_relay_canary_decision") or ""
-        )
-        if decision not in {"approve", "reject"}:
-            return False
-        await self._db.execute(
-            """
-            UPDATE jobs
-            SET status = ?, tags = ?, claimed_by = NULL, claimed_at = NULL,
-                claim_attempt_id = NULL, claim_expires_at = NULL,
-                last_heartbeat = NULL
-            WHERE job_id = ?
-            """,
-            (JobStatus.CANCELLED.value, json.dumps(job.tags), job_id),
-        )
-        if old_status is not JobStatus.CANCELLED:
-            await self._audit(
-                job_id,
-                old_status.value,
-                JobStatus.CANCELLED.value,
-                reason=f"approval_relay_canary_{decision}_no_effect_repaired",
-            )
-        if old_status in {JobStatus.CLAIMED, JobStatus.RUNNING}:
-            await self._finalize_pending_controls_after_transition(
-                job_id,
-                old_attempt_id,
-                reason="approval_relay_canary_terminal_repair",
-            )
-        await self._db.commit()
-        return True
-
-    @_serialized_mutation
-    async def ensure_approval_relay_canary(
-        self, idempotency_digest: str,
-    ) -> tuple[Job, bool]:
-        """Create or return one exact, server-owned inert relay canary.
-
-        The reentrant queue mutation lock makes the read/create pair atomic
-        inside the sole queue owner.  A deterministic primary key provides a
-        second idempotency boundary at SQLite even if this method is retried
-        after an ambiguous HTTP outcome.
-        """
-
-        from protagine.task_queue.approval_relay_canary import (
-            assert_exact_job,
-            build_job,
-            job_id_for_digest,
-        )
-
-        identifier = job_id_for_digest(idempotency_digest)
-        existing = await self.get_job(identifier)
-        if existing is not None:
-            assert_exact_job(existing)
-            return existing, False
-
-        job = build_job(idempotency_digest)
-        await self.post(job)
-        stored = await self.get_job(identifier)
-        if stored is None:
-            raise RuntimeError("approval relay canary was not durably created")
-        assert_exact_job(stored)
-        return stored, True
+        return None
 
     @_serialized_mutation
     async def post(self, job: Job) -> str:
@@ -1419,7 +1225,7 @@ class QueueManager:
                     "canonical_approval_expired"
                     if job.tags.get("approval_provenance")
                     == "server_deadline_expired"
-                    else "approval_authority_materialized"
+                    else "approval_hold_materialized"
                 )
                 await self._audit(
                     job.job_id,
@@ -3212,26 +3018,14 @@ class QueueManager:
                 ),
             }
 
-        from protagine.initiatives.approval_authority import (
-            build_action_binding,
-        )
-        from protagine.initiatives.action_registry import (
-            RiskTier,
-            get_action,
-        )
         from protagine.task_queue.governor import job_declares_effect
+        from protagine.task_queue.routing import action_digest
 
-        binding = build_action_binding(
-            job_id=job.job_id,
-            job_type=job.job_type.value,
-            payload=job.payload,
+        binding_digest = action_digest(
+            job_id=job.job_id, job_type=job.job_type.value, payload=job.payload,
         )
-        action_spec = get_action(str(job.payload.get("action_hint") or ""))
-        expected_effect = (
-            "disclosure"
-            if action_spec is not None and action_spec.risk is RiskTier.OUTBOUND
-            else "mutation"
-        )
+        declared_risk = str(job.payload.get("risk") or "").strip().lower()
+        expected_effect = "disclosure" if declared_risk == "outbound" else "mutation"
         try:
             clock_skew = float(os.environ.get(
                 "PROTAGINE_ACTION_RECEIPT_CLOCK_SKEW_SECS", "300",
@@ -3261,8 +3055,7 @@ class QueueManager:
         )
         if (
             not job_declares_effect(job)
-            or action_spec is None
-            or action_spec.risk is RiskTier.READ_ONLY
+            or declared_risk not in {"mutating", "outbound"}
             or attestation.effect_class != expected_effect
             or not chronology_valid
             or job.status is not JobStatus.NEUTRAL
@@ -3277,9 +3070,8 @@ class QueueManager:
                 and not reconciled_applied
             )
             or str(job.tags.get("governor_verdict") or "") == "violation"
-            or str(job.tags.get("action_digest") or "")
-            != binding.action_digest
-            or supplied_digest != binding.action_digest
+            or str(job.tags.get("action_digest") or "") != binding_digest
+            or supplied_digest != binding_digest
         ):
             return None
 
@@ -4124,21 +3916,14 @@ class QueueManager:
                 job.payload,
             ).work_order_digest
         else:
-            action_digest = ""
-            try:
-                from protagine.initiatives.approval_authority import (
-                    build_action_binding,
-                )
+            from protagine.task_queue.routing import action_digest as _action_digest
 
-                action_digest = build_action_binding(
-                    job_id=job.job_id,
-                    job_type=job.job_type.value,
-                    payload=job.payload,
-                ).action_digest
-            except Exception:
-                # Non-action queue jobs have no registered action binding;
-                # their complete immutable execution envelope is hashed below.
-                action_digest = ""
+            # Only agent actions carry an action binding; every other job's
+            # complete immutable execution envelope is hashed below.
+            action_digest = (
+                _action_digest(job_id=job.job_id, job_type=job.job_type.value, payload=job.payload)
+                if job.job_type is JobType.AGENT_ACTION else ""
+            )
             authority_digest = digest_json({
                 "schema": "QueueJobAuthorityV1",
                 "job_id": job.job_id,
@@ -7408,73 +7193,6 @@ class QueueManager:
         if count:
             await self._db.commit()
         return count
-
-    @_serialized_mutation
-    async def reconcile_blocked_approval_authority(self) -> int:
-        """Repair legacy/partial approval holds without a read-side effect."""
-
-        assert self._db is not None
-        cursor = await self._db.execute(
-            "SELECT * FROM jobs WHERE status = ?",
-            (JobStatus.BLOCKED.value,),
-        )
-        rows = await cursor.fetchall()
-        changed_count = 0
-        for row in rows:
-            job = _job_from_row(row)
-            if job.tags.get("blocked_reason") != "awaiting_owner_approval":
-                continue
-            before_status = job.status
-            before_tags = dict(job.tags)
-            self._materialize_effect_approval(job)
-            if job.status is JobStatus.QUEUED and job.depends_on:
-                dependency_pending = False
-                for dependency_id in job.depends_on:
-                    dependency = await self._db.execute(
-                        "SELECT status FROM jobs WHERE job_id = ?",
-                        (dependency_id,),
-                    )
-                    dependency_row = await dependency.fetchone()
-                    if (
-                        dependency_row is None
-                        or dependency_row["status"] != JobStatus.COMPLETED.value
-                    ):
-                        dependency_pending = True
-                        break
-                if dependency_pending:
-                    job.status = JobStatus.BLOCKED
-                    job.tags.update({
-                        "hold_kind": "dependency",
-                        "blocked_reason": "dependencies_pending",
-                    })
-            if job.status is before_status and job.tags == before_tags:
-                continue
-            updated = await self._db.execute(
-                "UPDATE jobs SET status=?, tags=? WHERE job_id=? AND status=?",
-                (
-                    job.status.value,
-                    json.dumps(job.tags),
-                    job.job_id,
-                    JobStatus.BLOCKED.value,
-                ),
-            )
-            if updated.rowcount != 1:
-                continue
-            reason = (
-                "approval_authority_materialized"
-                if job.status is JobStatus.BLOCKED
-                else "approval_authority_reconciled"
-            )
-            await self._audit(
-                job.job_id,
-                before_status.value,
-                job.status.value,
-                reason=reason,
-            )
-            changed_count += 1
-        if changed_count:
-            await self._db.commit()
-        return changed_count
 
     @_serialized_mutation
     async def abandon_jobs_for_node(self, node_id: str) -> List[str]:

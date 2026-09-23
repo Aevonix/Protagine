@@ -26,7 +26,7 @@ TASK_ROLES = {
     'source_claim_extraction': 'extraction', 'source_claim_review': 'judging',
     'source_image_description': 'vision',
     'source_appraisal': 'extraction', 'source_appraisal_revision': 'reasoning',
-    'self_judgment': 'reasoning',
+    'self_judgment': 'reasoning', 'commitment_extract': 'extraction',
     'project_planning': 'planning', 'thought_job': 'reasoning',
     'tom_affect_extraction': 'extraction', 'tom_belief_extraction': 'extraction',
     'tom_intention_extraction': 'extraction',

@@ -148,7 +148,7 @@ def test_memory_salvage_recovers_owned_bytes_and_current_corrections_scope_only(
     source = [{'role': 'user', 'content': 'The toolbox is in the study.'}]
     ledger.record_source('text-source', contact_id='fixture-contact', session_id='original',
                          messages=source, derive_claims=False)
-    runtime_files = ('task_queue.db', 'approval_authority.db', 'contacts.db', 'protagine-action-journal.db')
+    runtime_files = ('task_queue.db', 'protagine-expectations.db', 'contacts.db', 'protagine-action-journal.db')
     for filename in runtime_files:
         with sqlite3.connect(state / filename) as db:
             db.execute('CREATE TABLE records(id TEXT)')

@@ -79,10 +79,13 @@ Execution is sequential. With the default two arms the first episode runs base H
 An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
 flags, before the plugin loads, and the binary comparator switches that are on
-(`heartbeat`, `curator`; a switch is listed only when it is on). The built-in
-profiles are `base_hermes` (plugin off) and `protagine` (plugin on), the default
-arm set, plus the two comparators `base-heartbeat` and `base-curator` described
-below. `--arms` selects two to eight profiles by name; repeating a name runs the
+(`heartbeat`, `curator`, `initiative`; a switch is listed only when it is on).
+The built-in profiles are `base_hermes` (plugin off) and `protagine` (plugin on,
+the mind off), the default arm set, the two comparators `base-heartbeat` and
+`base-curator` described below, and `protagine-initiative`, the treatment arm
+of `mind-initiative-1`: the plugin with the mind on (`autonomy: standard`, only
+the `initiative` faculty, quiet hours and the daily digest off), served in the
+worker next to the host routes and ticked by the body tick. `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
 which measures the noise floor. `--reference-arm` names the comparator; it
 defaults to the first arm and every other arm is contrasted against it.
@@ -126,9 +129,15 @@ on; the arm's step of every body tick runs one synchronous `hermes curator run`
 pass (`agent.curator.run_curator_review`). Campaign mode, where the pass runs
 between episodes, comes later.
 
-In the `protagine` arm the arm's step is the plugin's `tick` when it defines
-one. Each tick row records the step's result under `arm_tick`. Base arms have
-no step.
+In the plugin arms the arm's step is the plugin's `tick()`: `POST
+/v1/mind/tick` (the mind forms intentions from the episode's shifted clock)
+and then the body pass (dispatch, outbox, reconciliation, observations),
+before Hermes cron and kanban dispatch; where the mind is off or absent only
+the body pass runs. The adapter's own body thread stays parked
+(`PROTAGINE_BODY_THREAD=0`) so nothing lands between two observed ticks. Each
+tick row records the step's result under `arm_tick`. Base arms have no step,
+at the same position. An image whose worker serves the mind advertises
+`mind_tick`; the plan refuses the initiative arm on an older image.
 
 `--temperature` pins the sampling temperature on every model call in every arm,
 foreground and auxiliary, through the same request body the candidate

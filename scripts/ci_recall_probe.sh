@@ -58,8 +58,11 @@ log "== protagine init --non-interactive"
   --adapter-source "$(ls "$DIST_DIR"/protagine_hermes-*.whl)" --no-service --port "$SIDECAR_PORT"
 
 log "== sidecar"
-(cd "$work" && "$protagine" start > "$work/sidecar.log" 2>&1) &
+# A simple command, no subshell: the recorded pid is the sidecar's own, so the exit trap really stops it.
+cd "$work"
+"$protagine" start > "$work/sidecar.log" 2>&1 &
 pids+=($!)
+cd "$OLDPWD"
 for _ in $(seq 1 90); do curl -sf "http://127.0.0.1:$SIDECAR_PORT/v1/host/health" > /dev/null && break; sleep 1; done
 curl -sf "http://127.0.0.1:$SIDECAR_PORT/v1/host/health" > /dev/null
 

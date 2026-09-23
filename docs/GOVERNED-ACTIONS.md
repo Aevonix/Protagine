@@ -24,7 +24,7 @@ streamed bodies above 32 KiB before parsing or touching the ledger.
 
 The allowlist contains ten generic Protagine operations:
 
-- enable or disable the autonomy loop;
+- turn the mind on or off;
 - create or resolve an owner commitment;
 - record initiative feedback;
 - record an owner insight;

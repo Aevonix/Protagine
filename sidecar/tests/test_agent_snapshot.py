@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from protagine.telemetry import TelemetryStore
@@ -18,10 +19,10 @@ class TestAgentSnapshot:
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         """Create a test client with telemetry and initiative stores injected."""
         from protagine.api.routers import host as host_mod
+        from protagine.api.routers import mind as mind_mod
         from protagine.api.routers.host import (
             set_telemetry,
             set_initiative_store,
-            set_autonomy_loop,
         )
         from protagine.server import create_app
 
@@ -32,7 +33,7 @@ class TestAgentSnapshot:
         prev = (
             host_mod._telemetry,
             host_mod._initiative_store,
-            host_mod._autonomy_loop,
+            mind_mod.get_mind(),
         )
 
         telemetry = TelemetryStore()
@@ -42,17 +43,16 @@ class TestAgentSnapshot:
         set_initiative_store(initiative_store)
 
         # Mock autonomy loop
-        autonomy_loop = Mock()
-        autonomy_loop.config.mode.value = "proactive"
-        autonomy_loop.is_running = True
-        set_autonomy_loop(autonomy_loop)
+        # The status routes read the mind: its level is the reported mode and
+        # its switch the running flag.
+        mind_mod.set_mind(SimpleNamespace(level="proactive", enabled=True, ticks=0))
 
         app = create_app()
         yield TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
         set_telemetry(prev[0])
         set_initiative_store(prev[1])
-        set_autonomy_loop(prev[2])
+        mind_mod.set_mind(prev[2])
 
     # -----------------------------------------------------------------------
     # GET /v1/host/agent-snapshot

@@ -1,5 +1,90 @@
 # Changelog
 
+## Unreleased - the first closed loop (duty initiative)
+
+The mind runs one loop end to end on a default install: a commitment in a
+turn is captured by the projection worker's `commitment_extract` router task,
+becomes an intention when it is overdue, passes authority and becomes a
+Hermes kanban task (assignee `protagine-act`, idempotency key `mind:<id>`) or
+a message the plugin sends verbatim, and its observed outcome feeds learning.
+The initiatives table is the intention store and the only audit log
+(`protagine mind log|why|stats`). Asks live only in the sidecar with a short
+code, a notice at most every 4 hours and the daily digest; the owner answers
+with `protagine mind yes|no <code>` or in chat through `protagine_self`;
+silence expires an ask after 72 hours and nothing else waits on it. The off
+switch (`protagine mind off`, `/mind off`, `POST /v1/mind/off`,
+`mind.enabled: false`) means no further effects and works with the model
+endpoint down. Expectations are on by default; every act is a prediction
+scored hit or miss. See [docs/MIND.md](docs/MIND.md).
+
+Review fixes on the loop: a cron run (a stored prompt, not the owner typing)
+can no longer answer an ask or mutate through the tools; the body writes to
+the board only in the process that owns the kanban dispatcher and holds
+dispatch and sends while `hermes pause` is engaged; a `mind:*` task archived
+before its ack is settled instead of recreated; `autonomy: off` stops
+existing effects like the off switch; a delivering cron job's recipients get
+`may_contact` and the message budgets; a task Hermes parked after its last
+retry is a final failure that frees its slot; a promise captured after its
+deadline is imported overdue instead of dropped; an intention whose source
+resolved meanwhile is cancelled before it acts; handles that name a user
+(Discord) send to the DM the gateway has had with them; the guard reads the
+stock `send_message` target syntax; suggest-level asks are digest-only.
+
+The four dead paths are fixed: commitment capture no longer needs a private
+endpoint, `/internal/deliver` is replaced by the outbox, the feedback
+multiplier is applied at the one ranker (a dismissal drops a type below the
+act threshold on its own), and the loop ticks by default.
+
+Deleted with their replacements: the autonomy loop, its scheduler and
+condition worker (`P/autonomy/`), the proactive delivery bridge, the queue
+approval ledger with its bounded grants, standing approvals, relay canary,
+approval policy and action registry, native reviews and follow-ups, executor
+retirement and the initiative-work router. The task queue keeps a direct owner
+decision on approval-held jobs (`/jobs/{id}/approve|reject`), signed by the
+server; `agent_action` jobs declare their risk. `protagine upgrade` moves
+`approval_authority.db`, `schedules.db`, `standing_approvals.json` and the
+delivery bridge's stores into the backup and adds the intention columns to
+`initiatives.db` in place. Config gains `mind.act_threshold` and
+`mind.digest_hour`.
+
+Both halves are checked against each other: the router accepts the body's
+bound acks, outcome reports (kanban status plus `outcome` and `final`; a
+requeued failed run is progress), sent reports and board observations as the
+body posts them, answers a second `sending` claim with 409 and marks a claim
+nobody settles `uncertain`, and `POST /v1/mind/decide` is the owner's ask
+answer with the owner and code checked again; the body reads the sidecar's
+recipient handles and the handle list `protagine init` writes. The
+`commitment_extract` task now hands the router the named object schema it
+requires (the array schema was refused on every real router, so no commitment
+was ever captured on a default install). A cancellation while the mind is off
+is not a dismissal. `scripts/ci_mind_loop.sh` plays the M2 acceptance list on
+stock Hermes in CI: a real gateway with the benchmark capture platform and a
+loopback webhook route, a scripted model, `protagine init` from the built
+wheels. The paired benchmark gains the `protagine-initiative` arm (the mind
+on, only the initiative faculty) and its body tick calls the plugin's
+`tick()` before cron and kanban dispatch in every arm.
+
+### The body
+
+The adapter's body thread now runs the mind's effects against `/v1/mind` on
+stock Hermes (architecture 6.2): it pulls the dispatch queue and creates one
+kanban task per intention on the `protagine-act` profile with idempotency key
+`mind:<id>` (a lost acknowledgement or a restart never creates a second task),
+sends outbox messages verbatim through stock `send_message_tool` with
+`sending` / `sent` bookkeeping on both sides (a send interrupted before its
+confirmation is reported `uncertain` and never repeated), reconciles every
+`mind:*` task's state and last run into `POST /v1/mind/outcome`, archives
+`mind:*` tasks that no dispatched intention owns, posts board observations
+(stale owner tasks, blocked tasks, goal tasks, the mind's own tasks and a
+heartbeat), and, with the mind off, archives unstarted mind tasks without
+touching a model. Its own ledger lives in
+`<hermes_home>/state/protagine-body.sqlite3`. `protagine_self` gains
+`state`, `rate` and typed-code approval (`yes`/`no` go to `POST
+/v1/mind/decide` only from the owner's own non-worker session whose message
+contains the code); `/mind` reads `state`, `log` and `why/{id}`; the guard
+reads `{allow, reason}` from `POST /v1/mind/guard {tool, args, session}`.
+See [docs/HERMES-ADAPTER.md](docs/HERMES-ADAPTER.md).
+
 ## Unreleased - stock install and one key
 
 Protagine attaches to stock Hermes (`hermes-agent >=0.21.3,<0.22`) through

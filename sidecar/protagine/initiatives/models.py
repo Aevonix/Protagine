@@ -41,6 +41,14 @@ class InitiativeStatus(str, Enum):
         )
 
 
+# Intention lifecycle (architecture 3.3): proposed -> asked -> approved ->
+# dispatched -> done | failed | expired | cancelled; messages add
+# sending -> sent | uncertain.
+MIND_ACTIVE_STATUSES = frozenset({"proposed", "asked", "approved", "dispatched", "sending"})
+MIND_TERMINAL_STATUSES = frozenset({"done", "failed", "expired", "cancelled", "sent", "uncertain", "dropped"})
+MIND_STATUSES = MIND_ACTIVE_STATUSES | MIND_TERMINAL_STATUSES
+
+
 @dataclass
 class StoredInitiative:
     """Persisted initiative with full tracking.
@@ -122,9 +130,37 @@ class StoredInitiative:
     stale_reason: Optional[str] = None
     recovery_reason: Optional[str] = None
 
+    # === Intention and audit columns (architecture 5.2) ===
+    # A row with a ``kind`` is a mind intention and an audit entry; rows
+    # without one predate the mind and keep their old lifecycle.
+    cls: Optional[str] = None            # internal | owner | contact | external | floor
+    decision: Optional[str] = None       # act | ask | drop | defer
+    decision_reason: Optional[str] = None
+    drive: Optional[str] = None          # duty | social | curiosity | mastery | upkeep
+    kind: Optional[str] = None           # task | goal | message | note
+    ask_code: Optional[str] = None
+    invalidates_if: Optional[str] = None
+    success_check: Optional[str] = None  # JSON
+    expectation_id: Optional[str] = None
+    parent_goal_id: Optional[str] = None
+    hermes_kind: Optional[str] = None    # kanban | message | none
+    hermes_ref: Optional[str] = None
+    outcome: Optional[str] = None        # done | blocked | failed | expired | denied | cancelled | uncertain
+    verified: Optional[str] = None       # owner | check | hermes_failure | none
+    verdict: Optional[str] = None        # actioned | dismissed | ignored | useful | not_useful | wrong
+    lesson_ids: Optional[str] = None     # JSON list
+    cost_tokens: int = 0
+    due_at: Optional[datetime] = None
+
+    @property
+    def is_intention(self) -> bool:
+        return bool(self.kind)
+
     @property
     def is_active(self) -> bool:
         """Is initiative still being worked on?"""
+        if self.kind:
+            return self.status in MIND_ACTIVE_STATUSES
         return self.status in ("pending", "assigned", "acknowledged")
 
     @property
@@ -222,6 +258,24 @@ class StoredInitiative:
             job_id=row.get("job_id"),
             stale_reason=row.get("stale_reason"),
             recovery_reason=row.get("recovery_reason"),
+            cls=row.get("cls"),
+            decision=row.get("decision"),
+            decision_reason=row.get("decision_reason"),
+            drive=row.get("drive"),
+            kind=row.get("kind"),
+            ask_code=row.get("ask_code"),
+            invalidates_if=row.get("invalidates_if"),
+            success_check=row.get("success_check"),
+            expectation_id=row.get("expectation_id"),
+            parent_goal_id=row.get("parent_goal_id"),
+            hermes_kind=row.get("hermes_kind"),
+            hermes_ref=row.get("hermes_ref"),
+            outcome=row.get("outcome"),
+            verified=row.get("verified"),
+            verdict=row.get("verdict"),
+            lesson_ids=row.get("lesson_ids"),
+            cost_tokens=int(row.get("cost_tokens") or 0),
+            due_at=parse_dt(row.get("due_at")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -270,6 +324,24 @@ class StoredInitiative:
             "job_id": self.job_id,
             "stale_reason": self.stale_reason,
             "recovery_reason": self.recovery_reason,
+            "cls": self.cls,
+            "decision": self.decision,
+            "decision_reason": self.decision_reason,
+            "drive": self.drive,
+            "kind": self.kind,
+            "ask_code": self.ask_code,
+            "invalidates_if": self.invalidates_if,
+            "success_check": self.success_check,
+            "expectation_id": self.expectation_id,
+            "parent_goal_id": self.parent_goal_id,
+            "hermes_kind": self.hermes_kind,
+            "hermes_ref": self.hermes_ref,
+            "outcome": self.outcome,
+            "verified": self.verified,
+            "verdict": self.verdict,
+            "lesson_ids": self.lesson_ids,
+            "cost_tokens": self.cost_tokens,
+            "due_at": format_dt(self.due_at),
         }
 
 

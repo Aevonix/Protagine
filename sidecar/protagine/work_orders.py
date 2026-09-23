@@ -496,7 +496,6 @@ class QueueWorkOrderAdapter:
         *,
         project_store: Optional[ProjectStore] = None,
         receipt_verifier: Any = None,
-        approval_authority: Any = None,
         posted_by: str = "project-engine",
     ) -> None:
         self.manager = task_queue_manager
@@ -505,18 +504,7 @@ class QueueWorkOrderAdapter:
         # preserving the same ledger invariants in tests.
         self.project_store = project_store or ProjectStore()
         self.receipt_verifier = receipt_verifier
-        self.approval_authority = approval_authority
         self.posted_by = posted_by
-
-    def _approval_store(self):
-        if self.approval_authority is not None:
-            return self.approval_authority
-        from protagine.initiatives.approval_authority import (
-            ApprovalAuthorityStore,
-        )
-
-        self.approval_authority = ApprovalAuthorityStore()
-        return self.approval_authority
 
     async def _prepare_effect_authority(
         self,
@@ -524,59 +512,19 @@ class QueueWorkOrderAdapter:
         job: Job,
         order: WorkOrderV1,
     ) -> Job:
-        """Materialize or consume canonical authority while the job is blocked.
+        """An effectful WorkOrder waits, blocked, for the owner's direct decision.
 
-        The queue row is born blocked, so a bounded grant can be consumed
-        without a claim race. Every retry reuses the exact grant-use or request
-        record and repairs an interrupted cross-database status transition.
+        The approval ledger and its grants are gone: the queue's approve route
+        records the owner's decision in the job's tags and releases the hold.
         """
 
-        from protagine.initiatives.approval_authority import (
-            prepare_action_approval,
-        )
-
-        authority = prepare_action_approval(
-            self._approval_store(),
-            job_id=job.job_id,
-            job_type=job.job_type.value,
-            payload=job.payload,
-            deadline=job.deadline or order.deadline,
-            approval_started_at=job.posted_at,
-        )
-        state = authority["state"]
-        tags = authority["tags"]
-        target = None
-        reason = "approval_request_materialized"
-        if state in {"authorized_grant", "authorized_direct"}:
-            target = JobStatus.QUEUED
-            reason = (
-                "bounded_grant"
-                if state == "authorized_grant"
-                else "approval_decision_reconciled"
-            )
-        elif state == "rejected":
-            target = JobStatus.CANCELLED
-            reason = "approval_rejection_reconciled"
-        elif state in {"expired", "superseded"}:
-            target = JobStatus.FAILED
-            reason = "canonical_approval_%s" % state
-
-        if target is None:
-            await queue.merge_job_tags(job.job_id, tags)
-        else:
-            changed = await queue.update_job_status(
-                job.job_id,
-                target,
-                reason=reason,
-                tags=tags,
-                remove_tags=(
-                    "hold_kind", "blocked_reason", "awaiting_owner_approval",
-                ),
-            )
-            if not changed:
-                raise WorkOrderError(
-                    "canonical approval resolved but queue transition must reconcile"
-                )
+        if not job.tags.get("approval_requested_at"):
+            posted_at = job.posted_at
+            if posted_at.tzinfo is None:
+                posted_at = posted_at.replace(tzinfo=timezone.utc)
+            await queue.merge_job_tags(job.job_id, {
+                "approval_requested_at": posted_at.astimezone(timezone.utc).isoformat(),
+            })
         refreshed = await queue.get_job(job.job_id)
         return refreshed or job
 
@@ -656,7 +604,7 @@ class QueueWorkOrderAdapter:
                 order.effect_class in EXTERNAL_EFFECT_CLASSES
                 and job.status is JobStatus.BLOCKED
                 and job.tags.get("blocked_reason") == "awaiting_owner_approval"
-                and not job.tags.get("approval_request_id")
+                and not job.tags.get("approval_requested_at")
             ):
                 job = await self._prepare_effect_authority(
                     queue, job, order,

@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from protagine.autonomy.loop import AutonomyLoop
 from protagine.api.routers import task_queue as queue_router
 from protagine.cognition.goal_spine import ThoughtJobV1
 from protagine.task_queue.models import (
@@ -156,12 +155,12 @@ async def test_only_exact_route_and_owner_wins_simultaneous_claim_race(
         if kind == "sync":
             job = Job(
                 job_type=JobType.AGENT_ACTION,
-                payload={"action_hint": "commitment_list_open"},
+                payload={"action_hint": "commitment_list_open", "risk": "read_only"},
             )
         elif kind == "effect":
             job = Job(
                 job_type=JobType.AGENT_ACTION,
-                payload={"action_hint": "agent_deliver_message"},
+                payload={"action_hint": "agent_deliver_message", "risk": "outbound"},
             )
         elif kind == "work_order":
             job = _work_order_job()
@@ -440,11 +439,11 @@ async def test_central_claim_kill_switch_skips_generic_but_keeps_action_plane(
     try:
         generic = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_list_open"},
+            payload={"action_hint": "commitment_list_open", "risk": "read_only"},
         )
         effect = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_mark_complete"},
+            payload={"action_hint": "commitment_mark_complete", "risk": "mutating"},
         )
         await manager.queue.post(generic)
         await manager.queue.post(effect)
@@ -483,148 +482,6 @@ async def test_central_claim_kill_switch_skips_generic_but_keeps_action_plane(
 
 
 @pytest.mark.asyncio
-async def test_inactive_restart_canonicalizes_or_quarantines_legacy_rows(
-    tmp_path, monkeypatch,
-):
-    db_path = tmp_path / "routes.db"
-    manager = await _manager(tmp_path, "routes.db")
-    try:
-        read = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_list_open"},
-        )
-        effect = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_mark_complete"},
-        )
-        wrong = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"schema": "HermesRunV1"},
-        )
-        preferred = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_list_open"},
-        )
-        for job in (read, effect, wrong, preferred):
-            await manager.queue.post(job)
-
-        for job in (read, effect):
-            payload = dict(job.payload)
-            payload.pop("risk", None)
-            await manager.queue._db.execute(
-                """UPDATE jobs SET status = ?, payload = ?,
-                          capabilities = '[]', tags = '{}'
-                   WHERE job_id = ?""",
-                (JobStatus.QUEUED.value, json.dumps(payload), job.job_id),
-            )
-        await manager.queue._db.execute(
-            "UPDATE jobs SET capabilities = ?, tags = '{}' WHERE job_id = ?",
-            (
-                json.dumps([{
-                    "name": ACTION_PLANE_ROUTE,
-                    "minimum": None,
-                    "preferred": False,
-                }]),
-                wrong.job_id,
-            ),
-        )
-        await manager.queue._db.execute(
-            "UPDATE jobs SET capabilities = ? WHERE job_id = ?",
-            (
-                json.dumps([
-                    {"name": AGENT_SYNC_ROUTE, "minimum": 99,
-                     "preferred": True},
-                    {"name": AGENT_SYNC_ROUTE, "minimum": None,
-                     "preferred": False},
-                ]),
-                preferred.job_id,
-            ),
-        )
-        await manager.queue._db.commit()
-    finally:
-        await manager.stop()
-
-    manager = await TaskQueueManager.initialize(db_path=db_path)
-    try:
-        migrated_read = await manager.queue.get_job(read.job_id)
-        assert migrated_read.status is JobStatus.QUEUED
-        assert migrated_read.payload["risk"] == "read_only"
-        assert [item.name for item in _route_requirements(migrated_read)] == [
-            AGENT_SYNC_ROUTE,
-        ]
-
-        migrated_effect = await manager.queue.get_job(effect.job_id)
-        assert migrated_effect.payload["risk"] == "mutating"
-        assert migrated_effect.status is JobStatus.BLOCKED
-        assert migrated_effect.tags["blocked_reason"] == (
-            "awaiting_owner_approval"
-        )
-        assert len(migrated_effect.tags["action_digest"]) == 64
-        assert migrated_effect.tags["action_result_contract"] == (
-            "ActionReceiptAttestationV1"
-        )
-        assert [item.name for item in _route_requirements(migrated_effect)] == [
-            ACTION_PLANE_ROUTE,
-        ]
-
-        quarantined = await manager.queue.get_job(wrong.job_id)
-        assert quarantined.status is JobStatus.BLOCKED
-        assert quarantined.tags["hold_kind"] == "route_migration"
-
-        canonical = await manager.queue.get_job(preferred.job_id)
-        route_caps = _route_requirements(canonical)
-        assert len(route_caps) == 1
-        assert route_caps[0] == JobCapabilityRequirement(
-            name=AGENT_SYNC_ROUTE,
-            minimum=None,
-            preferred=False,
-        )
-    finally:
-        await manager.stop()
-
-
-@pytest.mark.asyncio
-async def test_inactive_graduated_effect_migration_restores_gate_and_receipt_contract(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_POLICY", "graduated")
-    db_path = tmp_path / "graduated-effect-migration.db"
-    manager = await _manager(tmp_path, db_path.name)
-    try:
-        effect = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={
-                "action_hint": "commitment_mark_complete",
-                "ID": "legacy-commitment",
-            },
-        )
-        await manager.queue.post(effect)
-        legacy_payload = dict(effect.payload)
-        legacy_payload.pop("risk", None)
-        await manager.queue._db.execute(
-            "UPDATE jobs SET payload = ?, capabilities = '[]', tags = '{}' "
-            "WHERE job_id = ?",
-            (json.dumps(legacy_payload), effect.job_id),
-        )
-        await manager.queue._db.commit()
-    finally:
-        await manager.stop()
-
-    manager = await TaskQueueManager.initialize(db_path=db_path)
-    try:
-        migrated = await manager.queue.get_job(effect.job_id)
-        assert migrated.status is JobStatus.BLOCKED
-        assert migrated.tags["blocked_reason"] == "awaiting_owner_approval"
-        assert "auto_approved_by_policy" not in migrated.tags
-        assert len(migrated.tags["action_digest"]) == 64
-        assert migrated.tags["action_result_contract"] == (
-            "ActionReceiptAttestationV1"
-        )
-    finally:
-        await manager.stop()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("variant", "ready"),
     [
@@ -644,7 +501,7 @@ async def test_active_restart_never_rewrites_route_or_owner_drift(
     try:
         job = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_list_open"},
+            payload={"action_hint": "commitment_list_open", "risk": "read_only"},
         )
         await manager.queue.post(job)
         claimed = await manager.queue.claim_job(
@@ -704,7 +561,7 @@ async def test_active_unapproved_effect_holds_restart(tmp_path, monkeypatch):
     try:
         job = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_mark_complete"},
+            payload={"action_hint": "commitment_mark_complete", "risk": "mutating"},
         )
         await manager.queue.post(job)
         await queue_router.approve_job(job.job_id, queue_router.JobApproveRequest())
@@ -734,41 +591,6 @@ async def test_active_unapproved_effect_holds_restart(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_post_rejects_caller_active_state_and_spoofed_risk_or_approval(
-    tmp_path,
-):
-    manager = await _manager(tmp_path)
-    try:
-        with pytest.raises(ValueError, match="active claim state is server-owned"):
-            await manager.queue.post(Job(
-                status=JobStatus.CLAIMED,
-                claimed_by="caller",
-            ))
-
-        with pytest.raises(ValueError, match="risk does not match"):
-            await manager.queue.post(Job(
-                job_type=JobType.AGENT_ACTION,
-                payload={
-                    "action_hint": "agent_git_push",
-                    "risk": "read_only",
-                },
-            ))
-
-        spoofed = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "agent_git_push"},
-            tags={"approved_by": "fabricated-owner"},
-        )
-        await manager.queue.post(spoofed)
-        stored = await manager.queue.get_job(spoofed.job_id)
-        assert stored.payload["risk"] == "mutating"
-        assert stored.status is JobStatus.BLOCKED
-        assert "approved_by" not in stored.tags
-    finally:
-        await manager.stop()
-
-
-@pytest.mark.asyncio
 async def test_forged_outbound_policy_tags_never_authorize_direct_post_or_claim(
     tmp_path, monkeypatch,
 ):
@@ -777,7 +599,7 @@ async def test_forged_outbound_policy_tags_never_authorize_direct_post_or_claim(
     try:
         outbound = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "agent_deliver_message"},
+            payload={"action_hint": "agent_deliver_message", "risk": "outbound"},
             tags={
                 "auto_approved_by_policy": "graduated",
                 "outbound_target": "contact:forged",
@@ -819,155 +641,6 @@ async def test_forged_outbound_policy_tags_never_authorize_direct_post_or_claim(
 
 
 @pytest.mark.asyncio
-async def test_graduated_mutating_policy_cannot_replace_canonical_authority(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_POLICY", "graduated")
-    manager = await _manager(tmp_path)
-    try:
-        mutation = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_mark_complete"},
-        )
-        await manager.queue.post(mutation)
-        stored = await manager.queue.get_job(mutation.job_id)
-        assert stored.status is JobStatus.BLOCKED
-        assert stored.tags["blocked_reason"] == "awaiting_owner_approval"
-        assert stored.tags["approval_request_id"].startswith("apr_")
-        assert "auto_approved_by_policy" not in stored.tags
-        assert "approval_provenance" not in stored.tags
-    finally:
-        await manager.stop()
-
-
-@pytest.mark.asyncio
-async def test_action_effect_attestation_releases_dependency_and_writeback(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_ACTION_PLANE_WORKER_NODE_ID", "action-node")
-    manager = await _manager(tmp_path)
-    try:
-        effect = Job(
-            job_type=JobType.AGENT_ACTION,
-            payload={
-                "action_hint": "commitment_mark_complete",
-                "ID": "commitment-1",
-                "initiative_id": "initiative-1",
-                "description": "Mark the verified commitment complete",
-            },
-        )
-        await manager.queue.post(effect)
-        await queue_router.approve_job(
-            effect.job_id, queue_router.JobApproveRequest(),
-        )
-        claimed = await manager.queue.claim_job(
-            "action-node",
-            _caps("action-node", ACTION_PLANE_ROUTE),
-        )
-        assert claimed is not None and claimed.job_id == effect.job_id
-        assert await manager.queue.start_job(
-            claimed.job_id, "action-node", claimed.claim_attempt_id,
-        )
-        completion = await manager.queue.complete_job(
-            claimed.job_id,
-            "action-node",
-            {
-                "status": "completed",
-                "summary": "worker reports the commitment was updated",
-                "action_plane": {"state": "completed"},
-                "goal_id": "goal-1",
-                "subtask_id": "subtask-1",
-            },
-            claim_attempt_id=claimed.claim_attempt_id,
-        )
-        assert completion["job_status"] == "neutral"
-        pending = await manager.queue.get_job(effect.job_id)
-        assert pending.status is JobStatus.NEUTRAL
-        assert pending.tags["verification_pending"] == "true"
-        assert pending.tags["action_result_contract"] == (
-            "ActionReceiptAttestationV1"
-        )
-
-        dependent = Job(depends_on=[effect.job_id])
-        await manager.queue.post(dependent)
-        assert await manager.queue.unblock_ready_jobs() == 0
-        assert (await manager.queue.get_job(
-            dependent.job_id
-        )).status is JobStatus.BLOCKED
-
-        digest = pending.tags["action_digest"]
-        observed_at = datetime.now(timezone.utc).isoformat()
-
-        def receipt(*, attempt=claimed.claim_attempt_id, refs=None):
-            return ActionReceiptAttestationV1.from_payload({
-                "schema": "ActionReceiptAttestationV1",
-                "version": 1,
-                "job_id": effect.job_id,
-                "action_digest": digest,
-                "claim_attempt_id": attempt,
-                "effect_class": "mutation",
-                "terminal_outcome": "succeeded",
-                "receipt_refs": refs or [
-                    "commitment-ledger:commitment-1:completed"
-                ],
-                "observed_at": observed_at,
-                "summary": "commitment ledger confirms completion",
-            })
-
-        assert not await manager.queue.attest_action_success(
-            effect.job_id,
-            attestation=receipt(),
-            verifier_identity="action-node",
-        )
-        assert not await manager.queue.attest_action_success(
-            effect.job_id,
-            attestation=receipt(attempt="wrong-attempt"),
-            verifier_identity="receipt-verifier",
-        )
-        attested = await manager.queue.attest_action_success(
-            effect.job_id,
-            attestation=receipt(),
-            verifier_identity="receipt-verifier",
-        )
-        assert attested is not None and attested["replayed"] is False
-        replayed = await manager.queue.attest_action_success(
-            effect.job_id,
-            attestation=receipt(),
-            verifier_identity="receipt-verifier",
-        )
-        assert replayed is not None and replayed["replayed"] is True
-        assert not await manager.queue.attest_action_success(
-            effect.job_id,
-            attestation=receipt(refs=["commitment-ledger:other"]),
-            verifier_identity="receipt-verifier",
-        )
-        completed = await manager.queue.get_job(effect.job_id)
-        assert completed.status is JobStatus.COMPLETED
-        assert completed.tags["success_attested"] == "true"
-        assert completed.tags["success_verifier_identity"] == (
-            "receipt-verifier"
-        )
-        assert "verification_pending" not in completed.tags
-        assert (await manager.queue.get_job(
-            dependent.job_id
-        )).status is JobStatus.QUEUED
-
-        registry = MagicMock()
-        registry.task_queue = manager
-        registry.graph.store_memory = AsyncMock(return_value="memory-1")
-        registry.goals = MagicMock()
-        registry.initiative_store = MagicMock()
-        loop = AutonomyLoop(registry=registry)
-        await loop._phase_job_writeback()
-        registry.initiative_store.complete.assert_called_once()
-        registry.goals.on_job_completed.assert_not_called()
-        memory = registry.graph.store_memory.await_args.kwargs
-        assert memory["metadata"]["verification_pending"] is False
-    finally:
-        await manager.stop()
-
-
-@pytest.mark.asyncio
 async def test_action_receipt_rejects_stale_or_future_chronology(
     tmp_path, monkeypatch,
 ):
@@ -979,6 +652,7 @@ async def test_action_receipt_rejects_stale_or_future_chronology(
             job_type=JobType.AGENT_ACTION,
             payload={
                 "action_hint": "commitment_mark_complete",
+                "risk": "mutating",
                 "ID": "chronology",
             },
         )
@@ -1044,6 +718,7 @@ async def test_skipped_action_dependency_propagates_without_attestation(
                 job_type=JobType.AGENT_ACTION,
                 payload={
                     "action_hint": "commitment_mark_complete",
+                    "risk": "mutating",
                     "ID": "skipped-dependency",
                 },
             )
@@ -1102,7 +777,7 @@ async def test_approval_does_not_erase_dependency_gate(tmp_path):
         await manager.queue.post(dependency)
         effect = Job(
             job_type=JobType.AGENT_ACTION,
-            payload={"action_hint": "commitment_mark_complete"},
+            payload={"action_hint": "commitment_mark_complete", "risk": "mutating"},
             depends_on=[dependency.job_id],
         )
         await manager.queue.post(effect)

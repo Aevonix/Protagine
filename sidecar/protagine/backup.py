@@ -737,7 +737,6 @@ def _snapshot_config(state_dir: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     config_files = [
         ".env", "channels.json", ".protagine-llm-config.json",
-        "standing_approvals.json",
     ]
 
     for name in config_files:

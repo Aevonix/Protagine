@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "owner": {"contact_id": ""},
     "mind": {
         "enabled": True,
-        "autonomy": "standard",
+        "autonomy": "suggest",
         "deny": {"commands": [], "tools": [], "text": []},
         "worker_toolsets": ["web", "file", "session_search", "memory", "todo"],
         "budgets": {
@@ -50,6 +50,8 @@ DEFAULTS: dict[str, Any] = {
         "quiet_hours": "22:00-07:00",
         "ask_expires_hours": 72,
         "breaker": {"failures": 3, "window_hours": 24, "demotion_hours": 72},
+        "act_threshold": 0.6,   # the ranker's effective-score floor (architecture 3.2)
+        "digest_hour": 8,       # local hour after which the daily digest goes out
         "drives": {"duty": 1.0, "social": 0.5, "curiosity": 0.5, "mastery": 1.0, "upkeep": 1.0},
         "faculties": {
             "initiative": True,
@@ -154,7 +156,7 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     data["owner"]["contact_id"] = str(data["owner"].get("contact_id") or "")
     mind = data["mind"]
     mind["enabled"] = _parse_bool(mind.get("enabled", True), field_name="mind.enabled")
-    autonomy = str(mind.get("autonomy") or "standard").strip().lower()
+    autonomy = str(mind.get("autonomy") or "suggest").strip().lower()
     if autonomy not in AUTONOMY_LEVELS:
         raise ConfigError(f"mind.autonomy must be one of {', '.join(AUTONOMY_LEVELS)}")
     mind["autonomy"] = autonomy
@@ -175,6 +177,18 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     for name, value in list(budgets.items()):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"mind.budgets.{name} must be a number")
+    try:
+        mind["act_threshold"] = float(mind.get("act_threshold", 0.6))
+    except (TypeError, ValueError):
+        raise ConfigError("mind.act_threshold must be a number") from None
+    if not 0 < mind["act_threshold"] <= 1:
+        raise ConfigError("mind.act_threshold must be between 0 and 1")
+    try:
+        mind["digest_hour"] = int(mind.get("digest_hour", 8))
+    except (TypeError, ValueError):
+        raise ConfigError("mind.digest_hour must be an hour of the day") from None
+    if not 0 <= mind["digest_hour"] <= 23:
+        raise ConfigError("mind.digest_hour must be between 0 and 23")
     return data
 
 
@@ -283,6 +297,22 @@ def save_config(data: dict[str, Any], home: str | os.PathLike[str] | None = None
     validated = validate(copy.deepcopy(data))
     path = config_path(instance_home(home))
     _atomic_write(path, dump_config(validated).encode("utf-8"), mode=0o600)
+    return path
+
+
+def update_config(changes: dict[str, Any], home: str | os.PathLike[str] | None = None) -> Path | None:
+    """Merge ``changes`` into ``protagine.yaml`` without expanding it with defaults.
+
+    Returns the path written, or None when the instance has no configuration
+    file yet (library use). The merged result is validated before writing.
+    """
+    directory = instance_home(home)
+    path = directory / CONFIG_FILE
+    if not path.is_file():
+        return None
+    raw = _merge(read_raw(path), changes)
+    validate(_merge(DEFAULTS, copy.deepcopy(raw)))
+    _atomic_write(path, dump_config(raw).encode("utf-8"), mode=0o600)
     return path
 
 

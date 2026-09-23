@@ -26,12 +26,36 @@ import sqlite3
 import threading
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
-from protagine.initiatives.approval_authority import (
-    ActionBinding,
-    ApprovalAuthorityStore,
-    ApprovalSubjectBinding,
-    PRESENTATION_SCHEMA,
-)
+from dataclasses import dataclass as _binding_dataclass
+
+# The approval ledger is gone (build plan M2). The binding shapes charter
+# transitions record stay local; a transition that needs an approval store
+# raises approval_store_required until the mind's asks cover it.
+PRESENTATION_SCHEMA = "ProtagineApprovalPresentationV1"
+ApprovalAuthorityStore = Any
+
+
+@_binding_dataclass(frozen=True)
+class ActionBinding:
+    """Server-derived immutable identity and exact scope of one transition."""
+
+    action_digest: str
+    scope: Dict[str, Any]
+    scope_digest: str
+
+
+@_binding_dataclass(frozen=True)
+class ApprovalSubjectBinding:
+    """Server-derived identity for a charter transition subject."""
+
+    kind: str
+    subject_id: str
+    revision: str
+    action: str
+
+    def payload(self) -> Dict[str, str]:
+        return {"kind": self.kind, "subject_id": self.subject_id,
+                "revision": self.revision, "action": self.action}
 from protagine.scope_bounds import VIEWER_SCOPE_MAX_CHARS
 
 
@@ -2406,8 +2430,7 @@ class DriveGovernance:
             # created merely because a host imports or constructs the module.
             return cls(None, None, mode="off")
         store = DriveGovernanceStore(db_path)
-        approval_store = ApprovalAuthorityStore(approval_db_path)
-        return cls(store, approval_store, mode=selected)
+        return cls(store, None, mode=selected)
 
     def _store(self) -> DriveGovernanceStore:
         if self.store is None:

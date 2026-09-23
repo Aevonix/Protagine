@@ -4,6 +4,9 @@ import sqlite3
 
 from conftest import API_KEY, OWNER, probe
 
+# Probes that drive a Body of their own park the registered body thread, so it cannot claim
+# a row first (the same switch the paired benchmark uses).
+PARKED = {"PROTAGINE_BODY_THREAD": "0"}
 CAPTURE_PRELUDE_CODE = '''
 from protagine_hermes.client import load_settings
 from protagine_hermes.capture import TurnOutbox
@@ -54,7 +57,7 @@ while outbox.pending_count() and time.monotonic() < deadline:
     body.run_once()  # rows the registered body thread holds under lease are skipped
     time.sleep(0.05)
 emit(rows_before=rows_before, delivered=len(outbox.rows("delivered")), pending_after=outbox.pending_count())
-''', home)
+''', home, env=PARKED)
     assert result["rows_before"] == 100
     assert result["delivered"] == 100 and result["pending_after"] == 0
     syncs = sidecar.calls("/v1/host/turns/sync", "POST")
@@ -78,7 +81,7 @@ from protagine_hermes.client import ProtagineClient
 client = ProtagineClient(settings)
 Body(client, outbox, SessionMap(settings, client), settings).run_once()
 emit(rows=[r["turn_id"] for r in outbox.rows()])
-''', home)
+''', home, env=PARKED)
     assert result["rows"] == ["turn-1"]
     call, = sidecar.calls("/v1/host/turns/sync", "POST")
     assert call["json"]["context"]["contact_id"] == OWNER
@@ -102,7 +105,7 @@ with sqlite3.connect(outbox.path) as db:
     db.execute("UPDATE turn_outbox SET lease_expires_at = 0")
 second = Body(client, outbox, SessionMap(settings, client), settings).run_once()
 emit(first=first, attempts=row_after_failure["attempts"], error=row_after_failure["last_error"], second=second)
-''', home)
+''', home, env=PARKED)
     assert result["first"]["delivered"] == 0 and result["first"]["pending"] == 1
     assert result["attempts"] == 1 and result["error"] == "SidecarUnavailable"
     assert result["second"]["delivered"] == 1 and result["second"]["pending"] == 0
@@ -119,7 +122,7 @@ from protagine_hermes.client import ProtagineClient
 client = ProtagineClient(settings)
 Body(client, outbox, SessionMap(settings, client), settings).run_once()
 emit(receipt=receipt, pending=outbox.pending_count())
-''', home)
+''', home, env=PARKED)
     assert result["receipt"]["messages"] == 2 and result["pending"] == 0
     call, = sidecar.calls("/v1/host/turns/sync", "POST")
     assert [m["role"] for m in call["json"]["checkpoint_messages"]] == ["user", "assistant"]

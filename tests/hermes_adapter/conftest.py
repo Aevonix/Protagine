@@ -35,6 +35,132 @@ CONTACTS = {
 }
 
 
+class FakeMind:
+    """The ``/v1/mind`` contract the adapter's body, tools and guard rely on.
+
+    Intentions live in ``intentions`` keyed by id with a lifecycle ``status``
+    (``asked``, ``approved``, ``dispatched``, ``done``...). ``GET dispatch``
+    offers the approved tasks; ``bound`` moves them to ``dispatched`` unless
+    ``lose_bound`` simulates a lost ack. Outbox messages live in ``outbox``
+    with ``state`` ``ready | sending | sent | failed | uncertain``;
+    ``relist_sending`` makes the fake re-offer a message already in
+    ``sending``, the sloppy sidecar the body must tolerate.
+    """
+
+    def __init__(self):
+        self.enabled = True
+        self.autonomy = "standard"
+        self.intentions: dict[str, dict] = {}
+        self.outbox: dict[str, dict] = {}
+        self.guard_verdict: dict = {"allow": True, "reason": ""}
+        self.lose_bound = False
+        self.relist_sending = False
+        self.bound: list[dict] = []
+        self.outcomes: list[dict] = []
+        self.observations: list[dict] = []
+        self.decisions: list[dict] = []
+        self.rates: list[dict] = []
+        self.sending: list[dict] = []
+        self.sent: list[dict] = []
+        self.pulls = 0
+        self.last_pull_at = None
+
+    def handle(self, method, path, body):
+        import time as _time
+        parts = path.split("/")[3:]  # after /v1/mind
+        head = parts[0] if parts else ""
+        if head == "state" and method == "GET":
+            asks = [{"id": i["id"], "code": i.get("ask_code"), "title": i.get("title"), "expires_at": i.get("expires_at")}
+                    for i in self.intentions.values() if i.get("status") == "asked"]
+            return 200, {"enabled": self.enabled, "autonomy": self.autonomy, "level": self.autonomy,
+                         "queued": len([i for i in self.intentions.values() if i.get("status") == "approved"]),
+                         "asks": asks, "last_tick_at": None, "body": {"last_pull_at": self.last_pull_at}}
+        if head == "dispatch" and method == "GET":
+            self.pulls += 1
+            self.last_pull_at = _time.time()
+            if not self.enabled:
+                return 200, {"intentions": []}
+            offered = [dict(i) for i in self.intentions.values()
+                       if i.get("status") == "approved" and i.get("kind", "task") == "task"]
+            for item in offered:
+                item.setdefault("dedup_key", "mind:" + item["id"])
+                item.setdefault("assignee", "protagine-act")
+            return 200, {"intentions": offered}
+        if head == "dispatch" and len(parts) == 3 and parts[2] == "bound" and method == "POST":
+            intention = self.intentions.get(parts[1])
+            if intention is None:
+                return 404, {"detail": "unknown intention"}
+            self.bound.append({"id": parts[1], **(body or {})})
+            if not self.lose_bound:
+                intention["status"] = "dispatched"
+                intention["hermes_ref"] = (body or {}).get("hermes_ref")
+            return 200, {"ok": True, "id": parts[1], "status": intention["status"]}
+        if head == "outbox" and len(parts) == 1 and method == "GET":
+            if not self.enabled:
+                return 200, {"messages": []}
+            states = {"ready", "sending"} if self.relist_sending else {"ready"}
+            return 200, {"messages": [dict(m) for m in self.outbox.values() if m.get("state", "ready") in states]}
+        if head == "outbox" and len(parts) == 3 and method == "POST":
+            message = self.outbox.get(parts[1])
+            if message is None:
+                return 404, {"detail": "unknown message"}
+            if parts[2] == "sending":
+                self.sending.append({"id": parts[1], **(body or {})})
+                if message.get("state", "ready") != "ready":
+                    return 409, {"detail": f"message is {message['state']}"}
+                message["state"] = "sending"
+                return 200, {"ok": True, "state": "sending"}
+            if parts[2] == "sent":
+                self.sent.append({"id": parts[1], **(body or {})})
+                message["state"] = (body or {}).get("result") or "uncertain"
+                return 200, {"ok": True, "state": message["state"]}
+        if head == "outcome" and method == "POST":
+            intention = self.intentions.get(str((body or {}).get("id")))
+            if intention is None:
+                return 404, {"detail": "unknown intention"}
+            self.outcomes.append(dict(body))
+            intention["outcome"] = body.get("outcome")
+            if body.get("final"):
+                intention["status"] = body.get("outcome")
+            return 200, {"ok": True}
+        if head == "observations" and method == "POST":
+            self.observations.append(dict(body or {}))
+            return 200, {"ok": True}
+        if head == "guard" and method == "POST":
+            return 200, dict(self.guard_verdict)
+        if head == "decide" and method == "POST":
+            self.decisions.append(dict(body or {}))
+            code = str((body or {}).get("code") or "")
+            intention = next((i for i in self.intentions.values() if i.get("ask_code") == code and i.get("status") == "asked"), None)
+            if intention is None:
+                return 404, {"detail": "no open ask with that code"}
+            intention["status"] = "approved" if body.get("answer") == "yes" else "denied"
+            return 200, {"ok": True, "id": intention["id"], "status": intention["status"]}
+        if head == "rate" and method == "POST":
+            self.rates.append(dict(body or {}))
+            return 200, {"ok": True, **(body or {})}
+        if head == "log" and method == "GET":
+            return 200, {"entries": [{"id": i["id"], "kind": i.get("kind", "task"), "status": i.get("status"),
+                                      "title": i.get("title")} for i in self.intentions.values()]}
+        if head == "why" and len(parts) == 2 and method == "GET":
+            intention = self.intentions.get(parts[1])
+            return (200, dict(intention)) if intention else (404, {"detail": "unknown intention"})
+        if head == "off" and method == "POST":
+            self.enabled = False
+            for message in self.outbox.values():
+                if message.get("state", "ready") == "ready":
+                    message["state"] = "cancelled"
+            return 200, {"ok": True, "enabled": False}
+        if head == "on" and method == "POST":
+            self.enabled = True
+            return 200, {"ok": True, "enabled": True}
+        if head == "tick" and method == "POST":
+            return 200, {"ok": True}
+        if head == "people":
+            return 200, {"ok": True, "may_contact": (body or {}).get("may_contact")}
+        return 404, {"detail": "not found"}
+
+
 class FakeSidecar:
     """Just enough of ``/v1/host`` (and optionally ``/v1/mind``) for the adapter."""
 
@@ -42,8 +168,7 @@ class FakeSidecar:
         self.requests: list[dict] = []
         self.unauthorized: list[str] = []
         self.mind_routes = False
-        self.mind_enabled = True
-        self.guard_verdict: dict = {"action": "allow"}
+        self.mind = FakeMind()
         self.contacts = {key: dict(value) for key, value in CONTACTS.items()}
         self.lock = threading.Lock()
         sidecar = self
@@ -81,8 +206,13 @@ class FakeSidecar:
 
             do_GET = do_POST = do_PUT = do_PATCH = _route
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                pass  # a probe that exits mid-request (the crash tests) resets its socket
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property
@@ -100,6 +230,22 @@ class FakeSidecar:
     def calls(self, path: str, method: str | None = None) -> list[dict]:
         with self.lock:
             return [r for r in self.requests if r["path"] == path and (method is None or r["method"] == method)]
+
+    @property
+    def mind_enabled(self) -> bool:
+        return self.mind.enabled
+
+    @mind_enabled.setter
+    def mind_enabled(self, value: bool) -> None:
+        self.mind.enabled = bool(value)
+
+    @property
+    def guard_verdict(self) -> dict:
+        return self.mind.guard_verdict
+
+    @guard_verdict.setter
+    def guard_verdict(self, value: dict) -> None:
+        self.mind.guard_verdict = dict(value)
 
     def dispatch(self, method, path, query, body):
         if path.startswith("/v1/mind/"):
@@ -151,23 +297,8 @@ class FakeSidecar:
     def _mind(self, method, path, body):
         if not self.mind_routes:
             return 404, {"detail": "not found"}
-        if path == "/v1/mind/status":
-            return 200, {"enabled": self.mind_enabled, "autonomy": "standard", "queued": 0, "asks": 0}
-        if path == "/v1/mind/guard":
-            return 200, dict(self.guard_verdict)
-        if path == "/v1/mind/off":
-            self.mind_enabled = False
-            return 200, {"ok": True}
-        if path == "/v1/mind/log":
-            return 200, {"text": "log entries"}
-        if path == "/v1/mind/asks":
-            return 200, {"text": "no open asks"}
-        if path.startswith("/v1/mind/asks/"):
-            _, code, answer = path.rsplit("/", 2)
-            return 200, {"ok": True, "code": code, "answer": answer}
-        if path.startswith("/v1/mind/people/"):
-            return 200, {"ok": True, "may_contact": (body or {}).get("may_contact")}
-        return 404, {"detail": "not found"}
+        with self.lock:
+            return self.mind.handle(method, path, body)
 
 
 @pytest.fixture
@@ -182,6 +313,10 @@ def sidecar():
 @pytest.fixture
 def home(tmp_path, sidecar):
     """A Hermes profile configured the way ``protagine init`` writes it."""
+    return build_home(tmp_path, sidecar.server.server_address[1], sidecar.url)
+
+
+def build_home(tmp_path, port, url):
     hermes, instance = tmp_path / "hermes", tmp_path / "protagine"
     hermes.mkdir()
     instance.mkdir()
@@ -189,7 +324,7 @@ def home(tmp_path, sidecar):
     key_file.write_text(API_KEY + "\n")
     key_file.chmod(0o600)
     (instance / "protagine.yaml").write_text(yaml.safe_dump({
-        "sidecar": {"host": "127.0.0.1", "port": sidecar.server.server_address[1]},
+        "sidecar": {"host": "127.0.0.1", "port": port},
         "mind": {"enabled": True, "autonomy": "standard",
                  "deny": {"commands": ["rm -rf *"], "tools": ["terminal"], "text": ["secret-project-x"]}},
     }))
@@ -199,7 +334,7 @@ def home(tmp_path, sidecar):
     }))
     config = {
         "plugins": {"enabled": ["protagine"], "hook_callback_timeout": 0,
-                    "protagine": {"sidecar_url": sidecar.url, "key_file": str(key_file)}},
+                    "protagine": {"sidecar_url": url, "key_file": str(key_file)}},
         "memory": {"provider": "protagine-memory", "config": {"contact_id": OWNER}},
         "kanban": {"dispatch_in_gateway": True},
     }
@@ -235,6 +370,34 @@ manager.discover_and_load(force=True)
 loaded = manager._plugins["protagine"]
 assert loaded.enabled, loaded.error
 import protagine_hermes
+'''
+
+# The body tests drive ticks by hand: the registered body thread stays parked so
+# its own ticks cannot race the assertions.
+MIND_PRELUDE = PRELUDE.replace("manager.discover_and_load(force=True)", '''
+import protagine_hermes.body as _body_module
+_body_module.Body.start = lambda self: None
+manager.discover_and_load(force=True)''') + r'''
+from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect
+body = protagine_hermes._BODY
+def tick():
+    body.on_dispatch_tick(board="default", outcome="idle")  # the gateway dispatcher's heartbeat
+    return body.run_once()
+def tasks():
+    conn = connect()
+    try:
+        return {t.idempotency_key or t.id: {"id": t.id, "status": t.status, "assignee": t.assignee, "title": t.title,
+                "body": t.body, "goal_mode": t.goal_mode, "max_runtime_seconds": t.max_runtime_seconds,
+                "max_retries": t.max_retries, "created_by": t.created_by, "workspace_kind": t.workspace_kind}
+                for t in kb.list_tasks(conn, include_archived=True)}
+    finally:
+        conn.close()
+SENDS = []
+def fake_send(args, **kw):
+    SENDS.append(dict(args))
+    return json.dumps({"success": True, "platform": "telegram", "message_id": "m-%d" % len(SENDS)})
+import tools.send_message_tool as _smt
 '''
 
 WORKER_ENV_KEYS = ("HERMES_KANBAN_TASK", "HERMES_PROFILE", "HERMES_KANBAN_WORKSPACE", "TERMINAL_CWD")

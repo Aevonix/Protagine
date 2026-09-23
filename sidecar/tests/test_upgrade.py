@@ -108,3 +108,44 @@ def test_upgrade_reconciles_a_changed_worker_toolset(installed, capsys):
     assert profile["approvals"] == {"deny": ["shutdown*"]}
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_retires_old_stores_and_adds_the_intention_columns(installed, capsys):
+    """State owned by deleted code moves into the backup; the initiatives table gains
+    the intention and audit columns in place (architecture 5.2)."""
+    import sqlite3
+    home, _ = installed
+    with sqlite3.connect(home / "initiatives.db") as db:
+        db.execute("CREATE TABLE initiatives (id TEXT PRIMARY KEY, dedup_key TEXT UNIQUE, type TEXT NOT NULL, "
+                   "description TEXT NOT NULL, priority REAL, rationale TEXT, action_hint TEXT, entity_id TEXT, "
+                   "source_type TEXT, source_id TEXT, created_by TEXT, status TEXT, assigned_agent_id TEXT, "
+                   "assigned_agent_name TEXT, assigned_at TIMESTAMP, acknowledged_at TIMESTAMP, completed_at TIMESTAMP, "
+                   "cancelled_at TIMESTAMP, cancelled_by TEXT, cancelled_reason TEXT, failed_at TIMESTAMP, "
+                   "failed_reason TEXT, attempt_count INTEGER, max_attempts INTEGER, timeout_seconds INTEGER, "
+                   "last_attempt_at TIMESTAMP, created_at TIMESTAMP, expires_at TIMESTAMP, delivery_mode TEXT, "
+                   "delivery_attempts INTEGER, last_delivery_at TIMESTAMP, delivery_failed_at TIMESTAMP, "
+                   "delivery_failed_reason TEXT, result TEXT, result_metadata TEXT, preferred_agent_id TEXT, "
+                   "stale_reason TEXT, recovery_reason TEXT, job_id TEXT, context TEXT)")
+        db.execute("INSERT INTO initiatives (id, type, description, status, created_at) VALUES "
+                   "('old-1', 'relationship', 'old row', 'completed', '2026-01-01T00:00:00+00:00')")
+    for name in ("approval_authority.db", "schedules.db"):
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x TEXT)")
+    (home / "standing_approvals.json").write_text("{}")
+    assert set(init.retired_state_present(home)) == {"approval_authority.db", "schedules.db", "standing_approvals.json"}
+    assert "initiatives.db:kind" in init.pending_initiative_columns(home)
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    assert "retired approval_authority.db" in out and "migration applied: initiatives.db:kind" in out
+    for name in ("approval_authority.db", "schedules.db", "standing_approvals.json"):
+        assert not (home / name).exists()
+    retired = {p.name for p in (home / "backups").rglob("retired/*")}
+    assert retired >= {"approval_authority.db", "schedules.db", "standing_approvals.json"}
+    with sqlite3.connect(home / "initiatives.db") as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(initiatives)")}
+        assert {"kind", "cls", "decision", "hermes_ref", "outcome", "verified", "verdict", "ask_code"} <= columns
+        assert db.execute("SELECT status FROM initiatives WHERE id='old-1'").fetchone()[0] == "completed"
+    assert init.pending_initiative_columns(home) == [] and init.retired_state_present(home) == []
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    assert "nothing to do" in capsys.readouterr().out

@@ -13,8 +13,8 @@ from . import paired_arms
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
-                            MESSAGE_TIMESTAMPS_PROTOCOL, PROFILE_SWITCHES, TOOL_LOADING_MODES,
-                            TOOL_LOADING_PROTOCOL)
+                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
+                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -26,7 +26,10 @@ VERSION = 'paired-runner-1'
 PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'protagine': {'plugin': True, 'overlay': {}},
             'base-heartbeat': {'plugin': False, 'overlay': {}, 'heartbeat': True},
-            'base-curator': {'plugin': False, 'overlay': {}, 'curator': True}}
+            'base-curator': {'plugin': False, 'overlay': {}, 'curator': True},
+            # The treatment arm of mind-initiative-1: the plugin with the mind on
+            # (autonomy standard, only the initiative faculty), ticked by the body tick.
+            'protagine-initiative': {'plugin': True, 'overlay': {}, 'initiative': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
@@ -193,6 +196,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         raise ValueError('Arm profiles beyond the built-in pair require an image whose worker applies profiles')
     if any(labels[arm].get('heartbeat') for arm in labels) and payload.get('heartbeat_prompt_sha256') != HEARTBEAT['prompt_sha256']:
         raise ValueError('The heartbeat arm requires an image whose worker carries the same heartbeat prompt')
+    if any(labels[arm].get('initiative') for arm in labels) and payload.get('mind_tick') != MIND_TICK_PROTOCOL:
+        raise ValueError('The initiative arm requires an image whose worker serves the mind and ticks it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)

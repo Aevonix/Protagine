@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from protagine.autonomy.registry import SubsystemRegistry
+    from protagine.tools.subsystems import SubsystemRegistry
 
 logger = logging.getLogger(__name__)
 

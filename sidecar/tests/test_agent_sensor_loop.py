@@ -15,11 +15,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from protagine.initiatives.action_registry import (
-    OBSERVATION_SYNC_ACTIONS,
-    RiskTier,
-    get_action,
-)
 from protagine.initiatives.store import InitiativeStore
 from protagine.intelligence.components.initiative_engine import (
     InitiativeConfig,
@@ -260,16 +255,14 @@ class TestObservationRebuild:
         # Condition has cleared since the initiative was generated
         obs_store.record("coding", "repo#1", {"ci_status": "passing", "review_requested": False})
 
-        prev_store, prev_loop = host_mod._initiative_store, host_mod._autonomy_loop
+        prev_store, prev_engine = host_mod._initiative_store, host_mod._initiative_engine
         host_mod.set_initiative_store(init_store)
-        host_mod.set_autonomy_loop(
-            SimpleNamespace(_registry=SimpleNamespace(initiative_engine=engine))
-        )
+        host_mod.set_initiative_engine(engine)
         try:
             resp = await host_mod.refresh_initiative_context(created.id)
         finally:
             host_mod.set_initiative_store(prev_store)
-            host_mod.set_autonomy_loop(prev_loop)
+            host_mod.set_initiative_engine(prev_engine)
 
         assert resp.status == "cancelled"
         closed = init_store.get(created.id)
@@ -281,90 +274,12 @@ class TestObservationRebuild:
 # Autonomy loop requests syncs for stale domains
 # ---------------------------------------------------------------------------
 
-class TestObservationSyncPhase:
-    def _loop(self, obs_store):
-        from protagine.api.routers import observations as obs_router
-        from protagine.autonomy.config import AutonomyConfig
-        from protagine.autonomy.loop import AutonomyLoop
-
-        obs_router.set_observation_store(obs_store)
-        registry = MagicMock()
-        registry.task_queue = MagicMock()
-        registry.task_queue.submit = AsyncMock(return_value={"id": "job-1"})
-        return AutonomyLoop(registry=registry, config=AutonomyConfig()), registry
-
-    @pytest.mark.asyncio
-    async def test_never_observed_domains_get_sync_jobs(self, obs_store):
-        from protagine.api.routers import observations as obs_router
-
-        loop, registry = self._loop(obs_store)
-        try:
-            await loop._phase_observation_sync()
-            hints = {
-                call.kwargs["params"]["action_hint"]
-                for call in registry.task_queue.submit.call_args_list
-            }
-            assert hints == set(OBSERVATION_SYNC_ACTIONS.values())
-        finally:
-            obs_router.set_observation_store(None)
-
-    @pytest.mark.asyncio
-    async def test_fresh_domain_not_synced_and_no_respam(self, obs_store):
-        from protagine.api.routers import observations as obs_router
-
-        for domain in OBSERVATION_DOMAINS:
-            obs_store.record(domain, "e1", {"status": "healthy"})
-        loop, registry = self._loop(obs_store)
-        try:
-            await loop._phase_observation_sync()
-            assert registry.task_queue.submit.call_count == 0
-
-            # Make one domain stale → exactly one sync request
-            stale = datetime.now(timezone.utc) - timedelta(
-                seconds=OBSERVATION_SYNC_INTERVALS["system"] + 60
-            )
-            obs_store.record("system", "e1", {"status": "healthy"}, observed_at=stale)
-            await loop._phase_observation_sync()
-            assert registry.task_queue.submit.call_count == 1
-
-            # Same tick again: gated by _last_sync_request, no spam
-            await loop._phase_observation_sync()
-            assert registry.task_queue.submit.call_count == 1
-        finally:
-            obs_router.set_observation_store(None)
-
-    @pytest.mark.asyncio
-    async def test_sync_domains_env_filter(self, obs_store, monkeypatch):
-        from protagine.api.routers import observations as obs_router
-
-        monkeypatch.setenv("PROTAGINE_SYNC_DOMAINS", "system")
-        loop, registry = self._loop(obs_store)
-        try:
-            await loop._phase_observation_sync()
-            assert registry.task_queue.submit.call_count == 1
-            hint = registry.task_queue.submit.call_args.kwargs["params"]["action_hint"]
-            assert hint == "agent_sync_system"
-        finally:
-            obs_router.set_observation_store(None)
-
 
 # ---------------------------------------------------------------------------
 # Registry + framing
 # ---------------------------------------------------------------------------
 
 class TestSensorRegistration:
-    def test_all_domains_have_read_only_sync_actions(self):
-        # "skills" (v0.18.0) is push-only: the OpenClaw plugin reports
-        # the agent's Hermes skill index on its own 24h schedule, so it
-        # must NOT have an agent_sync action — the autonomy loop never
-        # requests refreshes for it. Every pull domain still needs one.
-        pull_domains = set(OBSERVATION_DOMAINS) - {"skills"}
-        assert set(OBSERVATION_SYNC_ACTIONS) == pull_domains
-        assert "skills" not in OBSERVATION_SYNC_ACTIONS
-        for action_name in OBSERVATION_SYNC_ACTIONS.values():
-            spec = get_action(action_name)
-            assert spec is not None, action_name
-            assert spec.risk == RiskTier.READ_ONLY, action_name
 
     def test_no_agent_name_hardcoded_in_sidecar(self):
         # Protagine is a public project: every deployment names its own

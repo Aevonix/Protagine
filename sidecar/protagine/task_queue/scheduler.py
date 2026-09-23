@@ -147,13 +147,6 @@ class Scheduler:
                 execution_timeouts,
             )
 
-        approval_repairs = await self._queue.reconcile_blocked_approval_authority()
-        if approval_repairs:
-            logger.info(
-                "Scheduler: reconciled %d owner-approval holds",
-                approval_repairs,
-            )
-
         approval_timeouts = await self._queue.expire_blocked_approvals(
             now, timeout_hours=self._approval_timeout_hours,
         )

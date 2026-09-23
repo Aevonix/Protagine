@@ -204,6 +204,8 @@ class TurnIdempotencyLedger:
                 initialize_judgments(conn)
                 from protagine.self_model.appraisals import initialize as initialize_appraisals
                 initialize_appraisals(conn)
+                from protagine.commitments.extract import initialize as initialize_commitments
+                initialize_commitments(conn)
                 from protagine.turns.source_attribution import initialize as initialize_attribution
                 initialize_attribution(conn)
                 from protagine.turns.source_annotations import initialize as initialize_annotations
@@ -321,6 +323,9 @@ class TurnIdempotencyLedger:
                 from protagine.self_model.appraisals import enqueue as enqueue_appraisals
                 enqueue_appraisals(conn, turn_id, contact_id, messages, scope=scope,
                                    runtime_observation=runtime_judgment)
+            if derive_claims:
+                from protagine.commitments.extract import enqueue as enqueue_commitments
+                enqueue_commitments(conn, turn_id, contact_id, messages, scope=scope)
             from protagine.turns.source_vectors import enqueue as enqueue_vectors
             enqueue_vectors(conn, turn_id)
         return True
@@ -598,6 +603,8 @@ class TurnIdempotencyLedger:
                     erase_judgments(conn, row["turn_id"], row["session_id"], retained)
                     from protagine.self_model.appraisals import erase_removed as erase_appraisals
                     erase_appraisals(conn, row["turn_id"], row["session_id"], retained)
+                    from protagine.commitments.extract import erase_removed as erase_commitment_runs
+                    erase_commitment_runs(conn, row["turn_id"], row["session_id"], retained)
                     affected.append(row["turn_id"])
                     for selected_id in selected:
                         conn.execute("INSERT OR IGNORE INTO source_projection_erasures(turn_id,source_turn_id) VALUES (?,?)", (row["turn_id"], selected_id))

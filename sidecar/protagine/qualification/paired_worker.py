@@ -24,7 +24,12 @@ from . import paired_arms, paired_body
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 # Version 2 adds the binary comparator switches heartbeat and curator to a profile.
 ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-2'
-PROFILE_SWITCHES = ('heartbeat', 'curator')
+PROFILE_SWITCHES = ('heartbeat', 'curator', 'initiative')
+# The initiative switch: the plugin arm with the mind on (autonomy standard, only the
+# initiative faculty), served in-process next to the host routes; the body tick calls
+# the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox, reconciliation and
+# observations) before cron and kanban dispatch.
+MIND_TICK_PROTOCOL = 'paired-mind-tick-1'
 # Plans written before arm profiles carried only the arm label.
 LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
@@ -89,6 +94,7 @@ def inspect_payload():
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
             'arm_profiles': ARM_PROFILE_PROTOCOL,
             'heartbeat_prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
+            'mind_tick': MIND_TICK_PROTOCOL,
             'tool_loading': TOOL_LOADING_PROTOCOL,
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
@@ -485,7 +491,7 @@ def main():
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
                     setup_host=partial(source_worker, temperature=temperature),
-                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay))
+                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=bool(profile.get('initiative'))))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)

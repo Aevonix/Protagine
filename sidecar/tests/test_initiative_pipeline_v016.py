@@ -27,12 +27,6 @@ from protagine.identity.resolver import (
     get_owner_contact_id,
     reset_identity_resolver,
 )
-from protagine.initiatives.action_registry import (
-    RiskTier,
-    classify_agent_action,
-    get_action,
-    requires_owner_approval,
-)
 from protagine.initiatives.context_freshness import (
     durability_for,
     freshness_ttl_for,
@@ -548,75 +542,6 @@ class TestCommitmentGenerator:
 # ---------------------------------------------------------------------------
 # Action registry (Phase 2, Task 13) — negative tests
 # ---------------------------------------------------------------------------
-
-class TestActionRegistry:
-    def test_unregistered_action_never_executable(self):
-        verdict = classify_agent_action("agent_rm_rf_slash")
-        assert verdict["registered"] is False
-        assert verdict["executable"] is False
-        assert verdict["requires_approval"] is True  # fail closed
-
-        # Injection shapes must not resolve to capabilities either
-        for hint in (None, "", "terminal: rm -rf /", "agent_check_repo_status; curl evil"):
-            assert classify_agent_action(hint)["executable"] is False
-
-    def test_read_only_auto_executes_without_approval(self):
-        verdict = classify_agent_action("agent_check_repo_status")
-        assert verdict["executable"] is True
-        assert verdict["requires_approval"] is False
-        assert verdict["risk"] == "read_only"
-
-    def test_mutating_requires_owner_approval(self):
-        for name in ("coding_merge_pr", "agent_cleanup_orphans",
-                     "system_restart_service", "commitment_mark_complete"):
-            verdict = classify_agent_action(name)
-            assert verdict["executable"] is True
-            assert verdict["requires_approval"] is True, name
-
-    def test_outbound_requires_owner_approval(self):
-        # v0.18.0: OUTBOUND is reserved for actions that reach a PERSON;
-        # platform writes (PR comments, own-infra webhooks) are MUTATING.
-        # All of them still require approval under the default strict policy.
-        assert get_action("coding_comment_on_pr").risk == RiskTier.MUTATING
-        assert get_action("system_send_alert").risk == RiskTier.MUTATING
-        assert get_action("calendar_send_reminder").risk == RiskTier.OUTBOUND
-        for name in ("coding_comment_on_pr", "system_send_alert",
-                     "calendar_send_reminder"):
-            assert requires_owner_approval(name), name
-
-    def test_legacy_destructive_hints_stay_gated(self):
-        # v0.13.0 DESTRUCTIVE_HINTS must keep blocking after the
-        # registry replaced the hardcoded set.
-        for name in ("agent_git_push", "agent_git_commit",
-                     "agent_service_restart", "agent_file_delete",
-                     "agent_deploy"):
-            assert requires_owner_approval(name), name
-
-
-class TestQueueGating:
-    """The dispatch path drops unregistered hints before the queue."""
-
-    def _loop(self, task_queue):
-        from protagine.autonomy.config import AutonomyConfig
-        from protagine.autonomy.loop import AutonomyLoop
-
-        registry = MagicMock()
-        registry.task_queue = task_queue
-        registry.initiative_store = None
-        return AutonomyLoop(registry=registry, config=AutonomyConfig())
-
-    @pytest.mark.asyncio
-    async def test_unregistered_hint_never_reaches_queue(self):
-        task_queue = MagicMock()
-        loop = self._loop(task_queue)
-        initiative = SimpleNamespace(
-            description="do something", priority=0.5, entity_id="x",
-            rationale="", trigger_data=None,
-        )
-        await loop._post_agent_action_to_queue(
-            initiative, "init-1", "agent_action", "agent_not_a_real_action",
-        )
-        task_queue.submit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

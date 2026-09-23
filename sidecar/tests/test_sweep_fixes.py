@@ -163,24 +163,3 @@ async def test_handle_list_goals_returns_goals():
 
 # --- autonomy: hourly condition-check phase exists and dedups ----------------
 
-async def test_phase_condition_checks_runs_and_dedups(monkeypatch):
-    from protagine.autonomy.loop import AutonomyLoop
-    calls = {"n": 0}
-
-    async def fake_check(params):
-        calls["n"] += 1
-        return {"condition_met": False}
-
-    import protagine.autonomy.condition_worker as cw
-    monkeypatch.setattr(cw, "_check_commitment_overdue", fake_check)
-    monkeypatch.setattr(cw, "_check_affect_decline", fake_check)
-    monkeypatch.setattr(cw, "_check_surprise_accumulation", fake_check)
-
-    registry = type("R", (), {"goals": None})()   # no goal engine wired
-    fake_self = type("S", (), {"_periodic_last": {}, "_registry": registry})()
-    fake_self._poll_blocked_goal_conditions = (
-        lambda: AutonomyLoop._poll_blocked_goal_conditions(fake_self))
-    await AutonomyLoop._phase_condition_checks(fake_self)
-    assert calls["n"] == 3
-    await AutonomyLoop._phase_condition_checks(fake_self)   # same hour → dedup
-    assert calls["n"] == 3

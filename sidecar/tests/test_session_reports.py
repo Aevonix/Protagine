@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from protagine.sessions.reports import SessionReport, SessionReportStore
@@ -115,7 +116,6 @@ class TestSessionReportEndpoint:
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         from protagine.api.routers.host import (
             set_telemetry,
-            set_autonomy_loop,
             set_session_report_store,
             set_initiative_store,
         )
@@ -124,6 +124,7 @@ class TestSessionReportEndpoint:
         from protagine.initiatives.store import InitiativeStore
 
         from protagine.api.routers import host as host_mod
+        from protagine.api.routers import mind as mind_mod
 
         monkeypatch.setenv("PROTAGINE_API_KEY", "test-api-key")
 
@@ -132,7 +133,7 @@ class TestSessionReportEndpoint:
         prev = (
             host_mod._telemetry,
             host_mod._initiative_store,
-            host_mod._autonomy_loop,
+            mind_mod.get_mind(),
             host_mod._session_report_store,
         )
 
@@ -142,10 +143,9 @@ class TestSessionReportEndpoint:
         initiative_store = InitiativeStore(state_dir=tmp_path)
         set_initiative_store(initiative_store)
 
-        autonomy_loop = Mock()
-        autonomy_loop.config.mode.value = "proactive"
-        autonomy_loop.is_running = True
-        set_autonomy_loop(autonomy_loop)
+        # The status routes read the mind: its level is the reported mode and
+        # its switch the running flag.
+        mind_mod.set_mind(SimpleNamespace(level="proactive", enabled=True, ticks=0))
 
         session_report_store = SessionReportStore()
         set_session_report_store(session_report_store)
@@ -155,7 +155,7 @@ class TestSessionReportEndpoint:
 
         set_telemetry(prev[0])
         set_initiative_store(prev[1])
-        set_autonomy_loop(prev[2])
+        mind_mod.set_mind(prev[2])
         set_session_report_store(prev[3])
 
     def test_store_report(self, client: TestClient):
@@ -218,7 +218,6 @@ class TestContextDigestEndpoint:
     def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         from protagine.api.routers.host import (
             set_telemetry,
-            set_autonomy_loop,
             set_session_report_store,
             set_initiative_store,
         )
@@ -227,6 +226,7 @@ class TestContextDigestEndpoint:
         from protagine.initiatives.store import InitiativeStore
 
         from protagine.api.routers import host as host_mod
+        from protagine.api.routers import mind as mind_mod
 
         monkeypatch.setenv("PROTAGINE_API_KEY", "test-api-key")
 
@@ -235,7 +235,7 @@ class TestContextDigestEndpoint:
         prev = (
             host_mod._telemetry,
             host_mod._initiative_store,
-            host_mod._autonomy_loop,
+            mind_mod.get_mind(),
             host_mod._session_report_store,
         )
 
@@ -245,10 +245,9 @@ class TestContextDigestEndpoint:
         initiative_store = InitiativeStore(state_dir=tmp_path)
         set_initiative_store(initiative_store)
 
-        autonomy_loop = Mock()
-        autonomy_loop.config.mode.value = "proactive"
-        autonomy_loop.is_running = True
-        set_autonomy_loop(autonomy_loop)
+        # The status routes read the mind: its level is the reported mode and
+        # its switch the running flag.
+        mind_mod.set_mind(SimpleNamespace(level="proactive", enabled=True, ticks=0))
 
         session_report_store = SessionReportStore()
         set_session_report_store(session_report_store)
@@ -258,7 +257,7 @@ class TestContextDigestEndpoint:
 
         set_telemetry(prev[0])
         set_initiative_store(prev[1])
-        set_autonomy_loop(prev[2])
+        mind_mod.set_mind(prev[2])
         set_session_report_store(prev[3])
 
     def test_digest_structure(self, client: TestClient):

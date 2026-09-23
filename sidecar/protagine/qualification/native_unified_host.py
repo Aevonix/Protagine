@@ -6,12 +6,11 @@ import threading
 
 @contextmanager
 def host_state(app, state, inputs, config):
-    from protagine.api.routers import commitment_work, executions, host, initiative_work
+    from protagine.api.routers import commitment_work, executions, host
     from protagine.commitments.store import CommitmentStore
     from protagine.initiatives.store import InitiativeStore
     app.include_router(executions.router)
     app.include_router(commitment_work.router)
-    app.include_router(initiative_work.router)
     previous = host._commitment_store
     previous_initiatives = host._initiative_store
     store = CommitmentStore(state/'memory-state'/'commitments.db')

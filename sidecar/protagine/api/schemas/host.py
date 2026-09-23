@@ -902,15 +902,6 @@ class ResearchListResponse(BaseModel):
 
 # --- Delivery ---------------------------------------------------------------
 
-class DeliveryListResponse(BaseModel):
-    pending: List[Dict[str, Any]] = []
-
-
-class DeliveryMarkRequest(BaseModel):
-    identity: HostIdentity
-    delivery_id: str
-
-
 # --- Synthesis --------------------------------------------------------------
 
 class SynthesisDiscoverRequest(BaseModel):
@@ -1089,26 +1080,6 @@ class SecretDeleteResponse(BaseModel):
 
 
 # --- Autonomy ---------------------------------------------------------------
-
-class AutonomyStatusResponse(BaseModel):
-    running: bool = False
-    mode: str = "reactive"
-    timezone: str = "UTC"
-    in_quiet_hours: bool = False
-    ticks: int = 0
-    events_processed: int = 0
-    goals_checked: int = 0
-    initiatives_generated: int = 0
-    actions_executed: int = 0
-    errors: int = 0
-    phases_cancelled: int = 0
-    last_cancelled_phase: Optional[str] = None
-    # Per-phase wall-clock seconds (last run / worst run) and the phase
-    # running right now, so a tick that overruns its budget is attributable.
-    phases: Optional[Dict[str, Any]] = None
-    config: Optional[Dict[str, Any]] = None
-
-
 
 # --- Configure (Host LLM Config) -------------------------------------------
 

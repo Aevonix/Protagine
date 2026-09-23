@@ -14,12 +14,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from protagine.api.auth import request_authority
 from protagine.api.routers.executions import authorized_viewer
-from protagine.api.routers.initiative_work import ReviewBinding
 from protagine.commitments.work import CommitmentWork
 from protagine.initiatives.temporal_followup import TemporalFollowups, encoded
 from protagine.turns.hermes_kanban import task_snapshot, observed_boards
 
 router = APIRouter(prefix='/v1/host/temporal-followups', tags=['commitments'])
+
+
+class ReviewBinding(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    contact_id: str = Field(min_length=1, max_length=256)
+    native_board: str = Field(pattern='^default$')
+    native_task_id: str = Field(min_length=1, max_length=128)
+    contract_sha256: str = Field(pattern='^[a-f0-9]{64}$')
 
 
 class ExpectedReply(BaseModel):

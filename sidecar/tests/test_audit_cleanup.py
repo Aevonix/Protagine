@@ -15,36 +15,11 @@ import hashlib
 
 import pytest
 
-from protagine.autonomy import condition_worker
 from protagine.contacts.importer import _pii_hash
 from protagine.skills.security.scanner import ASTScanner
 
 
 # ── A1: missing IMAPProvider is handled gracefully ────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_email_reply_without_imap_provider_returns_unavailable(monkeypatch):
-    """If protagine.email.providers is missing, the condition checker
-    must return a well-formed 'not met' result instead of raising."""
-
-    import builtins
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "protagine.email.providers":
-            raise ImportError("email module not installed")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    result = await condition_worker._check_email_reply({})
-
-    assert result["condition_met"] is False
-    assert result["message_id"] is None
-    assert result["from"] is None
-    assert result["details"] == {"unavailable": "imap_provider_not_installed"}
 
 
 # ── B2: /configure refused without PROTAGINE_API_KEY ─────────────────────────────

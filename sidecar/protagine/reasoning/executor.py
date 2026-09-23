@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 if TYPE_CHECKING:
-    from protagine.autonomy.registry import SubsystemRegistry
+    from protagine.tools.subsystems import SubsystemRegistry
 
 from protagine.tools.definitions import STATIC_TOOL_NAMES, get_tool_definitions
 from protagine.tools.handlers import TOOL_HANDLERS, tool_actor

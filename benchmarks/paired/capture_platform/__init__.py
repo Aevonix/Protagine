@@ -85,6 +85,9 @@ def adapter_factory(config):
             record(f'{NAME}:{chat_id}', content)
             return SendResult(success=True, message_id=str(len(read_outbox())))
 
+        async def get_chat_info(self, chat_id):
+            return {'name': str(chat_id), 'type': 'dm'}
+
     return CaptureAdapter(config)
 
 

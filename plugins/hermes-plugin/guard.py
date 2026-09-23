@@ -17,7 +17,7 @@ import time
 from typing import Any, Mapping
 
 from .capture import SessionMap
-from .client import ProtagineClient, Settings, SidecarUnavailable
+from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -181,11 +181,12 @@ class Guard:
             if matched:
                 return ask(matched.replace("_", " "), f"protagine.floor.{matched}")
         cron_action = str(args.get("action") or "").strip().lower()  # what stock cronjob() runs
+        recipients: list[str] = []  # the contacts a delivering cron job reaches later
         if tool in MESSAGING_TOOLS or (tool == "cronjob_manage" and cron_action in {"create", "update"}):
-            verdict = self._outbound(tool, args, session_id, cron_action)
+            verdict = self._outbound(tool, args, session_id, cron_action, recipients)
             if verdict is not None:
                 return verdict
-        return self._sidecar_verdict(tool, args, session_id, "mind" if mind else "guest")
+        return self._sidecar_verdict(tool, args, session_id, "mind" if mind else "guest", recipients)
 
     # -- rules ----------------------------------------------------------------
 
@@ -211,7 +212,7 @@ class Guard:
         enabled = True
         try:
             if self.client.has_mind_routes():
-                response = self.client.get("/v1/mind/status", timeout=GUARD_TIMEOUT)
+                response = self.client.get(MIND_STATE_ROUTE, timeout=GUARD_TIMEOUT)
                 if response.is_success and response.json().get("enabled") is False:
                     enabled = False
         except (SidecarUnavailable, ValueError):
@@ -220,8 +221,13 @@ class Guard:
         return enabled
 
     def _outbound(self, tool: str, args: Mapping[str, Any], session_id: str,
-                  cron_action: str = "") -> dict[str, str] | None:
-        """Messaging tools and delivering cron jobs need a permitted recipient."""
+                  cron_action: str = "", recipients: list[str] | None = None) -> dict[str, str] | None:
+        """Messaging tools and delivering cron jobs need a permitted recipient.
+
+        A cron job's recipients are resolved here (only the plugin can read a
+        stored job) and appended to ``recipients`` for the sidecar verdict,
+        which applies ``may_contact`` and the message budgets to each of them.
+        """
         if tool in MESSAGING_TOOLS:
             if self.client.has_mind_routes():
                 return None  # the sidecar verdict decides with may_contact and budgets
@@ -251,6 +257,8 @@ class Guard:
                 return block("cron delivery to an unknown recipient")
             if contact.get("interaction_allowed") is False:
                 return block("cron delivery to a contact who may not be contacted")
+            if recipients is not None and contact.get("contact_id") and contact["contact_id"] not in recipients:
+                recipients.append(str(contact["contact_id"]))
         return None
 
     @staticmethod
@@ -274,25 +282,35 @@ class Guard:
         return self.client.resolve_contact(info.platform, info.sender_id, timeout=GUARD_TIMEOUT)
 
     def _sidecar_verdict(self, tool: str, args: Mapping[str, Any], session_id: str,
-                         run: str) -> dict[str, str] | None:
-        """``POST /v1/mind/guard`` with a 2 s timeout; silence blocks, 404 allows.
+                         run: str, recipients: list[str] | None = None) -> dict[str, str] | None:
+        """``POST /v1/mind/guard {tool, args, session, recipients}`` → ``{allow, reason}``; 2 s timeout.
 
-        Every effect asks the sidecar itself: a cached "no mind routes" answer
-        says nothing about whether the sidecar is still there.
+        Silence blocks and a 404 allows (the rules above already ran). Every
+        effect asks the sidecar itself: a cached "no mind routes" answer says
+        nothing about whether the sidecar is still there. ``ask: true`` (or the
+        older ``action: ask``) turns the verdict into Hermes' approval gate.
         """
+        info = self.sessions.get(session_id) if run == "guest" else None  # a worker session has no sender
         response = self.client.post(GUARD_ROUTE, timeout=GUARD_TIMEOUT, json={
-            "tool": tool, "args": dict(args), "session_id": session_id, "run": run,
-            "task_id": os.environ.get("HERMES_KANBAN_TASK") or ""})
+            "tool": tool, "args": dict(args), "session": session_id, "run": run,
+            "task_id": os.environ.get("HERMES_KANBAN_TASK") or "", "recipients": list(recipients or []),
+            "owner": self.sessions.is_owner(session_id) if info is not None else None,
+            "contact_id": self.sessions.contact_id(session_id) if info is not None else None,
+            "platform": info.platform if info is not None else "", "sender_id": info.sender_id if info is not None else ""})
         if response.status_code == 404:
             return None
         if not response.is_success:
             return block(f"the sidecar refused the guard check (HTTP {response.status_code})")
         verdict = response.json()
-        action, message = verdict.get("action"), str(verdict.get("message") or "")
-        if action == "block":
-            return block(message or f"{tool} was refused by the mind")
-        if action == "ask":
-            return ask(message or f"{tool} needs the owner's approval", f"protagine.ask.{tool}")
+        if not isinstance(verdict, Mapping):
+            return block("the sidecar answered the guard check with no verdict")
+        reason = str(verdict.get("reason") or verdict.get("message") or "")
+        if verdict.get("ask") is True or verdict.get("action") == "ask":
+            return ask(reason or f"{tool} needs the owner's approval", f"protagine.ask.{tool}")
+        if "allow" in verdict:
+            return None if verdict["allow"] is True else block(reason or f"{tool} was refused by the mind")
+        if verdict.get("action") == "block":
+            return block(reason or f"{tool} was refused by the mind")
         return None
 
 

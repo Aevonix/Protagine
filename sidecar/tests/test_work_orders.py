@@ -6,11 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.initiatives.approval_authority import (
-    ApprovalAuthorityStore,
-    build_action_binding,
-    build_approval_presentation,
-)
 from protagine.projects import Project, ProjectEngine, ProjectStore, Step
 from protagine.self_model import (
     ActionJournal,
@@ -204,6 +199,8 @@ def project_step(kind="research"):
 def runtime_fence_work_order(
     store, *, suffix="turn", source="cognition_spine", concern_id="turn-concern",
 ):
+    """A WorkOrder the owner already decided: its tags carry the server's signature."""
+    from protagine.task_queue.queue_manager import decision_tags
     project = Project(
         id=f"proj-runtime-{suffix}",
         title=f"Runtime fence {suffix}",
@@ -224,16 +221,15 @@ def runtime_fence_work_order(
     store.save_step(step)
     order = WorkOrderV1.for_project_step(project, step)
     store.prepare_work_order(project, step, order)
+    tags = decision_tags(order.work_order_id, decision="approve", decision_id="decision-preserved",
+                         actor="owner:test", at=datetime.now(timezone.utc).isoformat())
+    tags["evidence_ref"] = "evidence:preserved"
     return Job(
         job_id=order.work_order_id,
         job_type=JobType.AGENT_ACTION,
         payload=order.payload(),
         deadline=datetime.fromisoformat(order.deadline),
-        tags={
-            "approved_by": "owner:test",
-            "approval_request_id": "approval-preserved",
-            "evidence_ref": "evidence:preserved",
-        },
+        tags=tags,
     )
 
 
@@ -393,135 +389,6 @@ def test_directed_work_order_names_exact_effect_capabilities():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["directed", "deliver"])
-async def test_effect_work_order_is_approval_blocked_and_capability_bound(kind):
-    manager = FakeManager()
-    adapter = QueueWorkOrderAdapter(manager)
-    project, step = project_step(kind)
-    waiting = await adapter.execute(project, step)
-    job = next(iter(manager.queue.jobs.values()))
-
-    assert waiting[0] is None
-    assert waiting[1].endswith(":blocked")
-    assert job.status is JobStatus.BLOCKED
-    assert job.tags["blocked_reason"] == "awaiting_owner_approval"
-    assert job.timeout_secs == float(job.payload["max_runtime_seconds"])
-    assert set(job.required_capabilities()) == {
-        "action_plane:v1",
-        "work_order:v1",
-        *job.payload["capability_allowlist"],
-    }
-    assert not WorkerCapabilities(
-        node_id="under-capable",
-        capabilities={"reasoning"},
-        job_types={JobType.AGENT_ACTION},
-    ).can_accept(job)
-    assert "work_order:v1" not in AGENT_ACTION_CAPABILITIES
-    assert not WorkerCapabilities(
-        node_id="generic-hermes-bridge",
-        capabilities=set(AGENT_ACTION_CAPABILITIES),
-        job_types={JobType.AGENT_ACTION},
-    ).can_accept(job)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["directed", "deliver"])
-async def test_effect_work_order_materializes_one_canonical_request_at_birth(
-    tmp_path,
-    kind,
-):
-    manager = FakeManager()
-    approvals = ApprovalAuthorityStore(tmp_path / "approval-authority.db")
-    adapter = QueueWorkOrderAdapter(manager, approval_authority=approvals)
-    project, step = project_step(kind)
-
-    waiting = await adapter.execute(project, step)
-    replay = await adapter.execute(project, step)
-    job = next(iter(manager.queue.jobs.values()))
-    requests = approvals.list_requests()
-
-    assert waiting[0] is None and waiting[1].endswith(":blocked")
-    assert replay == waiting
-    assert len(requests) == 1
-    request = requests[0]
-    assert request["job_id"] == job.job_id
-    assert request["status"] == "pending"
-    assert request["request_id"] == job.tags["approval_request_id"]
-    assert request["action_digest"] == job.tags["action_digest"]
-    assert request["scope_digest"] == job.tags["approval_scope_digest"]
-    assert request["presentation_digest"] == job.tags["approval_presentation_digest"]
-    assert job.tags["approval_expires_at"] == request["expires_at"]
-    assert request["presentation"]["schema"] == "ProtagineApprovalPresentationV1"
-    assert request["presentation"]["summary"]
-    assert request["presentation"]["risk"] == job.payload["risk_class"]
-    assert request["presentation"]["effect"] == job.payload["risk_class"]
-    assert "context_refs" not in request["presentation"]
-
-
-@pytest.mark.asyncio
-async def test_effect_work_order_consumes_exact_bounded_grant_before_queueing(
-    tmp_path,
-):
-    approvals = ApprovalAuthorityStore(tmp_path / "approval-authority.db")
-    first_project, first_step = project_step("directed")
-    first_order = WorkOrderV1.for_project_step(first_project, first_step)
-    first_payload = first_order.payload()
-    first_binding = build_action_binding(
-        job_id=first_order.work_order_id,
-        job_type=JobType.AGENT_ACTION.value,
-        payload=first_payload,
-    )
-    first_presentation = build_approval_presentation(
-        job_id=first_order.work_order_id,
-        job_type=JobType.AGENT_ACTION.value,
-        payload=first_payload,
-        deadline=first_order.deadline,
-    )
-    request = approvals.ensure_request(
-        job_id=first_order.work_order_id,
-        binding=first_binding,
-        presentation=first_presentation,
-    )
-    decided = approvals.decide(
-        request["request_id"],
-        decision="approve",
-        decision_id="owner-decision-work-order-1",
-        expected_action_digest=first_binding.action_digest,
-        decided_by="host-approval-bridge",
-        authority_evidence="scoped_principal:host-approval-bridge:test",
-        grant_scope=first_binding.scope,
-        grant_ttl_seconds=3600,
-        grant_max_uses=2,
-    )
-
-    manager = FakeManager()
-    adapter = QueueWorkOrderAdapter(manager, approval_authority=approvals)
-    second_project, second_step = project_step("directed")
-    second_step.id = "step-work-order-2"
-    second_step.ordinal = 2
-    second_step.description = "Apply the same approved bounded tool scope"
-    waiting = await adapter.execute(second_project, second_step)
-    job = next(iter(manager.queue.jobs.values()))
-    binding = build_action_binding(
-        job_id=job.job_id,
-        job_type=job.job_type.value,
-        payload=job.payload,
-    )
-    use = approvals.get_grant_use(binding.action_digest)
-
-    assert decided["grant"] is not None
-    assert waiting[0] is None and waiting[1].endswith(":queued")
-    assert job.status is JobStatus.QUEUED
-    assert use is not None
-    assert use["operation_id"] == job.job_id
-    assert use["grant_id"] == decided["grant"]["grant_id"]
-    assert job.tags["approval_provenance"] == "server_bounded_grant"
-    assert job.tags["bounded_grant_id"] == use["grant_id"]
-    assert job.tags["approval_source_request_id"] == use["source_request_id"]
-    assert job.tags["approval_decision_id"] == use["decision_id"]
-
-
-@pytest.mark.asyncio
 async def test_queue_adapter_posts_once_and_polls_verified_completion():
     manager = FakeManager()
     adapter = QueueWorkOrderAdapter(
@@ -668,82 +535,6 @@ async def test_queue_work_order_is_neutral_until_independent_attestation(
     finally:
         await manager.stop()
         TaskQueueManager._instance = None
-
-
-@pytest.mark.asyncio
-async def test_posted_turn_work_order_holds_before_claim_and_releases_same_row(
-    tmp_path, monkeypatch,
-):
-    from protagine.server import _work_order_runtime_hold_reason
-
-    monkeypatch.setenv("PROTAGINE_WORKERS_MODE", "off")
-    monkeypatch.setenv("PROTAGINE_TURN_CONCERNS", "shadow")
-    monkeypatch.delenv("PROTAGINE_ACTION_PLANE_WORKER_NODE_ID", raising=False)
-    projects = ProjectStore(str(tmp_path / "runtime-projects.db"))
-    concerns = SimpleNamespace(
-        get=lambda concern_id: (
-            SimpleNamespace(producer_name="turn_concerns")
-            if concern_id == "turn-concern" else None
-        ),
-    )
-    job = runtime_fence_work_order(projects)
-    queue = QueueManager(tmp_path / "runtime-queue.db")
-    await queue.start()
-    restarted = None
-    try:
-        queue.configure_runtime_claim_hold(
-            lambda candidate: _work_order_runtime_hold_reason(
-                candidate, projects, concerns,
-            ),
-        )
-        await queue.post(job)
-        stored = await queue.get_job(job.job_id)
-        caps = runtime_fence_worker(stored)
-
-        assert await queue.claim_job("runtime-worker", caps) is None
-        held = await queue.get_job(job.job_id)
-        assert held.status is JobStatus.BLOCKED
-        assert held.tags["hold_kind"] == "source_runtime"
-        assert held.tags["blocked_reason"] == "source_runtime_hold"
-        assert held.tags["source_runtime_hold_reason"] == (
-            "turn_concerns_current_mode_not_live"
-        )
-        assert held.tags["approved_by"] == "owner:test"
-        assert held.tags["approval_request_id"] == "approval-preserved"
-        assert held.tags["evidence_ref"] == "evidence:preserved"
-        assert all(
-            value is None
-            for value in (
-                held.claimed_by, held.claimed_at, held.claim_attempt_id,
-                held.claim_expires_at, held.last_heartbeat,
-            )
-        )
-
-        # A restart before server wiring cannot accidentally release the
-        # source hold. Configuring the read-only callback later is sufficient.
-        await queue.stop()
-        restarted = QueueManager(tmp_path / "runtime-queue.db")
-        await restarted.start()
-        assert await restarted.claim_job("runtime-worker", caps) is None
-
-        monkeypatch.setenv("PROTAGINE_TURN_CONCERNS", "live")
-        restarted.configure_runtime_claim_hold(
-            lambda candidate: _work_order_runtime_hold_reason(
-                candidate, projects, concerns,
-            ),
-        )
-        claimed = await restarted.claim_job("runtime-worker", caps)
-        assert claimed is not None
-        assert claimed.job_id == job.job_id
-        assert claimed.tags["approved_by"] == "owner:test"
-        assert claimed.tags["evidence_ref"] == "evidence:preserved"
-        assert "source_runtime_hold_reason" not in claimed.tags
-        assert "hold_kind" not in claimed.tags
-    finally:
-        if restarted is not None:
-            await restarted.stop()
-        elif queue._db is not None:
-            await queue.stop()
 
 
 @pytest.mark.asyncio

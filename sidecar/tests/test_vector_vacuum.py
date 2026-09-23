@@ -152,20 +152,6 @@ async def test_no_vector_store_reports_unavailable():
 
 # --- post-prune sweep gate --------------------------------------------------------
 
-def _loop_with_graph(graph):
-    from protagine.autonomy.loop import AutonomyLoop, LoopStats
-
-    class _Reg:
-        pass
-
-    reg = _Reg()
-    reg.graph = graph
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = reg
-    loop._periodic_last = {}
-    loop.stats = LoopStats()
-    return loop
-
 
 class _SweepRecordingGraph:
     def __init__(self):
@@ -185,36 +171,3 @@ class _SweepRecordingGraph:
                 "dry_run": dry_run, "ids": []}
 
 
-@pytest.mark.asyncio
-async def test_sweep_not_run_in_default_shadow_mode(monkeypatch):
-    """Regression lock: default prune mode never triggers the sweep."""
-    monkeypatch.delenv("PROTAGINE_MEMORY_PRUNE_MODE", raising=False)
-    graph = _SweepRecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.prune_calls == [{"dry_run": True}]
-    assert graph.vacuum_calls == []
-
-
-@pytest.mark.asyncio
-async def test_sweep_runs_bounded_in_live_mode(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "live")
-    graph = _SweepRecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.prune_calls == [{"dry_run": False}]
-    assert graph.vacuum_calls == [{"dry_run": False, "max_delete": 2000}]
-
-
-@pytest.mark.asyncio
-async def test_sweep_failure_does_not_fail_prune_phase(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "live")
-    graph = _SweepRecordingGraph()
-
-    async def _boom(**kwargs):
-        raise RuntimeError("lance down")
-
-    graph.vacuum_orphan_vectors = _boom
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()  # must not raise
-    assert graph.prune_calls == [{"dry_run": False}]

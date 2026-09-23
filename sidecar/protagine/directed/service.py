@@ -188,18 +188,8 @@ class DirectedActionService:
             task.status = "approved"
             self._journal(task, "acted", "read-only scope auto-approved")
         else:
-            standing = False
-            try:
-                from protagine.initiatives import standing_approvals
-                standing = standing_approvals.is_approved(task.approval_key)
-            except Exception:
-                pass
-            if standing:
-                task.approval = {"required": True, "granted_by": "standing",
-                                 "standing": True, "key": task.approval_key}
-                task.status = "approved"
-                self._journal(task, "acted", "bounded repeat approval")
-            else:
+            standing = False  # standing grants are gone; every mutating task asks the owner once
+            if not standing:
                 gate = None
                 trust = getattr(self._self_model, "trust", None)
                 if trust is not None:
@@ -270,17 +260,6 @@ class DirectedActionService:
             return task
         task.approval.update({"granted_by": approved_by, "standing": standing})
         task.status = "approved"
-        if standing:
-            try:
-                from protagine.initiatives import standing_approvals
-                standing_approvals.grant(
-                    task.approval_key,
-                    approved_by=approved_by,
-                    expires_in_seconds=grant_expires_in_seconds,
-                    max_uses=grant_max_uses,
-                )
-            except Exception:
-                pass
         self.store.save(task)
         return task
 

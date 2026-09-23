@@ -5,7 +5,7 @@ the same function Hermes' tool dispatch calls, so the directive shape and the
 hook timeout machinery are the stock ones.
 """
 
-from conftest import probe, worker_env
+from conftest import OWNER, probe, worker_env
 
 GUARD_CODE = '''
 from hermes_cli.plugins import get_pre_tool_call_directive
@@ -59,6 +59,9 @@ emit(never=check("cronjob_manage", {"action": "create", "schedule": "in 1h", "pr
     assert result["local"]["action"] is None
     assert result["listing"]["action"] is None
     assert result["messaging"]["action"] == "block"
+    # The sidecar verdict sees who a delivering job reaches, resolved here: it applies may_contact and budgets.
+    cron_calls = [c["json"] for c in sidecar.calls("/v1/mind/guard", "POST") if c["json"]["tool"] == "cronjob_manage"]
+    assert [c["recipients"] for c in cron_calls] == [["p-03"], [OWNER], [], []]
 
 
 def test_guard_fails_closed_when_the_sidecar_is_down_but_reads_still_run(home, sidecar):
@@ -105,23 +108,37 @@ emit(blocked=[r for r in results if r["action"] is not None])
 
 
 def test_sidecar_verdict_is_honoured_when_mind_routes_exist(home, sidecar):
+    """``POST /v1/mind/guard {tool, args, session}`` answers ``{allow, reason}``; 404 allows, silence blocks."""
     sidecar.mind_routes = True
     result = probe(GUARD_CODE + '''
-emit(allow=check("write_file", {"path": str(%r) + "/a.txt", "content": "x"}))
+emit(allow=check("write_file", {"path": str(%r) + "/a.txt", "content": "x"}, "worker-session"))
 ''' % str(home.workspace), home, env=worker_env(home))
     assert result["allow"]["action"] is None
-    guard_calls = sidecar.calls("/v1/mind/guard", "POST")
-    assert guard_calls and guard_calls[0]["json"]["run"] == "mind" and guard_calls[0]["json"]["tool"] == "write_file"
-    sidecar.guard_verdict = {"action": "block", "message": "not now"}
+    call, = sidecar.calls("/v1/mind/guard", "POST")
+    assert call["json"]["run"] == "mind" and call["json"]["tool"] == "write_file"
+    assert call["json"]["session"] == "worker-session" and call["json"]["task_id"] == "task-01"
+    assert call["json"]["args"]["content"] == "x"
+    sidecar.guard_verdict = {"allow": False, "reason": "not now"}
     result = probe(GUARD_CODE + '''
-emit(block=check("write_file", {"path": str(%r) + "/a.txt", "content": "x"}))
+emit(block=check("write_file", {"path": str(%r) + "/a.txt", "content": "x"}),
+     read=check("read_file", {"path": "x"}))
 ''' % str(home.workspace), home, env=worker_env(home))
     assert result["block"]["action"] == "block" and "not now" in result["block"]["message"]
-    sidecar.guard_verdict = {"action": "ask", "message": "owner?"}
+    assert result["read"]["action"] is None
+    sidecar.guard_verdict = {"allow": False, "reason": "owner?", "ask": True}
     result = probe(GUARD_CODE + '''
 emit(ask=check("write_file", {"path": str(%r) + "/a.txt", "content": "x"}))
 ''' % str(home.workspace), home, env=worker_env(home))
-    assert result["ask"]["action"] == "approve"
+    assert result["ask"]["action"] == "approve" and "owner?" in result["ask"]["message"]
+    sidecar.guard_verdict = {"allow": True, "reason": ""}
+    g = probe(GUARD_CODE + '''
+g = guest()
+emit(send=check("send_message", {"target": "telegram:2003", "message": "hi"}, g))
+''', home)
+    assert g["send"]["action"] is None
+    guest_call = sidecar.calls("/v1/mind/guard", "POST")[-1]["json"]
+    assert guest_call["run"] == "guest" and guest_call["owner"] is False and guest_call["contact_id"] == "p-02"
+    assert guest_call["platform"] == "telegram" and guest_call["sender_id"] == "2002"
 
 
 def test_cron_delivery_checks_cover_the_action_spelling_and_every_recipient(home, sidecar):

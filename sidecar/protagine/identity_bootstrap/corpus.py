@@ -183,7 +183,7 @@ LAYERS: List[LayerRecord] = [
     LayerRecord(
         name="Goals",
         description="Persistent goal records, reported outcomes, and attention state. Native tasks own execution.",
-        subsystems=["protagine.goals", "protagine.autonomy"],
+        subsystems=["protagine.goals", "protagine.mind"],
         layer_index=4,
     ),
     LayerRecord(
@@ -229,11 +229,10 @@ API_ENDPOINTS: List[EndpointRecord] = [
     EndpointRecord("/v1/admin/keys", "GET", "List all API keys", "admin", tags=["admin"]),
     EndpointRecord("/v1/admin/keys", "POST", "Create a new API key", "admin", tags=["admin"]),
     EndpointRecord("/v1/admin/keys/{key_id}", "DELETE", "Revoke an API key", "admin", tags=["admin"]),
-    # ── Autonomy (/v1/autonomy) ──────────────────────────────────────────────
-    EndpointRecord("/v1/autonomy/status", "GET", "Return current autonomy loop status", "autonomy", tags=["autonomy"]),
-    EndpointRecord("/v1/autonomy/config", "PATCH", "Patch autonomy configuration", "autonomy", tags=["autonomy"]),
-    EndpointRecord("/v1/autonomy/pause", "POST", "Pause the autonomy loop", "autonomy", tags=["autonomy"]),
-    EndpointRecord("/v1/autonomy/resume", "POST", "Resume a paused autonomy loop", "autonomy", tags=["autonomy"]),
+    # ── Mind (/v1/mind) ──────────────────────────────────────────────────────
+    EndpointRecord("/v1/mind/state", "GET", "The mind: enabled, level, queues, breaker", "mind", tags=["mind"]),
+    EndpointRecord("/v1/mind/log", "GET", "The audit log of intentions", "mind", tags=["mind"]),
+    EndpointRecord("/v1/mind/off", "POST", "The off switch: no further effects", "mind", tags=["mind"]),
     # ── Briefings (/v1/briefings) ────────────────────────────────────────────
     EndpointRecord("/v1/briefings/", "GET", "List briefings, most recent first", "briefings", tags=["briefings"]),
     EndpointRecord("/v1/briefings/history", "GET", "List briefing metadata for history display", "briefings", tags=["briefings"]),

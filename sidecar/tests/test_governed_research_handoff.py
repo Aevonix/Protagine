@@ -690,35 +690,6 @@ async def test_autonomy_results_are_prompt_and_match_observed_state():
 
 
 @pytest.mark.asyncio
-async def test_governed_stop_wrapper_uses_prompt_loop_signal_not_host_join():
-    import protagine.server as server
-
-    class Loop:
-        def __init__(self):
-            self.requested = False
-
-        async def stop(self):
-            self.requested = True
-
-    loop = Loop()
-    host_route_called = False
-
-    async def five_second_host_route():
-        nonlocal host_route_called
-        host_route_called = True
-        await asyncio.sleep(5)
-
-    started = time.monotonic()
-    await asyncio.wait_for(
-        server._governed_autonomy_stop_signal(loop), timeout=0.5
-    )
-    assert time.monotonic() - started < 0.5
-    assert loop.requested is True
-    assert host_route_called is False
-    assert five_second_host_route is not None
-
-
-@pytest.mark.asyncio
 async def test_insert_then_executor_crash_is_ambiguous_and_never_duplicates(
     tmp_path, monkeypatch
 ):

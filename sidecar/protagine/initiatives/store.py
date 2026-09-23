@@ -25,6 +25,28 @@ logger = logging.getLogger(__name__)
 # Maximum pending initiatives before rejecting new ones
 MAX_PENDING_INITIATIVES = 1000
 
+# Intention and audit columns (architecture 5.2). The table is the intention
+# store and the only audit log; ``protagine upgrade`` and every store open add
+# the missing ones in place.
+MIND_COLUMNS: Dict[str, str] = {
+    "cls": "TEXT", "decision": "TEXT", "decision_reason": "TEXT", "drive": "TEXT",
+    "kind": "TEXT", "ask_code": "TEXT", "invalidates_if": "TEXT", "success_check": "TEXT",
+    "expectation_id": "TEXT", "parent_goal_id": "TEXT", "hermes_kind": "TEXT",
+    "hermes_ref": "TEXT", "outcome": "TEXT", "verified": "TEXT", "verdict": "TEXT",
+    "lesson_ids": "TEXT", "cost_tokens": "INTEGER DEFAULT 0", "due_at": "TIMESTAMP",
+}
+
+
+def missing_mind_columns(conn: sqlite3.Connection) -> List[str]:
+    """The intention columns an existing ``initiatives`` table still lacks."""
+    try:
+        present = {row[1] for row in conn.execute("PRAGMA table_info(initiatives)").fetchall()}
+    except sqlite3.DatabaseError:
+        return []
+    if not present:
+        return []
+    return [name for name in MIND_COLUMNS if name not in present]
+
 
 def get_state_dir() -> Path:
     """Get Protagine state directory."""
@@ -154,8 +176,16 @@ class InitiativeStore:
                 conn.execute("ALTER TABLE initiatives ADD COLUMN dedup_base TEXT")
                 conn.commit()
                 logger.info("Migrated initiatives table: added dedup_base column")
+            for name in missing_mind_columns(conn):
+                conn.execute(f"ALTER TABLE initiatives ADD COLUMN {name} {MIND_COLUMNS[name]}")
+                conn.commit()
+                logger.info("Migrated initiatives table: added %s column", name)
         except Exception as exc:
             logger.warning("Initiative migration check failed (non-fatal): %s", exc)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_kind ON initiatives(kind, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_ask_code ON initiatives(ask_code)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_hermes_ref ON initiatives(hermes_ref)")
 
         # Indexes
         conn.execute(
@@ -263,36 +293,6 @@ class InitiativeStore:
                 )
                 return active, "deduped_active"
 
-            # A review of an old proposal may complete after its creation
-            # bucket expired. Anchor unchanged-condition re-review to that
-            # actual settlement, not immediately to the current wall bucket.
-            from .native_work import review_condition
-            evidence = review_condition({
-                "type": type, "source_type": source_type, "created_by": created_by,
-                "action_hint": action_hint, "entity_id": entity_id,
-                "description": description, "context": json.dumps(context or {}),
-            })
-            if evidence is not None:
-                from ..intelligence.components.initiative_engine import RECURRENCE_INTERVALS_SECS
-                interval = RECURRENCE_INTERVALS_SECS.get(type)
-                settled = self._db.execute(
-                    "SELECT * FROM initiatives WHERE dedup_base=? AND status='completed' "
-                    "AND completed_at IS NOT NULL "
-                    "AND json_extract(context,'$.native_review') IS NOT NULL "
-                    "ORDER BY completed_at DESC,created_at DESC LIMIT 1", (dedup_base,),
-                ).fetchone()
-                if settled is not None and interval and review_condition(settled) == evidence:
-                    completed = datetime.fromisoformat(settled['completed_at'])
-                    if completed.tzinfo is not None and (
-                            datetime.now(timezone.utc)-completed).total_seconds() < interval:
-                        return StoredInitiative.from_row(dict(settled)), "deduped_terminal"
-                # Stable evidence plus the last settled generation admits a
-                # real change even within one old bucket, and re-arms when due.
-                # Candidate UUIDs, observation time and prose never form this key.
-                material = {"condition": evidence, "period": dedup_key,
-                            "after": settled['id'] if settled is not None else None}
-                digest = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
-                dedup_key = f"{dedup_base}:review:{digest}"
 
         # Period-key dedup (at most one row per dedup_key; UNIQUE).
         if dedup_key:
@@ -424,7 +424,11 @@ class InitiativeStore:
         "delivery_failed_at", "delivery_failed_reason",
         "result", "result_metadata",
         "preferred_agent_id", "stale_reason", "recovery_reason", "job_id",
-        "context",
+        "context", *MIND_COLUMNS,
+    })
+    _TIMESTAMP_COLUMNS = frozenset({
+        "assigned_at", "acknowledged_at", "completed_at", "cancelled_at", "failed_at",
+        "expires_at", "last_attempt_at", "last_delivery_at", "delivery_failed_at", "due_at",
     })
 
     def update(self, initiative_id: str, **updates) -> Optional[StoredInitiative]:
@@ -443,23 +447,13 @@ class InitiativeStore:
         params = []
 
         for key, value in updates.items():
-            if key in ("result_metadata", "context"):
+            if key in ("result_metadata", "context", "success_check", "lesson_ids"):
                 set_parts.append(f"{key} = ?")
                 if value is None:
                     params.append(None)
                 else:
                     params.append(json.dumps(value) if not isinstance(value, str) else value)
-            elif key in (
-                "assigned_at",
-                "acknowledged_at",
-                "completed_at",
-                "cancelled_at",
-                "failed_at",
-                "expires_at",
-                "last_attempt_at",
-                "last_delivery_at",
-                "delivery_failed_at",
-            ):
+            elif key in self._TIMESTAMP_COLUMNS:
                 set_parts.append(f"{key} = ?")
                 if isinstance(value, datetime):
                     params.append(value.isoformat())
@@ -889,6 +883,202 @@ class InitiativeStore:
             [InitiativeStatus.ACKNOWLEDGED.value, threshold.isoformat()],
         )
         return [StoredInitiative.from_row(dict(row)) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Intentions (the mind): one row is an intention and its audit entry
+    # ------------------------------------------------------------------
+
+    MIND_ACTOR = "mind"
+
+    def create_intention(
+        self,
+        *,
+        kind: str,
+        type: str,
+        title: str,
+        drive: str,
+        cls: str,
+        decision: str,
+        decision_reason: str,
+        status: str,
+        dedup_key: Optional[str],
+        rationale: str = "",
+        recipient: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        priority: float = 0.5,
+        expires_at: Optional[datetime] = None,
+        due_at: Optional[datetime] = None,
+        ask_code: Optional[str] = None,
+        invalidates_if: Optional[str] = None,
+        success_check: Optional[Dict[str, Any]] = None,
+        hermes_kind: str = "none",
+        source_type: Optional[str] = None,
+        source_id: Optional[str] = None,
+        created_at: Optional[datetime] = None,
+    ) -> Tuple[StoredInitiative, str]:
+        """Save an intention; ``dedup_key`` makes a repeat return the existing row.
+
+        The outcome is ``created`` or ``deduped``: an obligation is reported
+        once, whatever became of the earlier intention (architecture 3.3).
+        """
+        if dedup_key:
+            existing = self.get_by_dedup_key(dedup_key)
+            if existing is not None:
+                return existing, "deduped"
+        intention_id = str(uuid.uuid4())
+        now = created_at or datetime.now(timezone.utc)
+        self._db.execute(
+            """
+            INSERT INTO initiatives (
+                id, dedup_key, type, description, priority, rationale, entity_id,
+                source_type, source_id, created_by, status, expires_at, context, created_at,
+                kind, cls, decision, decision_reason, drive, ask_code, invalidates_if,
+                success_check, hermes_kind, due_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                intention_id, dedup_key, type, title, max(0.0, min(1.0, float(priority))),
+                rationale, recipient, source_type, source_id, self.MIND_ACTOR, status,
+                expires_at.isoformat() if expires_at else None,
+                json.dumps(context) if context is not None else None, now.isoformat(),
+                kind, cls, decision, decision_reason, drive, ask_code, invalidates_if,
+                json.dumps(success_check) if success_check is not None else None,
+                hermes_kind, due_at.isoformat() if due_at else None,
+            ],
+        )
+        self._db.execute(
+            "INSERT INTO assignment_history (initiative_id, agent_id, action, timestamp, details) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [intention_id, self.MIND_ACTOR, f"decided_{decision}", now.isoformat(),
+             json.dumps({"status": status, "reason": decision_reason})],
+        )
+        self._db.commit()
+        return self.get(intention_id), "created"
+
+    def transition(self, initiative_id: str, status: str, *, action: str,
+                   details: Optional[Dict[str, Any]] = None, at: Optional[datetime] = None,
+                   **updates) -> Optional[StoredInitiative]:
+        """Move an intention to ``status`` and log the transition with its time."""
+        now = at or datetime.now(timezone.utc)
+        row = self.update(initiative_id, status=status, **updates)
+        if row is not None:
+            self._db.execute(
+                "INSERT INTO assignment_history (initiative_id, agent_id, action, timestamp, details) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [initiative_id, self.MIND_ACTOR, action, now.isoformat(),
+                 json.dumps(details) if details else None],
+            )
+            self._db.commit()
+        return row
+
+    def intentions(
+        self,
+        status: Optional[List[str]] = None,
+        kind: Optional[List[str]] = None,
+        since: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> List[StoredInitiative]:
+        """Mind rows (those with a ``kind``), newest first."""
+        query = "SELECT * FROM initiatives WHERE kind IS NOT NULL"
+        params: List[Any] = []
+        if status:
+            query += f" AND status IN ({','.join('?' * len(status))})"
+            params.extend(status)
+        if kind:
+            query += f" AND kind IN ({','.join('?' * len(kind))})"
+            params.extend(kind)
+        if since is not None:
+            query += " AND created_at >= ?"
+            params.append(since.isoformat())
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
+
+    def get_by_ask_code(self, code: str) -> Optional[StoredInitiative]:
+        row = self._db.execute(
+            "SELECT * FROM initiatives WHERE ask_code = ? AND status = 'asked'", [code.upper()]
+        ).fetchone()
+        return StoredInitiative.from_row(dict(row)) if row else None
+
+    def get_by_hermes_ref(self, hermes_ref: str) -> Optional[StoredInitiative]:
+        row = self._db.execute(
+            "SELECT * FROM initiatives WHERE hermes_ref = ? ORDER BY created_at DESC LIMIT 1", [hermes_ref]
+        ).fetchone()
+        return StoredInitiative.from_row(dict(row)) if row else None
+
+    def open_ask_codes(self) -> List[str]:
+        return [row[0] for row in self._db.execute(
+            "SELECT ask_code FROM initiatives WHERE status = 'asked' AND ask_code IS NOT NULL").fetchall()]
+
+    def count_transitions(self, action: str, since: datetime, *, kind: Optional[str] = None,
+                          recipient: Optional[str] = None, exclude_types: Tuple[str, ...] = ()) -> int:
+        """Transitions of one kind since ``since``, from the history: the budget counters."""
+        query = ("SELECT COUNT(*) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
+                 "WHERE h.action = ? AND h.timestamp >= ?")
+        params: List[Any] = [action, since.isoformat()]
+        if kind:
+            query += " AND i.kind = ?"
+            params.append(kind)
+        if recipient:
+            query += " AND i.entity_id = ?"
+            params.append(recipient)
+        if exclude_types:
+            query += f" AND i.type NOT IN ({','.join('?' * len(exclude_types))})"
+            params.extend(exclude_types)
+        return int(self._db.execute(query, params).fetchone()[0])
+
+    def last_transition_at(self, action: str, *, recipient: Optional[str] = None,
+                           type: Optional[str] = None) -> Optional[datetime]:
+        query = ("SELECT MAX(h.timestamp) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
+                 "WHERE h.action = ?")
+        params: List[Any] = [action]
+        if recipient:
+            query += " AND i.entity_id = ?"
+            params.append(recipient)
+        if type:
+            query += " AND i.type = ?"
+            params.append(type)
+        value = self._db.execute(query, params).fetchone()[0]
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def failures_since(self, cls: str, since: datetime) -> List[StoredInitiative]:
+        rows = self._db.execute(
+            "SELECT * FROM initiatives WHERE kind IS NOT NULL AND cls = ? AND outcome = 'failed' "
+            "AND failed_at >= ? ORDER BY failed_at DESC", [cls, since.isoformat()],
+        ).fetchall()
+        return [StoredInitiative.from_row(dict(row)) for row in rows]
+
+    def tokens_since(self, since: datetime) -> int:
+        value = self._db.execute(
+            "SELECT COALESCE(SUM(cost_tokens), 0) FROM initiatives WHERE kind IS NOT NULL AND created_at >= ?",
+            [since.isoformat()],
+        ).fetchone()[0]
+        return int(value or 0)
+
+    def prune_intentions(self, before: datetime) -> Dict[str, int]:
+        """Delete terminal mind rows older than ``before``; returns counts by outcome."""
+        from .models import MIND_TERMINAL_STATUSES
+        statuses = sorted(MIND_TERMINAL_STATUSES)
+        placeholders = ",".join("?" * len(statuses))
+        rows = self._db.execute(
+            f"SELECT id, outcome, status FROM initiatives WHERE kind IS NOT NULL "
+            f"AND status IN ({placeholders}) AND created_at < ?", [*statuses, before.isoformat()],
+        ).fetchall()
+        counts: Dict[str, int] = {}
+        for row in rows:
+            key = row["outcome"] or row["status"]
+            counts[key] = counts.get(key, 0) + 1
+        ids = [row["id"] for row in rows]
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            self._db.execute(f"DELETE FROM assignment_history WHERE initiative_id IN ({marks})", chunk)
+            self._db.execute(f"DELETE FROM initiatives WHERE id IN ({marks})", chunk)
+        self._db.commit()
+        return counts
 
     # ------------------------------------------------------------------
     # History

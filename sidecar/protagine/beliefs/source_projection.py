@@ -1063,7 +1063,7 @@ class SourceClaimProjection:
                 bundles + pair_conversation_candidates(quotations, input_pairs, sources))
 
 
-async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True):
+async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None):
     """One consumer, durable jobs and leases; process loss resumes from SQLite."""
     projection = SourceClaimProjection(ledger)
     from protagine.identity import get_owner_contact_id
@@ -1071,6 +1071,11 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     judgments = SelfJudgments(ledger, owner_id=get_owner_contact_id())
     from protagine.self_model.appraisals import AppraisalStore
     appraisals = AppraisalStore(ledger, owner_id=get_owner_contact_id())
+    from protagine.commitments.extract import CommitmentExtractor
+    if commitments_provider is None:
+        from protagine.api.routers import host as _host
+        commitments_provider = lambda: _host._commitment_store  # noqa: E731
+    commitment_extractor = CommitmentExtractor(ledger, commitments_provider)
     from protagine.turns.media import SourceMedia
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors
@@ -1081,7 +1086,8 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
         media.recover_unowned_files()
     except OSError:
         logger.warning("source media orphan recovery deferred")
-    reflections = {'judgment': judgments, 'appraisal': appraisals, 'claim': projection}
+    reflections = {'judgment': judgments, 'appraisal': appraisals, 'claim': projection,
+                   'commitment': commitment_extractor}
     reflection_tasks = {name: None for name in reflections}
     next_identity_check = 0.0
     try:

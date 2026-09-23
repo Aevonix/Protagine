@@ -69,8 +69,8 @@ unbuilt HERE by design:
   (system_prompt, model, tools_allow with real tool names), but spawning a
   restricted agent session is the host framework's job. A deployment that
   wants it should implement a thin host-plugin subscriber; the sidecar's
-  working per-turn path is the inline introspection
-  (`cognition/introspection.py`).
+  working per-turn path is commitment extraction in the projection worker
+  (`commitments/extract.py`, the `commitment_extract` router task).
 - **Email/desktop/browser job handlers**: outbound messaging goes through
   the host gateway (delivery bridge); Protagine never sends email itself. The
   desktop/browser packages were scaffolding for host-side capabilities and

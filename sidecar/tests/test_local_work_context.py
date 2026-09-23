@@ -163,8 +163,3 @@ def test_request_forecast_is_observation_without_action_or_private_processor_con
         ('inspect_recorded_state','PRIVATE_SOURCE','PRIVATE_CONFIGURATION','forecast_absolute_error_seconds'))
 
 
-def test_review_contract_mismatch_does_not_project_a_forecast():
-    from protagine.turns.local_work import _review_forecast
-    context={'native_review':{'contract_sha256':'old'}}
-    assert _review_forecast({},context,{'available':True,'contract_sha256':'new'},now=100)=={
-        'status':'review_contract_changed','suggestion_enabled':False}

@@ -116,21 +116,6 @@ async def test_vector_failure_does_not_abort_pass():
 
 # --- phase gate (PROTAGINE_MEMORY_PRUNE_MODE) -----------------------------------
 
-def _loop_with_graph(graph):
-    from protagine.autonomy.loop import AutonomyLoop
-
-    class _Reg:
-        pass
-
-    reg = _Reg()
-    reg.graph = graph
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = reg
-    loop._periodic_last = {}
-    from protagine.autonomy.loop import LoopStats
-    loop.stats = LoopStats()
-    return loop
-
 
 class _RecordingGraph:
     def __init__(self):
@@ -142,43 +127,3 @@ class _RecordingGraph:
         return {"matched": 0, "deleted": 0, "dry_run": dry_run, "ids": []}
 
 
-async def test_phase_default_is_shadow(monkeypatch):
-    """Regression lock: with no flag set, the phase never live-deletes."""
-    monkeypatch.delenv("PROTAGINE_MEMORY_PRUNE_MODE", raising=False)
-    graph = _RecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.calls == [{"dry_run": True, "max_delete": 500}]
-
-
-async def test_phase_off_never_touches_graph(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "off")
-    graph = _RecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.calls == []
-
-
-async def test_phase_live_deletes(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "live")
-    graph = _RecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.calls == [{"dry_run": False, "max_delete": 500}]
-
-
-async def test_phase_unknown_mode_fails_safe_to_shadow(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_PRUNE_MODE", "banana")
-    graph = _RecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    assert graph.calls == [{"dry_run": True, "max_delete": 500}]
-
-
-async def test_phase_runs_once_per_week_key(monkeypatch):
-    monkeypatch.delenv("PROTAGINE_MEMORY_PRUNE_MODE", raising=False)
-    graph = _RecordingGraph()
-    loop = _loop_with_graph(graph)
-    await loop._phase_memory_pruning()
-    await loop._phase_memory_pruning()
-    assert len(graph.calls) == 1

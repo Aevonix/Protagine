@@ -29,23 +29,6 @@ def _semantic_review(context, result):
                    'A retained semantic assessment no longer matches the current report.')}
 
 
-def _review_forecast(row, context, native, *, now):
-    binding = context.get('native_review')
-    if not isinstance(binding,dict) or not native.get('available'):
-        return None
-    if native.get('contract_sha256') != binding.get('contract_sha256'):
-        return {'status':'review_contract_changed','suggestion_enabled':False}
-    try:
-        from protagine.initiatives.native_work import NativeInitiativeWork
-        from protagine.self_model import runtime_forecasts
-        review = NativeInitiativeWork.view(row)
-        # project_accepted already verified this exact native task snapshot.
-        # Reuse it; no second task read or lifecycle observation is needed.
-        return runtime_forecasts.project(review,native,native,binding['contact_id'],now=now)
-    except (OSError,sqlite3.Error,ValueError,KeyError,TypeError):
-        return {'status':'unavailable','suggestion_enabled':False}
-
-
 def local_work_view(*, limit=8, now=None):
     view = {'source': 'canonical_initiatives', 'available': False,
             'items': [], 'recent': [], 'complete': False,
@@ -103,9 +86,6 @@ def local_work_view(*, limit=8, now=None):
                     item.update({key: native[key] for key in ('native_board', 'native_task_id', 'native_run_id', 'attempt_count')})
                     item['native_status'] = native['status']
                     item['liveness'] = native['liveness']
-                    forecast = _review_forecast(row,context,native,now=now)
-                    if forecast is not None:
-                        item['forecast'] = forecast
             return item
         return {**view, 'available':True, 'items':[project(row) for row in active],
                 'recent':[project(row) for row in recent], 'total':total, 'truncated':total>len(active),

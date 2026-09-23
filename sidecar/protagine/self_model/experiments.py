@@ -637,39 +637,6 @@ class ExperimentEngine:
         proposal = self.propose(**kwargs)
         return self.start(proposal["id"])
 
-    def _binding(self, exp: Mapping[str, Any]) -> Any:
-        from protagine.initiatives.approval_authority import ActionBinding
-
-        constraints = {
-            name: _digest(exp.get(name)) for name in (
-                "ref", "variant", "metric", "metric_version",
-                "max_regression", "window_days", "assignment_mode",
-            )
-        }
-        scope = {
-            "version": 1,
-            "job_type": "cognition_experiment",
-            "action_name": "cognition_experiment_mutation",
-            "risk": "mutating",
-            "constraints": constraints,
-        }
-        action = {
-            "version": 1,
-            "experiment_id": exp["id"],
-            "hypothesis": exp["hypothesis"],
-            "ref": exp["ref"],
-            "baseline_param": exp["baseline_param"],
-            "variant": exp["variant"],
-            "metric": exp["metric"],
-            "metric_version": exp.get("metric_version"),
-            "max_regression": exp["max_regression"],
-            "window_days": exp["window_days"],
-            "assignment_mode": exp.get("assignment_mode"),
-        }
-        return ActionBinding(
-            action_digest=_digest(action), scope=scope,
-            scope_digest=_digest(scope))
-
     def _authorize(self, exp: Dict[str, Any]) -> str:
         mode = exp.get("execution_mode") or cognition_p4_mode()
         if mode == "off":
@@ -679,27 +646,11 @@ class ExperimentEngine:
         bounds = self._pregrants.get(str(exp["ref"]))
         if bounds and bounds[0] <= float(exp["variant"]) <= bounds[1]:
             return "bounded_pregrant"
-        if self._approval_authority is None:
-            raise ValueError(
-                "bounded approval authority is required for a live mutation")
-        binding = self._binding(exp)
-        self.store.update(exp["id"], action_digest=binding.action_digest)
-        if exp.get("approval_request_id"):
-            request = self._approval_authority.get_request(
-                exp["approval_request_id"])
-            if (request and request.get("status") == "approved"
-                    and request.get("action_digest") == binding.action_digest):
-                return "owner_approved"
-        grant = self._approval_authority.consume_grant(
-            binding=binding, operation_id=exp["id"])
-        if grant is not None:
-            return "bounded_grant"
-        request = self._approval_authority.ensure_request(
-            job_id=exp["id"], binding=binding)
-        self.store.update(
-            exp["id"], approval_request_id=request["request_id"],
-            action_digest=binding.action_digest)
-        raise ExperimentApprovalRequired(self.store.get(exp["id"]) or exp)
+        # The approval ledger is gone: a live mutation outside a pregranted
+        # range has no approval path here and never starts.
+        raise ValueError(
+            "a live experiment mutation outside a pregranted range needs the owner; "
+            "set PROTAGINE_EXPERIMENT_PREGRANTS or keep the experiment in shadow")
 
     def _set_param(self, exp: Mapping[str, Any], value: float,
                    *, operation: str, authority_mode: str) -> float:

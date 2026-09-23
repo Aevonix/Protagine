@@ -51,7 +51,7 @@ _MUTATE_OPS = frozenset({
 
 # Risk tiers (from the action registry) that authorize a job to change state.
 # A job at read_only risk that reports a mutation is a violation.
-_MUTATING_RISK = frozenset({"low", "medium", "high", "outbound", "destructive"})
+_MUTATING_RISK = frozenset({"low", "medium", "high", "mutating", "outbound", "destructive"})
 
 
 def job_declares_effect(job: Any) -> bool:
@@ -65,23 +65,7 @@ def job_declares_effect(job: Any) -> bool:
         payload.get("action") or payload.get("command")
         or payload.get("action_hint") or ""
     ).strip().lower()
-    registered_action_effect = False
-    action_hint = str(payload.get("action_hint") or "").strip()
-    if action_hint:
-        try:
-            from protagine.initiatives.action_registry import (
-                RiskTier,
-                get_action,
-            )
-
-            spec = get_action(action_hint)
-            registered_action_effect = bool(
-                spec is not None and spec.risk is not RiskTier.READ_ONLY
-            )
-        except Exception:
-            # Registry availability is not needed to preserve the other
-            # conservative effect signals below.
-            registered_action_effect = False
+    registered_action_effect = False  # the action registry is gone; the declared risk decides
     job_type = getattr(job, "job_type", "")
     job_type = (
         job_type.value if hasattr(job_type, "value") else str(job_type)

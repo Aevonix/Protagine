@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 PLUGIN_ID = "protagine"
 WORKER_PROFILE = "protagine-act"
 DEFAULT_URL = "http://127.0.0.1:7777"
-MIND_STATUS_ROUTE = "/v1/mind/status"
+MIND_STATE_ROUTE = "/v1/mind/state"
 
 
 class SidecarUnavailable(RuntimeError):
@@ -91,6 +91,7 @@ class Settings:
     hermes_home: Path
     outbox_path: Path
     worker_profile: str = WORKER_PROFILE
+    body_ledger_path: Path | None = None
 
     def mind(self) -> dict[str, Any]:
         value = read_yaml(self.home / "protagine.yaml").get("mind")
@@ -98,6 +99,51 @@ class Settings:
 
     def identity(self) -> dict[str, Any]:
         return read_yaml(self.home / "identity.yaml")
+
+    def budget(self, name: str, default: int) -> int:
+        """One ``mind.budgets`` value from ``protagine.yaml`` (architecture 7.1)."""
+        budgets = self.mind().get("budgets")
+        value = budgets.get(name) if isinstance(budgets, Mapping) else None
+        try:
+            return int(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    def owner_handles(self) -> dict[str, list[str]]:
+        """The owner's messaging handles from ``identity.yaml`` as ``{platform: [id, ...]}``.
+
+        ``protagine init`` writes ``owner.handles`` as a list of ``{platform, id}``
+        entries; a mapping ``{platform: id | [ids]}`` and ``"platform=id"`` strings
+        are read too.
+        """
+        owner = self.identity().get("owner")
+        raw = owner.get("handles") if isinstance(owner, Mapping) else None
+        handles: dict[str, list[str]] = {}
+
+        def add(platform: Any, value: Any) -> None:
+            platform, value = str(platform or "").strip().lower(), str(value or "").strip()
+            if platform and value and value not in handles.setdefault(platform, []):
+                handles[platform].append(value)
+
+        if isinstance(raw, Mapping):
+            for platform, value in raw.items():
+                for item in value if isinstance(value, (list, tuple, set)) else [value]:
+                    add(platform, item)
+        elif isinstance(raw, (list, tuple)):
+            for item in raw:
+                if isinstance(item, Mapping):
+                    add(item.get("platform"), item.get("id") or item.get("handle") or item.get("address"))
+                elif isinstance(item, str) and ("=" in item or ":" in item):
+                    platform, _, value = item.replace(":", "=", 1).partition("=")
+                    add(platform, value)
+        return handles
+
+    def owner_handle(self) -> tuple[str, str] | None:
+        """The owner's first messaging handle as ``(platform, handle)`` from ``identity.yaml``."""
+        for platform, values in self.owner_handles().items():
+            if values:
+                return platform, values[0]
+        return None
 
     def owner_contact_id(self) -> str:
         """The owner's sidecar contact: ``protagine.yaml`` ``owner.contact_id`` (written by
@@ -131,6 +177,7 @@ def load_settings(config: Mapping[str, Any] | None = None) -> Settings:
         outbox_path=Path(section.get("turn_outbox_path")
                          or home / "state" / "protagine-turn-outbox.sqlite3"),
         worker_profile=str(section.get("worker_profile") or WORKER_PROFILE),
+        body_ledger_path=Path(section.get("body_ledger_path") or home / "state" / "protagine-body.sqlite3"),
     )
 
 
@@ -197,12 +244,23 @@ class ProtagineClient:
         if cached is not None and time.monotonic() - cached[0] < ttl:
             return cached[1]
         try:
-            present = self.get(MIND_STATUS_ROUTE, timeout=2).status_code != 404
+            present = self.get(MIND_STATE_ROUTE, timeout=2).status_code != 404
         except SidecarUnavailable:
             return None
         with self._lock:
             self._mind_routes = (time.monotonic(), present)
         return present
+
+    def mind_state(self, timeout: float = 3.0) -> dict[str, Any] | None:
+        """``GET /v1/mind/state`` when the route exists; None otherwise."""
+        try:
+            if self.has_mind_routes() is not True:
+                return None
+            response = self.get(MIND_STATE_ROUTE, timeout=timeout)
+            value = response.json() if response.is_success else None
+        except (SidecarUnavailable, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
 
     def resolve_contact(self, platform: str, handle: str, *, create: bool = False,
                         timeout: float = 4.0) -> dict[str, Any] | None:
@@ -228,7 +286,7 @@ class ProtagineClient:
 
 
 __all__ = [
-    "DEFAULT_URL", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
+    "DEFAULT_URL", "MIND_STATE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
     "SidecarUnavailable", "hermes_config", "hermes_home", "load_settings", "plugin_section",
     "read_yaml",
 ]

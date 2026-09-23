@@ -130,7 +130,7 @@ def _emit_cognition_event(
     This is an OPTIONAL integration point: no shipped consumer spawns a
     dedicated cognition session from it today (the hermes plugin only caches
     events as context blurbs). The working per-turn judgment path is the
-    inline introspection in cognition/introspection.py; a deployment that
+    commitment_extract task in the projection worker; a deployment that
     wants a real tool-restricted cognition session can subscribe to this
     event and honor system_prompt/model/tools_allow. See docs/KNOWN-GAPS.md.
     """

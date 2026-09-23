@@ -205,22 +205,3 @@ class TestAffectDetection:
         assert state["trend"] == "stable"
         assert store.detect_sustained_decline("owner") is False
 
-    @pytest.mark.asyncio
-    async def test_condition_worker_does_not_emit_neutral_decline(
-        self, store, monkeypatch,
-    ):
-        from protagine.api.routers import host
-        from protagine.autonomy.condition_worker import _check_affect_decline
-        from protagine.events import broadcaster
-
-        store.create_event(contact_id="owner", valence=0.06, source="explicit")
-        store.create_event(contact_id="owner", valence=-0.04, source="explicit")
-        store.create_event(contact_id="owner", valence=-0.08, source="explicit")
-        emitted = []
-        monkeypatch.setattr(host, "_affect_store", store)
-        monkeypatch.setattr(broadcaster, "emit", lambda *args: emitted.append(args))
-
-        result = await _check_affect_decline({})
-
-        assert result == {"condition_met": False, "declining_contacts": 0}
-        assert emitted == []

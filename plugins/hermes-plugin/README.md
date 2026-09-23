@@ -10,10 +10,10 @@ needs; nothing else is required.
 | `__init__.py` | Registers the hooks, the `/mind` command, the tools and one prompt section |
 | `client.py` | Settings (`plugins.protagine.sidecar_url`, `plugins.protagine.key_file`), bearer key, short timeouts, circuit breaker |
 | `capture.py` | Session map (`session_id -> sender, platform, last message`) and the durable SQLite turn outbox; hooks only enqueue |
-| `body.py` | The delivery thread; mind dispatch, outbox, reconciliation and observations once `/v1/mind/*` exists |
-| `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5) |
+| `body.py` | The body thread: turn delivery, then the mind loop on `/v1/mind` (dispatch to kanban with `mind:<id>` keys, the outbox sent verbatim once, outcome reconciliation, orphan archiving, board observations, off-switch cleanup) with its own ledger in `<hermes_home>/state/protagine-body.sqlite3` |
+| `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5); `POST /v1/mind/guard` → `{allow, reason}` |
 | `commands.py` | `/mind status|log|why <id>|asks|off` |
-| `tools.py` | `protagine_self`, `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
+| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`), `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
 | `reminders.py` | `protagine_reminder` on stock cron; the plugin keeps only the job id |
 
 Hermes config written by `protagine init`:
@@ -36,8 +36,10 @@ The key file's directory is the Protagine instance directory. The plugin reads
 `identity.yaml` (`owner.contact_id`, `owner.handles.<platform>`) from it when
 they are readable; both are optional for capture and recall.
 
-Internal Hermes imports: `hermes_cli.kanban_db` (off-switch cleanup and, later,
-dispatch), `cron.jobs` and `cron.scheduler` (reminders). Everything else goes
-through the public `PluginContext` API and the config keys above.
+Internal Hermes imports: `hermes_cli.kanban_db` and `kanban_db_connect`
+(dispatch, reconciliation, observations, off-switch cleanup),
+`tools.send_message_tool` (the outbox), `cron.jobs` and `cron.scheduler`
+(reminders). Everything else goes through the public `PluginContext` API and
+the config keys above.
 
 See [docs/HERMES-ADAPTER.md](../../docs/HERMES-ADAPTER.md).

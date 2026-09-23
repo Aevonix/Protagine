@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from onekey import RequestAuthority
-from protagine.autonomy.loop import AutonomyLoop
 from protagine.cognition.external_events import (
     ExternalCognitionEventV1,
     ExternalEventInboxStore,
@@ -26,7 +25,6 @@ from protagine.cognition.goal_spine import (
 from protagine.cognition.runtime import CognitionRuntimeContractV1
 from protagine.events.journal import replay_events
 from protagine.governed_actions import GovernedActionLedger
-from protagine.initiatives.approval_authority import ApprovalAuthorityStore
 from protagine.projects import Project, ProjectEngine, ProjectStore, Step
 from protagine.self_model.event_concerns import (
     EventConcernReducer,
@@ -813,65 +811,6 @@ async def test_live_external_concern_is_held_and_resumable_after_mode_demotion(
     assert manager.queue.posts == 1
 
 
-def test_success_can_only_resolve_external_concern_not_other_authority_ledgers(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_EXTERNAL_EVENT_CONCERNS", "live")
-    journal = FakeJournal([
-        _external(
-            1,
-            kind="action_outcome",
-            attributes={"action_id": "action-local-1", "outcome": "failed"},
-            summary="Reported action failed",
-        ),
-        _external(
-            2,
-            kind="action_outcome",
-            attributes={"action_id": "action-local-1", "outcome": "succeeded"},
-            summary="Reported action succeeded",
-        ),
-    ])
-    concerns = ConcernStore(str(tmp_path / "workspace.db"))
-    projects = ProjectStore(str(tmp_path / "projects.db"))
-    projects.save_project(Project(
-        id="project-real-1", title="Real project", objective="Remain active",
-        status="active",
-    ))
-    grants = ApprovalAuthorityStore(tmp_path / "approval-authority.db")
-    competence = CompetenceStore(str(tmp_path / "competence.db"))
-    effects = GovernedActionLedger(tmp_path / "governed-actions.db")
-    effects.prepare_execution(
-        {
-            "action_id": "action-local-1",
-            "execution_digest": "a" * 64,
-            "request_kind": "test-sentinel",
-        },
-        owner_person_id="person-owner",
-    )
-    with grants._connect() as connection:
-        grants_before = connection.execute(
-            "SELECT COUNT(*) FROM bounded_grants",
-        ).fetchone()[0]
-    competence_before = competence._conn.execute(
-        "SELECT COUNT(*) FROM competence_events",
-    ).fetchone()[0]
-
-    result = _reducer(concerns, journal).run_once()
-
-    assert result["dispositions"] == {"created": 1, "resolved": 1}
-    assert concerns.active() == []
-    assert projects.get_project("project-real-1").status == "active"
-    assert effects.get("action-local-1")["state"] == "prepared"
-    assert effects.get("action-local-1")["result"] is None
-    with grants._connect() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM bounded_grants",
-        ).fetchone()[0] == grants_before
-    assert competence._conn.execute(
-        "SELECT COUNT(*) FROM competence_events",
-    ).fetchone()[0] == competence_before
-
-
 def test_cancelled_action_is_terminal_for_only_its_external_concern(
     tmp_path, monkeypatch,
 ):
@@ -1154,92 +1093,6 @@ def test_generic_event_concern_resolved_ttl_behavior_is_unchanged(tmp_path):
         "created": 1, "resolved": 1, "suppressed_resolved": 1,
     }
     assert store.active() == []
-
-
-@pytest.mark.asyncio
-async def test_external_only_reducer_does_not_suppress_legacy_event_polling():
-    class Reducer:
-        mode = "live"
-
-        def __init__(self):
-            self.calls = 0
-
-        def run_once(self, **_kwargs):
-            self.calls += 1
-            return {"processed": 1}
-
-    external = Reducer()
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = SimpleNamespace(workspace=SimpleNamespace(
-        event_reducer=None, external_event_reducer=external,
-    ))
-    loop.events = SimpleNamespace(get_history=lambda limit: [
-        SimpleNamespace(id="legacy-event-1"),
-    ])
-    loop._last_event_seen_id = None
-    loop.stats = SimpleNamespace(events_processed=0, errors=0)
-
-    await loop._phase_events()
-
-    assert external.calls == 1
-    assert loop.stats.events_processed == 2
-    assert loop._last_event_seen_id == "legacy-event-1"
-
-
-@pytest.mark.asyncio
-async def test_normal_and_external_reducers_each_run_without_legacy_third_path():
-    class Reducer:
-        mode = "live"
-
-        def __init__(self):
-            self.calls = 0
-
-        def run_once(self, **_kwargs):
-            self.calls += 1
-            return {"processed": 1}
-
-    normal = Reducer()
-    external = Reducer()
-    legacy_calls = []
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = SimpleNamespace(workspace=SimpleNamespace(
-        event_reducer=normal, external_event_reducer=external,
-    ))
-    loop.events = SimpleNamespace(get_history=lambda limit: legacy_calls.append(limit))
-    loop._last_event_seen_id = None
-    loop.stats = SimpleNamespace(events_processed=0, errors=0)
-
-    await loop._phase_events()
-
-    assert external.calls == 1
-    assert normal.calls == 1
-    assert legacy_calls == []
-    assert loop.stats.events_processed == 2
-
-
-@pytest.mark.asyncio
-async def test_external_reducer_failure_does_not_disable_legacy_polling():
-    class FailedReducer:
-        mode = "live"
-
-        def run_once(self, **_kwargs):
-            raise RuntimeError("external reducer unavailable")
-
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = SimpleNamespace(workspace=SimpleNamespace(
-        event_reducer=None, external_event_reducer=FailedReducer(),
-    ))
-    loop.events = SimpleNamespace(get_history=lambda limit: [
-        SimpleNamespace(id="legacy-after-external-failure"),
-    ])
-    loop._last_event_seen_id = None
-    loop.stats = SimpleNamespace(events_processed=0, errors=0)
-
-    await loop._phase_events()
-
-    assert loop.stats.errors == 1
-    assert loop.stats.events_processed == 1
-    assert loop._last_event_seen_id == "legacy-after-external-failure"
 
 
 @pytest.mark.asyncio

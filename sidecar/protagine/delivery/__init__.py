@@ -1,16 +1,14 @@
-"""Protagine proactive delivery system.
+"""Protagine delivery helpers.
 
-Bridges the autonomy loop's initiative/insight generation with the gateway's
-messaging adapters so Protagine can proactively reach users when it has something
-worth saying.
+The proactive delivery bridge and its ``/internal/deliver`` path are gone:
+owner messages go through the mind's outbox and the plugin sends them
+verbatim (architecture 6.3). What is left here:
 
-Components:
-- ProactiveDeliveryBridge: Queues and manages pending deliveries
-- RateLimiter: Per-person rate limiting (max 3/day, quiet hours, 2h cooldown)
+- DeliveryRateLimiter: per-person rate limiting (quiet hours, cooldown)
+- ChannelRegistry: the registered channels
 """
 
-from protagine.delivery.bridge import ProactiveDeliveryBridge
 from protagine.delivery.rate_limiter import DeliveryRateLimiter
 from protagine.delivery.channels import ChannelRegistry
 
-__all__ = ["ProactiveDeliveryBridge", "DeliveryRateLimiter", "ChannelRegistry"]
+__all__ = ["DeliveryRateLimiter", "ChannelRegistry"]

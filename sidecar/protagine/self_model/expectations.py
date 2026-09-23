@@ -62,16 +62,17 @@ _EVIDENCE_PREFIXES = frozenset({
 
 
 def expectations_mode() -> str:
-    """Effective PROTAGINE_EXPECTATIONS: explicit env > autonomy preset > off.
+    """Effective PROTAGINE_EXPECTATIONS: explicit env, else on.
 
-    Expectations are binary in behavior (they only measure), so "on" is the
-    canonical enabled value; the historical "shadow"/"live" spellings remain
-    accepted aliases. An explicitly-set invalid value falls back to "off",
-    exactly as the legacy reader treated any unrecognized value.
+    Expectations are on by default (architecture 3.3): every intention is a
+    prediction that is later scored hit or miss. They are binary in behavior
+    (they only measure), so "on" is the canonical enabled value; the
+    historical "shadow"/"live" spellings remain accepted aliases. An
+    explicitly-set invalid value falls back to "on".
     """
     from protagine.config import env_choice
     return env_choice("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"),
-                   "off")
+                   "on")
 
 
 def expectations_enabled() -> bool:

@@ -159,10 +159,9 @@ def main() -> None:
     secrets_sub.add_parser("backend", help="Show the active secrets backend")
     secrets_sub.add_parser("status", help="Check backend availability")
 
-    # --- autonomy ---
-    autonomy_p = sub.add_parser("autonomy", help="Inspect or wake the autonomy loop in the running sidecar")
-    autonomy_p.add_argument("autonomy_args", nargs=argparse.REMAINDER,
-                            help="Autonomy subcommand (status/cycle)")
+    # --- mind ---
+    from protagine.mind.cli import add_parser as add_mind_parser
+    add_mind_parser(sub)
 
     # --- feeds ---
     feeds_p = sub.add_parser("feeds", help="Manage spec-driven intelligence feeds")
@@ -596,10 +595,10 @@ def main() -> None:
         _handler = getattr(_secrets_cli, f"cmd_secrets_{args.secrets_cmd}")
         _handler(args)
 
-    elif args.command == "autonomy":
+    elif args.command == "mind":
         _load_dotenv()
-        from protagine.autonomy.cli import run_autonomy_command
-        sys.exit(run_autonomy_command(args.autonomy_args))
+        from protagine.mind.cli import run as run_mind_command
+        sys.exit(run_mind_command(args))
 
     elif args.command == "feeds":
         from protagine.feeds.cli import main as feeds_main

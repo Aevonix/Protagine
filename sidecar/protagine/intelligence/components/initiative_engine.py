@@ -910,12 +910,7 @@ class InitiativeEngine:
 
         # A configured producer receipt supersedes the legacy file-age evidence.
         backup_dir = Path(os.path.expanduser("~/.protagine/backups"))
-        if self._config.backup_receipt_path:
-            from protagine.initiatives.backup_evidence import backup_review_task
-            review = backup_review_task(self._config.backup_receipt_path, datetime.now(timezone.utc))
-            if review is not None:
-                tasks.append(review)
-        elif backup_dir.exists():
+        if backup_dir.exists():
             backups = sorted(backup_dir.glob("*.bak"), key=lambda p: p.stat().st_mtime, reverse=True)
             if backups:
                 newest_age_days = (datetime.now(timezone.utc).timestamp() - backups[0].stat().st_mtime) / 86400

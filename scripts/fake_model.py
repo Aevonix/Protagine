@@ -1,24 +1,47 @@
-"""A scripted OpenAI-compatible model server for the fresh-install recall probe (CI).
+"""A scripted OpenAI-compatible model server for the CI probes against stock Hermes.
 
 Serves ``/v1/models`` and ``/v1/chat/completions`` (streaming and not). Every
-request body is appended to ``FAKE_MODEL_LOG`` (JSON lines) so the run can
-check what reached the model. The reply is scripted: the assistant repeats
-any recall token (``mem-<hex>``) it sees anywhere in the prompt, so a recall
-that reached the model shows up in the answer; otherwise it acknowledges.
-The sidecar's own extraction, observation and review prompts get the answers a
-capable model would give for a "remember this token" message, so a memory forms
-without any real model; every other JSON-shaped prompt gets an empty object.
+request body is appended to ``FAKE_MODEL_LOG`` (JSON lines) so a run can check
+what reached the model. The replies are scripted:
+
+- the assistant repeats any probe token (``mem-<hex>``, ``rep-<hex>``, ...) it
+  sees anywhere in the prompt, so a recall that reached the model shows up in
+  the answer; otherwise it acknowledges
+- the sidecar's own extraction, observation and review prompts get the answers
+  a capable model would give for a "remember this token" message, so a memory
+  forms without any real model; every other JSON-shaped prompt gets an empty
+  object
+- the ``commitment_extract`` router task (docs/MIND.md) gets one commitment for
+  a turn that says "I'll ... by 3pm" (or names a payment), due
+  ``FAKE_MODEL_DUE_SECONDS`` after the turn (default 90 s), so the mind loop
+  can be watched in minutes; anything else gets ``[]``
+- a kanban worker turn ("work kanban task ...") calls ``kanban_complete`` with
+  a summary, then says it is done
+- "yes <CODE>" / "no <CODE>" calls ``protagine_self`` with that code; the
+  owner's "please approve it" (no code) calls it with the code last posted to
+  ``POST /control {"ask_code": ...}``, so the plugin's typed-code rule is what
+  refuses it, not the model
+
+Tool calls are only emitted when the request offers that tool.
 """
 import json
 import os
 import re
 import sys
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = os.environ.get("FAKE_MODEL_LOG", "fake-model.log")
 MODEL = os.environ.get("FAKE_MODEL_NAME", "scripted-model")
-TOKEN = re.compile(r"mem-[0-9a-f]{8}")
+DUE_SECONDS = float(os.environ.get("FAKE_MODEL_DUE_SECONDS") or 90)
+TOKEN = re.compile(r"\b(?:mem|rep|inv|min|agn|sld)-[0-9a-f]{8}\b")
+# The owner's own words start the user message; Hermes appends recalled context after them.
+ASK = re.compile(r"^\s*(yes|no)\s+([A-Za-z0-9]{3,8})\b", re.IGNORECASE)
+COMMITMENT = re.compile(r"\bI(?:'ll| will)\s+(.+?)(?:\s+by\s+3\s*pm|\.|$)", re.IGNORECASE)
+CONTROL = {"ask_code": ""}
+_LOCK = threading.Lock()
 
 
 def _text(content):
@@ -29,13 +52,48 @@ def _text(content):
     return "" if content is None else str(content)
 
 
+def _tool_names(body):
+    names = []
+    for tool in body.get("tools") or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name"):
+            names.append(function["name"])
+    return names
+
+
+def _tool_call(name, arguments):
+    return {"tool_calls": [{"id": "call-" + hex(int(time.time() * 1000))[2:], "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+
+
+def _commitment_reply(last_user):
+    """The ``commitment_extract`` answer for one audited turn."""
+    said = last_user
+    match = re.search(r"They said:\s*(.*?)\s*\|\s*Assistant replied:", last_user, re.DOTALL)
+    if match:
+        said = match.group(1)
+    promise = COMMITMENT.search(said)
+    if promise is None:
+        return "[]"
+    what = promise.group(1).strip().rstrip(".")
+    description = what[0].upper() + what[1:] if what else "Do what was promised"
+    due = (datetime.now(timezone.utc) + timedelta(seconds=DUE_SECONDS)).replace(microsecond=0)
+    return json.dumps([{"description": description, "due_at": due.isoformat(), "priority": 70,
+                        "source_type": "cognition", "metadata": None}])
+
+
 def reply_for(body):
+    """The scripted answer: a string, or a dict with ``tool_calls``."""
     messages = body.get("messages") or []
     prompt = "\n".join(_text(m.get("content")) for m in messages if isinstance(m, dict))
     system = "\n".join(_text(m.get("content")) for m in messages if m.get("role") == "system")
     last_user = next((_text(m.get("content")) for m in reversed(messages) if m.get("role") == "user"), "")
+    last_role = messages[-1].get("role") if messages and isinstance(messages[-1], dict) else ""
+    tools = _tool_names(body)
     found = sorted(set(TOKEN.findall(prompt)))
-    # The sidecar's own extraction prompts: answer them the way a capable model would.
+    # The sidecar's own prompts: answer them the way a capable model would.
+    if "You audit ONE finished assistant turn" in system:
+        return _commitment_reply(last_user)
     if 'exactly one key, "claims"' in system:
         in_message = TOKEN.findall(last_user[:400])
         if in_message and "remember" in last_user.lower():
@@ -58,11 +116,23 @@ def reply_for(body):
                            for i, p in enumerate(proposals)})
     if body.get("response_format") or ("Return only JSON" in system) or ("JSON" in system and "Return" in system):
         return "{}"
+    # Hermes turns: a tool result comes back as a tool message; answer it in words.
+    if last_role == "tool":
+        return "Done."
+    if "kanban_complete" in tools and last_user.lower().startswith("work kanban task"):
+        return _tool_call("kanban_complete", {"summary": "Done as asked. Evidence: this run's log. It worked."})
+    if "protagine_self" in tools:
+        own_words = re.split(r"<memory-context|\n\n<", last_user, maxsplit=1)[0]
+        ask = ASK.search(own_words)
+        if ask:
+            return _tool_call("protagine_self", {"operation": ask.group(1).lower(), "code": ask.group(2).upper()})
+        if "please approve it" in own_words.lower() and CONTROL["ask_code"]:
+            return _tool_call("protagine_self", {"operation": "yes", "code": CONTROL["ask_code"]})
     asked = TOKEN.findall(last_user[:300])
     if asked and "remember" in last_user.lower():
         return "Noted. I will remember that: " + asked[0]
     if found:
-        return "The token you asked me to remember is " + ", ".join(found[:4]) + "."
+        return "On record: " + ", ".join(found[:4]) + "."
     return "I do not have that on record."
 
 
@@ -81,6 +151,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.rstrip("/").endswith("/models"):
             return self._send(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "fake"}]})
+        if self.path.rstrip("/").endswith("/control"):
+            return self._send(200, dict(CONTROL))
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -90,23 +162,36 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except ValueError:
             body = {"raw": raw.decode("utf-8", "replace")}
-        with open(LOG, "a", encoding="utf-8") as log:
+        if self.path.rstrip("/").endswith("/control"):
+            with _LOCK:
+                CONTROL.update({k: str(v) for k, v in body.items() if k in CONTROL})
+            return self._send(200, dict(CONTROL))
+        with _LOCK, open(LOG, "a", encoding="utf-8") as log:
             log.write(json.dumps({"path": self.path, "at": time.time(), "body": body}) + "\n")
         if not self.path.rstrip("/").endswith("/chat/completions"):
             return self._send(404, {"error": "not found"})
-        text = reply_for(body)
+        reply = reply_for(body)
         ident = "chatcmpl-" + hex(int(time.time() * 1000))[2:]
+        text = reply if isinstance(reply, str) else None
+        calls = reply["tool_calls"] if isinstance(reply, dict) else None
+        finish = "tool_calls" if calls else "stop"
+        message = {"role": "assistant", "content": text}
+        if calls:
+            message["tool_calls"] = calls
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
+            delta = {"role": "assistant", "content": text or ""}
+            if calls:
+                delta["tool_calls"] = [{"index": i, **call} for i, call in enumerate(calls)]
             chunks = [
                 {"id": ident, "object": "chat.completion.chunk", "created": int(time.time()), "model": MODEL,
-                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]},
+                 "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
                 {"id": ident, "object": "chat.completion.chunk", "created": int(time.time()), "model": MODEL,
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                 "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}], "usage": usage},
             ]
             for chunk in chunks:
                 self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
@@ -115,8 +200,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self._send(200, {
             "id": ident, "object": "chat.completion", "created": int(time.time()), "model": MODEL,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}], "usage": usage,
         })
 
 

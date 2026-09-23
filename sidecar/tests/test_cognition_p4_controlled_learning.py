@@ -14,7 +14,6 @@ import pytest
 
 from onekey import required_scope
 from protagine.contacts.comms import CommsLog
-from protagine.initiatives.approval_authority import ApprovalAuthorityStore
 from protagine.intelligence.learning.feedback_store import (
     FeedbackStore,
     UserCorrection,
@@ -310,44 +309,6 @@ def test_one_receipt_cannot_inflate_multiple_exposures(tmp_path, monkeypatch):
             receipt_ref="receipt:one")
 
 
-def test_live_mutation_requires_pregrant_or_bounded_owner_approval(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", "live")
-    params = AdaptiveParamStore(str(tmp_path / "params.db"))
-    params.register("answer.temperature", 0.2, 0.0, 1.0)
-    bstore = BenchmarkStore(str(tmp_path / "benchmark.db"))
-    bstore.register_definition(METRIC)
-    benchmark = SelfhoodBenchmark(bstore)
-    approvals = ApprovalAuthorityStore(tmp_path / "approvals.db")
-    engine = ExperimentEngine(
-        ExperimentStore(str(tmp_path / "experiments.db")),
-        params=params,
-        benchmark=benchmark,
-        approval_authority=approvals,
-        pregranted_ranges={},
-    )
-
-    with pytest.raises(ExperimentApprovalRequired) as needed:
-        _start(engine, assignment_mode="global")
-    proposed = needed.value.experiment
-    request = approvals.get_request(proposed["approval_request_id"])
-    assert request and request["status"] == "pending"
-    assert params.get("answer.temperature") == pytest.approx(0.2)
-
-    approvals.decide(
-        request["request_id"], decision="approve",
-        decision_id="deck:decision-0001",
-        expected_action_digest=request["action_digest"],
-        decided_by="owner:deck",
-        authority_evidence="phone-authenticated-session:test",
-    )
-    running = engine.start(proposed["id"])
-    assert running["status"] == "running"
-    assert running["authority_mode"] == "owner_approved"
-    assert params.get("answer.temperature") == pytest.approx(0.4)
-
-
 def test_incomplete_live_start_is_restored_on_engine_recovery(
     tmp_path, monkeypatch,
 ):
@@ -422,8 +383,6 @@ async def test_legacy_gap_detector_can_only_persist_a_typed_proposal(
     }]
     assert adjustment.result["details"][0]["proposal_id"] ==\
         "exp-proposal-only"
-
-
 
 
 def test_legacy_cpi_missing_dimensions_are_unavailable_not_synthesized(tmp_path):

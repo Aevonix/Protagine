@@ -1,0 +1,336 @@
+"""Outcomes: reconciliation, verification, expectations, feedback, the breaker and the autobiography.
+
+Architecture 3.1 (outcome events), 3.3 (``success_check`` and ``verified``),
+4.1 (autobiography) and 4.6 (implicit feedback). The body reports the state of
+every ``mind:*`` task from its run row; that report is the source of truth
+for ``outcome``. ``verified`` records which verifier ran: the owner, a
+deterministic check over mind-observable state, or a Hermes failure. Only a
+check that actually ran counts.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from protagine.initiatives.models import StoredInitiative
+
+logger = logging.getLogger(__name__)
+
+# The body's task states -> the intention outcome. ``None`` is progress only.
+STATUS_TO_OUTCOME: Dict[str, Optional[str]] = {
+    "done": "done", "completed": "done", "complete": "done", "success": "done",
+    "failed": "failed", "error": "failed", "failure": "failed",
+    "blocked": "blocked",
+    "archived": "cancelled", "cancelled": "cancelled", "canceled": "cancelled",
+    "expired": "expired", "timeout": "expired", "denied": "denied",
+    "running": None, "in_progress": None, "claimed": None, "todo": None, "ready": None,
+    "triage": None, "dispatched": None, "uncertain": "uncertain",
+}
+TERMINAL_OUTCOMES = frozenset({"done", "failed", "expired", "denied", "cancelled", "uncertain"})
+IMPLICIT_VERDICT = {"cancelled": "dismissed", "expired": "ignored", "denied": "dismissed"}
+VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
+
+
+class Autobiography:
+    """Owner-audience ledger entries with ``origin='mind'`` (architecture 4.1).
+
+    ``scope='person'`` under the owner contact, role ``assistant``, no claim
+    extraction: ordinary recall finds them in any later session, and nothing
+    the mind did is ever read as something the owner said.
+    """
+
+    SESSION = "mind"
+
+    def __init__(self, ledger: Any, *, owner_id: str | None, clock=None) -> None:
+        self.ledger = ledger
+        self.owner_id = owner_id
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def record(self, intention_id: str, event: str, text: str, **metadata: Any) -> bool:
+        if self.ledger is None or not self.owner_id or not text.strip():
+            return False
+        now = self.clock()
+        message = {"role": "assistant", "content": text.strip(),
+                   "metadata": {"origin": "mind", "intention_id": intention_id, "event": event, **metadata}}
+        try:
+            return bool(self.ledger.record_source(
+                f"mind:{intention_id}:{event}", contact_id=self.owner_id, session_id=self.SESSION,
+                messages=[message], scope="person", occurred_at=now.isoformat(), derive_claims=False))
+        except Exception as error:
+            logger.warning("autobiography entry not written (%s)", type(error).__name__)
+            return False
+
+
+def evaluate_check(check: Any, *, commitments: Any = None, followups: Any = None,
+                   summary: str = "", result: Any = None) -> Optional[bool]:
+    """A deterministic check over state the mind can observe without tools.
+
+    Returns True or False when the check ran, None when it cannot run (an
+    unknown kind or a store that is not wired), so ``verified`` stays honest.
+    """
+    if isinstance(check, str):
+        try:
+            check = json.loads(check)
+        except ValueError:
+            return None
+    if not isinstance(check, dict):
+        return None
+    kind = str(check.get("kind") or "")
+    if kind == "commitment_resolved":
+        if commitments is None or not check.get("commitment_id"):
+            return None
+        row = commitments.get(str(check["commitment_id"]))
+        if row is None:
+            return None
+        status = row.get("status")
+        if status == "fulfilled":
+            return True
+        if status in {"pending", "overdue"}:
+            return False
+        return None
+    if kind == "reply_recorded":
+        if followups is None or not check.get("wait_id"):
+            return None
+        try:
+            row = followups.get(str(check["wait_id"]))
+        except ValueError:
+            return None
+        return bool(row.get("reply"))
+    if kind == "result_field":
+        field = str(check.get("field") or "")
+        if not field:
+            return None
+        if isinstance(result, dict) and field in result:
+            return bool(result[field])
+        return f"{field}:" in (summary or "") or f'"{field}"' in (summary or "")
+    return None
+
+
+def invalidation_reason(condition: Any, *, commitments: Any = None, followups: Any = None) -> Optional[str]:
+    """Why an intention's ``invalidates_if`` condition holds now, or None while it does not.
+
+    ``commitment:<id>:resolved`` holds once the commitment is fulfilled or
+    cancelled; ``reply_wait:<id>:reply`` once the awaited reply is recorded.
+    An unknown condition, or a store that is not wired, never invalidates.
+    """
+    if not isinstance(condition, str) or condition.count(":") < 2:
+        return None
+    kind, _, rest = condition.partition(":")
+    ident, _, event = rest.rpartition(":")
+    if not ident:
+        return None
+    if kind == "commitment" and event == "resolved" and commitments is not None:
+        row = commitments.get(ident)
+        status = row.get("status") if isinstance(row, dict) else None
+        return f"commitment {ident} is {status}" if status in {"fulfilled", "cancelled"} else None
+    if kind == "reply_wait" and event == "reply" and followups is not None:
+        try:
+            row = followups.get(ident)
+        except ValueError:
+            return None
+        return f"reply wait {ident} has its reply" if isinstance(row, dict) and row.get("reply") else None
+    return None
+
+
+class Outcomes:
+    def __init__(self, store: Any, *, authority: Any = None, feedback: Any = None, expectations: Any = None,
+                 commitments: Any = None, followups: Any = None, autobiography: Autobiography | None = None,
+                 clock=None) -> None:
+        self.store = store
+        self.authority = authority
+        self.feedback = feedback
+        self.expectations = expectations
+        self.commitments = commitments
+        self.followups = followups
+        self.autobiography = autobiography
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.on_breaker_trip = None  # callable(cls, state) set by the tick
+
+    # -- reconciliation -------------------------------------------------------------
+
+    def record(self, intention_id: str, *, status: str, outcome: str | None = None, final: bool | None = None,
+               hermes_ref: str | None = None, summary: str = "", error: str | None = None,
+               verified: str | None = None, result: Any = None, run: Any = None,
+               by: str = "body", implicit_verdict: bool = True) -> Optional[StoredInitiative]:
+        """Apply one body report. Idempotent: a terminal row is left as it is.
+
+        ``status`` is the Hermes (kanban) status. When the body also names the
+        ``outcome`` it read from the task and its run row, that reading is
+        used; ``final: False`` (a failed run that Hermes requeued) is progress
+        and is logged without settling the intention. ``implicit_verdict``
+        False keeps a cancellation the world caused (an obligation that
+        resolved itself) from counting as the owner's dismissal of the type.
+        """
+        row = self.store.get(intention_id)
+        if row is None or not row.kind:
+            return None
+        status_key = str(status or "").strip().lower()
+        outcome_key = str(outcome or "").strip().lower()
+        if outcome_key:
+            resolved = STATUS_TO_OUTCOME.get(outcome_key, outcome_key if outcome_key in TERMINAL_OUTCOMES else "uncertain")
+        else:
+            resolved = STATUS_TO_OUTCOME.get(status_key, "uncertain" if status_key else None)
+        updates: Dict[str, Any] = {}
+        if hermes_ref and hermes_ref != row.hermes_ref:
+            updates["hermes_ref"] = hermes_ref
+            updates["hermes_kind"] = row.hermes_kind if row.hermes_kind not in {None, "none"} else \
+                ("message" if row.kind == "message" else "kanban")
+        if row.outcome in TERMINAL_OUTCOMES:
+            if updates:
+                self.store.update(intention_id, **updates)
+            return self.store.get(intention_id)
+        if final is False and resolved in TERMINAL_OUTCOMES:
+            return self.store.transition(intention_id, row.status, action=f"run_{resolved}", at=self.clock(),
+                                         details={"by": by, "status": status_key, "error": (error or summary or "")[:500],
+                                                  "run": run if isinstance(run, dict) else None}, **updates)
+        if resolved is None:
+            if row.status == "approved" and hermes_ref:
+                return self.store.transition(intention_id, "dispatched", action="bound", at=self.clock(), **updates)
+            if updates:
+                self.store.update(intention_id, **updates)
+            return self.store.get(intention_id)
+        if resolved == "blocked":
+            return self.store.update(intention_id, outcome="blocked", result=summary or error or row.result, **updates)
+        return self._settle(row, resolved, summary=summary, error=error, verified=verified, result=result, run=run,
+                            by=by, updates=updates, implicit_verdict=implicit_verdict)
+
+    def _settle(self, row: StoredInitiative, outcome: str, *, summary: str, verified: str | None,
+                result: Any, by: str, updates: Dict[str, Any], error: str | None = None,
+                run: Any = None, implicit_verdict: bool = True) -> Optional[StoredInitiative]:
+        now = self.clock()
+        check_result = evaluate_check(row.success_check, commitments=self.commitments, followups=self.followups,
+                                      summary=summary, result=result) if row.success_check else None
+        if verified in {"owner", "check", "hermes_failure", "none"}:
+            verifier = verified
+        elif outcome == "failed":
+            verifier = "hermes_failure"
+        elif check_result is not None:
+            verifier = "check"
+        else:
+            verifier = "none"
+        status = {"done": "done", "failed": "failed", "expired": "expired", "denied": "cancelled",
+                  "cancelled": "cancelled", "uncertain": "uncertain"}[outcome]
+        metadata = dict(row.result_metadata or {})
+        if check_result is not None:
+            metadata["check"] = {"passed": check_result, "at": now.isoformat()}
+        if isinstance(run, dict):
+            metadata["run"] = run
+        if error:
+            metadata["error"] = str(error)[:500]
+        stamps = {"done": {"completed_at": now},
+                  "failed": {"failed_at": now, "failed_reason": error or summary or outcome},
+                  "expired": {"cancelled_at": now, "cancelled_reason": "expired"},
+                  "denied": {"cancelled_at": now, "cancelled_by": by, "cancelled_reason": "denied"},
+                  "cancelled": {"cancelled_at": now, "cancelled_by": by, "cancelled_reason": summary or "cancelled"},
+                  "uncertain": {}}[outcome]
+        # A cancellation while the mind is off is the switch, and one the world caused (the
+        # obligation resolved itself) is not the owner's verdict on the type either.
+        enabled = getattr(self.authority, "enabled", True) if self.authority is not None else True
+        verdict = row.verdict or (IMPLICIT_VERDICT.get(outcome) if enabled and implicit_verdict else None)
+        updated = self.store.transition(
+            row.id, status, action=f"outcome_{outcome}", at=now,
+            details={"by": by, "verified": verifier, "check": check_result},
+            outcome=outcome, verified=verifier, result=summary or error or row.result, result_metadata=metadata,
+            verdict=verdict, **stamps, **updates)
+        self._resolve_expectation(updated, outcome, check_result)
+        if verdict and not row.verdict:
+            self._feedback(updated, verdict)
+        if outcome == "failed" and self.authority is not None and updated is not None:
+            self._breaker(updated)
+        if self.autobiography is not None and updated is not None:
+            self.autobiography.record(updated.id, f"outcome_{outcome}", self._narrate(updated, check_result),
+                                      outcome=outcome, verified=verifier)
+        return updated
+
+    # -- owner verdicts ---------------------------------------------------------------
+
+    def rate(self, intention_id: str, verdict: str, *, by: str = "owner") -> Optional[StoredInitiative]:
+        """An explicit verdict: recorded, fed back to the ranker, and ``verified='owner'``
+        when it says whether the outcome was right."""
+        verdict = str(verdict or "").strip().lower()
+        if verdict not in VERDICTS:
+            raise ValueError(f"verdict must be one of {', '.join(VERDICTS)}")
+        row = self.store.get(intention_id)
+        if row is None or not row.kind:
+            return None
+        updates: Dict[str, Any] = {"verdict": verdict}
+        if verdict in {"useful", "not_useful", "wrong"} and row.outcome in TERMINAL_OUTCOMES:
+            updates["verified"] = "owner"
+        updated = self.store.transition(row.id, row.status, action="rated", details={"verdict": verdict, "by": by},
+                                        at=self.clock(), **updates)
+        self._feedback(updated, verdict)
+        if self.autobiography is not None and updated is not None:
+            self.autobiography.record(updated.id, "rated", f"The owner rated '{updated.description}' as {verdict}.",
+                                      verdict=verdict)
+        return updated
+
+    # -- helpers -------------------------------------------------------------------------
+
+    def _feedback(self, row: Optional[StoredInitiative], verdict: str) -> None:
+        if row is None or self.feedback is None:
+            return
+        outcome = {"useful": "actioned", "not_useful": "dismissed", "wrong": "dismissed"}.get(verdict, verdict)
+        keys = [f"{row.type}:{row.drive}"]
+        if row.kind == "message" and row.entity_id:
+            keys.append(f"reach_out:{row.entity_id}")
+        for key in keys:
+            try:
+                self.feedback.record(key, outcome)
+            except Exception as error:
+                logger.warning("feedback not recorded for %s (%s)", key, type(error).__name__)
+
+    def _resolve_expectation(self, row: Optional[StoredInitiative], outcome: str,
+                             check_result: Optional[bool]) -> None:
+        if row is None or self.expectations is None or not row.expectation_id:
+            return
+        if outcome == "done":
+            verdict = "miss" if check_result is False else "hit"
+        elif outcome in {"failed", "expired", "denied", "cancelled"}:
+            verdict = "miss"
+        else:
+            return
+        try:
+            self.expectations.store.resolve(row.expectation_id, verdict)
+        except Exception as error:
+            logger.warning("expectation %s not resolved (%s)", row.expectation_id, type(error).__name__)
+
+    def _breaker(self, row: StoredInitiative) -> None:
+        state = self.authority.breaker_state(row.cls or "internal")
+        if not state.get("tripped"):
+            return
+        note, created = self.store.create_intention(
+            kind="note", type=f"breaker_trip:{row.cls}", title=f"breaker tripped for {row.cls}",
+            drive="upkeep", cls="internal", decision="act", decision_reason=(
+                f"{state['failures']} failures within the window; {row.cls} asks until {state['until']}"),
+            status="done", dedup_key=f"breaker_trip:{row.cls}:{state['until']}", hermes_kind="none",
+            created_at=self.clock())
+        if created == "created":
+            self.store.transition(note.id, "done", action="breaker_trip", outcome="done", verified="none",
+                                  completed_at=self.clock(), at=self.clock())
+            if callable(self.on_breaker_trip):
+                self.on_breaker_trip(row.cls, state)
+
+    @staticmethod
+    def _narrate(row: StoredInitiative, check_result: Optional[bool]) -> str:
+        what = {"task": "task", "message": "message", "goal": "goal", "note": "note"}.get(row.kind or "", "intention")
+        text = f"My {what} '{row.description}' ended {row.outcome}"
+        if row.hermes_ref:
+            text += f" ({row.hermes_ref})"
+        if row.result:
+            text += f": {str(row.result)[:300]}"
+        if check_result is True:
+            text += ". The check confirmed it."
+        elif check_result is False:
+            text += ". The check found it not achieved."
+        elif row.verified == "hermes_failure":
+            text += ". Hermes reported the failure."
+        else:
+            text += ". Unverified."
+        return text
+
+
+__all__ = ["Autobiography", "IMPLICIT_VERDICT", "Outcomes", "STATUS_TO_OUTCOME", "TERMINAL_OUTCOMES",
+           "VERDICTS", "evaluate_check", "invalidation_reason"]

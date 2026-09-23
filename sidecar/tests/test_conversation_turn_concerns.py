@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.autonomy.loop import AutonomyLoop
 from protagine.cognition.goal_spine import (
     CognitionSpine,
     CognitionSpineStore,
@@ -977,38 +976,6 @@ async def test_initiative_capacity_excludes_only_exact_turn_mode_hold(
         )
         assert await engine._adopt_initiatives() == 0
         assert initiatives.completed == []
-
-
-@pytest.mark.asyncio
-async def test_autonomy_runs_turn_reducer_without_disabling_legacy_polling():
-    class Reducer:
-        mode = "live"
-
-        def __init__(self):
-            self.calls = 0
-
-        def run_once(self, **_kwargs):
-            self.calls += 1
-            return {"processed": 1}
-
-    turns = Reducer()
-    loop = AutonomyLoop.__new__(AutonomyLoop)
-    loop._registry = SimpleNamespace(workspace=SimpleNamespace(
-        event_reducer=None,
-        external_event_reducer=None,
-        turn_event_reducer=turns,
-    ))
-    loop.events = SimpleNamespace(get_history=lambda limit: [
-        SimpleNamespace(id="legacy-event-1"),
-    ])
-    loop._last_event_seen_id = None
-    loop.stats = SimpleNamespace(events_processed=0, errors=0)
-
-    await loop._phase_events()
-
-    assert turns.calls == 1
-    assert loop.stats.events_processed == 2
-    assert loop._last_event_seen_id == "legacy-event-1"
 
 
 @pytest.mark.asyncio

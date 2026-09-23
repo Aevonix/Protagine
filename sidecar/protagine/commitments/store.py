@@ -496,11 +496,17 @@ class CommitmentStore:
         source_type: str = "manual",
         source_context: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        *, dedupe: bool = False,
+        *, dedupe: bool = False, allow_overdue: bool = False,
     ) -> Dict[str, Any]:
-        """Create, optionally reusing the same open obligation under one write lock."""
+        """Create, optionally reusing the same open obligation under one write lock.
+
+        ``allow_overdue`` imports an obligation whose deadline has already
+        passed (a promise captured late, after an outage or a backlog): it
+        keeps its original ``due_at`` and starts ``overdue``.
+        """
         commitment_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        status = "pending"
 
         # Validate due_at is in the future AND normalize it to canonical UTC ISO.
         # get_overdue() compares due_at as a STRING against a +00:00 `now`, so a
@@ -514,7 +520,9 @@ class CommitmentStore:
                     due_dt = due_dt.replace(tzinfo=timezone.utc)
                 due_dt = due_dt.astimezone(timezone.utc)
                 if due_dt < datetime.now(timezone.utc):
-                    raise ValueError("due_at must be in the future")
+                    if not allow_overdue:
+                        raise ValueError("due_at must be in the future")
+                    status = "overdue"
                 due_at = due_dt.isoformat()
             except ValueError:
                 raise
@@ -536,7 +544,7 @@ class CommitmentStore:
                         source_type, source_context, priority, metadata)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (commitment_id, person_id, description, now, due_at,
-                     "pending", source_type, source_context, priority, meta_json),
+                     status, source_type, source_context, priority, meta_json),
                 )
                 conn.commit()
                 row = conn.execute(

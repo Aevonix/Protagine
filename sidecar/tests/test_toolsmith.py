@@ -599,8 +599,6 @@ async def test_api_graduation_rejects_anonymous_and_digest_changes(tmp_path):
         assert response.json()["detail"]["code"] == "artifact_digest_mismatch"
 
 
-
-
 def test_graduation_authority_rejects_expired_and_multi_use():
     now = datetime.now(timezone.utc)
     base = {
@@ -652,16 +650,3 @@ async def test_graduation_authority_cannot_be_rebound_to_another_tool(tmp_path):
     assert reg.get(second.tool_id).status == ToolStatus.SHADOW
 
 
-async def test_act_first_never_auto_graduates_tool(tmp_path):
-    from protagine.autonomy.loop import AutonomyLoop
-    from protagine.toolsmith.miner import ToolCandidate
-    ts, reg, _ = make_toolsmith(tmp_path, stage="act_first")
-    tool = await ts.draft(ToolCandidate("s", "d", "d", 6))
-    await ts.verify(tool)
-    await qualify_tool(ts, reg, tool)
-    fake_loop = SimpleNamespace(
-        _registry=SimpleNamespace(delivery=None),
-        _route_reachout_delivery=None,
-    )
-    await AutonomyLoop._toolsmith_propose_graduations(fake_loop, ts)
-    assert reg.get(tool.tool_id).status == ToolStatus.SHADOW

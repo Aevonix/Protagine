@@ -1,30 +1,43 @@
 """Model tools: ``protagine_self``, ``protagine_people`` and the memory tools.
 
 Tool handlers receive ``session_id``; the session map turns it into a sender.
-Mutations are accepted only from the owner. ``yes``/``no`` also need the ask
-code inside the owner's own message for that turn, so neither a guest nor an
-injected page can approve anything.
+Mutations are accepted only from the owner's own interactive session: never
+from a kanban worker, and never from a cron run, whose prompt is a stored job
+anyone with the tool could have scheduled. ``yes``/``no`` also need the typed
+ask code inside the owner's own message for that turn, so neither a guest, a
+worker, a cron job nor an injected page can approve anything (architecture
+7.7, 7.10).
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 from typing import Any, Callable
 
-from .body import mind_status
+from .body import mind_state
 from .capture import SessionMap
 from .client import ProtagineClient, Settings, SidecarUnavailable
 from .commands import ROUTES_MISSING
 
+ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
+VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
+# Turns nobody typed: stock cron runs its agents with ``platform="cron"`` and no sender.
+AUTOMATED_PLATFORMS = frozenset({"cron"})
+
 SELF_SCHEMA = {
     "name": "protagine_self",
-    "description": "The agent's own mind: status, the audit log, why an intention was decided, open asks, "
-                   "and answering an ask (yes/no <code>) for the owner. Mutations are refused for anyone "
-                   "but the owner.",
+    "description": "The agent's own mind: its state (level, budgets, open asks with their codes), the audit "
+                   "log, why an intention was decided, rating an intention's usefulness, and answering an "
+                   "ask (yes/no with its code) for the owner. Mutations are refused for anyone but the owner, "
+                   "and an answer is accepted only when the owner's own message contains the code.",
     "parameters": {"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["status", "log", "why", "asks", "yes", "no"]},
-        "id": {"type": "string", "description": "Intention id for why"},
-        "code": {"type": "string", "description": "Ask code for yes/no"}},
+        "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
+        "id": {"type": "string", "description": "Intention id for why and rate"},
+        "verdict": {"type": "string", "enum": list(VERDICTS), "description": "Rating for rate"},
+        "code": {"type": "string", "description": "Ask code for yes/no, as the owner typed it"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Log entries"}},
         "required": ["operation"], "additionalProperties": False},
 }
 PEOPLE_SCHEMA = {
@@ -76,6 +89,13 @@ class Tools:
     # -- helpers ------------------------------------------------------------------
 
     def _owner(self, session_id: str) -> bool:
+        """The owner's own interactive session: never a kanban worker, whose turns carry no
+        sender, and never a cron run, whose prompt is a stored job rather than a typed message."""
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return False
+        info = self.sessions.get(session_id)
+        if info is not None and info.platform.strip().lower() in AUTOMATED_PLATFORMS:
+            return False
         return self.sessions.is_owner(session_id) is True
 
     def _mind(self, method: str, path: str, **kwargs: Any) -> str:
@@ -86,7 +106,7 @@ class Tools:
         except SidecarUnavailable:
             return _error("the sidecar is unreachable")
         if response.status_code == 404:
-            return _error(ROUTES_MISSING)
+            return _error(ROUTES_MISSING if not response.text else f"not found: {response.text[:200]}")
         if not response.is_success:
             return _error(f"sidecar HTTP {response.status_code}")
         return response.text
@@ -96,29 +116,43 @@ class Tools:
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
-        if operation == "status":
-            detail = mind_status(self.client) or {}
+        if operation in {"state", "status"}:
+            detail = mind_state(self.client) or {}
             mind = self.settings.mind()
-            return _json({"enabled": mind.get("enabled", True) is not False,
-                          "autonomy": mind.get("autonomy", "standard"),
-                          "sidecar_reachable": self.client.health() is not None, **detail})
+            return _json({"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
+                          "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
+                          "sidecar_reachable": self.client.health() is not None,
+                          "mind_routes": self.client.has_mind_routes() is True, **detail})
         if operation == "log":
-            return self._mind("GET", "/v1/mind/log", params={"limit": 20})
-        if operation == "asks":
-            return self._mind("GET", "/v1/mind/asks")
+            limit = max(1, min(int(args.get("limit") or 20), 100))
+            return self._mind("GET", "/v1/mind/log", params={"limit": limit})
         if operation == "why":
-            return self._mind("GET", f"/v1/mind/log/{args.get('id') or ''}") if args.get("id") else _error("id is required")
-        if operation in {"yes", "no"}:
-            code = str(args.get("code") or "").strip()
-            if not code:
-                return _error("code is required")
+            return self._mind("GET", f"/v1/mind/why/{args.get('id')}") if args.get("id") else _error("id is required")
+        if operation == "rate":
+            if not args.get("id") or args.get("verdict") not in VERDICTS:
+                return _error(f"id and verdict ({'|'.join(VERDICTS)}) are required")
             if not self._owner(session_id):
-                return _error("only the owner can answer an ask")
-            info = self.sessions.get(session_id)
-            if info is None or code.lower() not in info.user_message.lower():
-                return _error("the ask code must appear in the owner's own message")
-            return self._mind("POST", f"/v1/mind/asks/{code}/{operation}")
+                return _error("only the owner can rate an intention")
+            return self._mind("POST", "/v1/mind/rate", json={"id": str(args["id"]), "verdict": args["verdict"]})
+        if operation in {"yes", "no"}:
+            return self._answer_ask(operation, str(args.get("code") or ""), session_id)
         return _error("unknown operation")
+
+    def _answer_ask(self, answer: str, code: str, session_id: str) -> str:
+        """``POST /v1/mind/decide`` only for the owner's own turn whose message carries the typed code."""
+        code = code.strip().upper()
+        if not code:
+            return _error("code is required")
+        if not ASK_CODE.fullmatch(code):
+            return _error("the ask code is 3 to 8 letters or digits, as shown in the notice")
+        if not self._owner(session_id):
+            return _error("only the owner can answer an ask")
+        info = self.sessions.get(session_id)
+        if info is None or not re.search(rf"(?<![A-Z0-9]){re.escape(code)}(?![A-Z0-9])", info.user_message.upper()):
+            return _error("the ask code must appear in the owner's own message")
+        return self._mind("POST", "/v1/mind/decide", json={
+            "code": code, "answer": answer, "session_id": session_id, "message": info.user_message[:8000],
+            "contact_id": self.sessions.contact_id(session_id) or self.settings.owner_contact_id() or None})
 
     # -- protagine_people ----------------------------------------------------------
 
@@ -192,4 +226,5 @@ class Tools:
         return response.text
 
 
-__all__ = ["FORGET_SCHEMA", "PEOPLE_SCHEMA", "SEARCH_SCHEMA", "SELF_SCHEMA", "Tools"]
+__all__ = ["ASK_CODE", "AUTOMATED_PLATFORMS", "FORGET_SCHEMA", "PEOPLE_SCHEMA", "SEARCH_SCHEMA", "SELF_SCHEMA",
+           "Tools", "VERDICTS"]

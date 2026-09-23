@@ -41,6 +41,38 @@ def generic_agent_job_claims_enabled() -> bool:
     return False
 
 
+def action_digest(*, job_id: str, job_type: str, payload: Any) -> str:
+    """The immutable identity of one agent_action job: a digest of its envelope."""
+    from protagine.task_queue.work_control import digest_json
+
+    return digest_json({"schema": "AgentActionBindingV1", "job_id": str(job_id),
+                        "job_type": str(job_type), "payload": payload})
+
+
+def action_digest(*, job_id: str, job_type: str, payload: Any) -> str:
+    """The immutable identity of one agent_action job: a digest of its envelope."""
+    from protagine.task_queue.work_control import digest_json
+
+    return digest_json({"schema": "AgentActionBindingV1", "job_id": str(job_id),
+                        "job_type": str(job_type), "payload": payload})
+
+
+def action_digest(*, job_id: str, job_type: str, payload: Any) -> str:
+    """The immutable identity of one agent_action job: a digest of its envelope."""
+    from protagine.task_queue.work_control import digest_json
+
+    return digest_json({"schema": "AgentActionBindingV1", "job_id": str(job_id),
+                        "job_type": str(job_type), "payload": payload})
+
+
+def action_digest(*, job_id: str, job_type: str, payload: Any) -> str:
+    """The immutable identity of one agent_action job: a digest of its envelope."""
+    from protagine.task_queue.work_control import digest_json
+
+    return digest_json({"schema": "AgentActionBindingV1", "job_id": str(job_id),
+                        "job_type": str(job_type), "payload": payload})
+
+
 def expected_agent_action_routes(job: Any) -> tuple[str, ...]:
     """Derive exact executor lanes from server-known schema/action policy."""
 
@@ -60,30 +92,18 @@ def expected_agent_action_routes(job: Any) -> tuple[str, ...]:
 
     action_hint = str(payload.get("action_hint") or "").strip()
     if action_hint:
-        from protagine.initiatives.action_registry import (
-            RiskTier,
-            get_action,
-        )
+        # There is no server-owned action registry any more: the declared
+        # risk is the risk, and the effect capabilities decide the lane.
+        from protagine.task_queue.governor import job_declares_effect
 
-        spec = get_action(action_hint)
-        if spec is not None:
-            canonical_risk = spec.risk.value
-            declared_risk = str(payload.get("risk") or "").strip().lower()
-            if declared_risk and declared_risk != canonical_risk:
+        declared_risk = str(payload.get("risk") or "").strip().lower()
+        if declared_risk == "read_only":
+            if job_declares_effect(job):
                 raise ValueError(
-                    "agent_action risk does not match server registry"
+                    "read-only agent action declares effect capabilities"
                 )
-            if spec.risk is RiskTier.READ_ONLY:
-                from protagine.task_queue.governor import (
-                    job_declares_effect,
-                )
-                if job_declares_effect(job):
-                    raise ValueError(
-                        "read-only agent action declares effect capabilities"
-                    )
-                return (AGENT_SYNC_ROUTE,)
-            return (ACTION_PLANE_ROUTE,)
-        raise ValueError("agent_action action_hint is not server-registered")
+            return (AGENT_SYNC_ROUTE,)
+        return (ACTION_PLANE_ROUTE,)
 
     from protagine.task_queue.governor import job_declares_effect
 
@@ -107,14 +127,6 @@ def bind_agent_action_routes(
 
     expected = expected_agent_action_routes(job)
     payload = dict(getattr(job, "payload", None) or {})
-    action_hint = str(payload.get("action_hint") or "").strip()
-    if action_hint and payload.get("schema") != "WorkOrderV1":
-        from protagine.initiatives.action_registry import get_action
-
-        spec = get_action(action_hint)
-        if spec is not None:
-            payload["risk"] = spec.risk.value
-            job.payload = payload
     capabilities = list(getattr(job, "capabilities", None) or ())
     names = {
         str(getattr(capability, "name", capability))
@@ -186,20 +198,15 @@ def bind_agent_action_routes(
             "action_result_contract": "ExecutionResultV1",
         })
     elif expected == (ACTION_PLANE_ROUTE,):
-        from protagine.initiatives.approval_authority import (
-            build_action_binding,
-        )
-
-        binding = build_action_binding(
-            job_id=str(getattr(job, "job_id", "")),
-            job_type=str(
-                getattr(getattr(job, "job_type", None), "value", "")
-                or getattr(job, "job_type", "")
-            ),
-            payload=payload,
-        )
         tags.update({
-            "action_digest": binding.action_digest,
+            "action_digest": action_digest(
+                job_id=str(getattr(job, "job_id", "")),
+                job_type=str(
+                    getattr(getattr(job, "job_type", None), "value", "")
+                    or getattr(job, "job_type", "")
+                ),
+                payload=payload,
+            ),
             "action_result_contract": "ActionReceiptAttestationV1",
         })
     owners = {

@@ -38,7 +38,6 @@ from protagine.api.schemas.host import (
     HostConfigureResponse,
     ModelInfo,
     ModelListResponse,
-    AutonomyStatusResponse,
     BackfillRequest,
     BackfillResponse,
     BriefingListResponse,
@@ -74,8 +73,6 @@ from protagine.api.schemas.host import (
     TemporalContactsResponse,
     TimelineEvent,
     TimelineResponse,
-    DeliveryListResponse,
-    DeliveryMarkRequest,
     EmbedHealthResponse,
     EntityListResponse,
     EntityQueryRequest,
@@ -364,6 +361,20 @@ def set_consolidator(consolidator) -> None:
     _consolidator = consolidator
 
 
+def _mind():
+    """The running mind, or None (wired by the server lifespan)."""
+    from protagine.api.routers.mind import get_mind
+    return get_mind()
+
+
+def _mind_posture() -> tuple[str, bool]:
+    """(autonomy level, running) for the status routes that used to read the loop."""
+    mind = _mind()
+    if mind is None:
+        return "unknown", False
+    return str(mind.level), bool(mind.enabled)
+
+
 _llm_router = None
 
 
@@ -422,8 +433,6 @@ def supported_capabilities() -> List[str]:
         caps.append("drive_governance")
     if _research_pipeline is not None:
         caps.append("research")
-    if _delivery_bridge is not None:
-        caps.append("delivery")
     if _connection_discoverer is not None:
         caps.append("synthesis")
     if _learner is not None:
@@ -434,8 +443,8 @@ def supported_capabilities() -> List[str]:
         caps.append("identity")
     if _secrets_manager is not None:
         caps.append("secrets")
-    if _autonomy_loop is not None:
-        caps.append("autonomy")
+    if _mind() is not None:
+        caps.append("mind")
     if _session_store is not None:
         caps.append("sessions")
     if _task_queue is not None:
@@ -733,18 +742,13 @@ async def health() -> HostHealthResponse:
         notes["secrets"] = "SecretsManager wired"
     if _research_pipeline is not None:
         notes["research"] = "ResearchPipeline wired"
-    if _delivery_bridge is not None:
-        notes["delivery"] = "ProactiveDeliveryBridge wired"
     if _connection_discoverer is not None:
         notes["synthesis"] = "ConnectionDiscoverer wired"
     if _learner is not None:
         notes["learning"] = "ContinuousLearner wired"
-    if _autonomy_loop is not None:
-        running = getattr(_autonomy_loop, '_running', False)
-        if running:
-            notes["autonomy"] = f"AutonomyLoop running (ticks={getattr(_autonomy_loop.stats, 'ticks', 0)})"
-        else:
-            notes["autonomy"] = "AutonomyLoop wired (not started)"
+    mind = _mind()
+    if mind is not None:
+        notes["mind"] = f"mind {'on' if mind.enabled else 'off'} (autonomy {mind.level}, ticks={mind.ticks})"
     if _agent_bridge is not None:
         if getattr(_agent_bridge, "is_running", False):
             s = getattr(_agent_bridge, "stats", {})
@@ -4021,37 +4025,7 @@ async def _process_turn_sync(
     except Exception:
         logger.debug("cognition trigger from turn_sync failed", exc_info=True)
 
-    # Inline introspection (best-effort, non-blocking). Runs the same per-turn judgment
-    # in-process against a configured local LLM and records owed follow-ups directly —
-    # the path that works when no host plugin consumes the cognition.requested event.
-    try:
-        from protagine.cognition.introspection import introspect_enabled, run_turn_introspection
-        if introspect_enabled() and _commitment_store is not None and not _is_system_turn and (
-                body.user_message is not None or body.assistant_message is not None):
-            _existing = []
-            _rejections = []
-            try:
-                _existing = _commitment_store.get_pending_for_person(body.context.contact_id) or []
-            except Exception:
-                pass
-            try:
-                # Negative examples: items the owner/agent recently judged
-                # invalid or duplicate — the extractor must not re-record them.
-                _rejections = _commitment_store.recent_rejections(limit=6) or []
-            except Exception:
-                pass
-            _spawn_task(run_turn_introspection(
-                user_message=(getattr(body.user_message, "content", "") or "") if body.user_message else "",
-                assistant_message=(getattr(body.assistant_message, "content", "") or "")
-                                  if body.assistant_message else "",
-                conversation_text=body.summary or "",
-                person_id=body.context.contact_id,
-                existing_commitments=_existing,
-                commitment_store=_commitment_store,
-                recent_rejections=_rejections,
-            ))
-    except Exception:
-        logger.debug("inline introspection from turn_sync failed", exc_info=True)
+    # Commitment capture runs in the projection worker (commitments/extract.py) on the router.
 
     # Track last user message for concurrent-session safety (v0.13.0)
     if body.user_message is not None:
@@ -6643,47 +6617,6 @@ async def list_research(limit: int = 20, status_filter: Optional[str] = Query(No
 
 
 # ---------------------------------------------------------------------------
-# Delivery
-# ---------------------------------------------------------------------------
-
-_delivery_bridge = None
-
-def set_delivery_bridge(bridge) -> None:
-    global _delivery_bridge
-    _delivery_bridge = bridge
-
-
-@router.get("/delivery/pending", response_model=DeliveryListResponse)
-async def list_pending_deliveries(gateway_id: str = "", limit: int = 20) -> DeliveryListResponse:
-    if _delivery_bridge is None:
-        raise HTTPException(
-            status_code=503,
-            detail="delivery_bridge_not_initialized",
-        )
-    try:
-        pending = _delivery_bridge.get_pending(gateway_id=gateway_id, limit=limit)
-        return DeliveryListResponse(pending=pending)
-    except Exception as exc:
-        logger.warning("list_pending_deliveries failed: %s", exc)
-        return DeliveryListResponse(pending=[])
-
-
-@router.post("/delivery/mark-sent")
-async def mark_delivery_sent(body: DeliveryMarkRequest) -> dict:
-    if _delivery_bridge is None:
-        raise HTTPException(
-            status_code=503,
-            detail="delivery_bridge_not_initialized",
-        )
-    try:
-        ok = _delivery_bridge.mark_sent(body.delivery_id)
-        return {"ok": ok}
-    except Exception as exc:
-        logger.warning("mark_delivery_sent failed: %s", exc)
-        return {"ok": False}
-
-
-# ---------------------------------------------------------------------------
 # Synthesis
 # ---------------------------------------------------------------------------
 
@@ -8866,19 +8799,14 @@ async def charter_transition_approval_readiness(request: Request) -> dict:
             "invalid_hidden_count": 0,
             "blockers": ["drive_governance_unavailable"],
         }
-    from protagine.initiatives.approval_authority import authority_mode
-
     try:
         inventory = _drive_governance.transition_approval_inventory()
     except ValueError as exc:
         raise _governance_error(exc) from exc
     projections = inventory["requests"]
-    selected_authority_mode = authority_mode()
     blockers = []
     if _drive_governance.mode not in {"bootstrap", "live"}:
         blockers.append("drive_governance_not_authoritative")
-    if selected_authority_mode == "invalid":
-        blockers.append("approval_authority_mode_invalid")
     if _drive_governance.approval_store is None:
         blockers.append("approval_authority_store_unavailable")
     approved_unapplied = sum(
@@ -8895,11 +8823,9 @@ async def charter_transition_approval_readiness(request: Request) -> dict:
     invalid_hidden = int(inventory["invalid_hidden_count"])
     if invalid_hidden:
         blockers.append("invalid_hidden_transition_approval")
-    route_ready = bool(
-        _drive_governance.mode in {"bootstrap", "live"}
-        and selected_authority_mode in {"shadow", "enforce"}
-        and _drive_governance.approval_store is not None
-    )
+    # The queue approval ledger is gone; charter transitions wait for the
+    # mind's asks, so no approval store is ever wired here.
+    route_ready = False
     return {
         "schema": "ProtagineCharterApprovalReadinessV1",
         "version": 1,
@@ -8908,7 +8834,7 @@ async def charter_transition_approval_readiness(request: Request) -> dict:
         "route_ready": route_ready,
         "status": "ready" if not blockers else "blocked",
         "mode": _drive_governance.mode,
-        "authority_mode": selected_authority_mode,
+        "authority_mode": "removed",
         "pending_count": sum(
             item["status"] == "pending" for item in projections
         ),
@@ -9732,44 +9658,16 @@ async def get_autonomy_posture(request: Request) -> dict:
             ("PROTAGINE_WORKERS_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_DIRECTED_MODE", ("off", "dry_run", "live"), "dry_run"),
             ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
-            ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "off"),
+            ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "on"),
             ("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off"),
         ):
             if valid == ("true", "false"):
                 posture[name] = str(env_bool(name, fallback == "true")).lower()
             else:
                 posture[name] = env_choice(name, valid, fallback)
-        from protagine.initiatives.approval_authority import (
-            ApprovalAuthorityStore,
-        )
-        posture["grant_envelope"] = ApprovalAuthorityStore(
-            grant_envelope=getattr(request.app.state, "grant_envelope", None),
-        ).grant_posture()
-        # The loop mode decides whether the subsystems ever get a tick at
-        # all; report it so the doctor can flag an incoherent posture.
-        # Prefer the RUNNING loop's resolved mode over the raw env default.
-        try:
-            if _autonomy_loop is not None:
-                posture["PROTAGINE_AUTONOMY_MODE"] = _autonomy_loop.config.mode.value
-                posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = getattr(
-                    _autonomy_loop.config, "mode_source", "") or "default"
-            else:
-                # No running loop: mirror AutonomyConfig.from_env's mode
-                # resolution (env > legacy tick > default).
-                raw = (os.environ.get("PROTAGINE_AUTONOMY_MODE") or "").strip().lower()
-                if raw:
-                    posture["PROTAGINE_AUTONOMY_MODE"] = (
-                        raw if raw in ("reactive", "proactive") else "reactive")
-                    posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "env"
-                else:
-                    if os.environ.get("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS"):
-                        posture["PROTAGINE_AUTONOMY_MODE"] = "proactive"
-                        posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "legacy_tick"
-                    else:
-                        posture["PROTAGINE_AUTONOMY_MODE"] = "reactive"
-                        posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "default"
-        except Exception:
-            pass
+        mind = _mind()
+        posture["mind.autonomy"] = mind.level if mind is not None else "unknown"
+        posture["mind.enabled"] = bool(mind is not None and mind.enabled)
         return {"available": True, "posture": posture}
     except Exception as exc:
         return {"available": False, "error": str(exc)}
@@ -10753,11 +10651,9 @@ async def secrets_delete(body: SecretDeleteRequest) -> SecretDeleteResponse:
 
 
 # ---------------------------------------------------------------------------
-# Autonomy
+# Retrieval, sessions and queue wiring
 # ---------------------------------------------------------------------------
 
-_autonomy_loop = None
-_autonomy_task = None
 _reranker = None
 _context_recall_selector = None
 _session_store = None
@@ -10765,147 +10661,9 @@ _task_queue = None
 _session_report_store = None
 _agent_bridge = None
 
-def set_autonomy_loop(loop) -> None:
-    global _autonomy_loop
-    _autonomy_loop = loop
-
-
 def set_agent_bridge(bridge) -> None:
     global _agent_bridge
     _agent_bridge = bridge
-
-
-_scheduler = None
-
-
-def set_scheduler(scheduler) -> None:
-    global _scheduler
-    _scheduler = scheduler
-
-
-@router.get("/autonomy/schedule")
-async def list_schedules():
-    if _scheduler is None:
-        return {"schedules": []}
-    return {"schedules": [s.to_dict() for s in _scheduler.list_schedules()]}
-
-
-@router.post("/autonomy/schedule/{schedule_id}/enable")
-async def enable_schedule(schedule_id: str):
-    if _scheduler is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    if _scheduler.enable(schedule_id):
-        return {"status": "enabled"}
-    raise HTTPException(status_code=404, detail="Schedule not found")
-
-
-@router.post("/autonomy/schedule/{schedule_id}/disable")
-async def disable_schedule(schedule_id: str):
-    if _scheduler is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    if _scheduler.disable(schedule_id):
-        return {"status": "disabled"}
-    raise HTTPException(status_code=404, detail="Schedule not found")
-
-
-@router.get("/autonomy/status", response_model=AutonomyStatusResponse)
-async def autonomy_status() -> AutonomyStatusResponse:
-    if _autonomy_loop is None:
-        return AutonomyStatusResponse()
-    try:
-        s = _autonomy_loop.status()
-        return AutonomyStatusResponse(
-            running=s.get("running", False),
-            mode=s.get("mode", "reactive"),
-            timezone=s.get("timezone", "UTC"),
-            in_quiet_hours=s.get("in_quiet_hours", False),
-            ticks=s.get("stats", {}).get("ticks", 0),
-            events_processed=s.get("stats", {}).get("events_processed", 0),
-            goals_checked=s.get("stats", {}).get("goals_checked", 0),
-            initiatives_generated=s.get("stats", {}).get("initiatives_generated", 0),
-            actions_executed=s.get("stats", {}).get("actions_executed", 0),
-            errors=s.get("stats", {}).get("errors", 0),
-            phases_cancelled=s.get("stats", {}).get("phases_cancelled", 0),
-            last_cancelled_phase=s.get("stats", {}).get("last_cancelled_phase"),
-            phases=s.get("phases"),
-            config=s.get("config"),
-        )
-    except Exception as exc:
-        logger.warning("autonomy_status failed: %s", exc)
-        return AutonomyStatusResponse()
-
-
-@router.post("/autonomy/start", response_model=AutonomyStatusResponse)
-async def autonomy_start() -> AutonomyStatusResponse:
-    global _autonomy_task
-    if _autonomy_loop is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    if _autonomy_loop.is_running:
-        return await autonomy_status()
-    try:
-        _autonomy_task = asyncio.create_task(_autonomy_loop.start())
-        # Give it a moment to start
-        await asyncio.sleep(0.1)
-        return await autonomy_status()
-    except Exception as exc:
-        logger.warning("autonomy_start failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/autonomy/stop", response_model=AutonomyStatusResponse)
-async def autonomy_stop() -> AutonomyStatusResponse:
-    global _autonomy_task
-    if _autonomy_loop is None:
-        return AutonomyStatusResponse()
-    try:
-        await _autonomy_loop.stop()
-        if _autonomy_task is not None:
-            try:
-                await asyncio.wait_for(_autonomy_task, timeout=5)
-            except asyncio.TimeoutError:
-                logger.warning("Autonomy loop did not stop within timeout")
-            _autonomy_task = None
-        return await autonomy_status()
-    except Exception as exc:
-        logger.warning("autonomy_stop failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/autonomy/cycle", response_model=dict)
-async def autonomy_cycle() -> dict:
-    """Trigger a single autonomy tick for testing.
-
-    In reactive mode this runs _tick() directly.
-    In proactive mode it just wakes the loop early.
-    """
-    if _autonomy_loop is None:
-        raise HTTPException(status_code=501, detail=_NOT_WIRED)
-    try:
-        mode = (_autonomy_loop.config.mode.value
-                if getattr(_autonomy_loop, "config", None) else "unknown")
-        # In reactive mode the loop isn't actively ticking — run one directly and
-        # the DB reflects the tick on return. In proactive mode we only WAKE the
-        # loop: the tick (incl. job-writeback, phase 6c near the end) runs async,
-        # so the DB is NOT yet updated when this returns. Callers/e2e tests must
-        # poll rather than read immediately — `ran_synchronously` says which.
-        ran_synchronously = mode == "reactive"
-        if ran_synchronously:
-            await _autonomy_loop._tick()
-        else:
-            _autonomy_loop.wake()
-        status = _autonomy_loop.status()
-        return {
-            "completed": True,
-            "mode": mode,
-            "ran_synchronously": ran_synchronously,
-            "note": (None if ran_synchronously else
-                     "proactive mode: loop woken; tick runs asynchronously, "
-                     "DB not yet updated — poll for results"),
-            "result": status,
-        }
-    except Exception as exc:
-        logger.warning("autonomy_cycle failed: %s", exc)
-        return {"completed": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -12104,6 +11862,13 @@ def _wm_rel_to_response(rel) -> WorldRelationshipResponse:
 _agent_store = None
 _invite_store = None
 _initiative_store = None
+_initiative_engine = None
+
+
+def set_initiative_engine(engine) -> None:
+    """The volatile-context rebuilder; unwired until the drives milestone."""
+    global _initiative_engine
+    _initiative_engine = engine
 _assignment_engine = None
 _websocket_manager = None
 
@@ -12681,11 +12446,7 @@ async def refresh_initiative_context(initiative_id: str) -> InitiativeResponse:
 
     from protagine.initiatives.context_freshness import DURABLE, durability_for
 
-    engine = None
-    if _autonomy_loop is not None:
-        registry = getattr(_autonomy_loop, "_registry", None)
-        if registry is not None:
-            engine = getattr(registry, "initiative_engine", None)
+    engine = _initiative_engine
 
     fresh = None
     if engine is not None and hasattr(engine, "rebuild_context"):
@@ -12940,11 +12701,6 @@ async def respond_to_initiative(
             initiative_id, action, exc,
         )
 
-    # If acknowledged, also clear from delivery bridge
-    if action == "acknowledged" and _delivery_bridge is not None:
-        if hasattr(_delivery_bridge, "acknowledge_delivery"):
-            _delivery_bridge.acknowledge_delivery(initiative_id)
-
     _initiative_store.log_history(
         initiative_id,
         action=f"llm_{action}",
@@ -13010,8 +12766,8 @@ async def agent_snapshot() -> AgentSnapshotResponse:
         ),
         failed_count=len(failed),
         recently_completed=[_map_initiative_to_schema(i) for i in recent],
-        autonomy_mode=_autonomy_loop.config.mode.value if _autonomy_loop else "unknown",
-        autonomy_running=_autonomy_loop.is_running if _autonomy_loop else False,
+        autonomy_mode=_mind_posture()[0],
+        autonomy_running=_mind_posture()[1],
         last_tick_age_minutes=tick_age,
         flags=flags,
     )
@@ -13224,8 +12980,8 @@ async def context_digest(
 
     # Map initiatives (module-level helper extracted from agent-snapshot)
     system_state = AgentSnapshotSystemState(
-        autonomy_running=_autonomy_loop.is_running if _autonomy_loop else False,
-        mode=_autonomy_loop.config.mode.value if _autonomy_loop else "unknown",
+        autonomy_running=_mind_posture()[1],
+        mode=_mind_posture()[0],
         last_tick_age_minutes=tick_age,
         silence_hours=silence_flags,
         stale_flags=stale_flags,

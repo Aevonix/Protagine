@@ -110,16 +110,29 @@ router: {base_url: http://127.0.0.1:8000/v1, model: my-model, embed_url: "", emb
 owner: {contact_id: "<created by init>"}
 mind:
   enabled: true                      # the off switch
-  autonomy: standard                 # off | suggest | standard | trusted
+  autonomy: suggest                  # off | suggest | standard | trusted
   deny:
     commands: []                     # globs written to the worker's approvals.deny
     tools: []                        # exact tool names blocked in mind-originated runs
     text: []                         # regexes over intention, message and tool-argument text
   worker_toolsets: [web, file, session_search, memory, todo]
+  budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
+            contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
+            llm_tokens_per_day: 200000, task_max_runtime_s: 600, task_max_retries: 1}
+  quiet_hours: "22:00-07:00"         # owner notices wait; tasks and the digest do not
+  ask_expires_hours: 72              # silence = no
+  breaker: {failures: 3, window_hours: 24, demotion_hours: 72}
+  act_threshold: 0.6                 # the ranker's effective-score floor
+  digest_hour: 8                     # local hour after which the daily digest goes out
+  stale_task_hours: 72               # open board tasks idle longer are reported to the mind
   faculties: {initiative: true, people: true, affect: true, opinions: true, broadcast: true,
               semantic_recall: false, consolidation: true, self_narrative: true, lessons: true,
               skills: false}
 ```
+
+The mind itself (the tick, authority, asks, the audit log, the outbox and the
+off switch) and the `protagine mind` command are described in
+[docs/MIND.md](MIND.md).
 
 A few environment variables override the file for one process:
 `PROTAGINE_HOME` (the instance directory), `PROTAGINE_SIDECAR_HOST`,

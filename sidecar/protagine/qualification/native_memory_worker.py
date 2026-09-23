@@ -11,12 +11,89 @@ import time
 from unittest.mock import patch
 
 
+MIND_FACULTIES = ('initiative', 'people', 'affect', 'opinions', 'broadcast', 'semantic_recall',
+                  'consolidation', 'self_narrative', 'lessons', 'skills')
+WORKER_PROFILE = 'protagine-act'
+
+
+def mind_section(enabled):
+    """The ``mind`` section of the disposable ``protagine.yaml``.
+
+    Off in the plain plugin arm. The initiative arm turns the mind on at
+    autonomy ``standard`` with only the initiative faculty; quiet hours and the
+    daily digest are off because an episode's clock advance would otherwise
+    hold or add owner notices that have nothing to do with the scenario.
+    """
+    if not enabled:
+        return {'enabled': False}
+    return {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24,
+            'faculties': {name: name == 'initiative' for name in MIND_FACULTIES}}
+
+
+def mind_clock():
+    """The body clock: ``time.time`` as the paired body shifts it, as an aware UTC datetime."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(time.time(), timezone.utc)
+
+
 @contextmanager
-def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, overlay=None):
+def serve_mind(app, state, person, section):
+    """A real Mind over this arm's stores, on ``/v1/mind`` next to the host routes.
+
+    The stores the host routes already own (the commitment store, contacts and
+    the ledger) are shared; the intention, feedback and expectation stores live
+    in the same ``memory-state`` directory. The Mind's own timer is never
+    started: the body tick calls ``POST /v1/mind/tick`` through the plugin's
+    ``tick()``, so intentions form in lockstep with the episode's clock.
+    """
+    from protagine.api.routers import host
+    from protagine.api.routers import mind as mind_router
+    from protagine.feedback import TypeFeedbackStore
+    from protagine.initiatives.store import InitiativeStore
+    from protagine.mind import Mind
+    from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
+    from protagine.turns import get_turn_idempotency_ledger
+    directory = state / 'memory-state'
+    directory.mkdir(parents=True, exist_ok=True)
+    store = InitiativeStore(state_dir=directory)
+    try:
+        mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
+                    commitments=host._commitment_store,
+                    feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
+                    expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
+                    contacts=getattr(host, '_contacts_store', None),
+                    ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False)
+        mind_router.set_mind(mind)
+        yield mind
+    finally:
+        mind_router.set_mind(None)
+        store.close()
+
+
+def install_worker_profile(home):
+    """The ``protagine-act`` profile directory the kanban dispatcher spawns mind tasks on.
+
+    The in-process worker runs the task with the episode's own recipe; the
+    profile only has to exist for ``dispatch_once`` to consider the task
+    spawnable, as ``protagine init`` makes it exist on a real install.
+    """
+    directory = Path(home) / 'profiles' / WORKER_PROFILE
+    for name in ('memories', 'sessions', 'skills', 'logs', 'workspace'):
+        (directory / name).mkdir(parents=True, exist_ok=True)
+    config_path = directory / 'config.yaml'
+    if not config_path.exists():
+        config_path.write_text(json.dumps({'plugins': {'enabled': ['protagine'], 'hook_callback_timeout': 0}}))
+    return directory
+
+
+@contextmanager
+def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, overlay=None, mind=False):
     """Enable only this fixture's private profile and ledger, before agent construction.
 
     An arm profile overlay is applied after the forced flags below and before
-    the plugin loads, so a frozen profile can flip any fixture default.
+    the plugin loads, so a frozen profile can flip any fixture default. With
+    ``mind`` the arm also serves ``/v1/mind`` over a real Mind (the initiative
+    profile).
     """
     inputs = request['inputs']
     person = inputs['contact_id']
@@ -28,13 +105,17 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
         PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_TURN_WRITER='disabled',
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
         PROTAGINE_OWNER_CONTACT_ID=person, PROTAGINE_GUARD_CHAT_MODE='off',
-        PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false')
+        PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false',
+        # The body tick drives the adapter (tick() and flush()); its own thread stays parked
+        # so no dispatch or send lands between two observed ticks.
+        PROTAGINE_BODY_THREAD='0')
     os.environ.update(overlay or {})
     (state / 'empty-bundled').mkdir(exist_ok=True)
     from fastapi import FastAPI
     import uvicorn
     from protagine.api.middleware import ApiKeyMiddleware
     from protagine.api.routers import host
+    from protagine.api.routers import mind as mind_router
     from protagine.turns import get_turn_idempotency_ledger
     from hermes_cli.plugins import get_plugin_manager
     from hermes_state import SessionDB
@@ -55,9 +136,11 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     (instance / 'identity.yaml').write_text(json.dumps({
         'owner': {'name': 'Owner', 'contact_id': person, 'handles': {}},
         'agent': {'name': 'Agent'}}))
-    (instance / 'protagine.yaml').write_text(json.dumps({
-        'owner': {'contact_id': person}, 'mind': {'enabled': False}}))
+    section = mind_section(mind)
+    (instance / 'protagine.yaml').write_text(json.dumps({'owner': {'contact_id': person}, 'mind': section}))
     os.environ.update(PROTAGINE_HOME=str(instance), PROTAGINE_API_KEY=secret)
+    if mind:
+        install_worker_profile(state)
     app = FastAPI()
     app.add_middleware(ApiKeyMiddleware, api_key=secret)
     routes = []
@@ -73,6 +156,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
 
     app.include_router(host.router)
     app.include_router(host.v2_router)
+    if mind:
+        app.include_router(mind_router.router)
     host_resources = ExitStack()
     listener = server = thread = None
     transport_observer = None
@@ -93,6 +178,9 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 raise RuntimeError('Isolated memory API did not start')
             time.sleep(.01)
         url = f'http://127.0.0.1:{port}'
+        if mind:
+            # The host stores exist once the server's lifespan ran; the Mind shares them.
+            host_resources.enter_context(serve_mind(app, state, person, section))
         already = [name for name in config.get('plugins', {}).get('enabled', []) if name != 'protagine']
         # The keys `protagine init` writes: the adapter finds the sidecar and
         # the key file here; callbacks run inline so no capture fire is dropped.

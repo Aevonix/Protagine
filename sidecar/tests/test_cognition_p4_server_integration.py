@@ -129,72 +129,6 @@ def _proposal(**overrides):
     return payload
 
 
-def test_startup_uses_one_feedback_store_shared_authority_and_pipeline(
-    tmp_path, monkeypatch,
-):
-    state_dir = tmp_path / "state"
-    _configure(monkeypatch, state_dir)
-    monkeypatch.setenv(
-        "PROTAGINE_EXPERIMENT_PREGRANTS_JSON",
-        '{"recall.min_relevance":[0.0,0.25]}',
-    )
-    params = _params(state_dir)
-
-    wiring = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
-
-    assert host._learning_feedback_store is wiring["corrections"]
-    assert host._benchmark is wiring["benchmark"]
-    assert host._experiments is wiring["experiments"]
-    assert wiring["benchmark"]._deps["corrections"] is wiring["corrections"]
-    assert wiring["experiments"]._benchmark is wiring["benchmark"]
-    assert wiring["experiments"]._approval_authority is\
-        wiring["approval_authority"]
-    assert wiring["approval_authority"].path ==\
-        state_dir / "approval_authority.db"
-    assert wiring["experiments"]._pregrants == {
-        "recall.min_relevance": (0.0, 0.25)}
-
-    class Recorder:
-        def __init__(self):
-            self.value = None
-
-        def set_feedback_store(self, value):
-            self.value = value
-
-        def set_experiment_proposer(self, value):
-            self.value = value
-
-    pipeline = type("Pipeline", (), {})()
-    pipeline.meta_learner = Recorder()
-    pipeline.strategy_adjuster = Recorder()
-    _wire_controlled_learning_pipeline(pipeline, wiring)
-    assert pipeline.meta_learner.value is wiring["corrections"]
-    assert pipeline.strategy_adjuster.value is wiring["experiments"]
-
-
-def test_disabled_benchmark_and_experiments_create_no_feature_artifacts(
-    tmp_path, monkeypatch,
-):
-    state_dir = tmp_path / "state"
-    _configure(monkeypatch, state_dir)
-    monkeypatch.setenv("PROTAGINE_BENCHMARK_ENABLED", "false")
-    monkeypatch.setenv("PROTAGINE_EXPERIMENTS_ENABLED", "false")
-    params = _params(state_dir)
-
-    wiring = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
-
-    # Corrections remain a durable learning input independent of benchmarking.
-    assert wiring["corrections"] is host._learning_feedback_store
-    assert (state_dir / "protagine-learning-feedback.db").exists()
-    assert wiring["benchmark"] is None
-    assert wiring["experiments"] is None
-    assert not (state_dir / "protagine-benchmark.db").exists()
-    assert not (state_dir / "protagine-experiments.db").exists()
-    assert not (state_dir / "approval_authority.db").exists()
-
-
 @pytest.mark.asyncio
 async def test_correction_is_persisted_before_continuous_learning(
     tmp_path, monkeypatch,
@@ -241,62 +175,6 @@ async def test_correction_is_persisted_before_continuous_learning(
     assert stored[0]["context_hash"] == "response:owner:42"
     assert stored[0]["person_id"] == "contact-owner"
     assert learner.corrections[0].context_hash == "response:owner:42"
-
-
-
-
-@pytest.mark.asyncio
-async def test_live_proposal_returns_202_then_starts_after_exact_approval(
-    tmp_path, monkeypatch,
-):
-    state_dir = tmp_path / "state"
-    _configure(monkeypatch, state_dir, mode="live")
-    params = _params(state_dir)
-    baseline = params.get("recall.min_relevance")
-    wiring = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
-    app = _app(tmp_path)
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        pending = await client.post(
-            "/v1/host/self/experiments",
-            headers=_headers(),
-            json=_proposal(assignment_mode="global"),
-        )
-        assert pending.status_code == 202
-        body = pending.json()
-        assert body["status"] == "approval_required"
-        exp = body["experiment"]
-        assert params.get("recall.min_relevance") == pytest.approx(baseline)
-
-        request_row = wiring["approval_authority"].get_request(
-            body["approval_request_id"])
-        assert request_row["status"] == "pending"
-        wiring["approval_authority"].decide(
-            request_row["request_id"],
-            decision="approve",
-            decision_id="deck:decision-0001",
-            expected_action_digest=request_row["action_digest"],
-            decided_by="owner:deck",
-            authority_evidence="phone-authenticated-session:test",
-        )
-
-        started = await client.post(
-            f"/v1/host/self/experiments/{exp['id']}/start",
-            headers=_headers(),
-        )
-        started_retry = await client.post(
-            f"/v1/host/self/experiments/{exp['id']}/start",
-            headers=_headers(),
-        )
-
-    assert started.status_code == 200
-    assert started.json()["experiment"]["authority_mode"] == "owner_approved"
-    assert started_retry.status_code == 200
-    assert started_retry.json()["idempotent_replay"] is True
-    assert params.get("recall.min_relevance") == pytest.approx(0.2)
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,7 @@ def test_defaults_without_a_file(home):
     assert cfg.get("sidecar.host") == "127.0.0.1"
     assert cfg.get("sidecar.port") == 7777
     assert cfg.get("mind.enabled") is True
-    assert cfg.get("mind.autonomy") == "standard"
+    assert cfg.get("mind.autonomy") == "suggest"
     assert cfg.get("mind.deny.commands") == []
     assert cfg.get("mind.faculties.skills") is False
     assert cfg.sidecar_url == "http://127.0.0.1:7777"

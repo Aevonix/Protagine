@@ -19,19 +19,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from protagine.api.auth import request_authority
 from protagine.task_queue.contract import worker_authority_mode
-from protagine.initiatives.approval_authority import (
-    AUTHORIZATION_PROJECTION_SCHEMA,
-    ApprovalAuthorityError,
-    ApprovalAuthorityStore,
-    DEFAULT_GRANT_MAX_USES,
-    DEFAULT_GRANT_TTL_SECONDS,
-    authority_mode,
-    approval_binding_digest,
-    approval_presentation_digest,
-    build_action_binding,
-    build_approval_presentation,
-    resolve_grant_envelope,
-)
 from protagine.task_queue.models import (
     Job,
     JobCapabilityRequirement,
@@ -44,6 +31,7 @@ from protagine.task_queue.models import (
 from protagine.task_queue.queue_manager import (
     QueueExecutionUnavailable,
     TaskQueueManager,
+    decision_tags,
 )
 from protagine.util.session_safety import (
     load_last_user_message_at,
@@ -274,95 +262,28 @@ class WorkEffectReconciliationRequest(BaseModel):
     summary: str = Field("", max_length=1000)
 
 
-def _grant_request_ttl_default() -> int:
-    maximum = resolve_grant_envelope().max_ttl_seconds
-    return (
-        DEFAULT_GRANT_TTL_SECONDS
-        if maximum is None else min(DEFAULT_GRANT_TTL_SECONDS, maximum)
-    )
-
-
-def _grant_request_uses_default() -> int:
-    maximum = resolve_grant_envelope().max_uses
-    return (
-        DEFAULT_GRANT_MAX_USES
-        if maximum is None else min(DEFAULT_GRANT_MAX_USES, maximum)
-    )
-
-
-class BoundedGrantRequest(BaseModel):
-    """An exact-scope grant constrained by the server's grant envelope."""
-
-    expires_in_seconds: int = Field(
-        default_factory=_grant_request_ttl_default, ge=60,
-    )
-    max_uses: int = Field(default_factory=_grant_request_uses_default, ge=1)
-    # Optional only so clients can echo the scope they displayed. The server
-    # rejects any difference; omitting it means "the exact displayed scope".
-    exact_scope: Optional[Dict[str, Any]] = None
-
-    @model_validator(mode="after")
-    def within_configured_envelope(self):
-        """Keep over-limit API requests at validation-time HTTP 422."""
-
-        envelope = resolve_grant_envelope()
-        if (
-            envelope.max_ttl_seconds is not None
-            and self.expires_in_seconds > envelope.max_ttl_seconds
-        ):
-            raise ValueError(
-                "expires_in_seconds exceeds PROTAGINE_GRANT_MAX_TTL_SECONDS"
-            )
-        if (
-            envelope.max_uses is not None
-            and self.max_uses > envelope.max_uses
-        ):
-            raise ValueError("max_uses exceeds PROTAGINE_GRANT_MAX_USES")
-        return self
-
-
 class JobApproveRequest(BaseModel):
-    # Deprecated compatibility input. It is intentionally ignored: authority
-    # comes from the authenticated request principal, never caller prose.
+    """A direct owner decision. The legacy ledger fields are accepted and ignored:
+    the actor is the authenticated principal, never caller prose."""
+
+    model_config = {"extra": "ignore"}
+
     approved_by: Optional[str] = None
-    # Deprecated spelling. In shadow migration mode it maps to an exact-scope
-    # grant with safe request defaults and the deployment's configured envelope;
-    # it never creates action-name-only authority.
     always: bool = False
     approval_request_id: Optional[str] = None
     expected_action_digest: Optional[str] = None
     decision_id: Optional[str] = None
-    grant: Optional[BoundedGrantRequest] = None
+    grant: Optional[Dict[str, Any]] = None
 
 
 class JobRejectRequest(BaseModel):
-    # Deprecated and ignored for authority; retained so old clients parse.
+    model_config = {"extra": "ignore"}
+
     rejected_by: Optional[str] = None
     reason: str = "rejected_by_owner"
     approval_request_id: Optional[str] = None
     expected_action_digest: Optional[str] = None
     decision_id: Optional[str] = None
-
-
-class ApprovalDecisionRequest(BaseModel):
-    decision: str
-    decision_id: str
-    expected_action_digest: str
-    grant: Optional[BoundedGrantRequest] = None
-
-
-class ApprovalRelayCanaryRequest(BaseModel):
-    """The only caller-controlled canary value is an opaque retry token."""
-
-    model_config = {"extra": "forbid", "strict": True}
-
-    schema_name: str = Field(alias="schema", pattern=r"^ApprovalRelayCanaryV1$")
-    version: int = Field(ge=1, le=1)
-    idempotency_key: str = Field(
-        min_length=16,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9._:@/+-]+$",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -533,42 +454,14 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def _approval_store() -> ApprovalAuthorityStore:
-    return ApprovalAuthorityStore()
+def _decision_actor(request: Optional[Request]) -> str:
+    """The actor of a direct decision: the one API key (the owner) or an in-process caller."""
 
-
-def _approval_error(exc: ApprovalAuthorityError) -> HTTPException:
-    status = 404 if exc.code == "request_not_found" else 409
-    if exc.code in {"authority_required", "approval_scope_required"}:
-        status = 403
-    return HTTPException(
-        status_code=status,
-        detail={"code": exc.code, "message": exc.message},
-    )
-
-
-def _decision_authority(request: Optional[Request]) -> tuple[str, str, str]:
-    """Return server-derived actor/evidence/mode for an approval decision."""
-
-    mode = authority_mode()
-    if mode == "invalid":
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "approval_authority_mode_invalid",
-                "message": (
-                    "PROTAGINE_APPROVAL_AUTHORITY_MODE must be shadow or enforce"
-                ),
-            },
-        )
     if request is None:
-        # Direct in-process calls are an explicit trusted integration surface,
-        # not an HTTP body claim. They remain for embedded Protagine deployments.
-        return "trusted-internal", "in_process", mode
-
+        # Direct in-process calls are an explicit trusted integration surface.
+        return "trusted-internal"
     authority = request_authority(request)
-    allowed = bool(authority.authenticated and not authority.anonymous)
-    if mode == "enforce" and not allowed:
+    if not (authority.authenticated and not authority.anonymous):
         raise HTTPException(
             status_code=403,
             detail={
@@ -576,68 +469,7 @@ def _decision_authority(request: Optional[Request]) -> tuple[str, str, str]:
                 "message": "the API key is required to decide approvals",
             },
         )
-
-    actor = authority.principal_id
-    credential = authority.credential_id or "none"
-    if allowed:
-        evidence = f"api_key:{actor}:{credential}"
-    else:
-        # Shadow mode preserves loopback development traffic, but records
-        # that it would fail enforcement. The body's approved_by/rejected_by
-        # value still has no effect.
-        evidence = f"shadow_compat:{actor}:{credential}"
-    return actor, evidence, mode
-
-
-def _approval_relay_canary_authority(request: Request) -> str:
-    """Require the dedicated scoped bridge even while migration is shadow."""
-
-    authority = request_authority(request)
-    if not authority.authenticated or authority.anonymous:
-        raise HTTPException(status_code=403, detail={
-            "code": "approval_relay_canary_scope_required",
-            "message": "the API key is required",
-        })
     return authority.principal_id
-
-
-def _job_binding(job: Job):
-    return build_action_binding(
-        job_id=job.job_id,
-        job_type=job.job_type.value,
-        payload=job.payload,
-    )
-
-
-async def _ensure_job_approval_request(
-    queue: TaskQueueManager,
-    job: Job,
-) -> tuple[ApprovalAuthorityStore, Dict[str, Any], Any]:
-    binding = _job_binding(job)
-    store = _approval_store()
-    presentation = build_approval_presentation(
-        job_id=job.job_id,
-        job_type=job.job_type.value,
-        payload=job.payload,
-        deadline=job.deadline,
-    )
-    approval_request = store.ensure_request(
-        job_id=job.job_id,
-        binding=binding,
-        presentation=presentation,
-    )
-    await queue.queue.merge_job_tags(job.job_id, {
-        "approval_request_id": approval_request["request_id"],
-        "action_digest": binding.action_digest,
-        "approval_scope_digest": binding.scope_digest,
-        "approval_binding_digest": approval_request["binding_digest"],
-        "approval_request_digest": approval_request["request_digest"],
-        "approval_presentation_digest": approval_request[
-            "presentation_digest"
-        ],
-        "approval_expires_at": approval_request["expires_at"],
-    })
-    return store, approval_request, binding
 
 
 async def _decide_job(
@@ -645,119 +477,37 @@ async def _decide_job(
     job: Job,
     decision: str,
     decision_id: Optional[str],
-    approval_request_id: Optional[str],
-    expected_action_digest: Optional[str],
-    grant: Optional[BoundedGrantRequest],
     request: Optional[Request],
     rejection_reason: str = "rejected_by_owner",
+    **_legacy: Any,
 ) -> Dict[str, Any]:
-    queue = _get_queue()
-    actor, evidence, mode = _decision_authority(request)
-    from protagine.task_queue.approval_relay_canary import (
-        is_exact_job as is_exact_approval_relay_canary,
-    )
+    """A direct owner decision on an approval-held job: no ledger, no grants.
 
-    relay_canary = is_exact_approval_relay_canary(job)
-    if relay_canary and grant is not None:
-        raise HTTPException(status_code=409, detail={
-            "code": "approval_relay_canary_grant_forbidden",
-            "message": "the inert approval relay canary cannot create a grant",
-        })
-    # An exact client retry is a read of the durable winner after the queue
-    # transition. This includes approvals that remain BLOCKED solely on a
-    # separate dependency; they must not be mistaken for a new approval gate.
-    if approval_request_id and expected_action_digest and decision_id:
-        store = _approval_store()
-        stored = store.get_request(approval_request_id)
-        if (
-            stored is not None
-            and stored.get("job_id") == job.job_id
-            and stored.get("status") in {"approved", "rejected"}
-        ):
-            try:
-                replay = store.decide(
-                    approval_request_id,
-                    decision=decision,
-                    decision_id=decision_id,
-                    expected_action_digest=expected_action_digest,
-                    decided_by=actor,
-                    authority_evidence=evidence,
-                )
-            except ApprovalAuthorityError as exc:
-                raise _approval_error(exc) from exc
-            if relay_canary and replay["replayed"]:
-                # A pre-fix scheduler could have projected an APPROVE winner
-                # as QUEUED in the cross-database crash window.  An exact
-                # replay succeeds only after the server repairs the canonical
-                # canary to its sole valid terminal state.
-                repaired = await (
-                    queue.queue.repair_approval_relay_canary_terminal(
-                        job.job_id
-                    )
-                )
-                terminal = await queue.queue.get_job(job.job_id)
-                if (
-                    not repaired
-                    or terminal is None
-                    or terminal.status is not JobStatus.CANCELLED
-                ):
-                    raise HTTPException(status_code=409, detail={
-                        "code": "approval_relay_canary_not_cancelled",
-                        "message": (
-                            "the durable canary winner has not converged "
-                            "to CANCELLED"
-                        ),
-                    })
-                winner = replay["request"]
-                return {
-                    "success": True,
-                    "job_id": terminal.job_id,
-                    "status": JobStatus.CANCELLED.value,
-                    "decision": decision,
-                    "decided_by": winner["decided_by"],
-                    "decided_at": winner["decided_at"],
-                    "approval_request": winner,
-                    "bounded_grant": None,
-                    "replayed": True,
-                    "authority_mode": mode,
-                }
-            queue_transition_applied = bool(
-                replay["replayed"]
-                and (
-                    (
-                        decision == "approve"
-                        and (
-                            job.status is not JobStatus.BLOCKED
-                            or (
-                                job.tags.get("blocked_reason")
-                                == "dependencies_pending"
-                                and job.tags.get("approval_request_id")
-                                == approval_request_id
-                                and job.tags.get("approval_decision_id")
-                                == decision_id
-                            )
-                        )
-                    )
-                    or (
-                        decision == "reject"
-                        and job.status is JobStatus.CANCELLED
-                    )
-                )
-            )
-            if queue_transition_applied:
-                winner = replay["request"]
-                return {
-                    "success": True,
-                    "job_id": job.job_id,
-                    "status": job.status.value,
-                    "decision": decision,
-                    "decided_by": winner["decided_by"],
-                    "decided_at": winner["decided_at"],
-                    "approval_request": winner,
-                    "bounded_grant": replay["grant"],
-                    "replayed": True,
-                    "authority_mode": mode,
-                }
+    The decision is recorded in the job's tags with the actor the request
+    authenticated as. An exact retry with the same ``decision_id`` reads the
+    recorded decision back instead of deciding twice.
+    """
+    queue = _get_queue()
+    actor = _decision_actor(request)
+    recorded_id = str(job.tags.get("approval_decision_id") or "")
+    if (
+        recorded_id
+        and decision_id
+        and recorded_id == decision_id
+        and str(job.tags.get("approval_decision") or "") == decision
+    ):
+        return {
+            "success": True,
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "decision": decision,
+            "decided_by": job.tags.get("approval_authority"),
+            "decided_at": job.tags.get("approval_decided_at"),
+            "approval_request": None,
+            "bounded_grant": None,
+            "replayed": True,
+            "authority_mode": "direct",
+        }
     if job.status != JobStatus.BLOCKED:
         raise HTTPException(
             status_code=409,
@@ -771,85 +521,11 @@ async def _decide_job(
                 "message": "only owner-approval-blocked jobs can be decided",
             },
         )
-
-    try:
-        store, approval_request, binding = await _ensure_job_approval_request(queue, job)
-        if approval_request_id and approval_request_id != approval_request["request_id"]:
-            raise ApprovalAuthorityError(
-                "request_superseded", "approval request is not current for this job"
-            )
-        if mode == "enforce" and not approval_request_id:
-            raise ApprovalAuthorityError(
-                "request_id_required", "approval_request_id is required in enforce mode"
-            )
-        if mode == "enforce" and not expected_action_digest:
-            raise ApprovalAuthorityError(
-                "action_digest_required", "expected_action_digest is required in enforce mode"
-            )
-        if mode == "enforce" and not decision_id:
-            raise ApprovalAuthorityError(
-                "decision_id_required", "decision_id is required in enforce mode"
-            )
-
-        normalized_decision_id = decision_id or (
-            "compat_" + os.urandom(16).hex()
-        )
-        effective_grant = grant
-        exact_scope = None
-        if effective_grant is not None:
-            exact_scope = (
-                binding.scope
-                if effective_grant.exact_scope is None
-                else effective_grant.exact_scope
-            )
-
-        result = store.decide(
-            approval_request["request_id"],
-            decision=decision,
-            decision_id=normalized_decision_id,
-            expected_action_digest=expected_action_digest or binding.action_digest,
-            decided_by=actor,
-            authority_evidence=evidence,
-            grant_scope=exact_scope,
-            grant_ttl_seconds=(
-                effective_grant.expires_in_seconds
-                if effective_grant else DEFAULT_GRANT_TTL_SECONDS
-            ),
-            grant_max_uses=(
-                effective_grant.max_uses if effective_grant else DEFAULT_GRANT_MAX_USES
-            ),
-        )
-    except ApprovalAuthorityError as exc:
-        raise _approval_error(exc) from exc
-
-    decided_at = result["request"]["decided_at"]
-    tags = {
-        "approval_request_id": result["request"]["request_id"],
-        "action_digest": result["request"]["action_digest"],
-        "approval_decision_id": result["request"]["decision_id"],
-        "approval_authority": actor,
-        "approval_authority_mode": mode,
-    }
-    if relay_canary:
-        tags.update({
-            "approval_relay_canary_decision": decision,
-            "approval_relay_canary_terminalized": "true",
-            "external_effect": "false",
-        })
-        if decision == "approve":
-            tags.update({"approved_by": actor, "approved_at": decided_at})
-        else:
-            tags.update({
-                "rejected_by": actor,
-                "rejected_at": decided_at,
-                "rejected_reason": rejection_reason,
-            })
-        new_status = JobStatus.CANCELLED
-        reason = "approval_relay_canary_%s_no_effect" % decision
-    elif decision == "approve":
-        tags.update({"approved_by": actor, "approved_at": decided_at})
-        if result["grant"]:
-            tags["bounded_grant_id"] = result["grant"]["grant_id"]
+    decided_at = datetime.now(timezone.utc).isoformat()
+    normalized_decision_id = decision_id or ("compat_" + os.urandom(16).hex())
+    tags = decision_tags(job.job_id, decision=decision, decision_id=normalized_decision_id,
+                         actor=actor, at=decided_at)
+    if decision == "approve":
         new_status = JobStatus.QUEUED
         reason = f"approved_by_principal={actor}"
         if job.depends_on:
@@ -863,9 +539,9 @@ async def _decide_job(
                     dependencies_ready = False
                     break
             if not dependencies_ready:
-                # Approval provenance is durable, but it cannot erase a
-                # separate dependency gate. unblock_ready_jobs() will queue
-                # the job only after every prerequisite independently closes.
+                # The decision is durable, but it cannot erase a separate
+                # dependency gate. unblock_ready_jobs() queues the job only
+                # after every prerequisite independently closes.
                 new_status = JobStatus.BLOCKED
                 reason = "approved_waiting_for_dependencies"
                 tags.update({
@@ -873,36 +549,25 @@ async def _decide_job(
                     "blocked_reason": "dependencies_pending",
                 })
     else:
-        tags.update({
-            "rejected_by": actor,
-            "rejected_at": decided_at,
-            "rejected_reason": rejection_reason,
-        })
+        tags["rejected_reason"] = rejection_reason
         new_status = JobStatus.CANCELLED
         reason = rejection_reason
-    if relay_canary:
-        # Derive and apply the canary terminal state from the durable winner,
-        # including an idempotent scheduler race or historical QUEUED row.
-        changed = await queue.queue.repair_approval_relay_canary_terminal(
-            job.job_id
-        )
-    else:
-        changed = await queue.queue.update_job_status(
-            job.job_id,
-            new_status,
-            reason=reason,
-            tags=tags,
-            remove_tags=[
-                "hold_kind", "blocked_reason", "awaiting_owner_approval",
-                "governor_error", "governor_last_recheck_at",
-            ],
-        )
+    changed = await queue.queue.update_job_status(
+        job.job_id,
+        new_status,
+        reason=reason,
+        tags=tags,
+        remove_tags=[
+            "hold_kind", "blocked_reason", "awaiting_owner_approval",
+            "governor_error", "governor_last_recheck_at",
+        ],
+    )
     if not changed:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "job_transition_failed",
-                "message": "decision is durable but the job transition must be reconciled",
+                "message": "the job transition must be reconciled before it can be decided",
             },
         )
     return {
@@ -912,10 +577,10 @@ async def _decide_job(
         "decision": decision,
         "decided_by": actor,
         "decided_at": decided_at,
-        "approval_request": result["request"],
-        "bounded_grant": result["grant"],
-        "replayed": result["replayed"],
-        "authority_mode": mode,
+        "approval_request": None,
+        "bounded_grant": None,
+        "replayed": False,
+        "authority_mode": "direct",
     }
 
 
@@ -1368,59 +1033,6 @@ async def deregister_worker(
 # Job endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/approvals/canary")
-async def create_approval_relay_canary(
-    body: ApprovalRelayCanaryRequest,
-    request: Request,
-) -> Dict[str, Any]:
-    """Ensure one canonical approval request with no executable outcome."""
-
-    principal = _approval_relay_canary_authority(request)
-    from protagine.task_queue.approval_relay_canary import (
-        SCHEMA,
-        TERMINAL_POLICY,
-        idempotency_digest,
-    )
-
-    digest = idempotency_digest(body.idempotency_key)
-    queue = _get_queue()
-    try:
-        job, created = await queue.queue.ensure_approval_relay_canary(digest)
-        projection = await get_job_approval_projection(job.job_id)
-    except (ApprovalAuthorityError, ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=409, detail={
-            "code": "approval_relay_canary_conflict",
-            "message": str(exc),
-        }) from exc
-    canonical_request = projection.get("request") or {}
-    if not canonical_request.get("request_id"):
-        raise HTTPException(status_code=503, detail={
-            "code": "approval_relay_canary_authority_unavailable",
-            "message": "canonical approval request was not materialized",
-        })
-    return {
-        "schema": "ApprovalRelayCanaryReceiptV1",
-        "version": 1,
-        "canary_schema": SCHEMA,
-        "created": created,
-        "created_by": principal,
-        "job_id": job.job_id,
-        "job_status": projection["job_status"],
-        "external_effect": False,
-        "terminal_policy": TERMINAL_POLICY,
-        "idempotency_digest": digest,
-        "request_id": canonical_request["request_id"],
-        "action_digest": projection["action_digest"],
-        "scope_digest": projection["scope_digest"],
-        "binding_digest": projection["binding_digest"],
-        "request_digest": projection["request_digest"],
-        "presentation_digest": projection["presentation_digest"],
-        "request_status": canonical_request["status"],
-        "decision": canonical_request.get("decision"),
-        "decision_id": canonical_request.get("decision_id"),
-    }
-
-
 @router.post("/jobs")
 async def create_job(body: JobPostRequest) -> Dict[str, Any]:
     """Post a new job to the queue."""
@@ -1431,20 +1043,6 @@ async def create_job(body: JobPostRequest) -> Dict[str, Any]:
             "code": "reserved_job_tags",
             "message": "authority tags may only be set by Protagine control planes",
             "tags": reserved,
-        })
-    reserved_canary_hint = str(
-        body.payload.get("action_hint") or ""
-    ).strip()
-    if (
-        body.payload.get("schema") == "ApprovalRelayCanaryV1"
-        or reserved_canary_hint == "approval_relay_canary"
-    ):
-        raise HTTPException(status_code=400, detail={
-            "code": "approval_relay_canary_authority_reserved",
-            "message": (
-                "ApprovalRelayCanaryV1 may only be issued by Protagine's "
-                "server-owned approval canary endpoint"
-            ),
         })
     if body.payload.get("schema") == "WorkOrderV1":
         raise HTTPException(status_code=400, detail={
@@ -1490,27 +1088,14 @@ async def create_job(body: JobPostRequest) -> Dict[str, Any]:
     payload = dict(body.payload)
     public_effect = False
     if job_type is JobType.AGENT_ACTION:
-        from protagine.initiatives.action_registry import get_action
-
-        action_hint = str(payload.get("action_hint") or "").strip()
-        action_spec = get_action(action_hint)
-        if action_spec is None:
-            raise HTTPException(status_code=400, detail={
-                "code": "unregistered_agent_action",
-                "message": (
-                    "public agent_action jobs require a named action_hint "
-                    "from Protagine's server-owned action registry"
-                ),
-            })
         declared_risk = str(payload.get("risk") or "").strip().lower()
-        canonical_risk = action_spec.risk.value
-        if declared_risk and declared_risk != canonical_risk:
+        if declared_risk not in {"read_only", "mutating", "outbound"}:
             raise HTTPException(status_code=400, detail={
-                "code": "agent_action_risk_mismatch",
-                "message": "agent_action risk must match the server registry",
+                "code": "agent_action_risk_required",
+                "message": "public agent_action jobs declare risk: read_only, mutating or outbound",
             })
-        payload["risk"] = canonical_risk
-        public_effect = canonical_risk != "read_only"
+        payload["risk"] = declared_risk
+        public_effect = declared_risk != "read_only"
     # JobPriority is an int Enum (NORMAL=50, HIGH=80, ...); look up by NAME, not value —
     # JobPriority("HIGH") tries to match a member whose value is the string "HIGH" and always
     # raises (it even 500'd the default "normal"). Accept the name or the numeric value.
@@ -1943,56 +1528,19 @@ async def list_blocked_jobs(
         blocked_reason = job.tags.get("blocked_reason", "")
         if after is not None and job.job_id <= after:
             continue
-        # Approval-at-birth is owned by QueueManager.post. This GET is a
-        # projection only; polling it can never create or change authority.
-        approval_request = _approval_store().get_request_for_job(job.job_id)
-        presentation = (
-            approval_request.get("presentation")
-            if approval_request is not None else None
-        )
+        # A projection only; polling it never creates or changes authority.
+        payload = job.payload if isinstance(job.payload, dict) else {}
         items.append({
             "id": job.job_id,
-            "action_hint": (
-                presentation.get("action_name") if presentation else None
-            ),
-            "risk": (
-                presentation.get("risk") if presentation
-                else "projection_unavailable"
-            ),
-            "description": (
-                presentation.get("summary") if presentation
-                else "Approval presentation unavailable"
-            ),
+            "action_hint": payload.get("action_hint"),
+            "risk": str(payload.get("risk") or payload.get("risk_class") or "unknown"),
+            "description": str(
+                payload.get("description") or payload.get("summary") or payload.get("title") or ""
+            )[:500],
             "created_at": job.posted_at.isoformat() if job.posted_at else None,
             "blocked_reason": blocked_reason,
-            "approval_request_id": (
-                approval_request.get("request_id") if approval_request else None
-            ),
-            "action_digest": (
-                approval_request.get("action_digest") if approval_request else None
-            ),
-            "approval_expires_at": (
-                approval_request.get("expires_at") if approval_request else None
-            ),
-            "approval_scope": (
-                approval_request.get("scope") if approval_request else None
-            ),
-            "presentation": presentation,
-            "presentation_digest": (
-                approval_request.get("presentation_digest")
-                if approval_request else None
-            ),
-            "binding_digest": (
-                approval_request.get("binding_digest")
-                if approval_request else None
-            ),
-            "request_digest": (
-                approval_request.get("request_digest")
-                if approval_request else None
-            ),
-            "projection_status": (
-                "available" if presentation else "projection_unavailable"
-            ),
+            "approval_requested_at": job.tags.get("approval_requested_at"),
+            "projection_status": "direct",
         })
         if len(items) >= limit:
             break
@@ -2016,16 +1564,10 @@ async def approve_job(
     job = await queue.queue.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    grant = body.grant
-    if body.always and grant is None:
-        grant = BoundedGrantRequest()
     result = await _decide_job(
         job=job,
         decision="approve",
         decision_id=body.decision_id,
-        approval_request_id=body.approval_request_id,
-        expected_action_digest=body.expected_action_digest,
-        grant=grant,
         request=request,
     )
     # Response aliases keep old integrations operational while exposing the
@@ -2052,9 +1594,6 @@ async def reject_job(
         job=job,
         decision="reject",
         decision_id=body.decision_id,
-        approval_request_id=body.approval_request_id,
-        expected_action_digest=body.expected_action_digest,
-        grant=None,
         request=request,
         rejection_reason=body.reason,
     )
@@ -2062,348 +1601,6 @@ async def reject_job(
     result["reason"] = body.reason
     logger.info("Job %s rejected by principal %s", job_id, result["decided_by"])
     return result
-
-
-# ---------------------------------------------------------------------------
-# Durable approval requests and exact-scope grants
-# ---------------------------------------------------------------------------
-
-@router.get("/approvals/requests")
-async def list_approval_requests(
-    status: Optional[str] = None,
-    limit: int = Query(100, ge=1, le=500),
-) -> List[Dict[str, Any]]:
-    # The authority database may also contain non-queue experiment/charter
-    # records, and a cross-database crash may leave a historical orphan. This
-    # queue API exposes only requests that still have a canonical queue job.
-    # The host bridge uses `/jobs/blocked`, not this administrative ledger view.
-    candidates = _approval_store().list_requests(status=status, limit=500)
-    queue = _get_queue()
-    result: List[Dict[str, Any]] = []
-    for candidate in candidates:
-        if await queue.queue.get_job(candidate["job_id"]) is None:
-            continue
-        result.append(candidate)
-        if len(result) >= limit:
-            break
-    return result
-
-
-@router.get("/approvals/requests/{request_id}")
-async def get_approval_request(request_id: str) -> Dict[str, Any]:
-    result = _approval_store().get_request(request_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Approval request not found")
-    if await _get_queue().queue.get_job(result["job_id"]) is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "queue_approval_request_not_found",
-            "message": "Approval request is not owned by a canonical queue job",
-        })
-    return result
-
-
-def _request_projection(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if value is None:
-        return None
-    return {
-        "request_id": value["request_id"],
-        "request_digest": value["request_digest"],
-        "job_id": value["job_id"],
-        "action_digest": value["action_digest"],
-        "scope_digest": value["scope_digest"],
-        "binding_digest": value["binding_digest"],
-        "presentation_digest": value["presentation_digest"],
-        "status": value["status"],
-        "created_at": value["created_at"],
-        "expires_at": value["expires_at"],
-        "superseded_by": value.get("superseded_by"),
-        "decision": value.get("decision"),
-        "decision_id": value.get("decision_id"),
-        "decided_at": value.get("decided_at"),
-        "decided_by": value.get("decided_by"),
-        "authority_evidence": value.get("authority_evidence"),
-        "grant_id": value.get("grant_id"),
-    }
-
-
-async def _queue_approval_state_projection(
-    queue: TaskQueueManager,
-    job: Job,
-    authorization: Dict[str, Any],
-) -> Dict[str, Optional[str]]:
-    """Project bounded queue state without trusting mutable job tags."""
-
-    hold_kind: Optional[str] = None
-    blocked_reason: Optional[str] = None
-    if job.status is JobStatus.BLOCKED:
-        auth_kind = str(authorization.get("kind") or "")
-        auth_status = str(authorization.get("status") or "")
-        if auth_kind == "request" and auth_status == "pending":
-            hold_kind = "approval"
-            blocked_reason = "awaiting_owner_approval"
-        elif auth_status == "authorized" and job.depends_on:
-            dependency_failed = False
-            dependency_pending = False
-            for dependency_id in job.depends_on:
-                dependency = await queue.queue.get_job(dependency_id)
-                if dependency is None:
-                    dependency_pending = True
-                elif dependency.status in {
-                    JobStatus.FAILED,
-                    JobStatus.CANCELLED,
-                    JobStatus.NEUTRAL,
-                }:
-                    dependency_failed = True
-                elif dependency.status is not JobStatus.COMPLETED:
-                    dependency_pending = True
-            if dependency_failed or dependency_pending:
-                hold_kind = "dependency"
-                blocked_reason = (
-                    "dependency_terminal_transition_pending"
-                    if dependency_failed else "dependencies_pending"
-                )
-        if hold_kind is None:
-            # A durable decision and its queue transition live in different
-            # SQLite commits. Any other BLOCKED combination is conservatively
-            # incomplete, rather than copied from caller/worker-controlled tags.
-            hold_kind = "authority_transition"
-            blocked_reason = (
-                "canonical_authority_release_pending"
-                if auth_status == "authorized"
-                else "canonical_authority_terminal_pending"
-                if auth_status in {"rejected", "expired", "superseded"}
-                else "canonical_authority_unavailable"
-            )
-    return {
-        "job_status": job.status.value,
-        "hold_kind": hold_kind,
-        "blocked_reason": blocked_reason,
-    }
-
-
-@router.get("/approvals/jobs/{job_id}")
-async def get_job_approval_projection(job_id: str) -> Dict[str, Any]:
-    """Return the exact transport-neutral authority the host may import.
-
-    This endpoint recomputes the immutable job binding and presentation. It
-    reads decision/grant provenance from the canonical authority database,
-    never from worker-controlled tags, and does not expose the raw job payload.
-    """
-
-    queue = _get_queue()
-    job = await queue.queue.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    try:
-        binding = _job_binding(job)
-        presentation = build_approval_presentation(
-            job_id=job.job_id,
-            job_type=job.job_type.value,
-            payload=job.payload,
-            deadline=job.deadline,
-        )
-    except ApprovalAuthorityError as exc:
-        raise _approval_error(exc) from exc
-    presentation_digest = approval_presentation_digest(presentation)
-    binding_digest = approval_binding_digest(
-        job_id=job.job_id,
-        job_type=job.job_type.value,
-        action_digest=binding.action_digest,
-        scope_digest=binding.scope_digest,
-    )
-    store = _approval_store()
-    direct_request = store.get_request_for_job(job.job_id)
-    grant_use = store.get_grant_use(binding.action_digest)
-    source_request = None
-    authorization: Dict[str, Any]
-    expires_at = None
-    if direct_request is not None:
-        source_request = direct_request
-        binding_matches = bool(
-            direct_request["action_digest"] == binding.action_digest
-            and direct_request["scope_digest"] == binding.scope_digest
-            and direct_request["presentation_digest"] == presentation_digest
-        )
-        if (
-            binding_matches
-            and direct_request["status"] == "approved"
-            and direct_request.get("decision") == "approve"
-        ):
-            authorization = {
-                "kind": "direct_decision",
-                "status": "authorized",
-                "request_id": direct_request["request_id"],
-                "decision_id": direct_request["decision_id"],
-                "decision": direct_request["decision"],
-                "decided_at": direct_request["decided_at"],
-                "decided_by": direct_request["decided_by"],
-                "authority_evidence": direct_request["authority_evidence"],
-            }
-        else:
-            authorization = {
-                "kind": "request",
-                "status": (
-                    direct_request["status"]
-                    if binding_matches else "invalid_binding"
-                ),
-                "request_id": direct_request["request_id"],
-                "decision_id": direct_request.get("decision_id"),
-                "decision": direct_request.get("decision"),
-                "binding_matches": binding_matches,
-            }
-        expires_at = direct_request["expires_at"]
-    elif (
-        grant_use is not None
-        and grant_use.get("operation_id") == job.job_id
-        and grant_use.get("scope_digest") == binding.scope_digest
-    ):
-        source_request = store.get_request(grant_use["source_request_id"])
-        source_request_matches = bool(
-            source_request is not None
-            and source_request["request_id"] == grant_use["source_request_id"]
-            and source_request["status"] == "approved"
-            and source_request.get("decision") == "approve"
-            and source_request.get("decision_id") == grant_use["decision_id"]
-            and source_request.get("grant_id") == grant_use["grant_id"]
-            and source_request.get("decided_by") == grant_use["granted_by"]
-            and source_request["scope_digest"] == grant_use["scope_digest"]
-        )
-        authorization = {
-            "kind": "bounded_grant",
-            "status": (
-                "authorized" if source_request_matches else
-                (
-                    "missing_source_request" if source_request is None
-                    else "invalid_provenance"
-                )
-            ),
-            "grant_id": grant_use["grant_id"],
-            "source_request_id": grant_use["source_request_id"],
-            "decision_id": grant_use["decision_id"],
-            "granted_by": grant_use["granted_by"],
-            "scope_digest": grant_use["scope_digest"],
-            "operation_id": grant_use["operation_id"],
-            "consumed_at": grant_use["consumed_at"],
-            "grant_created_at": grant_use["grant_created_at"],
-            "expires_at": grant_use["grant_expires_at"],
-            "ttl_unbounded": grant_use["grant_ttl_unbounded"],
-            "ttl_state": (
-                "unbounded" if grant_use["grant_ttl_unbounded"] else "bounded"
-            ),
-            "grant_status": grant_use["grant_status"],
-            "uses": grant_use["uses"],
-            "max_uses": grant_use["max_uses"],
-            "uses_unbounded": grant_use["grant_uses_unbounded"],
-            "uses_state": (
-                "unbounded" if grant_use["grant_uses_unbounded"] else "bounded"
-            ),
-            "source_request_matches": source_request_matches,
-        }
-        expires_at = grant_use["grant_expires_at"]
-    else:
-        authorization = {"kind": "none", "status": "missing"}
-
-    request_value = source_request or direct_request
-    queue_authority_state = await _queue_approval_state_projection(
-        queue, job, authorization,
-    )
-    projection = {
-        "schema": AUTHORIZATION_PROJECTION_SCHEMA,
-        "version": 1,
-        "authority_mode": authority_mode(),
-        "job_id": job.job_id,
-        "job_type": job.job_type.value,
-        "job_status": job.status.value,
-        "queue_authority_state": queue_authority_state,
-        "action_digest": binding.action_digest,
-        "scope_digest": binding.scope_digest,
-        "binding_digest": binding_digest,
-        "presentation": presentation,
-        "presentation_digest": presentation_digest,
-        "request": _request_projection(request_value),
-        "request_digest": (
-            request_value.get("request_digest") if request_value else None
-        ),
-        "expires_at": expires_at,
-        "authorization": authorization,
-        "observed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    projection["projection_digest"] = hashlib.sha256(json.dumps(
-        projection,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")).hexdigest()
-    return projection
-
-
-@router.post("/approvals/requests/{request_id}/decision")
-async def decide_approval_request(
-    request_id: str,
-    body: ApprovalDecisionRequest,
-    request: Request = None,
-) -> Dict[str, Any]:
-    stored = _approval_store().get_request(request_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="Approval request not found")
-    queue = _get_queue()
-    job = await queue.queue.get_job(stored["job_id"])
-    if job is None:
-        raise HTTPException(status_code=409, detail={
-            "code": "approval_job_missing",
-            "message": "the approval request's job no longer exists",
-        })
-    return await _decide_job(
-        job=job,
-        decision=body.decision,
-        decision_id=body.decision_id,
-        approval_request_id=request_id,
-        expected_action_digest=body.expected_action_digest,
-        grant=body.grant,
-        request=request,
-    )
-
-
-@router.get("/approvals/grants")
-async def list_bounded_grants(
-    status: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    return _approval_store().list_grants(status=status)
-
-
-@router.delete("/approvals/grants/{grant_id}")
-async def revoke_bounded_grant(grant_id: str) -> Dict[str, Any]:
-    if not _approval_store().revoke_grant(grant_id):
-        raise HTTPException(status_code=404, detail="Bounded grant not found or inactive")
-    logger.info("Bounded approval grant revoked: %s", grant_id)
-    return {"success": True, "grant_id": grant_id}
-
-
-# Legacy read/revoke paths remain during migration. They return exact-scope
-# grants and never mint action-name-only authority.
-@router.get("/approvals/standing")
-async def list_standing_approvals() -> List[Dict[str, Any]]:
-    return _approval_store().list_grants()
-
-
-@router.delete("/approvals/standing/{action_name}")
-async def revoke_standing_approval(action_name: str) -> Dict[str, Any]:
-    """Revoke all active grants for an exact legacy action name."""
-    store = _approval_store()
-    matching = [
-        item for item in store.list_grants(status="active")
-        if item.get("scope", {}).get("action_name") == action_name
-    ]
-    changed = False
-    for item in matching:
-        changed = store.revoke_grant(item["grant_id"]) or changed
-    if not changed:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active bounded approval for {action_name}",
-        )
-    logger.info("Bounded approvals revoked for %s", action_name)
-    return {"success": True, "action_name": action_name}
 
 
 @router.get("/jobs/pending")

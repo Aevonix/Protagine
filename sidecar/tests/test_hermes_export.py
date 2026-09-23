@@ -432,7 +432,3 @@ class TestSkillsObservationDomain:
         assert by_id["pdf-tools"]["payload"]["tags"] == ["pdf", "documents"]
         assert by_id["pdf-tools"]["reported_by"] == "hermes-plugin"
 
-    def test_skills_domain_never_gets_sync_action(self):
-        from protagine.initiatives.action_registry import OBSERVATION_SYNC_ACTIONS
-
-        assert "skills" not in OBSERVATION_SYNC_ACTIONS
