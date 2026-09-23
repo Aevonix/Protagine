@@ -122,7 +122,7 @@ def _request(authority):
 
 
 async def test_http_calls_without_p8_are_attributed_to_the_caller(contacts, monkeypatch):
-    from protagine.api.authority import anonymous_authority, legacy_authority
+    from onekey import anonymous_authority, legacy_authority
     from protagine.api.schemas.host import HostIdentity, ToolInvokeRequest
 
     projects = _Projects()
@@ -147,7 +147,7 @@ async def test_http_calls_without_p8_are_attributed_to_the_caller(contacts, monk
 
 
 async def test_reasoning_turn_without_p8_names_the_caller_to_the_loop(monkeypatch):
-    from protagine.api.authority import legacy_authority
+    from onekey import legacy_authority
     from protagine.api.schemas.host import (
         HostIdentity, HostMessage, HostTurnContext, ReasoningTurnRequest,
     )
@@ -174,7 +174,7 @@ async def test_reasoning_turn_without_p8_names_the_caller_to_the_loop(monkeypatc
 def test_sealed_people_are_attributed_by_authority_not_policy_gating(monkeypatch):
     from dataclasses import replace
 
-    from protagine.api.authority import RequestAuthority
+    from onekey import RequestAuthority
 
     monkeypatch.delenv("PROTAGINE_OWNER_PERSON_ID", raising=False)
     monkeypatch.delenv("PROTAGINE_OWNER_CONTACT_ID", raising=False)

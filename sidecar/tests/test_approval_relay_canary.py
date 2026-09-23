@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from protagine.api.authority import RequestAuthority, required_scope
+from onekey import RequestAuthority, required_scope
 from protagine.api.routers import task_queue as tq_router
 from protagine.initiatives.approval_authority import (
     ApprovalAuthorityStore,
@@ -73,36 +73,8 @@ async def _manager(tmp_path, monkeypatch) -> TaskQueueManager:
     return await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
 
 
-def test_canary_route_has_exact_decision_scope():
-    assert required_scope(
-        "POST", "/v1/host/queue/approvals/canary"
-    ) == "approvals:decide"
 
 
-@pytest.mark.asyncio
-async def test_canary_requires_nonlegacy_scoped_bridge_even_in_shadow(
-    tmp_path, monkeypatch,
-):
-    manager = await _manager(tmp_path, monkeypatch)
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "shadow")
-    try:
-        rejected = (
-            _authority("api:access"),
-            _authority("approvals:decide"),
-            _authority("api:access", "approvals:decide", legacy=True),
-        )
-        for authority in rejected:
-            with pytest.raises(HTTPException) as exc_info:
-                await tq_router.create_approval_relay_canary(
-                    _body(), _request(authority),
-                )
-            assert exc_info.value.status_code == 403
-            assert exc_info.value.detail["code"] == (
-                "approval_relay_canary_scope_required"
-            )
-        assert sum((await manager.queue.get_queue_stats()).by_status.values()) == 0
-    finally:
-        await manager.stop()
 
 
 @pytest.mark.asyncio

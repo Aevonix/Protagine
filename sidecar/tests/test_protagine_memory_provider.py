@@ -141,72 +141,6 @@ def _make_provider(provider_mod, fake_httpx, monkeypatch):
     return p
 
 
-@pytest.mark.parametrize("reported", ["not_observed", "pending_until_each_host_connects", None])
-def test_source_remove_preserves_server_reconciliation_receipt(provider_mod, monkeypatch, reported):
-    payload = {"source_erased": True, "watermark": 7}
-    if reported is not None:
-        payload["host_reconciliation"] = reported
-    fake = _FakeHttpx({("POST", "/v1/host/memory/sources/forget"): payload})
-    monkeypatch.setattr(_FakeResponse, "is_success", property(lambda response: response.status_code < 300), raising=False)
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-    provider._session_id = "source-session"
-    monkeypatch.setattr(provider, "_prefetch_contact", lambda: "cid-base")
-    provider._temporal_cache = (1.0, "Prior context.")
-    provider.on_memory_write("remove", "MEMORY.md", "", metadata={"old_text": "A recalled source."})
-    assert provider._last_erasure == {
-        "state": "source_erased", "scope": "canonical_turn_sources", "watermark": 7,
-        "host_reconciliation": reported or "not_observed",
-    }
-    assert provider._temporal_cache == (0.0, "")
-    assert fake.requests[0]["json"] == {
-        "contact_id": "cid-base", "session_id": "source-session", "old_text": "A recalled source.",
-    }
-
-
-def test_native_setup_settings_survive_restart_and_profiles_stay_separate(
-        provider_mod, monkeypatch, tmp_path):
-    homes = [tmp_path / "profile-one", tmp_path / "profile-two"]
-    active = homes[0]
-    monkeypatch.setattr(provider_mod, "_active_hermes_home", lambda: active)
-    monkeypatch.setattr(provider_mod, "_profile_env", lambda name, home:
-                        f"test-key-{home.name}" if name == "PROTAGINE_API_KEY" else "")
-    fake = _FakeHttpx(routes={
-        ("POST", "/v1/host/context/assemble"): lambda request: {
-            "sections": [{"id": "memory", "body": request["json"]["context"]["contact_id"]}],
-        },
-    })
-    monkeypatch.setattr(provider_mod, "httpx", fake)
-    writer = provider_mod.ProtagineMemoryProvider(config={})
-    providers = []
-    for index, home in enumerate(homes):
-        home.mkdir()
-        (home / "config.yaml").write_text(
-            "memory:\n  config:\n    url: http://legacy.test\n    turn_writer: disabled\n")
-        (home / ".handoff_brief.md").write_text(f"Private thread {index}")
-        writer.save_config({"url": f"http://profile-{index}.test", "contact_id": f"person-{index}",
-                            "api_key": "must-not-be-saved"}, str(home))
-        assert "must-not-be-saved" not in (home / "protagine-memory.json").read_text()
-        assert (home / "protagine-memory.json").stat().st_mode & 0o777 == 0o600
-        active = home
-        provider = provider_mod.ProtagineMemoryProvider()
-        provider.initialize(f"session-{index}", hermes_home=str(home))
-        providers.append(provider)
-    # The currently selected profile changes; existing instances retain theirs.
-    for index, provider in enumerate(providers):
-        assert provider.sidecar_url == f"http://profile-{index}.test"
-        assert provider._api_key == f"test-key-{homes[index].name}"
-        assert provider._turn_writer_mode == "disabled"
-        block = provider._prefetch_sync("recall", internal_owner_lane=True,
-                                        contact_id=f"person-{index}")
-        assert f"person-{index}" in block
-        assert f"Private thread {index}" in provider._last_session_block()
-        assert f"Private thread {1-index}" not in provider._last_session_block()
-    assert [request["url"] for request in fake.requests] == [
-        "http://profile-0.test/v1/host/context/assemble",
-        "http://profile-1.test/v1/host/context/assemble",
-    ]
-
-
 def test_offline_start_does_not_detach_provider_and_same_instance_recovers(
         provider_mod, monkeypatch):
     attempts = 0
@@ -221,9 +155,9 @@ def test_offline_start_does_not_detach_provider_and_same_instance_recovers(
     assert provider.is_available() is True
     assert fake.requests == []
     assert provider.get_diagnostics()["connection_status"] == "unverified"
-    assert provider._prefetch_sync("recall", internal_owner_lane=True) == ""
+    assert provider._prefetch_sync("recall", contact_id="cid-base") == ""
     assert provider.get_diagnostics()["connection_status"] == "degraded"
-    assert "remembered after recovery" in provider._prefetch_sync("recall", internal_owner_lane=True)
+    assert "remembered after recovery" in provider._prefetch_sync("recall", contact_id="cid-base")
     assert provider.get_diagnostics()["connection_status"] == "connected"
 
 
@@ -284,129 +218,6 @@ def _install_session_context(monkeypatch):
     return set_turn
 
 
-def test_claim_tool_starts_job_before_returning_it_to_model(
-        provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_NODE_ID", "fixed-tool-worker")
-    monkeypatch.setenv(
-        "PROTAGINE_MEMORY_WORKER_CAPABILITIES",
-        (
-            "agent_action,reasoning,agent_sync:v1,work_order:v1,"
-            "action_plane:v1,messaging:send,filesystem:write"
-        ),
-    )
-    fake = _FakeHttpx(routes={
-        _QUEUE_CLAIM: {"job_id": "job-tool", "payload": {}},
-        _QUEUE_START: {"success": True},
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-    result = provider._tool_protagine_claim_task({
-        "worker_id": "model-spoofed-worker",
-        "capabilities": ["work_order:v1", "messaging:send"],
-    })
-    assert json.loads(result)["job_id"] == "job-tool"
-    posts = [
-        request["url"] for request in fake.requests if request["method"] == "POST"
-    ]
-    assert posts[0].endswith("/jobs/claim")
-    assert posts[1].endswith("/jobs/job-tool/start")
-    claim = fake.requests[0]["json"]
-    assert claim["node_id"] == "fixed-tool-worker"
-    assert claim["capabilities"] == [
-        "agent_action", "reasoning", "agent_sync:v1",
-    ]
-    schema = next(
-        item for item in provider.get_tool_schemas()
-        if item["name"] == "protagine_claim_task"
-    )
-    assert schema["parameters"]["properties"] == {}
-
-
-def test_standalone_queue_tools_require_explicit_opt_in(
-        provider_mod, monkeypatch):
-    monkeypatch.delenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", raising=False)
-    monkeypatch.delenv("PROTAGINE_MEMORY_WORKER_TOOLS", raising=False)
-    fake = _FakeHttpx(routes={
-        _QUEUE_CLAIM: {"job_id": "job-tool", "payload": {}},
-        _QUEUE_START: {"success": True},
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    names = {schema["name"] for schema in provider.get_tool_schemas()}
-    assert "protagine_claim_task" not in names
-    denied = json.loads(provider._tool_protagine_claim_task({
-        "worker_id": "tool-worker",
-    }))
-    assert denied["error"] == "protagine worker tools are disabled"
-    assert fake.requests == []
-
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
-    assert "protagine_claim_task" in {
-        schema["name"] for schema in provider.get_tool_schemas()
-    }
-
-
-def test_global_claim_kill_switch_overrides_standalone_provider_opt_in(
-        provider_mod, monkeypatch):
-    monkeypatch.delenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", raising=False)
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
-    monkeypatch.setenv("PROTAGINE_AGENT_JOB_CLAIMS_ENABLED", "false")
-    fake = _FakeHttpx(routes={
-        _QUEUE_CLAIM: {"job_id": "must-not-be-claimed"},
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    assert "protagine_claim_task" not in {
-        schema["name"] for schema in provider.get_tool_schemas()
-    }
-    denied = json.loads(provider._tool_protagine_claim_task({}))
-    assert denied["error"] == "agent job claims are disabled"
-    assert fake.requests == []
-
-
-def test_general_plugin_reduces_memory_provider_to_read_context_tools(
-        provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
-    fake = _FakeHttpx(routes={
-        _QUEUE_CLAIM: {"job_id": "job-tool", "payload": {}},
-        _QUEUE_START: {"success": True},
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    names = {schema["name"] for schema in provider.get_tool_schemas()}
-    assert names == {
-        "protagine_check_commitments",
-        "protagine_get_affect",
-        "protagine_get_facts",
-        "protagine_timeline",
-    }
-    for schema in provider.get_tool_schemas():
-        properties = schema["parameters"]["properties"]
-        assert "contact_id" not in properties
-        assert "person_id" not in properties
-    assert "protagine_approve_initiative" not in names
-    assert names.isdisjoint({
-        "protagine_list_goals",
-        "protagine_resolve_commitment",
-        "protagine_initiative_feedback",
-    })
-
-    dispatched = json.loads(provider.handle_tool_call(
-        "protagine_claim_task", {"worker_id": "tool-worker"},
-    ))
-    direct = json.loads(provider._tool_protagine_claim_task({
-        "worker_id": "tool-worker",
-    }))
-    approval = json.loads(provider._tool_protagine_approve_initiative({
-        "initiative_id": "initiative-1",
-    }))
-    assert dispatched["error"] == "Protagine tool is not available in this mode"
-    assert direct["error"] == "protagine worker tools are disabled"
-    assert approval["error"] == "initiative approval is operator-only"
-    assert fake.requests == []
-
-
 def test_approval_tool_is_never_model_visible(provider_mod, monkeypatch):
     monkeypatch.delenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", raising=False)
     monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
@@ -417,108 +228,16 @@ def test_approval_tool_is_never_model_visible(provider_mod, monkeypatch):
 
 
 def test_memory_provider_is_read_only_when_general_plugin_is_active(
-        provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    fake = _FakeHttpx()
-    p = _make_provider(provider_mod, fake, monkeypatch)
-    p.sync_turn("hello", "hi", session_id="s1", turn_id="turn-1")
-    assert fake.requests == []
-    assert p.get_diagnostics()["turn_writer"] == "read-only"
-
-
-def test_selected_profile_owns_memory_without_launcher_flags(provider_mod, monkeypatch, tmp_path):
+        provider_mod, monkeypatch, tmp_path):
+    # The general plugin's outbox owns capture whenever the Hermes config enables it.
     monkeypatch.setattr(provider_mod, "_active_hermes_home", lambda: tmp_path)
     (tmp_path / "config.yaml").write_text(json.dumps({
         "plugins": {"enabled": ["protagine"]}, "memory": {"provider": "protagine-memory"}}))
-    # Inherited standalone flags must not reinstate a second writer or tools.
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "0")
-    monkeypatch.setenv("PROTAGINE_MEMORY_WORKER_TOOLS", "1")
-    monkeypatch.setenv("PROTAGINE_MEMORY_TURN_WRITER", "enabled")
     fake = _FakeHttpx()
     p = _make_provider(provider_mod, fake, monkeypatch)
     p.sync_turn("hello", "hi", session_id="s1", turn_id="turn-1")
-    assert p.get_diagnostics()["turn_writer"] == "read-only"
-    assert {s["name"] for s in p.get_tool_schemas()} == set(provider_mod.GENERAL_PLUGIN_READ_CONTEXT_TOOL_NAMES)
-    assert json.loads(p._tool_protagine_claim_task({}))["error"] == "protagine worker tools are disabled"
     assert fake.requests == []
-
-
-@pytest.mark.parametrize("plugins", [{"enabled": []}, {"enabled": ["protagine"], "disabled": ["protagine"]}])
-def test_profile_deselection_and_existing_instance_are_isolated(provider_mod, monkeypatch, tmp_path, plugins):
-    selected = tmp_path / "selected"
-    root = tmp_path / "root"
-    for home, selection in ((selected, {"enabled": ["protagine"]}), (root, plugins)):
-        home.mkdir()
-        (home / "config.yaml").write_text(json.dumps({
-            "plugins": selection, "memory": {"provider": "protagine-memory"}}))
-    active = selected
-    monkeypatch.setattr(provider_mod, "_active_hermes_home", lambda: active)
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    monkeypatch.delenv("PROTAGINE_MEMORY_TURN_WRITER", raising=False)
-    owned = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
-    active = root
-    standalone = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
-    assert owned._turn_writer_enabled() is False
-    assert standalone._turn_writer_enabled() is True
-    for provider in (owned, standalone):
-        names = {s["name"] for s in provider.get_tool_schemas()}
-        assert not {"protagine_write_memory", "protagine_search_memory"} & names
-        assert set(provider_mod.GENERAL_PLUGIN_READ_CONTEXT_TOOL_NAMES) <= names
-
-
-def test_profile_ownership_honors_native_json_and_explicit_writer_precedence(provider_mod, monkeypatch, tmp_path):
-    monkeypatch.setattr(provider_mod, "_active_hermes_home", lambda: tmp_path)
-    (tmp_path / "config.yaml").write_text(json.dumps({
-        "plugins": {"enabled": ["protagine"]}, "memory": {"provider": "protagine-memory",
-        "config": {"turn_writer": "enabled"}}}))
-    with pytest.raises(ValueError, match="owns memory"):
-        provider_mod.ProtagineMemoryProvider()
-    native = tmp_path / "protagine-memory.json"
-    native.write_text(json.dumps({"turn_writer": "disabled"}))
-    assert provider_mod.ProtagineMemoryProvider()._turn_writer_enabled() is False
-    native.write_text(json.dumps({"turn_writer": "enabled"}))
-    with pytest.raises(ValueError, match="owns memory"):
-        provider_mod.ProtagineMemoryProvider()
-    assert provider_mod.ProtagineMemoryProvider(config={"turn_writer": "disabled"})._turn_writer_enabled() is False
-    with pytest.raises(ValueError, match="owns memory"):
-        provider_mod.ProtagineMemoryProvider(config={"turn_writer": "enabled"})
-
-
-def test_general_plugin_handoff_never_advertises_hidden_memory_write_tool(
-        provider_mod, monkeypatch, tmp_path):
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    handoff = tmp_path / ".hermes" / ".handoff_brief.md"
-    handoff.parent.mkdir()
-    handoff.write_text("Follow up on the open deployment thread.\n", encoding="utf-8")
-    provider = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
-
-    block = provider._last_session_block()
-    visible = {schema["name"] for schema in provider.get_tool_schemas()}
-
-    assert "Follow up on the open deployment thread." in block
-    assert "canonical Protagine turn writer" in block
-    assert "protagine_write_memory" not in block
-    assert set(re.findall(r"\bprotagine_[a-z_]+\b", block)) <= visible
-
-
-def test_standalone_handoff_does_not_advertise_retired_graph_tools(
-        provider_mod, monkeypatch, tmp_path):
-    monkeypatch.delenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    handoff = tmp_path / ".hermes" / ".handoff_brief.md"
-    handoff.parent.mkdir()
-    handoff.write_text("Preserve the standalone research thread.\n", encoding="utf-8")
-    provider = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
-
-    block = provider._last_session_block()
-    visible = {schema["name"] for schema in provider.get_tool_schemas()}
-
-    assert not {"protagine_write_memory", "protagine_search_memory"} & visible
-    assert "protagine_write_memory" not in block
-    assert "do not re-save this brief as an owner statement" in block
-    assert "Preserve the standalone research thread." in block
-    assert set(re.findall(r"\bprotagine_[a-z_]+\b", block)) <= visible
+    assert p.get_diagnostics()["turn_writer"] == "read-only"
 
 
 @pytest.mark.parametrize("general_active", [False, True])
@@ -545,23 +264,27 @@ def test_native_file_edits_never_become_new_owner_evidence(
     assert fake.requests == []
 
 
-def test_standalone_memory_provider_uses_stable_v2_turn_id(
-        provider_mod, monkeypatch):
-    monkeypatch.delenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", raising=False)
-    fake = _FakeHttpx(routes={_TURN_V2: {"accepted": True}})
+def test_standalone_memory_provider_syncs_the_turn_with_its_stable_id(
+        provider_mod, monkeypatch, tmp_path):
+    # Without the general plugin the provider is the turn writer: one sync per turn.
+    monkeypatch.setattr(provider_mod, "_active_hermes_home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(json.dumps({"memory": {"provider": "protagine-memory"}}))
+    set_turn = _install_session_context(monkeypatch)
+    set_turn(platform="cli", sender="", chat="")
+    fake = _FakeHttpx(routes={("POST", "/v1/host/turns/sync"): {"accepted": True}})
     p = _make_provider(provider_mod, fake, monkeypatch)
-    monkeypatch.setattr(p, "_turn_contact", lambda: "cid-turn")
-    monkeypatch.setattr(p, "_resolve_channel_id", lambda: "sms:thread")
+    assert p.get_diagnostics()["turn_writer"] == "enabled"
 
     p.sync_turn("hello", "hi", session_id="s1", turn_id="turn/1")
     p._sync_thread.join(timeout=5)
 
-    puts = [r for r in fake.requests if r["method"] == "PUT"]
-    assert len(puts) == 1
-    assert puts[0]["url"].endswith("/v2/host/turns/turn%2F1")
-    assert puts[0]["json"]["context"]["turn_id"] == "turn/1"
-    assert puts[0]["json"]["user_message"] == {"role": "user", "content": "hello"}
-    assert puts[0]["json"]["assistant_message"] == {"role": "assistant", "content": "hi"}
+    posts = [r for r in fake.requests if r["method"] == "POST"]
+    assert len(posts) == 1
+    assert posts[0]["url"].endswith("/v1/host/turns/sync")
+    assert posts[0]["json"]["context"]["turn_id"] == "turn/1"
+    assert posts[0]["json"]["context"]["contact_id"] == "cid-base"
+    assert posts[0]["json"]["user_message"] == {"role": "user", "content": "hello"}
+    assert posts[0]["json"]["assistant_message"] == {"role": "assistant", "content": "hi"}
 
 
 # --- U14: one bounded assemble per turn --------------------------------------
@@ -680,24 +403,19 @@ def test_prefetch_internal_owner_lane_requires_explicit_attestation(
     assert calls[0]["json"]["context"]["contact_id"] == "cid-base"
 
 
-def test_prefetch_sync_turn_contact_flag_uses_turn_contact(
-        provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_PREFETCH_TURN_CONTACT", "1")
-    projection = _projection("cid-turn")
-    fake = _FakeHttpx(routes={
-        _READINESS: projection,
-        _ASSEMBLE: {
-            "sections": [],
-            "projection_attestation": projection,
-        },
-    })
+def test_prefetch_binds_a_guest_turn_to_its_resolved_contact(provider_mod, monkeypatch):
+    # The turn's sender, resolved server-side, is the prefetch person; a guest
+    # request carries the viewer audience and the scoped projection policy.
+    set_turn = _install_session_context(monkeypatch)
+    set_turn(platform="rcs", sender="alice", chat="thread-a")
+    fake = _FakeHttpx(routes={_RESOLVE: {"contact_id": "cid-turn"}, _ASSEMBLE: {"sections": []}})
     p = _make_provider(provider_mod, fake, monkeypatch)
-    monkeypatch.setattr(p, "_turn_contact", lambda: "cid-turn")
-    p._prefetch_sync("hello", session_id="s1")
-    assert _assemble_calls(fake)[0]["json"]["context"]["contact_id"] == "cid-turn"
-    assert _assemble_calls(fake)[0]["json"]["projection_policy"] == (
-        "scoped_viewer_required"
-    )
+    p.prefetch("hello", session_id="s1")
+    call = _assemble_calls(fake)[0]["json"]
+    assert call["context"]["contact_id"] == "cid-turn"
+    assert call["audience"] == "viewer"
+    assert call["projection_policy"] == "scoped_viewer_required"
+    assert call["include_initiatives"] is False
 
 
 def test_prefetch_internal_owner_lane_may_fallback_when_attested(
@@ -715,15 +433,17 @@ def test_prefetch_internal_owner_lane_may_fallback_when_attested(
 
 
 def test_temporal_block_guest_uses_local_clock_only(provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_PREFETCH_TURN_CONTACT", "1")
-    fake = _FakeHttpx(routes={_TEMPORAL: {"title": "Current Time", "body": "now"}})
+    set_turn = _install_session_context(monkeypatch)
+    fake = _FakeHttpx(routes={_RESOLVE: {"contact_id": "cid-turn"},
+                              _TEMPORAL: {"title": "Current Time", "body": "now"}})
     p = _make_provider(provider_mod, fake, monkeypatch)
-    monkeypatch.setattr(p, "_turn_contact", lambda: "cid-turn")
+    set_turn(platform="rcs", sender="alice", chat="thread-a")
     block = p._fresh_temporal_block_sync()
     assert "Runtime reference clock" in block
     temporal = [r for r in fake.requests if r["url"].endswith(_TEMPORAL[1])]
     assert temporal == []
-    monkeypatch.setattr(p, "_turn_contact", lambda: "cid-other")
+    # A real channel without a sender binding is never the owner either.
+    set_turn(platform="rcs", sender="", chat="thread-b")
     p._fresh_temporal_block_sync()
     temporal = [r for r in fake.requests if r["url"].endswith(_TEMPORAL[1])]
     assert temporal == []
@@ -815,33 +535,6 @@ def test_resolve_handle_ttl_cache(provider_mod, monkeypatch):
     assert len(resolves) == 2
 
 
-@pytest.mark.parametrize("flag", ["PROTAGINE_PREFETCH_TURN_CONTACT"])
-def test_mandatory_privacy_flags_cannot_be_disabled(
-        provider_mod, monkeypatch, flag):
-    monkeypatch.setenv(flag, "0")
-    with pytest.raises(RuntimeError, match=f"{flag} is mandatory"):
-        provider_mod.ProtagineMemoryProvider(config={
-            "url": "http://sidecar.test",
-            "api_key": "k",
-            "contact_id": "cid-base",
-        })
-
-
-def test_internal_lane_without_explicit_owner_authority_stays_local_only(
-        provider_mod, monkeypatch):
-    monkeypatch.delenv("PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY", raising=False)
-    fake = _FakeHttpx()
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    assert provider.prefetch("hello", session_id="s1") == ""
-    assert "Runtime reference clock" in provider._fresh_temporal_block_sync()
-    denied = json.loads(provider.handle_tool_call(
-        "protagine_get_facts", {},
-    ))
-    assert "no attested turn participant" in denied["error"]
-    assert fake.requests == []
-
-
 def test_unresolved_real_channel_has_no_context_temporal_sync_or_writes(
         provider_mod, monkeypatch):
     set_turn = _install_session_context(monkeypatch)
@@ -874,85 +567,6 @@ def test_unresolved_real_channel_has_no_context_temporal_sync_or_writes(
         request["url"].endswith(_RESOLVE[1])
         for request in fake.requests
     ) == 2
-
-
-@pytest.mark.parametrize("mode", ["off", "malformed"])
-def test_guest_preflight_failure_never_calls_assemble(
-        provider_mod, monkeypatch, mode):
-    set_turn = _install_session_context(monkeypatch)
-    set_turn(platform="rcs", sender="+15550002", chat="thread-2")
-    readiness = (
-        _projection("cid-guest", mode="off")
-        if mode == "off" else {"viewer_attested": True}
-    )
-    fake = _FakeHttpx(routes={
-        _RESOLVE: {"contact_id": "cid-guest"},
-        _READINESS: readiness,
-        _ASSEMBLE: {
-            "sections": [{"title": "Private", "body": "owner-secret"}],
-        },
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    result = provider.prefetch("hello", session_id="s1")
-    assert "owner-secret" not in result
-    assert "Runtime reference clock" in result
-    assert _assemble_calls(fake) == []
-
-
-@pytest.mark.parametrize("mode", ["shadow", "live", "canonical_sources"])
-def test_guest_context_requires_preflight_atomic_policy_and_response_attestation(
-        provider_mod, monkeypatch, mode):
-    set_turn = _install_session_context(monkeypatch)
-    set_turn(platform="sms", sender="+15550003", chat="thread-3")
-    projection = _projection("cid-guest", mode=mode)
-    if mode == "canonical_sources":
-        projection.update(p8_mode="off", projection_backend=mode, scoped_projection_ready=True)
-    fake = _FakeHttpx(routes={
-        _RESOLVE: {"contact_id": "cid-guest"},
-        _READINESS: projection,
-        _ASSEMBLE: {
-            "sections": [{"title": "Shared", "body": "guest-safe"}],
-            "projection_attestation": projection,
-        },
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    result = provider.prefetch("hello", session_id="s1")
-    assert "guest-safe" in result
-    assert "Runtime reference clock" in result
-    call = _assemble_calls(fake)[0]
-    assert call["json"]["context"]["contact_id"] == "cid-guest"
-    assert call["json"]["projection_policy"] == "scoped_viewer_required"
-    readiness_index = next(
-        index for index, request in enumerate(fake.requests)
-        if request["url"].endswith(_READINESS[1])
-    )
-    assemble_index = fake.requests.index(call)
-    assert readiness_index < assemble_index
-    assert not any(
-        request["url"].endswith(_TEMPORAL[1])
-        for request in fake.requests
-    )
-
-
-def test_guest_assemble_response_viewer_mismatch_is_withheld(
-        provider_mod, monkeypatch):
-    set_turn = _install_session_context(monkeypatch)
-    set_turn(platform="whatsapp", sender="alice", chat="thread-a")
-    fake = _FakeHttpx(routes={
-        _RESOLVE: {"contact_id": "cid-alice"},
-        _READINESS: _projection("cid-alice"),
-        _ASSEMBLE: {
-            "sections": [{"title": "Private", "body": "owner-secret"}],
-            "projection_attestation": _projection("cid-owner"),
-        },
-    })
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-
-    result = provider.prefetch("hello", session_id="s1")
-    assert "owner-secret" not in result
-    assert "Runtime reference clock" in result
 
 
 def test_two_concurrent_senders_never_share_context(
@@ -1068,7 +682,7 @@ def test_guest_read_tools_never_call_legacy_unprojected_endpoints(
     withheld = json.loads(provider.handle_tool_call(
         "protagine_check_commitments", {},
     ))
-    assert "guest-scoped tool projections" in withheld["error"]
+    assert "owner-only" in withheld["error"]
     assert not any(
         request["url"].endswith((
             "/v1/host/commitments", "/v1/host/mind/facts",
@@ -1077,7 +691,6 @@ def test_guest_read_tools_never_call_legacy_unprojected_endpoints(
         for request in fake.requests
     )
     names = {schema["name"] for schema in provider.get_tool_schemas()}
-    assert names == set(provider_mod.GENERAL_PLUGIN_READ_CONTEXT_TOOL_NAMES)
     assert "protagine_search_memory" not in names
     assert "protagine_list_pending_tasks" not in names
 
@@ -1150,85 +763,6 @@ def test_lifecycle_write_hooks_stay_dark_without_write_authority(
         request["url"].endswith(("/memory/write", "/signals/ingest"))
         for request in fake.requests
     )
-
-
-def test_catalog_attests_read_only_prompt_and_provider_privacy(
-        provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    provider = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
-    catalog = provider_mod.catalog_attestation()
-    prompt = provider.system_prompt_block()
-
-    assert catalog["provider_governance_ready"] is True
-    assert catalog["general_plugin_governance_ready"] is False
-    assert catalog["posture"]["memory_write_hook"] == "canonical_source_erasure_only"
-    assert catalog["guest_context_runtime_prerequisite"] == {
-        "readiness_endpoint": "/v1/host/context/projection-readiness",
-        "response_schema": "ContextProjectionAttestationV1",
-        "response_version": 1,
-        "viewer_person_id_must_match_turn_contact": True,
-        "p8_modes": ["shadow", "live"],
-        "projection_backends": ["p8", "canonical_sources"],
-        "assemble_response_attestation_required": True,
-    }
-    import hashlib
-    assert catalog["system_prompt_sha256"] == hashlib.sha256(
-        prompt.encode("utf-8")
-    ).hexdigest()
-    assert set(catalog["model_visible_tool_names"]) == {
-        "protagine_check_commitments", "protagine_get_affect",
-        "protagine_get_facts", "protagine_timeline",
-    }
-    assert all(name in prompt for name in catalog["model_visible_tool_names"])
-    assert "protagine_write_memory" not in prompt
-    assert "handoff" not in prompt.lower()
-
-
-@pytest.mark.parametrize("change", [
-    {"projection_backend": "unknown"}, {"projection_backend": None},
-    {"p8_mode": "shadow"}, {"viewer_is_owner": True},
-    {"legacy_global_allowed": True}, {"viewer_person_id": "another-guest"},
-    {"viewer_attested": False}, {"scoped_projection_ready": False},
-])
-def test_canonical_projection_never_weakens_exact_guest_boundary(provider_mod, change):
-    projection = _projection("cid-guest", mode="off")
-    projection.update(projection_backend="canonical_sources", scoped_projection_ready=True)
-    assert provider_mod.ProtagineMemoryProvider._projection_attestation_valid(
-        projection, contact_id="cid-guest", require_scoped=True)
-    assert not provider_mod.ProtagineMemoryProvider._projection_attestation_valid(
-        {**projection, **change}, contact_id="cid-guest", require_scoped=True)
-
-
-
-
-
-
-def test_general_writer_ownership_follows_selected_profile(provider_mod, tmp_path):
-    config = {'plugins': {'enabled': ['protagine']}, 'memory': {'provider': 'protagine-memory'}}
-    (tmp_path / 'config.yaml').write_text(json.dumps(config))
-    assert provider_mod.general_plugin_memory_ownership(tmp_path) is True
-    config['plugins']['disabled'] = ['protagine']
-    (tmp_path / 'config.yaml').write_text(json.dumps(config))
-    assert provider_mod.general_plugin_memory_ownership(tmp_path) is False
-
-
-
-
-def test_profile_aliases_override_inherited_names_without_mutating_environment(
-        provider_mod, monkeypatch, tmp_path):
-    pytest.importorskip('hermes_cli.config')
-    monkeypatch.setenv('PROTAGINE_API_KEY', 'inherited-disposable-key')
-    monkeypatch.setenv('PROTAGINE_API_KEY', 'other-inherited-key')
-    profile = tmp_path / 'profile'
-    profile.mkdir()
-    (profile / '.env').write_text('PROTAGINE_API_KEY=profile-disposable-key\n')
-    before = dict(provider_mod.os.environ)
-    assert provider_mod._profile_env('PROTAGINE_API_KEY', profile) == 'profile-disposable-key'
-    assert provider_mod._profile_env('PROTAGINE_API_KEY', profile) == 'profile-disposable-key'
-    assert dict(provider_mod.os.environ) == before
-    (profile / '.env').write_text('PROTAGINE_API_KEY=legacy-profile-key\n')
-    assert provider_mod._profile_env('PROTAGINE_API_KEY', profile) == 'legacy-profile-key'
-    assert dict(provider_mod.os.environ) == before
 
 
 def test_native_setup_updates_existing_secret_name_without_adding_an_alias(

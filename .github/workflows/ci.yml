@@ -9,6 +9,10 @@ on:
   # the resulting artifacts, rather than rebuilding after qualification.
   workflow_call:
 
+env:
+  # Stock Hermes v2026.9.14 (0.21.3): the qualified release of the supported range >=0.21.3,<0.22.
+  HERMES_REF: 345cd2b057a452236de401d3534b8502a7465e8d
+
 jobs:
   artifacts:
     runs-on: ubuntu-latest
@@ -23,7 +27,7 @@ jobs:
         run: python -m pip install -c requirements/release-py312.txt '.[test,quality]'
       - name: Check fatal errors and the hostworker contract types
         run: |
-          python -m ruff check sidecar/protagine plugins/hermes-plugin/ops/protagine-doctor.py scripts/qualify_artifacts.py hostworker/protagine_hostworker tests/hermes_adapter/conftest.py tests/hermes_adapter/test_sidecar_distribution.py
+          python -m ruff check sidecar/protagine plugins/hermes-plugin plugins/protagine-memory scripts/qualify_artifacts.py scripts/check_hermes_record.py scripts/fake_model.py hostworker/protagine_hostworker tests/hermes_adapter
           python -m mypy
       - name: Build distributions from source archives
         run: |
@@ -47,19 +51,41 @@ jobs:
           path: artifact-qualification/
           if-no-files-found: warn
 
-  hermes-adapter-partition:
-    name: hermes-adapter (${{ matrix.group }})
+  # The plan's fresh-install test: stock Hermes in its own environment, the
+  # built wheels, init, pip check, RECORD, upgrade twice, doctor, uninstall.
+  fresh-install:
     runs-on: ubuntu-latest
     needs: artifacts
-    strategy:
-      fail-fast: false
-      matrix:
-        group: [native, integration]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
+      - uses: actions/checkout@v6
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_REF }}
+          path: .qualification/hermes
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install, check, upgrade twice, uninstall against stock Hermes
+        env:
+          HERMES_SRC: ${{ github.workspace }}/.qualification/hermes
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: bash scripts/ci_fresh_install.sh
+      - name: Remember in one session, recall in another (acceptance test 1)
+        env:
+          HERMES_SRC: ${{ github.workspace }}/.qualification/hermes
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: bash scripts/ci_recall_probe.sh
+
+  hermes-adapter:
+    runs-on: ubuntu-latest
+    needs: artifacts
     env:
-      QUALIFICATION_GROUP: ${{ matrix.group }}
-      PROTAGINE_TEST_HERMES_PATH: ${{ github.workspace }}/.qualification/hermes
-      HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
-      PROTAGINE_HERMES_TEST_SOURCE: ${{ github.workspace }}/.qualification/hermes
       PROTAGINE_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
     steps:
       - uses: actions/checkout@v6
@@ -69,10 +95,10 @@ jobs:
           path: dist/
       - uses: actions/checkout@v6
         with:
-          # Same official source + packaged patches used by guided installation.
+          # Stock Hermes, exactly as a user installs it. No patches are applied.
           repository: NousResearch/hermes-agent
-          ref: 345cd2b057a452236de401d3534b8502a7465e8d
-          path: .qualification/hermes-official
+          ref: ${{ env.HERMES_REF }}
+          path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -81,140 +107,56 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             sidecar/pyproject.toml
-            .qualification/hermes-official/pyproject.toml
-      - name: Apply the built distribution's versioned Hermes patches
+            .qualification/hermes/pyproject.toml
+      - name: Install stock Hermes and the built adapter
         run: |
-          python -m pip install --no-deps dist/protagine-*.whl
-          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions > hermes-patches.json
-      - name: Install adapter and pinned native runtime
-        run: |
+          python -m pip install -e ./.qualification/hermes
           python - <<'PY'
           from pathlib import Path
           import subprocess, sys
           adapter, = Path('dist').glob('protagine_hermes-*.whl')
           sidecar, = Path('dist').glob('protagine-*.whl')
-          subprocess.run([sys.executable, '-m', 'pip', 'install',
-              str(adapter) + '[test,native-memory]', str(sidecar) + '[lancedb,video]',
-              'pytest-asyncio>=0.23'], check=True)
+          subprocess.run([sys.executable, '-m', 'pip', 'install', str(adapter) + '[test]', str(sidecar) + '[lancedb]'], check=True)
           PY
-          python -m pip install -e ./.qualification/hermes
-          python - <<'PY'
-          import importlib.metadata as metadata, json
-          from pathlib import Path
-          for name, pattern in [('protagine', 'protagine-*.whl'),
-                                ('protagine-hermes', 'protagine_hermes-*.whl')]:
-              wheel, = Path('dist').resolve().glob(pattern)
-              installed = metadata.distribution(name)
-              origin = json.loads(installed.read_text('direct_url.json'))
-              assert origin.get('url') == wheel.as_uri(), (name, 'Release wheel is not installed')
-              assert not origin.get('dir_info', {}).get('editable'), name
-              print(name, installed.version, 'installed from qualified wheel')
-          PY
-      - name: Qualify built artifacts and profile isolation
+          python -m pip check
+      - name: Qualify the adapter against stock Hermes
+        run: python -m pytest tests/hermes_adapter -q --durations=0 --junitxml=hermes-adapter-results.xml
+      - name: Qualify the host worker and the recall harness
         run: |
-          export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
-          python - <<'PY'
-          import json, os, subprocess, sys
-          from pathlib import Path
-          group = os.environ['QUALIFICATION_GROUP']
-          # Each matrix job has its own checkout/native install and uses the
-          # same prepared release artifacts.
-          # Include both default pytest filename patterns so new tests cannot
-          # silently fall outside the two complementary groups.
-          files = sorted(path for path in Path('tests/hermes_adapter').rglob('*.py')
-                         if path.name.startswith('test_') or path.name.endswith('_test.py'))
-          selected = [str(path) for path in files
-                      if path.name.startswith('test_native_') == (group == 'native')]
-          assert group in ('native', 'integration') and selected
-          Path(f'hermes-adapter-inventory-{group}.json').write_text(json.dumps(selected, indent=2) + '\n')
-          subprocess.run([sys.executable, '-m', 'pytest', *selected, '-q', '--durations=0',
-                          f'--junitxml=hermes-adapter-results-{group}.xml'], check=True)
-          PY
-      - name: Require the patched runtime contract
-        if: matrix.group == 'native'
-        run: |
-          python -m protagine.hermes_capabilities --output hermes-capabilities.json --require core --require concurrent_work --require detached_review --require source_reminders --require terminal_handoff
-          python scripts/qualify_hermes_patch_regressions.py --runtime .qualification/hermes --output hermes-patch-regressions
-      - name: Require native qualification witnesses
-        if: matrix.group == 'native'
-        run: |
-          python - <<'PY'
-          import xml.etree.ElementTree as ET
-          collected = list(ET.parse('hermes-adapter-results-native.xml').iter('testcase'))
-          for module, name, expected in (
-              ('test_native_task_channels', 'test_native_task_channels', 7),
-              ('test_native_review_boundary', 'test_native_executor_read_only_review', 2),
-              ('test_native_skill_catalog', 'test_native_skill_index_and_view_remain_authoritative', 1),
-              ('test_native_skill_updates', 'test_native_skill_updates_reach_running_and_saved_conversations', 2),
-              ('test_native_source_reminders', 'test_native_source_deadline_correction_and_forgetting', 2),
-          ):
-              cases = [case for case in collected
-                       if case.get('classname', '').endswith('.' + module)
-                       and (case.get('name') == name or case.get('name', '').startswith(name + '['))]
-              assert len(cases) == expected, f'{name}: expected {expected} cases, found {len(cases)}'
-              assert not any(case.find(outcome) is not None for case in cases for outcome in ('skipped', 'failure', 'error')), \
-                  f'{name} must run and pass'
-          PY
-      - name: Qualify host worker and recall harness
-        if: matrix.group == 'integration'
-        run: |
-          export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
           python -m pytest hostworker/tests -q --durations=0 --junitxml=hostworker-results.xml
           python -m pytest benchmarks/source_recall/test_harness.py -q --durations=0 --junitxml=source-recall-results.xml
-      - name: Qualify native original-memory observations
-        if: matrix.group == 'native'
-        env:
-          PYTHONPATH: ${{ github.workspace }}/.qualification/hermes
-        run: |
-          python -c "from hermes_state import SessionDB; assert all(callable(getattr(SessionDB, name, None)) for name in ('redact_message_payloads', 'message_redaction_snapshot'))"
-          python -m pytest sidecar/tests/test_native_tool_observations.py sidecar/tests/test_native_owned_copies.py sidecar/tests/test_native_instruction_ownership.py sidecar/tests/test_native_profile_scope.py sidecar/tests/test_cron_memory_lineage.py sidecar/tests/test_task_execution_judgments.py -q --durations=0 --junitxml=native-memory-results.xml
-          python - <<'PY'
-          import xml.etree.ElementTree as ET
-          cases = [case for case in ET.parse('native-memory-results.xml').iter('testcase')
-                   if case.get('classname', '').endswith('test_native_profile_scope')]
-          assert len(cases) == 41, f'Expected 41 native profile scope witnesses, found {len(cases)}'
-          assert not any(case.find(state) is not None for case in cases
-                         for state in ('skipped', 'failure', 'error')), 'Profile scope witnesses must run and pass'
-          PY
-      - name: Retain test inventory and durations
+      - name: Retain test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-adapter-${{ matrix.group }}-results
-          path: |
-            hermes-adapter-inventory-*.json
-            *-results*.xml
-            hermes-patches.json
-            hermes-capabilities.json
-            hermes-patch-regressions/
-
-  # Preserve the existing required check name. Both isolated test jobs must
-  # succeed; a failed, cancelled or skipped partition cannot satisfy it.
-  hermes-adapter:
-    if: always()
-    needs: hermes-adapter-partition
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require both adapter partitions
-        env:
-          PARTITION_RESULT: ${{ needs.hermes-adapter-partition.result }}
-        run: test "$PARTITION_RESULT" = success
+          name: hermes-adapter-results
+          path: '*-results*.xml'
 
   python:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sidecar
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_REF }}
+          path: .qualification/hermes
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: sidecar/pyproject.toml
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Install the sidecar and a stock Hermes for the install tests
+        run: |
+          pip install -e "./sidecar[dev]" -e .
+          python -m venv .qualification/hermes-venv
+          .qualification/hermes-venv/bin/python -m pip install --quiet --upgrade pip
+          .qualification/hermes-venv/bin/python -m pip install --quiet -e ./.qualification/hermes .
       - name: Run tests
+        env:
+          PROTAGINE_TEST_HERMES_PYTHON: ${{ github.workspace }}/.qualification/hermes-venv/bin/python
+        working-directory: sidecar
         run: pytest tests/ -v
 
   docker:

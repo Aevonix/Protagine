@@ -603,15 +603,13 @@ class ExternalCognitionEventV1:
             )
         if not (
             getattr(authority, "authenticated", False)
-            and not getattr(authority, "legacy", False)
             and not getattr(authority, "anonymous", False)
-            and authority.has_scope("cognition:events-ingest")
             and getattr(authority, "principal_id", "")
             and getattr(authority, "credential_id", "")
             and getattr(authority, "viewer_person_id", "")
         ):
             raise ExternalEventValidationError(
-                "scoped principal with an exact viewer binding is required"
+                "the API key with a viewer binding is required"
             )
         event_id = str(body.get("event_id") or "").strip()
         if not _SAFE_ID.fullmatch(event_id):
@@ -663,7 +661,6 @@ class ExternalCognitionEventV1:
         producer_revision = "external-principal:" + _digest({
             "principal_id": principal,
             "credential_id": credential,
-            "scopes": sorted(authority.scopes),
         })[:24]
         payload = {
             "schema": "ExternalCognitionEventV1",

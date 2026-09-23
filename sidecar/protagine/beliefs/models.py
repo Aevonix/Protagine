@@ -9,8 +9,8 @@ from typing import Any, Dict, Optional
 
 
 def beliefs_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_BELIEFS_MODE", ("off", "shadow", "live"), "shadow")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_BELIEFS_MODE", ("off", "shadow", "live"), "shadow")
 
 
 def beliefs_supervised_live() -> bool:

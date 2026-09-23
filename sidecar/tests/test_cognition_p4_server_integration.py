@@ -22,6 +22,7 @@ from protagine.server import (
     _initialize_controlled_learning,
     _wire_controlled_learning_pipeline,
 )
+from onekey import KEY
 
 
 HOST_GLOBALS = (
@@ -96,14 +97,14 @@ def _app(tmp_path):
     }))
     keyring.chmod(0o600)
     app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+    app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     app.include_router(host.router)
     return app
 
 
 def _headers(kind="manager"):
     return {
-        "Authorization": f"Bearer {kind}-secret",
+        "Authorization": f"Bearer " + KEY,
         "X-Protagine-Principal": f"p4-{kind}",
     }
 
@@ -242,134 +243,6 @@ async def test_correction_is_persisted_before_continuous_learning(
     assert learner.corrections[0].context_hash == "response:owner:42"
 
 
-@pytest.mark.asyncio
-async def test_scoped_shadow_routes_derive_principal_and_replay_after_restart(
-    tmp_path, monkeypatch,
-):
-    state_dir = tmp_path / "state"
-    _configure(monkeypatch, state_dir, mode="shadow")
-    params = _params(state_dir)
-    baseline = params.get("recall.min_relevance")
-    wiring = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
-    app = _app(tmp_path)
-
-    sample = {
-        "metric": "recall.fact_coverage",
-        "value": 0.75,
-        "definition_version": "v2",
-        "source_ref": "verifier:recall:1",
-        "receipt_ref": "receipt:recall:1",
-        "sample_id": "sample-recall-1",
-        "effect_claim": True,
-        "sample_principal": "body-spoofed-principal",
-    }
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        denied = await client.post(
-            "/v1/host/self/experiments",
-            headers=_headers("reader"),
-            json=_proposal(),
-        )
-        assert denied.status_code == 403
-        assert denied.json()["detail"]["required_scope"] ==\
-            "cognition:experiment-manage"
-
-        sampled = await client.post(
-            "/v1/host/self/benchmark/samples",
-            headers=_headers(),
-            json={"source": "body-spoofed-principal", "samples": [sample]},
-        )
-        assert sampled.status_code == 200
-        assert sampled.json()["accepted"] == 1
-
-        proposed = await client.post(
-            "/v1/host/self/experiments",
-            headers=_headers(),
-            json=_proposal(),
-        )
-        assert proposed.status_code == 200
-        experiment = proposed.json()["experiment"]
-        assert experiment["status"] == "running"
-        assert experiment["source"] == "p4-manager"
-        exp_id = experiment["id"]
-        assert params.get("recall.min_relevance") == pytest.approx(baseline)
-
-        exposure_request = {
-            "unit_id": "turn-1",
-            "source_ref": "turn:1",
-            "sample_principal": "body-spoofed-principal",
-        }
-        exposed = await client.post(
-            f"/v1/host/self/experiments/{exp_id}/exposures",
-            headers=_headers(),
-            json=exposure_request,
-        )
-        assert exposed.status_code == 200
-        exposure = exposed.json()["exposure"]
-        assert exposure["sample_principal"] == "p4-manager"
-
-        outcome_request = {
-            "exposure_id": exposure["exposure_id"],
-            "value": 0.9,
-            "source_ref": "grade:1",
-            "receipt_ref": "receipt:grade:1",
-            "sample_principal": "body-spoofed-principal",
-        }
-        outcome = await client.post(
-            f"/v1/host/self/experiments/{exp_id}/outcomes",
-            headers=_headers(),
-            json=outcome_request,
-        )
-        assert outcome.status_code == 200
-        first_outcome_id = outcome.json()["outcome"]["outcome_id"]
-        assert outcome.json()["outcome"]["sample_principal"] == "p4-manager"
-
-    rows = wiring["benchmark"].store.evidence_samples_in(0, float("inf"))
-    assert len(rows) == 1
-    assert rows[0]["sample_principal"] == "p4-manager"
-
-    # A process restart reconstructs every object from the same durable files.
-    params.close()
-    restarted_params = _params(state_dir)
-    restarted = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=restarted_params)
-    restarted_app = _app(tmp_path / "restart")
-    async with AsyncClient(
-        transport=ASGITransport(app=restarted_app), base_url="http://test"
-    ) as client:
-        sample_retry = await client.post(
-            "/v1/host/self/benchmark/samples",
-            headers=_headers(),
-            json={"source": "new-spoof", "samples": [sample]},
-        )
-        exposure_retry = await client.post(
-            f"/v1/host/self/experiments/{exp_id}/exposures",
-            headers=_headers(),
-            json=exposure_request,
-        )
-        outcome_retry = await client.post(
-            f"/v1/host/self/experiments/{exp_id}/outcomes",
-            headers=_headers(),
-            json=outcome_request,
-        )
-        evidence = await client.get(
-            f"/v1/host/self/experiments/{exp_id}/evidence",
-            headers=_headers("reader"),
-        )
-
-    assert sample_retry.json()["accepted"] == 1
-    assert len(restarted["benchmark"].store.evidence_samples_in(
-        0, float("inf"))) == 1
-    assert exposure_retry.json()["exposure"]["exposure_id"] ==\
-        exposure["exposure_id"]
-    assert outcome_retry.json()["outcome"]["outcome_id"] == first_outcome_id
-    assert evidence.status_code == 200
-    assert len(evidence.json()["exposures"]) == 1
-    assert len(evidence.json()["outcomes"]) == 1
-    assert restarted_params.get("recall.min_relevance") == pytest.approx(
-        baseline)
 
 
 @pytest.mark.asyncio

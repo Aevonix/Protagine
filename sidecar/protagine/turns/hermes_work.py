@@ -16,14 +16,12 @@ from protagine import get_state_dir
 
 
 def selected_home():
-    """Use the private instance binding or explicit HERMES_HOME, never a scan."""
+    """Use the instance's configured Hermes home or explicit HERMES_HOME, never a scan."""
     selected = os.environ.get('HERMES_HOME', '').strip()
-    path = get_state_dir() / 'instance.json'
-    if path.is_file():
-        manifest = json.loads(path.read_text())
-        if manifest.get('version') != 1 or manifest.get('profile') != 'local':
-            raise ValueError('unsupported_instance_binding')
-        bound = Path(manifest['hermes_home']).expanduser().resolve()
+    from protagine.config import CONFIG_FILE, load_config
+    state = get_state_dir()
+    if (state / CONFIG_FILE).is_file():
+        bound = load_config(state, environ={}).hermes_home.resolve()
         if selected and Path(selected).expanduser().resolve() != bound:
             raise ValueError('conflicting_instance_binding')
         return bound

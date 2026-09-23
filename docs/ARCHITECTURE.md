@@ -7,7 +7,7 @@ defaults and remaining limitations are documented in the README and the linked
 capability guides.
 
 Phase 1 establishes the first supported Protagine baseline. Support targets the
-current installation and its qualified official Hermes source plus patchset. Older
+current installation on stock Hermes (`>=0.21.3,<0.22`). Older
 Protagine releases, aliases and database layouts carry no public compatibility
 promise. Retained implementation paths still need their current consumers and
 data accounted for before removal; this document does not claim they are gone.
@@ -110,23 +110,24 @@ effect.
 Attachment selects an exact runtime and profile. Configuration staging,
 activation and observed behavioral readiness are different states. A copied
 plugin or successful health request does not prove the integration is active.
-Missing host interfaces come from a versioned patchset shipped with Protagine.
-The installer stages a separate copy of exact official Hermes source, verifies
-patch preimages and postimages, then checks its native capabilities. No fork is
-required. Unknown revisions need a new qualified patchset; existing source,
-profiles and service commands are not silently replaced.
+Every host interface the adapter uses is a stock Hermes seam: the plugin
+hooks, the memory-provider entry point, the kanban store, the worker profile
+and the configuration keys `protagine init` writes. No patch is applied and
+no separate runtime is prepared; `protagine doctor` checks the supported
+release range. Existing source, profiles and service commands are not silently
+replaced.
 
-Keep cognition and deployment identity outside the runtime patches. Limit the
+Keep cognition and deployment identity outside Hermes. Limit the
 delta to generic interfaces and required correctness repairs, preserve upstream
 attribution, and qualify the built package against official source on each update.
 CI runs installed-adapter behavior and the affected native regressions. Remove a
 patch when official behavior makes it unnecessary. Upstream acceptance can reduce
 maintenance, but is not a release gate or another approval process.
 
-The packaged installer selects one home, preserves unrelated configuration and
-uses the native general-plugin and memory-provider registrations. It can install
-an optional user service through systemd or launchd. Existing gateways are not
-restarted by attachment. See [local setup](LOCAL-HERMES-SETUP.md) for activation
+`protagine init` selects one home, preserves unrelated configuration and
+uses the native general-plugin and memory-provider registrations. It installs
+the sidecar user service through systemd or launchd. Existing gateways are not
+restarted by attachment. See the [install guide](INSTALL.md) for activation
 and [the native adapter](HERMES-ADAPTER.md) for the evaluated learning path.
 
 ## State ownership and recovery

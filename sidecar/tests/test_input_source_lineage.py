@@ -11,7 +11,6 @@ from protagine.turns.idempotency import SourceErased, SourceInputPending, source
 from test_answer_source_lineage import stored
 from test_turn_source_evidence import source_app
 from test_source_media import message as image_message
-from test_hermes_turn_outbox import _load_client
 
 
 def parent_ref(message, source='parent', session='original'):
@@ -78,20 +77,6 @@ async def test_missing_parent_does_not_reserve_effects_and_replay_succeeds(sourc
         assert (await client.put(path, json=body)).status_code == 200
     ledger.erase_sources(contact_id='person', turn_ids=['parent'])
     assert stored(ledger) == {}
-
-
-def test_offline_outbox_removes_input_dependent_answer_before_replay(tmp_path):
-    client = _load_client('input_parent_outbox')
-    ledger = TurnIdempotencyLedger(tmp_path/'sources.db')
-    parent = image_message()
-    ref = parent_ref(parent)
-    ledger.record_source('parent', contact_id='person', session_id='original', messages=[parent], derive_claims=False)
-    outbox = client.TurnOutbox(tmp_path/'outbox.db')
-    outbox.enqueue('late', {'turn_id': 'late', 'contact_id': 'person', 'session_id': 'call',
-        'assistant_message': 'A paraphrase of the captured picture.', 'assistant_input_refs': [ref]})
-    ledger.erase_sources(contact_id='person', turn_ids=['parent'])
-    client.TurnOutbox(outbox.path).apply_erasure_page('person', ledger.erasure_feed('person'))
-    assert outbox.snapshot() == []
 
 
 @pytest.mark.asyncio

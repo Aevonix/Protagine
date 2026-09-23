@@ -10,6 +10,7 @@ from protagine.api.routers import host
 from protagine.briefings.models import Briefing, BriefingSection
 from test_contact_fact_recall import contact_context
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 @pytest.mark.asyncio
@@ -37,7 +38,7 @@ async def test_ordinary_recall_preserves_source_and_history_without_global_brief
         return [brief]
 
     monkeypatch.setattr(host, '_briefings_engine', SimpleNamespace(get_recent=get_recent))
-    headers = {'Authorization': 'Bearer owner-key'}
+    headers = {'Authorization': 'Bearer ' + KEY}
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         response = await client.post('/v1/host/context/assemble', headers=headers, json={
             'identity': {'host_id': 'native-fixture'},

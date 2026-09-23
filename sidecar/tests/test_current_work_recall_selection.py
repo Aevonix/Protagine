@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.api.routers import executions
 from protagine.beliefs.source_projection import SourceClaimProjection
 from protagine.beliefs.source_time import MemoryTimeQuery

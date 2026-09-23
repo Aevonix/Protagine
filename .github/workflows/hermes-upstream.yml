@@ -1,4 +1,4 @@
-name: Latest Hermes patch compatibility
+name: Latest Hermes compatibility
 
 on:
   schedule:
@@ -35,7 +35,7 @@ jobs:
         with:
           repository: NousResearch/hermes-agent
           ref: ${{ steps.release.outputs.tag }}
-          path: .qualification/hermes-official
+          path: .qualification/hermes
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -44,7 +44,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             sidecar/pyproject.toml
-            .qualification/hermes-official/pyproject.toml
+            .qualification/hermes/pyproject.toml
       - name: Record the selected runtime
         env:
           HERMES_RELEASE: ${{ steps.release.outputs.tag }}
@@ -52,53 +52,37 @@ jobs:
           python - <<'PY'
           import os, subprocess
           revision = subprocess.check_output([
-              'git', '-C', '.qualification/hermes-official', 'rev-parse', 'HEAD'], text=True).strip()
+              'git', '-C', '.qualification/hermes', 'rev-parse', 'HEAD'], text=True).strip()
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
               stream.write('Hermes release: ' + os.environ['HERMES_RELEASE'] + '\n\n')
               stream.write('Exact commit: `' + revision + '`\n\n')
-              stream.write('Official release plus shipped Protagine patches. No deployment or pin is changed.\n')
+              stream.write('Stock upstream release, no patches. No deployment or pin is changed.\n')
           PY
-      - name: Check and stage the shipped patches on the latest official release
+      - name: Build the distributions
         run: |
-          python -m pip install --no-deps ./sidecar
-          python -m protagine.hermes_patches --source .qualification/hermes-official --destination .qualification/hermes --include-regressions --candidate-upstream > upstream-patches.json
-      - name: Install adapter and selected native runtime
+          python -m pip install build "setuptools>=77" wheel
+          python -m build --no-isolation --outdir dist .
+          python -m build --no-isolation --outdir dist ./sidecar
+      - name: Fresh install against the latest stock release
         id: install
+        env:
+          HERMES_SRC: ${{ github.workspace }}/.qualification/hermes
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: bash scripts/ci_fresh_install.sh
+      - name: Install adapter, sidecar and the latest stock Hermes for the adapter tests
+        id: adapter
         run: |
           python -m pip install -e '.[test,native-memory]'
           python -m pip install -e ./.qualification/hermes
           python -m pip install ./sidecar
-      - name: Record core and optional native capabilities
-        run: |
-          python -m protagine.hermes_capabilities --output upstream-capabilities.json --require core --require concurrent_work --require detached_review --require source_reminders --require terminal_handoff
-          python - <<'PY'
-          import json, os
-          report = json.load(open('upstream-capabilities.json'))
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
-              for name, feature in report['features'].items():
-                  status = 'available' if feature['available'] else 'missing: ' + ', '.join(feature['missing'])
-                  stream.write(f'- {name}: {status}\n')
-              stream.write('\nInterface checks do not replace installed-adapter behavior qualification.\n')
-          PY
-      - name: Qualify built artifacts against the patched latest stable Hermes
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: |
-          export PROTAGINE_HERMES_TEST_PYTHON="$(command -v python)"
-          python -m pytest tests/hermes_adapter -q -ra --junitxml=upstream-adapter.xml
-      - name: Require core interfaces independently of optional feature results
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python -m protagine.hermes_capabilities --require core
-      - name: Qualify each native patch regression in a fresh process
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: python scripts/qualify_hermes_patch_regressions.py --runtime .qualification/hermes --output upstream-patch-regressions
-      - name: Retain runtime receipt and every test outcome
+      - name: Qualify built artifacts against the latest stock Hermes
+        if: ${{ !cancelled() && steps.adapter.outcome == 'success' }}
+        run: python -m pytest tests/hermes_adapter -q -ra --junitxml=upstream-adapter.xml
+      - name: Retain every test outcome
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: latest-hermes-qualification
           path: |
-            upstream-capabilities.json
             upstream-adapter.xml
-            upstream-patches.json
-            upstream-patch-regressions/
           if-no-files-found: warn

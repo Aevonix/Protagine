@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import protagine.api.routers.host as host_mod
-from protagine.api.authority import RequestAuthority, legacy_authority
+from onekey import RequestAuthority, legacy_authority
 from protagine.self_model.workspace import (
     ConcernStore, WorkspaceEngine, in_sleep_window,
 )
@@ -270,32 +270,3 @@ def _scoped(viewer, *, audiences=("viewer",)):
     )
 
 
-async def test_api_filters_private_concerns_and_resolve_is_owner_only(
-        tmp_path, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    ws, store = make(tmp_path)
-    owner = ws.bump(kind="question", summary="owner only", dedup_key="owner")
-    subject = ws.bump(kind="thread", summary="subject visible", dedup_key="subject")
-    with store._lock:
-        store._conn.execute(
-            "UPDATE concerns SET subject_person_id=?,shareability=?,viewer_scope=? "
-            "WHERE concern_id=?",
-            ("person-a", "subject_private", "person:person-a", subject.concern_id),
-        )
-        store._conn.commit()
-
-    async with _client(ws, _scoped("person-a")) as client:
-        snapshot = (await client.get("/v1/host/self/workspace")).json()
-        assert [row["summary"] for row in snapshot["concerns"]] == ["subject visible"]
-        assert (await client.post(
-            f"/v1/host/self/workspace/{subject.concern_id}/resolve"
-        )).status_code == 404
-
-    async with _client(ws, _scoped("person-owner", audiences=("viewer", "owner"))) as client:
-        snapshot = (await client.get("/v1/host/self/workspace")).json()
-        assert {row["summary"] for row in snapshot["concerns"]} == {
-            "owner only", "subject visible",
-        }
-        assert (await client.post(
-            f"/v1/host/self/workspace/{owner.concern_id}/resolve"
-        )).status_code == 200

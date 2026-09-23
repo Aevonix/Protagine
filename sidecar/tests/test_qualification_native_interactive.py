@@ -10,6 +10,10 @@ import threading
 
 import pytest
 
+# The live transition runs of this pack exercised the plugin task platform
+# (protagine_task, task handoffs) that M1 removed; the pack definitions and
+# their evaluators stay until the M2/M3 cleanup replaces them.
+
 from protagine.qualification.native import configuration, native_context
 from protagine.qualification.native_interactive import CONSUMERS, EVALUATORS, assess
 from protagine.qualification.native_interactive_cases import cases
@@ -23,12 +27,6 @@ def test_answer_without_task_effects_cannot_pass():
     assert checks['grounded_foreground_answer'] is True
     assert checks['exact_durable_task_count'] is False
     assert checks['canonical_owner_preserved'] is False
-
-
-@pytest.mark.skipif(not os.environ.get('PROTAGINE_TEST_HERMES_PYTHON'), reason='Explicit isolated native interpreter required')
-@pytest.mark.parametrize('index', range(11))
-def test_controlled_native_interactive_transition(tmp_path, index):
-    run_case(tmp_path, cases()[index])
 
 
 @pytest.mark.skipif(not (os.environ.get('PROTAGINE_TEST_HERMES_PYTHON') and os.environ.get('PROTAGINE_INTERACTIVE_HELDOUT')),

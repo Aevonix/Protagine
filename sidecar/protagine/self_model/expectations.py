@@ -69,8 +69,8 @@ def expectations_mode() -> str:
     accepted aliases. An explicitly-set invalid value falls back to "off",
     exactly as the legacy reader treated any unrecognized value.
     """
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"),
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"),
                    "off")
 
 

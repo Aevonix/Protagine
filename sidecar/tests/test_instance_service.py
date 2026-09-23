@@ -186,19 +186,20 @@ def test_occupied_port_is_not_started_or_stopped(service_factory, monkeypatch):
 
 def test_selected_instance_and_managed_foreground_use_same_binding(tmp_path, monkeypatch):
     from protagine import cli
+    from protagine.config import DEFAULTS, save_config, write_api_key
     state, home = tmp_path/'instance', tmp_path/'hermes'
     state.mkdir(); home.mkdir()
-    (state/'instance.json').write_text(json.dumps({'version': 1, 'profile': 'local', 'hermes_home': str(home)}))
-    (home/'config.yaml').write_text(yaml.safe_dump({'plugins': {'protagine': {'instance_dir': str(state)}}}))
-    (state/'.env').write_text(f'PROTAGINE_STATE_DIR={state}\nPROTAGINE_INSTALL_PROFILE=local\nPROTAGINE_API_KEY=private-secret\n')
-    monkeypatch.setattr(os, 'environ', {'PROTAGINE_STATE_DIR': str(state), 'PROTAGINE_INSTANCE_SELECTED': '1'})
+    save_config({**DEFAULTS, 'hermes': {'home': str(home), 'python': ''}}, state)
+    write_api_key('private-secret', state)
+    monkeypatch.setattr(os, 'environ', {'PROTAGINE_HOME': str(state)})
     service = InstanceService.selected()
     assert service.hermes_home == home and service.state == state
+    assert os.environ['PROTAGINE_API_KEY'] == 'private-secret'
     os.environ['PROTAGINE_INSTANCE_SERVICE'] = service.label
     assert cli._is_service_loaded() is False
     assert b'private-secret' not in service.render()
-    (state/'instance.json').unlink()
-    with pytest.raises(ValueError, match='Selected private instance is incomplete'):
+    (state/'protagine.yaml').unlink()
+    with pytest.raises(ServiceError, match='does not exist'):
         InstanceService.selected()
 
 
@@ -222,8 +223,9 @@ def test_launchd_preserves_venv_and_literal_paths(service_factory):
     make, _ = service_factory
     service = make('space%name$dollar', 'darwin')
     payload = plistlib.loads(service.render())
-    assert payload['ProgramArguments'] == [service.python, '-m', 'protagine', '--instance', str(service.state), 'start']
+    assert payload['ProgramArguments'] == [service.python, '-m', 'protagine', 'start']
     assert payload['EnvironmentVariables']['HERMES_HOME'] == str(service.hermes_home)
+    assert payload['EnvironmentVariables']['PROTAGINE_HOME'] == str(service.state)
     assert payload['RunAtLoad'] and payload['KeepAlive'] and payload['Umask'] == 0o077
 
 

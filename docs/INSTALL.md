@@ -1,0 +1,151 @@
+# Install and update
+
+Protagine runs beside stock Hermes: the sidecar and its CLI live in their own
+Python environment, one adapter package goes into the Python that runs
+`hermes`, and one directory holds everything the instance owns. No patched
+Hermes, no prepared runtime, no keyring.
+
+Supported Hermes releases: `hermes-agent >=0.21.3,<0.22`. You need Python 3.12,
+a Hermes install whose `hermes` executable is on `PATH` (pipx, uv or a venv all
+work) and one OpenAI-compatible chat endpoint, which Hermes already has.
+
+## Install
+
+```bash
+pipx install protagine
+protagine init
+hermes gateway restart
+```
+
+`protagine init` asks for your name and messaging handles, the agent's name and
+values, and the autonomy level (`off`, `suggest`, `standard` or `trusted`;
+default `standard`). Then it:
+
+1. writes `protagine.yaml`, `identity.yaml` and `api.key` (mode 600) to the
+   instance directory (`$PROTAGINE_HOME`, default `~/.protagine`);
+2. creates the owner contact;
+3. points the router at the model endpoint Hermes uses, and records an
+   embedding endpoint when you pass `--embed-url` (semantic recall is on only
+   then);
+4. installs `protagine-hermes==<same version>` into the Python of the `hermes`
+   executable and runs `pip check` there;
+5. writes these Hermes keys: `plugins.enabled += protagine`,
+   `memory.provider: protagine-memory`, `plugins.hook_callback_timeout: 0`,
+   `kanban.dispatch_in_gateway: true`, `skills.external_dirs += <instance>/skills`,
+   `security.protected_instruction_extra_patterns += protagine.yaml, identity.yaml, api.key`,
+   and `plugins.protagine.{sidecar_url, key_file}`;
+6. creates the `protagine-act` worker profile with the mind's toolsets and
+   `approvals.deny` from `mind.deny.commands`;
+7. installs and starts the sidecar user service (systemd `--user` on Linux,
+   launchd on macOS; skipped with a message elsewhere, then start it with
+   `protagine start`).
+
+It writes no Hermes admin lists and never restarts a running gateway. Every
+step is idempotent: run it again to change an answer, or pass the flags
+(`protagine init --help`). `--non-interactive` uses the flags and defaults.
+
+Two keys deserve a word. `plugins.hook_callback_timeout: 0` makes Hermes run
+plugin callbacks inline, for every plugin, so overlapping capture and guard
+calls are never skipped. The protected patterns match by basename in any
+directory: writes to any `protagine.yaml`, `identity.yaml` or `api.key` need a
+human, even under yolo, and fail closed inside a worker.
+
+Check the result:
+
+```bash
+protagine doctor
+```
+
+It checks the Hermes version, the instance files, the adapter version, `pip
+check`, the Hermes keys, the worker profile, the plugin registration and the
+sidecar.
+
+## Update
+
+```bash
+pipx upgrade protagine
+protagine upgrade
+hermes gateway restart
+```
+
+`protagine upgrade` takes a backup (`<instance>/backups/<stamp>/`), applies
+the SQLite migrations, upgrades the adapter in Hermes' environment, reconciles
+the Hermes keys and the worker profile, and restarts the sidecar service. When
+nothing changed it says so and stops. Run it as often as you like.
+
+To roll back, install the previous version and copy the files in
+`<instance>/backups/<stamp>/` back into the instance directory.
+
+## Upgrading from 1.9.0
+
+Run `protagine upgrade` with `PROTAGINE_HOME` pointing at the 1.9.0 instance
+directory (the one holding `instance.json`). It converts the keyring to
+`api.key` (a credential the 1.9.0 sidecar still accepted, else a fresh key),
+the `.env` values to `protagine.yaml` and `identity.yaml`, keeps the old files
+as `.env.1.9.0` and `api-keyring.json.1.9.0`, moves the private-directory
+forwarders out of `<hermes_home>/plugins/` into the backup (stock Hermes would
+load them ahead of the installed adapter), and starts the mind at
+`autonomy: suggest`; edit `mind.autonomy` to choose `standard` or `trusted`.
+Reminders scheduled by 1.9.0 keep firing: their launchers run the new adapter.
+
+If the instance used a prepared (patched) Hermes runtime, the upgrade prints
+the one command that binds it to stock Hermes instead:
+
+```bash
+protagine upgrade --hermes-python <python of your stock hermes>
+```
+
+If the `protagine` sidecar package was installed inside Hermes' environment,
+the upgrade prints how to move it out. Nothing restarts the running gateway;
+do that yourself once you are ready.
+
+## Configure
+
+`<instance>/protagine.yaml`:
+
+```yaml
+sidecar: {host: 127.0.0.1, port: 7777}
+hermes: {home: ~/.hermes, python: /path/to/hermes/python}
+router: {base_url: http://127.0.0.1:8000/v1, model: my-model, embed_url: "", embed_model: ""}
+owner: {contact_id: "<created by init>"}
+mind:
+  enabled: true                      # the off switch
+  autonomy: standard                 # off | suggest | standard | trusted
+  deny:
+    commands: []                     # globs written to the worker's approvals.deny
+    tools: []                        # exact tool names blocked in mind-originated runs
+    text: []                         # regexes over intention, message and tool-argument text
+  worker_toolsets: [web, file, session_search, memory, todo]
+  faculties: {initiative: true, people: true, affect: true, opinions: true, broadcast: true,
+              semantic_recall: false, consolidation: true, self_narrative: true, lessons: true,
+              skills: false}
+```
+
+A few environment variables override the file for one process:
+`PROTAGINE_HOME` (the instance directory), `PROTAGINE_SIDECAR_HOST`,
+`PROTAGINE_SIDECAR_PORT`, `HERMES_HOME`, `PROTAGINE_MIND_ENABLED`,
+`PROTAGINE_AUTONOMY` and `PROTAGINE_API_KEY` (in place of `api.key`).
+
+## Security
+
+- The sidecar binds `127.0.0.1` and refuses a non-loopback bind without a key.
+- One key. Every request from the plugin sends `Authorization: Bearer <key>`;
+  the person a request acts for comes from the contact identity in the body,
+  so owner versus guest is a property of the contact, never of a credential.
+- Without a key the API serves loopback callers only (a development
+  convenience), and the credential-handling routes stay closed.
+
+## Uninstall
+
+```bash
+protagine init --uninstall
+hermes gateway restart
+```
+
+This removes the adapter and its keys from Hermes' config, moves the
+`protagine-act` profile (its sessions, memories and logs) into
+`<instance>/backups/<stamp>/profiles/`, removes the sidecar service and
+uninstalls the adapter from Hermes' environment, unless another profile of
+that Hermes home still enables it. What is left is stock Hermes. The instance
+directory and its data are kept; delete it yourself when you no longer want
+them.

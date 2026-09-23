@@ -19,55 +19,14 @@ def main() -> None:
         prog="protagine",
         description="Protagine intelligence sidecar server",
     )
-    parser.add_argument("--instance", help="Private Protagine state directory (otherwise use selected Hermes profile binding)")
+    parser.add_argument("--instance", help="Instance directory (default: $PROTAGINE_HOME or ~/.protagine)")
     sub = parser.add_subparsers(dest="command")
     from protagine.qualification.cli import add_parser as add_model_parser
     add_model_parser(sub)
-    from protagine.hermes_runtime import add_parser as add_hermes_parser
-    add_hermes_parser(sub)
 
-    # --- init ---
-    init_p = sub.add_parser("init", help="Initialize Protagine identity and setup")
-    init_p.add_argument("--dir", default=None, help="Private instance directory (default for new instances: selected Hermes home/protagine)")
-    init_p.add_argument("--passphrase", default=None, help="Encrypt Protagine private key with passphrase (prompted if --encrypt)")
-    init_p.add_argument("--encrypt", action="store_true", help="Encrypt Protagine private key")
-    init_p.add_argument("--claim-genesis", action="store_true", help="Create a signed private federation manifest; trust requires explicit configuration")
-    # Non-interactive mode flags
-    init_p.add_argument("--non-interactive", "-n", action="store_true", help="Run without prompts (requires all required flags)")
-    # Hermes profile attachment
-    init_p.add_argument("--agent-harness", choices=["hermes"], help="Connect an existing Hermes installation")
-    init_p.add_argument("--hermes-home", default=None, help="Selected Hermes home; guided setup lists native profiles, noninteractive defaults to HERMES_HOME or ~/.hermes")
-    init_p.add_argument("--hermes-python", help="Python interpreter of an existing supported Hermes installation")
-    init_p.add_argument("--prepare-hermes", action="store_true", help="Install the qualified official Hermes revision with Protagine patches before attachment")
-    init_p.add_argument("--hermes-source", type=Path, help="Apply the shipped patchset to this clean official Hermes checkout in a separate runtime")
-    init_p.add_argument("--hermes-runtime-dir", type=Path, help="Destination for a prepared Hermes runtime (never overwrites an existing runtime)")
-    init_p.add_argument("--agent-name", help="Name for a new private identity; existing SOUL is preserved")
-    init_p.add_argument("--agent-values", help="Comma-separated guiding values for a new private agent")
-    init_p.add_argument("--timezone", help="Named timezone for the private agent's expectations, for example Europe/Paris")
-    init_p.add_argument("--quiet-hours", help="Optional local follow-up quiet window, HH:MM-HH:MM; grants no outreach permission")
-    init_p.add_argument("--whatsapp-read-receipts", choices=["on", "off"], help="Set this Hermes profile's read receipts for accepted WhatsApp messages; omission preserves its setting")
-    init_p.add_argument("--preferences-only", action="store_true", help="Update only an existing Hermes config preference; skip instance and model setup")
-    init_p.add_argument("--skills-only", action="store_true", help="Install or explicitly refresh owned bundled skills in one Hermes profile; no instance or model setup")
-    init_p.add_argument("--preview", action="store_true", help="With --preferences-only, show changed preference paths without writing")
-    init_p.add_argument("--model-url", help="One local OpenAI-compatible API root")
-    init_p.add_argument("--model", help="Model identifier at that endpoint")
-    init_p.add_argument("--model-config", metavar="PATH", help="Private JSON host-model configuration for a new Protagine instance; preserve its roles and request settings separately from Hermes chat")
-    init_p.add_argument("--adapter-wheel", help="Use this canonical protagine-hermes wheel instead of the installed distribution")
-    init_p.add_argument("--refresh-adapter", action="store_true", help="Refresh an existing stopped instance's adapter from the selected package; retain private state")
-    init_p.add_argument("--replace-memory-provider", action="store_true", help="Explicitly replace selection of another memory provider; retain its files and a config backup")
-    init_p.add_argument("--contact-name", help="Contact name for this user")
-    init_p.add_argument("--owner-handle", action="append", metavar="CHANNEL=SENDER_ID", help="Enroll your exact Hermes sender ID when creating a private instance; repeat for each account")
-    init_p.add_argument("--bind", default="127.0.0.1", help="Sidecar bind address (0.0.0.0 for all interfaces)")
-    init_p.add_argument("--port", type=int, default=7777, help="Sidecar port")
-    init_p.add_argument("--start", action="store_true", help="Start sidecar after init")
-    init_p.add_argument("--local-work", action="store_true", help="Enable explicitly accepted local drafts through the selected Hermes scheduler")
-    init_p.add_argument("--native-goals", action="store_true", help="Opt in to native persistent task tools on the existing Hermes profile; its gateway must be running")
-    init_p.add_argument("--native-reviews", action="store_true", help="Opt in to bounded read-only operational reviews using the existing planning role")
-    skill_review = init_p.add_mutually_exclusive_group()
-    skill_review.add_argument("--ordinary-skill-review", dest="ordinary_skill_review", action="store_true", default=None, help="Opt in to scheduled ordinary-skill proposals using the existing planning role")
-    skill_review.add_argument("--no-ordinary-skill-review", dest="ordinary_skill_review", action="store_false", help="Remove this instance's managed ordinary-skill review job")
-    init_p.add_argument("--skill-review-schedule", help="Native recurring schedule for ordinary-skill review (default: 0 */6 * * *)")
-    init_p.add_argument("--skill-review-evaluator", metavar="PATH", help="Optional explicit evaluator declaration for qualified skill application; use an empty value for proposal-only review")
+    # --- init and upgrade ---
+    from protagine.init import add_parsers as add_init_parsers
+    add_init_parsers(sub)
 
     # --- start ---
     start_p = sub.add_parser("start", help="Start the sidecar server")
@@ -97,15 +56,13 @@ def main() -> None:
     val_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     # --- doctor ---
-    doctor_p = sub.add_parser("doctor", help="Diagnose configuration and runtime health")
+    doctor_p = sub.add_parser("doctor", help="Check the install: Hermes version, keys, adapter, service, plugin")
     doctor_p.add_argument("--json", action="store_true", help="Machine-readable JSON output")
-    doctor_p.add_argument("--url", default=None, help="Sidecar URL (default: from .env)")
-    doctor_p.add_argument("--api-key", default=None, help="API key (default: from .env)")
+    doctor_p.add_argument("--url", default=None, help="Sidecar URL (default: from protagine.yaml)")
+    doctor_p.add_argument("--api-key", default=None, help="API key (default: api.key)")
     doctor_p.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout in seconds (default: 10)")
     doctor_p.add_argument("--fix", action="store_true",
                           help="Apply safe automatic fixes (LLM config baseUrl/apiKey), then re-check")
-    doctor_p.add_argument("--clean-orphans", action="store_true",
-                          help="Kill orphaned sidecar processes (pre-v0.19 flag, preserved)")
 
     # --- generate-types ---
     sub.add_parser("generate-types", help="Export OpenAPI spec (for TypeScript generation)")
@@ -270,16 +227,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.instance:
         os.environ["PROTAGINE_INSTANCE_SELECTED"] = "1"
-        os.environ.pop("PROTAGINE_STATE_DIR", None)
-        os.environ["PROTAGINE_STATE_DIR"] = str(Path(args.instance).expanduser().resolve())
-
-    if args.command == "hermes":
-        from protagine.hermes_runtime import run
-        try:
-            raise SystemExit(run(args))
-        except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
-            print(f"Hermes runtime operation failed: {exc if isinstance(exc, ValueError) else type(exc).__name__}", file=sys.stderr)
-            raise SystemExit(1) from None
+        selected = str(Path(args.instance).expanduser().resolve())
+        os.environ["PROTAGINE_HOME"] = selected
+        os.environ["PROTAGINE_STATE_DIR"] = selected
 
     if args.command == "models":
         from protagine.qualification.cli import run
@@ -291,22 +241,20 @@ def main() -> None:
         raise SystemExit(code)
 
     if args.command == "init":
-        # Run setup wizard
-        from protagine.setup import run_init
-        code = run_init(root_dir=args.dir, args=args)
-        if code != 0:
+        from protagine.init import run_init
+        code = run_init(args)
+        if code != 0 or args.uninstall:
             sys.exit(code)
-        if args.preferences_only or args.skills_only:
-            return
-
-        # Initialize Protagine identity if not already done
+        # The portable identity used by backup/restore is created once.
         _load_dotenv()
-        state_dir = os.environ.get("PROTAGINE_STATE_DIR", args.dir)
-        id_path = Path(state_dir) / "protagine-id"
-        if not id_path.exists():
-            _cmd_init(args)
-        else:
-            print(f"  Protagine identity already exists: {id_path.read_text().strip()}")
+        state_dir = os.environ.get("PROTAGINE_STATE_DIR") or os.environ.get("PROTAGINE_HOME", "")
+        if state_dir and not (Path(state_dir) / "protagine-id").exists():
+            from types import SimpleNamespace
+            _cmd_init(SimpleNamespace(encrypt=False, passphrase=None, claim_genesis=False))
+
+    elif args.command == "upgrade":
+        from protagine.init import run_upgrade
+        sys.exit(run_upgrade(args))
 
     elif args.command == "start":
         _load_dotenv()
@@ -328,7 +276,7 @@ def main() -> None:
             # Foreground mode — check port first
             existing_pid = _find_pid_on_port(port)
             if existing_pid:
-                if os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local":
+                if _configured_instance():
                     print("Selected port is already in use; no process was stopped.")
                     raise SystemExit(1)
                 if args.force:
@@ -380,7 +328,7 @@ def main() -> None:
 
     elif args.command == "service":
         _load_dotenv()
-        if os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local" and args.service_command:
+        if _configured_instance() and args.service_command:
             from protagine.services.instance import manage, ServiceError
             try:
                 manage(args.service_command)
@@ -1237,30 +1185,29 @@ def _cmd_key(args) -> None:
 
 def _is_loopback_host(host: str) -> bool:
     """True if the bind host only accepts local connections."""
-    h = (host or "").strip().lower()
-    return h in {"127.0.0.1", "::1", "localhost", ""}
+    from protagine.api.auth import is_loopback_host
+    return is_loopback_host(host)
 
 
 def _guard_bind_auth(host: str) -> None:
     """Refuse to start an unauthenticated sidecar on a non-loopback interface.
 
-    When both PROTAGINE_API_KEY and PROTAGINE_API_KEYRING_PATH are unset the
-    API runs in dev mode and ApiKeyMiddleware serves loopback callers only, so
-    a non-loopback bind would answer every remote request with 403. Fail at
-    startup with the fix instead.
+    Without a key the API runs in dev mode and ApiKeyMiddleware serves loopback
+    callers only, so a non-loopback bind would answer every remote request
+    with 403. Fail at startup with the fix instead.
     """
+    from protagine.api.auth import configured_api_key
     if _is_loopback_host(host):
         return
-    if os.environ.get("PROTAGINE_API_KEY") or os.environ.get("PROTAGINE_API_KEYRING_PATH"):
+    if configured_api_key():
         return
     print(
-        f"❌ Refusing to start: binding to {host!r} (non-loopback) with no "
-        "API authentication — without a key the API only serves loopback "
-        "clients.\n"
+        f"Refusing to start: binding to {host!r} (non-loopback) with no API key; "
+        "without a key the API only serves loopback clients.\n"
         "  Fix one of:\n"
-        "    • set PROTAGINE_API_KEY=<secret> or PROTAGINE_API_KEYRING_PATH=<file> "
-        "to require bearer/X-API-Key auth, or\n"
-        "    • bind to 127.0.0.1 (default) and reach it via SSH/proxy.",
+        "    - write the key to api.key in the instance directory (protagine init "
+        "does this) or set PROTAGINE_API_KEY=<secret>, or\n"
+        "    - bind to 127.0.0.1 (default) and reach it via SSH/proxy.",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -1289,7 +1236,7 @@ def _find_pids_on_port(port: int) -> list[int]:
 
 def _is_service_loaded() -> bool:
     """Check the selected user service, retaining legacy launchd behavior."""
-    if os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local":
+    if _configured_instance():
         from protagine.services.instance import InstanceService
         service = InstanceService.selected()
         if os.environ.get("PROTAGINE_INSTANCE_SERVICE") == service.label:
@@ -1416,7 +1363,7 @@ def _cleanup_orphans(kill: bool = False) -> int:
 def _cmd_start_daemon(host: str, port: int, force: bool) -> None:
     """Start the sidecar as a background daemon."""
     # Clean up any orphaned processes first
-    local_instance = os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local"
+    local_instance = _configured_instance()
     if local_instance:
         from protagine.setup import _check_port
         if _check_port(port):
@@ -1598,10 +1545,10 @@ def _cmd_stop() -> None:
             pass
 
     # New private instances never infer process ownership from a port alone.
-    if not pid and os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local":
-        print("No recorded process for this private instance.")
+    if not pid and _configured_instance():
+        print("No recorded process for this instance.")
         return
-    if os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local":
+    if _configured_instance():
         try:
             record_path = pid_path.with_name("sidecar-process.json")
             record = json.loads(record_path.read_text())
@@ -1675,15 +1622,10 @@ def _cmd_status() -> None:
         status = data.get("status", "unknown")
         caps = data.get("capabilities", [])
         notes = data.get("notes", {})
-        if os.environ.get("PROTAGINE_INSTALL_PROFILE") == "local":
-            print(f"Private instance: {os.environ['PROTAGINE_STATE_DIR']}")
+        if _configured_instance():
+            print(f"Instance: {os.environ.get('PROTAGINE_STATE_DIR', '')}")
             print(f"Sidecar HTTP status: {status}; endpoint: {url}")
-            response = httpx.get(f"{url}/v1/host/memory/sources/claims/status", headers=headers,
-                params={"contact_id": os.environ["PROTAGINE_OWNER_CONTACT_ID"]}, timeout=5)
-            response.raise_for_status()
-            print("Source projection: " + json.dumps(response.json(), sort_keys=True))
             print("Verify recollection by telling Hermes a fact, then asking in a new session.")
-            print("Graph/vector services and consequential background workers are disabled in this profile.")
             return
 
         # Status icon
@@ -1696,34 +1638,6 @@ def _cmd_status() -> None:
         for k, v in notes.items():
             if "fail" in str(v).lower() or "error" in str(v).lower() or "not wired" in str(v).lower():
                 print(f"  ⚠️  {k}: {v}")
-
-        # Detailed auth migration evidence is intentionally separate from the
-        # public health response and requires legacy or scoped auth:admin.
-        auth_response = httpx.get(
-            f"{url}/v1/host/admin/auth/status", headers=headers, timeout=5,
-        )
-        if auth_response.status_code == 200:
-            auth_status = auth_response.json()
-            telemetry = auth_status.get("telemetry") or {}
-            totals = telemetry.get("totals") or {}
-            principals = telemetry.get("principals") or {}
-            grants = auth_status.get("contact_grants") or {}
-            print(
-                "  Auth migration: scoped=%d legacy=%d denied=%d exact_contacts=%d"
-                % (
-                    int(totals.get("scoped_allow") or 0),
-                    int(totals.get("legacy_allow") or 0),
-                    int(totals.get("deny") or 0),
-                    int(grants.get("total_exact_person_ids") or 0),
-                )
-            )
-            legacy_last_seen = (principals.get("legacy") or {}).get("last_seen_at")
-            if legacy_last_seen:
-                print(f"  Legacy last seen: {legacy_last_seen}")
-            if telemetry.get("error") or grants.get("error"):
-                print("  ⚠️  Auth migration telemetry/grants report an error; run protagine doctor")
-        elif auth_response.status_code in (401, 403):
-            print("  ⚠️  Auth migration status requires an auth:admin credential")
 
         # Check E2E validation stamp
         stamp = Path(os.environ.get("PROTAGINE_STATE_DIR", ".")) / ".protagine-e2e-validated"
@@ -2214,8 +2128,14 @@ def _cmd_validate(args) -> None:
         print(f"  Check sidecar logs and configuration")
 
 
+def _configured_instance() -> bool:
+    """True once ``protagine init`` has written this instance's ``protagine.yaml``."""
+    from protagine.config import CONFIG_FILE, instance_home
+    return (instance_home() / CONFIG_FILE).is_file()
+
+
 def _cmd_doctor(args) -> None:
-    """Diagnose configuration and runtime health (v0.19.0 check engine)."""
+    """Check the install: Hermes version, keys, adapter, pip check, sidecar, plugin."""
     _load_dotenv()
     from protagine.doctor import (
         default_api_key,
@@ -2228,10 +2148,6 @@ def _cmd_doctor(args) -> None:
 
     url = args.url or default_protagine_url()
     api_key = args.api_key if args.api_key is not None else default_api_key()
-
-    if getattr(args, "clean_orphans", False):
-        killed = _cleanup_orphans(kill=True)
-        print(f"🧹 Cleaned {killed} orphaned sidecar process(es)\n")
 
     if getattr(args, "fix", False):
         # Safe, idempotent config repairs only — everything else gets a

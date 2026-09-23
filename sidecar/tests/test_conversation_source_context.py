@@ -17,6 +17,7 @@ from protagine.turns.source_annotations import expand, current_candidates
 from test_canonical_memory_search import memory_app, search
 from test_source_claim_projection import Model, claim
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 SCOPE = {'contact_id': 'person', 'session_id': 'later'}
@@ -248,7 +249,7 @@ async def test_actual_scoped_search_and_automatic_context_share_the_pair(memory_
     app, ledger = memory_app
     seed(ledger)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization': 'Bearer person'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         explicit = await search(client, query='laboratory')
         response = await client.post('/v1/host/context/assemble', json={
             'identity': {'host_id': 'fixture'},

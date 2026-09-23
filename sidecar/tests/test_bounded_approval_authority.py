@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Response
 from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
-from protagine.api.authority import RequestAuthority, required_scope
+from onekey import RequestAuthority, required_scope
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import task_queue as tq_router
 from protagine.initiatives.approval_authority import (
@@ -31,6 +31,7 @@ from protagine.task_queue.models import (
     WorkerCapabilities,
 )
 from protagine.task_queue.queue_manager import TaskQueueManager
+from onekey import KEY
 
 
 def _binding(job_id: str, *, pr: str = "17", message: str = "merge"):
@@ -654,235 +655,16 @@ async def test_exact_approval_replay_is_idempotent_while_dependency_blocked(
         await manager.stop()
 
 
-@pytest.mark.asyncio
-async def test_enforce_mode_rejects_model_or_consumer_without_decision_scope(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    TaskQueueManager._instance = None
-    manager = await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
-    try:
-        submitted = await manager.submit(
-            task_type="agent_action",
-            params={"action_hint": "commitment_mark_complete", "risk": "mutating"},
-            initial_status=JobStatus.BLOCKED,
-            tags={"blocked_reason": "awaiting_owner_approval"},
-        )
-        with pytest.raises(HTTPException) as exc_info:
-            await tq_router.approve_job(
-                submitted["id"],
-                tq_router.JobApproveRequest(approved_by="owner"),
-                _request(_authority("api:access")),
-            )
-        assert exc_info.value.status_code == 403
-        assert exc_info.value.detail["code"] == "approval_scope_required"
-        assert (await manager.queue.get_job(submitted["id"])).status == JobStatus.BLOCKED
-    finally:
-        await manager.stop()
 
 
-def test_enforce_middleware_scopes_are_exact(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    assert required_scope(
-        "POST", "/v1/host/queue/jobs/job-1/approve"
-    ) == "approvals:decide"
-    assert required_scope(
-        "GET", "/v1/host/queue/approvals/requests"
-    ) == "approvals:read"
-    assert required_scope(
-        "GET", "/v1/host/queue/approvals/jobs/job-1"
-    ) == "approvals:read"
-    assert required_scope(
-        "DELETE", "/v1/host/queue/approvals/grants/grt-1"
-    ) == "approvals:manage"
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enfroce")
-    assert required_scope(
-        "GET", "/v1/host/queue/jobs/blocked"
-    ) == "approvals:read"
-    assert required_scope(
-        "POST", "/v1/host/queue/approvals/requests/apr-1/decision"
-    ) == "approvals:decide"
 
 
-@pytest.mark.asyncio
-async def test_enforce_approval_surfaces_never_allow_anonymous_dev_mode(
-    monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=None)
-    app.include_router(tq_router.router)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://localhost",
-    ) as client:
-        responses = [
-            await client.get("/v1/host/queue/approvals/requests"),
-            await client.get("/v1/host/queue/jobs/blocked"),
-            await client.post(
-                "/v1/host/queue/approvals/requests/apr-missing/decision",
-                json={
-                    "decision": "approve",
-                    "decision_id": "decision_missing1",
-                    "expected_action_digest": "0" * 64,
-                },
-            ),
-            await client.delete("/v1/host/queue/approvals/grants/grt-missing"),
-        ]
-
-    for response in responses:
-        assert response.status_code == 403
-        assert response.json()["detail"]["code"] == (
-            "exact_scoped_principal_required"
-        )
 
 
-@pytest.mark.asyncio
-async def test_invalid_approval_mode_returns_503_on_read_and_decision(
-    monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enfroce")
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=None)
-    app.include_router(tq_router.router)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://localhost",
-    ) as client:
-        read = await client.get("/v1/host/queue/approvals/requests")
-        decision = await client.post(
-            "/v1/host/queue/approvals/requests/apr-missing/decision",
-            json={
-                "decision": "approve",
-                "decision_id": "decision_missing2",
-                "expected_action_digest": "0" * 64,
-            },
-        )
-    for response in (read, decision):
-        assert response.status_code == 503
-        assert response.json()["detail"]["code"] == (
-            "approval_authority_mode_invalid"
-        )
 
 
-@pytest.mark.asyncio
-async def test_enforce_approval_reads_require_api_access_and_exact_scope(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    keyring = tmp_path / "approval-read-keyring.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [
-            {
-                "principal": "approval-reader",
-                "allow_unscoped_api": False,
-                "scopes": ["api:access", "approvals:read"],
-                "audiences": [],
-                "credentials": [{
-                    "id": "current", "secret": "reader-secret", "status": "active",
-                }],
-            },
-            {
-                "principal": "missing-api-access",
-                "allow_unscoped_api": False,
-                "scopes": ["approvals:read"],
-                "audiences": [],
-                "credentials": [{
-                    "id": "current", "secret": "missing-api-secret", "status": "active",
-                }],
-            },
-        ],
-    }))
-    keyring.chmod(0o600)
-    TaskQueueManager._instance = None
-    manager = await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
-    app = FastAPI()
-    app.add_middleware(
-        ApiKeyMiddleware,
-        api_key="legacy-secret",
-        keyring_path=str(keyring),
-    )
-    app.include_router(tq_router.router)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://localhost",
-        ) as client:
-            legacy = await client.get(
-                "/v1/host/queue/approvals/requests",
-                headers={"Authorization": "Bearer legacy-secret"},
-            )
-            missing_api = await client.get(
-                "/v1/host/queue/approvals/requests",
-                headers={"Authorization": "Bearer missing-api-secret"},
-            )
-            exact = await client.get(
-                "/v1/host/queue/approvals/requests",
-                headers={"Authorization": "Bearer reader-secret"},
-            )
-    finally:
-        await manager.stop()
-
-    assert legacy.status_code == 403
-    assert missing_api.status_code == 403
-    assert exact.status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_shadow_restricted_approval_principal_uses_exact_route_only(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    keyring = tmp_path / "shadow-approval-keyring.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [{
-            "principal": "shadow-approval-bridge",
-            "allow_unscoped_api": False,
-            "scopes": [
-                "api:access", "approvals:read", "approvals:decide",
-            ],
-            "audiences": [],
-            "credentials": [{
-                "id": "current", "secret": "shadow-bridge-secret",
-                "status": "active",
-            }],
-        }],
-    }))
-    keyring.chmod(0o600)
-    TaskQueueManager._instance = None
-    manager = await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
-    app = FastAPI()
-    app.add_middleware(
-        ApiKeyMiddleware,
-        api_key="legacy-shadow-secret",
-        keyring_path=str(keyring),
-    )
-    app.include_router(tq_router.router)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://localhost",
-        ) as client:
-            exact = await client.get(
-                "/v1/host/queue/jobs/blocked",
-                headers={"Authorization": "Bearer shadow-bridge-secret"},
-            )
-            fallback = await client.get(
-                "/v1/host/goals",
-                headers={"Authorization": "Bearer shadow-bridge-secret"},
-            )
-            legacy = await client.get(
-                "/v1/host/queue/jobs/blocked",
-                headers={"Authorization": "Bearer legacy-shadow-secret"},
-            )
-    finally:
-        await manager.stop()
-
-    assert exact.status_code == 200
-    assert legacy.status_code == 200
-    assert fallback.status_code == 403
-    assert fallback.json()["detail"]["code"] == "unscoped_api_denied"
 
 
 def test_presentation_is_redacted_bounded_and_digest_bound(tmp_path):
@@ -2031,7 +1813,7 @@ async def test_approval_job_projection_exposes_exact_direct_authorization(
         assert projection["authorization"]["decision_id"] == "decision_projection01"
         assert projection["authorization"]["decided_by"] == "owner-approval-service"
         assert projection["authorization"]["authority_evidence"].startswith(
-            "scoped_principal:owner-approval-service:"
+            "api_key:owner-approval-service:"
         )
         assert projection["queue_authority_state"] == {
             "job_status": "queued",
@@ -2249,73 +2031,3 @@ async def test_grant_projection_fails_closed_without_exact_source_request(
         await manager.stop()
 
 
-@pytest.mark.asyncio
-async def test_enforce_http_boundary_derives_principal_from_scoped_key(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    keyring = tmp_path / "keys.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [{
-            "principal": "operator-approval-adapter",
-            "scopes": ["api:access", "approvals:decide"],
-            "viewer_person_id": "owner",
-            "audiences": ["viewer"],
-            "credentials": [{
-                "id": "c" + "x" * 191,
-                "secret": "transport-attested-secret",
-                "status": "active",
-            }],
-        }],
-    }))
-    keyring.chmod(0o600)
-
-    TaskQueueManager._instance = None
-    manager = await TaskQueueManager.initialize(db_path=tmp_path / "queue.db")
-    try:
-        submitted = await manager.submit(
-            task_type="agent_action",
-            params={"action_hint": "commitment_mark_complete", "risk": "mutating"},
-            initial_status=JobStatus.BLOCKED,
-            tags={"blocked_reason": "awaiting_owner_approval"},
-        )
-        job = await manager.queue.get_job(submitted["id"])
-        binding = build_action_binding(
-            job_id=job.job_id,
-            job_type=job.job_type.value,
-            payload=job.payload,
-        )
-        approval_request = ApprovalAuthorityStore().ensure_request(
-            job_id=job.job_id, binding=binding
-        )
-
-        app = FastAPI()
-        app.add_middleware(
-            ApiKeyMiddleware,
-            api_key=None,
-            keyring_path=str(keyring),
-        )
-        app.include_router(tq_router.router)
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://localhost"
-        ) as client:
-            response = await client.post(
-                f"/v1/host/queue/jobs/{job.job_id}/approve",
-                headers={"Authorization": "Bearer transport-attested-secret"},
-                json={
-                    "approved_by": "body-spoof",
-                    "approval_request_id": approval_request["request_id"],
-                    "expected_action_digest": binding.action_digest,
-                    "decision_id": "decision_asgi0001",
-                },
-            )
-        assert response.status_code == 200, response.text
-        assert response.json()["approved_by"] == "operator-approval-adapter"
-        assert response.json()["approved_by"] != "body-spoof"
-        evidence = response.json()["approval_request"]["authority_evidence"]
-        assert evidence.startswith("scoped_principal:operator-approval-adapter:")
-        assert len(evidence) <= 512
-    finally:
-        await manager.stop()

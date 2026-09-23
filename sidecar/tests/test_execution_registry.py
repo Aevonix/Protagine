@@ -11,11 +11,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from protagine.api.authority import RequestAuthority, required_scope
+from onekey import RequestAuthority, required_scope
 from protagine.api.routers import executions
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.executions import ExecutionRegistry, format_view
-from test_hermes_general_governance import runtime
 
 
 def observation(name="a", **changes):
@@ -133,128 +132,14 @@ def test_parent_scope_and_writer_are_immutable(store):
     assert store.view(contact_id="contact-b", session_id=child["session_id"])["total"] == 0
 
 
-@pytest.mark.asyncio
-async def test_api_binds_owner_and_subject_to_existing_authority(store, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    store.observe(observation(), principal_id="host", contact_id="contact-a")
-    store.observe(observation("other"), principal_id="host", contact_id="contact-b")
-    principal = [RequestAuthority(principal_id="guest-host", credential_id="key", scopes=frozenset({"context:read", "turns:write"}), viewer_person_id="contact-a", person_ids=frozenset({"contact-a"}), audiences=frozenset({"viewer"}), authenticated=True)]
-    app = FastAPI()
-    @app.middleware("http")
-    async def auth(request, call_next):
-        request.state.protagine_authority = principal[0]
-        return await call_next(request)
-    app.include_router(executions.router)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get("/v1/host/executions", params={"contact_id": "owner"})).status_code == 403
-        assert (await client.post("/v1/host/executions/observe", json=observation("forged", contact_id="owner"))).status_code == 403
-        own = await client.get("/v1/host/executions", params={"contact_id": "contact-a", "session_id": "session-a"})
-        assert own.json()["total"] == 1
-        assert (await client.get('/v1/host/executions', params={
-            'contact_id': 'contact-a', 'projection': 'request'})).status_code == 403
-        assert (await client.get("/v1/host/executions", params={"contact_id": "contact-a", "session_id": "session-other"})).json()["total"] == 0
-        principal[0] = RequestAuthority(principal_id="owner-host", credential_id="key", scopes=frozenset({"context:read"}), viewer_person_id="owner", person_ids=frozenset({"owner"}), audiences=frozenset({"owner"}), authenticated=True)
-        assert (await client.get("/v1/host/executions", params={"contact_id": "owner"})).json()["total"] == 2
-        current = await client.get('/v1/host/executions', params={
-            'contact_id': 'owner', 'projection': 'request', 'limit': 100})
-        assert current.status_code == 200
-        assert current.json()['schema'] == 'ProtagineRequestWorkV1'
-        assert observation()['execution_id'] in current.json()['text']
-        assert len(current.json()['text']) <= 4000
-        assert (await client.post("/v1/host/executions/observe", json=observation("write", contact_id="owner"))).status_code == 403
-    assert required_scope("GET", "/v1/host/executions") == "context:read"
-    assert required_scope("POST", "/v1/host/executions/observe") == "turns:write"
 
 
-@pytest.mark.asyncio
-async def test_anonymous_and_legacy_cannot_claim_owner(store):
-    app = FastAPI()
-    app.include_router(executions.router)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get("/v1/host/executions", params={"contact_id": "owner"})).status_code == 403
-        assert (await client.post("/v1/host/executions/observe", json=observation())).status_code == 403
-    from protagine.api.authority import legacy_authority
-    request = SimpleNamespace(state=SimpleNamespace(protagine_authority=legacy_authority()))
-    with pytest.raises(Exception) as error:
-        executions.authorized_viewer(request, "owner", scope="context:read")
-    assert error.value.status_code == 403
 
 
-def test_adapter_parent_binding_rotation_and_interruption_reach_durable_registry(store):
-    path = Path(__file__).resolve().parents[2] / "plugins/hermes-plugin/executions.py"
-    spec = importlib.util.spec_from_file_location("execution_observer_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    calls = []
-    class Client:
-        def post(self, path, *, json, **kwargs):
-            calls.append(json)
-            body = executions.ExecutionObservation(**json)
-            store.observe(body.model_dump(), principal_id="host", contact_id=body.contact_id)
-            assert kwargs["timeout"] <= .4
-            return SimpleNamespace(raise_for_status=lambda: None)
-    observer = module.ExecutionObserver(Client())
-    owner = SimpleNamespace(valid_participant=True, contact_id="owner", platform="sms")
-    guest = SimpleNamespace(valid_participant=True, contact_id="contact-a", platform="voice")
-    observer.start(owner, session_id="owner-session", turn_id="owner-turn")
-    observer.start(guest, session_id="guest-session", turn_id="guest-turn")
-    observer.child(parent_session_id="guest-session", parent_turn_id="guest-turn", child_session_id="child-session", child_goal="Never store this task prose")
-    observer.start(owner, session_id="child-session", turn_id="child-turn", parent_session_id="guest-session")
-    child = calls[-1]
-    assert child["contact_id"] == "contact-a" and child["parent_execution_id"] == calls[1]["execution_id"]
-    assert "Never store" not in str(calls)
-    observer.start(owner, session_id="unbound-child", turn_id="unbound-turn", parent_session_id="owner-session")
-    assert len(calls) == 3
-    # Native compression rotates session IDs inside a turn. End still closes
-    # the original observed row by the unchanged native turn ID.
-    observer.update("model", session_id="rotated-child", turn_id="child-turn")
-    observer.end(session_id="rotated-child", turn_id="child-turn", interrupted=True)
-    observer.update("model", session_id="rotated-child", turn_id="child-turn")
-    assert len(calls) == 5
-    assert store.view(contact_id="owner", owner=True)["total"] == 2
-    assert calls[-1]["state"] == "interrupted"
 
 
-def test_scope_conflict_does_not_replace_child_binding(store):
-    from test_hermes_general_governance import _load_plugin
-    module = _load_plugin("protagine_execution_binding_test")
-    observer = module.ExecutionObserver(SimpleNamespace(post=lambda *a, **k: SimpleNamespace(raise_for_status=lambda: None)))
-    scope = SimpleNamespace(valid_participant=True, contact_id="contact-a", platform="sms")
-    observer.start(scope, session_id="a", turn_id="ta")
-    observer.start(scope, session_id="b", turn_id="tb")
-    observer.child(parent_session_id="a", parent_turn_id="ta", child_session_id="child")
-    observer.child(parent_session_id="b", parent_turn_id="tb", child_session_id="child")
-    observer.start(scope, session_id="child", turn_id="tc", parent_session_id="b")
-    assert "tc" not in observer._records
 
 
-@pytest.mark.parametrize('status, state', [('completed', 'completed'), ('failed', 'failed'),
-    ('error', 'failed'), ('interrupted', 'interrupted'), ('unrecognized', 'ended')])
-def test_native_child_stop_closes_only_exact_bound_child_after_rotation(store, status, state):
-    from test_hermes_general_governance import _load_plugin
-    module = _load_plugin("protagine_execution_child_stop_test")
-    calls = []
-    observer = module.ExecutionObserver(SimpleNamespace(post=lambda path, **kw:
-        calls.append(kw['json']) or SimpleNamespace(raise_for_status=lambda: None)))
-    scope = SimpleNamespace(valid_participant=True, contact_id='contact-a', platform='sms')
-    observer.start(scope, session_id='parent', turn_id='parent-turn')
-    observer.child(parent_session_id='parent', parent_turn_id='parent-turn', child_session_id='child')
-    observer.start(scope, session_id='child', turn_id='child-turn', parent_session_id='parent')
-    observer.update('model', session_id='rotated-child', turn_id='child-turn')
-    observer.update('model', session_id='rotated-parent', turn_id='parent-turn')
-    before = len(calls)
-    observer.child_end(child_session_id='child', parent_session_id='parent', child_status='completed')
-    observer.child_end(child_session_id='rotated-child', parent_session_id='foreign', child_status='completed')
-    observer.child_end(child_session_id='missing', parent_session_id='parent', child_status='completed')
-    assert len(calls) == before
-    observer.child_end(child_session_id='rotated-child', parent_session_id='rotated-parent',
-                       child_status=status, child_summary='Never store result prose')
-    assert calls[-1]['state'] == state and calls[-1]['turn_id'] == 'child-turn'
-    assert calls[-1]['contact_id'] == 'contact-a' and 'Never store' not in str(calls)
-    count = len(calls)
-    observer.end(turn_id='child-turn', completed=True)
-    observer.child_end(child_session_id='rotated-child', parent_session_id='parent', child_status='completed')
-    assert len(calls) == count
 
 
 @pytest.mark.asyncio
@@ -280,19 +165,6 @@ async def test_owner_context_observes_other_sessions_but_guest_context_omits_the
             assert not sections
 
 
-def test_enabled_tool_observer_preserves_owner_guest_authority(runtime):
-    from test_hermes_general_governance import _pre, _tool
-    module, context, _client, _mediator = runtime
-    context.config["plugins"]["protagine"]["execution_registry_enabled"] = True
-    module.register(context)
-    _pre(context, session="owner-session", task="owner-task", turn="owner-turn", platform="sms", sender="+15550001")
-    _pre(context, session="guest-session", task="guest-task", turn="guest-turn", platform="sms", sender="+15550002")
-    owner = _tool(context, "protagine_autonomy_status", {}, session="owner-session", task="owner-task", turn="owner-turn", call="call-owner")
-    guest = _tool(context, "protagine_autonomy_status", {}, session="guest-session", task="guest-task", turn="guest-turn", call="call-guest")
-    import json
-    assert json.loads(owner)["running"] is True
-    assert json.loads(guest).get("running") is not True
-    assert module._TOOL_EXECUTION_CONTEXT.get() is None
 
 
 @pytest.mark.asyncio

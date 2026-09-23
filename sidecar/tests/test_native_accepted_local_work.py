@@ -12,10 +12,11 @@ import pytest
 from protagine.commitments.local_work import LocalWork
 from protagine.turns.local_work import local_work_view
 from test_accepted_local_work import body, local_api, native_run, post
+from onekey import KEY
 
 
 ROOT = '/v1/host/commitments'
-HEADERS = {'Authorization': 'Bearer writer-key'}
+HEADERS = {'Authorization': 'Bearer ' + KEY}
 
 
 @pytest.fixture
@@ -89,26 +90,6 @@ def pending(api):
     return response.json()
 
 
-def test_owner_acceptance_selects_backend_on_server_and_replays_once(native_api, tmp_path, monkeypatch):
-    api, commitments, initiatives, obligation, _, _ = native_api
-    path = ROOT+'/'+obligation['id']+'/local-draft'
-    value = body(tmp_path)
-    assert api.post(path, json=value).status_code == 401
-    assert api.post(path, json=value, headers={'Authorization': 'Bearer guest-key'}).status_code == 403
-    assert post(api, path, {**value, 'execution_backend': 'cron'}).status_code == 422
-    accepted = accept(native_api, tmp_path)
-    assert accepted['status'] == 'pending' and accepted['attempt_count'] == 0
-    assert accepted['max_attempts'] is None
-    assert accepted['context']['execution_backend'] == 'kanban'
-    assert accepted['context']['accepted_principal_id'] == 'host'
-    assert accept(native_api, tmp_path) == accepted
-    monkeypatch.setenv('PROTAGINE_LOCAL_WORK_EXECUTOR', 'cron')
-    assert accept(native_api, tmp_path) == accepted
-    monkeypatch.setenv('PROTAGINE_LOCAL_WORK_EXECUTOR', 'unknown')
-    assert post(api, path, value).status_code == 503
-    with sqlite3.connect(initiatives._db_path) as db:
-        assert db.execute('SELECT count(*) FROM initiatives').fetchone()[0] == 1
-    assert commitments.get(obligation['id'])['status'] == 'pending'
 
 
 @pytest.mark.parametrize('changes', [

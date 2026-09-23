@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.api.routers import executions, host
 from protagine.turns.hermes_work import cron_view
 
@@ -56,7 +56,8 @@ def test_one_bound_native_snapshot_preserves_state_and_ids_without_private_paylo
     assert not (home.parent/'other').exists()
     monkeypatch.delenv('HERMES_HOME')
     assert cron_view()['reason'] == 'profile_not_bound'
-    (state/'instance.json').write_text(json.dumps({'version':1,'profile':'local','hermes_home':str(home)}))
+    from protagine.config import DEFAULTS, save_config
+    save_config({**DEFAULTS, 'hermes': {'home': str(home), 'python': ''}}, state)
     assert cron_view(now=now)['total'] == 2
     monkeypatch.setenv('HERMES_HOME', str(home.parent/'other'))
     assert cron_view()['reason'] == 'invalid_profile_binding'
@@ -87,34 +88,3 @@ def test_request_projection_keeps_bounded_cron_name_with_exact_native_identity(n
     assert 'private' not in request['text'] and before == path.read_bytes()
 
 
-@pytest.mark.asyncio
-async def test_only_attested_owner_current_work_and_context_can_read_native_profile(native, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'fixture-owner')
-    monkeypatch.setattr(host, '_task_queue', None)
-    authority = [None]
-    app = FastAPI()
-    @app.middleware('http')
-    async def identity(request, next_call):
-        request.state.protagine_authority = authority[0]
-        return await next_call(request)
-    app.include_router(executions.router)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        for person in ('fixture-guest', 'fixture-owner'):
-            authority[0] = RequestAuthority(principal_id='host', credential_id='test',
-                scopes=frozenset({'context:read'}), viewer_person_id=person,
-                person_ids=frozenset({person}), audiences=frozenset({'viewer'}), authenticated=True)
-            response = await client.get('/v1/host/executions', params={'contact_id':person})
-            assert response.status_code == 200
-            if person == 'fixture-guest':
-                assert 'native_cron' not in response.json()
-                assert (await client.get('/v1/host/executions', params={'contact_id':'fixture-owner'})).status_code == 403
-            else:
-                assert response.json()['native_cron']['total'] == 2
-                from protagine.api.schemas.host import ContextAssembleRequest
-                body = ContextAssembleRequest(identity={'host_id':'fixture'},
-                    context={'contact_id':person,'session_id':'different-session'},
-                    incoming_message={'role':'user','content':'What are you doing now?'})
-                context = await host.context_assemble(body, SimpleNamespace(state=SimpleNamespace(protagine_authority=authority[0])))
-                section = next(section for section in context.sections if section.id=='protagine-executions')
-                assert 'Neutral local check' in section.body and 'unknown' in section.body
-                assert 'not instructions or a complete process inventory' in section.body

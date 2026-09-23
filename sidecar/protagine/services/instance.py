@@ -1,4 +1,4 @@
-"""User-manager autostart for one validated private instance, without a supervisor."""
+"""User-manager autostart for one configured instance, without a supervisor."""
 from __future__ import annotations
 
 import hashlib
@@ -47,9 +47,14 @@ def _systemd_path(value):
 
 
 class InstanceService:
-    def __init__(self, state, hermes_home, *, python=None, platform=None, home=None, runner=None):
+    def __init__(self, state, hermes_home, *, python=None, platform=None, home=None, runner=None,
+                 host=None, port=None):
         self.state = Path(state).resolve()
         self.hermes_home = Path(hermes_home).resolve()
+        # Where the sidecar answers, for the readiness checks; ``protagine.yaml`` values
+        # come in through these arguments, a service unit's through the environment.
+        self.host = str(host or os.environ.get('PROTAGINE_SIDECAR_HOST', '127.0.0.1'))
+        self.port = int(port or os.environ.get('PROTAGINE_SIDECAR_PORT', '7777'))
         # Resolving a venv's python symlink would select the system interpreter.
         self.python = os.path.abspath(python or sys.executable)
         self.platform = platform or sys.platform
@@ -74,17 +79,14 @@ class InstanceService:
 
     @classmethod
     def selected(cls):
-        from protagine.util.instance import load_environment
-        # A service must select and validate a configured private instance.
-        if not os.environ.get('PROTAGINE_STATE_DIR'):
-            load_environment()
-        if not os.environ.get('PROTAGINE_STATE_DIR'):
-            raise ServiceError('Select a configured private instance with --instance')
-        os.environ['PROTAGINE_INSTANCE_SELECTED'] = '1'
-        load_environment()
-        state = Path(os.environ['PROTAGINE_STATE_DIR'])
-        manifest = json.loads((state / 'instance.json').read_text())
-        return cls(state, manifest['hermes_home'])
+        """The service of the instance ``protagine.yaml`` describes."""
+        from protagine.config import ConfigError, apply_environment, load_config
+        try:
+            config = load_config(required=True)
+        except ConfigError as exc:
+            raise ServiceError(str(exc)) from None
+        apply_environment(config)
+        return cls(config.home, config.hermes_home)
 
     def _run(self, *args, check=True):
         try:
@@ -111,9 +113,9 @@ class InstanceService:
         return True
 
     def render(self):
-        arguments = [self.python, '-m', 'protagine', '--instance', str(self.state), 'start']
-        environment = {'HERMES_HOME': str(self.hermes_home), 'PROTAGINE_INSTANCE_SERVICE': self.label,
-                       'PYTHONUNBUFFERED': '1'}
+        arguments = [self.python, '-m', 'protagine', 'start']
+        environment = {'PROTAGINE_HOME': str(self.state), 'HERMES_HOME': str(self.hermes_home),
+                       'PROTAGINE_INSTANCE_SERVICE': self.label, 'PYTHONUNBUFFERED': '1'}
         if self.platform == 'darwin':
             return plistlib.dumps({'Label': self.label, 'ProgramArguments': arguments,
                 'WorkingDirectory': str(self.state), 'EnvironmentVariables': environment,
@@ -201,13 +203,12 @@ class InstanceService:
 
     def healthy(self):
         import httpx
-        host = os.environ.get('PROTAGINE_SIDECAR_HOST', '127.0.0.1')
-        host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+        host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(self.host, self.host)
         if ':' in host:
             host = '[' + host + ']'
         key = os.environ.get('PROTAGINE_CLIENT_API_KEY') or os.environ.get('PROTAGINE_API_KEY', '')
         try:
-            response = httpx.get(f'http://{host}:{os.environ.get("PROTAGINE_SIDECAR_PORT", "7777")}/v1/host/health',
+            response = httpx.get(f'http://{host}:{self.port}/v1/host/health',
                 headers={'Authorization': 'Bearer ' + key}, timeout=5, trust_env=False, follow_redirects=False)
             return response.status_code == 200 and response.json().get('status') == 'ok'
         except (httpx.HTTPError, ValueError):
@@ -217,10 +218,9 @@ class InstanceService:
         self._require_installed()
         status = self.status()
         if not status['running']:
-            host = os.environ.get('PROTAGINE_SIDECAR_HOST', '127.0.0.1')
-            host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(host, host)
+            host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(self.host, self.host)
             try:
-                with socket.create_connection((host, int(os.environ.get('PROTAGINE_SIDECAR_PORT', '7777'))), timeout=.2):
+                with socket.create_connection((host, self.port), timeout=.2):
                     raise ServiceError('Instance port is already occupied; stop its current process before service start')
             except OSError:
                 pass

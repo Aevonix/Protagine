@@ -18,14 +18,17 @@ except Exception:  # editable/unbuilt checkouts without installed metadata
 def get_state_dir() -> Path:
     """Return the selected state directory without moving existing state.
 
-    Guided setup selects an explicit private instance directory. Unconfigured
-    library use defaults to ~/.protagine/data.
+    The instance directory (``$PROTAGINE_HOME``, default ``~/.protagine``)
+    holds the state once ``protagine init`` has written ``protagine.yaml``.
+    Unconfigured library use defaults to ``~/.protagine/data``.
 
     Creates the directory if it does not exist.
     """
-    explicit = os.environ.get("PROTAGINE_STATE_DIR")
+    explicit = os.environ.get("PROTAGINE_STATE_DIR") or os.environ.get("PROTAGINE_HOME")
     if explicit:
-        path = Path(explicit)
+        path = Path(explicit).expanduser()
+    elif (Path.home() / ".protagine" / "protagine.yaml").is_file():
+        path = Path.home() / ".protagine"
     else:
         path = Path.home() / ".protagine" / "data"
     path.mkdir(parents=True, exist_ok=True)

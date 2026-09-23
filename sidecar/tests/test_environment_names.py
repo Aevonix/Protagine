@@ -9,10 +9,10 @@ WORKFLOWS = ROOT / '.github' / 'workflows'
 def test_hermes_qualification_env_names_match_between_workflows_and_tests():
     workflows = ''.join(path.read_text() for path in sorted(WORKFLOWS.glob('*.yml')))
     adapter_tests = ''.join(path.read_text() for path in sorted((ROOT / 'tests' / 'hermes_adapter').rglob('*.py')))
-    expected = {'PROTAGINE_HERMES_TEST_PYTHON', 'PROTAGINE_HERMES_TEST_SOURCE'}
+    # The adapter tests run in the interpreter that has stock Hermes installed
+    # (no override names); a workflow must not export names no test reads.
     prefixed = re.compile(r'\b([A-Z0-9]+_HERMES_TEST_(?:PYTHON|SOURCE))\b')
-    assert set(prefixed.findall(workflows)) == expected
-    assert set(prefixed.findall(adapter_tests)) == expected
+    assert set(prefixed.findall(workflows)) == set(prefixed.findall(adapter_tests)) == set()
 
 
 def test_no_tautological_environment_fallbacks():

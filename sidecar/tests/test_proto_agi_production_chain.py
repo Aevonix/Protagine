@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.cognition.drive_governance import (
     CharterRevisionV1,
     DriveGovernance,

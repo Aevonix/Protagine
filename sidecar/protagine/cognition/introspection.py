@@ -92,8 +92,8 @@ def _build_user_prompt(user_message: str, assistant_message: str,
 
 
 def introspect_enabled() -> bool:
-    from protagine.util.autonomy_preset import resolve_bool
-    return resolve_bool("PROTAGINE_INTROSPECT_ENABLED", False)
+    from protagine.config import env_bool
+    return env_bool("PROTAGINE_INTROSPECT_ENABLED", False)
 
 
 def _config() -> Dict[str, Any]:

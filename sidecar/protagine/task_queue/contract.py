@@ -57,11 +57,15 @@ def _release_identity() -> Dict[str, str]:
     }
 
 
+def worker_authority_mode() -> str:
+    """The worker HTTP authority posture: ``shadow``, ``enforce`` or ``invalid``."""
+    value = os.environ.get("PROTAGINE_WORKER_AUTHORITY_MODE", "shadow").strip().lower()
+    return value if value in {"shadow", "enforce"} else "invalid"
+
+
 def _deployment_posture() -> Dict[str, Any]:
-    authority_mode = os.environ.get(
-        "PROTAGINE_WORKER_AUTHORITY_MODE", "shadow"
-    ).strip().lower()
-    if authority_mode not in {"shadow", "enforce"}:
+    authority_mode = worker_authority_mode()
+    if authority_mode == "invalid":
         raise QueueContractIdentityError(
             "PROTAGINE_WORKER_AUTHORITY_MODE must be shadow or enforce"
         )

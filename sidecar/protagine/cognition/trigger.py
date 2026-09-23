@@ -22,8 +22,8 @@ _last_trigger_session: Optional[str] = None
 
 
 def _cognition_enabled() -> bool:
-    from protagine.util.autonomy_preset import resolve_bool
-    return resolve_bool("PROTAGINE_COGNITION_ENABLED", False)
+    from protagine.config import env_bool
+    return env_bool("PROTAGINE_COGNITION_ENABLED", False)
 
 
 def _cognition_model() -> Optional[str]:

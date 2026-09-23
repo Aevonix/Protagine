@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.api.routers import executions, host
 from protagine.api.schemas.host import ContextAssembleRequest
 from protagine.turns import executions as work

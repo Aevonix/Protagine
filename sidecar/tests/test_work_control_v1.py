@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from protagine.api.authority import required_scope
+from onekey import required_scope
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import task_queue as queue_router
 from protagine.task_queue.models import (
@@ -28,6 +28,7 @@ from protagine.task_queue.work_control import (
     steer_capability,
 )
 from protagine.task_queue.worker import JobHandler, WorkerNode
+from onekey import KEY
 
 
 @pytest.fixture(autouse=True)
@@ -604,19 +605,6 @@ def test_default_off_worker_has_no_control_capability_or_loop(monkeypatch):
     )
 
 
-def test_work_control_exact_api_scopes():
-    assert required_scope(
-        "GET", "/v1/host/queue/work/job-1",
-    ) == "work:read"
-    assert required_scope(
-        "POST", "/v1/host/queue/work/job-1/operations",
-    ) == "work:control"
-    assert required_scope(
-        "GET", "/v1/host/queue/workers/node-1/controls",
-    ) == "workers:lifecycle"
-    assert required_scope(
-        "POST", "/v1/host/queue/workers/node-1/controls/op-1/ack",
-    ) == "workers:lifecycle"
 
 
 @pytest.mark.asyncio
@@ -673,108 +661,3 @@ async def test_scheduler_expires_control_authority_before_failure_phases():
     assert calls.index("control-expiry") < calls.index("retry")
 
 
-@pytest.mark.asyncio
-async def test_work_control_http_requires_exact_principal_and_executes_cas(
-    queue, tmp_path, monkeypatch,
-):
-    await queue.post(Job(job_id="http-control"))
-    keyring = tmp_path / "work-control-keyring.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [
-            {
-                "principal": "operator-deck",
-                "status": "active",
-                "scopes": ["work:read", "work:control"],
-                "audiences": [],
-                "credentials": [{
-                    "id": "current",
-                    "secret": "operator-secret",
-                    "status": "active",
-                }],
-            },
-            {
-                "principal": "other-operator",
-                "status": "active",
-                "scopes": ["work:read", "work:control"],
-                "audiences": [],
-                "credentials": [{
-                    "id": "current",
-                    "secret": "other-secret",
-                    "status": "active",
-                }],
-            },
-        ],
-    }))
-    keyring.chmod(0o600)
-    app = FastAPI()
-    app.add_middleware(
-        ApiKeyMiddleware,
-        api_key="legacy-secret",
-        keyring_path=str(keyring),
-    )
-    app.include_router(queue_router.router)
-    monkeypatch.setattr(
-        queue_router,
-        "_get_queue",
-        lambda: SimpleNamespace(queue=queue),
-    )
-
-    scoped_headers = {"Authorization": "Bearer operator-secret"}
-    legacy_headers = {"Authorization": "Bearer legacy-secret"}
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test",
-    ) as client:
-        inspected = await client.get(
-            "/v1/host/queue/work/http-control",
-            headers=scoped_headers,
-        )
-        assert inspected.status_code == 200
-        projection = inspected.json()
-        body = {
-            "schema": "WorkControlOperationV1",
-            "version": 1,
-            "operation_id": "http-cancel",
-            "operation": "cancel",
-            "target_id": "http-control",
-            "run_id": projection["run_id"],
-            "attempt_id": None,
-            "expected_revision": projection["revision"],
-            "expected_state_digest": projection["state_digest"],
-            "parameters": {},
-            "reason": "operator requested cancellation",
-        }
-        legacy = await client.post(
-            "/v1/host/queue/work/http-control/operations",
-            headers=legacy_headers,
-            json=body,
-        )
-        applied = await client.post(
-            "/v1/host/queue/work/http-control/operations",
-            headers=scoped_headers,
-            json=body,
-        )
-        cross_principal_reuse = await client.post(
-            "/v1/host/queue/work/http-control/operations",
-            headers={"Authorization": "Bearer other-secret"},
-            json=body,
-        )
-        receipt = await client.get(
-            "/v1/host/queue/work/http-control/operations/http-cancel",
-            headers=scoped_headers,
-        )
-
-    assert legacy.status_code == 403
-    assert legacy.json()["detail"]["code"] == (
-        "exact_work_control_principal_required"
-    )
-    assert applied.status_code == 200
-    assert applied.json()["status"] == "applied"
-    assert applied.json()["requested_by"] == "operator-deck"
-    assert cross_principal_reuse.status_code == 409
-    assert cross_principal_reuse.json()["detail"]["code"] == (
-        "operation_id_conflict"
-    )
-    assert receipt.status_code == 200
-    assert receipt.json()["operation_id"] == "http-cancel"
-    assert (await queue.get_job("http-control")).status is JobStatus.CANCELLED

@@ -958,8 +958,8 @@ class AutonomyLoop:
                     "PROTAGINE_ENABLE_INTERNAL_THINKING", "false").lower() == "true":
                 mode = "live"
             else:
-                from protagine.util.autonomy_preset import resolve
-                mode = resolve("PROTAGINE_THINKING_MODE",
+                from protagine.config import env_choice
+                mode = env_choice("PROTAGINE_THINKING_MODE",
                                ("off", "shadow", "live"), "off")
         if mode == "off":
             return

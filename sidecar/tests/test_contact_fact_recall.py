@@ -10,7 +10,7 @@ from protagine.server import _attach_p8_runtime
 from protagine.tom.facts import SharedFactsStore
 from protagine.turns import TurnIdempotencyLedger
 from test_recall_unified_context import Graph, Reranker, belief, calibrate
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_tom_p8_server_integration import _authority, _request
 from test_turn_source_evidence import source_app
 
@@ -31,7 +31,7 @@ def contact_context(source_app, tmp_path, monkeypatch):
     for principal in principals:
         principal['allow_unscoped_api'] = False
     _write_keyring(keyring, principals)
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring), api_key=None)
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
 
     original_search = TurnIdempotencyLedger.search_sources
     monkeypatch.setattr(TurnIdempotencyLedger, 'search_sources', lambda *a, **k: [
@@ -59,7 +59,7 @@ def contact_context(source_app, tmp_path, monkeypatch):
 
 async def context(client, query, *, person='contact-a', credential='owner'):
     response = await client.post('/v1/host/context/assemble',
-        headers={'Authorization':'Bearer '+credential+'-key'}, json={
+        headers={'Authorization':'Bearer ' + KEY}, json={
             'identity': {'host_id':'fixture'},
             'context': {'contact_id':person, 'session_id':'later'},
             'incoming_message': {'role':'user', 'content':query},
@@ -158,7 +158,7 @@ async def test_source_erasure_removes_estimate_from_full_context(contact_context
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         assert 'shared-fact:'+row['id'] in await context(client, 'hydrofoil departure')
         forgotten = await client.post('/v1/host/memory/sources/forget',
-            headers={'Authorization':'Bearer owner-key'},
+            headers={'Authorization':'Bearer ' + KEY},
             json={'contact_id':'contact-a','source_ids':['fact-origin']})
         assert forgotten.status_code == 200 and forgotten.json()['shared_facts_cleanup'] == 'complete'
         assert await context(client, 'hydrofoil departure') == ''
@@ -175,7 +175,7 @@ async def test_explicit_search_uses_same_current_contact_projection_and_selector
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         async def search(person='contact-a', credential='owner'):
             response = await client.post('/v1/host/memory/search',
-                headers={'Authorization':'Bearer '+credential+'-key'}, json={
+                headers={'Authorization':'Bearer ' + KEY}, json={
                     'identity': {'host_id':'fixture'}, 'person_id':person,
                     'session_id':'later', 'query':'hydrofoil departure'})
             assert response.status_code == 200, response.text

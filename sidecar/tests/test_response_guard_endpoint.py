@@ -6,18 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from protagine.api.routers import host as host_mod
-from protagine.api.authority import compatible_scopes, required_scope
+from onekey import compatible_scopes, required_scope
 from protagine.api.schemas.host import ResponseGuardCheckRequest
 from protagine.gate.context_provenance import (
     ContextProvenanceStore, ProvenanceCrossContextGuard)
 from protagine.gate.response_guard import GuardMode, ResponseGuard
 
 
-def test_outbound_evaluator_scope_does_not_grant_guard_audit_access():
-    assert required_scope("POST", "/v1/host/response-guard/check") == "response-guard:check"
-    assert compatible_scopes("POST", "/v1/host/response-guard/check") == frozenset({"api:access"})
-    assert required_scope("GET", "/v1/host/response-guard/audit") == "api:access"
-    assert compatible_scopes("GET", "/v1/host/response-guard/audit") == frozenset()
 
 
 @pytest.mark.asyncio

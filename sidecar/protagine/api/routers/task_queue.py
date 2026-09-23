@@ -17,11 +17,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
-from protagine.api.authority import (
-    WorkerGrant,
-    request_authority,
-    worker_authority_mode,
-)
+from protagine.api.auth import request_authority
+from protagine.task_queue.contract import worker_authority_mode
 from protagine.initiatives.approval_authority import (
     AUTHORIZATION_PROJECTION_SCHEMA,
     ApprovalAuthorityError,
@@ -467,42 +464,18 @@ def _worker_request_context(
         }
 
     authority = request_authority(request)
-    grant = next(
-        (item for item in authority.worker_grants if item.node_id == node_id),
-        None,
-    )
-    scoped = (
-        authority.authenticated
-        and not authority.legacy
-        and not authority.anonymous
-        and authority.has_scope(required_scope)
-        and grant is not None
-    )
-    if mode == "enforce" and not scoped:
-        if not authority.authenticated or authority.legacy or authority.anonymous:
-            raise _worker_authority_error(
-                "scoped_worker_authority_required",
-                "a scoped authenticated worker principal is required",
-            )
-        if not authority.has_scope(required_scope):
-            raise _worker_authority_error(
-                "worker_scope_required",
-                f"worker principal requires exact scope {required_scope}",
-            )
+    keyed = bool(authority.authenticated and not authority.anonymous)
+    if mode == "enforce" and not keyed:
         raise _worker_authority_error(
-            "worker_claimant_mismatch" if claimant else "worker_node_not_granted",
-            (
-                "authenticated worker principal does not own this job claim"
-                if claimant
-                else "authenticated worker principal is not granted this node_id"
-            ),
+            "worker_authority_required",
+            "the API key is required for worker registration and claims",
         )
     return {
         "mode": mode,
         "principal": authority.principal_id,
         "credential": authority.credential_id or "none",
-        "grant": grant,
-        "would_deny": not scoped,
+        "grant": None,
+        "would_deny": not keyed,
     }
 
 
@@ -530,102 +503,18 @@ def _job_type_set(values: List[str], *, field: str) -> set[JobType]:
     return result
 
 
-def _body_exceeds_worker_grant(
-    body: WorkerRegisterRequest | JobClaimRequest,
-    grant: WorkerGrant,
-) -> bool:
-    grant_capacity = grant.capacity_map()
-    if (
-        body.capabilities is not None
-        and not set(body.capabilities).issubset(grant.capabilities)
-    ):
-        return True
-    if body.job_types is not None:
-        requested_types = set(body.job_types)
-        if not requested_types or not requested_types.issubset(grant.job_types):
-            return True
-    if body.max_concurrent is not None and body.max_concurrent > grant.max_concurrent:
-        return True
-    if body.capacity is not None:
-        for key, value in body.capacity.items():
-            amount = float(value)
-            if (
-                not math.isfinite(amount)
-                or amount < 0
-                or key not in grant_capacity
-                or amount > grant_capacity.get(key, -1.0)
-            ):
-                return True
-    return False
-
-
 def _bounded_worker_capabilities(
     body: WorkerRegisterRequest | JobClaimRequest,
     context: Dict[str, Any],
 ) -> WorkerCapabilities:
-    """Build effective caps; enforce bodies may omit or narrow keyring ceilings."""
+    """Build effective caps from the body; the one key carries no per-node ceiling."""
 
-    grant: WorkerGrant | None = context.get("grant")
-    if context["mode"] != "enforce":
-        exceeds = grant is not None and _body_exceeds_worker_grant(body, grant)
-        if exceeds:
-            context["would_deny"] = True
-        # A correctly scoped shadow consumer should exercise the exact
-        # enforcement shape: omissions derive from its server grant. Legacy,
-        # unprovisioned, and intentionally over-broad shadow traffic retains
-        # historical body behavior so migration cannot silently break it.
-        use_grant = grant is not None and not exceeds and not context.get("would_deny")
-        return WorkerCapabilities(
-            node_id=body.node_id,
-            capabilities=(
-                set(grant.capabilities)
-                if use_grant and body.capabilities is None
-                else set(body.capabilities or [])
-            ),
-            capacity=(
-                grant.capacity_map()
-                if use_grant and body.capacity is None
-                else body.capacity or {}
-            ),
-            max_concurrent=(
-                grant.max_concurrent
-                if use_grant and body.max_concurrent is None
-                else body.max_concurrent or 4
-            ),
-            job_types=_job_type_set(
-                sorted(grant.job_types)
-                if use_grant and body.job_types is None
-                else body.job_types or [],
-                field="job_types",
-            ),
-            available=bool(getattr(body, "available", True)),
-            load=float(getattr(body, "load", 0.0)),
-        )
-    assert grant is not None
-
-    capabilities = (
-        set(grant.capabilities)
-        if body.capabilities is None
-        else set(body.capabilities)
-    )
-    job_type_names = (
-        set(grant.job_types)
-        if body.job_types is None
-        else set(body.job_types)
-    )
-    capacity = grant.capacity_map() if body.capacity is None else dict(body.capacity)
-    max_concurrent = body.max_concurrent or grant.max_concurrent
-    if _body_exceeds_worker_grant(body, grant):
-        raise _worker_authority_error(
-            "worker_grant_exceeded",
-            "worker request may only narrow its server-owned keyring grant",
-        )
     return WorkerCapabilities(
         node_id=body.node_id,
-        capabilities=capabilities,
-        capacity={key: float(value) for key, value in capacity.items()},
-        max_concurrent=max_concurrent,
-        job_types=_job_type_set(sorted(job_type_names), field="job_types"),
+        capabilities=set(body.capabilities or []),
+        capacity={key: float(value) for key, value in (body.capacity or {}).items()},
+        max_concurrent=body.max_concurrent or 4,
+        job_types=_job_type_set(body.job_types or [], field="job_types"),
         available=bool(getattr(body, "available", True)),
         load=float(getattr(body, "load", 0.0)),
     )
@@ -678,29 +567,24 @@ def _decision_authority(request: Optional[Request]) -> tuple[str, str, str]:
         return "trusted-internal", "in_process", mode
 
     authority = request_authority(request)
-    allowed = (
-        authority.authenticated
-        and not authority.legacy
-        and authority.has_scope("api:access")
-        and authority.has_scope("approvals:decide")
-    )
+    allowed = bool(authority.authenticated and not authority.anonymous)
     if mode == "enforce" and not allowed:
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "approval_scope_required",
-                "message": "a scoped authenticated approvals:decide principal is required",
+                "message": "the API key is required to decide approvals",
             },
         )
 
     actor = authority.principal_id
     credential = authority.credential_id or "none"
     if allowed:
-        evidence = f"scoped_principal:{actor}:{credential}"
+        evidence = f"api_key:{actor}:{credential}"
     else:
-        # Shadow mode preserves legacy bearer/dev traffic during consumer
-        # migration, but records that it would fail enforcement. The body's
-        # approved_by/rejected_by value still has no effect.
+        # Shadow mode preserves loopback development traffic, but records
+        # that it would fail enforcement. The body's approved_by/rejected_by
+        # value still has no effect.
         evidence = f"shadow_compat:{actor}:{credential}"
     return actor, evidence, mode
 
@@ -709,20 +593,10 @@ def _approval_relay_canary_authority(request: Request) -> str:
     """Require the dedicated scoped bridge even while migration is shadow."""
 
     authority = request_authority(request)
-    allowed = bool(
-        authority.authenticated
-        and not authority.legacy
-        and not authority.anonymous
-        and authority.has_scope("api:access")
-        and authority.has_scope("approvals:decide")
-    )
-    if not allowed:
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(status_code=403, detail={
             "code": "approval_relay_canary_scope_required",
-            "message": (
-                "a scoped authenticated api:access + approvals:decide "
-                "principal is required"
-            ),
+            "message": "the API key is required",
         })
     return authority.principal_id
 
@@ -1198,15 +1072,10 @@ async def reconcile_work_effect(
     """Close one ambiguous effect using an independent scoped verifier."""
 
     authority = request_authority(request)
-    if (
-        not authority.authenticated
-        or authority.anonymous
-        or authority.legacy
-        or not authority.has_scope("workers:attest")
-    ):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(status_code=403, detail={
             "code": "independent_verifier_required",
-            "message": "a scoped workers:attest verifier is required",
+            "message": "the API key is required to reconcile effects",
         })
     queue = _get_queue()
     job = await queue.queue.get_job(body.target_id)
@@ -1218,13 +1087,7 @@ async def reconcile_work_effect(
     executor_principal = str(
         (job.tags or {}).get("worker_authority_principal") or ""
     ).strip()
-    if (
-        authority.principal_id in {executor_node, executor_principal}
-        or any(
-            grant.node_id == executor_node
-            for grant in authority.worker_grants
-        )
-    ):
+    if authority.principal_id in {executor_node, executor_principal}:
         raise HTTPException(status_code=403, detail={
             "code": "independent_verifier_required",
             "message": "the executor cannot reconcile its own effect",
@@ -1272,17 +1135,10 @@ async def apply_work_control_operation(
     """CAS-apply an idempotent command from an exact scoped principal."""
 
     authority = request_authority(request)
-    if (
-        not authority.authenticated
-        or authority.anonymous
-        or authority.legacy
-        or not authority.has_scope("work:control")
-    ):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(status_code=403, detail={
             "code": "exact_work_control_principal_required",
-            "message": (
-                "WorkControl mutations require a scoped work:control principal"
-            ),
+            "message": "WorkControl mutations require the API key",
         })
     payload = body.model_dump(by_alias=True)
     if payload["target_id"] != target_id:
@@ -1865,14 +1721,9 @@ async def attest_action_success(
     executor_principal = str(
         (job.tags or {}).get("worker_authority_principal") or ""
     ).strip()
-    same_executor_grant = any(
-        grant.node_id == executor_node
-        for grant in authority.worker_grants
-    )
     if (
         not authority.authenticated
-        or authority.legacy
-        or same_executor_grant
+        or authority.anonymous
         or (
             executor_principal
             and authority.principal_id == executor_principal

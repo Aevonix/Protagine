@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from protagine.api.authority import required_scope
+from onekey import required_scope
 from protagine.contacts.comms import CommsLog
 from protagine.initiatives.approval_authority import ApprovalAuthorityStore
 from protagine.intelligence.learning.feedback_store import (
@@ -424,18 +424,6 @@ async def test_legacy_gap_detector_can_only_persist_a_typed_proposal(
         "exp-proposal-only"
 
 
-def test_dedicated_benchmark_and_experiment_scopes():
-    assert required_scope("GET", "/v1/host/self/benchmark") ==\
-        "cognition:benchmark-read"
-    assert required_scope("POST", "/v1/host/self/benchmark/samples") ==\
-        "cognition:benchmark-manage"
-    assert required_scope("GET", "/v1/host/self/experiments") ==\
-        "cognition:experiment-read"
-    assert required_scope("POST", "/v1/host/self/experiments") ==\
-        "cognition:experiment-manage"
-    assert required_scope(
-        "POST", "/v1/host/self/experiments/exp-1/abort"
-    ) == "cognition:experiment-manage"
 
 
 def test_legacy_cpi_missing_dimensions_are_unavailable_not_synthesized(tmp_path):

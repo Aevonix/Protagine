@@ -21,8 +21,8 @@ STEP_STATUSES = ("pending", "active", "done", "failed", "skipped")
 
 
 def projects_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_PROJECTS_MODE", ("off", "shadow", "live"), "shadow")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_PROJECTS_MODE", ("off", "shadow", "live"), "shadow")
 
 
 def projects_max_steps() -> int:

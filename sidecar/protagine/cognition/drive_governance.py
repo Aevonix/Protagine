@@ -2866,10 +2866,7 @@ class DriveGovernance:
         allowed = bool(
             authority is not None
             and getattr(authority, "authenticated", False)
-            and not getattr(authority, "legacy", False)
             and not getattr(authority, "anonymous", False)
-            and callable(getattr(authority, "has_scope", None))
-            and authority.has_scope("charter:approval-decide")
             and "owner" in set(getattr(authority, "audiences", ()))
             and str(getattr(authority, "principal_id", "")).strip()
             and str(getattr(authority, "credential_id", "")).strip()
@@ -2877,7 +2874,7 @@ class DriveGovernance:
         if not allowed:
             raise DriveGovernanceError(
                 "owner_charter_approval_authority_required",
-                "scoped authenticated owner charter approval authority is required",
+                "the API key bound to the owner is required",
             )
         return (
             str(authority.principal_id).strip(),
@@ -2959,13 +2956,7 @@ class DriveGovernance:
         allowed = bool(
             authority is not None
             and getattr(authority, "authenticated", False)
-            and not getattr(authority, "legacy", False)
             and not getattr(authority, "anonymous", False)
-            and callable(getattr(authority, "has_scope", None))
-            and (
-                authority.has_scope("approvals:decide")
-                or authority.has_scope("charter:approval-decide")
-            )
             and "owner" in set(getattr(authority, "audiences", ()))
             and str(getattr(authority, "principal_id", "")).strip()
             and str(getattr(authority, "credential_id", "")).strip()
@@ -2973,7 +2964,7 @@ class DriveGovernance:
         if not allowed:
             raise DriveGovernanceError(
                 "owner_authority_required",
-                "scoped authenticated owner approval authority is required",
+                "the API key bound to the owner is required",
             )
         principal = str(authority.principal_id).strip()
         credential = str(authority.credential_id).strip()

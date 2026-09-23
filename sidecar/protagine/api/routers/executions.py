@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from protagine.api.authority import request_authority, resolve_request_person
+from protagine.api.auth import request_authority, resolve_request_person
 from protagine.turns.executions import registry
 from protagine.api.schemas.host import SourceAnnotationCheck, SourceReference
 
@@ -114,9 +114,7 @@ class AssessmentRead(BaseModel):
 
 def authorized_viewer(request: Request, contact_id: str, *, scope: str) -> tuple[str, bool]:
     authority = request_authority(request)
-    # Legacy body-selected identity is deliberately not sufficient for this new
-    # shared surface. Use the existing exact person grants, never an owner flag.
-    if not authority.authenticated or authority.anonymous or authority.legacy or not authority.has_scope(scope):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(403, detail={"code": "scoped_execution_authority_required"})
     person = resolve_request_person(request, claimed_person_id=contact_id)
     owner = os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip() or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()

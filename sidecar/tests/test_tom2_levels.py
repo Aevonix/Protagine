@@ -92,20 +92,6 @@ def test_malformed_risk_caps_all_zero(monkeypatch, raw):
     assert parse_risk_caps() == {0: 0, 1: 0, 2: 0, 3: 0}
 
 
-def test_doctor_warns_on_malformed_caps(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_TOM2_RISK_CAPS", "garbage")
-    r = doctor.check_tom2_risk_caps()
-    assert r.status == doctor.WARN
-    assert "all-0" in r.detail
-    monkeypatch.setenv("PROTAGINE_TOM2_RISK_CAPS", DEFAULT_RISK_CAPS)
-    assert doctor.check_tom2_risk_caps().status == doctor.PASS
-    monkeypatch.delenv("PROTAGINE_TOM2_RISK_CAPS", raising=False)
-    assert doctor.check_tom2_risk_caps().status == doctor.PASS
-
-
-# ---------------------------------------------------------------------------
-# The min-chain
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_shipped_defaults_resolve_zero(r1_world, monkeypatch):

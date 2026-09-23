@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 import protagine.api.routers.host as host_mod
-from protagine.api.authority import RequestAuthority, required_scope
+from onekey import RequestAuthority, required_scope
 from protagine.commitments.store import CommitmentStore
 from protagine.self_model import settlement
 from protagine.self_model.workspace import (
@@ -180,46 +180,6 @@ def test_additive_migration_freezes_truthful_legacy_receipt(tmp_path):
     assert reopened.get("concern-legacy").status == "resolved"
 
 
-async def test_owner_scoped_exact_get_and_scope_mapping(tmp_path, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    store = ConcernStore(str(tmp_path / "workspace.db"))
-    workspace = WorkspaceEngine(store)
-    concern = workspace.bump(
-        kind="question", summary="owner concern", dedup_key="owner-concern",
-    )
-    payload = {
-        "note": "owner chose the exact outcome",
-        "outcome": "done",
-        "cascade": True,
-        "resolved_by": "owner-deck",
-    }
-
-    async with _client(
-        workspace, _authority("person-owner", audiences=("viewer", "owner")),
-    ) as client:
-        resolved = await client.post(
-            f"/v1/host/self/workspace/{concern.concern_id}/resolve",
-            json=payload,
-        )
-        assert resolved.status_code == 200
-        fetched = await client.get(
-            f"/v1/host/self/workspace/{concern.concern_id}/resolution"
-        )
-        assert fetched.status_code == 200
-        assert fetched.json()["resolution"] == resolved.json()["resolution"]
-
-    async with _client(workspace, _authority("person-other")) as client:
-        hidden = await client.get(
-            f"/v1/host/self/workspace/{concern.concern_id}/resolution"
-        )
-        assert hidden.status_code == 404
-        assert hidden.json()["detail"] == "no concern with that id"
-
-    path = f"/v1/host/self/workspace/{concern.concern_id}/resolution"
-    assert required_scope("GET", path) == "cognition:read"
-    assert required_scope(
-        "POST", f"/v1/host/self/workspace/{concern.concern_id}/resolve",
-    ) == "cognition:manage"
 
 
 async def test_resolution_receipt_is_exact_and_replay_is_idempotent(
@@ -549,64 +509,6 @@ def test_recent_resolutions_are_bounded_validated_and_newest_first(tmp_path):
         workspace.snapshot(unrestricted=True)
 
 
-async def test_recent_resolutions_only_appear_for_legacy_or_exact_owner(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    store = ConcernStore(str(tmp_path / "workspace.db"))
-    workspace = WorkspaceEngine(store)
-    owner_concern = workspace.bump(
-        kind="goal", summary="owner resolution", dedup_key="owner-resolution",
-    )
-    subject_concern = workspace.bump(
-        kind="thread", summary="subject visible", dedup_key="subject-visible",
-    )
-    with store._lock:
-        store._conn.execute(
-            """UPDATE concerns SET subject_person_id=?,shareability=?,viewer_scope=?
-               WHERE concern_id=?""",
-            (
-                "person-subject", "subject_private", "person:person-subject",
-                subject_concern.concern_id,
-            ),
-        )
-        store._conn.commit()
-    path = f"/v1/host/self/workspace/{owner_concern.concern_id}/resolve"
-    async with _client(
-        workspace, _authority("person-owner", audiences=("viewer", "owner")),
-    ) as client:
-        owner_resolution = await client.post(path, json={
-            "note": "owner-only receipt",
-            "outcome": "done",
-            "cascade": False,
-            "resolved_by": "operator-v3",
-        })
-        assert owner_resolution.status_code == 200
-        owner_snapshot = (await client.get("/v1/host/self/workspace")).json()
-    assert len(owner_snapshot["recent_resolutions"]) == 1
-    assert owner_resolution.json()["cascade_status"] == "not_requested"
-
-    async with _client(workspace, _authority("person-subject")) as client:
-        subject_snapshot = (await client.get("/v1/host/self/workspace")).json()
-    assert [row["concern_id"] for row in subject_snapshot["concerns"]] == [
-        subject_concern.concern_id,
-    ]
-    assert "recent_resolutions" not in subject_snapshot
-
-    async with _client(workspace, _authority("person-other")) as client:
-        cross_owner = (await client.get("/v1/host/self/workspace")).json()
-    assert "recent_resolutions" not in cross_owner
-
-    async with _client(workspace, _authority("person-owner")) as client:
-        owner_without_audience = (
-            await client.get("/v1/host/self/workspace")
-        ).json()
-    assert "recent_resolutions" not in owner_without_audience
-
-    legacy_projection = workspace.snapshot(unrestricted=True)
-    assert legacy_projection["recent_resolutions"] == owner_snapshot[
-        "recent_resolutions"
-    ]
 
 
 async def test_workspace_and_legacy_deck_response_remain_compatible(

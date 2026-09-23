@@ -3087,41 +3087,6 @@ async def lifespan(app: FastAPI):
         from protagine.autonomy.scheduler import AutonomyScheduler
         autonomy_config = AutonomyConfig.from_env()
 
-        # H4.2 annunciation: when the loop mode came from the preset (via
-        # PROTAGINE_PRESET_LOOP_COUPLING, default on) rather than an explicit
-        # PROTAGINE_AUTONOMY_MODE, say so loudly at startup and leave ONE
-        # durable journal record the first time a deployment boots coupled —
-        # a default flip an operator can always see and always roll back.
-        if getattr(autonomy_config, "mode_source", "") == "preset":
-            try:
-                from protagine.util.autonomy_preset import preset_name
-                _preset = preset_name() or "(unknown)"
-            except Exception:
-                _preset = "(unknown)"
-            logger.warning(
-                "Autonomy loop mode %s inherited from PROTAGINE_AUTONOMY_PRESET=%s "
-                "via preset-loop coupling (PROTAGINE_PRESET_LOOP_COUPLING=on by "
-                "default). Set PROTAGINE_AUTONOMY_MODE explicitly to override, or "
-                "PROTAGINE_PRESET_LOOP_COUPLING=off to restore env-only resolution.",
-                autonomy_config.mode.value, _preset)
-            try:
-                from protagine.api.routers.host import _self_model as _sm_j
-                _cj = getattr(_sm_j, "journal", None)
-                if _cj is not None and not _cj.recent(
-                        limit=1, domain="preset_coupling"):
-                    _cj.record(
-                        "preset_coupling",
-                        f"First coupled boot: loop mode {autonomy_config.mode.value} "
-                        f"inherited from preset '{_preset}'",
-                        reasoning="PROTAGINE_AUTONOMY_MODE unset; "
-                                  "PROTAGINE_PRESET_LOOP_COUPLING on (default). "
-                                  "Rollback: set PROTAGINE_AUTONOMY_MODE=reactive "
-                                  "or PROTAGINE_PRESET_LOOP_COUPLING=off.",
-                        reversibility="reversible", decision="noted",
-                        ref="preset-loop-coupling")
-            except Exception:
-                pass  # annunciation must never block startup
-
         registry = SubsystemRegistry()
 
         # Wire scheduler BEFORE the loop so the loop gets a direct reference.
@@ -4008,12 +3973,6 @@ async def lifespan(app: FastAPI):
         set_observation_store(None)
     except Exception:
         pass
-    auth_telemetry = getattr(app.state, "auth_telemetry", None)
-    if auth_telemetry is not None:
-        try:
-            auth_telemetry.close()
-        except Exception:
-            logger.debug("Auth telemetry shutdown failed", exc_info=True)
     logger.info("Sidecar shutdown complete")
 
 
@@ -4028,10 +3987,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # API authentication (skips health/docs; loopback dev mode if no auth set).
-    # The scoped keyring runs alongside PROTAGINE_API_KEY during migration.
-    from protagine.api.auth_telemetry import AuthTelemetry
-    from protagine.api.contact_grants import ContactGrantRegistry
+    # API authentication (skips health/docs; loopback dev mode without a key).
+    from protagine.api.auth import configured_api_key
     from protagine.api.middleware import ApiKeyMiddleware, BodySizeLimitMiddleware
 
     # Body-size cap runs before auth so oversized payloads are rejected with
@@ -4042,38 +3999,12 @@ def create_app() -> FastAPI:
         max_body = 10 * 1024 * 1024
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=max_body)
 
-    api_key = os.environ.get("PROTAGINE_API_KEY")
-    keyring_path = os.environ.get("PROTAGINE_API_KEYRING_PATH")
-    state_dir = _state_dir()
-    telemetry_path = os.environ.get(
-        "PROTAGINE_AUTH_TELEMETRY_PATH",
-        str(state_dir / "protagine-auth-telemetry.db"),
-    )
-    contact_grants_path = os.environ.get(
-        "PROTAGINE_API_CONTACT_GRANTS_PATH",
-        str(state_dir / "api-contact-grants.json"),
-    )
-    auth_telemetry = AuthTelemetry(telemetry_path)
-    contact_grants = ContactGrantRegistry(contact_grants_path)
-    # HTTP middleware uses request.state; WebSocket/admin status paths use
-    # app.state because BaseHTTPMiddleware does not wrap WebSocket frames.
-    app.state.auth_telemetry = auth_telemetry
-    app.state.contact_grants = contact_grants
-    app.add_middleware(
-        ApiKeyMiddleware,
-        api_key=api_key,
-        keyring_path=keyring_path,
-        auth_telemetry=auth_telemetry,
-        contact_grants=contact_grants,
-    )
-    if api_key and keyring_path:
-        logger.info("Legacy and scoped API authentication enabled (dual-accept)")
-    elif keyring_path:
-        logger.info("Scoped API authentication enabled")
-    elif api_key:
-        logger.info("Legacy API key authentication enabled")
+    api_key = configured_api_key()
+    app.add_middleware(ApiKeyMiddleware, api_key=api_key)
+    if api_key:
+        logger.info("API key authentication enabled")
     else:
-        logger.warning("No API auth configured — serving loopback clients only (dev mode)")
+        logger.warning("No API key configured; serving loopback clients only (dev mode)")
 
     app.include_router(host_router)
     app.include_router(host_v2_router)

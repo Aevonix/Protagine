@@ -13,7 +13,7 @@ import textwrap
 
 import pytest
 
-from tests.test_skill_sandbox import _build_skill, _make_executor
+from test_skill_sandbox import _build_skill, _make_executor
 
 
 class _FakeProc:

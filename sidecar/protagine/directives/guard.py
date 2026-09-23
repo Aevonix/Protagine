@@ -59,8 +59,8 @@ def boundary_fail_closed() -> bool:
     PROTAGINE_BOUNDARY_FAIL_CLOSED=false to restore the legacy allow-on-error
     behavior.
     """
-    from protagine.util.autonomy_preset import resolve_bool
-    return resolve_bool("PROTAGINE_BOUNDARY_FAIL_CLOSED", True)
+    from protagine.config import env_bool
+    return env_bool("PROTAGINE_BOUNDARY_FAIL_CLOSED", True)
 
 
 @dataclass

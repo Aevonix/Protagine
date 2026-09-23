@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from protagine.api.authority import required_scope
+from onekey import required_scope
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import task_queue as queue_router
 from protagine.task_queue.action_receipts import (
@@ -35,6 +35,7 @@ from protagine.task_queue.work_control import (
 )
 from protagine.task_queue.worker import JobHandler, WorkerNode
 from protagine.work_orders import WorkOrderV1
+from onekey import KEY
 
 
 @pytest.fixture(autouse=True)
@@ -1338,7 +1339,7 @@ async def test_reconciliation_rejects_evidence_before_exact_ambiguity(
         ring = tmp_path / f"stale-{finding}-keyring.json"
         _write_keyring(ring)
         app = FastAPI()
-        app.add_middleware(ApiKeyMiddleware, keyring_path=str(ring))
+        app.add_middleware(ApiKeyMiddleware, api_key=KEY)
         app.include_router(queue_router.router)
         monkeypatch.setattr(
             queue_router,
@@ -1350,7 +1351,7 @@ async def test_reconciliation_rejects_evidence_before_exact_ambiguity(
         ) as client:
             rejected = await client.post(
                 "/v1/host/queue/work/reconciliations",
-                headers={"Authorization": "Bearer verifier-secret"},
+                headers={"Authorization": "Bearer " + KEY},
                 json=payload,
             )
             assert rejected.status_code == 422
@@ -1360,7 +1361,7 @@ async def test_reconciliation_rejects_evidence_before_exact_ambiguity(
             payload["observed_at"] = datetime.now(timezone.utc).isoformat()
             accepted = await client.post(
                 "/v1/host/queue/work/reconciliations",
-                headers={"Authorization": "Bearer verifier-secret"},
+                headers={"Authorization": "Bearer " + KEY},
                 json=payload,
             )
         assert accepted.status_code == 200
@@ -1682,7 +1683,7 @@ async def test_live_pending_control_is_terminalized_on_off_restart(
         ring = tmp_path / "off-keyring.json"
         _write_keyring(ring)
         app = FastAPI()
-        app.add_middleware(ApiKeyMiddleware, keyring_path=str(ring))
+        app.add_middleware(ApiKeyMiddleware, api_key=KEY)
         app.include_router(queue_router.router)
         monkeypatch.setattr(
             queue_router, "_get_queue",
@@ -1693,7 +1694,7 @@ async def test_live_pending_control_is_terminalized_on_off_restart(
         ) as client:
             response = await client.get(
                 "/v1/host/queue/workers/worker-1/controls",
-                headers={"Authorization": "Bearer worker-secret"},
+                headers={"Authorization": "Bearer " + KEY},
             )
         assert response.status_code == 200
         assert response.json() == []
@@ -1919,7 +1920,7 @@ async def test_precedence_receipts_survive_restart_and_key_rotation(
             operator_credential_id="operator-new",
         )
         app = FastAPI()
-        app.add_middleware(ApiKeyMiddleware, keyring_path=str(ring))
+        app.add_middleware(ApiKeyMiddleware, api_key=KEY)
         app.include_router(queue_router.router)
         monkeypatch.setattr(
             queue_router, "_get_queue",
@@ -1935,7 +1936,7 @@ async def test_precedence_receipts_survive_restart_and_key_rotation(
                     "operation_id": "precedence-steer",
                 },
                 headers={
-                    "Authorization": "Bearer operator-secret-after-rotation",
+                    "Authorization": "Bearer " + KEY,
                 },
             )
         assert rotated.status_code == 200
@@ -2011,14 +2012,14 @@ async def test_slash_ids_are_routable_and_ack_authority_is_durable(
     ring = tmp_path / "keyring.json"
     _write_keyring(ring)
     app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, keyring_path=str(ring))
+    app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     app.include_router(queue_router.router)
     monkeypatch.setattr(
         queue_router, "_get_queue", lambda: SimpleNamespace(queue=queue),
     )
     await queue.post(Job(job_id="target/with/slash"))
-    operator = {"Authorization": "Bearer operator-secret"}
-    worker_headers = {"Authorization": "Bearer worker-secret"}
+    operator = {"Authorization": "Bearer " + KEY}
+    worker_headers = {"Authorization": "Bearer " + KEY}
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test",
     ) as client:
@@ -2084,16 +2085,12 @@ async def test_slash_ids_are_routable_and_ack_authority_is_durable(
     )
     assert stop_receipt["ack_authority"] == {
         "authority_kind": "scoped_worker_principal",
-        "credential_id": "worker-current",
-        "principal_id": "worker-principal",
+        "credential_id": "api.key",
+        "principal_id": "api-key",
         "required_scope": "workers:lifecycle",
         "worker_authority_mode": "enforce",
         "worker_id": "worker-1",
     }
-    assert required_scope("GET", "/v1/host/queue/work") == "work:read"
-    assert required_scope(
-        "POST", "/v1/host/queue/work/reconciliations",
-    ) == "workers:attest"
 
 
 @pytest.mark.asyncio

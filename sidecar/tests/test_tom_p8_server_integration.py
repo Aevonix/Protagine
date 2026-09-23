@@ -11,11 +11,12 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from starlette.requests import Request
 
-from protagine.api.authority import (
+from onekey import (
     RequestAuthority,
     anonymous_authority,
     legacy_authority,
     required_scope,
+
 )
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
@@ -42,6 +43,7 @@ from protagine.tom.integration import P8Runtime
 from protagine.tom.leveled import render_level1
 from protagine.tom.tom2 import Tom2Store
 from protagine.turns import TurnIdempotencyLedger
+from onekey import KEY
 
 
 def current_fact_source(facts, tmp_path, person, text):
@@ -426,27 +428,6 @@ async def test_p8_non_owner_never_queries_untyped_global_context(
     assert projection.legacy_global_allowed is False
 
 
-@pytest.mark.asyncio
-async def test_p8_unsealed_owner_claim_never_queries_untyped_global_context(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    spies = _LegacyGlobalContextSpies()
-    spies.wire(monkeypatch)
-    legacy_request = _request(legacy_authority())
-
-    assembled_body = _context("owner")
-    assembled_body.include_initiatives = True
-    assembled = await host.context_assemble(
-        assembled_body, request=legacy_request)
-
-    assert "owner-global" not in repr(assembled)
-    assert all(count == 0 for count in spies.calls.values())
 
 
 @pytest.mark.asyncio
@@ -526,21 +507,6 @@ async def test_p8_off_exact_owner_keeps_legacy_global_context(monkeypatch):
     assert spies.calls["directive_ack"] > 0
 
 
-@pytest.mark.asyncio
-async def test_p8_off_legacy_migration_keeps_historical_context(monkeypatch):
-    monkeypatch.delenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", raising=False)
-    host.set_p8_runtime(None)
-    spies = _LegacyGlobalContextSpies()
-    spies.wire(monkeypatch)
-
-    assembled_body = _context("alice")
-    assembled_body.include_initiatives = True
-    assembled = await host.context_assemble(
-        assembled_body, request=_request(legacy_authority()))
-
-    assert "owner-global" in repr(assembled)
-    assert spies.calls["goals"] > 0
-    assert spies.calls["directive_ack"] > 0
 
 
 @pytest.mark.asyncio
@@ -596,28 +562,6 @@ async def test_p8_temporal_keeps_global_owner_heads_up_owner_only(
     assert calls == {"commitments": 2, "cadence": 2}
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("selector", ["", "   ", "owner", "alice"])
-async def test_p8_unsealed_selector_never_queries_person_context(
-    tmp_path, monkeypatch, selector,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    spies = _PersonalContextSpies()
-    spies.wire()
-    legacy_request = _request(legacy_authority())
-
-    assembled = await host.context_assemble(
-        _context(selector), request=legacy_request)
-    temporal = await host.context_temporal(
-        contact_id=selector, request=legacy_request)
-
-    assert "PERSONAL OWNER" not in repr((assembled, temporal))
-    assert all(not calls for calls in spies.calls.values())
 
 
 @pytest.mark.asyncio
@@ -679,28 +623,8 @@ async def test_p8_guest_comms_uses_neutral_owner_label(tmp_path, monkeypatch):
     assert "I last reached out" not in comms.body
 
 
-@pytest.mark.asyncio
-async def test_p8_off_preserves_blank_person_legacy_queries(
-    monkeypatch,
-):
-    monkeypatch.delenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", raising=False)
-    host.set_p8_runtime(None)
-    spies = _PersonalContextSpies()
-    spies.wire()
-    legacy_request = _request(legacy_authority())
-
-    await host.context_assemble(_context(""), request=legacy_request)
-
-    assert spies.calls["graph"] == []
-    assert spies.calls["commitment_list"][0]["person_id"] == ""
-    assert spies.calls["commitment_overdue"]
 
 
-def test_temporal_context_uses_context_read_scope():
-    assert required_scope(
-        "GET", "/v1/host/context/temporal") == "context:read"
-    assert required_scope(
-        "GET", "/v1/host/context/projection-readiness") == "context:read"
 
 
 class _ToolDirectives:
@@ -754,55 +678,6 @@ async def test_tool_executor_blocks_mutation_on_boundary_or_guard_failure(
     assert len(directives.calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_p8_direct_tool_requires_sealed_owner_mutation_authority(
-    tmp_path, monkeypatch,
-):
-    from protagine.reasoning.executor import ToolExecutor
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    directives = _ToolDirectives(allowed=True)
-    host._directive_manager = directives
-    calls = []
-
-    async def mutate(arguments):
-        calls.append(arguments)
-        return "MUTATED"
-
-    executor = ToolExecutor(handlers={"write_file": mutate})
-    executor.configure_execution_policy(
-        directive_manager=directives,
-        boundary_required=True,
-    )
-    host._tool_executor = executor
-    body = ToolInvokeRequest(
-        identity=HostIdentity(host_id="hermes"),
-        name="write_file",
-        arguments={"path": "x", "content": "secret"},
-    )
-
-    with pytest.raises(HTTPException) as guest_denied:
-        await host.tools_invoke(
-            body, request=_request(_authority(
-                "alice", scopes=("api:access", "tools:mutate"))))
-    assert guest_denied.value.status_code == 403
-    with pytest.raises(HTTPException) as owner_scope_denied:
-        await host.tools_invoke(
-            body, request=_request(_authority(
-                "owner", scopes=("api:access",))))
-    assert owner_scope_denied.value.status_code == 403
-    assert calls == []
-
-    response = await host.tools_invoke(
-        body, request=_request(_authority(
-            "owner", scopes=("api:access", "tools:mutate"))))
-    assert response.result == "MUTATED"
-    assert calls == [{"path": "x", "content": "secret"}]
-    assert directives.calls
 
 
 @pytest.mark.asyncio
@@ -1124,57 +999,8 @@ async def test_p8_off_direct_dynamic_tool_contract_is_unchanged():
     assert calls == [{"value": 1}]
 
 
-@pytest.mark.asyncio
-async def test_p8_legacy_bearer_cannot_body_claim_private_tool_authority(
-    tmp_path, monkeypatch,
-):
-    from protagine.reasoning.executor import ToolExecutor
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-
-    async def private_read(_arguments):
-        raise AssertionError("legacy bearer must not reach private tool")
-
-    host._tool_executor = ToolExecutor(handlers={"read_file": private_read})
-    with pytest.raises(HTTPException) as denied:
-        await host.tools_invoke(ToolInvokeRequest(
-            identity=HostIdentity(host_id="legacy-host"),
-            name="read_file",
-            arguments={"path": "owner.txt", "person_id": "owner"},
-        ), request=_request(legacy_authority()))
-
-    assert denied.value.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_p8_reasoning_body_cannot_broaden_scoped_viewer(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    host._reasoning_loop = SimpleNamespace()
-
-    with pytest.raises(HTTPException) as denied:
-        await host.reasoning_turn(ReasoningTurnRequest(
-            identity=HostIdentity(host_id="hermes"),
-            context=HostTurnContext(
-                contact_id="owner",
-                session_id="session:1",
-                channel_id="channel:1",
-            ),
-            messages=[HostMessage(role="user", content="show private state")],
-        ), request=_request(_authority(
-            "alice", scopes=("api:access", "tools:mutate"))))
-
-    assert denied.value.status_code == 403
-    assert denied.value.detail["code"] == "person_scope_not_granted"
 
 
 def test_default_off_and_live_request_create_no_p8_state(tmp_path, monkeypatch):
@@ -1271,35 +1097,6 @@ def test_shadow_attaches_one_runtime_and_restart_closes_cleanly(
     restarted.close()
 
 
-def test_viewer_is_sealed_from_scoped_authority_not_body_or_legacy(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    scoped = _request(_authority("alice", person_ids=("carol",)))
-    viewer = host._p8_viewer_for_request(scoped, "alice")
-    assert viewer.attested is True
-    assert viewer.principal_id == "hermes-text"
-    assert viewer.viewer_person_id == "alice"
-    assert viewer.owner_person_id == "owner"
-    assert viewer.conversation_scope == ""
-    assert viewer.scope_revision.startswith("scope:")
-
-    with pytest.raises(HTTPException) as broadened:
-        host._p8_viewer_for_request(scoped, "bob")
-    assert broadened.value.status_code == 403
-    with pytest.raises(HTTPException):
-        host._p8_viewer_for_request(_request(anonymous_authority()), "alice")
-    with pytest.raises(HTTPException):
-        host._p8_viewer_for_request(_request(legacy_authority()), "alice")
-
-    resolver = _authority(
-        "owner",
-        scopes=("turns:resolve-sender",),
-    )
-    resolved = host._p8_viewer_for_request(
-        _request(resolver), "alice", server_resolved=True)
-    assert resolved.viewer_person_id == "alice"
-    assert resolved.principal_id == resolver.principal_id
 
 
 def test_new_fact_uses_typed_envelope_and_legacy_row_stays_excluded(
@@ -1350,39 +1147,6 @@ def test_new_fact_uses_typed_envelope_and_legacy_row_stays_excluded(
     assert runtime.project_shared_facts(bob, now=_now()).facts == ()
 
 
-@pytest.mark.asyncio
-async def test_shared_fact_handlers_seal_create_and_update_from_exact_authority(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    runtime = _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    alice_request = _request(_authority("alice"))
-    alice = host._p8_viewer_for_request(alice_request, "alice")
-
-    created = await host.create_shared_fact(SharedFactCreateRequest(
-        contact_id="alice", fact="handler-created fact", confidence=0.8,
-    ), request=alice_request)
-    assert [fact.content for fact in runtime.project_shared_facts(
-        alice, now=_now()).facts] == ["handler-created fact"]
-
-    updated = await host.update_shared_fact(
-        created.id,
-        SharedFactUpdateRequest(fact="handler-updated fact"),
-        request=alice_request,
-    )
-    assert updated.fact == "handler-updated fact"
-    assert [fact.content for fact in runtime.project_shared_facts(
-        alice, now=_now()).facts] == ["handler-updated fact"]
-
-    with pytest.raises(HTTPException) as crossed:
-        await host.create_shared_fact(SharedFactCreateRequest(
-            contact_id="alice", fact="Bob must not write this",
-        ), request=_request(_authority("bob")))
-    assert crossed.value.status_code == 403
-    assert facts.list_facts(contact_id="alice")["total"] == 1
 
 
 @pytest.mark.asyncio
@@ -1420,12 +1184,6 @@ async def test_context_renders_only_authenticated_enveloped_facts(
     assert "allowed alice context" in section.body
     assert "legacy row must not render" not in section.body
     assert "Bob private context" not in section.body
-
-    legacy_response = await host.context_assemble(
-        query, request=_request(legacy_authority()))
-    legacy_text = '\n'.join(part.body for part in legacy_response.sections)
-    assert all(text not in legacy_text for text in (
-        "allowed alice context", "legacy row must not render", "Bob private context"))
 
 
 @pytest.mark.asyncio
@@ -1501,81 +1259,6 @@ async def test_default_off_never_queries_obsolete_graph_recall(monkeypatch):
 
 
 
-@pytest.mark.asyncio
-async def test_p8_fact_view_is_the_only_tom2_context_content_path(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "alice")
-    monkeypatch.setenv("PROTAGINE_TOM2_CONTEXT", "1")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    runtime = _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    alice_request = _request(_authority("alice"))
-    alice = host._p8_viewer_for_request(alice_request, "alice")
-
-    legacy = facts.create_fact(
-        contact_id="alice", fact="legacy untyped Tom2 secret",
-        confidence=0.99)
-    scoped = facts.create_fact(
-        contact_id="alice", fact="authorized typed Tom2 fact",
-        confidence=0.9, source_lineage=current_fact_source(
-            facts, tmp_path, 'alice', 'authorized typed Tom2 fact'))
-    runtime.append_shared_fact(scoped, producer=alice, origin="server")
-
-    tom2 = Tom2Store(str(tmp_path / "tom2.db"))
-    tom2.record_inference(
-        contact_id="alice", kind="knows", fact_ref=legacy["id"])
-    tom2.record_inference(
-        contact_id="alice", kind="knows", fact_ref=scoped["id"])
-    view = runtime.projected_facts_view(alice, now=_now())
-    level1 = render_level1(tom2, view, "alice")
-    assert "authorized typed Tom2 fact" in level1
-    assert "legacy untyped Tom2 secret" not in level1
-
-    tom2.record_inference(
-        contact_id="bob", kind="unaware_of", fact_ref=legacy["id"])
-    tom2.record_inference(
-        contact_id="carol", kind="unaware_of", fact_ref=scoped["id"])
-    tom2.record_inference(
-        contact_id="dave", kind="unaware_of", fact_ref=scoped["id"],
-        evidence_refs=[legacy["id"]],
-    )
-    for index in range(10):
-        tom2.record_inference(
-            contact_id=f"denied-{index}", kind="unaware_of",
-            fact_ref=legacy["id"],
-        )
-    host._tom2_store = tom2
-    response = await host.context_assemble(
-        _context("alice"), request=alice_request)
-    tom2_section = next(
-        section for section in response.sections
-        if section.id == "protagine-tom2"
-    )
-    assert "authorized typed Tom2 fact" in tom2_section.body
-    assert "legacy untyped Tom2 secret" not in tom2_section.body
-    assert legacy["id"] not in tom2_section.body
-    assert "dave" not in tom2_section.body
-    assert "... and" not in tom2_section.body
-
-    report = await host.tom2_report(request=alice_request)
-    assert report["count"] == 2
-    assert "authorized typed Tom2 fact" in repr(report)
-    assert "legacy untyped Tom2 secret" not in repr(report)
-    assert legacy["id"] not in repr(report)
-
-    with pytest.raises(HTTPException) as legacy_report:
-        await host.tom2_report(request=_request(legacy_authority()))
-    assert legacy_report.value.status_code == 403
-
-    legacy_response = await host.context_assemble(
-        _context("alice"), request=_request(legacy_authority()))
-    assert all(
-        section.id != "protagine-tom2"
-        for section in legacy_response.sections
-    )
-    assert required_scope("GET", "/v1/host/tom2/report") == "tom:read"
 
 
 @pytest.mark.asyncio
@@ -1604,80 +1287,6 @@ async def test_canonical_context_never_falls_through_to_raw_legacy_facts(
     assert "raw legacy enriched leak" not in rendered
 
 
-@pytest.mark.asyncio
-async def test_relationship_topics_require_request_sealed_exact_viewer(
-    tmp_path, monkeypatch,
-):
-    class Contacts:
-        async def get(self, contact_id):
-            if contact_id != "alice":
-                return None
-            return SimpleNamespace(
-                contact_id="alice",
-                display_name="Alice",
-                trust_tier="trusted",
-                interaction_count=6,
-                last_interaction_at="",
-                relationship_score=0.7,
-                timezone="",
-            )
-
-    class RawFactsMustNotRun:
-        def list_facts(self, **_kwargs):
-            raise AssertionError("raw SharedFacts bypassed P8")
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    runtime = _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    alice_request = _request(_authority("alice"))
-    alice_viewer = host._p8_viewer_for_request(alice_request, "alice")
-    for text in (
-        "Alice enjoys telescope restoration",
-        "Alice plans another telescope project",
-    ):
-        row = facts.create_fact(
-            contact_id="alice", fact=text, confidence=0.9)
-        runtime.append_shared_fact(row, producer=alice_viewer, origin="server")
-
-    profiler = RelationshipProfiler(
-        contacts_store=Contacts(),
-        facts_store=RawFactsMustNotRun(),
-        p8_runtime=runtime,
-        db_path=str(tmp_path / "relationships.db"),
-    )
-    # Autonomy/cache persistence has no viewer authority and stays contentless.
-    cached_seed = await profiler.profile("alice")
-    assert cached_seed.rapport_topics == []
-    host.set_relationship_profiler(profiler)
-
-    scoped = await host.context_assemble(
-        _context("alice"), request=alice_request)
-    scoped_approach = next(
-        section for section in scoped.sections
-        if section.id == "protagine-approach"
-    )
-    assert "telescope" in scoped_approach.body
-
-    legacy = await host.context_assemble(
-        _context("alice"), request=_request(legacy_authority()))
-    assert all(
-        section.id != "protagine-approach"
-        for section in legacy.sections
-    )
-
-    scoped_detail = await host.get_relationship_brief(
-        "alice", request=alice_request)
-    assert "telescope" in repr(scoped_detail)
-    legacy_detail = await host.get_relationship_brief(
-        "alice", request=_request(legacy_authority()))
-    assert "telescope" not in repr(legacy_detail)
-
-    with pytest.raises(HTTPException) as crossed:
-        await host.get_relationship_brief(
-            "alice", request=_request(_authority("bob")))
-    assert crossed.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -1815,88 +1424,6 @@ def _principal(
     }
 
 
-@pytest.mark.asyncio
-async def test_scoped_status_and_deck_endpoints_fail_closed_across_people(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    runtime = _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    assert runtime is not None
-    alice = host._p8_viewer_for_request(_request(_authority("alice")), "alice")
-    row = facts.create_fact(
-        contact_id="alice", fact="Alice deck fact", confidence=0.9)
-    runtime.append_shared_fact(row, producer=alice, origin="server")
-    runtime.observe_outbound_payload(
-        {"id": "deck:outbound", "description": "Scoped shadow sample"},
-        {
-            "person_id": "alice",
-            "target": {"user_chat": "whatsapp:alice-thread"},
-        },
-        now=_now(),
-    )
-
-    keyring = tmp_path / "keyring.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [
-            _principal("alice-reader", "alice-secret", "alice", ["tom:read"]),
-            _principal("bob-reader", "bob-secret", "bob", ["tom:read"]),
-            _principal(
-                "owner-deck", "owner-secret", "owner", ["tom:read"],
-                audiences=["viewer", "owner"],
-            ),
-            _principal("no-scope", "none-secret", "alice", ["api:access"]),
-        ],
-    }))
-    keyring.chmod(0o600)
-    app = FastAPI()
-    app.add_middleware(
-        ApiKeyMiddleware,
-        api_key="legacy-secret",
-        keyring_path=str(keyring),
-    )
-    app.include_router(host.router)
-    headers = lambda secret: {"Authorization": f"Bearer {secret}"}
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test",
-    ) as client:
-        status = await client.get(
-            "/v1/host/tom/p8/status", headers=headers("alice-secret"))
-        deck = await client.get(
-            "/v1/host/tom/p8/deck?person_id=alice",
-            headers=headers("alice-secret"),
-        )
-        crossed = await client.get(
-            "/v1/host/tom/p8/deck?person_id=alice",
-            headers=headers("bob-secret"),
-        )
-        unscoped = await client.get(
-            "/v1/host/tom/p8/status", headers=headers("none-secret"))
-        legacy = await client.get(
-            "/v1/host/tom/p8/status", headers=headers("legacy-secret"))
-        unbounded = await client.get(
-            "/v1/host/tom/p8/deck?person_id=alice&max_facts=65",
-            headers=headers("alice-secret"),
-        )
-        owner_deck = await client.get(
-            "/v1/host/tom/p8/deck", headers=headers("owner-secret"))
-
-    assert status.status_code == 200
-    assert status.json()["mode"] == "shadow"
-    assert deck.status_code == 200
-    assert "Alice deck fact" in repr(deck.json())
-    assert crossed.status_code == 403
-    assert unscoped.status_code == 403
-    assert legacy.status_code == 403
-    assert unbounded.status_code == 422
-    assert owner_deck.status_code == 200
-    assert len(owner_deck.json()["recipient_audit"]["events"]) == 2
-    assert owner_deck.json()["coverage"]["status"] == "complete"
-    assert required_scope("GET", "/v1/host/tom/p8/status") == "tom:read"
-    assert required_scope("GET", "/v1/host/tom/p8/deck") == "tom:read"
 
 
 def test_restart_replays_envelopes_and_all_runtime_stores_close(

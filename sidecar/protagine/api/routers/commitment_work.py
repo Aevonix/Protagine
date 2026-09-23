@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from pydantic import field_validator
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 from protagine.api.routers.executions import authorized_viewer
 from protagine.commitments.work import CommitmentWork
 from protagine.commitments.local_work import LocalWork, LocalWorkConflict

@@ -15,7 +15,7 @@ import threading
 
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.cognition.drive_governance import (
     CharterRevisionV1,
     DriveGovernance,
@@ -727,55 +727,6 @@ def test_charter_cannot_broaden_a_private_drive_scope(tmp_path):
     assert store.revision_projection(revision.revision_id, now=NOW)[
         "lifecycle_status"
     ] == "proposed"
-
-
-@pytest.mark.parametrize(
-    "authority",
-    [
-        owner_authority(owner=False),
-        owner_authority(scope=False),
-        RequestAuthority(
-            principal_id="legacy",
-            credential_id="PROTAGINE_API_KEY",
-            scopes=frozenset({"*"}),
-            viewer_person_id=None,
-            person_ids=frozenset(),
-            audiences=frozenset({"owner"}),
-            authenticated=True,
-            legacy=True,
-        ),
-    ],
-)
-def test_non_owner_unscoped_and_legacy_authority_cannot_ratify(tmp_path, authority):
-    governance, _, approvals = make_governance(tmp_path)
-    item = drive()
-    revision = charter([item])
-    register_and_propose(governance, [item], revision)
-    request = governance.ensure_transition_request(
-        revision.revision_id, transition="activate", now=NOW
-    )
-    approvals.decide(
-        request["request_id"],
-        decision="approve",
-        decision_id=f"decision-{authority.principal_id}-0001",
-        expected_action_digest=request["action_digest"],
-        decided_by=authority.principal_id,
-        authority_evidence=(
-            f"scoped_principal:{authority.principal_id}:"
-            f"{authority.credential_id}"
-        ),
-        now=NOW,
-    )
-    with pytest.raises(DriveGovernanceError) as exc_info:
-        governance.ratify_transition(
-            revision.revision_id,
-            transition="activate",
-            approval_request_id=request["request_id"],
-            operation_id=f"ratify-{authority.principal_id}-0001",
-            authority=authority,
-            now=NOW,
-        )
-    assert exc_info.value.code == "owner_authority_required"
 
 
 def test_ratification_actor_must_match_the_approved_scoped_principal(tmp_path):

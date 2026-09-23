@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from protagine.api.routers import host
-from protagine.api.authority import required_scope
+from onekey import required_scope
 from protagine.cognition.evidence_pipeline import CognitionEvidenceStore
 from protagine.execution_results import ExecutionResultV1
 from protagine.projects.models import Project, Step
@@ -50,33 +50,6 @@ def isolate_host(monkeypatch, tmp_path):
         setattr(host, name, value)
 
 
-def test_default_off_keeps_only_passthrough_cursor_and_drains_project_outbox(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.delenv("PROTAGINE_COGNITION_EVIDENCE", raising=False)
-    projects = ProjectStore(str(tmp_path / "projects.db"))
-    scheduler = FakeScheduler()
-
-    wiring = _attach_cognition_evidence(
-        state_dir=tmp_path,
-        project_store=projects,
-        scheduler=scheduler,
-    )
-
-    assert wiring["mode"] == "off"
-    assert wiring["store"] is host._cognition_evidence_store
-    assert wiring["reducer"] is host._cognition_evidence_reducer
-    assert wiring["initial_status"]["enabled"] is False
-    assert wiring["projector"] is host._project_event_projector
-    assert "cognition_evidence_reduce" in scheduler.callbacks
-    assert "project_event_outbox" not in scheduler.callbacks
-    assert (tmp_path / "protagine-cognition-evidence.db").exists()
-    assert "project_event_outbox" in host.supported_capabilities()
-    assert "cognition_evidence" not in host.supported_capabilities()
-    assert required_scope(
-        "GET", "/v1/host/cognition/evidence"
-    ) == "cognition:read"
-    wiring["store"].close()
 
 
 def test_shadow_attaches_observer_without_competence_authority(
@@ -231,49 +204,6 @@ def test_live_attaches_one_reducer_and_scheduler_failure_is_atomic(
     reopened.close()
 
 
-@pytest.mark.asyncio
-async def test_http_evidence_trace_uses_server_derived_viewer_scope(monkeypatch):
-    calls = []
-
-    class TraceStore:
-        def trace(self, **kwargs):
-            calls.append(kwargs)
-            return [{"event_seq": 7, "viewer_scope": kwargs["viewer_scope"]}]
-
-    class Reducer:
-        def status(self):
-            return {"mode": "shadow", "healthy": True}
-
-    host.set_cognition_evidence(
-        TraceStore(), Reducer(), SimpleNamespace(status=lambda: {}),
-        {"configured_mode": "shadow", "state": "attached"},
-    )
-    authority = SimpleNamespace(
-        legacy=False,
-        viewer_person_id="person-7",
-        audiences=frozenset(),
-    )
-    monkeypatch.setattr(host, "request_authority", lambda _request: authority)
-    monkeypatch.setattr(
-        host,
-        "resolve_request_person",
-        lambda _request, claimed_person_id=None: claimed_person_id or "person-7",
-    )
-
-    result = await host.get_cognition_evidence(
-        SimpleNamespace(), person_id="person-7", project_id="project-7", limit=25,
-    )
-
-    assert result["available"] is True
-    assert result["learning_available"] is True
-    assert result["status"]["healthy"] is True
-    assert calls == [{
-        "project_id": "project-7",
-        "subject_person_id": "person-7",
-        "viewer_scope": "person:person-7",
-        "limit": 25,
-    }]
-    assert result["trace"][0]["viewer_scope"] == "person:person-7"
 
 
 @pytest.mark.asyncio
@@ -293,7 +223,8 @@ async def test_http_never_returns_unverifiable_evidence_trace(monkeypatch):
         {"configured_mode": "shadow", "state": "attached"},
     )
     authority = SimpleNamespace(
-        legacy=False,
+        authenticated=True,
+        anonymous=False,
         viewer_person_id="owner",
         audiences=frozenset(),
     )

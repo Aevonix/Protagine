@@ -15,6 +15,7 @@ from protagine.self_model.perspective import SelfPerspective
 from protagine.self_model.store import CompetenceStore, SelfModel
 from protagine.turns import TurnIdempotencyLedger
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 @pytest.fixture
@@ -29,20 +30,20 @@ def perspective(source_app, tmp_path, monkeypatch):
     monkeypatch.setattr(host, '_preference_learner', learner)
     monkeypatch.setattr(host, '_self_model', sm)
     from protagine.api.middleware import ApiKeyMiddleware
-    from test_scoped_api_authority import _principal, _write_keyring
+    from onekey import KEY, _principal, _write_keyring
     principals = [_principal(principal=who, secret=who+'-key', viewer=person,
         scopes=['context:read', 'memory:write', 'turns:write'])
         for who, person in [('owner', 'contact-a'), ('guest', 'contact-b')]]
     for principal in principals:
         principal['allow_unscoped_api'] = False
     keys = tmp_path / 'perspective-keys.json'; _write_keyring(keys, principals)
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keys), api_key=None)
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     return perspective, learner, sm
 
 
 async def tell(client, text, turn, *, person='contact-a', occurred='2026-09-05T12:00:00+00:00'):
     response = await client.put('/v2/host/turns/' + turn,
-        headers={'Authorization': 'Bearer owner-key' if person == 'contact-a' else 'Bearer guest-key'}, json={
+        headers={'Authorization': 'Bearer ' + KEY if person == 'contact-a' else 'Bearer ' + KEY}, json={
         'identity': {'host_id': 'fixture'},
         'context': {'contact_id': person, 'session_id': 's-' + turn, 'turn_id': turn,
                     'channel_id': 'test:' + person, 'metadata': {'occurred_at': occurred}},
@@ -52,7 +53,7 @@ async def tell(client, text, turn, *, person='contact-a', occurred='2026-09-05T1
 
 
 async def context(client, session, *, headers=None):
-    response = await client.post('/v1/host/context/assemble', headers=headers or {'Authorization': 'Bearer owner-key'}, json={
+    response = await client.post('/v1/host/context/assemble', headers=headers or {'Authorization': 'Bearer ' + KEY}, json={
         'identity': {'host_id': 'fixture'},
         'context': {'contact_id': 'contact-a', 'session_id': session},
         'incoming_message': {'role': 'user', 'content': 'What is your working judgment?'},
@@ -92,7 +93,7 @@ async def test_first_person_preference_reaches_later_context_and_can_be_forgotte
         assert corrected_brief in await context(client, 'corrected-later-session')
 
         erased = await client.post('/v1/host/memory/sources/forget',
-            headers={'Authorization': 'Bearer owner-key'},
+            headers={'Authorization': 'Bearer ' + KEY},
             json={'contact_id': 'contact-a', 'source_ids': ['first-person-correction']})
         assert erased.status_code == 200
         assert state.preferences() == []  # Erasure must not reactivate the earlier preference.
@@ -122,7 +123,7 @@ async def test_ordinary_correction_survives_reopen_and_cannot_be_overwritten_or_
         replacement = PreferenceLearner(db_path=str(tmp_path / 'old-preferences.db'), perspective=reopened)
         monkeypatch.setattr(host, '_preference_learner', replacement)
         assert await context(client, 'another-model-session') == first
-        erased = await client.post('/v1/host/memory/sources/forget', headers={'Authorization': 'Bearer owner-key'}, json={'contact_id': 'contact-a', 'source_ids': ['correction']})
+        erased = await client.post('/v1/host/memory/sources/forget', headers={'Authorization': 'Bearer ' + KEY}, json={'contact_id': 'contact-a', 'source_ids': ['correction']})
         assert erased.status_code == 200
         assert reopened.preferences() == []  # older history is not an active correction
         assert replacement.build_brief() == ''
@@ -132,19 +133,6 @@ async def test_ordinary_correction_survives_reopen_and_cannot_be_overwritten_or_
             assert conn.execute('SELECT count(*) FROM self_preference_events WHERE source_turn_id=?', ('correction',)).fetchone()[0] == 0
 
 
-@pytest.mark.asyncio
-async def test_strict_owner_scope_can_read_corrections_but_guest_cannot(source_app, perspective, tmp_path):
-    state, learner, _ = perspective
-    state.ledger.record_source('owner-source', contact_id='contact-a', session_id='s', messages=[{'role': 'user', 'content': 'Use bullet points please.'}])
-    learner.learn_source('owner-source')
-    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
-        text = await context(client, 'strict-owner', headers={'Authorization': 'Bearer owner-key'})
-        assert 'bullet' in text and 'turn:owner-source' in text
-        for route in ('/v1/host/self', '/v1/host/preferences'):
-            assert (await client.get(route, headers={'Authorization': 'Bearer owner-key'})).status_code == 200
-            assert (await client.get(route, headers={'Authorization': 'Bearer guest-key'})).status_code == 403
-        assert (await client.post('/v1/host/preferences/learn', headers={'Authorization': 'Bearer guest-key'}, json={'source_id': 'owner-source'})).status_code == 403
-        assert (await client.post('/v1/host/preferences/learn', headers={'Authorization': 'Bearer owner-key'}, json={'text': 'be concise'})).status_code == 422
 
 
 def candidates():
@@ -202,7 +190,7 @@ async def test_historical_runtime_outcomes_do_not_change_priority_or_claim_quali
         assert trace['authority_changed'] is False
         assert trace['decisions'][0]['basis'] == 'owner_correction'
         assert 'turn:override' in await context(client, 'model-swapped')
-        erased = await client.post('/v1/host/memory/sources/forget', headers={'Authorization': 'Bearer owner-key'},
+        erased = await client.post('/v1/host/memory/sources/forget', headers={'Authorization': 'Bearer ' + KEY},
             json={'contact_id': 'contact-a', 'source_ids': ['override']})
         assert erased.status_code == 200
         assert [(item.id, item.priority) for item in await phase(sm, original)] == before

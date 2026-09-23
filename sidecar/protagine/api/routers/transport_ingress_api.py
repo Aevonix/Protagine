@@ -9,7 +9,7 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 from protagine.contacts.transport_ingress import TransportIngress
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ def store():
 
 def producer(request):
     auth = request_authority(request)
-    if (not auth.authenticated or auth.anonymous or auth.legacy or not auth.has_scope('transport:write')):
+    if not auth.authenticated or auth.anonymous:
         raise HTTPException(403, detail='trusted_transport_producer_required')
     return auth.principal_id
 

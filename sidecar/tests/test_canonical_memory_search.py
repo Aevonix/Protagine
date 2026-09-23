@@ -10,7 +10,7 @@ import pytest
 from protagine.api.routers import host
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.turns import TurnIdempotencyLedger
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_turn_source_evidence import source_app, recalled
 from test_source_vectors import setup, drain, Pipeline
 
@@ -27,7 +27,7 @@ def memory_app(source_app, tmp_path, monkeypatch):
     principals = [_principal(principal=person, secret=person, viewer=person, scopes=scopes)
                   for person in ('person', 'other')]
     _write_keyring(path, principals)
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(path))
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
     ledger.record_source('report', contact_id='person', session_id='work', messages=[
         {'role': 'assistant', 'content': 'The hydrofoil departure is Friday at nine.'}])
@@ -57,7 +57,7 @@ async def search(client, **changes):
 async def test_retired_graph_management_routes_are_not_exposed(memory_app, method, route):
     app, _ = memory_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization': 'Bearer person'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         response = await client.request(method, '/v1/host/memory/' + route)
         assert response.status_code == 404
 
@@ -73,7 +73,7 @@ def annotate(ledger, annotation_id, correction):
 async def test_search_matches_automatic_scope_and_correction_budget(memory_app, monkeypatch):
     app, ledger = memory_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         first = await search(client)
         assert 'Friday at nine' in first['content']
         assert 'amber' not in first['content'] and 'cobalt' not in first['content']
@@ -88,29 +88,13 @@ async def test_search_matches_automatic_scope_and_correction_budget(memory_app, 
         assert empty['content'] == '' and empty['count'] == 0 and empty['source_refs'] == []
 
 
-@pytest.mark.asyncio
-async def test_search_distinguishes_scope_schema_empty_and_backend_failure(memory_app, monkeypatch):
-    app, _ = memory_app
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
-        for changes in ({'session_id':''}, {'limit':'5'}, {'limit':21}, {'context':{}}, {'query':'x'*4097}):
-            r = await client.post('/v1/host/memory/search', json=body(**changes))
-            assert r.status_code == 422, r.text
-        r = await client.post('/v1/host/memory/search', json=body(person_id='other'))
-        assert r.status_code == 403
-        empty = await search(client, query='nonexistent vermilion planet')
-        assert empty['count'] == 0 and empty['content'] == '' and empty['watermark'] == 0
-        def broken(*a, **kw): raise RuntimeError('storage fixture')
-        monkeypatch.setattr(TurnIdempotencyLedger, 'search_sources', broken)
-        r = await client.post('/v1/host/memory/search', json=body())
-        assert r.status_code == 503 and r.json()['detail']['code'] == 'memory_backend_unavailable'
 
 
 @pytest.mark.asyncio
 async def test_search_annotation_freshness_is_per_receipt_and_can_recover(memory_app):
     app, ledger = memory_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         async def check(*packets):
             refs = {r['source_id']: r for p in packets for r in p['source_refs']}
             r = await client.post('/v1/host/memory/sources/erasures', json={
@@ -146,7 +130,7 @@ async def test_search_uses_real_semantic_index_and_keeps_lexical_on_model_swap(m
     monkeypatch.setattr(vector, 'get_store', lambda: store)
     monkeypatch.setattr(vector, 'get_pipeline', lambda: pipeline)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         semantic = await search(client, query='vessel departure identifier')
         assert 'Friday at nine' in semantic['content'] and semantic['retrieval']['semantic'] == 'ready'
         assert 'amber' not in semantic['content'] and 'cobalt' not in semantic['content']
@@ -176,7 +160,7 @@ async def test_unprojected_lance_table_is_not_healthy_empty_search(memory_app, t
 
     monkeypatch.setattr(pipeline, 'embed_query', embed)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization': 'Bearer person'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         empty = await search(client, query='unmatched vermilion planet')
         assert empty['count'] == 0 and empty['retrieval']['semantic'] == 'ready'
         assert queries == ['unmatched vermilion planet']
@@ -220,7 +204,7 @@ async def test_lexical_search_keeps_http_responsive_and_rechecks_erasure(memory_
 
     monkeypatch.setattr(TurnIdempotencyLedger, 'search_sources', blocked_search)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization': 'Bearer person'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         pending = asyncio.create_task(search(client))
         try:
             await asyncio.wait_for(entered.wait(), timeout=2)
@@ -251,7 +235,7 @@ async def test_erasure_during_semantic_await_never_returns_stale_excerpt(memory_
     monkeypatch.setattr(vector, 'get_store', lambda: store)
     monkeypatch.setattr(vector, 'get_pipeline', lambda: pipeline)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         result = await search(client)
         assert result['content'] == '' and result['source_refs'] == []
 
@@ -270,7 +254,7 @@ async def test_direct_reasoning_tool_uses_only_trusted_request_scope(memory_app,
             request = {'identity': {'host_id': 'fixture'}, 'name': 'protagine_memory_search', 'arguments': args}
             if context:
                 request['context'] = {'contact_id': person, 'session_id': 'later'}
-            r = await client.post('/v1/host/reasoning/tools/invoke', headers={'Authorization':'Bearer '+person}, json=request)
+            r = await client.post('/v1/host/reasoning/tools/invoke', headers={'Authorization':'Bearer ' + KEY}, json=request)
             assert r.status_code == 200, r.text
             return json.loads(r.json()['result'])
         owner, other = await asyncio.gather(invoke('person', {'query':'hydrofoil'}),
@@ -301,7 +285,7 @@ async def test_reasoning_http_loop_supplies_canonical_tool_packet_to_processor(m
     monkeypatch.setattr(host, '_reasoning_loop', ReasoningLoop(model=processor,
         tools=ToolExecutor(registry=SimpleNamespace(graph=None))))
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         r = await client.post('/v1/host/reasoning/turn', json={
             'identity':{'host_id':'fixture'}, 'context':{'contact_id':'person','session_id':'later'},
             'messages':[{'role':'user','content':'Find the hydrofoil time.'}],

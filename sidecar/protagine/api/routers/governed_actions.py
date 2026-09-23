@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 from protagine.governed_actions import (
     GOVERNED_ACTION_REQUEST_MAX_BYTES,
     GovernedActionConflict,

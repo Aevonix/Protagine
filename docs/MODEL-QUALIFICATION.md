@@ -83,7 +83,7 @@ To continue an interrupted run, repeat the same evaluate command with `--resume`
 
 ### Native elapsed budgets
 
-On the [qualified Hermes build](HERMES-HOOK-COMPATIBILITY.md), `run_budget_seconds` supplies a wrap-up notice and influences implicit stale-response limits. It does not enforce an absolute elapsed deadline. An implicitly configured local non-streaming request can have no stale cutoff, and explicit provider timeout settings take precedence over the run-budget adjustment.
+On the qualified stock Hermes release, `run_budget_seconds` supplies a wrap-up notice and influences implicit stale-response limits. It does not enforce an absolute elapsed deadline. An implicitly configured local non-streaming request can have no stale cutoff, and explicit provider timeout settings take precedence over the run-budget adjustment.
 
 Use Hermes' existing named-provider `request_timeout_seconds` and `stale_timeout_seconds` settings for transport behavior. The request timeout bounds socket operations; a stream making progress can outlive it. Stale detection concerns response progress and may scale with context. `agent.gateway_timeout` is an inactivity limit. None of these settings alone proves that a native task stops at a fixed elapsed time.
 

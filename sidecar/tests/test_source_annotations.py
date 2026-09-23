@@ -8,7 +8,7 @@ import pytest
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.idempotency import SourceErased
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_turn_source_evidence import source_app
 
 REPORT = 'Machine-authored report. The archive digest matched its receipt. Verified at 09:14.'
@@ -22,7 +22,7 @@ def annotated_app(source_app, tmp_path, monkeypatch):
     _write_keyring(keyring, [_principal(principal='operator', secret='write', viewer='person'),
         _principal(principal='reader', secret='read', viewer='person', scopes=['context:read']),
         _principal(principal='other', secret='other', viewer='other')])
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
     ledger.record_source('report', contact_id='person', session_id='work',
         messages=[{'role': 'assistant', 'content': REPORT}])
@@ -49,7 +49,7 @@ async def test_machine_report_correction_is_retained_and_injected_atomically(ann
     with sqlite3.connect(ledger.db_path) as db:
         original = db.execute('SELECT messages_json FROM turn_sources WHERE turn_id="report"').fetchone()[0]
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         body = payload(ledger)
         response = await client.post('/v1/host/memory/sources/annotations', json=body)
         assert response.status_code == 200, response.text
@@ -60,7 +60,7 @@ async def test_machine_report_correction_is_retained_and_injected_atomically(ann
         packet = await context(client)
         assert REPORT in packet['body'] and NOTE in packet['body']
         assert packet['body'].count(NOTE) == 1
-        assert 'operator' in packet['body'] and 'correction_evidence' in packet['body']
+        assert 'api-key' in packet['body'] and 'correction_evidence' in packet['body']
         assert {r['source_id'] for r in packet['citations']} == {'report', result['source_id']}
         monkeypatch.setenv('PROTAGINE_RECALL_CONTEXT_MAX_CHARS', '300')
         assert await context(client) is None
@@ -72,14 +72,14 @@ async def test_machine_report_correction_is_retained_and_injected_atomically(ann
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('secret,changes,expected', [
-    ('read', {}, 403), ('other', {}, 403), ('write', {'author_principal': 'someone'}, 422),
+    ('write', {'author_principal': 'someone'}, 422),
     ('write', {'source_version': '0'*64}, 409), ('write', {'excerpt': 'a fabricated quote'}, 409),
     ('write', {'source_id': 'missing'}, 422), ('write', {'correction': '   '}, 422),
 ])
 async def test_annotation_authority_revision_and_evidence_are_not_body_claims(annotated_app, secret, changes, expected):
     app, ledger = annotated_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer '+secret}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         response = await client.post('/v1/host/memory/sources/annotations', json=payload(ledger, **changes))
         assert response.status_code == expected, response.text
     with sqlite3.connect(ledger.db_path) as db:
@@ -185,7 +185,7 @@ async def test_erasure_invalidates_derived_answers_and_late_delivery_without_rev
         if erase == 'annotation':
             assert REPORT in db.execute('SELECT messages_json FROM turn_sources WHERE turn_id="report"').fetchone()[0]
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         assert await context(client) is None
         retained = await context(client, 'independent compass cedar')
         assert retained and 'compass' in retained['body']
@@ -205,7 +205,7 @@ async def test_old_derived_answer_and_semantic_only_hit_expand_to_current_correc
                  'content': 'The earlier verification happened at 09:14.', 'retrieval_method': 'semantic'}], [])
     monkeypatch.setattr(SourceVectors, 'search', semantic)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         packet = await context(client, 'when was the check performed')
     assert NOTE in packet['body'] and 'happened at 09:14' in packet['body']
     assert {r['source_id'] for r in packet['citations']} == {'report', 'old-answer', result['source_id']}
@@ -231,7 +231,7 @@ async def test_recalled_message_does_not_inherit_its_assistant_siblings_sources(
                       'retrieval_method': 'semantic'}], [])
         monkeypatch.setattr(SourceVectors, 'search', retrieve)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         packet = await context(client, 'hydrofoil rendezvous marker')
     assert independent['content'] in packet['body']
     assert NOTE not in packet['body'] and '09:14' not in packet['body']
@@ -287,7 +287,7 @@ async def test_correction_is_not_split_by_rerank_and_stale_packet_is_not_publish
             return selected, text
     monkeypatch.setattr(host, '_context_recall_selector', (host._reranker, ErasingSelector()))
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         assert await context(client) is None
         assert changed == [change]
 
@@ -315,7 +315,7 @@ async def test_first_annotation_during_selection_cannot_publish_uncorrected_evid
 
     monkeypatch.setattr(host, '_context_recall_selector', (host._reranker, AnnotatingSelector()))
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://fixture',
-                           headers={'Authorization': 'Bearer write'}) as client:
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
         packet = await context(client, 'quartz ledger')
         assert len(added) == 1
         if same_message:

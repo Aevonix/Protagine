@@ -23,8 +23,8 @@ def skills_enabled() -> bool:
 
 
 def skills_distill_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_SKILLS_DISTILL",
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_SKILLS_DISTILL",
                    ("off", "shadow", "live"), "shadow")
 
 

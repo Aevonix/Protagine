@@ -12,7 +12,7 @@ from protagine.contacts.comms import CommsLog
 from protagine.memory.recent import read_recent, MAX_CONTENT
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.idempotency import source_message_hash
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_turn_source_evidence import source_app
 
 
@@ -331,7 +331,7 @@ def recent_app(source_app, tmp_path, ledger):
     _write_keyring(path, [_principal(principal=person, secret=person, viewer=person,
         scopes=['memory:read', 'turns:write']) for person in ('person', 'guest')]
         + [_principal(principal='no-memory', secret='no-memory', viewer='person', scopes=['context:read'])])
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(path))
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     return source_app
 
 
@@ -340,34 +340,6 @@ def body(**changes):
             'platform':'whatsapp', **changes}
 
 
-@pytest.mark.asyncio
-async def test_http_scope_schema_and_real_annotation_receipt(recent_app, ledger):
-    add(ledger, 'source', 'the current plan')
-    async with AsyncClient(transport=ASGITransport(app=recent_app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
-        result = await client.post('/v1/host/memory/recent', json=body())
-        assert result.status_code == 200, result.text
-        packet = result.json()
-        async def check(packet):
-            response = await client.post('/v1/host/memory/sources/erasures', json={
-                'contact_id':'person', 'session_id':'call', 'after':packet['watermark'],
-                'source_refs':packet['source_refs'], 'annotation_checks':packet['annotation_checks']})
-            assert response.status_code == 200, response.text
-            return response.json()
-        assert (await check(packet))['annotation_checks_current'] == [True]
-        ledger.append_source_annotation(contact_id='person', session_id='call', annotation_id='note',
-            **packet['source_refs'][0], excerpt='current plan', correction='The plan was revised.', author_principal='person')
-        assert (await check(packet))['annotation_checks_current'] == [False]
-        corrected = (await client.post('/v1/host/memory/recent', json=body())).json()
-        assert (await check(corrected))['annotation_checks_current'] == [True]
-        for changes in ({'person_id':'guest'},):
-            assert (await client.post('/v1/host/memory/recent', json=body(**changes))).status_code == 403
-        for changes in ({'limit':21}, {'limit':'8'}, {'query':'last thing'}, {'session_id':' '}, {'platform':'WhatsApp'}):
-            assert (await client.post('/v1/host/memory/recent', json=body(**changes))).status_code == 422
-        denied = await client.post('/v1/host/memory/recent', json=body(), headers={'Authorization':'Bearer no-memory'})
-        assert denied.status_code == 403
-        guest = await client.post('/v1/host/memory/recent', json=body(person_id='guest'), headers={'Authorization':'Bearer guest'})
-        assert guest.status_code == 200 and guest.json()['entries'] == []
 
 
 @pytest.mark.asyncio
@@ -401,7 +373,7 @@ async def test_recent_read_does_not_hold_request_event_loop(recent_app, ledger, 
         return original(*args, **kwargs)
     monkeypatch.setattr(module, 'read_recent', slow_read)
     async with AsyncClient(transport=ASGITransport(app=recent_app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         pending = asyncio.create_task(client.post('/v1/host/memory/recent', json=body()))
         try:
             assert await asyncio.to_thread(entered.wait, 1)

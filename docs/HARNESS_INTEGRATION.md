@@ -1,8 +1,7 @@
 # Connecting Hermes and coding harnesses
 
-Use the [guided local setup](LOCAL-HERMES-SETUP.md) for the current Protagine
-baseline and its [Hermes qualification target](HERMES-HOOK-COMPATIBILITY.md).
-This guide describes the integration boundaries. Older Protagine installers,
+Use the [install guide](INSTALL.md) for the current Protagine baseline on
+stock Hermes. This guide describes the integration boundaries. Older Protagine installers,
 manual context plugins and migration procedures are outside that baseline.
 
 ## Hermes native integration

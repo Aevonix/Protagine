@@ -44,15 +44,22 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     diagnostic = request.get('_diagnostic_recorder')
     if diagnostic is not None:
         diagnostic.add_secret(secret)
-    keyring = state / 'fixture-keyring.json'
-    keyring.write_text(json.dumps({'version': 1, 'principals': [{
-        'principal': 'benchmark-owner', 'status': 'active', 'viewer_person_id': person,
-        'person_ids': [person], 'scopes': list(scopes) if scopes is not None else
-            ['context:read', 'turns:write', 'memory:read'],
-        'audiences': ['viewer'], 'credentials': [{'id': 'fixture', 'secret': secret, 'status': 'active'}]}]}))
-    keyring.chmod(0o600)
+    # The disposable instance directory the adapter reads: the one key, the
+    # owner identity and a stock protagine.yaml (mind defaults, nothing enabled
+    # beyond memory). The same secret guards the fixture API below.
+    instance = state / 'protagine-instance'
+    instance.mkdir(mode=0o700, exist_ok=True)
+    key_file = instance / 'api.key'
+    key_file.write_text(secret + '\n')
+    key_file.chmod(0o600)
+    (instance / 'identity.yaml').write_text(json.dumps({
+        'owner': {'name': 'Owner', 'contact_id': person, 'handles': {}},
+        'agent': {'name': 'Agent'}}))
+    (instance / 'protagine.yaml').write_text(json.dumps({
+        'owner': {'contact_id': person}, 'mind': {'enabled': False}}))
+    os.environ.update(PROTAGINE_HOME=str(instance), PROTAGINE_API_KEY=secret)
     app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+    app.add_middleware(ApiKeyMiddleware, api_key=secret)
     routes = []
 
     @app.middleware('http')
@@ -87,12 +94,14 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
             time.sleep(.01)
         url = f'http://127.0.0.1:{port}'
         already = [name for name in config.get('plugins', {}).get('enabled', []) if name != 'protagine']
-        config.update(plugins={'enabled': [*already, 'protagine'], 'protagine': {
-            **config.get('plugins', {}).get('protagine', {}),
-            'url': url, 'api_key': secret, 'owner_contact_id': person,
-            'attested_system_platforms': ['cli'], 'turn_writer_platforms': ['cli']}},
-            memory={'provider': 'protagine-memory', 'config': {
-                'url': url, 'api_key': secret, 'contact_id': person}})
+        # The keys `protagine init` writes: the adapter finds the sidecar and
+        # the key file here; callbacks run inline so no capture fire is dropped.
+        config.update(plugins={'enabled': [*already, 'protagine'], 'hook_callback_timeout': 0,
+                               'protagine': {**config.get('plugins', {}).get('protagine', {}),
+                                             'sidecar_url': url, 'key_file': str(key_file),
+                                             'turn_outbox_path': str(state / 'protagine-turn-outbox.sqlite3')}},
+                      memory={'provider': 'protagine-memory', 'config': {
+                          'url': url, 'api_key': secret, 'contact_id': person}})
         (state / 'config.yaml').write_text(json.dumps(config))
         (state / 'SOUL.md').write_text('Use available evidence. Preserve uncertainty. Answer the current question.')
         manager = get_plugin_manager()

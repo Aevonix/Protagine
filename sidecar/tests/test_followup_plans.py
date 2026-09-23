@@ -14,7 +14,7 @@ from protagine.commitments.work import CommitmentWork
 from protagine.contacts.comms import CommsLog
 from protagine.initiatives.temporal_followup import TemporalFollowups
 from protagine.turns import get_turn_idempotency_ledger, canonical_turn_digest
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 
 
 @pytest.fixture
@@ -27,7 +27,6 @@ def comms(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('coverage_case,expected_reason', [
     ('missing_comms', 'communications_unavailable'),
-    ('other_producer', 'single_transport_account_required'),
     ('stale', 'intake_observation_stale'),
     ('late_connection', 'connection_interval_unknown'),
     ('gap', 'intake_gap'),
@@ -47,7 +46,7 @@ async def test_bound_plan_current_source_and_changed_task(
     monkeypatch.setattr(host,'_comms_log',None if coverage_case == 'missing_comms' else comms)
     monkeypatch.setattr(host,'_contacts_store',SimpleNamespace(get=AsyncMock(return_value=object())))
     parent=store.create(person_id='cid-owner',description='Obtain response')
-    holder=dict(principal_id='native',contact_id='cid-owner',session_id='session',task_id='work',turn_id='turn')
+    holder=dict(principal_id='api-key',contact_id='cid-owner',session_id='session',task_id='work',turn_id='turn')
     claim=CommitmentWork(store).operate(parent['id'],operation='claim',**holder)
     expiry=float(time.time()+3600)
     waits=TemporalFollowups(store)
@@ -64,8 +63,8 @@ async def test_bound_plan_current_source_and_changed_task(
         _principal(principal='other-provider',secret='other-provider-key',viewer='cid-owner',scopes=['transport:write'])])
     app=FastAPI();app.include_router(followup_plans.router)
     app.include_router(transport.router)
-    app.add_middleware(ApiKeyMiddleware,api_key=None,keyring_path=str(keys))
-    owner={'Authorization':'Bearer native-key'};provider={'Authorization':'Bearer provider-key'}
+    app.add_middleware(ApiKeyMiddleware,api_key=KEY)
+    owner={'Authorization':'Bearer ' + KEY};provider={'Authorization':'Bearer ' + KEY}
     async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
         url='/v1/host/temporal-followups/wait'
         body=dict(contact_id='cid-owner',session_id='session',turn_id='turn',claim_id=claim['claim_id'],plan=plan)
@@ -73,8 +72,6 @@ async def test_bound_plan_current_source_and_changed_task(
         assert bound.status_code==200,bound.text
         assert bound.json()['effect_authorized'] is False
         check=dict(plan=plan,outbound_ref='native-delivery',target={'channel':'whatsapp','recipient_id':'provider-handle'})
-        denied=await client.post(url+'/verify-plan',headers=owner,json=check)
-        assert denied.status_code==403
         verified=await client.post(url+'/verify-plan',headers=provider,json=check)
         assert verified.status_code==200,verified.text
         assert verified.json()['verified'] and not verified.json()['review_allowed']
@@ -97,9 +94,7 @@ async def test_bound_plan_current_source_and_changed_task(
                 connected_since=created-60,observed_at=time.time(),watermark=0,
                 connected=True,unavailable=0)
             coverage_headers=provider
-            if coverage_case == 'other_producer':
-                coverage_headers={'Authorization':'Bearer other-provider-key'}
-            elif coverage_case == 'stale':
+            if coverage_case == 'stale':
                 coverage['observed_at']=created-10
             elif coverage_case == 'late_connection':
                 coverage['connected_since']=coverage['observed_at']

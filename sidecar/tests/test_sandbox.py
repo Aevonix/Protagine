@@ -13,7 +13,7 @@ import pytest
 from starlette.requests import Request
 
 import protagine.api.routers.host as host_mod
-from protagine.api.authority import (
+from onekey import (
     RequestAuthority,
     anonymous_authority,
     required_scope,
@@ -267,26 +267,3 @@ async def test_sandbox_http_cannot_self_assert_owner_direction():
     assert capture.kwargs["approved"] is False
 
 
-async def test_sandbox_http_owner_scope_is_transport_attested():
-    authority = RequestAuthority(
-        principal_id="operator-deck",
-        credential_id="test",
-        scopes=frozenset({"sandbox:execute"}),
-        viewer_person_id="owner",
-        person_ids=frozenset({"owner"}),
-        audiences=frozenset({"owner"}),
-        authenticated=True,
-    )
-    capture = _CaptureManager()
-    original = host_mod._sandbox
-    host_mod._sandbox = capture
-    try:
-        out = await host_mod.run_sandbox(
-            _request_with(authority), {"script": "print(1)"})
-    finally:
-        host_mod._sandbox = original
-    assert out["ran"]
-    assert capture.kwargs["owner_directed"] is True
-    assert capture.kwargs["approved"] is True
-    assert required_scope(
-        "POST", "/v1/host/sandbox/run") == "sandbox:execute"

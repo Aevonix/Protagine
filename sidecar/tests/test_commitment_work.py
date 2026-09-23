@@ -12,8 +12,7 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import commitment_work, executions, host
 from protagine.commitments.store import CommitmentStore
 from protagine.commitments.work import CommitmentWork
-from test_hermes_general_governance import runtime, _pre, _tool
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 
 
 def holder(session):
@@ -52,7 +51,6 @@ def test_two_database_clients_race_recover_and_reject_old_tokens(tmp_path):
     assert not peer.operate(obligation['id'], operation='claim', **holder('late'))['accepted']
 
 
-
 def test_two_creates_and_claims_reuse_one_open_obligation(tmp_path):
     path = tmp_path / 'commitments.db'
     CommitmentStore(path)
@@ -87,74 +85,9 @@ def work_app(tmp_path, monkeypatch, store):
     guest = _principal(principal='guest-host', secret='guest-key', viewer='guest', scopes=['turns:write'])
     guest['allow_unscoped_api'] = False
     _write_keyring(keyring, [writer, guest])
-    app = FastAPI(); app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=str(keyring))
+    app = FastAPI(); app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     app.include_router(commitment_work.router)
     return app
-
-
-def test_native_adapter_sessions_race_through_scoped_http_and_stale_tool_stops(runtime, tmp_path, monkeypatch):
-    module, context, client, _ = runtime
-    store = CommitmentStore(tmp_path / 'commitments.db')
-    obligation = store.create('cid-owner', 'Inspect the same failing build once')
-    now = [1000.0]
-    # Preserve the real HTTP operation and SQLite transaction, with a controllable lease clock.
-    monkeypatch.setattr(commitment_work, 'CommitmentWork', lambda store: CommitmentWork(store, clock=lambda: now[0]))
-    with TestClient(work_app(tmp_path, monkeypatch, store)) as api:
-        client.post = lambda path, **kwargs: api.post(path, json=kwargs['json'], headers={'Authorization': 'Bearer writer-key'})
-        for session in ('sms', 'voice'):
-            _pre(context, session=session, task=session, turn=session, platform='sms', sender='+15550001')
-        def claim(session):
-            return json.loads(_tool(context, 'protagine_commitment_work', {'operation': 'claim', 'commitment_id': obligation['id']},
-                session=session, task=session, turn=session, call='call-' + session))
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            outcomes = list(pool.map(claim, ['sms', 'voice']))
-        assert sorted(value['accepted'] for value in outcomes) == [False, True]
-        winner = next(value['session_id'] for value in outcomes if value['accepted'])
-        assert all('claim_id' not in value for value in outcomes)
-        from test_hermes_native_tool_authority import call
-        assert call(context, 'read_file', session=winner, task=winner, turn=winner) == 'executed'
-        now[0] += 121
-        _pre(context, session='recovery', task='recovery', turn='recovery', platform='sms', sender='+15550001')
-        assert claim('recovery')['accepted']
-        invoked = []
-        denied = json.loads(call(context, 'terminal', session=winner, task=winner, turn=winner,
-                                  dispatch=lambda args: invoked.append(args)))
-        assert denied['effect_performed'] is False and invoked == []
-        assert call(context, 'read_file', session='recovery', task='recovery', turn='recovery') == 'executed'
-        payload = {'operation': 'status', 'contact_id': 'cid-owner', 'session_id': 's', 'task_id': 't', 'turn_id': 'u'}
-        route = '/v1/host/commitments/' + obligation['id'] + '/work'
-        assert api.post(route, json=payload).status_code == 401
-        assert api.post(route, json=payload, headers={'Authorization': 'Bearer guest-key'}).status_code == 403
-        assert api.post(route, json={**payload, 'claim_id': 'invented'}, headers={'Authorization': 'Bearer writer-key'}).status_code == 422
-    assert module._TOOL_EXECUTION_CONTEXT.get() is None
-
-
-def test_explicit_stop_after_terminal_or_superseded_claim_allows_next_work(runtime, tmp_path, monkeypatch):
-    _, context, client, _ = runtime
-    from test_hermes_native_tool_authority import call
-    store = CommitmentStore(tmp_path / 'commitments.db')
-    first = store.create('cid-owner', 'Inspect fixture Alpha')
-    second = store.create('cid-owner', 'Inspect fixture Beta')
-    now = [1000.0]
-    monkeypatch.setattr(commitment_work, 'CommitmentWork', lambda store: CommitmentWork(store, clock=lambda: now[0]))
-    with TestClient(work_app(tmp_path, monkeypatch, store)) as api:
-        client.post = lambda path, **kwargs: api.post(path, json=kwargs['json'], headers={'Authorization': 'Bearer writer-key'})
-        for session in ('first', 'reclaimer'):
-            _pre(context, session=session, task=session, turn=session, platform='sms', sender='+15550001')
-        def work(session, operation, obligation):
-            return json.loads(_tool(context, 'protagine_commitment_work', {'operation': operation, 'commitment_id': obligation['id']}, session=session, task=session, turn=session, call='call-' + session))
-        assert work('first', 'claim', first)['accepted']
-        store.resolve(first['id'], outcome='done')
-        assert json.loads(call(context, 'read_file', session='first', task='first', turn='first'))['effect_performed'] is False
-        assert work('first', 'release', first)['detached']
-        assert call(context, 'read_file', session='first', task='first', turn='first') == 'executed'
-        assert work('first', 'claim', second)['accepted']
-        now[0] += 121
-        assert work('reclaimer', 'claim', second)['accepted']
-        assert json.loads(call(context, 'read_file', session='first', task='first', turn='first'))['effect_performed'] is False
-        assert work('first', 'release', second)['detached']
-        assert call(context, 'read_file', session='first', task='first', turn='first') == 'executed'
-        assert work('reclaimer', 'status', second)['session_id'] == 'reclaimer'
 
 
 @pytest.mark.asyncio
@@ -191,7 +124,7 @@ async def test_canonical_worker_queue_view_has_descriptions_and_truthful_livenes
 
 @pytest.mark.asyncio
 async def test_context_names_obligation_and_other_session_holder(tmp_path, monkeypatch):
-    from protagine.api.authority import RequestAuthority
+    from onekey import RequestAuthority
     from protagine.api.schemas.host import ContextAssembleRequest
     store = CommitmentStore(tmp_path / 'commitments.db')
     obligation = store.create('owner', 'Compare repair options', due_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())

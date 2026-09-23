@@ -26,15 +26,16 @@ def test_non_loopback_with_key_allowed(monkeypatch):
     _guard_bind_auth("0.0.0.0")  # must not raise/exit
 
 
-def test_non_loopback_with_scoped_keyring_allowed(monkeypatch, tmp_path):
+def test_non_loopback_with_key_file_allowed(monkeypatch, tmp_path):
     monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
-    monkeypatch.setenv("PROTAGINE_API_KEYRING_PATH", str(tmp_path / "keys.json"))
-    _guard_bind_auth("0.0.0.0")  # middleware will validate the file itself
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
+    (tmp_path / "api.key").write_text("file-secret\n")
+    _guard_bind_auth("0.0.0.0")  # the key file counts as configured auth
 
 
-def test_non_loopback_without_key_fails_closed(monkeypatch):
+def test_non_loopback_without_key_fails_closed(monkeypatch, tmp_path):
     monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
-    monkeypatch.delenv("PROTAGINE_API_KEYRING_PATH", raising=False)
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
     monkeypatch.delenv("PROTAGINE_ALLOW_OPEN_BIND", raising=False)
     with pytest.raises(SystemExit) as exc:
         _guard_bind_auth("0.0.0.0")

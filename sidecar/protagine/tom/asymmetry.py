@@ -32,8 +32,8 @@ _MIN_SOURCE_CONFIDENCE = 0.6
 
 
 def tom2_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_TOM2", ("off", "shadow", "live"), "off")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_TOM2", ("off", "shadow", "live"), "off")
 
 
 def tom2_context_enabled() -> bool:

@@ -14,7 +14,6 @@ from protagine.beliefs.source_projection import SourceClaimProjection
 from protagine.beliefs.source_time import interpret_time_query
 from protagine.turns import TurnIdempotencyLedger
 from test_turn_source_evidence import source_app
-from test_hermes_turn_outbox import _load_client, _payload
 
 
 class Model:
@@ -279,20 +278,6 @@ async def test_valid_empty_or_unsupported_extraction_completes_without_a_claim(t
     assert status["claim_count"] == 0
     assert status["model"] == "fixture-complete"
     assert ledger.search_sources("office", contact_id="contact-a", session_id="later")
-
-
-def test_outbox_captures_once_and_never_dates_checkpoints(tmp_path, monkeypatch):
-    module = _load_client("source_time_outbox")
-    outbox = module.TurnOutbox(tmp_path / "outbox.sqlite3")
-    monkeypatch.setattr(module.time, "time", lambda: 1772355600.0)
-    first = outbox.enqueue("turn-1", _payload(), capture_ordinary=True)
-    stamp = outbox.snapshot()[0]["payload"]["occurred_at"]
-    monkeypatch.setattr(module.time, "time", lambda: 1774958400.0)
-    assert outbox.enqueue("turn-1", _payload(), capture_ordinary=True)["envelope_sha256"] == first["envelope_sha256"]
-    assert outbox.snapshot()[0]["payload"]["occurred_at"] == stamp
-    checkpoint = {"session_id": "s", "contact_id": "c", "checkpoint_messages": [{"role": "user", "content": "old"}]}
-    outbox.enqueue("checkpoint", checkpoint, capture_ordinary=True)
-    assert "occurred_at" not in next(row for row in outbox.snapshot() if row["turn_id"] == "checkpoint")["payload"]
 
 
 @pytest.mark.asyncio

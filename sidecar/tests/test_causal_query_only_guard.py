@@ -125,6 +125,8 @@ async def test_context_assemble_output_carries_no_causal_edge(monkeypatch):
     from protagine.api.schemas.host import (
         ContextAssembleRequest, HostIdentity, HostMessage, HostTurnContext,
     )
+    # World entities are owner context; a guest packet holds canonical sources only.
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "contact:x")
     async with _seeded_store() as s:
         monkeypatch.setattr(host_mod, "_world_store", s)
         resp = await host_mod.context_assemble(ContextAssembleRequest(

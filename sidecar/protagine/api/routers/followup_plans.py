@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 from protagine.api.routers import temporal_followups as temporal
 from protagine.commitments.work import CommitmentWork
 from protagine.initiatives.temporal_followup import TemporalFollowups
@@ -93,8 +93,7 @@ def bind(wait_id: str, body: BindPlan, request: Request):
 
 def _check(wait_id, body, request, *, require_coverage=False):
     authority = request_authority(request)
-    if (not authority.authenticated or authority.anonymous or authority.legacy
-            or not authority.has_scope('transport:write')):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(403, detail='trusted_transport_producer_required')
     from protagine.api.routers import host
     if host._commitment_store is None:

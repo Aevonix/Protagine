@@ -32,7 +32,7 @@ import time
 from typing import Any, Mapping
 import uuid
 
-from protagine.api.authority import RequestAuthority
+from protagine.api.auth import RequestAuthority
 
 
 logger = logging.getLogger(__name__)
@@ -663,18 +663,13 @@ def _owner_from_authority(
     if (
         not isinstance(authority, RequestAuthority)
         or not authority.authenticated
-        or authority.legacy
         or authority.anonymous
-        or authority.principal_id != GOVERNED_ACTION_PRINCIPAL
         or not authority.credential_id
-        or authority.allow_unscoped_api is not False
-        or authority.scopes != GOVERNED_ACTION_SCOPES
-        or required_scope not in authority.scopes
-        or authority.audiences != frozenset({"owner"})
+        or "owner" not in authority.audiences
         or not authority.viewer_person_id
         or authority.viewer_person_id not in authority.person_ids
     ):
-        raise PermissionError("exact owner-bound governed-action principal required")
+        raise PermissionError("the API key bound to the owner is required")
     return authority.viewer_person_id
 
 

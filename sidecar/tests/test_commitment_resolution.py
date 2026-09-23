@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import protagine.api.routers.host as host_mod
-from protagine.api.authority import legacy_authority
+from onekey import legacy_authority
 from protagine.commitments.store import (
     CommitmentResolutionConflict, CommitmentStore, _normalize_desc, _similar_desc,
 )

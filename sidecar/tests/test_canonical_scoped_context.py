@@ -10,7 +10,7 @@ from protagine.beliefs.source_projection import SourceClaimProjection
 from protagine.commitments.store import CommitmentStore
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.media import SourceMedia
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_source_claim_projection import Model, claim
 from test_source_media import message as image_message
 from test_turn_source_evidence import source_app
@@ -26,7 +26,7 @@ class PrivateProducer:
 
 
 def headers(person):
-    return {"Authorization": "Bearer fixture-" + person}
+    return {"Authorization": "Bearer " + KEY}
 
 
 def context(person, query, session="second-session"):
@@ -51,7 +51,7 @@ async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
         principals.append(principal)
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, principals)
-    source_app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=str(keyring))
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
 
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
         text = "My office is in River."

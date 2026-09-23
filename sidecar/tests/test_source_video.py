@@ -18,6 +18,7 @@ from protagine.turns.media import SourceMedia
 from protagine.turns.source_read import read, read_video
 from protagine.turns.video import decode_video, MAX_VIDEO_BYTES
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 def clip_bytes(times=(0, 250, 1000, 1500), *, size=(160, 120), track_timescale=None):
@@ -94,15 +95,15 @@ async def test_original_http_admission_retry_and_frame_read(source_app, tmp_path
     from protagine.turns import get_turn_idempotency_ledger
     from protagine import get_state_dir
     from protagine.api.middleware import ApiKeyMiddleware
-    from test_scoped_api_authority import _principal, _write_keyring
+    from onekey import KEY, _principal, _write_keyring
     keyring = tmp_path/'video-keyring.json'
     _write_keyring(keyring, [_principal(principal='video-reader', secret='fixture-video', viewer='owner',
                                       scopes=['memory:read', 'turns:write'])])
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     body = {'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'owner', 'session_id': 'earlier', 'turn_id': 'clip'},
             'user_message': message(), 'source_only': True}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture',
-                                 headers={'Authorization': 'Bearer fixture-video'}) as client:
+                                 headers={'Authorization': 'Bearer ' + KEY}) as client:
         for expected in (201, 200):
             response = await client.put('/v2/host/turns/source-media/video/clip', json=body)
             assert response.status_code == expected, response.text

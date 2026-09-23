@@ -11,6 +11,7 @@ from protagine.turns.source_annotations import append as annotate_source
 from test_contact_fact_recall import contact_context, context
 from test_recall_unified_context import Graph, belief
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 @pytest.mark.asyncio
@@ -38,13 +39,13 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
     ])
     monkeypatch.setattr(host, '_graph', graph)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
-        created = await client.post('/v1/host/mind/facts', headers={'Authorization': 'Bearer owner-key'}, json={
+        created = await client.post('/v1/host/mind/facts', headers={'Authorization': 'Bearer ' + KEY}, json={
             'contact_id': 'contact-a', 'fact': 'Hydrofoil hand-entered note.',
             'source': 'told_by_contact', 'metadata': {'curated': True, 'owner_approved': True}})
         assert created.status_code == 201, created.text
         manual = created.json()
         for row in (old, manual):
-            read = await client.get('/v1/host/mind/facts/'+row['id'], headers={'Authorization': 'Bearer owner-key'})
+            read = await client.get('/v1/host/mind/facts/'+row['id'], headers={'Authorization': 'Bearer ' + KEY})
             assert read.status_code == 200 and read.json()['fact'] == row['fact']
         text = await context(client, 'hydrofoil')
         assert 'separate hydrofoil memory' not in text
@@ -69,7 +70,7 @@ async def test_current_linked_estimate_has_native_citations_then_revision_and_er
     lineage, _ = runtime.facts.source_input('origin', 'contact-a')
     linked = runtime.add('The contact knows the hydrofoil gate.', source_lineage=lineage)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
-        response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer owner-key'}, json={
+        response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer ' + KEY}, json={
             'identity': {'host_id': 'native-fixture'},
             'context': {'contact_id': 'contact-a', 'session_id': 'later-voice'},
             'incoming_message': {'role': 'user', 'content': 'hydrofoil gate'}})
@@ -126,7 +127,7 @@ async def test_linked_estimate_keeps_current_correction_and_exact_source_refs(co
         excerpt=original, correction='The earlier gate color was mistaken; the gate is amber.',
         author_principal='fixture-owner')
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
-        response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer owner-key'}, json={
+        response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer ' + KEY}, json={
             'identity': {'host_id': 'native-fixture'},
             'context': {'contact_id': 'contact-a', 'session_id': 'later'},
             'incoming_message': {'role': 'user', 'content': 'hydrofoil gate'}})
@@ -163,7 +164,7 @@ async def test_canonical_estimate_keeps_correction_refs_and_never_revives_erased
         'incoming_message': {'role': 'user', 'content': 'hydrofoil gate'}}
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         response = await client.post('/v1/host/context/assemble',
-            headers={'Authorization': 'Bearer owner-key'}, json=payload)
+            headers={'Authorization': 'Bearer ' + KEY}, json=payload)
         assert response.status_code == 200, response.text
         section = next(s for s in response.json()['sections'] if s['id'] == 'protagine-memory')
         assert 'amber' in section['body'] and 'attributed_correction' in section['body']
@@ -174,7 +175,7 @@ async def test_canonical_estimate_keeps_correction_refs_and_never_revives_erased
             r['source_id']: r['source_version'] for r in expected}
         runtime.ledger.erase_sources(contact_id='contact-a', turn_ids=[correction['source_id']])
         after = await client.post('/v1/host/context/assemble',
-            headers={'Authorization': 'Bearer owner-key'}, json=payload)
+            headers={'Authorization': 'Bearer ' + KEY}, json=payload)
         assert after.status_code == 200, after.text
         assert not any(s['id'] == 'protagine-memory' for s in after.json()['sections'])
     assert runtime.facts.get_fact(fact['id'])['fact'] == original
@@ -210,7 +211,7 @@ async def test_canonical_omits_irrelevant_incomplete_or_changed_source_packet(
         monkeypatch.setattr(host, '_context_recall_selector', (host._reranker, CorrectingSelector()))
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         response = await client.post('/v1/host/context/assemble',
-            headers={'Authorization': 'Bearer owner-key'}, json={
+            headers={'Authorization': 'Bearer ' + KEY}, json={
                 'identity': {'host_id': 'native-fixture'},
                 'context': {'contact_id': 'contact-a', 'session_id': 'later'},
                 'incoming_message': {'role': 'user', 'content': query}})

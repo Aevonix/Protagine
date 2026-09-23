@@ -39,8 +39,8 @@ def connectors_enabled() -> bool:
 
 
 def connectors_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off")
 
 
 class ConnectorManager:

@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 
 
 def directed_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_DIRECTED_MODE", ("off", "dry_run", "live"),
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_DIRECTED_MODE", ("off", "dry_run", "live"),
                    "dry_run")
 
 

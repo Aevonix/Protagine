@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -25,8 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from protagine.goals.store import GoalNotFoundError
 from protagine import get_state_dir
 from protagine.events.stream import EventSubscriberBuffer
-from protagine.api.authority import (
-    record_attested_contact_grant,
+from protagine.api.auth import (
     request_authority,
     resolve_request_person,
     resolve_turn_person,
@@ -835,48 +833,6 @@ async def health() -> HostHealthResponse:
     )
 
 
-@router.get("/admin/auth/status")
-async def auth_migration_status(request: Request) -> dict:
-    """Admin-only scoped-auth migration evidence without credential material."""
-
-    telemetry = getattr(request.state, "protagine_auth_telemetry", None)
-    grants = getattr(request.state, "protagine_contact_grants", None)
-    keyring_status = getattr(request.state, "protagine_keyring_status", None) or {
-        "configured": False,
-        "available": False,
-        "error": "scoped keyring status is not attached to this application",
-        "principal_count": 0,
-        "credential_count": 0,
-    }
-    telemetry_status = telemetry.snapshot() if telemetry is not None else {
-        "enabled": False,
-        "persistent": False,
-        "error": "auth telemetry is not attached to this application",
-        "totals": {},
-        "principals": {},
-        "records": [],
-    }
-    grants_status = grants.status() if grants is not None else {
-        "configured": False,
-        "available": False,
-        "error": "exact contact grants are not attached to this application",
-        "principal_counts": {},
-        "total_exact_person_ids": 0,
-    }
-    auth_configuration = getattr(request.state, "protagine_auth_configuration", None) or {
-        "legacy_configured": False,
-        "scoped_configured": False,
-        "dual_accept": False,
-    }
-    return {
-        "auth": auth_configuration,
-        "telemetry": telemetry_status,
-        "keyring": keyring_status,
-        "contact_grants": grants_status,
-        "secrets_exposed": False,
-    }
-
-
 def _p8_viewer_for_request(
     request: Request | None,
     resolved_person_id: str,
@@ -897,26 +853,14 @@ def _p8_viewer_for_request(
     if (
         not authority.authenticated
         or authority.anonymous
-        or authority.legacy
         or not authority.principal_id
         or not person
     ):
         raise HTTPException(
             status_code=403,
             detail={
-                "code": "p8_scoped_authority_required",
-                "message": "P8 requires a scoped authenticated principal",
-            },
-        )
-    granted = person in authority.person_ids
-    resolved_grant = (
-        server_resolved and authority.has_scope("turns:resolve-sender"))
-    if not granted and not resolved_grant:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "person_scope_not_granted",
-                "message": "P8 viewer exceeds principal person authority",
+                "code": "p8_authority_required",
+                "message": "P8 requires the API key and a resolved person",
             },
         )
     owner = (
@@ -1001,7 +945,7 @@ def _require_scoped_context_runtime_for_guest(
     need P8. Missing viewer authority must still never select legacy context.
     """
     authority = request_authority(request)
-    if authority.legacy or authority.anonymous or not authority.authenticated:
+    if authority.anonymous or not authority.authenticated:
         return
     _p8_viewer_for_request(request, resolved_person_id)
 
@@ -1086,14 +1030,12 @@ def _request_tool_actor(
 ) -> str:
     """Name the caller an HTTP tool call is recorded as.
 
-    Attribution does not depend on P8 gating: the legacy key is the owner's
-    own credential, a sealed owner is the owner, another sealed person is that
-    person and anything else is a guest. Only in-process execution, which
-    never passes through here, is the agent's own.
+    Attribution does not depend on P8 gating: the resolved owner contact is
+    the owner, another resolved person is that person and anything else is a
+    guest. Only in-process execution, which never passes through here, is the
+    agent's own.
     """
     authority = request_authority(request)
-    if authority.legacy:
-        return "owner"
     policy = _p8_tool_actor_policy(
         request, resolved_person_id or authority.viewer_person_id)
     if policy.allow_private_read:
@@ -1109,8 +1051,8 @@ def _p8_tool_actor_policy(
 
     P8 legacy handlers still accept arbitrary selectors inside tool argument
     dictionaries. Until each handler has typed person/resource envelopes, only
-    the exact sealed owner may use private reads, and mutations additionally
-    require ``tools:mutate``. Guests retain the public information tools.
+    the resolved owner contact may use private reads and mutations. Guests
+    retain the public information tools.
     """
 
     from protagine.reasoning.tool_policy import ToolActorPolicy
@@ -1120,7 +1062,6 @@ def _p8_tool_actor_policy(
     sealed = bool(
         authority.authenticated
         and not authority.anonymous
-        and not authority.legacy
         and person
         and authority.viewer_person_id == person
         and person in authority.person_ids
@@ -1135,7 +1076,7 @@ def _p8_tool_actor_policy(
         principal_id=str(authority.principal_id or "unsealed"),
         viewer_person_id=person if sealed else "",
         allow_private_read=is_owner,
-        allow_mutation=is_owner and authority.has_scope("tools:mutate"),
+        allow_mutation=is_owner,
     )
 
 
@@ -2716,8 +2657,8 @@ def _reasoning_memory_search(request, identity, context):
     if context is None:
         return None
     async def search(args):
-        if not request_authority(request).has_scope('memory:search'):
-            raise ValueError('memory search scope is required')
+        if not request_authority(request).authenticated:
+            raise ValueError('memory search requires the API key')
         if not isinstance(args, dict) or set(args) - {'query', 'limit'}:
             raise ValueError('memory authority and source selectors are not model arguments')
         body = MemorySearchRequest(identity=identity, person_id=context.contact_id,
@@ -3113,12 +3054,11 @@ def _conversation_turn_concern_metadata(
     """Seal optional concern metadata from server-side authority only.
 
     ``HostTurnContext.metadata`` and every caller-provided privacy/authority
-    claim are deliberately ignored.  A scoped credential may attest only its
-    exact person grant.  A structured sender may attest the resolver result
-    only when that scoped principal owns the sender-resolution scope and the
-    platform is in its configured attestation set.  Legacy/global bearer,
-    anonymous, client-only contact claims, and the system sentinel all fail
-    closed while the ordinary timeline event remains unchanged.
+    claim are deliberately ignored.  The key attests the owner contact it is
+    bound to; a structured sender attests the server-side resolver result.
+    Anonymous development mode, client-only contact claims, and the system
+    sentinel all fail closed while the ordinary timeline event remains
+    unchanged.
     """
 
     from protagine.self_model.event_concerns import turn_concerns_enabled
@@ -3127,17 +3067,13 @@ def _conversation_turn_concern_metadata(
         return {}
     authority = request_authority(request)
     subject = str(body.context.contact_id or "").strip()
-    scoped = bool(
-        authority.authenticated
-        and not authority.legacy
-        and not authority.anonymous
-    )
+    scoped = bool(authority.authenticated and not authority.anonymous)
     static_subject_granted = bool(
         scoped
         and subject
         and (
             subject == str(authority.viewer_person_id or "")
-            or subject in authority.static_person_ids
+            or subject in authority.person_ids
         )
     )
     within_static_grant = bool(body.sender is None and static_subject_granted)
@@ -3146,29 +3082,20 @@ def _conversation_turn_concern_metadata(
         if body.sender is not None else ""
     )
     source_platform = ""
-    ingress_platforms = authority.turn_ingress_platforms
-    if body.sender is not None:
-        if (
-            re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", claimed_sender_platform)
-            and claimed_sender_platform in ingress_platforms
-        ):
-            source_platform = claimed_sender_platform
-    elif len(ingress_platforms) == 1:
-        source_platform = next(iter(ingress_platforms))
+    if body.sender is not None and re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", claimed_sender_platform):
+        source_platform = claimed_sender_platform
     source_platform_attested = bool(scoped and source_platform)
     resolved_static_grant = bool(
         scoped
         and resolved_human_sender
         and body.sender is not None
-        and authority.has_scope("turns:resolve-sender")
         and static_subject_granted
     )
     resolved_dynamic_sender = bool(
         scoped
         and resolved_human_sender
         and body.sender is not None
-        and authority.has_scope("turns:resolve-sender")
-        and source_platform in authority.attested_contact_platforms
+        and source_platform
         and dynamic_contact_grant_attested
     )
     resolved_sender_attested = bool(
@@ -3297,7 +3224,7 @@ class SourceDeadlineRequest(BaseModel):
 @router.post('/memory/sources/deadline')
 async def read_source_deadline(body: SourceDeadlineRequest, request: Request):
     authority = request_authority(request)
-    if not authority.authenticated or authority.anonymous or not authority.has_scope('memory:read'):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(status_code=403, detail={'code': 'source_deadline_not_authorized'})
     person = resolve_request_person(request, claimed_person_id=body.contact_id)
     from protagine.turns import get_turn_idempotency_ledger
@@ -3316,7 +3243,7 @@ async def read_source_deadline(body: SourceDeadlineRequest, request: Request):
 @router.post('/memory/sources/annotations')
 async def append_source_annotation(body: SourceAnnotationRequest, request: Request):
     authority = request_authority(request)
-    if not authority.authenticated or authority.anonymous or not authority.has_scope('memory:write'):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(status_code=403, detail={'code': 'source_annotation_not_authorized'})
     person = resolve_request_person(request, claimed_person_id=body.contact_id)
     from protagine.turns import get_turn_idempotency_ledger
@@ -3544,26 +3471,6 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             "host_reconciliation_detail": "The erasure feed is available at this watermark; this response does not measure which hosts have applied it."}
 
 
-async def _resolve_scoped_sender_contact(authority, gateway: str, address: str):
-    """Read one verified handle within the credential's existing grants."""
-    platform = gateway.strip().lower()
-    if (not authority.authenticated or not authority.has_scope('turns:resolve-sender')
-            or platform not in authority.turn_ingress_platforms):
-        raise HTTPException(status_code=403, detail='Sender resolution is outside this transport grant')
-    if _contacts_store is None:
-        raise HTTPException(status_code=503, detail='Contact store not initialized')
-    from protagine.contacts.identity_links import normalized_handle
-    try:
-        normalized_gateway, normalized_address = normalized_handle(platform, address)
-        contact = await _contacts_store.resolve_verified_handles(
-            normalized_gateway, [normalized_address])
-    except ValueError:
-        raise HTTPException(status_code=400, detail='Invalid sender handle') from None
-    if contact is None or contact.contact_id not in authority.person_ids:
-        raise HTTPException(status_code=404, detail='No enrolled contact for that handle')
-    return contact
-
-
 async def _ingest_turn_idempotently(
     body: TurnSyncRequest,
     request: Request | None = None,
@@ -3576,18 +3483,6 @@ async def _ingest_turn_idempotently(
     two host integrations accidentally submit the same envelope.
     """
     resolved_sender_contact_id = None
-    authority = request_authority(request)
-    if (body.sender is not None and not authority.legacy and authority.authenticated
-            and authority.has_scope('turns:resolve-sender')
-            and not (authority.allow_unscoped_api and authority.has_scope('api:access'))
-            and body.sender.platform.strip().lower() not in authority.attested_contact_platforms):
-        # Static transport enrollment cannot inherit the viewer on a failed
-        # lookup, or take the general resolver's canonical-ID/name fallbacks.
-        # Validate before checkpoints, reservations or any source write.
-        contact = await _resolve_scoped_sender_contact(
-            authority, body.sender.platform, body.sender.user_id)
-        resolved_sender_contact_id = contact.contact_id
-        body.context.contact_id = contact.contact_id
     turn_id = (body.context.turn_id or "").strip()
     if not turn_id:
         return await _process_turn_sync(body, request=request,
@@ -3967,11 +3862,8 @@ async def _process_turn_sync(
                 body.context.contact_id = _res.contact_id
                 _resolution_method = _res.method
                 _resolved_human_sender = True
-                _contact_grant_attested = record_attested_contact_grant(
-                    request,
-                    platform=body.sender.platform,
-                    person_id=_res.contact_id,
-                )
+                # The server resolved the sender itself; that is the attestation.
+                _contact_grant_attested = True
         if not _resolved_human_sender and is_machine_turn(
                 body.context.channel_id or "",
                 (getattr(body.user_message, "content", "") or "")
@@ -4421,89 +4313,32 @@ async def safety_check(body: SafetyCheckRequest) -> SafetyCheckResponse:
 
 @router.websocket("/events")
 async def events_ws(ws: WebSocket) -> None:
-    auth_telemetry = getattr(ws.app.state, "auth_telemetry", None)
-
-    def _record_event_auth(
-        *, authority=None, decision: str, reason: str,
-        auth_kind: str = "unauthenticated", principal_id: str = "unauthenticated",
-    ) -> None:
-        if auth_telemetry is None:
-            return
-        if authority is not None:
-            auth_kind = "legacy" if authority.legacy else "scoped"
-            principal_id = authority.principal_id
-        auth_telemetry.record(
-            auth_kind=auth_kind,
-            principal_id=principal_id,
-            method="WS",
-            route="/v1/host/events",
-            required_scope="events:read",
-            decision=decision,
-            reason=reason,
-        )
-
     await ws.accept()
 
     # Read auth message. New clients send an exact sequence plus the journal
     # record time; ``lastEventId`` remains accepted as the legacy time cursor.
     last_event_seq: Optional[int] = None
     last_event_time = ""
-    event_authority = None
     try:
         raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
         import json as _json
         msg = _json.loads(raw)
         if msg.get("type") != "auth":
-            _record_event_auth(decision="deny", reason="invalid_auth_payload")
             await ws.close(code=4001, reason="Expected auth message")
             return
         token = msg.get("token", "")
-        expected = os.environ.get("PROTAGINE_API_KEY", "")
-        keyring_path = os.environ.get("PROTAGINE_API_KEYRING_PATH", "")
-        if not expected and not keyring_path:
-            # Fail closed: without either credential source we cannot
-            # authenticate event-stream subscribers, and this socket carries
-            # live state changes.
-            _record_event_auth(
-                decision="deny", reason="auth_not_configured",
-                auth_kind="anonymous", principal_id="anonymous-dev",
-            )
+        from protagine.api.auth import configured_api_key, token_matches
+        expected = configured_api_key()
+        if not expected:
+            # Fail closed: without a key we cannot authenticate event-stream
+            # subscribers, and this socket carries live state changes.
             await ws.close(
                 code=4003,
                 reason="API authentication not configured on server",
             )
             return
-        scoped_candidate = None
-        if keyring_path:
-            from protagine.api.authority import KeyringLoader, scoped_authority
-            _match = KeyringLoader(keyring_path).authenticate(str(token))
-            if _match is not None and _match.accepts():
-                _candidate = scoped_authority(_match)
-                scoped_candidate = _candidate
-                if _candidate.has_scope("events:read"):
-                    event_authority = _candidate
-        if event_authority is None and expected and hmac.compare_digest(
-            str(token).encode("utf-8"), expected.encode("utf-8")
-        ):
-            from protagine.api.authority import legacy_authority
-            event_authority = legacy_authority()
-        if event_authority is None:
-            if scoped_candidate is not None:
-                _record_event_auth(
-                    authority=scoped_candidate,
-                    decision="deny", reason="insufficient_scope",
-                )
-            else:
-                _record_event_auth(decision="deny", reason="invalid_key")
+        if not token_matches(str(token), expected):
             await ws.close(code=4003, reason="Invalid API key")
-            return
-        claimed_principal = str(msg.get("principal") or "").strip()
-        if claimed_principal and claimed_principal != event_authority.principal_id:
-            _record_event_auth(
-                authority=event_authority,
-                decision="deny", reason="principal_mismatch",
-            )
-            await ws.close(code=4003, reason="Principal mismatch")
             return
 
         raw_seq = msg.get("lastEventSeq")
@@ -4517,19 +4352,10 @@ async def events_ws(ws: WebSocket) -> None:
         last_event_time = str(msg.get("lastEventTime") or "")
         if not last_event_time and legacy_cursor and not legacy_cursor.isdigit():
             last_event_time = legacy_cursor
-        _record_event_auth(
-            authority=event_authority,
-            decision="allow", reason="allowed",
-        )
     except asyncio.TimeoutError:
-        _record_event_auth(decision="deny", reason="auth_timeout")
         await ws.close(code=4001, reason="Auth timeout")
         return
     except Exception:
-        _record_event_auth(
-            authority=event_authority,
-            decision="deny", reason="invalid_auth_payload",
-        )
         await ws.close(code=4001, reason="Invalid auth")
         return
 
@@ -5046,12 +4872,12 @@ async def contact_policy_source(
     """
 
     authority = request_authority(request)
-    if authority.legacy or authority.anonymous or not authority.authenticated:
+    if authority.anonymous or not authority.authenticated:
         raise HTTPException(
             status_code=403,
             detail={
-                "code": "scoped_principal_required",
-                "message": "contact policy requires one scoped authenticated principal",
+                "code": "api_key_required",
+                "message": "contact policy requires the API key",
             },
         )
     if _contacts_store is None:
@@ -5077,29 +4903,9 @@ async def contact_policy_source(
             "items": [],
         }
 
-    registry = getattr(request.state, "protagine_contact_grants", None)
-    if authority.attested_contact_limit > 0 and registry is not None:
-        try:
-            caller_grants = registry.principal_projection(
-                authority.principal_id,
-                max_person_ids=authority.attested_contact_limit,
-            )
-        except Exception:
-            logger.warning("contact-policy caller grant projection failed", exc_info=True)
-            caller_grants = {
-                "available": False,
-                "reason": "caller_contact_grant_projection_invalid",
-                "person_ids": [],
-                "updated_at": None,
-            }
-    else:
-        caller_grants = {
-            "available": False,
-            "reason": "caller_not_configured_for_attested_contact_grants",
-            "person_ids": [],
-            "updated_at": None,
-        }
-    granted_ids = frozenset(caller_grants.get("person_ids") or ())
+    # The key holds the owner's authority over every contact it lists.
+    caller_grants = {"available": True, "reason": None, "person_ids": [], "updated_at": None}
+    granted_ids: frozenset[str] = frozenset()
 
     try:
         contacts = await _contacts_store.list(
@@ -5133,6 +4939,9 @@ async def contact_policy_source(
 
     truncated = len(contacts) > limit
     contacts = contacts[:limit]
+    granted_ids = frozenset(
+        str(getattr(contact, "contact_id", "") or "") for contact in contacts
+    )
     now = datetime.now(timezone.utc)
     try:
         owner_contact_id = await _contact_policy_owner_contact_id()
@@ -5460,12 +5269,7 @@ async def set_contact_policy_standing(
 
     authority = request_authority(request)
     contact_id = body.contact_id
-    if (
-        authority.legacy
-        or authority.anonymous
-        or not authority.authenticated
-        or not authority.has_scope("contacts:policy-write")
-    ):
+    if authority.anonymous or not authority.authenticated:
         raise HTTPException(
             status_code=403,
             detail={
@@ -5602,12 +5406,7 @@ async def provision_contact_policy_identity(
     """
 
     authority = request_authority(request)
-    if (
-        authority.legacy
-        or authority.anonymous
-        or not authority.authenticated
-        or not authority.has_scope("contacts:policy-write")
-    ):
+    if authority.anonymous or not authority.authenticated:
         raise HTTPException(
             status_code=403,
             detail={
@@ -5987,14 +5786,6 @@ async def resolve_contact_by_handle(gateway: str, address: str, request: Request
     if _contacts_store is None:
         raise HTTPException(status_code=404, detail="Contact store not initialized")
     try:
-        authority = request_authority(request)
-        if not authority.legacy and not (
-                authority.allow_unscoped_api and authority.has_scope('api:access')):
-            # Fresh native profiles resolve only explicitly enrolled accounts.
-            # The memory provider's legacy create=true hint cannot provision a
-            # contact or expand the credential's person/transport grants here.
-            contact = await _resolve_scoped_sender_contact(authority, gateway, address)
-            return ContactResponse(**contact.to_dict())
         # Normalized, cross-gateway phone-identity resolution (a number is one contact regardless of
         # the transport it arrived on). find_by_handle stays exact-match for dedup callers.
         contact = await _contacts_store.resolve_messaging_handle(gateway, address)
@@ -8147,9 +7938,7 @@ def _external_owner_goal_objective(event, authority) -> str:
     owner = _owner_person_id()
     if not (
         authority.authenticated
-        and not authority.legacy
         and not authority.anonymous
-        and authority.has_scope("cognition:events-ingest")
         and authority.viewer_person_id == owner
         and owner in authority.person_ids
         and "owner" in authority.audiences
@@ -8173,9 +7962,7 @@ def _cognition_owner_authority(request: Request):
     owner = _owner_person_id()
     allowed = bool(
         authority.authenticated
-        and not authority.legacy
         and not authority.anonymous
-        and authority.has_scope("cognition:manage")
         and "owner" in authority.audiences
         and authority.viewer_person_id == owner
         and authority.principal_id
@@ -8186,7 +7973,7 @@ def _cognition_owner_authority(request: Request):
             status_code=403,
             detail={
                 "code": "owner_authority_required",
-                "message": "scoped authenticated owner authority is required",
+                "message": "the API key bound to the owner is required",
             },
         )
     return authority
@@ -8204,8 +7991,6 @@ async def get_cognition_spine_health(request: Request, limit: int = 100) -> dict
         }
     authority = request_authority(request)
     viewer = authority.viewer_person_id or ""
-    if authority.legacy:
-        viewer = _owner_person_id()
     if not viewer:
         raise HTTPException(
             status_code=403,
@@ -8249,9 +8034,7 @@ async def ingest_external_cognition_event(
     authority = request_authority(request)
     if (
         not authority.authenticated
-        or authority.legacy
         or authority.anonymous
-        or not authority.has_scope("cognition:events-ingest")
         or not authority.viewer_person_id
         or not authority.principal_id
         or not authority.credential_id
@@ -8423,7 +8206,8 @@ def _authority_view(request: Request, *, person_id: str = "") -> tuple:
     """Derive one exact viewer/subject lane from middleware authority."""
 
     authority = request_authority(request)
-    if authority.legacy:
+    if authority.authenticated and not authority.anonymous:
+        # The key acts for the owner; a body person only selects the subject.
         subject = person_id.strip() or _owner_person_id()
         return authority, subject, _owner_person_id(), "owner"
     subject = resolve_request_person(
@@ -8685,10 +8469,7 @@ def _owner_charter_approval_authority(request: Request, scope: str):
     authority = request_authority(request)
     allowed = bool(
         authority.authenticated
-        and not authority.legacy
         and not authority.anonymous
-        and authority.has_scope("api:access")
-        and authority.has_scope(scope)
         and "owner" in authority.audiences
         and authority.viewer_person_id == _owner_person_id()
         and _owner_person_id() in authority.person_ids
@@ -8696,10 +8477,7 @@ def _owner_charter_approval_authority(request: Request, scope: str):
     if not allowed:
         raise HTTPException(status_code=403, detail={
             "code": "owner_charter_approval_authority_required",
-            "message": (
-                "an exact scoped owner charter approval principal is required"
-            ),
-            "required_scopes": ["api:access", scope],
+            "message": "the API key bound to the owner is required",
         })
     return authority
 
@@ -9231,16 +9009,12 @@ async def ratify_cognition_charter(
     authority = request_authority(request)
     if not (
         authority.authenticated
-        and not authority.legacy
         and not authority.anonymous
-        and authority.has_scope("approvals:decide")
         and "owner" in authority.audiences
     ):
         raise HTTPException(status_code=403, detail={
             "code": "owner_authority_required",
-            "message": (
-                "ratification requires scoped owner approvals:decide authority"
-            ),
+            "message": "ratification requires the API key bound to the owner",
         })
     try:
         result = _drive_governance.ratify_transition(
@@ -9287,7 +9061,7 @@ async def get_workspace(request: Request, limit: int = 24) -> dict:
         out = {"available": True}
         out.update(_workspace.snapshot(
             limit=max(1, min(200, limit)),
-            unrestricted=authority.legacy,
+            unrestricted=authority.authenticated and not authority.anonymous,
             viewer_person_id=authority.viewer_person_id or "",
             owner_person_id=owner_person_id,
             audiences=authority.audiences,
@@ -9304,7 +9078,7 @@ def _owner_workspace_concern(concern_id: str, request: Request):
     if concern is None:
         raise HTTPException(status_code=404, detail="no concern with that id")
     authority = request_authority(request)
-    if authority.legacy:
+    if authority.authenticated and not authority.anonymous:
         return concern
     owner_person_id = (
         os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
@@ -9570,17 +9344,12 @@ def _toolsmith_scoped_authority(
     owner_required: bool = False,
 ) -> tuple[Any, str]:
     authority = request_authority(request)
-    if (
-        not authority.authenticated
-        or authority.legacy
-        or authority.anonymous
-        or not authority.has_scope(scope)
-    ):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "toolsmith_scope_required",
-                "message": f"a scoped authenticated {scope} principal is required",
+                "message": "the API key is required",
             },
         )
     owner_person_id = (
@@ -9944,22 +9713,40 @@ async def get_adaptive_params() -> dict:
 
 @router.get("/autonomy/posture")
 async def get_autonomy_posture(request: Request) -> dict:
-    """Effective autonomy posture: the active PROTAGINE_AUTONOMY_PRESET (if any)
-    and the resolved value of every preset-managed mode flag, as the RUNNING
-    process sees them. This is what `protagine doctor` reads so plist/unit-pinned
-    env is never invisible to diagnostics."""
+    """Effective autonomy posture: the resolved value of every mode switch as
+    the RUNNING process sees it, so unit-pinned env is never invisible."""
     try:
-        from protagine.util.autonomy_preset import snapshot
-        posture = snapshot()
+        from protagine.config import env_bool, env_choice
+        posture = {}
+        for name, valid, fallback in (
+            ("PROTAGINE_COGNITION_ENABLED", ("true", "false"), "false"),
+            ("PROTAGINE_INTROSPECT_ENABLED", ("true", "false"), "false"),
+            ("PROTAGINE_THINKING_MODE", ("off", "shadow", "live"), "off"),
+            ("PROTAGINE_PROJECTS_MODE", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_BELIEFS_MODE", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_WORLD_POPULATE_MODE", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_WORLD_LLM_EXTRACT", ("off", "shadow", "live"), "off"),
+            ("PROTAGINE_SKILLS_DISTILL", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_ESCALATION_MINING", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off"),
+            ("PROTAGINE_WORKERS_MODE", ("off", "shadow", "live"), "shadow"),
+            ("PROTAGINE_DIRECTED_MODE", ("off", "dry_run", "live"), "dry_run"),
+            ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
+            ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "off"),
+            ("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off"),
+        ):
+            if valid == ("true", "false"):
+                posture[name] = str(env_bool(name, fallback == "true")).lower()
+            else:
+                posture[name] = env_choice(name, valid, fallback)
         from protagine.initiatives.approval_authority import (
             ApprovalAuthorityStore,
         )
         posture["grant_envelope"] = ApprovalAuthorityStore(
             grant_envelope=getattr(request.app.state, "grant_envelope", None),
         ).grant_posture()
-        # The loop mode decides whether preset-enabled subsystems ever get a
-        # tick at all; report it so the doctor can flag an incoherent posture
-        # (e.g. calibration preset with a reactive loop = nothing calibrates).
+        # The loop mode decides whether the subsystems ever get a tick at
+        # all; report it so the doctor can flag an incoherent posture.
         # Prefer the RUNNING loop's resolved mode over the raw env default.
         try:
             if _autonomy_loop is not None:
@@ -9968,20 +9755,14 @@ async def get_autonomy_posture(request: Request) -> dict:
                     _autonomy_loop.config, "mode_source", "") or "default"
             else:
                 # No running loop: mirror AutonomyConfig.from_env's mode
-                # resolution (env > coupled preset > legacy tick > default)
-                # so the reported source is honest even pre-loop.
+                # resolution (env > legacy tick > default).
                 raw = (os.environ.get("PROTAGINE_AUTONOMY_MODE") or "").strip().lower()
                 if raw:
                     posture["PROTAGINE_AUTONOMY_MODE"] = (
                         raw if raw in ("reactive", "proactive") else "reactive")
                     posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "env"
                 else:
-                    from protagine.util.autonomy_preset import coupled_loop_mode
-                    coupled = coupled_loop_mode()
-                    if coupled:
-                        posture["PROTAGINE_AUTONOMY_MODE"] = coupled
-                        posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "preset"
-                    elif os.environ.get("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS"):
+                    if os.environ.get("PROTAGINE_AUTONOMY_TICK_INTERVAL_SECS"):
                         posture["PROTAGINE_AUTONOMY_MODE"] = "proactive"
                         posture["PROTAGINE_AUTONOMY_MODE_SOURCE"] = "legacy_tick"
                     else:
@@ -10025,9 +9806,7 @@ def _project_visible_to_request(project, request: Request | None) -> bool:
 
     authority = request_authority(request)
     owner = _owner_person_id()
-    viewer = owner if authority.legacy else str(
-        authority.viewer_person_id or ""
-    ).strip()
+    viewer = str(authority.viewer_person_id or "").strip()
     if not viewer:
         return False
     if viewer == owner:
@@ -10050,16 +9829,12 @@ def _project_visible_to_request(project, request: Request | None) -> bool:
 
 
 def _project_owner_request(request: Request | None) -> bool:
-    """Recognize the migration bearer or one exact scoped owner identity.
+    """Recognize the key bound to the owner.
 
-    Project creation and lifecycle changes are owner-directed operations.  A
-    generic ``api:access`` credential may observe its granted project lane,
-    but that read grant must not become mutation authority.
+    Project creation and lifecycle changes are owner-directed operations.
     """
 
     authority = request_authority(request)
-    if authority.legacy:
-        return True
     owner = _owner_person_id()
     return bool(
         authority.authenticated
@@ -10223,18 +9998,13 @@ async def run_sandbox(
         or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
         or "owner"
     )
-    # Owner direction is derived from authenticated transport authority.  The
-    # legacy bearer remains a migration-compatible owner surface, but request
-    # JSON can no longer assert either owner direction or approval.
+    # Owner direction is derived from authenticated transport authority;
+    # request JSON cannot assert either owner direction or approval.
     owner_directed = bool(
-        authority.legacy
-        or (
-            authority.authenticated
-            and not authority.anonymous
-            and authority.has_scope("sandbox:execute")
-            and "owner" in authority.audiences
-            and owner_person_id in authority.person_ids
-        )
+        authority.authenticated
+        and not authority.anonymous
+        and "owner" in authority.audiences
+        and owner_person_id in authority.person_ids
     )
     return _sandbox.run(
         b.get("script", ""),
@@ -10300,10 +10070,7 @@ async def list_proposals(
     try:
         items = _proposal_store.list(status=status or None, limit=limit)
         authority = request_authority(request)
-        viewer = (
-            _owner_person_id() if authority.legacy
-            else authority.viewer_person_id or ""
-        )
+        viewer = authority.viewer_person_id or ""
         items = [
             item for item in items
             if item.visible_to(

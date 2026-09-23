@@ -157,30 +157,7 @@ def test_raw_renderer_not_referenced_by_context_assembly():
 # Doctor posture
 # ---------------------------------------------------------------------------
 
-def test_doctor_pass_when_flag_off(monkeypatch):
-    monkeypatch.delenv("PROTAGINE_TOM2_CROSS_CONTEXT", raising=False)
-    r = doctor.check_tom2_cross_context()
-    assert r.status == doctor.PASS
-    assert "ships dark" in r.detail
 
 
-def test_doctor_warns_when_on_without_chat_enforce(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_TOM2_CROSS_CONTEXT", "1")
-    for mode in ("", "off", "shadow"):
-        if mode:
-            monkeypatch.setenv("PROTAGINE_GUARD_CHAT_MODE", mode)
-        else:
-            monkeypatch.delenv("PROTAGINE_GUARD_CHAT_MODE", raising=False)
-        r = doctor.check_tom2_cross_context()
-        assert r.status == doctor.WARN, mode
-        assert "implication leak" in r.detail
 
 
-def test_doctor_warns_when_chat_enforce_is_requested_but_unapplied(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_TOM2_CROSS_CONTEXT", "1")
-    monkeypatch.setenv("PROTAGINE_GUARD_CHAT_MODE", "enforce")
-    r = doctor.check_tom2_cross_context()
-    assert r.status == doctor.WARN
-    assert "requested" in r.detail
-    assert "SHADOW" in r.detail
-    assert "applied" in r.detail

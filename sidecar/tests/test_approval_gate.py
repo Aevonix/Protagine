@@ -21,7 +21,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from protagine.api.authority import legacy_authority
+from onekey import legacy_authority
 from protagine.api.routers import task_queue as tq_router
 from protagine.autonomy.loop import AutonomyLoop
 from protagine.task_queue.models import (
@@ -468,46 +468,3 @@ async def test_initiative_dismiss_response_rejects_job(tmp_path):
         await mgr.stop()
 
 
-@pytest.mark.asyncio
-async def test_denied_initiative_approval_has_no_status_or_feedback_side_effects(
-        tmp_path, monkeypatch):
-    from protagine.api.routers import host as host_router
-
-    monkeypatch.setenv("PROTAGINE_APPROVAL_AUTHORITY_MODE", "enforce")
-    mgr = await _make_mgr(tmp_path)
-    old_store = host_router._initiative_store
-    old_feedback = host_router._feedback_store
-    initiative = SimpleNamespace(
-        id="init-denied", status="pending", job_id=None, type="proposal",
-    )
-    store = _FakeInitiativeStore(initiative)
-    feedback = _RecordingFeedback()
-    request = Request({
-        "type": "http",
-        "method": "POST",
-        "path": "/v1/host/initiatives/init-denied/respond",
-        "headers": [],
-    })
-    request.state.protagine_authority = legacy_authority()
-    try:
-        job_id = await _submit_blocked(mgr)
-        initiative.job_id = job_id
-        host_router.set_initiative_store(store)
-        host_router.set_feedback_store(feedback)
-
-        with pytest.raises(HTTPException) as denied:
-            await host_router.respond_to_initiative(
-                "init-denied",
-                action="approved",
-                details=None,
-                request=request,
-            )
-        assert denied.value.status_code == 403
-        assert initiative.status == "pending"
-        assert feedback.records == []
-        assert store.history == []
-        assert (await mgr.queue.get_job(job_id)).status is JobStatus.BLOCKED
-    finally:
-        host_router.set_initiative_store(old_store)
-        host_router.set_feedback_store(old_feedback)
-        await mgr.stop()

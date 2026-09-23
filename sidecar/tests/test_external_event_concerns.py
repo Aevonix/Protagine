@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.autonomy.loop import AutonomyLoop
 from protagine.cognition.external_events import (
     ExternalCognitionEventV1,

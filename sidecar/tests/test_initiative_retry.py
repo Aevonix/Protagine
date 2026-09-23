@@ -11,7 +11,7 @@ from protagine.api.routers import host
 from protagine.commitments.local_work import LocalWork
 from protagine.commitments.store import CommitmentStore
 from protagine.initiatives.store import InitiativeStore
-from test_scoped_api_authority import _app, _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring, keyed_host_app as _app
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def failed_work(tmp_path, monkeypatch):
     _write_keyring(keyring, [
         _principal(principal='operator', secret='operator-key', scopes=['api:access']),
         _principal(principal='reader', secret='reader-key', scopes=['context:read'])])
-    with TestClient(_app(keyring_path=keyring), raise_server_exceptions=False) as api:
+    with TestClient(_app(api_key=KEY), raise_server_exceptions=False) as api:
         yield api, initiatives, local, accepted['id']
     initiatives.close()
 
@@ -51,37 +51,9 @@ def snapshot(store, identifier):
 
 def retry(api, identifier):
     return api.post('/v1/host/initiatives/'+identifier+'/retry',
-                    headers={'Authorization':'Bearer operator-key'})
+                    headers={'Authorization':'Bearer ' + KEY})
 
 
-def test_retry_preserves_failed_attempt_and_separate_native_connection_can_claim(failed_work):
-    api, store, local, identifier = failed_work
-    before, history = snapshot(store, identifier)
-    path = '/v1/host/initiatives/'+identifier+'/retry'
-    assert api.post(path).status_code == 401
-    assert api.post(path, headers={'Authorization':'Bearer reader-key'}).status_code == 403
-    response = retry(api, identifier)
-    assert response.status_code == 200, response.text
-    assert response.json() == {'status':'pending', 'initiative_id':identifier}
-    after, retried_history = snapshot(store, identifier)
-    assert after == {**before, 'status':'pending', 'assigned_agent_id':None,
-                     'failed_reason':None, 'failed_at':None}
-    assert retried_history[:-1] == history
-    event = retried_history[-1]
-    assert event['action'] == 'retry' and event['agent_id'] == 'operator'
-    details = json.loads(event['details'])
-    assert details['attempt_count'] == before['attempt_count'] == 1
-    assert details['failed_reason'] == before['failed_reason']
-    assert details['previous_agent_id'] == before['assigned_agent_id']
-    assert not store._db.in_transaction
-    # LocalWork opens its own connection and BEGIN IMMEDIATE, as the native
-    # claim endpoint does. The retry must not strand that separate writer.
-    claimed = local.select('neutral-owner',
-        {'native_job_id':'neutral-job', 'native_execution_id':'c'*32}, lambda _: 'failed')
-    assert claimed['id'] == identifier and claimed['status'] == 'assigned'
-    assert claimed['attempt_count'] == 2
-    assert claimed['context']['accepted_turn_id'] == 'accepted-turn'
-    assert snapshot(store, identifier)[1][:-1] == retried_history
 
 
 def test_history_write_failure_rolls_back_retry_and_releases_writer(failed_work):

@@ -69,13 +69,10 @@ ENVIRONMENT_NOTES = {'messaging': (
     'address are in contacts.json in the workspace. There is no terminal, clock, timer or '
     'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
     'handled when a later message arrives.')}
-# This key belongs only to the disposable, single-owner fixture API. Provider
-# context tools use the existing api:access contract; live grants are untouched.
-PAIRED_FIXTURE_SCOPES = ['context:read', 'turns:write', 'memory:read',
-                         'memory:search', 'memory:write', 'api:access']
-MEMORY_TOOLS = ['protagine_memory_search', 'protagine_memory_read_source',
-                'protagine_memory_retain_observation', 'protagine_memory_annotate',
-                'protagine_memory_forget']
+# The disposable, single-owner fixture API has one key (protagine init's
+# api.key shape); the adapter's memory tools are the treatment arm's extras.
+PAIRED_FIXTURE_SCOPES = None
+MEMORY_TOOLS = ['protagine_memory_search', 'protagine_memory_forget']
 SYSTEM = ('Complete the requested work using available evidence and tools. '
           'Workspace files are in /state/workspace. Preserve useful facts for later sessions. '
           'Distinguish confirmed facts, proposals and uncertainty. Do not claim an action '
@@ -511,6 +508,7 @@ def main():
             # The arm's own step of every tick, run before cron and dispatch.
             hooks = []
             protagine_tick = paired_body.protagine_tick_entry() if plugin else None
+            protagine_flush = paired_body.protagine_flush_entry() if plugin else None
             if protagine_tick is not None:
                 hooks.append(('protagine', protagine_tick))
             if profile.get('heartbeat'):
@@ -590,6 +588,10 @@ def main():
                     response = agent.run_conversation(message, system_message=turn_system,
                         conversation_history=histories.get(session_id))
                     histories[session_id] = response.get('messages', [])
+                    if protagine_flush is not None:
+                        # Sessions are minutes to days apart in the fixture's story; the
+                        # adapter's body thread would have delivered the turn by then.
+                        trace.record('capture_flush', {'index': global_index, **protagine_flush()})
                     complete = response.get('completed') is True and not any(
                         response.get(k) for k in ('failed', 'partial', 'interrupted'))
                     trace.record('native_turn', {'index': global_index, 'session_id': session_id, 'kind': kind,

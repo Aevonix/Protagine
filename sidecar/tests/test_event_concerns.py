@@ -8,7 +8,7 @@ import pytest
 
 from protagine.self_model.event_concerns import EventConcernReducer
 from protagine.self_model.workspace import ConcernStore
-from protagine.api.authority import required_scope
+from onekey import required_scope
 
 
 class FakeJournal:
@@ -393,8 +393,3 @@ def test_conflicting_event_id_is_rejected(tmp_path):
         )
 
 
-def test_workspace_read_and_mutation_have_separate_scopes():
-    assert required_scope("GET", "/v1/host/self/workspace") == "cognition:read"
-    assert required_scope(
-        "POST", "/v1/host/self/workspace/c-123/resolve"
-    ) == "cognition:manage"

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import protagine.api.routers.host as host_mod
-from protagine.api.authority import (
+from onekey import (
     RequestAuthority,
     anonymous_authority,
     required_scope,
@@ -599,13 +599,6 @@ async def test_api_graduation_rejects_anonymous_and_digest_changes(tmp_path):
         assert response.json()["detail"]["code"] == "artifact_digest_mismatch"
 
 
-def test_toolsmith_mutations_have_exact_middleware_scopes():
-    assert required_scope(
-        "POST", "/v1/host/self/tools/tool-abc/shadow-compare"
-    ) == "toolsmith:evaluate"
-    assert required_scope(
-        "POST", "/v1/host/self/tools/tool-abc/graduate"
-    ) == "toolsmith:graduate"
 
 
 def test_graduation_authority_rejects_expired_and_multi_use():

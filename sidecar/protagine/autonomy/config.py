@@ -257,16 +257,6 @@ class AutonomyConfig:
                     if mode_str in [m.value for m in AutonomyMode]
                     else AutonomyMode.REACTIVE)
             mode_source = "env"
-        else:
-            coupled = None
-            try:
-                from protagine.util.autonomy_preset import coupled_loop_mode
-                coupled = coupled_loop_mode()
-            except Exception:
-                coupled = None  # fail toward reactive
-            if coupled in ("reactive", "proactive"):
-                mode = AutonomyMode(coupled)
-                mode_source = "preset"
 
         # Timezone
         timezone = os.environ.get("PROTAGINE_TIMEZONE", "UTC")

@@ -13,6 +13,7 @@ from test_accepted_local_work import local_api
 from test_self_judgments import Processor
 from test_turn_source_evidence import source_app
 from test_self_perspective import perspective
+from onekey import KEY
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def observation(local_api, monkeypatch):
     row = initiatives.create(type='operational', source_type='operational', created_by='autonomy_loop',
         action_hint='operational_review', description='Review local work', priority=.5, context={})
     path = '/v1/host/initiative-work/'+row.id
-    headers = {'Authorization': 'Bearer writer-key'}
+    headers = {'Authorization': 'Bearer ' + KEY}
     selected = api.get(path, params={'contact_id':'cid-owner'}, headers=headers).json()
     with sqlite3.connect(native/'kanban.db') as db:
         db.execute('''CREATE TABLE tasks(id TEXT PRIMARY KEY,created_by TEXT,idempotency_key TEXT,
@@ -198,7 +199,7 @@ async def test_http_assistant_marker_cannot_claim_runtime_attribution(source_app
         'runtime_judgment':True}
     async with AsyncClient(transport=ASGITransport(app=source_app),base_url='http://fixture') as client:
         response=await client.put('/v2/host/turns/source-survivors/untrusted-marker',json=body,
-            headers={'Authorization':'Bearer owner-key'})
+            headers={'Authorization':'Bearer ' + KEY})
         assert response.status_code==201,response.text
     ledger=get_turn_idempotency_ledger(tmp_path)
     with closing(ledger._connect()) as db:

@@ -164,46 +164,6 @@ def test_websocket_reconnect_replays_from_exact_sequence(tmp_path, monkeypatch):
     assert host._event_subscribers == []
 
 
-def test_websocket_accepts_scoped_event_principal_without_legacy_key(
-        tmp_path, monkeypatch):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from protagine.api.routers import host
-
-    keyring = tmp_path / "api-principals.json"
-    keyring.write_text(json.dumps({
-        "version": 1,
-        "principals": [{
-            "principal": "event-observer",
-            "status": "active",
-            "scopes": ["events:read"],
-            "viewer_person_id": "observer",
-            "audiences": ["viewer"],
-            "credentials": [{
-                "id": "current",
-                "secret": "scoped-event-key",
-                "status": "active",
-            }],
-        }],
-    }))
-    keyring.chmod(0o600)
-    monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
-    monkeypatch.setenv("PROTAGINE_API_KEYRING_PATH", str(keyring))
-    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_DIR", str(tmp_path / "events"))
-
-    app = FastAPI()
-    app.include_router(host.router)
-    with TestClient(app) as client:
-        with client.websocket_connect("/v1/host/events") as socket:
-            socket.send_json({
-                "type": "auth",
-                "token": "scoped-event-key",
-                "principal": "event-observer",
-            })
-            assert socket.receive_json()["type"] == "connected"
-            assert socket.receive_json()["type"] == "replay_complete"
-
-    assert host._event_subscribers == []
 
 
 def test_websocket_cursor_ahead_of_journal_replays_new_epoch(tmp_path, monkeypatch):

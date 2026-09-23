@@ -119,7 +119,7 @@ def job_declares_effect(job: Any) -> bool:
 
 
 def workers_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
+    from protagine.config import env_choice
     explicit = os.environ.get("PROTAGINE_WORKERS_MODE")
     if explicit is not None and explicit.strip():
         value = explicit.strip().lower()
@@ -127,7 +127,7 @@ def workers_mode() -> str:
             raise RuntimeError(
                 "PROTAGINE_WORKERS_MODE must be off, shadow, or live"
             )
-    return resolve("PROTAGINE_WORKERS_MODE", ("off", "shadow", "live"), "shadow")
+    return env_choice("PROTAGINE_WORKERS_MODE", ("off", "shadow", "live"), "shadow")
 
 
 @dataclass(frozen=True)

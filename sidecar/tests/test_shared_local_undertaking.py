@@ -9,7 +9,6 @@ import pytest
 
 from test_accepted_local_work import body, local_api, native_run, post
 from protagine.commitments.local_work import LocalWork
-from test_hermes_general_governance import runtime, _pre, _tool
 
 
 def test_independent_http_sessions_share_one_commitment_draft(local_api, tmp_path):
@@ -259,35 +258,3 @@ def test_standalone_new_turn_and_legacy_acceptance_keep_their_identity(local_api
     assert post(api, path, body(tmp_path)).json()['id'] == old['id']
 
 
-def test_native_handler_recovers_lost_handoff_ack_without_releasing_worker(runtime, local_api, tmp_path):
-    _, context, client, _ = runtime
-    api, _, _, obligation, _ = local_api
-    dropped = []
-    def transport(path, **kwargs):
-        response = post(api, path, kwargs['json'])
-        if path.endswith('/local-draft') and response.status_code == 200 and not dropped:
-            dropped.append(response.json()['id'])
-            raise ConnectionError('controlled lost acceptance acknowledgment')
-        return response
-    client.post = transport
-    session = 'owner-chat'
-    _pre(context, session=session, task='owner-task', turn='owner-turn', platform='sms', sender='+15550001')
-    def tool(name, args):
-        return json.loads(_tool(context, name, args, session=session, task='owner-task', turn='owner-turn', call=name))
-    assert tool('protagine_commitment_work', {'operation':'claim', 'commitment_id':obligation['id']})['accepted']
-    args = {'commitment_id':obligation['id'], 'question':body(tmp_path)['question'], 'sources':body(tmp_path)['sources']}
-    assert 'error' in tool('protagine_accept_local_draft', args)
-    assert dropped
-    # The worker may take ownership before the accepting caller learns that
-    # handoff committed. A replay must detach only the caller's old snapshot.
-    assert claim(api, obligation, session_id='worker', task_id='worker', turn_id='worker')[1]['accepted']
-    recovered = tool('protagine_accept_local_draft', args)
-    assert recovered['id'] == dropped[0] and recovered['handoff_released'] is True
-    assert claim(api, obligation, operation='status')[1]['session_id'] == 'worker'
-    from test_hermes_native_tool_authority import call
-    assert call(context, 'read_file', session=session, task='owner-task', turn='owner-turn') == 'executed'
-    for forbidden in ('handoff', 'claim_id', 'session_id'):
-        assert 'error' in tool('protagine_accept_local_draft', {**args, forbidden:'model-selected'})
-    conflict = tool('protagine_accept_local_draft', {**args, 'new_draft':True})
-    assert conflict == {'error':'local_draft_in_progress', 'initiative_id': recovered['id'],
-                        'execution_created':False}

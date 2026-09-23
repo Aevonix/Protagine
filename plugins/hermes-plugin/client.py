@@ -1,1928 +1,234 @@
-"""Minimal HTTP client for the governed Hermes Protagine adapter."""
+"""Sidecar client: settings, bearer key, short timeouts and a circuit breaker.
+
+The plugin finds the sidecar through the Hermes config keys
+``plugins.protagine.sidecar_url`` and ``plugins.protagine.key_file`` (written
+by ``protagine init``). The key file's directory is the Protagine instance
+directory, which also holds ``protagine.yaml`` and ``identity.yaml``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import hashlib
-import ipaddress
-import json
 import logging
 import os
 from pathlib import Path
-import re
-import select
-import socket
-import sqlite3
-import stat
 import threading
 import time
-from typing import Any, Mapping, Sequence
-from urllib.parse import quote
-import uuid
+from typing import Any, Mapping
 
-import httpcore
 import httpx
-
 
 logger = logging.getLogger(__name__)
 
-
-def turn_outbox_path(config):
-    configured = config.get('turn_outbox_path')
-    if configured is not None and not isinstance(configured, (str, os.PathLike)):
-        raise RuntimeError('turn_outbox_path must be a filesystem path')
-    return str(configured or os.environ.get('PROTAGINE_HERMES_TURN_OUTBOX') or
-               Path(os.environ.get('HERMES_HOME') or Path.home()/'.hermes')/'state'/'protagine-turn-outbox.sqlite3')
+PLUGIN_ID = "protagine"
+WORKER_PROFILE = "protagine-act"
+DEFAULT_URL = "http://127.0.0.1:7777"
+MIND_STATUS_ROUTE = "/v1/mind/status"
 
 
-class TurnOutboxConflict(RuntimeError):
-    """The same stable turn id was offered with different content."""
+class SidecarUnavailable(RuntimeError):
+    """The sidecar gave no answer: connection refused, timeout or open breaker."""
 
 
-class TurnOutboxFull(RuntimeError):
-    """The bounded pending ledger cannot safely accept another turn."""
+def hermes_home() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()).expanduser()
+    except ImportError:
+        return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
 
 
-class TurnOutboxPayloadError(ValueError):
-    """A turn envelope is not bounded canonical JSON."""
+def hermes_config() -> dict[str, Any]:
+    """The merged Hermes config; falls back to the raw file outside Hermes."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        loaded = load_config_readonly()
+        return loaded if isinstance(loaded, Mapping) else {}
+    except Exception:
+        return read_yaml(hermes_home() / "config.yaml")
 
 
-class PrivateSQLitePathError(OSError):
-    """A configured private SQLite path does not meet the local trust contract."""
+def plugin_section(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    config = hermes_config() if config is None else config
+    plugins = config.get("plugins") if isinstance(config, Mapping) else None
+    section = plugins.get(PLUGIN_ID) if isinstance(plugins, Mapping) else None
+    return dict(section) if isinstance(section, Mapping) else {}
 
 
-class TurnDeliveryOutcomeUnknown(TimeoutError):
-    """A deadline expired after an idempotent turn request may have started."""
+_YAML_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_YAML_LOCK = threading.Lock()
 
 
-class _DrainDeadlineExceeded(TimeoutError):
-    """Internal fixed signal that the caller's total drain budget expired."""
+def read_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read a YAML mapping, cached by mtime; missing or invalid files read as {}."""
+    path = Path(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    with _YAML_LOCK:
+        cached = _YAML_CACHE.get(str(path))
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+    try:
+        import yaml
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        value = dict(loaded) if isinstance(loaded, Mapping) else {}
+    except Exception as error:
+        logger.warning("could not read %s: %s", path.name, type(error).__name__)
+        value = {}
+    with _YAML_LOCK:
+        _YAML_CACHE[str(path)] = (mtime, value)
+    return value
 
 
-class _AbsoluteDeadlineNetworkStream(httpcore.NetworkStream):
-    """Apply one monotonic deadline to every operation on a sync stream."""
+@dataclass
+class Settings:
+    sidecar_url: str
+    key_file: Path
+    api_key: str
+    home: Path
+    hermes_home: Path
+    outbox_path: Path
+    worker_profile: str = WORKER_PROFILE
 
-    def __init__(self, network_socket: socket.socket, deadline_monotonic: float):
-        self._socket = network_socket
-        self._deadline_monotonic = float(deadline_monotonic)
+    def mind(self) -> dict[str, Any]:
+        value = read_yaml(self.home / "protagine.yaml").get("mind")
+        return dict(value) if isinstance(value, Mapping) else {}
 
-    def _remaining(self, timeout: float | None, error_type: type[Exception]) -> float:
-        remaining = self._deadline_monotonic - time.monotonic()
-        if remaining <= 0:
-            raise error_type("absolute turn-delivery deadline expired")
-        if timeout is None:
-            return remaining
-        bounded = min(max(0.0, float(timeout)), remaining)
-        if bounded <= 0:
-            raise error_type("absolute turn-delivery phase deadline expired")
-        return bounded
+    def identity(self) -> dict[str, Any]:
+        return read_yaml(self.home / "identity.yaml")
 
-    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+    def owner_contact_id(self) -> str:
+        """The owner's sidecar contact: ``protagine.yaml`` ``owner.contact_id`` (written by
+        ``protagine init``), else the same key in ``identity.yaml``."""
+        for source in (read_yaml(self.home / "protagine.yaml"), self.identity()):
+            owner = source.get("owner")
+            if isinstance(owner, Mapping) and owner.get("contact_id"):
+                return str(owner["contact_id"])
+        return ""
+
+
+def load_settings(config: Mapping[str, Any] | None = None) -> Settings:
+    section = plugin_section(config)
+    home = hermes_home()
+    instance = Path(os.environ.get("PROTAGINE_HOME") or Path.home() / ".protagine").expanduser()
+    key_file = Path(section.get("key_file") or instance / "api.key").expanduser()
+    api_key = os.environ.get("PROTAGINE_API_KEY", "").strip()
+    if not api_key:
         try:
-            self._socket.settimeout(
-                self._remaining(timeout, httpcore.ReadTimeout)
-            )
-            value = self._socket.recv(max_bytes)
-            self._remaining(None, httpcore.ReadTimeout)
-            return value
-        except socket.timeout:
-            raise httpcore.ReadTimeout(
-                "absolute turn-delivery read deadline expired"
-            ) from None
-        except httpcore.ReadTimeout:
-            raise
-        except OSError:
-            raise httpcore.ReadError("turn-delivery socket read failed") from None
-
-    def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        if not buffer:
-            return
-        pending = memoryview(buffer)
-        try:
-            while pending:
-                self._socket.settimeout(
-                    self._remaining(timeout, httpcore.WriteTimeout)
-                )
-                sent = int(self._socket.send(pending))
-                if sent <= 0:
-                    raise httpcore.WriteError(
-                        "turn-delivery socket stopped accepting bytes"
-                    )
-                pending = pending[sent:]
-            self._remaining(None, httpcore.WriteTimeout)
-        except socket.timeout:
-            raise httpcore.WriteTimeout(
-                "absolute turn-delivery write deadline expired"
-            ) from None
-        except httpcore.WriteError:
-            raise
-        except OSError:
-            raise httpcore.WriteError("turn-delivery socket write failed") from None
-
-    def close(self) -> None:
-        self._socket.close()
-
-    def start_tls(
-        self,
-        ssl_context: Any,
-        server_hostname: str | None = None,
-        timeout: float | None = None,
-    ) -> httpcore.NetworkStream:
-        try:
-            self._socket.settimeout(
-                self._remaining(timeout, httpcore.ConnectTimeout)
-            )
-            upgraded = ssl_context.wrap_socket(
-                self._socket, server_hostname=server_hostname,
-            )
-            self._remaining(None, httpcore.ConnectTimeout)
-            return _AbsoluteDeadlineNetworkStream(
-                upgraded, self._deadline_monotonic,
-            )
-        except socket.timeout:
-            self.close()
-            raise httpcore.ConnectTimeout(
-                "absolute turn-delivery TLS deadline expired"
-            ) from None
-        except httpcore.ConnectTimeout:
-            self.close()
-            raise
-        except OSError:
-            self.close()
-            raise httpcore.ConnectError(
-                "turn-delivery TLS connection failed"
-            ) from None
-
-    def get_extra_info(self, info: str) -> Any:
-        try:
-            if info == "ssl_object":
-                return getattr(self._socket, "_sslobj", None)
-            if info == "client_addr":
-                return self._socket.getsockname()
-            if info == "server_addr":
-                return self._socket.getpeername()
-            if info == "socket":
-                return self._socket
-            if info == "is_readable":
-                return bool(select.select([self._socket], [], [], 0)[0])
-        except (OSError, ValueError):
-            return None
-        return None
-
-
-class _AbsoluteDeadlineNetworkBackend(httpcore.NetworkBackend):
-    """No-DNS sync backend whose stream operations share one deadline."""
-
-    def __init__(self, deadline_monotonic: float):
-        self._deadline_monotonic = float(deadline_monotonic)
-
-    def _remaining(self) -> float:
-        remaining = self._deadline_monotonic - time.monotonic()
-        if remaining <= 0:
-            raise httpcore.ConnectTimeout(
-                "absolute turn-delivery deadline expired"
-            )
-        return remaining
-
-    @staticmethod
-    def _numeric_host(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-        candidate = "127.0.0.1" if host.lower() == "localhost" else host
-        try:
-            return ipaddress.ip_address(candidate)
-        except ValueError:
-            # Synchronous name resolution has no portable Python wall deadline.
-            # Fail closed instead of silently advertising a bound we cannot keep.
-            raise httpcore.ConnectError(
-                "deadline-bound turn delivery requires an IP literal or localhost"
-            ) from None
-
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Any = None,
-    ) -> httpcore.NetworkStream:
-        address = self._numeric_host(host)
-        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
-        network_socket = socket.socket(family, socket.SOCK_STREAM)
-        try:
-            for option in socket_options or ():
-                network_socket.setsockopt(*option)
-            network_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            if local_address:
-                local = self._numeric_host(local_address)
-                if local.version != address.version:
-                    raise httpcore.ConnectError(
-                        "turn-delivery local address family does not match"
-                    )
-                bind_address = (
-                    (str(local), 0, 0, 0) if local.version == 6
-                    else (str(local), 0)
-                )
-                network_socket.bind(bind_address)
-            remaining = self._remaining()
-            if timeout is not None:
-                remaining = min(remaining, max(0.0, float(timeout)))
-            if remaining <= 0:
-                raise httpcore.ConnectTimeout(
-                    "absolute turn-delivery connect deadline expired"
-                )
-            network_socket.settimeout(remaining)
-            remote_address = (
-                (str(address), int(port), 0, 0) if address.version == 6
-                else (str(address), int(port))
-            )
-            network_socket.connect(remote_address)
-            self._remaining()
-        except socket.timeout:
-            network_socket.close()
-            raise httpcore.ConnectTimeout(
-                "absolute turn-delivery connect deadline expired"
-            ) from None
-        except (httpcore.ConnectError, httpcore.ConnectTimeout):
-            network_socket.close()
-            raise
-        except OSError:
-            network_socket.close()
-            raise httpcore.ConnectError(
-                "turn-delivery socket connection failed"
-            ) from None
-        return _AbsoluteDeadlineNetworkStream(
-            network_socket, self._deadline_monotonic,
-        )
-
-    def connect_unix_socket(
-        self,
-        path: str,
-        timeout: float | None = None,
-        socket_options: Any = None,
-    ) -> httpcore.NetworkStream:
-        raise httpcore.ConnectError(
-            "deadline-bound turn delivery does not use a Unix socket"
-        )
-
-    def sleep(self, seconds: float) -> None:
-        remaining = self._remaining()
-        delay = max(0.0, float(seconds))
-        if delay >= remaining:
-            time.sleep(remaining)
-            raise httpcore.ConnectTimeout(
-                "absolute turn-delivery retry deadline expired"
-            )
-        time.sleep(delay)
-
-
-class _AbsoluteDeadlineHTTPTransport(httpx.HTTPTransport):
-    """HTTPX adapter backed by one fresh absolute-deadline connection pool."""
-
-    def __init__(self, deadline_monotonic: float):
-        # HTTPTransport.handle_request/close deliberately operate on this public
-        # httpcore pool contract; a fresh one-request pool has no waiter thread.
-        self._pool = httpcore.ConnectionPool(
-            max_connections=1,
-            max_keepalive_connections=0,
-            keepalive_expiry=0,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=_AbsoluteDeadlineNetworkBackend(deadline_monotonic),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _PrivateFileIdentity:
-    device: int
-    inode: int
-
-
-class PrivateSQLitePath:
-    """Open one owner-private SQLite file without following aliases.
-
-    This is a deliberately small POSIX boundary for local conversation state.
-    The database's immediate parent must be an exact mode-0700 directory owned
-    by the current effective uid.  Ancestors must be real directories owned by
-    that uid or root and may not be group/other writable, except for a
-    root-owned sticky directory such as ``/tmp``.  Every component is traversed
-    with directory file descriptors and ``O_NOFOLLOW``.
-
-    The leaf is created atomically as mode 0600 or accepted only when it is an
-    existing, regular, current-euid, mode-0600, single-link file.  Existing
-    files are never chmodded.  Holding the private parent and leaf descriptors
-    while SQLite reopens the pathname, then comparing lstat/fstat identities,
-    closes the practical path-swap window.  A process already running as the
-    same uid is outside this local-filesystem threat boundary.
-    """
-
-    def __init__(self, path: str | os.PathLike[str]):
-        raw = os.path.expanduser(str(path))
-        candidate = Path(raw)
-        if not candidate.is_absolute() or any(
-            component in {".", ".."} for component in candidate.parts
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite path must be absolute and normalized"
-            )
-        if not candidate.name:
-            raise PrivateSQLitePathError("private SQLite path must name a file")
-        required = ("O_DIRECTORY", "O_NOFOLLOW")
-        if any(not hasattr(os, name) for name in required):
-            raise PrivateSQLitePathError(
-                "private SQLite path requires POSIX no-follow directory opens"
-            )
-        self.path = candidate
-        self._euid = os.geteuid()
-
-    @staticmethod
-    def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
-        return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
-
-    def _validate_directory(
-        self,
-        value: os.stat_result,
-        *,
-        private_parent: bool,
-        label: str,
-    ) -> None:
-        if not stat.S_ISDIR(value.st_mode):
-            raise PrivateSQLitePathError(f"private SQLite {label} is not a directory")
-        mode = stat.S_IMODE(value.st_mode)
-        if private_parent:
-            if value.st_uid != self._euid or mode != 0o700:
-                raise PrivateSQLitePathError(
-                    "private SQLite parent must be current-euid mode 0700"
-                )
-            return
-        if value.st_uid not in {0, self._euid}:
-            raise PrivateSQLitePathError(
-                f"private SQLite {label} has an untrusted owner"
-            )
-        if mode & 0o022:
-            sticky_root = value.st_uid == 0 and bool(value.st_mode & stat.S_ISVTX)
-            if not sticky_root:
-                raise PrivateSQLitePathError(
-                    f"private SQLite {label} is writable by another principal"
-                )
-
-    def _open_parent(self) -> int:
-        directory_flags = (
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        try:
-            current_fd = os.open(self.path.anchor, directory_flags)
-        except OSError:
-            raise PrivateSQLitePathError(
-                "private SQLite root directory cannot be opened"
-            ) from None
-        components = self.path.parts[1:-1]
-        try:
-            self._validate_directory(
-                os.fstat(current_fd), private_parent=not components, label="root",
-            )
-            for index, component in enumerate(components):
-                is_private_parent = index == len(components) - 1
-                try:
-                    before = os.stat(
-                        component, dir_fd=current_fd, follow_symlinks=False,
-                    )
-                except FileNotFoundError:
-                    try:
-                        os.mkdir(component, 0o700, dir_fd=current_fd)
-                    except FileExistsError:
-                        pass
-                    except OSError:
-                        raise PrivateSQLitePathError(
-                            "private SQLite parent directory cannot be created"
-                        ) from None
-                    try:
-                        before = os.stat(
-                            component, dir_fd=current_fd, follow_symlinks=False,
-                        )
-                    except OSError:
-                        raise PrivateSQLitePathError(
-                            "private SQLite parent directory is unstable"
-                        ) from None
-                self._validate_directory(
-                    before,
-                    private_parent=is_private_parent,
-                    label="parent" if is_private_parent else "ancestor",
-                )
-                try:
-                    next_fd = os.open(component, directory_flags, dir_fd=current_fd)
-                except OSError:
-                    raise PrivateSQLitePathError(
-                        "private SQLite parent chain cannot be opened without links"
-                    ) from None
-                try:
-                    after = os.fstat(next_fd)
-                    if not self._same_inode(before, after):
-                        raise PrivateSQLitePathError(
-                            "private SQLite parent changed while it was opened"
-                        )
-                    self._validate_directory(
-                        after,
-                        private_parent=is_private_parent,
-                        label="parent" if is_private_parent else "ancestor",
-                    )
-                except BaseException:
-                    os.close(next_fd)
-                    raise
-                os.close(current_fd)
-                current_fd = next_fd
-            return current_fd
-        except BaseException as error:
-            os.close(current_fd)
-            if isinstance(error, PrivateSQLitePathError):
-                raise
-            if isinstance(error, OSError):
-                raise PrivateSQLitePathError(
-                    "private SQLite parent chain cannot be inspected safely"
-                ) from None
-            raise
-
-    def _validate_leaf(self, value: os.stat_result) -> None:
-        if not stat.S_ISREG(value.st_mode):
-            raise PrivateSQLitePathError(
-                "private SQLite leaf must be a regular file"
-            )
-        if value.st_uid != self._euid:
-            raise PrivateSQLitePathError(
-                "private SQLite leaf must be owned by the current effective uid"
-            )
-        if value.st_nlink != 1:
-            raise PrivateSQLitePathError(
-                "private SQLite leaf must have exactly one filesystem link"
-            )
-        if stat.S_IMODE(value.st_mode) != 0o600:
-            raise PrivateSQLitePathError(
-                "private SQLite leaf must already be mode 0600"
-            )
-
-    def _assert_leaf_identity(
-        self, parent_fd: int, identity: _PrivateFileIdentity,
-    ) -> None:
-        try:
-            current = os.stat(
-                self.path.name, dir_fd=parent_fd, follow_symlinks=False,
-            )
-        except OSError:
-            raise PrivateSQLitePathError(
-                "private SQLite leaf disappeared during open"
-            ) from None
-        self._validate_leaf(current)
-        if (current.st_dev, current.st_ino) != (identity.device, identity.inode):
-            raise PrivateSQLitePathError(
-                "private SQLite leaf changed while SQLite reopened it"
-            )
-
-    def _open_leaf(
-        self, *, create: bool,
-    ) -> tuple[int, int, _PrivateFileIdentity]:
-        parent_fd = self._open_parent()
-        flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-        created = False
-
-        def open_existing() -> tuple[int, os.stat_result]:
-            # Reject links and special files before an O_RDWR open can touch
-            # them, then bind the no-follow fd back to that exact lstat inode.
-            before = os.stat(
-                self.path.name, dir_fd=parent_fd, follow_symlinks=False,
-            )
-            self._validate_leaf(before)
-            descriptor: int | None = None
-            try:
-                descriptor = os.open(
-                    self.path.name, flags, dir_fd=parent_fd,
-                )
-                opened_value = os.fstat(descriptor)
-                self._validate_leaf(opened_value)
-                if not self._same_inode(before, opened_value):
-                    raise PrivateSQLitePathError(
-                        "private SQLite leaf changed while it was opened"
-                    )
-                return descriptor, opened_value
-            except BaseException:
-                if descriptor is not None:
-                    os.close(descriptor)
-                raise
-
-        try:
-            try:
-                leaf_fd, opened = open_existing()
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    leaf_fd = os.open(
-                        self.path.name,
-                        flags | os.O_CREAT | os.O_EXCL,
-                        0o600,
-                        dir_fd=parent_fd,
-                    )
-                    created = True
-                except FileExistsError:
-                    leaf_fd, opened = open_existing()
-                else:
-                    opened = os.fstat(leaf_fd)
-            if created:
-                # This descriptor names the atomically-created, still
-                # single-link inode. fchmod cannot follow a replacement path.
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_uid != self._euid
-                    or opened.st_nlink != 1
-                ):
-                    raise PrivateSQLitePathError(
-                        "new private SQLite leaf has invalid inode posture"
-                    )
-                os.fchmod(leaf_fd, 0o600)
-                opened = os.fstat(leaf_fd)
-            self._validate_leaf(opened)
-            listed = os.stat(
-                self.path.name, dir_fd=parent_fd, follow_symlinks=False,
-            )
-            self._validate_leaf(listed)
-            if not self._same_inode(opened, listed):
-                raise PrivateSQLitePathError(
-                    "private SQLite leaf changed while it was opened"
-                )
-            identity = _PrivateFileIdentity(opened.st_dev, opened.st_ino)
-            return parent_fd, leaf_fd, identity
-        except BaseException as error:
-            if "leaf_fd" in locals():
-                os.close(leaf_fd)
-            os.close(parent_fd)
-            if isinstance(error, PrivateSQLitePathError):
-                raise
-            if isinstance(error, OSError):
-                raise PrivateSQLitePathError(
-                    "private SQLite leaf cannot be opened safely"
-                ) from None
-            raise
-
-    def connect(
-        self, *, timeout_seconds: float = 2.0,
-    ) -> tuple[sqlite3.Connection, _PrivateFileIdentity]:
-        parent_fd, leaf_fd, identity = self._open_leaf(create=True)
-        connection: sqlite3.Connection | None = None
-        try:
-            timeout = max(0.0, min(float(timeout_seconds), 2.0))
-            connection = sqlite3.connect(
-                str(self.path), timeout=timeout, isolation_level=None,
-            )
-            self._assert_leaf_identity(parent_fd, identity)
-            return connection, identity
-        except BaseException as error:
-            if connection is not None:
-                connection.close()
-            if isinstance(error, PrivateSQLitePathError):
-                raise
-            if isinstance(error, (OSError, sqlite3.Error)):
-                raise PrivateSQLitePathError(
-                    "private SQLite database could not be opened"
-                ) from None
-            raise
-        finally:
-            os.close(leaf_fd)
-            os.close(parent_fd)
-
-    def assert_current(self, identity: _PrivateFileIdentity) -> None:
-        parent_fd = self._open_parent()
-        try:
-            self._assert_leaf_identity(parent_fd, identity)
-        finally:
-            os.close(parent_fd)
-
-    def fsync(self) -> None:
-        parent_fd, leaf_fd, identity = self._open_leaf(create=False)
-        try:
-            os.fsync(leaf_fd)
-            os.fsync(parent_fd)
-            self._assert_leaf_identity(parent_fd, identity)
-        except OSError as error:
-            if isinstance(error, PrivateSQLitePathError):
-                raise
-            raise PrivateSQLitePathError(
-                "private SQLite durability sync failed"
-            ) from None
-        finally:
-            os.close(leaf_fd)
-            os.close(parent_fd)
-
-
-def source_message_hash(session_id: str, message: Mapping[str, Any]) -> str:
-    canonical = json.dumps({"session_id": session_id, "role": message.get("role"), "content": message.get("content")}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def source_input_erased(ref: Mapping[str, str], rules: Sequence[Mapping[str, Any]]) -> bool:
-    return any(ref.get('source_id') == rule.get('source_turn_id', rule['turn_id'])
-        and (rule.get('whole_source', True) or ref.get('input_message_hash') in rule['message_hashes'])
-        for rule in rules)
-
-
-def redact_source_payload(payload: Mapping[str, Any], rules: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
-    """Remove exact erased evidence without replaying ordinary turn effects."""
-    original = dict(payload)
-    if any(rule["turn_id"] == original.get("turn_id") and rule.get('whole_source', True) for rule in rules):
-        return None
-    session = str(original.get("session_id") or "")
-    hashes = {value for rule in rules if rule["session_id"] == session for value in rule["message_hashes"]}
-    if original.get('observation') is not None:
-        observation = original['observation']
-        refs = [observation['origin'], *observation.get('sources', [])]
-        if any(ref.get('source_id') == rule.get('source_turn_id', rule['turn_id'])
-                and (rule.get('whole_source', True) or ref.get('source_version') == rule.get('source_version'))
-                for ref in refs for rule in rules):
-            return None
-        message = {'role': 'tool', 'content': observation['content']}
-        return None if source_message_hash(session, message) in hashes else original
-    messages = original.get("checkpoint_messages")
-    if messages is None:
-        messages = [{"role": role, "content": original[key]} for role, key in (("user", "user_message"), ("assistant", "assistant_message")) if original.get(key)]
-    erased_dependency = any(ref.get('source_id') == rule.get('source_turn_id', rule['turn_id'])
-        and (rule.get('whole_source', True) or ref.get('source_version') == rule.get('source_version'))
-        for ref in original.get('assistant_source_refs') or [] for rule in rules)
-    erased_dependency = erased_dependency or any(source_input_erased(ref, rules)
-        for ref in original.get('assistant_input_refs') or [])
-    retained = [message for message in messages if source_message_hash(session, message) not in hashes
-                and not (message.get('role') == 'assistant' and erased_dependency)]
-    if len(retained) == len(messages):
-        return original
-    if not retained:
-        return None
-    # A fresh checkpoint stores only survivors. Retiring the old ID avoids
-    # mutating an immutable envelope or rerunning its now-unsafe summary/tools.
-    if original.get('checkpoint_messages') is None and original.get('sender'):
-        result = {'session_id': session, 'contact_id': original['contact_id'],
-                  'sender': original['sender'], 'source_only': True, 'require_source_receipt': True}
-        for message in retained:
-            result[message['role'] + '_message'] = message['content']
-        if original.get('transport_media') and any(message['role'] == 'user' for message in retained):
-            result['transport_media'] = original['transport_media']
-        for name in ('occurred_at', 'timezone_name'):
-            if original.get(name) is not None:
-                result[name] = original[name]
-    else:
-        result = {"session_id": session, "contact_id": original["contact_id"], "checkpoint_messages": retained}
-    if original.get('assistant_source_refs') and any(message['role'] == 'assistant' for message in retained):
-        result['assistant_source_refs'] = original['assistant_source_refs']
-    if original.get('assistant_input_refs') and any(message['role'] == 'assistant' for message in retained):
-        result['assistant_input_refs'] = original['assistant_input_refs']
-    digest = hashlib.sha256(json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    result["turn_id"] = "checkpoint:" + digest
-    return result
-
-
-class TurnOutbox:
-    """SQLite-backed durable turn ledger shared across Hermes processes.
-
-    Enqueue commits with SQLite's ``synchronous=FULL`` configuration before
-    returning. Delivery receipts remain in the ledger so a repeated host hook
-    or a later one-shot process does not resend an already accepted turn. The
-    delivery callback runs synchronously with the remaining cooperative budget;
-    the durable row, not a daemon writer, is the loss-prevention mechanism.
-    """
-
-    _APPLICATION_ID = 1_129_270_361  # big-endian ASCII ``COLY``
-    _USER_VERSION = 3
-    _NATIVE_OWNERSHIP_SCHEMA = """
-        CREATE TABLE native_source_ownership (
-            ownership_id TEXT PRIMARY KEY,
-            contact_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            turn_id TEXT NOT NULL,
-            metadata_json TEXT NOT NULL
-        )
-    """
-    _ERASURE_SCHEMA = """
-        CREATE TABLE turn_erasures (
-            contact_id TEXT PRIMARY KEY,
-            watermark INTEGER NOT NULL,
-            rules_json TEXT NOT NULL
-        )
-    """
-    _SCHEMA = """
-        CREATE TABLE turn_outbox (
-            turn_id TEXT PRIMARY KEY,
-            envelope_sha256 TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('pending', 'delivered')),
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            last_error TEXT NOT NULL DEFAULT '',
-            lease_id TEXT NOT NULL DEFAULT '',
-            lease_expires_at REAL NOT NULL DEFAULT 0
-        )
-    """
-    _PREDECESSOR_SCHEMA = """
-        CREATE TABLE turn_outbox (
-            turn_id TEXT PRIMARY KEY,
-            envelope_sha256 TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            state TEXT NOT NULL CHECK (state IN ('pending', 'delivered')),
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            last_error TEXT NOT NULL DEFAULT ''
-        )
-    """
-    _PENDING_INDEX = (
-        "CREATE INDEX turn_outbox_pending_idx "
-        "ON turn_outbox(state, lease_expires_at, created_at, turn_id)"
+            api_key = key_file.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+        except (OSError, IndexError):
+            api_key = ""
+    url = str(section.get("sidecar_url") or os.environ.get("PROTAGINE_URL") or "").strip()
+    if not url:
+        sidecar = read_yaml(key_file.parent / "protagine.yaml").get("sidecar")
+        if isinstance(sidecar, Mapping) and sidecar.get("port"):
+            url = f"http://{sidecar.get('host') or '127.0.0.1'}:{sidecar['port']}"
+    return Settings(
+        sidecar_url=(url or DEFAULT_URL).rstrip("/"), key_file=key_file, api_key=api_key,
+        home=key_file.parent, hermes_home=home,
+        outbox_path=Path(section.get("turn_outbox_path")
+                         or home / "state" / "protagine-turn-outbox.sqlite3"),
+        worker_profile=str(section.get("worker_profile") or WORKER_PROFILE),
     )
-    _CURRENT_COLUMNS = (
-        (0, "turn_id", "TEXT", 0, None, 1),
-        (1, "envelope_sha256", "TEXT", 1, None, 0),
-        (2, "payload_json", "TEXT", 1, None, 0),
-        (3, "state", "TEXT", 1, None, 0),
-        (4, "attempts", "INTEGER", 1, "0", 0),
-        (5, "created_at", "REAL", 1, None, 0),
-        (6, "updated_at", "REAL", 1, None, 0),
-        (7, "last_error", "TEXT", 1, "''", 0),
-        (8, "lease_id", "TEXT", 1, "''", 0),
-        (9, "lease_expires_at", "REAL", 1, "0", 0),
-    )
-    _PREDECESSOR_COLUMNS = _CURRENT_COLUMNS[:8]
-
-    def __init__(
-        self,
-        path: str | os.PathLike[str],
-        *,
-        max_payload_bytes: int = 8 * 1024 * 1024,
-        max_pending: int = 10_000,
-        max_delivered: int = 8_192,
-    ):
-        self.path = Path(os.path.expanduser(str(path)))
-        self.max_payload_bytes = max(4096, min(int(max_payload_bytes), 8 * 1024 * 1024))
-        self.max_pending = max(128, min(int(max_pending), 100_000))
-        self.max_delivered = max(128, min(int(max_delivered), 100_000))
-        self._schema_lock = threading.RLock()
-        self._validated_identity: _PrivateFileIdentity | None = None
-        self._validated_schema_version: int | None = None
-
-    def _storage(self) -> PrivateSQLitePath:
-        return PrivateSQLitePath(self.path)
-
-    @staticmethod
-    def _normalized_sql(value: Any) -> str:
-        compact = " ".join(str(value or "").split())
-        return re.sub(r"\s*([(),])\s*", r"\1", compact)
-
-    @classmethod
-    def _schema_objects(cls, connection: sqlite3.Connection) -> tuple[tuple[Any, ...], ...]:
-        return tuple(
-            tuple(row)
-            for row in connection.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master "
-                "ORDER BY type, name"
-            ).fetchall()
-        )
-
-    @classmethod
-    def _expected_objects(cls, *, predecessor: bool, legacy: bool = False,
-                          native_ownership: bool = True) -> tuple[tuple[Any, ...], ...]:
-        table_sql = cls._PREDECESSOR_SCHEMA if predecessor else cls._SCHEMA
-        objects: list[tuple[Any, ...]] = [
-            ("index", "sqlite_autoindex_turn_outbox_1", "turn_outbox", None),
-        ]
-        if not predecessor:
-            objects.append((
-                "index", "turn_outbox_pending_idx", "turn_outbox",
-                cls._PENDING_INDEX,
-            ))
-        objects.append(("table", "turn_outbox", "turn_outbox", table_sql))
-        if not predecessor and not legacy:
-            objects.extend([
-                ("index", "sqlite_autoindex_turn_erasures_1", "turn_erasures", None),
-                ("table", "turn_erasures", "turn_erasures", cls._ERASURE_SCHEMA),
-            ])
-            if native_ownership:
-                objects.extend([
-                    ("index", "sqlite_autoindex_native_source_ownership_1", "native_source_ownership", None),
-                    ("table", "native_source_ownership", "native_source_ownership", cls._NATIVE_OWNERSHIP_SCHEMA),
-                ])
-        return tuple(sorted(objects, key=lambda row: (row[0], row[1])))
-
-    @classmethod
-    def _objects_match(
-        cls,
-        actual: Sequence[Sequence[Any]],
-        expected: Sequence[Sequence[Any]],
-    ) -> bool:
-        if len(actual) != len(expected):
-            return False
-        for left, right in zip(actual, expected):
-            if tuple(left[:3]) != tuple(right[:3]):
-                return False
-            if left[3] is None or right[3] is None:
-                if left[3] is not None or right[3] is not None:
-                    return False
-            elif cls._normalized_sql(left[3]) != cls._normalized_sql(right[3]):
-                return False
-        return True
-
-    @staticmethod
-    def _quick_check(connection: sqlite3.Connection) -> None:
-        rows = connection.execute("PRAGMA quick_check").fetchall()
-        if len(rows) != 1 or str(rows[0][0]).lower() != "ok":
-            raise PrivateSQLitePathError(
-                "private SQLite consistency check failed"
-            )
-
-    @classmethod
-    def _table_columns(
-        cls, connection: sqlite3.Connection,
-    ) -> tuple[tuple[Any, ...], ...]:
-        return tuple(
-            tuple(row[:6])
-            for row in connection.execute(
-                "PRAGMA table_info(turn_outbox)"
-            ).fetchall()
-        )
-
-    @classmethod
-    def _validate_current_schema(cls, connection: sqlite3.Connection) -> None:
-        cls._quick_check(connection)
-        if not cls._objects_match(
-            cls._schema_objects(connection),
-            cls._expected_objects(predecessor=False),
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite schema is not the governed outbox schema"
-            )
-        if cls._table_columns(connection) != cls._CURRENT_COLUMNS:
-            raise PrivateSQLitePathError(
-                "private SQLite outbox columns are not exact"
-            )
-        if connection.execute(
-            "PRAGMA foreign_key_list(turn_outbox)"
-        ).fetchall():
-            raise PrivateSQLitePathError(
-                "private SQLite outbox cannot contain foreign keys"
-            )
-        indexes = connection.execute("PRAGMA index_list(turn_outbox)").fetchall()
-        by_name = {str(row[1]): tuple(row) for row in indexes}
-        pending = by_name.get("turn_outbox_pending_idx")
-        automatic = by_name.get("sqlite_autoindex_turn_outbox_1")
-        if (
-            set(by_name) != {
-                "sqlite_autoindex_turn_outbox_1", "turn_outbox_pending_idx",
-            }
-            or pending is None
-            or tuple(pending[2:5]) != (0, "c", 0)
-            or automatic is None
-            or tuple(automatic[2:5]) != (1, "pk", 0)
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite outbox indexes are not exact"
-            )
-        pending_columns = tuple(
-            str(row[2])
-            for row in connection.execute(
-                "PRAGMA index_xinfo(turn_outbox_pending_idx)"
-            ).fetchall()
-            if int(row[5]) == 1
-        )
-        if pending_columns != (
-            "state", "lease_expires_at", "created_at", "turn_id",
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite pending index columns are not exact"
-            )
-        if int(connection.execute("PRAGMA application_id").fetchone()[0]) != (
-            cls._APPLICATION_ID
-        ) or int(connection.execute("PRAGMA user_version").fetchone()[0]) != (
-            cls._USER_VERSION
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite schema version is not recognized"
-            )
-
-        # The canonical sqlite_master source above is the primary CHECK proof.
-        # Also exercise its behavior inside the surrounding transaction without
-        # leaving a row or firing any trigger (the exact object set has none).
-        connection.execute("SAVEPOINT governed_check_contract")
-        try:
-            try:
-                connection.execute(
-                    "INSERT INTO turn_outbox ("
-                    "turn_id, envelope_sha256, payload_json, state, attempts, "
-                    "created_at, updated_at, last_error, lease_id, lease_expires_at"
-                    ") VALUES (?, ?, ?, ?, 0, 0, 0, '', '', 0)",
-                    (
-                        "__governed_check_probe__:" + uuid.uuid4().hex,
-                        "0" * 64, "{}", "invalid",
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                pass
-            else:
-                raise PrivateSQLitePathError(
-                    "private SQLite state CHECK is not enforced"
-                )
-        finally:
-            connection.execute("ROLLBACK TO governed_check_contract")
-            connection.execute("RELEASE governed_check_contract")
-
-    @classmethod
-    def _classify_schema(cls, connection: sqlite3.Connection) -> str:
-        cls._quick_check(connection)
-        objects = cls._schema_objects(connection)
-        application_id = int(
-            connection.execute("PRAGMA application_id").fetchone()[0]
-        )
-        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if not objects and application_id == 0 and user_version == 0:
-            return "empty"
-        if cls._objects_match(
-            objects, cls._expected_objects(predecessor=True),
-        ):
-            if (
-                cls._table_columns(connection) == cls._PREDECESSOR_COLUMNS
-                and application_id == 0
-                and user_version == 0
-                and not connection.execute(
-                    "PRAGMA foreign_key_list(turn_outbox)"
-                ).fetchall()
-            ):
-                return "predecessor"
-            return "unknown"
-        if cls._objects_match(objects, cls._expected_objects(predecessor=False, legacy=True)) and cls._table_columns(connection) == cls._CURRENT_COLUMNS:
-            if (application_id, user_version) in ((0, 0), (cls._APPLICATION_ID, 1)):
-                return "version_one"
-            return "unknown"
-        if (cls._objects_match(objects, cls._expected_objects(predecessor=False, native_ownership=False))
-                and cls._table_columns(connection) == cls._CURRENT_COLUMNS
-                and (application_id, user_version) in ((0, 0), (cls._APPLICATION_ID, 2))):
-            return "version_two"
-        if cls._objects_match(
-            objects, cls._expected_objects(predecessor=False),
-        ) and cls._table_columns(connection) == cls._CURRENT_COLUMNS:
-            if application_id == 0 and user_version == 0:
-                return "unversioned_current"
-            if (
-                application_id == cls._APPLICATION_ID
-                and user_version == cls._USER_VERSION
-            ):
-                return "current"
-        return "unknown"
-
-    @classmethod
-    def _prepare_schema(cls, connection: sqlite3.Connection) -> bool:
-        """Validate or transactionally migrate only exact recognized states."""
-
-        connection.execute("BEGIN IMMEDIATE")
-        mutated = False
-        try:
-            state = cls._classify_schema(connection)
-            if state == "empty":
-                connection.execute(cls._SCHEMA)
-                connection.execute(cls._PENDING_INDEX)
-                mutated = True
-            elif state == "predecessor":
-                connection.execute(
-                    "ALTER TABLE turn_outbox ADD COLUMN "
-                    "lease_id TEXT NOT NULL DEFAULT ''"
-                )
-                connection.execute(
-                    "ALTER TABLE turn_outbox ADD COLUMN "
-                    "lease_expires_at REAL NOT NULL DEFAULT 0"
-                )
-                connection.execute(cls._PENDING_INDEX)
-                mutated = True
-            elif state in {"unversioned_current", "version_one", "version_two"}:
-                mutated = True
-            elif state != "current":
-                raise PrivateSQLitePathError(
-                    "private SQLite schema is unknown or malformed"
-                )
-            if mutated:
-                if state in {"empty", "predecessor", "version_one"}:
-                    connection.execute(cls._ERASURE_SCHEMA)
-                if state != "unversioned_current":
-                    connection.execute(cls._NATIVE_OWNERSHIP_SCHEMA)
-                    for retained in connection.execute('SELECT contact_id,rules_json FROM turn_erasures').fetchall():
-                        for rule in json.loads(retained[1]):
-                            cls._retain_native_erasure(connection, retained[0], rule)
-                connection.execute(f"PRAGMA application_id={cls._APPLICATION_ID}")
-                connection.execute(f"PRAGMA user_version={cls._USER_VERSION}")
-            cls._validate_current_schema(connection)
-            connection.commit()
-            return mutated
-        except BaseException as error:
-            if connection.in_transaction:
-                connection.rollback()
-            if isinstance(error, PrivateSQLitePathError):
-                raise
-            if isinstance(error, sqlite3.Error):
-                raise PrivateSQLitePathError(
-                    "private SQLite schema could not be validated"
-                ) from None
-            raise
-
-    @staticmethod
-    def _configure_durability(connection: sqlite3.Connection) -> dict[str, Any]:
-        journal = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA secure_delete=ON")
-        connection.execute("PRAGMA fullfsync=ON")
-        connection.execute("PRAGMA checkpoint_fullfsync=ON")
-        synchronous = int(connection.execute("PRAGMA synchronous").fetchone()[0])
-        fullfsync = int(connection.execute("PRAGMA fullfsync").fetchone()[0])
-        checkpoint_fullfsync = int(
-            connection.execute("PRAGMA checkpoint_fullfsync").fetchone()[0]
-        )
-        if (
-            journal != "delete"
-            or synchronous != 2
-            or fullfsync != 1
-            or checkpoint_fullfsync != 1
-        ):
-            raise PrivateSQLitePathError(
-                "private SQLite durability pragmas are not active"
-            )
-        return {
-            "journal_mode": journal,
-            "synchronous": synchronous,
-            "fullfsync": fullfsync,
-            "checkpoint_fullfsync": checkpoint_fullfsync,
-        }
-
-    def _validate_cached_schema(
-        self,
-        connection: sqlite3.Connection,
-        identity: _PrivateFileIdentity,
-    ) -> None:
-        if (
-            self._validated_identity != identity
-            or self._validated_schema_version is None
-            or int(connection.execute("PRAGMA schema_version").fetchone()[0])
-            != self._validated_schema_version
-            or int(connection.execute("PRAGMA application_id").fetchone()[0])
-            != self._APPLICATION_ID
-            or int(connection.execute("PRAGMA user_version").fetchone()[0])
-            != self._USER_VERSION
-        ):
-            self._validated_identity = None
-            self._validated_schema_version = None
-            raise PrivateSQLitePathError(
-                "private SQLite cached schema posture changed"
-            )
-
-    @staticmethod
-    def _remaining_seconds(deadline_monotonic: float | None) -> float:
-        if deadline_monotonic is None:
-            return 2.0
-        remaining = float(deadline_monotonic) - time.monotonic()
-        if remaining <= 0:
-            raise _DrainDeadlineExceeded("turn outbox drain budget expired")
-        return remaining
-
-    @classmethod
-    def _apply_busy_deadline(
-        cls,
-        connection: sqlite3.Connection,
-        deadline_monotonic: float | None,
-    ) -> None:
-        if deadline_monotonic is None:
-            milliseconds = 2_000
-        else:
-            remaining = cls._remaining_seconds(deadline_monotonic)
-            milliseconds = max(0, min(int(remaining * 1_000), 2_000))
-        connection.execute(f"PRAGMA busy_timeout={milliseconds}")
-
-    def _connect(
-        self,
-        *,
-        force_schema_validation: bool = False,
-        deadline_monotonic: float | None = None,
-    ) -> sqlite3.Connection:
-        storage = self._storage()
-        remaining = self._remaining_seconds(deadline_monotonic)
-        connection, identity = storage.connect(timeout_seconds=remaining)
-        try:
-            connection.row_factory = sqlite3.Row
-            self._apply_busy_deadline(connection, deadline_monotonic)
-            self._configure_durability(connection)
-            if deadline_monotonic is None:
-                acquired_schema_lock = self._schema_lock.acquire()
-            else:
-                acquired_schema_lock = self._schema_lock.acquire(
-                    timeout=self._remaining_seconds(deadline_monotonic)
-                )
-            if not acquired_schema_lock:
-                raise _DrainDeadlineExceeded(
-                    "turn outbox schema lock budget expired"
-                )
-            try:
-                self._remaining_seconds(deadline_monotonic)
-                needs_full_validation = bool(
-                    force_schema_validation
-                    or self._validated_identity != identity
-                    or self._validated_schema_version is None
-                )
-                if needs_full_validation:
-                    self._validated_identity = None
-                    self._validated_schema_version = None
-                    mutated = self._prepare_schema(connection)
-                    self._remaining_seconds(deadline_monotonic)
-                    storage.assert_current(identity)
-                    # Explicit prepare/enqueue owns the filesystem sync. A
-                    # budgeted drain never adds an uninterruptible fsync tail;
-                    # SQLite's configured FULL commit remains in force.
-                    if mutated and deadline_monotonic is None:
-                        storage.fsync()
-                    self._validated_identity = identity
-                    self._validated_schema_version = int(
-                        connection.execute("PRAGMA schema_version").fetchone()[0]
-                    )
-                else:
-                    self._validate_cached_schema(connection, identity)
-                    self._remaining_seconds(deadline_monotonic)
-                    storage.assert_current(identity)
-            finally:
-                self._schema_lock.release()
-            return connection
-        except BaseException:
-            connection.close()
-            raise
-
-    def prepare(self) -> dict[str, Any]:
-        """Attest storage configuration without claiming physical proof."""
-
-        connection = self._connect(force_schema_validation=True)
-        try:
-            durability = self._configure_durability(connection)
-        finally:
-            connection.close()
-        self._fsync_storage()
-        return {
-            "schema": "PrivateSQLiteDurabilityConfigurationAttestationV2",
-            "version": 2,
-            "configuration_ready": True,
-            "physical_power_loss_verified": False,
-            "readiness_scope": "sqlite_and_filesystem_configuration",
-            "path_sha256": hashlib.sha256(
-                str(self.path).encode("utf-8")
-            ).hexdigest(),
-            "private_parent": True,
-            "regular_file": True,
-            "current_euid_owner": True,
-            "single_link": True,
-            "mode": "0600",
-            "journal_mode": "delete",
-            "synchronous": "FULL",
-            "fullfsync": "ON" if durability["fullfsync"] == 1 else "OFF",
-            "checkpoint_fullfsync": (
-                "ON" if durability["checkpoint_fullfsync"] == 1 else "OFF"
-            ),
-            "application_id": self._APPLICATION_ID,
-            "user_version": self._USER_VERSION,
-        }
-
-    def _fsync_storage(self) -> None:
-        self._storage().fsync()
-
-    def enqueue(self, turn_id: str, payload: Mapping[str, Any], *, capture_ordinary: bool = False) -> dict[str, Any]:
-        stable_id = str(turn_id or "").strip()
-        if not stable_id:
-            raise TurnOutboxPayloadError("turn_id is required")
-        try:
-            payload_json = json.dumps(
-                dict(payload), sort_keys=True, separators=(",", ":"),
-                ensure_ascii=True, allow_nan=False,
-            )
-        except (TypeError, ValueError) as error:
-            raise TurnOutboxPayloadError("turn payload is not canonical JSON") from error
-        if len(payload_json.encode("utf-8")) > self.max_payload_bytes:
-            raise TurnOutboxPayloadError("turn payload exceeds the durable outbox limit")
-        digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-        now = time.time()
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            erasures = connection.execute("SELECT rules_json FROM turn_erasures WHERE contact_id=?", (str(payload.get("contact_id") or ""),)).fetchone()
-            retained = redact_source_payload(payload, json.loads(erasures[0])) if erasures else dict(payload)
-            if retained != dict(payload):
-                receipt = {"turn_id": stable_id, "state": "erased", "attempts": 0}
-                if retained is not None:
-                    receipt["survivor_turn_id"] = retained["turn_id"]
-                    receipt["survivor_state"] = self._insert_redacted(connection, retained, now)
-                connection.commit()
-                self._fsync_storage()
-                return receipt
-            row = connection.execute(
-                "SELECT envelope_sha256, payload_json, state, attempts FROM turn_outbox WHERE turn_id = ?",
-                (stable_id,),
-            ).fetchone()
-            if capture_ordinary and payload.get("checkpoint_messages") is None:
-                stamped = dict(payload)
-                if row is not None:
-                    # Duplicate lifecycle callbacks must reuse the original
-                    # capture time; old unstamped rows stay unknown.
-                    original = json.loads(row["payload_json"])
-                    if "occurred_at" not in stamped and original.get("occurred_at"):
-                        stamped["occurred_at"] = original["occurred_at"]
-                elif not stamped.get("occurred_at"):
-                    stamped["occurred_at"] = datetime.fromtimestamp(now, timezone.utc).isoformat()
-                payload_json = json.dumps(stamped, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
-                if len(payload_json.encode("utf-8")) > self.max_payload_bytes:
-                    raise TurnOutboxPayloadError("turn payload exceeds the durable outbox limit")
-                digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-            if row is not None:
-                if row["envelope_sha256"] != digest:
-                    raise TurnOutboxConflict(
-                        "stable turn id already has a different envelope"
-                    )
-                connection.commit()
-                return {
-                    "turn_id": stable_id,
-                    "envelope_sha256": digest,
-                    "state": row["state"],
-                    "attempts": int(row["attempts"]),
-                }
-            pending = int(connection.execute(
-                "SELECT COUNT(*) FROM turn_outbox WHERE state = 'pending'"
-            ).fetchone()[0])
-            if pending >= self.max_pending:
-                raise TurnOutboxFull("durable turn outbox is full")
-            connection.execute(
-                """
-                INSERT INTO turn_outbox (
-                    turn_id, envelope_sha256, payload_json, state, attempts,
-                    created_at, updated_at, last_error
-                ) VALUES (?, ?, ?, 'pending', 0, ?, ?, '')
-                """,
-                (stable_id, digest, payload_json, now, now),
-            )
-            connection.commit()
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
-        self._fsync_storage()
-        return {
-            "turn_id": stable_id,
-            "envelope_sha256": digest,
-            "state": "pending",
-            "attempts": 0,
-        }
-
-    def _insert_redacted(self, connection: sqlite3.Connection, payload: dict[str, Any], now: float) -> str:
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(encoded.encode()).hexdigest()
-        existing = connection.execute("SELECT envelope_sha256,state FROM turn_outbox WHERE turn_id=?", (payload["turn_id"],)).fetchone()
-        if existing is not None and existing[0] != digest:
-            raise TurnOutboxConflict("redacted source ID already has different evidence")
-        if existing is None and connection.execute("SELECT count(*) FROM turn_outbox WHERE state='pending'").fetchone()[0] >= self.max_pending:
-            raise TurnOutboxFull("durable turn outbox is full")
-        connection.execute("INSERT OR IGNORE INTO turn_outbox(turn_id,envelope_sha256,payload_json,state,created_at,updated_at) VALUES(?,?,?,'pending',?,?)", (payload["turn_id"], digest, encoded, now, now))
-        return existing["state"] if existing is not None else "pending"
-
-    def erasure_watermark(self, contact_id: str, *, deadline_monotonic: float | None = None) -> int:
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            row = connection.execute("SELECT watermark FROM turn_erasures WHERE contact_id=?", (contact_id,)).fetchone()
-            return int(row[0]) if row else 0
-        finally:
-            connection.close()
-
-    def apply_erasure_page(self, contact_id: str, page: Mapping[str, Any], *, deadline_monotonic: float | None = None) -> None:
-        if page.get("contact_id") != contact_id:
-            raise ValueError("erasure feed contact mismatch")
-        events, through = page["events"], int(page["through"])
-        if not isinstance(events, list) or len(events) > 500 or through < 0:
-            raise ValueError("invalid erasure feed")
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT watermark,rules_json FROM turn_erasures WHERE contact_id=?", (contact_id,)).fetchone()
-            current, rules = (int(row[0]), json.loads(row[1])) if row else (0, [])
-            if through < current:
-                connection.rollback()
-                return  # A concurrent host thread already applied a newer page.
-            if through == current:
-                connection.rollback()
-                return
-            by_id = {rule["turn_id"]: rule for rule in rules}
-            for rule in events:
-                if not current < int(rule["sequence"]) <= through:
-                    continue
-                if not isinstance(rule["session_id"], str) or not isinstance(rule["turn_id"], str) or not isinstance(rule["message_hashes"], list) or any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in rule["message_hashes"]):
-                    raise ValueError("invalid erasure rule")
-                by_id[rule["turn_id"]] = dict(rule)
-                self._retain_native_erasure(connection, contact_id, rule)
-            rules = list(by_id.values())
-            # Purge delivered receipts too: they still contain original content.
-            rows = connection.execute("SELECT turn_id,payload_json,state FROM turn_outbox").fetchall()
-            for queued in rows:
-                self._remaining_seconds(deadline_monotonic)
-                payload = json.loads(queued["payload_json"])
-                if payload.get("contact_id") != contact_id:
-                    continue
-                retained = redact_source_payload(payload, rules)
-                if retained == payload:
-                    continue
-                connection.execute("DELETE FROM turn_outbox WHERE turn_id=?", (queued["turn_id"],))
-                if retained is not None and queued["state"] == "pending":
-                    self._insert_redacted(connection, retained, time.time())
-            connection.execute("INSERT INTO turn_erasures(contact_id,watermark,rules_json) VALUES(?,?,?) ON CONFLICT(contact_id) DO UPDATE SET watermark=excluded.watermark,rules_json=excluded.rules_json", (contact_id, through, json.dumps(rules, separators=(",", ":"))))
-            connection.commit()
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
-        self._fsync_storage()
-
-    @staticmethod
-    def _retain_native_erasure(connection, contact_id, rule):
-        # The feed cursor and pending native cleanup commit together. This is
-        # ownership bookkeeping, never a delivery or canonical source payload.
-        identity = 'erasure:' + hashlib.sha256(json.dumps(
-            [contact_id, rule['sequence']], separators=(',', ':')).encode()).hexdigest()
-        connection.execute('''INSERT OR IGNORE INTO native_source_ownership
-            VALUES (?,?,?,?,?)''', (identity, contact_id, rule['session_id'], rule['turn_id'],
-            json.dumps({'kind': 'erasure', 'sequence': rule['sequence']}, separators=(',', ':'))))
-
-    def erasure_state(self, contact_id: str, *, deadline_monotonic: float | None = None) -> tuple[int, list[dict[str, Any]]]:
-        """Read the same durable rules used to prevent forgotten turn replay."""
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            row = connection.execute("SELECT watermark,rules_json FROM turn_erasures WHERE contact_id=?", (contact_id,)).fetchone()
-            return (int(row[0]), json.loads(row[1])) if row else (0, [])
-        finally:
-            connection.close()
-
-    def contains_turn(self, turn_id: str, *, deadline_monotonic: float | None = None) -> bool:
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            return connection.execute("SELECT 1 FROM turn_outbox WHERE turn_id=?", (turn_id,)).fetchone() is not None
-        finally:
-            connection.close()
-
-    @staticmethod
-    def _cooperative_delivery(
-        deliver: Any, payload: dict[str, Any], timeout_seconds: float,
-    ) -> str:
-        """Call one deadline-aware delivery function without background work."""
-
-        began = time.monotonic()
-        try:
-            accepted = bool(deliver(
-                payload, timeout_seconds=float(timeout_seconds),
-            ))
-        except (TurnDeliveryOutcomeUnknown, TimeoutError):
-            return "timeout"
-        except BaseException:
-            # Exception details can contain credentials, URLs, or content.
-            return "exception"
-        if time.monotonic() - began > timeout_seconds:
-            # A callback that violates the cooperative contract cannot be
-            # interrupted safely. Treat its result as ambiguous and never
-            # spawn a continuation or retry it inside this drain.
-            return "timeout"
-        return "accepted" if accepted else "rejected"
-
-    def _claim_one(
-        self,
-        *,
-        lease_seconds: float,
-        excluded_turn_ids: Sequence[str] = (),
-        deadline_monotonic: float | None = None,
-    ) -> dict[str, Any] | None:
-        """Lease one row in a short transaction; never hold a DB lock on I/O."""
-
-        now = time.time()
-        lease_id = uuid.uuid4().hex
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            self._apply_busy_deadline(connection, deadline_monotonic)
-            connection.execute("BEGIN IMMEDIATE")
-            self._remaining_seconds(deadline_monotonic)
-            excluded = tuple(str(item) for item in excluded_turn_ids)
-            exclusion_sql = (
-                " AND turn_id NOT IN (" + ",".join("?" for _item in excluded) + ")"
-                if excluded else ""
-            )
-            row = connection.execute(
-                """
-                SELECT turn_id, payload_json FROM turn_outbox
-                WHERE state = 'pending'
-                  AND (lease_id = '' OR lease_expires_at <= ?)
-                """ + exclusion_sql + """
-                ORDER BY created_at, turn_id LIMIT 1
-                """,
-                (now, *excluded),
-            ).fetchone()
-            if row is None:
-                self._apply_busy_deadline(connection, deadline_monotonic)
-                connection.commit()
-                return None
-            updated = connection.execute(
-                """
-                UPDATE turn_outbox
-                SET lease_id = ?, lease_expires_at = ?, attempts = attempts + 1,
-                    updated_at = ?, last_error = ''
-                WHERE turn_id = ? AND state = 'pending'
-                  AND (lease_id = '' OR lease_expires_at <= ?)
-                """,
-                (
-                    lease_id, now + lease_seconds, now,
-                    row["turn_id"], now,
-                ),
-            )
-            if updated.rowcount != 1:  # pragma: no cover - IMMEDIATE serializes claims
-                connection.rollback()
-                return None
-            self._apply_busy_deadline(connection, deadline_monotonic)
-            connection.commit()
-            return {
-                "turn_id": str(row["turn_id"]),
-                "payload": json.loads(row["payload_json"]),
-                "lease_id": lease_id,
-            }
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def _finish_claim(
-        self,
-        claim: Mapping[str, Any],
-        outcome: str,
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> bool:
-        """Finalize only the exact lease that performed the delivery attempt."""
-
-        now = time.time()
-        connection = self._connect(deadline_monotonic=deadline_monotonic)
-        try:
-            self._apply_busy_deadline(connection, deadline_monotonic)
-            connection.execute("BEGIN IMMEDIATE")
-            self._remaining_seconds(deadline_monotonic)
-            if outcome == "accepted":
-                updated = connection.execute(
-                    """
-                    UPDATE turn_outbox
-                    SET state = 'delivered', lease_id = '', lease_expires_at = 0,
-                        updated_at = ?, last_error = ''
-                    WHERE turn_id = ? AND state = 'pending' AND lease_id = ?
-                    """,
-                    (now, claim["turn_id"], claim["lease_id"]),
-                )
-            elif outcome == "timeout":
-                # A deadline-aware request returned an ambiguous timeout. No
-                # local callback continues, but the remote exact PUT may have
-                # been accepted, so preserve the lease until expiry.
-                updated = connection.execute(
-                    """
-                    UPDATE turn_outbox SET updated_at = ?,
-                        last_error = 'delivery_outcome_unknown'
-                    WHERE turn_id = ? AND state = 'pending' AND lease_id = ?
-                    """,
-                    (now, claim["turn_id"], claim["lease_id"]),
-                )
-            else:
-                error_code = (
-                    "delivery_rejected" if outcome == "rejected"
-                    else (
-                        "delivery_budget_exhausted"
-                        if outcome == "budget_exhausted"
-                        else "delivery_exception"
-                    )
-                )
-                updated = connection.execute(
-                    """
-                    UPDATE turn_outbox SET lease_id = '', lease_expires_at = 0,
-                        updated_at = ?, last_error = ?
-                    WHERE turn_id = ? AND state = 'pending' AND lease_id = ?
-                    """,
-                    (now, error_code, claim["turn_id"], claim["lease_id"]),
-                )
-            if outcome == "accepted" and updated.rowcount == 1:
-                self._remaining_seconds(deadline_monotonic)
-                delivered_rows = connection.execute(
-                    """
-                    SELECT turn_id FROM turn_outbox WHERE state = 'delivered'
-                    ORDER BY updated_at DESC, turn_id DESC
-                    """
-                ).fetchall()
-                for stale in delivered_rows[self.max_delivered:]:
-                    self._remaining_seconds(deadline_monotonic)
-                    connection.execute(
-                        "DELETE FROM turn_outbox "
-                        "WHERE turn_id = ? AND state = 'delivered'",
-                        (stale["turn_id"],),
-                    )
-            self._apply_busy_deadline(connection, deadline_monotonic)
-            connection.commit()
-            return bool(outcome == "accepted" and updated.rowcount == 1)
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def drain(
-        self,
-        deliver: Any,
-        *,
-        limit: int = 16,
-        timeout_seconds: float = 0.25,
-        lease_seconds: float | None = None,
-    ) -> int:
-        """Attempt rows within one cooperative DB-and-delivery wall budget."""
-
-        row_limit = max(1, min(int(limit), 100))
-        call_timeout = max(0.01, min(float(timeout_seconds), 1.0))
-        lease_ttl = max(
-            0.05,
-            min(
-                float(lease_seconds) if lease_seconds is not None else call_timeout * 4,
-                60.0,
-            ),
-        )
-        delivered_count = 0
-        deadline = time.monotonic() + call_timeout
-        finalization_reserve = min(0.05, max(0.005, call_timeout * 0.25))
-        attempted_turn_ids: set[str] = set()
-        for _index in range(row_limit):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                claim = self._claim_one(
-                    lease_seconds=lease_ttl,
-                    excluded_turn_ids=tuple(attempted_turn_ids),
-                    deadline_monotonic=deadline,
-                )
-            except BaseException:
-                # Lock acquisition, local validation, and filesystem failures
-                # are represented only by the fixed zero-delivery result.
-                break
-            if claim is None:
-                break
-            attempted_turn_ids.add(str(claim["turn_id"]))
-            remaining = deadline - time.monotonic()
-            if remaining <= finalization_reserve:
-                outcome = "budget_exhausted"
-            else:
-                outcome = self._cooperative_delivery(
-                    deliver,
-                    claim["payload"],
-                    remaining - finalization_reserve,
-                )
-            try:
-                delivered_count += int(self._finish_claim(
-                    claim, outcome, deadline_monotonic=deadline,
-                ))
-            except BaseException:
-                # The exact lease remains safe for bounded recovery. Never leak
-                # a database or callback error to the post-turn path.
-                break
-        return delivered_count
-
-    def lookup(self, turn_id: str) -> dict[str, Any] | None:
-        """Read one exact queued source without decoding unrelated history."""
-        connection = self._connect()
-        try:
-            row = connection.execute(
-                "SELECT turn_id, payload_json, state FROM turn_outbox WHERE turn_id=?",
-                (turn_id,),
-            ).fetchone()
-            return ({"turn_id": row["turn_id"], "payload": json.loads(row["payload_json"]),
-                     "state": row["state"]} if row is not None else None)
-        finally:
-            connection.close()
-
-    def snapshot(self) -> list[dict[str, Any]]:
-        connection = self._connect()
-        try:
-            rows = connection.execute(
-                """
-                SELECT turn_id, envelope_sha256, payload_json, state, attempts,
-                    created_at, updated_at, last_error, lease_id, lease_expires_at
-                FROM turn_outbox ORDER BY created_at, turn_id
-                """
-            ).fetchall()
-            return [
-                {
-                    "turn_id": row["turn_id"],
-                    "envelope_sha256": row["envelope_sha256"],
-                    "payload": json.loads(row["payload_json"]),
-                    "state": row["state"],
-                    "attempts": int(row["attempts"]),
-                    "created_at": float(row["created_at"]),
-                    "updated_at": float(row["updated_at"]),
-                    "last_error": row["last_error"],
-                    "lease_id": row["lease_id"],
-                    "lease_expires_at": float(row["lease_expires_at"]),
-                }
-                for row in rows
-            ]
-        finally:
-            connection.close()
-
-
-def derive_hermes_turn_id(
-    *,
-    session_id: str,
-    turn_id: str = "",
-    task_id: str = "",
-    user_message: str = "",
-    assistant_response: str = "",
-    conversation_history: Any = None,
-    model: str = "",
-    platform: str = "",
-) -> str:
-    """Derive a stable non-secret turn identifier from host lifecycle data."""
-
-    supplied = str(turn_id or "").strip()
-    if supplied:
-        return supplied
-    session = str(session_id or "").strip()
-    task = str(task_id or "").strip()
-    if task:
-        anchor: dict[str, Any] = {
-            "schema": "hermes-hook-turn-v1",
-            "session_id": session,
-            "task_id": task,
-        }
-    else:
-        anchor = {
-            "schema": "hermes-hook-turn-legacy-v1",
-            "session_id": session,
-            "platform": str(platform or ""),
-            "model": str(model or ""),
-            "user_message": str(user_message or ""),
-            "assistant_response": str(assistant_response or ""),
-            "conversation_history": conversation_history or [],
-        }
-    canonical = json.dumps(
-        anchor,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-        default=str,
-    )
-    return "hermes:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _resolve_env_placeholder(value: Any) -> str:
-    text = str(value or "").strip()
-    if text.startswith("${") and text.endswith("}") and len(text) > 3:
-        return os.environ.get(text[2:-1], "")
-    return text
 
 
 class ProtagineClient:
-    """Small synchronous client; effect endpoints are intentionally absent."""
+    """Synchronous HTTP client with a bearer key, short timeouts and a breaker.
 
-    def __init__(self, url: str | None = None, api_key: str | None = None):
-        self.url = str(
-            url or os.environ.get("PROTAGINE_URL") or "http://127.0.0.1:7777"
-        ).rstrip("/")
-        self._api_key = _resolve_env_placeholder(
-            api_key if api_key is not None else os.environ.get("PROTAGINE_API_KEY", "")
-        )
+    Three consecutive connection failures open the breaker for ``cooldown``
+    seconds; while open, requests raise :class:`SidecarUnavailable` at once.
+    """
 
-    def _headers(self, supplied: Mapping[str, str] | None = None) -> dict[str, str]:
-        headers = dict(supplied or {})
-        if self._api_key:
-            headers.setdefault("Authorization", f"Bearer {self._api_key}")
-        return headers
+    def __init__(self, settings: Settings | None = None, *, url: str | None = None,
+                 api_key: str | None = None, timeout: float = 5.0, cooldown: float = 30.0):
+        self.url = (url or (settings.sidecar_url if settings else DEFAULT_URL)).rstrip("/")
+        self.api_key = api_key if api_key is not None else (settings.api_key if settings else "")
+        self.timeout = timeout
+        self.cooldown = cooldown
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._open_until = 0.0
+        self._mind_routes: tuple[float, bool] | None = None
+
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+    @property
+    def breaker_open(self) -> bool:
+        with self._lock:
+            return time.monotonic() < self._open_until
+
+    def request(self, method: str, path: str, *, timeout: float | None = None,
+                **kwargs: Any) -> httpx.Response:
+        if self.breaker_open:
+            raise SidecarUnavailable("circuit breaker open")
+        try:
+            with httpx.Client(timeout=timeout or self.timeout, trust_env=False) as client:
+                response = client.request(method, f"{self.url}{path}", headers=self.headers(),
+                                          **kwargs)
+        except (httpx.TransportError, OSError) as error:
+            with self._lock:
+                self._failures += 1
+                if self._failures >= 3:
+                    self._open_until = time.monotonic() + self.cooldown
+            raise SidecarUnavailable(type(error).__name__) from error
+        with self._lock:
+            self._failures = 0
+        return response
 
     def get(self, path: str, **kwargs: Any) -> httpx.Response:
-        timeout = kwargs.pop("timeout", 5)
-        headers = self._headers(kwargs.pop("headers", None))
-        deadline = kwargs.pop("_deadline_monotonic", None)
-        transport = _AbsoluteDeadlineHTTPTransport(float(deadline)) if deadline is not None else None
-        with httpx.Client(timeout=timeout, transport=transport, trust_env=deadline is None) as client:
-            return client.get(f"{self.url}{path}", headers=headers, **kwargs)
+        return self.request("GET", path, **kwargs)
 
     def post(self, path: str, **kwargs: Any) -> httpx.Response:
-        timeout = kwargs.pop("timeout", 5)
-        headers = self._headers(kwargs.pop("headers", None))
-        deadline = kwargs.pop("_deadline_monotonic", None)
-        transport = (
-            _AbsoluteDeadlineHTTPTransport(float(deadline))
-            if deadline is not None else None
-        )
-        with httpx.Client(
-            timeout=timeout, transport=transport, trust_env=deadline is None,
-        ) as client:
-            return client.post(f"{self.url}{path}", headers=headers, **kwargs)
+        return self.request("POST", path, **kwargs)
 
     def put(self, path: str, **kwargs: Any) -> httpx.Response:
-        timeout = kwargs.pop("timeout", 5)
-        headers = self._headers(kwargs.pop("headers", None))
-        deadline = kwargs.pop("_deadline_monotonic", None)
-        transport = (
-            _AbsoluteDeadlineHTTPTransport(float(deadline))
-            if deadline is not None else None
-        )
-        with httpx.Client(
-            timeout=timeout, transport=transport, trust_env=deadline is None,
-        ) as client:
-            return client.put(f"{self.url}{path}", headers=headers, **kwargs)
+        return self.request("PUT", path, **kwargs)
 
-    def sync_turn(
-        self,
-        *,
-        session_id: str,
-        contact_id: str,
-        user_message: str = "",
-        assistant_message: str = "",
-        tools_used: Sequence[str] | None = None,
-        topics: Sequence[str] | None = None,
-        entities: Sequence[str] | None = None,
-        summary: str = "",
-        model: str = "",
-        turn_id: str = "",
-        sender: Mapping[str, str] | None = None,
-        channel_id: str = "",
-        checkpoint_messages: Sequence[Mapping[str, Any]] | None = None,
-        observation: Mapping[str, Any] | None = None,
-        assistant_source_refs: Sequence[Mapping[str, str]] | None = None,
-        assistant_input_refs: Sequence[Mapping[str, str]] | None = None,
-        transport_media: Mapping[str, Any] | None = None,
-        source_only: bool | None = None,
-        instruction_only: bool = False,
-        require_source_receipt: bool = False,
-        occurred_at: str | None = None,
-        timezone_name: str | None = None,
-        outbox: TurnOutbox | None = None,
-        timeout_seconds: float = 0.25,
-    ) -> bool:
-        """Persist one participant-bound observation through Protagine's ledger."""
+    def patch(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.request("PATCH", path, **kwargs)
 
+    def has_mind_routes(self, *, ttl: float = 300.0) -> bool | None:
+        """Whether this sidecar serves ``/v1/mind/*``; None while unreachable."""
+        with self._lock:
+            cached = self._mind_routes
+        if cached is not None and time.monotonic() - cached[0] < ttl:
+            return cached[1]
         try:
-            timeout = max(0.01, min(float(timeout_seconds), 1.0))
-            deadline = time.monotonic() + timeout
-            session = str(session_id or "").strip()
-            contact = str(contact_id or "").strip()
-            if not session or not contact:
-                return False
-            if outbox is not None:
-                # Never replay while erasure state is unavailable or incomplete.
-                # The queued source remains durable and chat remains independent.
-                after = outbox.erasure_watermark(contact, deadline_monotonic=deadline)
-                response = self.get("/v1/host/memory/sources/erasures", params={"contact_id": contact, "after": after}, timeout=max(0.001, deadline - time.monotonic()), _deadline_monotonic=deadline)
-                if not response.is_success:
-                    return False
-                page = response.json()
-                outbox.apply_erasure_page(contact, page, deadline_monotonic=deadline)
-                if page.get("complete") is not True:
-                    return False
-                if turn_id and not outbox.contains_turn(turn_id, deadline_monotonic=deadline):
-                    return False  # Purged, or replaced by a survivor-only checkpoint.
-            payload: dict[str, Any] = {
-                "identity": {"host_id": "hermes"},
-                "context": {
-                    "session_id": session,
-                    "contact_id": contact,
-                    **({"channel_id": str(channel_id).strip()} if str(channel_id or "").strip() else {}),
-                    **({"turn_id": str(turn_id)} if turn_id else {}),
-                },
-            }
-            if sender:
-                platform = str(sender.get("platform") or "").strip()
-                user_id = str(sender.get("user_id") or "").strip()
-                if platform and user_id:
-                    payload["sender"] = {"platform": platform, "user_id": user_id}
-            if occurred_at is not None:
-                payload["context"]["metadata"] = {"occurred_at": occurred_at}
-            if timezone_name is not None:
-                payload["context"]["timezone"] = timezone_name
-            if user_message:
-                payload["user_message"] = {"role": "user", "content": user_message if isinstance(user_message, list) else str(user_message)}
-            if assistant_message:
-                payload["assistant_message"] = {
-                    "role": "assistant", "content": str(assistant_message),
-                }
-            if assistant_source_refs:
-                payload['assistant_source_refs'] = list(assistant_source_refs)
-            if assistant_input_refs:
-                payload['assistant_input_refs'] = list(assistant_input_refs)
-            if transport_media is not None:
-                if not turn_id:
-                    return False
-                payload['transport_media'] = dict(transport_media)
-            if source_only:
-                payload['source_only'] = True
-            if tools_used:
-                payload["tools_used"] = [str(item) for item in tools_used][:50]
-            if topics:
-                payload["topics"] = [str(item) for item in topics][:50]
-            if entities:
-                payload["entities"] = [str(item) for item in entities][:50]
-            if summary:
-                payload["summary"] = str(summary)
-            if model:
-                payload["model"] = str(model)
-            if checkpoint_messages is not None:
-                payload["checkpoint_messages"] = list(checkpoint_messages)
+            present = self.get(MIND_STATUS_ROUTE, timeout=2).status_code != 404
+        except SidecarUnavailable:
+            return None
+        with self._lock:
+            self._mind_routes = (time.monotonic(), present)
+        return present
 
-            if observation is not None:
-                if not turn_id:
-                    return False
-                payload = {key: payload[key] for key in ('identity', 'context')}
-                payload['observation'] = dict(observation)
+    def resolve_contact(self, platform: str, handle: str, *, create: bool = False,
+                        timeout: float = 4.0) -> dict[str, Any] | None:
+        """The contact behind a messaging handle, or None when there is none."""
+        if not handle:
+            return None
+        params = {"gateway": platform or "", "address": handle}
+        if create:
+            params["create"] = "true"
+        response = self.get("/v1/host/contacts/resolve", params=params, timeout=timeout)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        value = response.json()
+        return value if isinstance(value, dict) and value.get("contact_id") else None
 
-            video_source = any(isinstance(message, dict) and isinstance(message.get('content'), list)
-                and any(isinstance(block, dict) and block.get('type') == 'input_video' for block in message['content'])
-                for message in [payload.get('user_message'), payload.get('assistant_message'),
-                                *(payload.get('checkpoint_messages') or [])])
-            if video_source and not turn_id:
-                return False  # Legacy sync cannot attest original video retention.
-            if turn_id:
-                document_source = any(isinstance(message, dict) and isinstance(message.get('content'), list)
-                    and any(isinstance(block, dict) and block.get('type') == 'input_document' for block in message['content'])
-                    for message in [payload.get('user_message'), payload.get('assistant_message'),
-                                    *(payload.get('checkpoint_messages') or [])])
-                audio_source = any(isinstance(message, dict) and isinstance(message.get('content'), list)
-                    and any(isinstance(block, dict) and block.get('type') == 'input_audio' for block in message['content'])
-                    for message in [payload.get('user_message'), payload.get('assistant_message'),
-                                    *(payload.get('checkpoint_messages') or [])])
-                # Mixed sources must also require a video-aware receiver.
-                route = ('turns/source-observation' if observation is not None else
-                         'turns/source-media/transport' if transport_media is not None else
-                         'turns/source-media/video' if video_source else
-                         'turns/source-media/document' if document_source else
-                         'turns/source-media/audio' if audio_source else
-                         'turns/source-linked/input-parent' if assistant_input_refs else
-                         'turns/task-instruction' if instruction_only else
-                         'turns/source-survivors' if source_only else
-                         'turns/source-linked' if assistant_source_refs else 'turns')
-                response = self.put(
-                    f"/v2/host/{route}/{quote(str(turn_id), safe='')}",
-                    json=payload,
-                    timeout=min(timeout, max(0.0, deadline - time.monotonic())),
-                    _deadline_monotonic=deadline,
-                )
-            else:
-                response = self.post(
-                    "/v1/host/turns/sync", json=payload, timeout=timeout,
-                    _deadline_monotonic=deadline,
-                )
-            if time.monotonic() >= deadline:
-                raise TurnDeliveryOutcomeUnknown(
-                    "participant-bound turn outcome is unknown"
-                )
-            response.raise_for_status()
-            value = response.json()
-            if time.monotonic() >= deadline:
-                raise TurnDeliveryOutcomeUnknown(
-                    "participant-bound turn outcome is unknown"
-                )
-            return bool(
-                isinstance(value, Mapping) and value.get("accepted")
-                and (transport_media is None or isinstance(value.get('transport_media'), dict)
-                     and value['transport_media'].get('processed') is True
-                     and value['transport_media'].get('source_id') == turn_id
-                     and value['transport_media'].get('provider_message_id') == transport_media['provider_message_id'])
-                and (
-                    not (require_source_receipt or checkpoint_messages is not None)
-                    or value.get("source_recorded") is True
-                )
-            )
-        except TurnDeliveryOutcomeUnknown:
-            raise
-        except httpx.TimeoutException:
-            raise TurnDeliveryOutcomeUnknown(
-                "participant-bound turn outcome is unknown"
-            ) from None
-        except BaseException as error:
-            logger.debug(
-                "participant-bound turn sync failed (%s)", type(error).__name__,
-            )
-            return False
-
+    def health(self, timeout: float = 3.0) -> dict[str, Any] | None:
+        try:
+            response = self.get("/v1/host/health", timeout=timeout)
+            return response.json() if response.is_success else None
+        except (SidecarUnavailable, ValueError):
+            return None
 
 
 __all__ = [
-    "ProtagineClient",
-    "ProtagineClient",
-    "PrivateSQLitePath",
-    "PrivateSQLitePathError",
-    "TurnOutbox",
-    "TurnOutboxConflict",
-    "TurnOutboxFull",
-    "TurnOutboxPayloadError",
-    "TurnDeliveryOutcomeUnknown",
-    "derive_hermes_turn_id",
+    "DEFAULT_URL", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
+    "SidecarUnavailable", "hermes_config", "hermes_home", "load_settings", "plugin_section",
+    "read_yaml",
 ]

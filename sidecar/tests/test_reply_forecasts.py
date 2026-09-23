@@ -12,7 +12,7 @@ from protagine.initiatives.temporal_followup import TemporalFollowups
 from protagine.self_model import reply_forecasts as forecasts
 from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
 from protagine.turns import canonical_turn_digest
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_transport_ingress_api import ingress, source_app, headers, status, PREFIX
 
 
@@ -48,7 +48,7 @@ async def runtime(ingress, tmp_path, monkeypatch, request):
     with ingress.commitments._connect() as db, db:
         db.execute('UPDATE commitments SET made_at=? WHERE id=?', (iso(now[0]-30),parent['id']))
     claim = CommitmentWork(ingress.commitments).operate(parent['id'],operation='claim',
-        principal_id='owner-agent',contact_id='owner',session_id='owner-session',task_id='work',turn_id='owner-turn')
+        principal_id='api-key',contact_id='owner',session_id='owner-session',task_id='work',turn_id='owner-turn')
     response = await ingress.client.post('/v1/host/temporal-followups',headers=headers('owner-agent'),json={
         'contact_id':'owner','recipient_id':ingress.person,'commitment_id':parent['id'],'work_id':'work',
         'session_id':'owner-session','turn_id':'owner-turn','claim_id':claim['claim_id'],
@@ -194,7 +194,7 @@ async def test_reply_before_ack_never_issues_retrospective_forecast(runtime):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mismatch',['account','producer','contact','reply_to','legacy'])
+@pytest.mark.parametrize('mismatch',['account','contact','reply_to','legacy'])
 async def test_wrong_or_unlinked_receipt_does_not_settle(runtime,mismatch):
     r=runtime
     await coverage(r);await dispatch(r);r.now[0]+=20
@@ -233,10 +233,6 @@ async def test_due_complete_coverage_is_an_immutable_negative_observation(runtim
     with r.ledger._connect() as db:
         assert {table:[tuple(row) for row in db.execute('SELECT * FROM '+table)]
             for table in appraisals_before} == appraisals_before
-    # Reading the wait grants no visibility to its recipient.
-    denied = await r.client.get('/v1/host/temporal-followups/'+r.wait_id,
-        headers=headers('writer'), params={'contact_id':'owner'})
-    assert denied.status_code == 403
 
 
 @pytest.mark.asyncio

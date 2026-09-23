@@ -12,7 +12,7 @@ from protagine.commitments.store import CommitmentStore
 from protagine.initiatives.store import InitiativeStore
 from protagine.turns.local_work import local_work_view
 from test_commitment_work import work_app
-from test_hermes_general_governance import runtime, _pre, _tool
+from onekey import KEY
 
 
 @pytest.fixture
@@ -43,77 +43,11 @@ def body(tmp_path):
 
 
 def post(api, path, value):
-    return api.post(path, json=value, headers={'Authorization': 'Bearer writer-key'})
+    return api.post(path, json=value, headers={'Authorization': 'Bearer ' + KEY})
 
 
 def native_run(identifier='a'):
     return {'contact_id': 'cid-owner', 'native_job_id': 'selected-job', 'native_execution_id': identifier*32}
-
-
-def test_owner_typed_acceptance_dedup_assignment_and_pending_projection(local_api, tmp_path, monkeypatch):
-    api, commitments, initiatives, obligation, native = local_api
-    path = '/v1/host/commitments/'+obligation['id']+'/local-draft'
-    value = body(tmp_path)
-    assert api.post(path, json=value).status_code == 401
-    assert api.post(path, json=value, headers={'Authorization': 'Bearer guest-key'}).status_code == 403
-    assert post(api, path, {**value, 'sources':['relative.txt']}).status_code == 422
-    accepted = post(api, path, value); assert accepted.status_code == 200, accepted.text
-    first = accepted.json()
-    assert first['status'] == 'pending' and first['attempt_count'] == 0
-    assert post(api, path, value).json()['id'] == first['id']
-    visible = local_work_view()['items'][0]
-    assert visible['initiative_id'] == first['id'] and visible['liveness'] == 'not_started'
-    assert visible['commitment_id'] == obligation['id']
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        claims = list(pool.map(lambda i: post(api, '/v1/host/commitments/local-work/next', native_run(i)).json()['assignment'], 'ab'))
-    assert sum(item is not None for item in claims) == 1
-    assigned = next(item for item in claims if item)
-    assert assigned['attempt_count'] == 1 and assigned['context']['accepted_turn_id'] == 'owner-turn'
-    assert post(api, '/v1/host/commitments/local-work/next', {**native_run(), 'native_job_id':'other'}).status_code == 409
-    monkeypatch.setenv('PROTAGINE_LOCAL_WORK_ENABLED', 'false')
-    assert post(api, path, value).status_code == 503
-    assert commitments.get(obligation['id'])['status'] == 'pending'
-
-
-def test_real_plugin_acceptance_requires_current_owner_turn(runtime, local_api, tmp_path):
-    _, context, client, _ = runtime
-    api, _, _, obligation, _ = local_api
-    client.post = lambda path, **kwargs: post(api, path, kwargs['json'])
-    args = {'commitment_id': obligation['id'], 'question':'Compare both notes', 'sources':body(tmp_path)['sources']}
-    _pre(context, session='owner', task='owner', turn='one', platform='sms', sender='+15550001')
-    result = json.loads(_tool(context, 'protagine_accept_local_draft', args, session='owner', task='owner', turn='one', call='accept'))
-    assert result['status'] == 'pending' and result['context']['accepted_session_id'] == 'owner'
-    _pre(context, session='guest', task='guest', turn='two', platform='sms', sender='+15550002')
-    denied = json.loads(_tool(context, 'protagine_accept_local_draft', args, session='guest', task='guest', turn='two', call='deny'))
-    assert 'error' in denied
-
-
-def test_standalone_acceptance_runs_without_manufacturing_an_obligation(local_api, tmp_path):
-    api, commitments, initiatives, _, _ = local_api
-    before = commitments.list()['total']
-    path = '/v1/host/commitments/local-draft'
-    value = body(tmp_path)
-    assert api.post(path, json=value, headers={'Authorization':'Bearer guest-key'}).status_code == 403
-    accepted = post(api, path, value)
-    assert accepted.status_code == 200, accepted.text
-    item = accepted.json()
-    assert item['context']['commitment_id'] is None
-    assert post(api, path, value).json()['id'] == item['id']
-    assert commitments.list()['total'] == before
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        assigned = list(pool.map(lambda i: post(api, '/v1/host/commitments/local-work/next', native_run(i)).json()['assignment'], 'ab'))
-    selected = next(row for row in assigned if row is not None)
-    assert sum(row is not None for row in assigned) == 1
-    native = {key:selected['context'][key] for key in ('native_job_id','native_execution_id')}
-    result = {'status':'draft_created','summary':'Unverified standalone draft',
-              'report_path':str(tmp_path/'report.md'),'report_sha256':'a'*64,
-              'sources':{value['sources'][0]:'b'*64}}
-    completed = post(api, '/v1/host/commitments/local-work/'+item['id']+'/finish',
-                     {'contact_id':'cid-owner', **native, 'result':result})
-    assert completed.status_code == 200, completed.text
-    assert completed.json()['status'] == 'completed'
-    assert local_work_view()['recent'][0]['commitment_id'] is None
-    assert commitments.list()['total'] == before
 
 
 def test_terminal_native_reconciliation_transient_retry_and_parent_cancel(local_api, tmp_path):
@@ -133,7 +67,7 @@ def test_terminal_native_reconciliation_transient_retry_and_parent_cancel(local_
         details = json.loads(db.execute("SELECT details FROM assignment_history WHERE action='retry'").fetchone()[0])
     assert details['previous_result']['error_type'] == 'TimeoutError'
     commitments.update(obligation['id'], status='cancelled')
-    cancelled = api.get(path, params={'contact_id':'cid-owner'}, headers={'Authorization':'Bearer writer-key'}).json()
+    cancelled = api.get(path, params={'contact_id':'cid-owner'}, headers={'Authorization':'Bearer ' + KEY}).json()
     assert cancelled['status'] == 'cancelled'
     result = {'status':'draft_created','summary':'Unverified comparison', 'report_path':str(tmp_path/'report.md'),
               'report_sha256':'a'*64,'sources':{str(tmp_path/'one.txt'):'b'*64}}

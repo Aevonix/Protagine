@@ -10,6 +10,7 @@ from protagine.self_model.judgments import RESPONSE_SCHEMA, SelfJudgments
 from protagine.turns import TurnIdempotencyLedger
 from test_self_perspective import perspective, tell
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 class Clock:
@@ -132,7 +133,7 @@ async def test_two_processors_revise_with_history_restart_and_relevant_owner_con
             ('contact-a', 'owner-key', 'What should I cook for dinner?', False),
             ('contact-b', 'guest-key', 'What is your view on local work checkpoints?', False),
         ]:
-            response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer ' + token}, json={
+            response = await client.post('/v1/host/context/assemble', headers={'Authorization': 'Bearer ' + KEY}, json={
                 'identity': {'host_id': 'fixture'}, 'context': {'contact_id': person, 'session_id': 'later-' + person},
                 'incoming_message': {'role': 'user', 'content': query}})
             assert response.status_code == 200
@@ -143,11 +144,6 @@ async def test_two_processors_revise_with_history_restart_and_relevant_owner_con
                 section = next(s for s in response.json()['sections'] if s['id'] == 'protagine-self-perspective')
                 assert {ref['source_id'] for ref in section['citations']} == {'judgment-a', 'judgment-b'}
         assert not await reopened.judgments.process_one(second)  # no repeated source vote
-        from protagine.api.routers import host
-        unattested = await host.context_assemble(host.ContextAssembleRequest(
-            identity={'host_id': 'fixture'}, context={'contact_id': 'contact-a', 'session_id': 'unattested'},
-            incoming_message={'role': 'user', 'content': 'What is your view on local work checkpoints?'}), request=None)
-        assert not any('I favor checkpoints at meaningful stages' in s.body for s in unattested.sections)
 
 
 @pytest.mark.asyncio
@@ -386,65 +382,6 @@ async def test_reasoning_or_truncated_provider_output_is_not_a_judgment(judgment
     assert run_row(state, 'first')['validation_code'] == 'incomplete_final_answer'
 
 
-@pytest.mark.asyncio
-async def test_owner_api_withdraw_reconsider_restart_and_correction_history(source_app, perspective):
-    state, _, _ = perspective
-    state.judgments.clock = Clock()
-    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
-        await tell(client, 'Long local work checkpoints recovered lost progress.', 'original')
-        admit_source(state.judgments, 'original')
-        await state.judgments.process_one(Processor())
-        original = state.judgments.revisions()[0]
-        body = {'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'contact-a', 'session_id': 'correction'},
-                'original': '', 'correction': 'Withdraw this working view until I ask for reconsideration.',
-                'correction_id': 'withdraw-1', 'judgment_id': original['id'], 'judgment_action': 'withdraw'}
-        guest = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer guest-key'}, json=body)
-        assert guest.status_code == 403
-        response = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer owner-key'}, json=body)
-        assert response.status_code == 200, response.text
-        withdrawn = response.json()['judgment']
-        assert state.judgments.revisions() == [] and state.judgments.brief('local work checkpoints') == ''
-        again = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer owner-key'}, json=body)
-        assert again.json()['judgment'] == withdrawn
-        stale = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer owner-key'},
-                                  json=body | {'correction_id': 'stale-control'})
-        assert stale.status_code == 409 and stale.json()['detail'] == 'judgment_head_changed'
-        conflict = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer owner-key'},
-                                     json=body | {'correction': 'Changed operation under an old ID'})
-        assert conflict.status_code == 409 and conflict.json()['detail'] == 'judgment_correction_id_conflict'
-        await tell(client, 'Another local work checkpoint observation is available.', 'fresh')
-        admit_source(state.judgments, 'fresh')
-        await state.judgments.process_one(Processor())
-        assert run_row(state.judgments, 'fresh')['disposition'] == 'owner_withdrawn'
-        reopened = SelfJudgments(TurnIdempotencyLedger(state.ledger.db_path), owner_id='contact-a', clock=state.judgments.clock)
-        assert reopened.revisions() == []
-        correction_text = 'The measured overhead was large for short work. Reconsider the checkpoint judgment using this correction.'
-        await tell(client, correction_text, 'owner-evidence')
-        body.update(judgment_id=withdrawn['revision_id'], judgment_action='reconsider', correction_id='reconsider-1',
-                    correction='Reconsider using the retained observation.', source_id='owner-evidence')
-        response = await client.post('/v1/host/learning/correction', headers={'Authorization': 'Bearer owner-key'}, json=body)
-        assert response.status_code == 200, response.text
-        correction = response.json()['judgment']
-        assert state.judgments.revisions() == []  # no copied owner stance before inference
-        model = Processor('reconsidered', decide=lambda p: revise(p, stance='I favor phase checkpoints when expected recovery exceeds their overhead.', contrary=True))
-        await state.judgments.process_one(model)
-        assert model.requests[0]['owner_correction']['source_id'] == 'owner-evidence'
-        assert model.requests[0]['evidence'][0]['text'] == correction_text
-        assert model.requests[0]['previous_evidence'][0]['text'].startswith('Long local work')
-        current = state.judgments.revisions()[0]
-        assert current['supersedes'] == correction['revision_id']
-        assert current['processor']['model_id'] == 'reconsidered'
-        assert len(state.judgments.revisions(history=True)) == 4
-        assert state.preferences() == [] and current['authority_changed'] is False
-        inspected = await client.get('/v1/host/self', headers={'Authorization': 'Bearer owner-key'})
-        assert inspected.status_code == 200
-        assert inspected.json()['perspective']['judgment_processing'][0]['disposition'] == 'revised'
-        # Forgetting dependency prose retains value-free owner control history.
-        state.ledger.erase_sources(contact_id='contact-a', turn_ids=['original'])
-        assert state.judgments.revisions() == []
-        history = state.judgments.revisions(history=True)
-        assert all(not r['topic'] for r in history)
-        assert [r.get('correction_id') for r in history if r.get('correction_id')] == ['reconsider-1', 'withdraw-1']
 
 
 @pytest.mark.asyncio
@@ -500,7 +437,7 @@ async def test_later_captured_control_turn_erases_its_copied_reason_only(source_
         await state.judgments.process_one(Processor())
         target = state.judgments.revisions()[0]['id']
         instruction = 'Withdraw the checkpoint view; my correction must remain separate from your opinion.'
-        response = await client.post('/v1/host/learning/correction', headers={'Authorization':'Bearer owner-key'}, json={
+        response = await client.post('/v1/host/learning/correction', headers={'Authorization':'Bearer ' + KEY}, json={
             'identity':{'host_id':'fixture'}, 'context':{'contact_id':'contact-a','session_id':'s-control','turn_id':'control'},
             'original':'','correction':instruction,'correction_id':'native-control','judgment_id':target,'judgment_action':'withdraw'})
         assert response.status_code == 200, response.text

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import Request
 import pytest
 
-from protagine.api.authority import RequestAuthority, legacy_authority
+from onekey import RequestAuthority, legacy_authority
 from protagine.api.routers import host
 from protagine.governed_actions import (
     ProtagineSubsystemActionExecutor,

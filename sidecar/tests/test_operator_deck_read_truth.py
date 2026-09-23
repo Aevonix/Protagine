@@ -8,7 +8,7 @@ from fastapi import HTTPException, Request
 import pytest
 
 from protagine.api.routers import host
-from protagine.api.authority import legacy_authority
+from onekey import legacy_authority
 
 
 def _legacy_request() -> Request:

@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 def populate_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_WORLD_POPULATE_MODE",
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_WORLD_POPULATE_MODE",
                    ("off", "shadow", "live"), "shadow")
 
 

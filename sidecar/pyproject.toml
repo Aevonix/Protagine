@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protagine"
-version = "1.9.0"
+version = "1.10.0"
 description = "Persistent identity, memory and autonomy for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -67,4 +67,4 @@ include = ["protagine*"]
 exclude = ["*.tests", "*.tests.*", "*.test_*", "*.conftest"]
 
 [tool.setuptools.package-data]
-protagine = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png", "hermes_patchsets/*/*.patch", "hermes_patchsets/*/LICENSE", "hermes_patchsets/*/NOTICE"]
+protagine = ["**/*.sql", "**/*.json", "**/*.yaml", "**/*.txt", "qualification/fixtures/*.png", "service_template.plist"]

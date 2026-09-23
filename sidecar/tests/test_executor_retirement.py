@@ -119,10 +119,7 @@ def test_missing_database_not_silently_created(tmp_path):
     assert not (tmp_path / 'initiatives.db').exists()
 
 
-def test_retired_executor_cannot_be_reactivated_by_preset_or_old_environment(monkeypatch):
+def test_retired_executor_cannot_be_reactivated_by_old_environment(monkeypatch):
     import importlib.util
-    from protagine.util.autonomy_preset import snapshot
     monkeypatch.setenv('PROTAGINE_EXECUTOR_ENABLED', 'true')
-    monkeypatch.setenv('PROTAGINE_AUTONOMY_PRESET', 'autonomous')
-    assert 'PROTAGINE_EXECUTOR_ENABLED' not in snapshot()
     assert importlib.util.find_spec('protagine.services.initiative_executor') is None

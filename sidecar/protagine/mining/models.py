@@ -37,8 +37,8 @@ ESCALATION_KINDS = ("consultation", "provider_escalation")
 
 
 def mining_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_ESCALATION_MINING",
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_ESCALATION_MINING",
                    ("off", "shadow", "live"), "shadow")
 
 

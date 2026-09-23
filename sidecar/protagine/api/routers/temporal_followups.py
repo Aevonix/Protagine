@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 from protagine.api.routers.executions import authorized_viewer
 from protagine.api.routers.initiative_work import ReviewBinding
 from protagine.commitments.work import CommitmentWork

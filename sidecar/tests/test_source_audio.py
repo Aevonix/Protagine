@@ -16,7 +16,6 @@ from protagine.turns.idempotency import SourceErased, source_message_hash
 from protagine.turns.media import SourceMedia
 from protagine.beliefs.source_projection import SourceClaimProjection
 from test_turn_source_evidence import source_app, recalled, envelope
-from test_hermes_turn_outbox import _load_client
 
 
 def wav_bytes(rate=16000, frames=1600):
@@ -39,66 +38,6 @@ def message(data=None):
 def retained(ledger, turn='audio'):
     with sqlite3.connect(ledger.db_path) as db:
         return json.loads(db.execute('SELECT messages_json FROM turn_sources WHERE turn_id=?', (turn,)).fetchone()[0])[0]
-
-
-@pytest.mark.asyncio
-async def test_audio_http_recall_and_full_source_preserve_derived_clock_lineage(source_app, tmp_path, monkeypatch):
-    from protagine.turns.source_read import read
-    from protagine.turns.source_vectors import chunks, hydrate
-    from contextlib import closing
-    data = wav_bytes(); original = message(data); asset = hashlib.sha256(data).hexdigest()
-    body = {'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'contact-a', 'session_id': 'call', 'turn_id': 'audio'},
-            'user_message': original, 'source_only': True}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as client:
-        result = await client.put('/v2/host/turns/source-media/audio/audio', json=body)
-        assert result.status_code == 201 and result.json()['source_recorded'], result.text
-        ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
-        stored = retained(ledger)
-        assert source_message_hash('call', stored) == source_message_hash('call', original)
-        assert original['content'][0]['input_audio']['data'] not in json.dumps(stored)
-        assert stored['content'][0]['duration_ms'] == 100 and stored['content'][0]['sample_rate'] == 16000
-        transcript = stored['content'][1]
-        assert transcript['captured_at'] is None and transcript['received_at'] == original['content'][1]['received_at']
-        assert transcript['confidence'] is None and transcript['epistemic_state'] == 'derived_unverified'
-        assert SourceMedia(ledger).claim_job() is None  # Audio is never sent to the image model.
-        class NoModel:
-            async def complete(self, **kwargs): pytest.fail('An unavailable configured role was invoked')
-        assert await SourceClaimProjection(ledger).process_one(NoModel())
-        # Recognition remains usable source evidence while semantic formation
-        # waits for its existing configured extraction/review roles.
-        assert SourceClaimProjection(ledger).status('contact-a')[0]['status'] == 'pending'
-        asset_url = '/v1/host/memory/sources/assets/' + asset
-        response = await client.get(asset_url, params={'contact_id': 'contact-a', 'session_id': 'later'})
-        assert response.content == data and response.headers['content-type'] == 'audio/wav'
-        assert response.headers['cache-control'] == 'no-store'
-        assert (await client.get(asset_url, params={'contact_id': 'other', 'session_id': 'call'})).status_code == 404
-        monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-        packet = await recalled(client, session='later', query='violet lamp')
-        assert 'Unverified machine transcript' in packet and 'derived_unverified' in packet and asset in packet
-        assert 'input_audio' not in packet and original['content'][0]['input_audio']['data'] not in packet
-        refs = ledger.source_references(['audio'], contact_id='contact-a', session_id='later')
-        opened = read(ledger, contact_id='contact-a', session_id='later', source_id='audio', source_version=refs[0]['source_version'])
-        assert 'fixture-asr' in opened['content'] and 'audio_transcript' in opened['content']
-        with closing(ledger._connect()) as db:
-            source = dict(db.execute("SELECT * FROM turn_sources WHERE turn_id='audio'").fetchone())
-            vectors = list(chunks(db, source))
-        assert len(vectors) == 1
-        assert hydrate(ledger, vectors[0][1], contact_id='contact-a', session_id='later')['epistemic_state'] == 'derived_unverified'
-        ledger.record_source('answer', contact_id='contact-a', session_id='later', messages=[{'role': 'assistant',
-            'content': 'Your extra lamp has a purple finish.', '_supplied_inputs': [{'source_id': 'audio',
-            'input_message_hash': source_message_hash('call', original)}]}], derive_claims=False)
-        ledger.erase_sources(contact_id='contact-a', turn_ids=['audio'])
-        assert ledger.source_references(['answer'], contact_id='contact-a', session_id='later') == []
-        assert not ledger.search_sources('violet', contact_id='contact-a', session_id='later')
-        assert hydrate(ledger, vectors[0][1], contact_id='contact-a', session_id='later') is None
-        assert (await client.get(asset_url, params={'contact_id': 'contact-a', 'session_id': 'later'})).status_code == 404
-        assert not SourceMedia(ledger).store._original_path(asset, 'audio/wav').exists()
-        with pytest.raises(ValueError): read(ledger, contact_id='contact-a', session_id='later', source_id='audio', source_version=refs[0]['source_version'])
-        with pytest.raises(SourceErased): ledger.record_source('late', contact_id='contact-a', session_id='call', messages=[original])
-        outbox = _load_client('audio_erasure').TurnOutbox(tmp_path/'outbox.db')
-        outbox.enqueue('late', {'turn_id': 'late', 'contact_id': 'contact-a', 'session_id': 'call', 'user_message': original['content']})
-        outbox.apply_erasure_page('contact-a', ledger.erasure_feed('contact-a'))
-        assert outbox.snapshot() == []
 
 
 @pytest.mark.parametrize('variant', ['mp3', 'truncated', 'too-long', 'remote', 'video', 'transcript-hash', 'segment-range'])

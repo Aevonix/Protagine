@@ -11,7 +11,6 @@ from protagine import backup
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.media import SourceMedia
 from test_source_media import image_bytes, message
-from test_hermes_turn_outbox import _load_client
 
 
 @pytest.fixture
@@ -140,41 +139,6 @@ os._exit(0)
 def _memory_archive(state, output):
     (state / 'protagine-id').write_text('recovery-fixture-protagine')
     return backup.create_full_backup(state, output, include_graph=False, include_vectors=False)
-
-
-def test_memory_salvage_keeps_newer_erasures_and_offline_host_cursor(evidence, tmp_path):
-    state, ledger, media, asset = evidence
-    client = _load_client('recovery_offline_client')
-    outbox = client.TurnOutbox(tmp_path / 'offline-host' / 'outbox.sqlite3')
-    outbox.enqueue('image-source', {'turn_id': 'image-source', 'contact_id': 'fixture-contact',
-        'session_id': 'original', 'checkpoint_messages': [message()]})
-    archive = _memory_archive(state, tmp_path / 'archives')
-    assert ledger.erase_sources(contact_id='fixture-contact', turn_ids=['image-source'])['media_cleanup'] == 'complete'
-    page = ledger.erasure_feed('fixture-contact')
-    outbox.apply_erasure_page('fixture-contact', page)
-    cursor = outbox.erasure_watermark('fixture-contact')
-    assert cursor > 0
-
-    old = tmp_path / 'old-restore'
-    backup.restore_full_backup(archive, old)
-    old_media = SourceMedia(TurnIdempotencyLedger(old / 'turn-idempotency.db'))
-    assert old_media.read(asset, contact_id='fixture-contact', session_id='later')[0] == image_bytes()
-    with pytest.raises(ValueError, match='restore requires reconciliation'):
-        old_media.ledger.erasure_feed('fixture-contact', after=cursor)
-
-    destination = tmp_path / 'current-memory'
-    summary = backup.restore_source_memory(archive, destination, current_state=state)
-    recovered = SourceMedia(TurnIdempotencyLedger(destination / 'turn-idempotency.db'))
-    assert recovered.ledger.erasure_feed('fixture-contact', after=cursor)['complete']
-    assert recovered.search('blue circle', contact_id='fixture-contact', session_id='later') == []
-    with pytest.raises(KeyError):
-        recovered.read(asset, contact_id='fixture-contact', session_id='later')
-    assert not (destination / 'images').exists()
-    assert summary['erasure_head'] == cursor
-    assert summary['source_images'] == 0
-    assert summary['runtime_authority_restored'] is False
-    with sqlite3.connect(outbox.path) as db:
-        assert db.execute('SELECT count(*) FROM turn_outbox').fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('lost_original', ['missing', 'corrupt'])

@@ -5,6 +5,7 @@ from httpx import ASGITransport, AsyncClient
 from protagine.api.routers import host
 from test_canonical_memory_search import memory_app
 from test_turn_source_evidence import source_app
+from onekey import KEY
 
 
 class NoGraph:
@@ -19,7 +20,7 @@ async def test_memory_read_opens_canonical_source_without_graph(memory_app, monk
     ref = ledger.source_references(['report'], contact_id='person', session_id='later')[0]
     body = {'identity': {'host_id': 'fixture'}, 'person_id': 'person', 'session_id': 'later', **ref}
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         response = await client.post('/v1/host/memory/read', json=body)
         assert response.status_code == 200, response.text
         assert set(response.json()) == {'source'}
@@ -38,7 +39,7 @@ async def test_memory_read_backend_failure_is_not_empty_success(memory_app, monk
     def unavailable(*args): raise OSError('fixture unavailable')
     monkeypatch.setattr(turns, 'get_turn_idempotency_ledger', unavailable)
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer person'}) as client:
+                           headers={'Authorization':'Bearer ' + KEY}) as client:
         response = await client.post('/v1/host/memory/read', json={
             'identity': {'host_id': 'fixture'}, 'person_id': 'person', 'session_id': 'later', **ref})
         assert response.status_code == 503

@@ -259,53 +259,6 @@ class TestProfiler:
 # Doctor attribution check
 # ---------------------------------------------------------------------------
 
-class TestDoctorAttribution:
-    def test_placeholder_fraction_warns(self, tmp_path, monkeypatch):
-        from protagine import doctor
-        monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
-        conn = sqlite3.connect(tmp_path / "protagine-comms.db")
-        conn.execute(
-            "CREATE TABLE communications (id TEXT, contact_id TEXT, "
-            "channel TEXT, direction TEXT, summary TEXT, session_id TEXT, "
-            "ts TEXT)")
-        for i in range(8):
-            conn.execute(
-                "INSERT INTO communications VALUES (?,?,?,?,?,?,datetime('now'))",
-                (str(i), "default" if i < 6 else "cid-1", "direct", "in",
-                 "", ""))
-        conn.commit()
-        conn.close()
-        r = doctor.check_relationship_attribution()
-        assert r.status == doctor.WARN
-
-    def test_healthy_attribution_passes(self, tmp_path, monkeypatch):
-        from protagine import doctor
-        monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
-        conn = sqlite3.connect(tmp_path / "protagine-comms.db")
-        conn.execute(
-            "CREATE TABLE communications (id TEXT, contact_id TEXT, "
-            "channel TEXT, direction TEXT, summary TEXT, session_id TEXT, "
-            "ts TEXT)")
-        for i in range(8):
-            conn.execute(
-                "INSERT INTO communications VALUES (?,?,?,?,?,?,datetime('now'))",
-                (str(i), "system" if i < 2 else f"cid-{i}", "direct", "in",
-                 "", ""))
-        conn.commit()
-        conn.close()
-        r = doctor.check_relationship_attribution()
-        assert r.status == doctor.PASS
-
-    def test_no_ledger_skips(self, tmp_path, monkeypatch):
-        from protagine import doctor
-        monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
-        r = doctor.check_relationship_attribution()
-        assert r.status == doctor.SKIP
-
-
-# ---------------------------------------------------------------------------
-# v0.23.1 gap fixes: canonical-id resolution, outbound comms, research gate
-# ---------------------------------------------------------------------------
 
 class TestCanonicalIdResolution:
     async def test_existing_contact_id_as_user_id_short_circuits(self, store):

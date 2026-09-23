@@ -279,8 +279,8 @@ def workspace_mode() -> str:
 
     An explicitly-set invalid value falls back to "off", exactly as the
     legacy reader did; the preset only fills the unset case."""
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off")
 
 
 def workspace_enabled() -> bool:

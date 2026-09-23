@@ -128,8 +128,8 @@ def uninstall_clock():
     _OFFSET[0] = 0.0
 
 
-def protagine_tick_entry():
-    """The loaded Protagine plugin's ``tick`` when it defines one; None in every other arm."""
+def _protagine_entry(name):
+    """A callable the loaded Protagine plugin module defines; None in every other arm."""
     try:
         from hermes_cli.plugins import get_plugin_manager
         loaded = get_plugin_manager()._plugins.get('protagine')
@@ -137,8 +137,18 @@ def protagine_tick_entry():
         return None
     if loaded is None or not loaded.enabled:
         return None
-    tick = getattr(loaded.module, 'tick', None)
-    return tick if callable(tick) else None
+    entry = getattr(loaded.module, name, None)
+    return entry if callable(entry) else None
+
+
+def protagine_tick_entry():
+    """The loaded Protagine plugin's ``tick`` when it defines one; None in every other arm."""
+    return _protagine_entry('tick')
+
+
+def protagine_flush_entry():
+    """The adapter's ``flush``: deliver captured turns now, as its body thread would shortly."""
+    return _protagine_entry('flush')
 
 
 def _bounded(text):

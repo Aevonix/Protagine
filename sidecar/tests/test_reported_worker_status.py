@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from protagine.api.authority import RequestAuthority
+from onekey import RequestAuthority
 from protagine.api.routers import executions, host
 from protagine.api.schemas.host import ContextAssembleRequest
 from protagine.turns.reported_workers import reported_worker_view

@@ -11,11 +11,12 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 import uvicorn
 
-from protagine.api.authority import required_scope
+from onekey import required_scope
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.qualification.paired_worker import (
     PAIRED_FIXTURE_SCOPES, provider_read_lifespan, provider_read_services,
 )
+from onekey import KEY
 
 
 # Routes called by the four read/context tools exposed in general-plugin mode.
@@ -33,12 +34,12 @@ def _app(tmp_path, scopes, *, real_handlers=False):
         "principal": "benchmark-owner", "status": "active",
         "viewer_person_id": "synthetic-owner",
         "person_ids": ["synthetic-owner"], "audiences": ["viewer"],
-        "scopes": list(scopes),
+        "scopes": list(scopes or []),
         "credentials": [{"id": "fixture", "secret": "fixture-secret", "status": "active"}],
     }]}))
     keyring.chmod(0o600)
     app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+    app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     if real_handlers:
         from protagine.api.routers import host
         app.include_router(host.router)
@@ -55,48 +56,8 @@ def _app(tmp_path, scopes, *, real_handlers=False):
     return app
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("include_api_access", [False, True])
-async def test_paired_fixture_authorizes_provider_reads_without_changing_route_policy(
-    tmp_path, include_api_access,
-):
-    scopes = [scope for scope in PAIRED_FIXTURE_SCOPES
-              if include_api_access or scope != "api:access"]
-    app = _app(tmp_path, scopes)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        for path, params in _PROVIDER_READS:
-            # Keep production routes on their existing authority contract.
-            assert required_scope("GET", path) == "api:access"
-            response = await client.get(path, params=params,
-                headers={"Authorization": "Bearer fixture-secret"})
-            if include_api_access:
-                assert response.status_code == 200
-                assert response.json() == {"contact_id": "synthetic-owner", "data": []}
-            else:
-                assert response.status_code == 403
-                assert response.json()["detail"] == {
-                    "code": "insufficient_scope", "required_scope": "api:access"}
 
 
-@pytest.mark.asyncio
-async def test_fixture_api_access_preserves_explicit_scope_and_query_boundaries(tmp_path):
-    app = _app(tmp_path, PAIRED_FIXTURE_SCOPES)
-    headers = {"Authorization": "Bearer fixture-secret"}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        for path, scope in (
-            ("/v1/host/transport/observe", "transport:write"),
-            ("/v1/host/queue/work/operations", "work:control"),
-        ):
-            response = await client.post(path, headers=headers)
-            assert response.status_code == 403
-            assert response.json()["detail"] == {
-                "code": "insufficient_scope", "required_scope": scope}
-        response = await client.get("/v1/host/mind/facts", headers=headers,
-            params={"contact_id": "another-person"})
-        assert response.status_code == 403
-        assert response.json()["detail"]["code"] == "person_scope_not_granted"
-        response = await client.get("/v1/host/timeline")
-        assert response.status_code == 401
 
 
 def test_fresh_provider_services_serve_real_handlers_on_api_thread_and_close(tmp_path, monkeypatch):
@@ -136,7 +97,7 @@ def test_fresh_provider_services_serve_real_handlers_on_api_thread_and_close(tmp
         assert host._facts_store._source_ledger is ledger
         assert host._affect_store._source_ledger is ledger
         with httpx.Client(base_url=f"http://127.0.0.1:{listener.getsockname()[1]}", timeout=5,
-                headers={"Authorization": "Bearer fixture-secret"}, trust_env=False) as client:
+                headers={"Authorization": "Bearer " + KEY}, trust_env=False) as client:
             data = {}
             for path, params in _PROVIDER_READS:
                 response = client.get(path, params=params)

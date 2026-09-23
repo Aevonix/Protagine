@@ -10,7 +10,7 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.media import SourceMedia, MAX_IMAGE_BYTES
 from protagine.turns.source_read import read
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_source_media import image_bytes, message
 from test_turn_source_evidence import source_app
 
@@ -133,23 +133,3 @@ def test_audio_asset_is_not_an_image_read_even_with_valid_source_scope(original)
         opened(original, **ref, asset_hash=asset)
 
 
-@pytest.mark.asyncio
-async def test_image_read_api_enforces_scope_hash_and_selector_contract(source_app, original, tmp_path):
-    ledger, ref, asset = original
-    keyring = tmp_path/'keys.json'
-    _write_keyring(keyring, [_principal(principal='reader', secret='read', viewer='person', scopes=['memory:read']),
-                            _principal(principal='other', secret='other', viewer='other', scopes=['memory:read'])])
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
-    body = {'identity': {'host_id': 'fixture'}, 'person_id': 'person', 'session_id': 'later',
-            **ref, 'source_view': 'image', 'asset_hash': asset}
-    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://fixture') as client:
-        result = await client.post('/v1/host/memory/read', json=body, headers={'Authorization': 'Bearer read'})
-        assert result.status_code == 200, result.text
-        assert base64.b64decode(result.json()['source']['image']['data_url'].split(',')[1]) == image_bytes()
-        assert (await client.post('/v1/host/memory/read', json=body,
-                                  headers={'Authorization': 'Bearer other'})).status_code == 403
-        for changes in ({'asset_hash': '/tmp/image.png'}, {'asset_hash': 'https://invalid/image.png'},
-                        {'asset_hash': None}, {'offset': 1}, {'source_view': 'source'}):
-            invalid = await client.post('/v1/host/memory/read', json=body | changes,
-                                         headers={'Authorization': 'Bearer read'})
-            assert invalid.status_code == 422, invalid.text

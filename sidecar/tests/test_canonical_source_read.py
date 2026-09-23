@@ -12,7 +12,7 @@ from protagine.beliefs.source_time import interpret_time_query
 from protagine.memory.recall import pack_memory_context
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.source_read import read
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_source_claim_projection import Model, claim
 from test_turn_source_evidence import source_app
 
@@ -156,23 +156,6 @@ async def test_oversized_conflict_is_discoverable_and_history_pages_current_sour
     assert opened(ledger, anchor['source_id'], view='assertions', claim_id=anchor['claim_id'])['total'] == 9
 
 
-@pytest.mark.asyncio
-async def test_memory_read_canonical_mode_enforces_principal_without_graph(source_app, tmp_path):
-    ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
-    ledger.record_source('source', contact_id='person', session_id='original',
-                         messages=[{'role': 'user', 'content': 'Useful procedure.'}])
-    keyring = tmp_path/'keys.json'
-    _write_keyring(keyring, [_principal(principal='reader', secret='read', viewer='person', scopes=['memory:read']),
-                            _principal(principal='other', secret='other', viewer='other', scopes=['memory:read'])])
-    source_app.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
-    body = {'identity': {'host_id': 'fixture'}, 'person_id': 'person', 'session_id': 'later', **ref(ledger)}
-    async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://fixture') as client:
-        good = await client.post('/v1/host/memory/read', json=body, headers={'Authorization': 'Bearer read'})
-        assert good.status_code == 200 and good.json()['source']['complete'], good.text
-        denied = await client.post('/v1/host/memory/read', json=body, headers={'Authorization': 'Bearer other'})
-        assert denied.status_code == 403
-        missing_cursor = await client.post('/v1/host/memory/read', json={**body, 'offset': 1}, headers={'Authorization': 'Bearer read'})
-        assert missing_cursor.status_code == 422
 
 
 def retain_call(ledger, origin, number, content, *, sources=(), reason='Useful inspection evidence.'):

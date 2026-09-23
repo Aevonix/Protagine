@@ -82,8 +82,8 @@ Causal rules:
 
 
 def llm_extract_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_WORLD_LLM_EXTRACT",
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_WORLD_LLM_EXTRACT",
                    ("off", "shadow", "live"), "off")
 
 
@@ -100,9 +100,9 @@ def causal_extract_mode() -> str:
     """Effective causal-extraction mode: min(PROTAGINE_CAUSAL_EXTRACT,
     PROTAGINE_WORLD_LLM_EXTRACT) over off < shadow < live — causal extraction
     can never be MORE live than the extractor that carries it."""
-    from protagine.util.autonomy_preset import resolve
+    from protagine.config import env_choice
     order = ("off", "shadow", "live")
-    causal = resolve("PROTAGINE_CAUSAL_EXTRACT", order, "off")
+    causal = env_choice("PROTAGINE_CAUSAL_EXTRACT", order, "off")
     return order[min(order.index(causal), order.index(llm_extract_mode()))]
 
 

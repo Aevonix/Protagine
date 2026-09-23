@@ -9,7 +9,6 @@ import pytest
 from protagine.api.routers import host
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.idempotency import SourceErased
-from test_hermes_turn_outbox import _load_client, _create_database, _CURRENT_SCHEMA, _PENDING_INDEX, _APPLICATION_ID
 
 @pytest.fixture
 def ledger(tmp_path, monkeypatch):
@@ -68,53 +67,6 @@ def test_feed_pages_and_detects_restore_behind_host(ledger):
     with pytest.raises(ValueError, match="cursor"):
         ledger.erasure_feed("contact-a", after=3)
 
-def test_outbox_v1_migration_and_redaction(ledger, tmp_path):
-    module = _load_client("source_erasure_outbox")
-    path = tmp_path / "host.sqlite3"
-    _create_database(path, [_CURRENT_SCHEMA, _PENDING_INDEX], application_id=_APPLICATION_ID, user_version=1)
-    outbox = module.TurnOutbox(path)
-    assert outbox.prepare()["user_version"] == 3
-    messages = source(ledger)
-    survivor = {"role": "user", "content": "The bicycle is blue."}
-    outbox.enqueue("turn-a", queued("turn-a", messages))
-    outbox.enqueue("checkpoint-a", queued("checkpoint-a", messages + [survivor]))
-    outbox.enqueue("other-contact", queued("other-contact", messages, contact="contact-b"))
-    ledger.erase_sources(contact_id="contact-a", turn_ids=["turn-a"])
-    outbox.apply_erasure_page("contact-a", ledger.erasure_feed("contact-a"))
-    reopened = module.TurnOutbox(path)
-    rows = reopened.snapshot()
-    assert len(rows) == 2 and rows[0]["turn_id"] == "other-contact"
-    assert rows[1]["payload"]["checkpoint_messages"] == [survivor]
-    assert reopened.enqueue("turn-a", queued("turn-a", messages))["state"] == "erased"
-    assert len(reopened.snapshot()) == 2 and reopened.erasure_watermark("contact-a") == 1
-    assert module.source_message_hash("session-a", messages[0]) == ledger.erasure_feed("contact-a")["events"][0]["message_hashes"][0]
-
-def test_disconnected_replay_holds_then_reconciles_before_put(ledger, tmp_path, monkeypatch):
-    module = _load_client("source_erasure_replay")
-    outbox = module.TurnOutbox(tmp_path / "host.sqlite3")
-    messages = source(ledger)
-    outbox.enqueue("turn-a", queued("turn-a", messages))
-    client = module.ProtagineClient()
-    writes = []
-    monkeypatch.setattr(client, "get", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
-    monkeypatch.setattr(client, "put", lambda *a, **k: writes.append(k))
-    deliver = lambda payload, timeout_seconds: client.sync_turn(**payload, outbox=outbox, timeout_seconds=timeout_seconds)
-    assert outbox.drain(deliver, timeout_seconds=1) == 0
-    assert outbox.snapshot()[0]["state"] == "pending" and not writes
-    ledger.erase_sources(contact_id="contact-a", turn_ids=["turn-a"])
-    monkeypatch.setattr(client, "get", lambda *a, **k: Response(200, json=ledger.erasure_feed("contact-a", k["params"]["after"]), request=Request("GET", "http://test")))
-    assert outbox.drain(deliver, timeout_seconds=1) == 0
-    assert not writes and outbox.snapshot() == []
-
-def test_delivered_payload_is_purged_without_replaying_survivors(ledger, tmp_path):
-    module = _load_client("source_erasure_delivered")
-    outbox = module.TurnOutbox(tmp_path / "host.sqlite3")
-    messages = source(ledger)
-    outbox.enqueue("checkpoint-a", queued("checkpoint-a", messages + [{"role": "user", "content": "Unrelated."}]))
-    assert outbox.drain(lambda *a, **k: True, timeout_seconds=1) == 1
-    ledger.erase_sources(contact_id="contact-a", turn_ids=["turn-a"])
-    outbox.apply_erasure_page("contact-a", ledger.erasure_feed("contact-a"))
-    assert outbox.snapshot() == []
 
 @pytest.mark.asyncio
 async def test_api_erases_before_graph_cleanup_and_blocks_replay(ledger, monkeypatch):
@@ -149,26 +101,6 @@ async def test_graph_lineage_and_late_projection_guard(ledger):
     assert graph.store_memory.await_count == 1
     assert await graph._filter_erased_source_memories([{"source_uri": "turn:turn-a"}, {"source_uri": "file:unrelated"}]) == [{"source_uri": "file:unrelated"}]
     assert await ProtagineGraph.store_memory(graph, "late", "episodic", [], source_uri="turn:turn-a") == ""
-
-@pytest.mark.asyncio
-async def test_authenticated_contact_cannot_select_another_person(ledger, monkeypatch):
-    from protagine.api.authority import RequestAuthority
-    source(ledger, contact="contact-b")
-    app = FastAPI()
-    @app.middleware("http")
-    async def principal(request, call_next):
-        request.state.protagine_authority = RequestAuthority(
-            principal_id="host-a", credential_id="key-a", scopes=frozenset({"memory:write", "turns:write"}),
-            viewer_person_id="contact-a", person_ids=frozenset({"contact-a"}),
-            audiences=frozenset({"viewer"}), authenticated=True,
-        )
-        return await call_next(request)
-    app.include_router(host.router)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        erased = await client.post("/v1/host/memory/sources/forget", json={"contact_id": "contact-b", "source_ids": ["turn-a"]})
-        feed = await client.get("/v1/host/memory/sources/erasures", params={"contact_id": "contact-b"})
-        assert erased.status_code == 403 and feed.status_code == 403
-    assert ledger.search_sources("hydrofoil", contact_id="contact-b", session_id="session-a")
 
 
 def test_repeat_erase_retains_derived_cleanup_targets(ledger):

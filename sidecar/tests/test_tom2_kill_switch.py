@@ -173,35 +173,5 @@ async def test_all_defaults_whole_system_is_invisible(world, monkeypatch):
 # The single-var kill
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_level_zero_kills_all_rendering_next_turn(world, monkeypatch):
-    _arm_level2(monkeypatch)
-    assert len(_leveled(await host.context_assemble(_req(READER)))) == 2
-    # PANIC: one variable, nothing else touched
-    monkeypatch.setenv("PROTAGINE_TOM2_LEVEL", "0")
-    clear_level_cache()
-    resp = await host.context_assemble(_req(READER))
-    assert _leveled(resp) == []
-    joined = "\n".join(s.body for s in resp.sections)
-    assert "has not heard" not in joined
 
 
-@pytest.mark.asyncio
-async def test_kill_switch_leaves_the_egress_net_armed(world, monkeypatch):
-    """Taints already in the wild keep protecting after the kill: rendering
-    stops, but a reply voicing the previously injected prior still blocks
-    until the taint's TTL runs out."""
-    _arm_level2(monkeypatch)
-    await host.context_assemble(_req(READER))          # registers the taint
-    monkeypatch.setenv("PROTAGINE_TOM2_LEVEL", "0")       # kill
-    monkeypatch.delenv("PROTAGINE_GUARD_ENFORCE_CHECKS", raising=False)
-    guard = ResponseGuard(
-        default_mode=GuardMode.ENFORCE,
-        tom2_epistemic=Tom2EpistemicGuard(world.taints,
-                                          facts_store=world.facts))
-    r = await guard.evaluate(
-        surface="text_chat",
-        response_text="bob smith hasn't heard about it yet",
-        target_gateway="dm", conversation_key=CONV)
-    assert r.decision == "revise"
-    assert any(f.check == "tom2_epistemic" for f in r.findings)

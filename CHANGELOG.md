@@ -1,6 +1,45 @@
 # Changelog
 
-## Unreleased
+## Unreleased - stock install and one key
+
+Protagine attaches to stock Hermes (`hermes-agent >=0.21.3,<0.22`) through
+its public plugin and memory-provider seams. The patch bundle, the prepared
+runtime, the capability receipts, the scoped keyring, the contact grants and
+the autonomy presets are removed. Install is `pipx install protagine`,
+`protagine init`, `hermes gateway restart`; update is `pipx upgrade protagine`,
+`protagine upgrade`, `hermes gateway restart`. See [docs/INSTALL.md](docs/INSTALL.md).
+
+`protagine init` writes `protagine.yaml`, `identity.yaml` and `api.key` to the
+instance directory (`$PROTAGINE_HOME`, default `~/.protagine`), installs the
+matching `protagine-hermes` adapter into the Python of the `hermes` executable
+and runs `pip check` there, writes the Hermes keys the adapter needs, creates
+the `protagine-act` worker profile and installs and starts the sidecar user
+service. `protagine init --uninstall` leaves stock Hermes behind, moving the
+worker profile into the backups and keeping the adapter package while another
+profile of the same Hermes home still enables it. `protagine upgrade`
+takes a backup, applies the SQLite migrations, upgrades the adapter, reconciles
+the Hermes keys and restarts the sidecar service; it is a no-op when nothing
+changed, and it converts a 1.9.0 instance (a live keyring credential to
+`api.key`, `.env` values to `protagine.yaml`, private-directory forwarders into
+the backup, autonomy at `suggest`); 1.9.0 reminder launchers keep working.
+
+The API has one key. Every plugin request sends `Authorization: Bearer <key>`;
+the person a request acts for comes from the contact identity in the body. A
+non-loopback bind without a key is refused; without a key the API serves
+loopback callers only. `protagine doctor` is trimmed to install checks. CI
+tests against stock Hermes v2026.9.14 and a nightly job against the latest
+upstream release.
+
+The Hermes plugin is a thin adapter on stock seams (about 1.5k lines): turn
+capture through a durable SQLite outbox that the body thread delivers, the
+`pre_tool_call` guard (every effect asks the sidecar; V4A patch targets, child
+task workspaces and every cron recipient field are checked), `/mind`
+(read-only plus `off`), the self, people, memory
+and reminder tools, and `flush()` for hosts that end right after a turn. Both
+the plugin and the memory provider read the owner's contact from
+`protagine.yaml`. The release is 1.10.0 for both distributions so that
+`protagine init` can never resolve `protagine-hermes==<version>` to the
+previous plugin.
 
 The paired benchmark runs named arm profiles instead of a fixed pair. A profile
 says whether the Protagine plugin is installed and which flags are overlaid

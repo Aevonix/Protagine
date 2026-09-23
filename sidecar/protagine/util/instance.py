@@ -1,12 +1,10 @@
-"""Load the selected private instance without mixing profile environments."""
+"""Load the selected instance's configuration into the process environment."""
 from pathlib import Path
-import json
 import os
 
 
-
 def plugin_settings(config):
-    """Read the one platform binding without changing a configuration."""
+    """Read the plugin's settings mapping from a Hermes config without changing it."""
     plugins = config.get('plugins', {}) if isinstance(config, dict) else {}
     if not isinstance(plugins, dict):
         raise ValueError('Hermes plugins must be a mapping')
@@ -17,58 +15,25 @@ def plugin_settings(config):
 
 
 def load_environment():
-    # Startup/explicit instance-selection boundary only. Runtime reads never
-    # rewrite the process environment.
-    selected_env = dict(os.environ)
-    if (selected_env.get('PROTAGINE_SKIP_DOTENV', '').lower() in {'1', 'true', 'yes', 'on'}
-            and selected_env.get('PROTAGINE_INSTANCE_SELECTED') != '1'):
+    """Export ``protagine.yaml`` (or a legacy ``.env``) to ``os.environ`` once at startup.
+
+    Runtime reads never rewrite the process environment; this is the explicit
+    instance-selection boundary used by the CLI and the service.
+    """
+    environment = dict(os.environ)
+    if (environment.get('PROTAGINE_SKIP_DOTENV', '').lower() in {'1', 'true', 'yes', 'on'}
+            and environment.get('PROTAGINE_INSTANCE_SELECTED') != '1'):
         return
-    selected = selected_env.get('PROTAGINE_STATE_DIR')
-    explicitly_selected = selected_env.get('PROTAGINE_INSTANCE_SELECTED') == '1'
-    if not selected:
-        import yaml
-        home = Path(os.environ.get('HERMES_HOME') or Path.home() / '.hermes').expanduser()
-        config_path = home / 'config.yaml'
-        if config_path.is_file():
-            config = yaml.safe_load(config_path.read_text()) or {}
-            selected = plugin_settings(config).get('instance_dir')
-            explicitly_selected = bool(selected)
-    managed = bool(selected and (explicitly_selected or
-        (Path(selected).expanduser()/'instance.json').is_file()))
-    if managed:
-        selected = str(Path(selected).expanduser().resolve())
-        try:
-            import yaml
-            manifest = json.loads((Path(selected)/'instance.json').read_text())
-            home = Path(manifest['hermes_home']).expanduser().resolve()
-            config = yaml.safe_load((home/'config.yaml').read_text())
-            if (manifest.get('version') != 1 or manifest.get('profile') != 'local'
-                    or plugin_settings(config).get('instance_dir') != selected
-                    or not (Path(selected)/'.env').is_file()):
-                raise ValueError()
-        except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError):
-            raise ValueError('Selected private instance is incomplete or its Hermes binding changed') from None
-    # Existing wrappers set ~/.protagine/data as state but read ~/.protagine/.env.
-    paths = [Path(selected)/'.env'] if managed else [Path.home()/'.protagine'/'.env', Path.cwd()/'.env']
-    for path in paths:
+    from protagine.config import CONFIG_FILE, apply_environment, instance_home, load_config
+    home = instance_home()
+    if (home / CONFIG_FILE).is_file():
+        apply_environment(load_config(home))
+        return
+    # Unconfigured library use: a plain .env next to the state or in the cwd.
+    for path in (home / '.env', Path.home() / '.protagine' / '.env', Path.cwd() / '.env'):
         if path.is_file():
-            if managed:
-                from dotenv import dotenv_values
-                values = {key: value for key, value in dotenv_values(path, interpolate=False).items()
-                          if value is not None}
-            else:
-                values = {}
-                for line in path.read_text().splitlines():
-                    if line.strip() and not line.lstrip().startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        values[key.strip()] = value.strip()
-            normalized = dict(values)
-            if managed and (normalized.get('PROTAGINE_STATE_DIR') != selected
-                            or normalized.get('PROTAGINE_INSTALL_PROFILE') != 'local'):
-                raise ValueError('Selected private environment is incomplete or points to a different instance')
-            for key, value in values.items():
-                if managed:
-                    os.environ[key] = value
-                else:
-                    os.environ.setdefault(key, value)
+            for line in path.read_text().splitlines():
+                if line.strip() and not line.lstrip().startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), value.strip())
             break

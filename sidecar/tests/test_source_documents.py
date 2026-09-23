@@ -20,9 +20,8 @@ from protagine.turns.idempotency import SourceErased, source_message_hash
 from protagine.turns.media import SourceMedia
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
-from test_scoped_api_authority import _principal, _write_keyring
+from onekey import KEY, _principal, _write_keyring
 from test_turn_source_evidence import source_app, envelope
-from test_hermes_turn_outbox import _load_client
 
 
 def pdf_bytes(texts=('The first tray holds seven tiles.', 'The second tray holds nine tiles.'), *, encrypted=False, stream_bytes=None):
@@ -104,9 +103,9 @@ async def test_actual_pdf_http_retention_and_page_extraction_without_model(sourc
         _write_keyring(keyring, [_principal(viewer='contact-a', secret='read', scopes=['memory:read'])])
         reader = FastAPI()
         reader.include_router(host.router)
-        reader.add_middleware(ApiKeyMiddleware, keyring_path=str(keyring))
+        reader.add_middleware(ApiKeyMiddleware, api_key=KEY)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=reader), base_url='http://fixture',
-                                     headers={'Authorization': 'Bearer read'}) as scoped_client:
+                                     headers={'Authorization': 'Bearer ' + KEY}) as scoped_client:
             response = await scoped_client.post('/v1/host/memory/read', json={'identity': {'host_id': 'fixture'},
                 'person_id': 'contact-a', 'session_id': 'later', **ref, 'source_view': 'document', 'asset_hash': asset, 'page': 2})
         assert response.status_code == 200, response.text
@@ -195,34 +194,6 @@ async def test_pdf_backup_restore_shared_ownership_and_parse_erasure_race(tmp_pa
     assert not race_media.finish_document(job, await extract_document(data))
     with closing(race._connect()) as db:
         assert not db.execute('SELECT * FROM source_media').fetchall()
-
-
-@pytest.mark.asyncio
-async def test_document_protocol_and_client_never_fall_back_to_predecessor(source_app, tmp_path):
-    from fastapi import HTTPException, Response
-    from protagine.api.routers.host import turns_sync_v2
-    from protagine.api.schemas.host import TurnSyncRequest
-    body = TurnSyncRequest.model_validate({'identity': {'host_id': 'fixture'},
-        'context': {'contact_id': 'a', 'session_id': 's', 'turn_id': 'pdf'}, 'user_message': message()})
-    with pytest.raises(HTTPException) as error:
-        await turns_sync_v2('source-media/document/pdf', body, Response())
-    assert error.value.status_code == 409 and error.value.detail['code'] == 'turn_id_mismatch'
-    identifier = 'source-media/document/old-literal-id'
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as client:
-        assert (await client.put('/v2/host/turns/' + identifier, json=envelope(identifier, checkpoint=True))).status_code == 201
-    module = _load_client('document_route'); client = module.ProtagineClient('http://fixture')
-    requests = []
-    def reject(path, **kwargs):
-        requests.append(path)
-        return httpx.Response(409, request=httpx.Request('PUT', 'http://fixture' + path))
-    client.put = reject
-    # Delivery failure stays queued at the existing outbox layer; no generic
-    # source route should receive the raw document block after this rejection.
-    try:
-        client.sync_turn(session_id='s', contact_id='a', turn_id='pdf', user_message=message()['content'])
-    except Exception:
-        pass
-    assert requests == ['/v2/host/turns/source-media/document/pdf']
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from protagine.api.authority import request_authority
+from protagine.api.auth import request_authority
 
 router = APIRouter(prefix='/v1/host/transport', tags=['transport'])
 
@@ -55,8 +55,7 @@ def reconcile_receipts(waits, comms, row):
 @router.post('/observe')
 async def observe(body: TransportReceipt, request: Request):
     authority = request_authority(request)
-    if (not authority.authenticated or authority.anonymous or authority.legacy
-            or not authority.has_scope('transport:write')):
+    if not authority.authenticated or authority.anonymous:
         raise HTTPException(403, detail='trusted_transport_producer_required')
     if (body.direction == 'in') != (body.status == 'received'):
         raise HTTPException(422, detail='transport_direction_status_mismatch')

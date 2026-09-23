@@ -15,8 +15,9 @@ so an agent can use that state across conversations, channels and model changes.
 Hermes owns conversations, tools, workers and scheduling. Each deployment keeps
 its identity, credentials and device configuration private.
 
-**Development status:** Phase 1 is not complete. Version 1.9.0 prepares
-[official Hermes with packaged compatibility patches](docs/HERMES-HOOK-COMPATIBILITY.md).
+**Development status:** Phase 1 is not complete. Protagine attaches to
+[stock Hermes](docs/INSTALL.md) through its public plugin and memory-provider
+seams (see the [Hermes adapter](docs/HERMES-ADAPTER.md)); no patch is applied.
 The [known gaps](docs/KNOWN-GAPS.md) track unfinished behavior.
 
 ## How it works
@@ -99,39 +100,32 @@ storage layouts. The [known gaps](docs/KNOWN-GAPS.md) and
 
 ## Get started
 
-You need Python 3.12, Git and one OpenAI-compatible chat endpoint. The minimum
-profile does not require Docker, a graph database or an embedding model.
-
-Protagine **1.9.0** includes the runtime installer. Install from this checkout:
-
-```bash
-python3.12 -m venv "$HOME/.local/share/protagine/venv"
-source "$HOME/.local/share/protagine/venv/bin/activate"
-python -m pip install ".[native-memory]" "./sidecar[hermes]"
-protagine init --prepare-hermes
-```
-
-The wizard selects a Hermes profile and asks for identity, owner, model and
-operating preferences. It preserves existing channel and model settings;
-replacing an existing memory provider is an explicit choice. Accept its startup
-option, or use your instance path:
+You need Python 3.12, a stock Hermes install (`hermes-agent >=0.21.3,<0.22`)
+whose `hermes` executable is on `PATH`, and one OpenAI-compatible chat
+endpoint, which Hermes already has. No fork, no patches, no graph database.
 
 ```bash
-protagine --instance /path/to/private/protagine start --detach
-protagine --instance /path/to/private/protagine status
-protagine --instance /path/to/private/protagine hermes run gateway run
+pipx install protagine
+protagine init
+hermes gateway restart
 ```
 
-Start a fresh Hermes session, provide a harmless fact and ask for it in another
-session. Check the remembered source as well as the answer. The minimum profile
-provides memory and work observation; background execution needs configuration.
+`protagine init` asks for your name, the agent's name and the autonomy level,
+then installs the adapter into Hermes' own environment, writes the Hermes keys
+it needs and creates the `protagine-act` worker profile. It never restarts a
+running gateway. Start a fresh Hermes session, tell it a harmless fact and ask
+for it in another session; `protagine doctor` checks the install.
 
-The installer stages official Hermes plus versioned patches in a separate
-environment. No fork is required. You can instead pass an existing official
-`--hermes-python`; missing core interfaces trigger the same preparation.
-Unknown revisions require a qualified update. Existing services switch through
-their normal lifecycle; setup never restarts a running gateway. The
-[setup guide](docs/LOCAL-HERMES-SETUP.md) covers profiles, services and updates.
+To update:
+
+```bash
+pipx upgrade protagine
+protagine upgrade
+hermes gateway restart
+```
+
+The [install guide](docs/INSTALL.md) covers the configuration file, the
+upgrade from 1.9.0, the sidecar service and uninstalling.
 
 Protagine includes **Deep Research** and **Skill Creator** skills. Hermes lists
 their short descriptions and loads the instructions when needed. They use the
@@ -192,16 +186,13 @@ not a prerequisite for the harness approach described above.
   [model-swap demonstration](docs/MODEL-SWAP-DEMO.md),
   [semantic recall](docs/SOURCE-SEMANTIC-RECALL.md),
   [corrections](docs/SOURCE-ANNOTATIONS.md),
-  [erasure](docs/NATIVE-REQUEST-ERASURE.md),
   [backup and recovery](docs/SOURCE-MEMORY-RECOVERY.md).
 - **Media:** [images](docs/SOURCE-IMAGES.md), [audio](docs/SOURCE-AUDIO.md),
   [documents](docs/SOURCE-DOCUMENTS.md), [video](docs/SOURCE-VIDEOS.md).
 - **Agent state:** [contacts](docs/SOCIAL-STATE.md),
   [working perspective](docs/WORKING-PERSPECTIVE.md),
   [judgments](docs/SELF-JUDGMENTS.md), [commitments](docs/COMMITMENT-WORK.md).
-- **Execution:** [shared tasks](docs/NATIVE-TASK-CHANNELS.md),
-  [accepted local work](docs/ACCEPTED-LOCAL-WORK.md),
-  [model roles](docs/FUNCTION-ROUTING.md),
+- **Execution:** [model roles](docs/FUNCTION-ROUTING.md),
   [inference pool](docs/INFERENCE-POOL.md),
   [model qualification](docs/MODEL-QUALIFICATION.md).
 
@@ -213,9 +204,9 @@ cd sidecar
 python -m pytest -q tests protagine
 ```
 
-`tests/hermes_adapter` checks built packages against official Hermes plus the
-patches shipped in that same build. CI also runs the native patch regressions.
-Deployment validation also needs real inference, attributable sources, work
+`tests/hermes_adapter` checks the built packages against stock Hermes
+v2026.9.14 (0.21.3); a nightly job repeats the check against the latest
+upstream release. Deployment validation also needs real inference, attributable sources, work
 across sessions and recovery with the actual configuration. Keep private data,
 credentials and deployment configuration out of public commits and examples.
 

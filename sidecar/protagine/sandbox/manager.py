@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 def sandbox_mode() -> str:
-    from protagine.util.autonomy_preset import resolve
-    return resolve("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off")
+    from protagine.config import env_choice
+    return env_choice("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off")
 
 
 def _fenv(name: str, default: float) -> float:

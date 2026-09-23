@@ -9,7 +9,7 @@ and an existing supported Hermes installation. The guided local setup uses one
 OpenAI-compatible chat endpoint and SQLite; graph and vector dependencies are
 optional.
 
-See the [public setup guide](https://github.com/Aevonix/Protagine/blob/main/docs/LOCAL-HERMES-SETUP.md)
+See the [install guide](https://github.com/Aevonix/Protagine/blob/main/docs/INSTALL.md)
 for installation, private identity setup, supported runtime and operation.
 The [project README](https://github.com/Aevonix/Protagine/blob/main/README.md)
 describes current capabilities and their limits. Personal configuration,
