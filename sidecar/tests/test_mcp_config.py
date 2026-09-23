@@ -72,7 +72,7 @@ def test_actual_cli_print_config_preserves_subcommand_and_custom_launch(tmp_path
     import subprocess
     import sys
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('PROTAGINE_', 'PROTAGINE_'))}
+           if not key.startswith('PROTAGINE_')}
     env['HOME'] = str(tmp_path)
     env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
     args = [sys.executable, '-m', 'protagine', 'mcp', 'setup', '--print-config',

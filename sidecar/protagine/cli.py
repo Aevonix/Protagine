@@ -355,7 +355,7 @@ def main() -> None:
             except ValueError:
                 ws_max_size = 1 * 1024 * 1024
             from protagine.runtime_logging import configure_runtime_logging
-            configure_runtime_logging(redirect_stdio=bool(os.environ.get('PROTAGINE_INSTANCE_SERVICE') or os.environ.get('PROTAGINE_INSTANCE_SERVICE')))
+            configure_runtime_logging(redirect_stdio=bool(os.environ.get('PROTAGINE_INSTANCE_SERVICE')))
             uvicorn.run(
                 "protagine.server:app",
                 host=host,
@@ -1244,33 +1244,23 @@ def _is_loopback_host(host: str) -> bool:
 def _guard_bind_auth(host: str) -> None:
     """Refuse to start an unauthenticated sidecar on a non-loopback interface.
 
-    Auth is enforced by ApiKeyMiddleware, but when both PROTAGINE_API_KEY and
-    PROTAGINE_API_KEYRING_PATH are unset the API runs in dev mode. That is only
-    safe on loopback. Binding to 0.0.0.0 / a LAN address without either auth
-    mechanism exposes every endpoint to the network, so fail closed.
-    Set PROTAGINE_ALLOW_OPEN_BIND=1 to override (e.g. behind a trusted proxy).
+    When both PROTAGINE_API_KEY and PROTAGINE_API_KEYRING_PATH are unset the
+    API runs in dev mode and ApiKeyMiddleware serves loopback callers only, so
+    a non-loopback bind would answer every remote request with 403. Fail at
+    startup with the fix instead.
     """
     if _is_loopback_host(host):
         return
     if os.environ.get("PROTAGINE_API_KEY") or os.environ.get("PROTAGINE_API_KEYRING_PATH"):
         return
-    if os.environ.get("PROTAGINE_ALLOW_OPEN_BIND", "").strip().lower() in {"1", "true", "yes", "on"}:
-        print(
-            f"⚠️  Sidecar binding to non-loopback host {host!r} with NO "
-            "API authentication (PROTAGINE_ALLOW_OPEN_BIND override set) — the API is "
-            "open to the network.",
-            file=sys.stderr,
-        )
-        return
     print(
         f"❌ Refusing to start: binding to {host!r} (non-loopback) with no "
-        "API authentication — the API would be open to the network.\n"
+        "API authentication — without a key the API only serves loopback "
+        "clients.\n"
         "  Fix one of:\n"
         "    • set PROTAGINE_API_KEY=<secret> or PROTAGINE_API_KEYRING_PATH=<file> "
         "to require bearer/X-API-Key auth, or\n"
-        "    • bind to 127.0.0.1 (default) and reach it via SSH/proxy, or\n"
-        "    • set PROTAGINE_ALLOW_OPEN_BIND=1 to intentionally serve open "
-        "(only behind a trusted network/proxy).",
+        "    • bind to 127.0.0.1 (default) and reach it via SSH/proxy.",
         file=sys.stderr,
     )
     sys.exit(2)

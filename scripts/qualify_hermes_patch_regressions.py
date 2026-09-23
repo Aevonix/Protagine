@@ -24,7 +24,7 @@ def main():
         # Hermes tests explicitly require a fresh process for each file.
         with tempfile.TemporaryDirectory(prefix='hermes-regression-') as home:
             env = {key: value for key, value in os.environ.items()
-                   if not key.startswith(('HERMES_', 'PROTAGINE_', 'AGENT_', 'PYTHONPATH'))}
+                   if not key.startswith(('HERMES_', 'PROTAGINE_', 'PYTHONPATH'))}
             env.update(HOME=home, HERMES_HOME=str(Path(home)/'.hermes'), PYTHON_DOTENV_DISABLED='1')
             result = subprocess.run([sys.executable, '-m', 'pytest', path, '-q', '-ra',
                                      f'--junitxml={output / (str(index) + ".xml")}'],

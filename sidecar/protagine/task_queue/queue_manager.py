@@ -43,6 +43,10 @@ from protagine.task_queue.models import (
 
 logger = logging.getLogger(__name__)
 
+# A worker-outcome outbox row that keeps failing delivery is retired after
+# this many attempts so it cannot pin its job in retention forever.
+WORKER_OUTCOME_MAX_DELIVERY_ATTEMPTS = 100
+
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _SOURCE_RUNTIME_HOLD_KIND = "source_runtime"
 _SOURCE_RUNTIME_BLOCKED_REASON = "source_runtime_hold"
@@ -155,6 +159,15 @@ def _parse_dt(s: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Return *value* as an aware UTC datetime; naive values are taken as UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _job_from_row(row: aiosqlite.Row) -> Job:
     """Deserialize a SQLite row into a Job dataclass."""
     caps_raw = json.loads(row["capabilities"] or "[]")
@@ -186,7 +199,8 @@ def _job_from_row(row: aiosqlite.Row) -> Job:
         payload=json.loads(row["payload"] or "{}"),
         priority=JobPriority(row["priority"]),
         capabilities=capabilities,
-        deadline=_parse_dt(row["deadline"]),
+        # Rows written before deadlines were normalised may be naive.
+        deadline=_as_utc(_parse_dt(row["deadline"])),
         max_retries=row["max_retries"],
         retry_count=row["retry_count"],
         timeout_secs=row["timeout_secs"],
@@ -1225,6 +1239,9 @@ class QueueManager:
         Validates dependency DAG for cycles.
         """
         assert self._db is not None
+        # Deadlines are compared against aware UTC clocks everywhere; a naive
+        # deadline (taken as UTC) would otherwise break claim sorting.
+        job.deadline = _as_utc(job.deadline)
 
         if not is_canonical_job_id(job.job_id):
             raise ValueError(
@@ -2599,7 +2616,9 @@ class QueueManager:
         if event_id:
             sql += " AND event_id = ?"
             params.append(event_id)
-        sql += " ORDER BY created_at ASC LIMIT ?"
+        # Rows that keep failing sort behind fresh ones so a poisoned row
+        # cannot hold the head of a bounded drain.
+        sql += " ORDER BY delivery_attempts ASC, created_at ASC LIMIT ?"
         params.append(max(1, min(int(limit), 1000)))
         cursor = await self._db.execute(sql, tuple(params))
         rows = []
@@ -2638,6 +2657,20 @@ class QueueManager:
                    WHERE event_id = ? AND state = 'pending'""",
                 (str(error)[:1000], event_id),
             )
+            retired = await self._db.execute(
+                """UPDATE worker_outcome_outbox SET state = 'dead'
+                   WHERE event_id = ? AND state = 'pending'
+                     AND delivery_attempts >= ?""",
+                (event_id, WORKER_OUTCOME_MAX_DELIVERY_ATTEMPTS),
+            )
+            if retired.rowcount:
+                logger.warning(
+                    "worker outcome %s retired after %d failed delivery "
+                    "attempts: %s",
+                    event_id,
+                    WORKER_OUTCOME_MAX_DELIVERY_ATTEMPTS,
+                    str(error)[:200],
+                )
         await self._db.commit()
 
     async def drain_worker_outcomes(
@@ -6820,15 +6853,16 @@ class QueueManager:
     async def expire_past_deadlines(self, now: datetime) -> int:
         """Transition expired QUEUED/CLAIMED/RUNNING jobs → FAILED. Returns count."""
         assert self._db is not None
-        now_iso = now.isoformat()
+        # Compare instants, not ISO text: legacy rows may carry a UTC offset
+        # or no zone at all (julianday reads either; naive means UTC).
         cur = await self._db.execute(
             """
             SELECT * FROM jobs
             WHERE deadline IS NOT NULL
-              AND deadline < ?
+              AND julianday(deadline) < julianday(?)
               AND status IN ('queued', 'claimed', 'running', 'blocked')
             """,
-            (now_iso,),
+            (_as_utc(now).isoformat(),),
         )
         rows = await cur.fetchall()
         count = 0

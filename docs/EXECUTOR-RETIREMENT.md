@@ -36,13 +36,15 @@ Preview opens the existing database read-only, accounts for every row and never
 creates or repairs a database. Apply uses one transaction and appends idempotent
 receipts in the existing assignment history.
 
-Terminal results, effect receipts and task IDs are unchanged. Work currently
+Completed results, effect receipts and task IDs are unchanged. Work currently
 owned by another executor is untouched, even when old assignment history exists.
-Unfinished work last owned by the retired executor becomes cancelled with
-`executor_retired_effect_unverified` and an explicit reconciliation reason.
-This cancels that execution, not its underlying goal. A failed status would let
-the generator retry automatically, which is inappropriate when prior effects
-are unknown. Inspect retained results and effects before explicitly issuing new
+Unfinished or failed work last owned by the retired executor becomes cancelled
+with `executor_retired_effect_unverified` and an explicit reconciliation reason;
+the failure reason and time stay on the row. This cancels that execution, not
+its underlying goal. A failed status would let the generator reactivate the same
+work automatically, which is inappropriate when prior effects are unknown, so a
+retired row that is still failed is cancelled even when an earlier run already
+recorded it. Inspect retained results and effects before explicitly issuing new
 native work. Never convert an old description directly into an action grant.
 
 Unclaimed proposals remain unchanged. The report identifies existing native

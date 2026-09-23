@@ -77,7 +77,7 @@ class StoredInitiative:
     # === Source tracking ===
     source_type: Optional[str] = None  # blocked_goal, neglected_contact, manual
     source_id: Optional[str] = None
-    created_by: Optional[str] = None  # autonomy_loop, user_request, agent:macmini
+    created_by: Optional[str] = None  # autonomy_loop, user_request, agent:<agent_id>
 
     # === Assignment tracking ===
     status: str = "pending"

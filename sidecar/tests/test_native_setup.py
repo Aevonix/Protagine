@@ -178,7 +178,7 @@ def test_ordinary_skill_review_invalid_schedule_precedes_attachment(args, monkey
 @pytest.fixture(autouse=True)
 def isolated_platform_environment(monkeypatch):
     monkeypatch.setattr(os, 'environ', {key:value for key,value in os.environ.items()
-        if not key.startswith(('PROTAGINE_', 'PROTAGINE_')) or key == 'PROTAGINE_TEST_HOME'})
+        if not key.startswith('PROTAGINE_') or key == 'PROTAGINE_TEST_HOME'})
 
 
 def _capability_receipt(*, missing=(), version='future-version'):

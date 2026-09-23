@@ -594,7 +594,7 @@ the ops layer (doctor, patch runner, restart runner, activity monitor).
    gateway and re-implements transport).
 2. Sampling/model tweaks as llm_request middleware, not core patches: a
    middleware can set temperature per model family, which retires the
-   mimo-temperature class of core patch entirely. Policy: before authoring any
+   per-model temperature class of core patch entirely. Policy: before authoring any
    new core patch, check middleware and hooks first (see
    plugins/hermes-plugin/ops/PATCHES.md).
 3. pre_gateway_dispatch for inbound gating: the response-gate/guard work has a

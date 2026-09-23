@@ -14,7 +14,6 @@ intercom turn path.
 ## Required posture
 
 ```bash
-PROTAGINE_PREFETCH_QUERY_CHECK=1
 PROTAGINE_PREFETCH_TURN_CONTACT=1
 PROTAGINE_MCP_CONTACT_ID=replace-with-exact-owner-contact-id
 PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY=none

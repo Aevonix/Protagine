@@ -9,7 +9,6 @@ Config key: memory.provider = "protagine-memory"
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -673,17 +672,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         config = self._explicit_config if config is not None else _profile_config(Path(self._hermes_home))
         self._configure(config)
         self._session_id = ""
-        self._cached_context: str = ""
-        # Prefetch-cache bookkeeping (PROTAGINE_PREFETCH_QUERY_CHECK=1): remember
-        # WHICH turn the background prefetch was for, so a cached context is
-        # only consumed by the turn that queued it. Guarded by a Lock because
-        # queue_prefetch's worker thread and prefetch() race on these fields.
-        self._cache_lock = threading.Lock()
-        self._cached_query: str = ""
-        self._cached_session: str = ""
-        self._cached_participant: str = ""
-        self._cached_contact: str = ""
-        self._stale_cache_misses = 0
         self._temporal_cache = (0.0, "")  # (monotonic ts, contact clock block without turn gap)
         self._temporal_cache_contact = ""  # contact the cached block was fetched for
         self._handle_cache: dict[str, tuple] = {}  # "platform:sender" -> (monotonic ts, contact_id)
@@ -696,9 +684,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._last_turn_started_at = 0.0
         self._turn_number = 0
         self._prev_turn_gap_secs = None
-        self._prefetch_thread = None  # background sync prefetch (v0.3.0)
-        self._prefetch_ready = asyncio.Event()
-        self._prefetch_ready.set()
         self._platform = "cli"
         self._async_client: Optional[httpx.AsyncClient] = None
         self._sync_thread: Optional[threading.Thread] = None
@@ -710,15 +695,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._last_checkpoint: dict[str, Any] = {"state": "unverified"}
         self._last_erasure: dict[str, Any] = {"state": "unverified"}
         self._turn_writer_skip_logged = False
-        for binding_flag in (
-            "PROTAGINE_PREFETCH_TURN_CONTACT",
-            "PROTAGINE_PREFETCH_QUERY_CHECK",
-        ):
-            value = _env(binding_flag, "1").strip().lower()
-            if value not in {"1", "true", "yes", "on", "enabled"}:
-                raise RuntimeError(
-                    f"{binding_flag} is mandatory and cannot be disabled"
-                )
+        binding_flag = "PROTAGINE_PREFETCH_TURN_CONTACT"
+        value = _env(binding_flag, "1").strip().lower()
+        if value not in {"1", "true", "yes", "on", "enabled"}:
+            raise RuntimeError(
+                f"{binding_flag} is mandatory and cannot be disabled"
+            )
 
     def _configure(self, config: dict[str, Any]) -> None:
         home = Path(self._hermes_home)
@@ -765,7 +747,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             "circuit_open": self._is_circuit_open(),
             "connection_failures": self._connection_failures,
             "connection_status": self._connection_status,
-            "stale_cache_misses": self._stale_cache_misses,
             "turn_writer": "enabled" if self._turn_writer_enabled() else "read-only",
             "checkpoint": dict(self._last_checkpoint),
             "source_erasure": dict(self._last_erasure),
@@ -1005,12 +986,13 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         synchronously and expects a string. (This was previously an ``async def``,
         so prefetch_all received an un-awaited coroutine and silently dropped ALL
         injected context — memories, temporal, affect, facts. That is the
-        "relevant info isn't injected live" bug.) If queue_prefetch() already
-        fetched in the background for this turn, return that; otherwise fetch now.
+        "relevant info isn't injected live" bug.)
+
+        Performs exactly one assemble for this turn's query, bounded by the
+        HTTP timeout and skipped entirely while the circuit breaker is open.
         """
         effective_session = session_id or self._session_id
         contact_id = self._prefetch_contact(effective_session)
-        participant = self._turn_participant_key()
         if not contact_id:
             logger.warning(
                 "Protagine prefetch withheld: current turn has no attested "
@@ -1024,43 +1006,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 query = supplied.recollection_query(effective_session, query)
         except ImportError:
             pass
-        t = self._prefetch_thread
-        if t is not None and t.is_alive():
-            t.join(timeout=9.0)
-        if self._prefetch_query_check_enabled():
-            # Consume the cached context only when it was fetched for THIS
-            # query+session; a leftover cache from an abandoned or concurrent
-            # turn is stale and would inject the wrong turn's context.
-            with self._cache_lock:
-                cached = self._cached_context
-                match = (cached
-                         and self._cached_query == (query or "")
-                         and self._cached_session == effective_session
-                         and self._cached_participant == participant
-                         and self._cached_contact == contact_id)
-                if cached:
-                    self._cached_context = ""  # one-shot per turn
-                    self._cached_query = ""
-                    self._cached_session = ""
-                    self._cached_participant = ""
-                    self._cached_contact = ""
-                if cached and not match:
-                    self._stale_cache_misses += 1
-            if match:
-                ctx = cached
-            else:
-                ctx = self._prefetch_sync(
-                    query,
-                    session_id=effective_session,
-                    contact_id=contact_id,
-                )
-        elif self._cached_context:
-            ctx = self._cached_context
-            self._cached_context = ""  # one-shot per turn
-        else:
-            ctx = self._prefetch_sync(
-                query, session_id=effective_session, contact_id=contact_id,
-            )
+        ctx = self._prefetch_sync(
+            query, session_id=effective_session, contact_id=contact_id,
+        )
         # Reply thread-window: when this turn replies to an earlier message,
         # inject the surrounding turns that are NOT already in live context.
         ctx = self._merge_context_block(
@@ -1113,11 +1061,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             )
         except Exception:
             return "", "", ""
-
-    def _turn_participant_key(self) -> str:
-        platform, sender, chat = self._turn_sender_context()
-        effective = platform or str(self._platform or "").strip().lower()
-        return f"{effective}:{sender}:{chat}"
 
     def _default_contact_fallback_allowed(self, platform: str) -> bool:
         authority = _env(
@@ -1285,20 +1228,23 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 or contact_id == self._temporal_cache_contact):
             return self._with_turn_gap(cached) if include_turn_gap else cached
         block = ""
-        try:
-            with httpx.Client(timeout=2.5) as client:
-                resp = client.get(
-                    f"{self.sidecar_url}/v1/host/context/temporal",
-                    headers=self._headers(),
-                    params={"contact_id": contact_id},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            body = data.get("body", "")
-            if body:
-                block = f"## {data.get('title', 'Current Time')} [priority 100]\n{body}"
-        except Exception as exc:
-            logger.debug("Protagine temporal brief fetch failed: %s", exc)
+        if self._is_circuit_open():
+            logger.debug("Protagine temporal brief skipped: circuit breaker open")
+        else:
+            try:
+                with httpx.Client(timeout=2.5) as client:
+                    resp = client.get(
+                        f"{self.sidecar_url}/v1/host/context/temporal",
+                        headers=self._headers(),
+                        params={"contact_id": contact_id},
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                body = data.get("body", "")
+                if body:
+                    block = f"## {data.get('title', 'Current Time')} [priority 100]\n{body}"
+            except Exception as exc:
+                logger.debug("Protagine temporal brief fetch failed: %s", exc)
         if not block:
             block = self._local_temporal_block(include_turn_gap=False)
         self._temporal_cache = (_ttime.monotonic(), block)
@@ -1491,6 +1437,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         bound_contact = contact_id or self._prefetch_contact(session_id)
         if not bound_contact:
             return ""
+        if self._is_circuit_open():
+            logger.debug("Protagine prefetch skipped: circuit breaker open")
+            return ""
         internal_owner = (
             self._internal_owner_lane(bound_contact)
             if internal_owner_lane is None else internal_owner_lane
@@ -1571,50 +1520,17 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         return ("[protagine-recall-v1 " + stamp + "]\n" + self._format_sections(sections)
                 + "\n[/protagine-recall-v1]")
 
-    @staticmethod
-    def _prefetch_query_check_enabled() -> bool:
-        """PROTAGINE_PREFETCH_QUERY_CHECK=1 -> consume the prefetch cache only when
-        it matches the current query+session (default 0 = legacy consume-any)."""
-        return True
-
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Kick off a background (thread) prefetch for the upcoming turn so the
-        synchronous prefetch() can return instantly with the cached result."""
-        effective_session = session_id or self._session_id
-        contact_id = self._prefetch_contact(effective_session)
-        participant = self._turn_participant_key()
-        internal_owner_lane = self._internal_owner_lane(contact_id)
-        with self._cache_lock:
-            self._cached_context = ""
-            self._cached_query = ""
-            self._cached_session = ""
-            self._cached_participant = ""
-            self._cached_contact = ""
+        """Intentionally a no-op.
 
-        if not contact_id:
-            self._prefetch_thread = None
-            return
-
-        def _bg():
-            try:
-                ctx = self._prefetch_sync(
-                    query,
-                    session_id=effective_session,
-                    contact_id=contact_id,
-                    internal_owner_lane=internal_owner_lane,
-                )
-            except Exception:
-                ctx = ""
-            with self._cache_lock:
-                self._cached_context = ctx
-                self._cached_query = query or ""
-                self._cached_session = effective_session
-                self._cached_participant = participant
-                self._cached_contact = contact_id
-
-        t = threading.Thread(target=_bg, daemon=True)
-        self._prefetch_thread = t
-        t.start()
+        Hermes calls this with the message of the turn that just finished,
+        but recall for the next turn is keyed on the next message, which is
+        not known yet. Context assembled here could never be consumed (a
+        result is only valid for the exact query it was built for), so doing
+        the work would cost one wasted /context/assemble per turn plus a
+        background thread for prefetch() to wait on. prefetch() performs the
+        single bounded assemble for its own turn instead.
+        """
 
     # -- Turn sync -------------------------------------------------------------
 
@@ -1665,6 +1581,11 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 ):
                     return None
                 self._handle_negative_cache.pop(key, None)
+        if self._is_circuit_open():
+            # Resolution is a sidecar call like any other: while the breaker
+            # is open it must not cost a turn its timeout.
+            logger.debug("Protagine resolve_handle skipped: circuit breaker open")
+            return None
         resolved: Optional[str] = None
         try:
             with httpx.Client(timeout=4) as client:
@@ -1673,10 +1594,14 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                     headers=self._headers(),
                     params={"gateway": platform or "", "address": sender, "create": "true"},
                 )
+                self._record_connection_success()
                 if resp.status_code == 200:
                     cid = (resp.json() or {}).get("contact_id")
                     if cid:
                         resolved = str(cid)
+        except (httpx.HTTPError, OSError) as exc:
+            self._record_connection_failure()
+            logger.debug("Protagine resolve_handle failed: %s", exc)
         except Exception as exc:
             logger.debug("Protagine resolve_handle failed: %s", exc)
         with self._handle_cache_lock:
@@ -2327,14 +2252,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 or (new_session_id != self._session_id and not compression_continuation)):
             self._last_turn_started_at = 0.0
             self._prev_turn_gap_secs = None
-        if reset:
-            with self._cache_lock:
-                self._cached_context = ""
-                self._cached_query = ""
-                self._cached_session = ""
-                self._cached_participant = ""
-                self._cached_contact = ""
-            self._prefetch_ready.set()
         self._session_id = new_session_id
         self._rw_touch_session(new_session_id)
         logger.debug("Protagine memory provider switched to session=%s (reset=%s)", new_session_id, reset)
@@ -2381,8 +2298,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                         "watermark": receipt["watermark"],
                         "host_reconciliation": receipt.get("host_reconciliation", "not_observed"),
                     }
-                    with self._cache_lock:
-                        self._cached_context = ""
                     self._temporal_cache = (0.0, "")
                 else:
                     self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
@@ -2436,12 +2351,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush any pending context at session end."""
-        with self._cache_lock:
-            self._cached_context = ""
-            self._cached_query = ""
-            self._cached_session = ""
-            self._cached_participant = ""
-            self._cached_contact = ""
         # Best-effort final sync of the last exchange
         if messages:
             try:
@@ -2463,17 +2372,8 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     def shutdown(self) -> None:
         """Clean up. SYNCHRONOUS by Hermes contract (MemoryManager calls this
         synchronously; an async def here was never awaited)."""
-        with self._cache_lock:
-            self._cached_context = ""
-            self._cached_query = ""
-            self._cached_session = ""
-            self._cached_participant = ""
-            self._cached_contact = ""
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
-        t = self._prefetch_thread
-        if t is not None and t.is_alive():
-            t.join(timeout=3.0)
         # _async_client (if ever created) closes on GC; nothing to await here.
         self._async_client = None
 

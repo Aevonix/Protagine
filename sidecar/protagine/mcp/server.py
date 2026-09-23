@@ -15,11 +15,11 @@ from mcp.server.fastmcp import FastMCP
 # ---------------------------------------------------------------------------
 
 def _base_url() -> str:
-    return os.environ.get("PROTAGINE_URL") or os.environ.get("PROTAGINE_URL", "http://127.0.0.1:7777")
+    return os.environ.get("PROTAGINE_URL", "http://127.0.0.1:7777")
 
 
 def _api_key() -> str:
-    return os.environ.get("PROTAGINE_API_KEY") or os.environ.get("PROTAGINE_API_KEY", "")
+    return os.environ.get("PROTAGINE_API_KEY", "")
 
 
 def _headers() -> dict[str, str]:
@@ -28,11 +28,11 @@ def _headers() -> dict[str, str]:
 
 
 def _source() -> str | None:
-    return os.environ.get("PROTAGINE_MCP_SOURCE") or os.environ.get("PROTAGINE_MCP_SOURCE")
+    return os.environ.get("PROTAGINE_MCP_SOURCE")
 
 
 def _contact_id(override: str | None = None) -> str | None:
-    return override or os.environ.get("PROTAGINE_MCP_CONTACT_ID") or os.environ.get("PROTAGINE_MCP_CONTACT_ID")
+    return override or os.environ.get("PROTAGINE_MCP_CONTACT_ID")
 
 
 def _require_contact(override: str | None = None) -> tuple[str, dict[str, str]]:

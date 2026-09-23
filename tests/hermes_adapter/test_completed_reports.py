@@ -313,7 +313,6 @@ finally:protagine_hermes._TOOL_EXECUTION_CONTEXT.reset(token)
 assert not outbox.snapshot()
 with ledger._connect() as conn:assert not conn.execute('SELECT 1 FROM turn_sources WHERE turn_id=?',(sid,)).fetchone()
 assert kb.latest_run(db,tid).summary==report
-provider._prefetch_thread.join(timeout=2) if provider._prefetch_thread else None
 db.close()
 native_db.close()
 print('native completion context, source-only report, scoped recall and dependent erasure verified')

@@ -174,3 +174,26 @@ async def test_long_source_excerpt_is_marked_incomplete_before_packet_packing(so
     assert "Labeler reset procedure" in context
     assert "Only reconnect" not in context
     assert '"excerpt_truncated": true' in context
+
+
+def test_lexical_recall_reconstructs_only_the_candidates_it_returns(tmp_path, monkeypatch):
+    from protagine.turns import idempotency
+
+    ledger = TurnIdempotencyLedger(tmp_path / "ledger.db")
+    for index in range(40):
+        ledger.record_source(f"t{index}", contact_id="contact-a", session_id="s",
+                             messages=[{"role": "user", "content": f"Parcel {index} arrives at the depot."}])
+    with ledger._connect() as conn:
+        # A chunk written by an older indexer that no canonical message owns.
+        conn.execute("INSERT INTO turn_source_search(turn_id, role, content) VALUES (?, ?, ?)",
+                     ("t0", "user", "parcel depot parcel depot parcel depot"))
+    parsed = []
+    lexical_chunks = idempotency._lexical_chunks
+    monkeypatch.setattr(idempotency, "_lexical_chunks",
+                        lambda messages: (parsed.append(1), lexical_chunks(messages))[1])
+    hits = ledger.search_sources("parcel depot", contact_id="contact-a", session_id="later", limit=3)
+    assert len(hits) == 3 and len({hit["turn_id"] for hit in hits}) == 3
+    assert all(hit["source_message_hash"] for hit in hits)
+    # Source envelopes are reconstructed for the handful of ranked candidates
+    # consumed, never for every FTS match; the stale row spends no budget.
+    assert len(parsed) <= 4

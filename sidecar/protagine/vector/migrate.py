@@ -241,7 +241,6 @@ async def _migrate_generation(store, pipeline, *, graph, old_model_id, batch_siz
             raise ValueError('Embedding batch response does not match retained inputs')
         for vector in vectors:
             store._validate_vector(vector)
-        table = await store._table(collection, write=True, generation=generation)
         projected_rows, eligible, projected_ids = [], [], set()
         for row, vector in zip(rows, vectors):
             meta = row['metadata']
@@ -266,13 +265,15 @@ async def _migrate_generation(store, pipeline, *, graph, old_model_id, batch_siz
             return
         # One Lance commit per embedding batch. Existing staged rows include
         # concurrent live writes and survive the insert-only merge unchanged.
-        await table.merge_insert('id').when_not_matched_insert_all().execute(projected_rows)
-        for entry_id, meta in eligible:
-            # A source can be erased while the batch commit is in flight.
-            if not store._eligible(collection, entry_id, meta):
-                await table.delete('id = ' + store._quoted(entry_id))
-            else:
-                result.vectors_migrated += 1
+        async with store.write_lock:
+            table = await store._table(collection, write=True, generation=generation)
+            await table.merge_insert('id').when_not_matched_insert_all().execute(projected_rows)
+            for entry_id, meta in eligible:
+                # A source can be erased while the batch commit is in flight.
+                if not store._eligible(collection, entry_id, meta):
+                    await table.delete('id = ' + store._quoted(entry_id))
+                else:
+                    result.vectors_migrated += 1
 
     try:
         for collection in Collection:

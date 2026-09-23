@@ -30,9 +30,9 @@ import sys
 import urllib.request
 
 HOME = os.path.expanduser("~")
-PLUGINS_DIR = os.environ.get("PROTAGINE_DOCTOR_PLUGINS_DIR", os.environ.get("PROTAGINE_DOCTOR_PLUGINS_DIR", os.path.join(HOME, ".hermes", "plugins")))
+PLUGINS_DIR = os.environ.get("PROTAGINE_DOCTOR_PLUGINS_DIR", os.path.join(HOME, ".hermes", "plugins"))
 STATE_FILE = os.path.join(HOME, ".hermes", ".protagine_doctor_state.json")
-SIDECAR_URL = os.environ.get("PROTAGINE_URL", os.environ.get("PROTAGINE_URL", "http://127.0.0.1:7777"))
+SIDECAR_URL = os.environ.get("PROTAGINE_URL", "http://127.0.0.1:7777")
 
 FAILS, WARNS, OKS = [], [], []
 def ok(m):   OKS.append(m);   print(f"  ✅ {m}")
@@ -55,7 +55,7 @@ def valid_hooks():
         return None  # unknown -> skip the name check rather than false-fail
 
 def protagine_key():
-    configured = os.environ.get("PROTAGINE_API_KEY", os.environ.get("PROTAGINE_API_KEY", ""))
+    configured = os.environ.get("PROTAGINE_API_KEY", "")
     if configured:
         return configured
     try:
@@ -224,7 +224,7 @@ def live_checks():
     except Exception as e:
         fail(f"contact-resolve failed: {e}")
     # Protagine LLM provider sane (generative, not an embedding model)
-    cfg_path = os.path.join(os.environ.get("PROTAGINE_STATE_DIR", os.environ.get("PROTAGINE_STATE_DIR", os.path.join(HOME, ".protagine", "data"))),
+    cfg_path = os.path.join(os.environ.get("PROTAGINE_STATE_DIR", os.path.join(HOME, ".protagine", "data")),
                             ".protagine-llm-config.json")
     try:
         cfg = json.load(open(cfg_path))

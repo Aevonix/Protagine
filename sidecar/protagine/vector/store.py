@@ -8,6 +8,7 @@ operations degrade gracefully when the store is not initialized.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 import json
 import logging
 import math
@@ -123,6 +124,10 @@ class VectorStore:
         if (identity is None) != (catalog is None):
             raise ValueError('Managed indexes require both embedding identity and source-ledger catalog')
         self._generation_dbs = {}
+        # Held around every Lance commit made through or beside this store. A
+        # table rewrite after erasure snapshots and replaces a whole table, and
+        # would drop any row another writer commits in between.
+        self.write_lock = asyncio.Lock()
 
     async def connect(self, dimensions: int) -> None:
         """Open (or create) the LanceDB database directory."""
@@ -220,22 +225,23 @@ class VectorStore:
                     'served_model': self.identity.served_model,
                     'declared_revision': self.identity.declared_revision}
 
-        table = await self._table(collection, write=True)
-        await table.add([{
-            "id": id,
-            "text": text,
-            "vector": vector,
-            "metadata": json.dumps(meta),
-            "modality": meta.get("modality", "text"),
-            "image_hash": meta.get("image_hash", ""),
-            "image_ref": meta.get("image_ref", ""),
-            "thumbnail_ref": meta.get("thumbnail_ref", ""),
-            "caption": meta.get("caption", ""),
-            "created_at": now,
-            "updated_at": now,
-        }])
-        if not self._eligible(collection, id, meta):
-            await table.delete('id = ' + self._quoted(id))
+        async with self.write_lock:
+            table = await self._table(collection, write=True)
+            await table.add([{
+                "id": id,
+                "text": text,
+                "vector": vector,
+                "metadata": json.dumps(meta),
+                "modality": meta.get("modality", "text"),
+                "image_hash": meta.get("image_hash", ""),
+                "image_ref": meta.get("image_ref", ""),
+                "thumbnail_ref": meta.get("thumbnail_ref", ""),
+                "caption": meta.get("caption", ""),
+                "created_at": now,
+                "updated_at": now,
+            }])
+            if not self._eligible(collection, id, meta):
+                await table.delete('id = ' + self._quoted(id))
 
     async def add_batch(
         self,
@@ -251,7 +257,6 @@ class VectorStore:
         for item in items:
             self._validate_vector(item.vector)
 
-        table = await self._table(collection, write=True)
         rows = []
         for item in items:
             meta = item.metadata or {}
@@ -275,10 +280,12 @@ class VectorStore:
                 "updated_at": now,
             })
         if rows:
-            await table.add(rows)
-            for item in items:
-                if not self._eligible(collection, item.id, item.metadata):
-                    await table.delete('id = ' + self._quoted(item.id))
+            async with self.write_lock:
+                table = await self._table(collection, write=True)
+                await table.add(rows)
+                for item in items:
+                    if not self._eligible(collection, item.id, item.metadata):
+                        await table.delete('id = ' + self._quoted(item.id))
 
     async def search(
         self,
@@ -404,15 +411,17 @@ class VectorStore:
     async def delete(self, collection: Collection, id: str) -> None:
         """Delete a single entry by ID."""
         if self.catalog is None:
-            table = await self._table(collection)
-            await table.delete('id = ' + self._quoted(id))
+            async with self.write_lock:
+                table = await self._table(collection)
+                await table.delete('id = ' + self._quoted(id))
             return
         self.catalog.delete(collection.value, id)
         # Exact ID removal covers active, staged, unknown legacy and retained generations.
         for generation in self.catalog.generations():
             db = await self._generation_db(generation)
             if collection.value in await db.table_names():
-                await (await db.open_table(collection.value)).delete('id = ' + self._quoted(id))
+                async with self.write_lock:
+                    await (await db.open_table(collection.value)).delete('id = ' + self._quoted(id))
 
     async def update(
         self,
@@ -435,10 +444,11 @@ class VectorStore:
                'modality': meta.get('modality', 'text'), 'image_hash': meta.get('image_hash', ''),
                'image_ref': meta.get('image_ref', ''), 'thumbnail_ref': meta.get('thumbnail_ref', ''),
                'caption': meta.get('caption', ''), 'created_at': now, 'updated_at': now}
-        table = await self._table(collection, write=True)
-        await table.merge_insert('id').when_matched_update_all().when_not_matched_insert_all().execute([row])
-        if not self._eligible(collection, id, meta):
-            await table.delete('id = ' + self._quoted(id))
+        async with self.write_lock:
+            table = await self._table(collection, write=True)
+            await table.merge_insert('id').when_matched_update_all().when_not_matched_insert_all().execute([row])
+            if not self._eligible(collection, id, meta):
+                await table.delete('id = ' + self._quoted(id))
 
     async def get(self, collection: Collection, id: str) -> Optional[VectorResult]:
         """Fetch a single entry by ID."""
@@ -542,7 +552,11 @@ class VectorStore:
         self._generation_dbs.clear()
 
     async def erase_source_projections(self, turn_ids):
-        """Remove exact linked rows even when the old graph row is already gone."""
+        """Remove exact linked rows even when the old graph row is already gone.
+
+        Every table is compacted afterwards, so the erased text also leaves the
+        Lance data files and version history rather than only the current view.
+        """
         if self.catalog is None:
             return 0
         selected = {'turn:' + value for value in turn_ids}
@@ -577,4 +591,31 @@ class VectorStore:
                         # deletion commits. Later batches must still be read.
                         await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
                         deleted.update((collection.value, value) for value in matched)
+                # Unconditional, so a retry after a failed compaction still
+                # finishes the job and earlier soft deletes are purged as well.
+                await self._purge_deleted(db, collection.value)
         return len(deleted)
+
+    async def _purge_deleted(self, db, name):
+        """Rewrite a table so soft-deleted rows leave its data files and history.
+
+        ``table.delete`` only writes a deletion vector under a new manifest.
+        ``optimize`` merges small fragments, dropping deleted rows on the way,
+        and prunes every older version. Compaction leaves a lone fragment with
+        few deletions untouched, so its surviving rows are rewritten instead.
+        That overwrite lands on whatever version is current when it commits
+        and would drop rows another writer, such as the source vector worker,
+        committed after the snapshot, so it holds the store's write lock.
+        """
+        table = await db.open_table(name)
+        if not hasattr(table, 'optimize'):
+            logger.warning('LanceDB cannot compact %s; deleted rows stay on disk until a reindex', name)
+            return
+        await table.optimize(cleanup_older_than=timedelta(0))
+        pending = Path(db.uri) / (name + '.lance') / '_deletions'
+        if pending.is_dir() and any(pending.iterdir()):
+            logger.info('Rewriting vector table %s to purge deleted rows', name)
+            async with self.write_lock:
+                table = await db.open_table(name)
+                await db.create_table(name, data=await table.to_arrow(), mode='overwrite')
+                await (await db.open_table(name)).optimize(cleanup_older_than=timedelta(0))

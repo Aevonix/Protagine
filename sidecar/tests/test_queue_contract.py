@@ -78,14 +78,14 @@ def _headers(secret):
 async def test_contract_endpoint_auth_matrix(tmp_path):
     no_auth_app = _app()
     async with AsyncClient(
-        transport=ASGITransport(app=no_auth_app), base_url="http://test",
+        transport=ASGITransport(app=no_auth_app), base_url="http://localhost",
     ) as client:
         no_auth = await client.get("/v1/host/queue/contract")
     assert no_auth.status_code == 503
 
     legacy_app = _app(legacy_key="legacy-secret")
     async with AsyncClient(
-        transport=ASGITransport(app=legacy_app), base_url="http://test",
+        transport=ASGITransport(app=legacy_app), base_url="http://localhost",
     ) as client:
         missing = await client.get("/v1/host/queue/contract")
         wrong = await client.get(
@@ -102,7 +102,7 @@ async def test_contract_endpoint_auth_matrix(tmp_path):
     _write_keyring(denied_ring, ["api:access"])
     denied_app = _app(keyring=denied_ring)
     async with AsyncClient(
-        transport=ASGITransport(app=denied_app), base_url="http://test",
+        transport=ASGITransport(app=denied_app), base_url="http://localhost",
     ) as client:
         denied = await client.get(
             "/v1/host/queue/contract", headers=_headers("scoped-secret"),
@@ -113,7 +113,7 @@ async def test_contract_endpoint_auth_matrix(tmp_path):
     _write_keyring(allowed_ring, ["workers:contract"])
     allowed_app = _app(keyring=allowed_ring)
     async with AsyncClient(
-        transport=ASGITransport(app=allowed_app), base_url="http://test",
+        transport=ASGITransport(app=allowed_app), base_url="http://localhost",
     ) as client:
         allowed = await client.get(
             "/v1/host/queue/contract", headers=_headers("scoped-secret"),
@@ -221,7 +221,7 @@ async def test_contract_rejects_missing_malformed_or_null_release_identity(
     )
     app = _app(legacy_key="legacy-secret")
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test",
+        transport=ASGITransport(app=app), base_url="http://localhost",
     ) as client:
         response = await client.get(
             "/v1/host/queue/contract", headers=_headers("legacy-secret"),
@@ -313,7 +313,7 @@ async def test_exact_job_inspection_is_authenticated_and_canary_complete(
 
         no_auth_app = _app()
         async with AsyncClient(
-            transport=ASGITransport(app=no_auth_app), base_url="http://test",
+            transport=ASGITransport(app=no_auth_app), base_url="http://localhost",
         ) as client:
             no_auth = await client.get(
                 f"/v1/host/queue/inspection/jobs/{job.job_id}",
@@ -322,7 +322,7 @@ async def test_exact_job_inspection_is_authenticated_and_canary_complete(
 
         legacy_app = _app(legacy_key="legacy-secret")
         async with AsyncClient(
-            transport=ASGITransport(app=legacy_app), base_url="http://test",
+            transport=ASGITransport(app=legacy_app), base_url="http://localhost",
         ) as client:
             missing = await client.get(
                 f"/v1/host/queue/inspection/jobs/{job.job_id}",
@@ -343,7 +343,7 @@ async def test_exact_job_inspection_is_authenticated_and_canary_complete(
         _write_keyring(denied_ring, ["api:access"])
         denied_app = _app(keyring=denied_ring)
         async with AsyncClient(
-            transport=ASGITransport(app=denied_app), base_url="http://test",
+            transport=ASGITransport(app=denied_app), base_url="http://localhost",
         ) as client:
             denied = await client.get(
                 f"/v1/host/queue/inspection/jobs/{job.job_id}",
@@ -355,7 +355,7 @@ async def test_exact_job_inspection_is_authenticated_and_canary_complete(
         _write_keyring(ring, ["workers:inspect"])
         app = _app(keyring=ring)
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test",
+            transport=ASGITransport(app=app), base_url="http://localhost",
         ) as client:
             response = await client.get(
                 f"/v1/host/queue/inspection/jobs/{job.job_id}",

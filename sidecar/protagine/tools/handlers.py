@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import json
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from protagine.autonomy.registry import SubsystemRegistry
 
 logger = logging.getLogger(__name__)
+
+# Who is invoking the current tool call. ToolExecutor sets it per batch from
+# the server-derived actor policy; the default covers in-process callers such
+# as the autonomy loop, where the agent acts on its own behalf.
+tool_actor: ContextVar[str] = ContextVar("protagine_tool_actor", default="agent")
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -594,7 +600,7 @@ async def handle_create_project(
             return json.dumps({"error": "Projects not wired", "status": "unavailable"})
         project, reason = engine.create_project(
             args.get("objective", ""), title=args.get("title", ""),
-            source="owner")
+            source=tool_actor.get())
         if project is None:
             return json.dumps({"created": False, "reason": reason})
         return json.dumps({"created": True, "project_id": project.id,
@@ -768,7 +774,8 @@ async def handle_merge_contacts(
         merge, err = await _resolve_one_contact(_contacts_store, args.get("merge", ""))
         if err:
             return err
-        kept = await _contacts_store.merge_contacts(keep, merge, performed_by="owner")
+        kept = await _contacts_store.merge_contacts(
+            keep, merge, performed_by=tool_actor.get())
         return json.dumps({"merged": True, "kept_contact_id": keep,
                            "merged_contact_id": merge,
                            "interaction_count": getattr(kept, "interaction_count", None)},

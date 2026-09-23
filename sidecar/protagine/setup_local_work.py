@@ -182,8 +182,7 @@ def install(state):
     env_path = worker/'.env'
     env_before = env_path.read_bytes() if env_path.exists() else None
     _atomic_hermes_config_write(env_path, env_before,
-        (('PROTAGINE_NATIVE_API_KEY' if plugin.get('api_key') == '${PROTAGINE_NATIVE_API_KEY}' else 'PROTAGINE_NATIVE_API_KEY')
-         +'='+json.dumps(secret)+'\nPROTAGINE_GENERAL_PLUGIN_ACTIVE=1\n'
+        ('PROTAGINE_NATIVE_API_KEY='+json.dumps(secret)+'\nPROTAGINE_GENERAL_PLUGIN_ACTIVE=1\n'
          'PROTAGINE_MEMORY_WORKER_TOOLS=0\nPROTAGINE_MEMORY_TURN_WRITER=disabled\n').encode())
     def write_owned(path, value):
         before = path.read_bytes() if path.exists() else None

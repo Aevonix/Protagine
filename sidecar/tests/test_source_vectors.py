@@ -402,3 +402,76 @@ async def test_semantic_candidates_still_use_temporal_conflict_and_correction_bu
         hits, _ = await projection.search('workplace', contact_id='contact-a', session_id='later')
         _, rows = claims.prepare_context([], hits, contact_id='contact-a', session_id='later', time_query=query)
         assert all('River' not in str(row.get('content')) or row.get('atomic_evidence') for row in rows)
+
+
+def files_containing(root, needle):
+    return sorted(str(path.relative_to(root)) for path in root.rglob('*')
+                  if path.is_file() and needle.encode() in path.read_bytes())
+
+
+@pytest.mark.asyncio
+async def test_source_erasure_leaves_no_erased_text_in_lance_files_or_old_versions(tmp_path):
+    ledger, store, pipeline, projection = await setup(tmp_path)
+    for index in range(11):
+        ledger.record_source(f'kept-{index}', contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'Office {index} is beside the orchard.'}])
+    secrets = {'first': 'cedar-9x', 'second': 'willow-4q'}
+    for turn, secret in secrets.items():
+        ledger.record_source(turn, contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'The hydrofoil code is {secret}.'}])
+    await drain(projection)
+    lance_root = tmp_path / 'lancedb'
+    # Lance deletes are soft: a deletion vector plus a new manifest. The first
+    # erasure hits a table of many small fragments, the second a single fragment
+    # with one deletion in twelve rows, which plain compaction leaves alone.
+    for turn, secret in secrets.items():
+        assert files_containing(lance_root, secret)
+        ledger.erase_sources(contact_id='c', turn_ids=[turn])
+        assert await store.erase_source_projections([turn]) >= 1
+        assert files_containing(lance_root, secret) == []
+        table = await store._table(Collection.CONVERSATIONS)
+        assert len(await table.list_versions()) == 1
+    hits, _ = await projection.search('workplace', contact_id='c', session_id='s', limit=20)
+    assert {hit['turn_id'] for hit in hits} == {f'kept-{index}' for index in range(11)}
+
+
+@pytest.mark.asyncio
+async def test_purge_rewrite_waits_for_a_concurrent_projection_commit(tmp_path, monkeypatch):
+    from lancedb.table import AsyncTable
+
+    ledger, store, pipeline, projection = await setup(tmp_path)
+    for index in range(11):
+        ledger.record_source(f'kept-{index}', contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'Office {index} is beside the orchard.'}])
+    secrets = {'first': 'cedar-9x', 'second': 'willow-4q'}
+    for turn, secret in secrets.items():
+        ledger.record_source(turn, contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'The hydrofoil code is {secret}.'}])
+    await drain(projection)
+    # The first erasure compacts the small fragments into one; the second then
+    # takes the snapshot-and-overwrite path for a lone fragment.
+    ledger.erase_sources(contact_id='c', turn_ids=['first'])
+    assert await store.erase_source_projections(['first']) >= 1
+    real_to_arrow = AsyncTable.to_arrow
+    late = []
+
+    async def snapshot_then_late_projection(self, *args, **kwargs):
+        snapshot = await real_to_arrow(self, *args, **kwargs)
+        if not late:
+            # The source vector worker projects a new turn while the rewrite
+            # holds its snapshot; the overwrite must not drop that commit.
+            ledger.record_source('late', contact_id='c', session_id='s',
+                                 messages=[{'role': 'user', 'content': 'The vessel office moved late.'}])
+            late.append(asyncio.create_task(drain(projection)))
+            await asyncio.sleep(0.2)
+        return snapshot
+
+    monkeypatch.setattr(AsyncTable, 'to_arrow', snapshot_then_late_projection)
+    ledger.erase_sources(contact_id='c', turn_ids=['second'])
+    assert await store.erase_source_projections(['second']) >= 1
+    assert late, 'the lone-fragment rewrite path must have run'
+    await late[0]
+    for secret in secrets.values():
+        assert files_containing(tmp_path / 'lancedb', secret) == []
+    hits, _ = await projection.search('workplace', contact_id='c', session_id='s', limit=20)
+    assert {hit['turn_id'] for hit in hits} == {f'kept-{index}' for index in range(11)} | {'late'}

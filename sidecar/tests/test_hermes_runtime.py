@@ -22,6 +22,7 @@ def preparation(tmp_path, monkeypatch):
         assert destination.parent.is_dir()
         destination.mkdir()
         (destination/'unpatched_module.py').write_text('value = 1\n')
+        (destination/'.protagine-patch-receipt.json').write_text('{"status": "patched"}\n')
         calls.append('stage')
     def command(args, **kwargs):
         calls.append([str(value) for value in args])
@@ -56,6 +57,34 @@ def test_failed_behavior_does_not_write_success_receipt(preparation):
     with pytest.raises(ValueError, match='concurrent_callback_context'):
         runtime.prepare_runtime(source=p.source, destination=p.root)
     assert not (p.root/'.protagine-runtime.json').exists()
+
+
+def test_failed_install_is_rebuilt_by_the_next_prepare(preparation, monkeypatch):
+    p = preparation
+    command = runtime._run
+    def failing_install(args, **kwargs):
+        if 'install' in [str(value) for value in args]:
+            raise ValueError('Hermes preparation failed: python -I exited 1; active runtime retained')
+        return command(args, **kwargs)
+    monkeypatch.setattr(runtime, '_run', failing_install)
+    with pytest.raises(ValueError, match='preparation failed'):
+        runtime.prepare_runtime(source=p.source, destination=p.root)
+    assert p.root.is_dir() and not (p.root/'.protagine-runtime.json').exists()
+    monkeypatch.setattr(runtime, '_run', command)
+    p.calls.clear()
+    assert runtime.prepare_runtime(source=p.source, destination=p.root) == p.root/'.venv/bin/python'
+    assert (p.root/'.protagine-runtime.json').is_file()
+    assert p.calls[0] == 'stage' and any('install' in row for row in p.calls)
+
+
+def test_occupied_destination_not_staged_by_protagine_is_still_refused(preparation):
+    p = preparation
+    p.root.mkdir(parents=True)
+    (p.root/'notes.txt').write_text('operator data\n')
+    with pytest.raises(ValueError, match='occupied or incomplete'):
+        runtime.prepare_runtime(destination=p.root)
+    assert (p.root/'notes.txt').read_text() == 'operator data\n'
+    assert p.calls == []
 
 
 def test_wrong_import_root_is_not_qualified(preparation, monkeypatch):

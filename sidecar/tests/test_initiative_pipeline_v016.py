@@ -297,8 +297,8 @@ class TestInitiativeSerializer:
         assigned = self._stored(assigned_agent_id="test-agent", status="assigned")
         assert _initiative_to_response(assigned).target_agent_id == "test-agent"
 
-        preferred = self._stored(preferred_agent_id="macmini")
-        assert _initiative_to_response(preferred).target_agent_id == "macmini"
+        preferred = self._stored(preferred_agent_id="preferred-agent")
+        assert _initiative_to_response(preferred).target_agent_id == "preferred-agent"
 
         unset = self._stored()
         assert _initiative_to_response(unset).target_agent_id is None

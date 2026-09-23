@@ -130,7 +130,7 @@ def runtime_log_directory():
     if _handler is not None:
         return Path(_handler.baseFilename).parent
     from protagine import get_state_dir
-    path = os.environ.get('PROTAGINE_LOG_PATH') or os.environ.get('PROTAGINE_LOG_PATH')
+    path = os.environ.get('PROTAGINE_LOG_PATH')
     return Path(path).expanduser().absolute().parent if path else get_state_dir()/'service'
 
 
@@ -143,7 +143,7 @@ def configure_runtime_logging(path=None, *, max_bytes=None, backups=None, redire
     """
     global _handler
     from protagine import get_state_dir
-    path = Path(path or os.environ.get('PROTAGINE_LOG_PATH') or os.environ.get('PROTAGINE_LOG_PATH')
+    path = Path(path or os.environ.get('PROTAGINE_LOG_PATH')
                 or get_state_dir()/'service/sidecar.log').expanduser().absolute()
     max_bytes = int(max_bytes if max_bytes is not None else os.environ.get('PROTAGINE_LOG_MAX_BYTES', DEFAULT_MAX_BYTES))
     backups = int(backups if backups is not None else os.environ.get('PROTAGINE_LOG_BACKUPS', DEFAULT_BACKUPS))

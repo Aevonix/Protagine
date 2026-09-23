@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,8 +70,9 @@ def _source_inventory(root):
 def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=DEFAULT_PATCHSET):
     """Stage exact source, install native dependencies, then run offline probes.
 
-    A failed candidate remains unselected. Reuse rechecks the complete source
-    digest, patch hashes, dependencies and behavior before returning its interpreter.
+    A failed candidate remains unselected and is rebuilt by the next preparation
+    of the same directory. Reuse rechecks the complete source digest, patch
+    hashes, dependencies and behavior before returning its interpreter.
     """
     manifest = describe_patchset(patchset_id)
     root = Path(destination or default_destination(patchset_id)).expanduser().absolute()
@@ -78,6 +80,12 @@ def prepare_runtime(*, source=None, destination=None, python=None, patchset_id=D
         raise ValueError('Choose a dedicated runtime directory, not a symlink')
     receipt_path = root/'.protagine-runtime.json'
     reused = root.exists()
+    if reused and not receipt_path.exists() and (root/'.protagine-patch-receipt.json').is_file():
+        # Staged by an earlier preparation that never qualified, for example
+        # because the dependency install failed or was interrupted. Nothing
+        # selected it, and only this staging writes that marker.
+        shutil.rmtree(root)
+        reused = False
     if reused:
         if source:
             revision = _run(['git', '-C', source, 'rev-parse', 'HEAD']).strip()

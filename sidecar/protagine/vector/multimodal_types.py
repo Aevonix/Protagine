@@ -46,7 +46,7 @@ class EmbedInput:
 class ImageInput:
     """Normalized image input for the embedding pipeline.
 
-    Constructed by image_preprocess from raw inputs (path, URL, bytes, base64).
+    Constructed by image_preprocess from raw inputs (URL, bytes, base64).
     """
 
     data: bytes  # Raw image bytes (JPEG or PNG)

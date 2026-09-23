@@ -122,7 +122,7 @@ def _merged(existing: dict, desired: dict, sidecar_url: Optional[str]) -> dict:
     env = dict(current_env)
     # Old generated placeholders are not portable across harnesses. Inherit the
     # real variable from the launching environment instead of passing a literal.
-    if env.get("PROTAGINE_API_KEY") in {'${PROTAGINE_API_KEY}'}:
+    if env.get("PROTAGINE_API_KEY") == '${PROTAGINE_API_KEY}':
         env.pop("PROTAGINE_API_KEY")
     selected_env = dict(desired["env"])
     if (sidecar_url is None and not any(os.environ.get(k) for k in ('PROTAGINE_SIDECAR_URL', 'PROTAGINE_SIDECAR_PORT'))

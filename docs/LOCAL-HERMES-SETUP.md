@@ -91,8 +91,9 @@ patchset. Omit `--destination` to use its directory under
 `~/.local/share/protagine/hermes/`. Preparation copies tracked official source,
 checks patch preimages and postimages, installs an isolated environment and
 records its source and capabilities. Untracked files and private profiles are
-not copied. A failed candidate stays unselected. An existing successful candidate
-is rechecked before reuse.
+not copied. A failed candidate stays unselected, and the next preparation of the
+same directory replaces it. An existing successful candidate is rechecked before
+reuse.
 
 Each Hermes update needs a patchset qualified against that exact official
 revision. Release CI applies the built wheel's patches and runs the full adapter

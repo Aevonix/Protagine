@@ -1,21 +1,23 @@
 """Protagine Vector — image preprocessing, EXIF extraction, and thumbnail generation.
 
-Handles all image input normalization: loading from paths, URLs, base64, or raw
-bytes. Extracts EXIF metadata, generates thumbnails, and validates format/size.
+Handles all image input normalization: loading from raw bytes, base64, or public
+http(s) URLs. Extracts EXIF metadata, generates thumbnails, and validates format/size.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import binascii
 import hashlib
 import io
+import ipaddress
 import logging
-import os
+import socket
 import struct
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -69,27 +71,15 @@ def validate_image(data: bytes, max_size: int = MAX_IMAGE_SIZE_BYTES) -> list[st
 # ---------------------------------------------------------------------------
 
 
+MAX_URL_REDIRECTS = 5
+
+
 def _is_url(s: str) -> bool:
     try:
         result = urlparse(s)
         return result.scheme in ("http", "https")
     except Exception:
         return False
-
-
-def _is_base64(s: str) -> bool:
-    """Check if a string looks like base64-encoded data."""
-    if s.startswith("data:"):
-        return True
-    if len(s) < 100:
-        return False
-    try:
-        # Quick check — doesn't need to be perfect
-        if len(s) % 4 == 0 and all(c in base64._urlsafe_b64alphabet.decode() or c == '=' for c in s[:100]):
-            return True
-    except Exception:
-        pass
-    return False
 
 
 def _decode_base64(s: str) -> bytes:
@@ -99,12 +89,96 @@ def _decode_base64(s: str) -> bytes:
         _, _, encoded = s.partition(",")
         if not encoded:
             raise ValueError("Empty base64 data in data URI")
-        return base64.b64decode(encoded)
-    return base64.b64decode(s)
+    else:
+        encoded = s
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(
+            "image must be raw bytes, a base64/data-URL string, or an http(s) URL"
+        ) from exc
+
+
+async def _check_public_url(url: str) -> str:
+    """Return the public address to fetch ``url`` from, or raise ValueError.
+
+    Callers can hand the sidecar any URL, so a fetch must not reach
+    loopback, LAN, link-local (cloud metadata) or other reserved ranges.
+    Hostnames are resolved once and every address checked; the caller
+    connects to the returned address rather than resolving the name again.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("image URL must be http(s)")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("image URL cannot contain credentials")
+    host = parsed.hostname.rstrip(".")
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, parsed.port or 0, proto=socket.IPPROTO_TCP,
+            )
+        except socket.gaierror as exc:
+            raise ValueError(f"image URL host could not be resolved: {host}") from exc
+        addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    for address in addresses:
+        mapped = getattr(address, "ipv4_mapped", None) or address
+        if not mapped.is_global:
+            raise ValueError("image URL resolves to a non-public address")
+    return str(next((a for a in addresses if a.version == 4), addresses[0]))
+
+
+async def _fetch_image(url: str, client) -> tuple[bytes, str]:
+    """GET ``url`` with a byte cap, checking every redirect hop.
+
+    Each hop connects to the address that passed the check while the URL's
+    own host stays in the Host header and the TLS name, so a name that
+    answers the check with a public address and the connection with a
+    private one is never followed.
+
+    Returns (raw_bytes, content-type mime).
+    """
+    import httpx
+
+    for _ in range(MAX_URL_REDIRECTS + 1):
+        address = await _check_public_url(url)
+        target = httpx.URL(url)
+        async with client.stream(
+            "GET", target.copy_with(host=address), follow_redirects=False,
+            headers={"Host": target.netloc.decode("ascii")},
+            extensions={"sni_hostname": target.host},
+        ) as resp:
+            if resp.is_redirect:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError("image URL redirect has no location")
+                url = str(target.join(location))
+                continue
+            if resp.status_code >= 400:
+                raise ValueError(f"image URL returned HTTP {resp.status_code}")
+            declared = resp.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > MAX_IMAGE_SIZE_BYTES:
+                raise ValueError(f"Image size {declared} exceeds limit {MAX_IMAGE_SIZE_BYTES}")
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in resp.aiter_bytes():
+                size += len(chunk)
+                if size > MAX_IMAGE_SIZE_BYTES:
+                    raise ValueError(f"Image size exceeds limit {MAX_IMAGE_SIZE_BYTES}")
+                chunks.append(chunk)
+            mime = resp.headers.get("content-type", "").split(";")[0].strip()
+            return b"".join(chunks), mime
+    raise ValueError("image URL has too many redirects")
 
 
 async def load_image(source: str | bytes, mime_type: str = "") -> tuple[bytes, str]:
-    """Load image data from a path, URL, base64 string, or raw bytes.
+    """Load image data from raw bytes, a base64/data-URL string, or an http(s) URL.
+
+    Local file paths are deliberately not accepted: the sources reach this
+    function straight from API request bodies. Callers that hold a file
+    should read it and pass the bytes.
 
     Returns (raw_bytes, mime_type).
     """
@@ -117,34 +191,13 @@ async def load_image(source: str | bytes, mime_type: str = "") -> tuple[bytes, s
     if not isinstance(source, str):
         raise ValueError(f"Unsupported image source type: {type(source)}")
 
-    # URL
     if _is_url(source):
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(source, follow_redirects=True)
-            resp.raise_for_status()
-            data = resp.content
-            mime = mime_type or resp.headers.get("content-type", "").split(";")[0] or detect_mime(data)
-            return data, mime
+            data, mime = await _fetch_image(source, client)
+        return data, mime_type or mime or detect_mime(data)
 
-    # Base64
-    if _is_base64(source):
-        data = _decode_base64(source)
-        mime = mime_type or detect_mime(data)
-        return data, mime
-
-    # File path
-    path = Path(source)
-    if not path.exists():
-        raise FileNotFoundError(f"Image file not found: {source}")
-    data = path.read_bytes()
-    mime = mime_type or _mime_from_extension(path) or detect_mime(data)
-    return data, mime
-
-
-def _mime_from_extension(path: Path) -> str:
-    ext = path.suffix.lower().lstrip(".")
-    mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
-    return mime_map.get(ext, "")
+    data = _decode_base64(source)
+    return data, mime_type or detect_mime(data)
 
 
 # ---------------------------------------------------------------------------

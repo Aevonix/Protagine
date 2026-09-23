@@ -1080,6 +1080,27 @@ def _canonical_shared_commitments(rows, contact_id):
     return visible[:5]
 
 
+def _request_tool_actor(
+    request: Request | None,
+    resolved_person_id: str | None,
+) -> str:
+    """Name the caller an HTTP tool call is recorded as.
+
+    Attribution does not depend on P8 gating: the legacy key is the owner's
+    own credential, a sealed owner is the owner, another sealed person is that
+    person and anything else is a guest. Only in-process execution, which
+    never passes through here, is the agent's own.
+    """
+    authority = request_authority(request)
+    if authority.legacy:
+        return "owner"
+    policy = _p8_tool_actor_policy(
+        request, resolved_person_id or authority.viewer_person_id)
+    if policy.allow_private_read:
+        return "owner"
+    return policy.viewer_person_id or "guest"
+
+
 def _p8_tool_actor_policy(
     request: Request | None,
     resolved_person_id: str | None,
@@ -1385,9 +1406,9 @@ async def memory_embed_image(body: ImageEmbedRequest) -> ImageEmbedResponse:
 
     try:
         # Determine image source
-        source = body.image or body.image_url or body.image_path
+        source = body.image or body.image_url
         if not source:
-            raise HTTPException(status_code=400, detail="No image provided (use image, image_url, or image_path)")
+            raise HTTPException(status_code=400, detail="No image provided (use image or image_url)")
 
         vector, meta = await _embedder.embed_image(
             source,
@@ -1448,7 +1469,7 @@ async def memory_embed_image_batch(body: ImageBatchEmbedRequest) -> ImageBatchEm
     try:
         results = []
         for img_item in body.images:
-            source = img_item.get("image") or img_item.get("image_url") or img_item.get("image_path")
+            source = img_item.get("image") or img_item.get("image_url")
             if not source:
                 continue
             vector, meta = await _embedder.embed_image(
@@ -1508,7 +1529,7 @@ async def memory_embed_async(body: dict) -> dict:
                 failed = 0
                 for img_item in images:
                     try:
-                        source = img_item.get("image") or img_item.get("image_url") or img_item.get("image_path")
+                        source = img_item.get("image") or img_item.get("image_url")
                         if not source:
                             failed += 1
                             continue
@@ -1533,8 +1554,8 @@ async def memory_embed_async(body: dict) -> dict:
                         from protagine.vector.collections import Collection
                         from protagine.vector.query import VectorItem
 
-                        if item.get("image") or item.get("image_url") or item.get("image_path"):
-                            source = item.get("image") or item.get("image_url") or item.get("image_path")
+                        if item.get("image") or item.get("image_url"):
+                            source = item.get("image") or item.get("image_url")
                             vector, meta = await _embedder.embed_image(
                                 source, mime_type=item.get("mime_type", ""),
                                 caption=item.get("caption", ""),
@@ -1805,7 +1826,7 @@ async def memory_index(body: IndexRequest) -> IndexResponse:
         text_items = []
         image_items = []
         for item in body.items:
-            if item.get("image") or item.get("image_url") or item.get("image_path"):
+            if item.get("image") or item.get("image_url"):
                 image_items.append(item)
             else:
                 text_items.append(item)
@@ -1836,7 +1857,7 @@ async def memory_index(body: IndexRequest) -> IndexResponse:
         # Process image items
         for item in image_items:
             try:
-                source = item.get("image") or item.get("image_url") or item.get("image_path")
+                source = item.get("image") or item.get("image_url")
                 if not source:
                     failed += 1
                     continue
@@ -2719,6 +2740,7 @@ async def reasoning_turn(
 
     available_tools = body.available_tools or None
     actor_policy = None
+    resolved_person = None
     if _p8_runtime is not None:
         from protagine.reasoning.executor import ToolRegistryError
         from protagine.reasoning.tool_policy import filter_tools_for_actor
@@ -2760,6 +2782,7 @@ async def reasoning_turn(
         model_override=body.model_override or None,
         actor_policy=actor_policy,
         memory_search=_reasoning_memory_search(request, body.identity, body.context),
+        actor=_request_tool_actor(request, resolved_person),
     )
 
     response_msg = None
@@ -2873,6 +2896,7 @@ async def tools_invoke(
             }],
             allowed_tools=frozenset({body.name}),
             actor_policy=actor_policy,
+            actor=_request_tool_actor(request, None),
             **({'memory_search': _reasoning_memory_search(request, body.identity, body.context)}
                if body.name == 'protagine_memory_search' and body.context is not None else {}),
         ))[0]

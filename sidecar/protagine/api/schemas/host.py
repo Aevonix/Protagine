@@ -290,9 +290,8 @@ class IndexResponse(BaseModel):
 
 class ImageEmbedRequest(BaseModel):
     identity: HostIdentity
-    image: Optional[str] = None  # Base64-encoded image
-    image_url: Optional[str] = None  # URL to image
-    image_path: Optional[str] = None  # Local file path
+    image: Optional[str] = None  # Base64-encoded image or data URL
+    image_url: Optional[str] = None  # Public http(s) URL to image
     mime_type: Optional[str] = None
     caption: Optional[str] = None
     collection: Optional[str] = None
@@ -313,7 +312,7 @@ class ImageEmbedResponse(BaseModel):
 
 class ImageBatchEmbedRequest(BaseModel):
     identity: HostIdentity
-    images: List[dict]  # [{image, image_url, image_path, mime_type, caption}]
+    images: List[dict]  # [{image, image_url, mime_type, caption}]
     collection: Optional[str] = None
 
 

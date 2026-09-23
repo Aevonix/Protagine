@@ -1,7 +1,7 @@
 """Inspect/reconcile the retired built-in executor's existing queue, offline.
 
 This command never dispatches work. Stop the old executor and back up state
-before applying. Native task owners and terminal effect records are preserved.
+before applying. Native task owners, results and effect receipts are preserved.
 """
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ import sqlite3
 from .native_work import contract
 
 MIGRATION = 'retire-builtin-executor-v1'
-ACTIVE = {'pending', 'assigned', 'acknowledged'}
+# Statuses that would run again: the generator reactivates a failed row when
+# the same work is proposed again, so a failed row is not a settled record.
+REPLAYABLE = {'pending', 'assigned', 'acknowledged', 'failed'}
 
 
 def _pending_path(row):
@@ -67,17 +69,17 @@ def reconcile(state_dir: Path, *, executor_ids=('protagine-executor',),
                 detail = {'id': row['id'], 'status': status, 'assigned_agent_id': owner}
                 if owner and owner not in executor_ids:
                     detail['disposition'] = 'preserve_other_owner'
-                elif row['id'] in recorded:
+                elif row['id'] in recorded and status not in REPLAYABLE:
                     detail['disposition'] = 'already_reconciled'
                 elif was_retired:
-                    detail.update(disposition=('reconcile_effect_before_retry' if status in ACTIVE
+                    detail.update(disposition=('reconcile_effect_before_retry' if status in REPLAYABLE
                                                else 'preserve_terminal_record'),
                                   runtime_status_proves_quality=False, quality_credit=False)
                     if apply:
-                        if status in ACTIVE:
+                        if status in REPLAYABLE:
                             now = datetime.now(timezone.utc).isoformat()
-                            # Failed rows are automatically reactivated by the
-                            # generator. Cancellation blocks replay of this ID.
+                            # Cancellation blocks replay of this ID; the failure
+                            # reason and time stay on the row as evidence.
                             db.execute('''UPDATE initiatives SET status='cancelled', cancelled_at=?,
                                 cancelled_by=?, cancelled_reason='executor_retired_effect_unverified',
                                 recovery_reason='Reconcile prior effects before explicit native retry'

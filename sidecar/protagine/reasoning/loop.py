@@ -108,6 +108,7 @@ class ReasoningLoop:
         context: dict[str, Any] | None = None,
         actor_policy: ToolActorPolicy | None = None,
         memory_search=None,
+        actor: str | None = None,
     ) -> ReasoningResult:
         """Run a single reasoning turn with tool iteration.
 
@@ -254,6 +255,7 @@ class ReasoningLoop:
                     allowed_tools=allowed_tool_names,
                     actor_policy=actor_policy,
                     **({"memory_search": memory_search} if memory_search is not None else {}),
+                    **({"actor": actor} if actor else {}),
                 )
             except Exception as exc:
                 logger.error("%s tool execution failed: %s", log_prefix, exc)

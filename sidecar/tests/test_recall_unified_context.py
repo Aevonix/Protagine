@@ -53,7 +53,7 @@ def test_source_selection_runs_without_graph_imports():
     ''')
     result = subprocess.run([sys.executable, '-I', '-c', script,
         str(Path(__file__).resolve().parents[1])], capture_output=True, text=True,
-        env={**os.environ, 'PROTAGINE_RECALL_RERANK': 'off', 'PROTAGINE_RECALL_RERANK': 'off'},
+        env={**os.environ, 'PROTAGINE_RECALL_RERANK': 'off'},
         timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'GRAPH_FREE_RECALL_OK'

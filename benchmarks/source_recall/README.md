@@ -25,8 +25,9 @@ fixture `supersedes`, `parents`, `claim` and `value` fields never enter extracti
 or ranking. Explicit `deleted` requests exercise canonical source erasure;
 `indexed=false` models delayed graph projection.
 
-The extractor was a deployment alias `openai/glm52`; embedding and served alias
-were `Qwen/Qwen3-Embedding-8B`, 4096 dimensions; the reranker was
+The extractor was a GLM chat model served through an OpenAI-compatible endpoint
+under a local serving alias, not a public model identifier; embedding and served
+alias were `Qwen/Qwen3-Embedding-8B`, 4096 dimensions; the reranker was
 `Qwen/Qwen3-Reranker-8B` with the Qwen3 instruction template. Remote immutable
 weight revisions were unknown. The extraction pass captured 119 successful
 responses and one timeout, accepting 111 claims. Pending work was frozen for the

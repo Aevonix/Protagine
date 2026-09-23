@@ -70,7 +70,7 @@ async def test_middleware_refuses_configure_in_dev_mode():
     app.add_middleware(ApiKeyMiddleware, api_key=None)
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://localhost"
     ) as client:
         health = await client.get("/v1/host/health")
         assert health.status_code == 200
@@ -96,7 +96,7 @@ async def test_middleware_accepts_valid_bearer():
     app.add_middleware(ApiKeyMiddleware, api_key="s3cret")
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://localhost"
     ) as client:
         unauthed = await client.post("/v1/host/configure", json={})
         assert unauthed.status_code == 401
@@ -355,7 +355,7 @@ async def test_body_size_middleware_rejects_oversized_payload():
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=64)
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://localhost"
     ) as client:
         small = await client.post("/echo", json={"a": 1})
         assert small.status_code == 200
@@ -381,7 +381,7 @@ async def test_body_size_middleware_allows_missing_content_length():
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=64)
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://localhost"
     ) as client:
         resp = await client.get("/ping")
         assert resp.status_code == 200

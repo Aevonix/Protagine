@@ -113,7 +113,9 @@ old projections. A partially redacted checkpoint retains unrelated message
 chunks, while the old whole-turn graph summary remains fenced.
 
 Source erasure physically removes matching invalid projections from every
-retained generation through the existing vector cleanup path. Writes check
+retained generation through the existing vector cleanup path: Lance deletes are
+soft, so each table is then compacted and its older versions are dropped, and
+the erased text leaves the data files as well. Writes check
 lineage both before and after asynchronous index I/O. Identical pixels belonging
 to a different retained source remain available to that source's owner.
 

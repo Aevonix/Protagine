@@ -225,3 +225,39 @@ async def test_interrupted_creator_becomes_ambiguous_not_success(
     assert first.status_code == 500
     assert retry.status_code == 503
     assert retry.json()["detail"]["code"] == "turn_ingestion_ambiguous"
+
+
+@pytest.mark.asyncio
+async def test_v2_retry_ingests_turn_abandoned_by_a_killed_first_attempt(app, graph):
+    import sqlite3
+
+    from protagine.api.schemas.host import TurnSyncRequest
+    from protagine.turns import ReservationOutcome, canonical_turn_digest
+
+    body = _payload(turn_id="turn-stale")
+    digest = canonical_turn_digest(TurnSyncRequest.model_validate(body))
+    # The first attempt reserved the row and its process was then hard-killed,
+    # so neither complete() nor mark_ambiguous() will ever run for it.
+    assert graph.ledger.reserve("turn-stale", digest).outcome == ReservationOutcome.CREATED
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        pending = await client.put("/v2/host/turns/turn-stale", json=body)
+        assert pending.status_code == 202
+        assert pending.json()["accepted"] is False
+
+        with sqlite3.connect(graph.ledger.db_path) as conn:
+            conn.execute(
+                "UPDATE turn_ingestion SET created_at="
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 minutes')"
+            )
+        reclaimed = await client.put("/v2/host/turns/turn-stale", json=body)
+        replay = await client.put("/v2/host/turns/turn-stale", json=body)
+
+    assert (reclaimed.status_code, reclaimed.headers["Idempotency-Status"]) == (201, "created")
+    assert reclaimed.json()["accepted"] is True
+    assert (replay.status_code, replay.headers["Idempotency-Status"]) == (200, "replayed")
+    assert replay.json() == reclaimed.json()
+    assert graph.ledger.get("turn-stale")["state"] == "completed"
+    assert graph.comms._conn.execute("SELECT count(*) FROM communications").fetchone()[0] == 2

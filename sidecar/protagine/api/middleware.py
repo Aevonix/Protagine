@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import os
+from urllib.parse import urlsplit
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -52,13 +55,56 @@ _ALWAYS_AUTH_REQUIRED = frozenset({
     "/v1/host/queue/contract",
 })
 
+_DEV_MODE_MESSAGE = (
+    "API authentication is not configured, so only loopback clients sending a "
+    "loopback Host header (localhost, 127.0.0.1, ::1) are served. Set "
+    "PROTAGINE_API_KEY or PROTAGINE_API_KEYRING_PATH in the sidecar "
+    "environment to accept other clients."
+)
+
+
+def _is_loopback_name(value: str | None) -> bool:
+    """True for ``localhost`` or a literal loopback IP (v4, v6, v4-mapped)."""
+    if not value:
+        return False
+    if value.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
+
+
+def is_local_request(request: Request) -> bool:
+    """True when both the peer address and the Host header are loopback.
+
+    Dev mode (no API key) serves this case only. Checking the Host header
+    as well as the socket peer stops a browser on the same machine from
+    being pointed at the API through a DNS-rebinding hostname.
+    """
+    client = request.client
+    if client is None or not _is_loopback_name(client.host):
+        return False
+    # ``//host:port`` parsing strips the port and IPv6 brackets for us.
+    try:
+        parts = urlsplit("//" + request.headers.get("host", ""))
+        hostname = parts.hostname
+    except ValueError:
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    return _is_loopback_name(hostname)
+
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     """Reject requests that don't carry the correct Bearer token.
 
-    Without either auth mechanism, normal endpoints retain loopback dev-mode
-    behavior; ``_ALWAYS_AUTH_REQUIRED`` paths fail closed with 503 so an
-    operator cannot accidentally expose credential-handling endpoints.
+    Without either auth mechanism the API runs in dev mode: only loopback
+    requests (see ``is_local_request``) are served, and
+    ``_ALWAYS_AUTH_REQUIRED`` paths fail closed with 503 so an operator
+    cannot accidentally expose credential-handling endpoints.
     """
 
     def __init__(
@@ -223,6 +269,21 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
         auth_configured = bool(self._api_key) or self._keyring.configured
         if not auth_configured:
+            if not is_local_request(request):
+                self._record(
+                    request, authority=request.state.protagine_authority,
+                    decision="deny", reason="dev_mode_not_local",
+                    scope=scope, route=route,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": {
+                            "code": "dev_mode_not_local",
+                            "message": _DEV_MODE_MESSAGE,
+                        }
+                    },
+                )
             if exact_approval_scope:
                 self._record(
                     request, authority=request.state.protagine_authority,
@@ -240,6 +301,12 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                 )
             if (
                 path in _ALWAYS_AUTH_REQUIRED
+                # PATCH/DELETE /agents/{id} change the same privileged
+                # fields (is_primary, capabilities) as register/connect.
+                or (
+                    request.method in {"PATCH", "DELETE"}
+                    and path.startswith("/v1/host/agents/")
+                )
                 or path == "/v1/host/queue/work"
                 or path.startswith("/v1/host/queue/work/")
                 or (

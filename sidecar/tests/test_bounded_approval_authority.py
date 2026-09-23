@@ -714,7 +714,7 @@ async def test_enforce_approval_surfaces_never_allow_anonymous_dev_mode(
     app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=None)
     app.include_router(tq_router.router)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test",
+        transport=ASGITransport(app=app), base_url="http://localhost",
     ) as client:
         responses = [
             await client.get("/v1/host/queue/approvals/requests"),
@@ -746,7 +746,7 @@ async def test_invalid_approval_mode_returns_503_on_read_and_decision(
     app.add_middleware(ApiKeyMiddleware, api_key=None, keyring_path=None)
     app.include_router(tq_router.router)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test",
+        transport=ASGITransport(app=app), base_url="http://localhost",
     ) as client:
         read = await client.get("/v1/host/queue/approvals/requests")
         decision = await client.post(
@@ -806,7 +806,7 @@ async def test_enforce_approval_reads_require_api_access_and_exact_scope(
     app.include_router(tq_router.router)
     try:
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test",
+            transport=ASGITransport(app=app), base_url="http://localhost",
         ) as client:
             legacy = await client.get(
                 "/v1/host/queue/approvals/requests",
@@ -862,7 +862,7 @@ async def test_shadow_restricted_approval_principal_uses_exact_route_only(
     app.include_router(tq_router.router)
     try:
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test",
+            transport=ASGITransport(app=app), base_url="http://localhost",
         ) as client:
             exact = await client.get(
                 "/v1/host/queue/jobs/blocked",
@@ -2299,7 +2299,7 @@ async def test_enforce_http_boundary_derives_principal_from_scoped_key(
         )
         app.include_router(tq_router.router)
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url="http://localhost"
         ) as client:
             response = await client.post(
                 f"/v1/host/queue/jobs/{job.job_id}/approve",

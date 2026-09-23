@@ -23,7 +23,7 @@ from protagine.util.model_output import final_text
 logger = logging.getLogger(__name__)
 
 MAX_INPUT_CHARS = 4_000
-MAX_RESPONSE_TOKENS = int(os.environ.get("PROTAGINE_TOM_MAX_TOKENS", "2048"))  # reasoning models (mimo) need room; 512 returns empty content
+MAX_RESPONSE_TOKENS = int(os.environ.get("PROTAGINE_TOM_MAX_TOKENS", "2048"))  # reasoning models need room; 512 returns empty content
 THROTTLE_MINUTES = int(os.environ.get("PROTAGINE_TOM_EXTRACTION_THROTTLE_MINUTES", "5"))
 
 # ---------------------------------------------------------------------------

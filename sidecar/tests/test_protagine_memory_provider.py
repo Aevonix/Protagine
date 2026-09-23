@@ -6,8 +6,9 @@ needed) and exercises the prefetch-cache and per-turn-contact logic with a
 stubbed httpx transport.
 
 Regression locks:
-  * query, effective session, sender/channel, and resolved contact all bind a
-    one-shot prefetch cache entry;
+  * prefetch performs exactly one bounded assemble for the current turn's
+    query; queue_prefetch starts no background work, and an open circuit
+    breaker skips the sidecar entirely (assemble and temporal);
   * a real-channel resolution miss yields no context and never falls back to
     the provider-wide owner/default contact.
   * guest context requires a server-attested exact viewer plus a supported scoped
@@ -24,6 +25,7 @@ import pathlib
 import re
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -48,7 +50,6 @@ def provider_mod():
 
 @pytest.fixture(autouse=True)
 def _privacy_posture(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_PREFETCH_QUERY_CHECK", "1")
     monkeypatch.setenv("PROTAGINE_PREFETCH_TURN_CONTACT", "1")
     monkeypatch.setenv(
         "PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY", "owner_system",
@@ -83,9 +84,14 @@ class _FakeHttpx:
     class ConnectError(Exception):
         pass
 
-    def __init__(self, routes=None):
+    def __init__(self, routes=None, *, delay=0.0, error=None):
+        """`delay` sleeps that long on every request (a slow sidecar); `error`
+        is an exception class raised after the delay (a hung sidecar whose
+        requests time out)."""
         self.routes = routes or {}
         self.requests = []
+        self.delay = delay
+        self.error = error
         fake = self
 
         class _Client:
@@ -105,6 +111,10 @@ class _FakeHttpx:
                     "json": kwargs.get("json"),
                 }
                 fake.requests.append(request)
+                if fake.delay:
+                    time.sleep(fake.delay)
+                if fake.error is not None:
+                    raise fake.error("sidecar request timed out")
                 for (m, suffix), payload in fake.routes.items():
                     if m == method and url.endswith(suffix):
                         if callable(payload):
@@ -141,14 +151,13 @@ def test_source_remove_preserves_server_reconciliation_receipt(provider_mod, mon
     provider = _make_provider(provider_mod, fake, monkeypatch)
     provider._session_id = "source-session"
     monkeypatch.setattr(provider, "_prefetch_contact", lambda: "cid-base")
-    provider._cached_context = "A recalled source."
     provider._temporal_cache = (1.0, "Prior context.")
     provider.on_memory_write("remove", "MEMORY.md", "", metadata={"old_text": "A recalled source."})
     assert provider._last_erasure == {
         "state": "source_erased", "scope": "canonical_turn_sources", "watermark": 7,
         "host_reconciliation": reported or "not_observed",
     }
-    assert provider._cached_context == "" and provider._temporal_cache == (0.0, "")
+    assert provider._temporal_cache == (0.0, "")
     assert fake.requests[0]["json"] == {
         "contact_id": "cid-base", "session_id": "source-session", "old_text": "A recalled source.",
     }
@@ -555,54 +564,107 @@ def test_standalone_memory_provider_uses_stable_v2_turn_id(
     assert puts[0]["json"]["assistant_message"] == {"role": "assistant", "content": "hi"}
 
 
-# --- U14: prefetch cached-query match ---------------------------------------
+# --- U14: one bounded assemble per turn --------------------------------------
+# Hermes hands queue_prefetch() the message of the turn that just finished and
+# prefetch() the message of the next turn. Recall is keyed on the current
+# message, so nothing assembled in the background could ever be consumed.
 
-def test_prefetch_always_rejects_cache_for_a_different_query(
+_LOCAL_CLOCK = "Runtime reference clock"
+
+
+def test_queue_prefetch_starts_no_work_and_prefetch_assembles_once(
         provider_mod, monkeypatch):
-    """The legacy consume-any cache path cannot be restored by unsetting env."""
-    monkeypatch.delenv("PROTAGINE_PREFETCH_QUERY_CHECK", raising=False)
-    fake = _FakeHttpx(routes={
-        _ASSEMBLE: {"sections": [{"title": "M", "body": "cached-A", "priority": 90}]},
-        _TEMPORAL: {"title": "Current Time", "body": "now"},
-    })
-    p = _make_provider(provider_mod, fake, monkeypatch)
-    p.queue_prefetch("query A", session_id="s1")
-    p._prefetch_thread.join(timeout=5)
-    out = p.prefetch("query B", session_id="s1")   # DIFFERENT query
-    assert "cached-A" in out
-    assert len(_assemble_calls(fake)) == 2
-    assert p._stale_cache_misses == 1
-
-
-def test_prefetch_query_check_rejects_stale_cache(provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_PREFETCH_QUERY_CHECK", "1")
     fake = _FakeHttpx(routes={
         _ASSEMBLE: {"sections": [{"title": "M", "body": "fresh", "priority": 90}]},
         _TEMPORAL: {"title": "Current Time", "body": "now"},
     })
     p = _make_provider(provider_mod, fake, monkeypatch)
-    p.queue_prefetch("query A", session_id="s1")
-    p._prefetch_thread.join(timeout=5)
-    p.prefetch("query B", session_id="s1")          # mismatch -> fresh fetch
-    assert len(_assemble_calls(fake)) == 2          # queued + fresh
-    assert p._stale_cache_misses == 1
-    # And the stale cache was dropped, not left to poison a later turn.
-    assert p._cached_context == ""
+    p.queue_prefetch("previous turn", session_id="s1")
+    assert _assemble_calls(fake) == []
+    out = p.prefetch("next turn", session_id="s1")
+    assert "fresh" in out
+    calls = _assemble_calls(fake)
+    assert len(calls) == 1
+    assert calls[0]["json"]["incoming_message"]["content"] == "next turn"
 
 
-def test_prefetch_query_check_consumes_matching_cache(provider_mod, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_PREFETCH_QUERY_CHECK", "1")
+def test_prefetch_never_waits_on_queued_background_work(provider_mod, monkeypatch):
+    delay = 0.4
+
+    def slow_assemble(request):
+        time.sleep(delay)
+        return {"sections": [{"title": "M", "body": "fresh", "priority": 90}]}
+
     fake = _FakeHttpx(routes={
-        _ASSEMBLE: {"sections": [{"title": "M", "body": "cached-A", "priority": 90}]},
+        _ASSEMBLE: slow_assemble,
         _TEMPORAL: {"title": "Current Time", "body": "now"},
     })
     p = _make_provider(provider_mod, fake, monkeypatch)
-    p.queue_prefetch("query A", session_id="s1")
-    p._prefetch_thread.join(timeout=5)
-    out = p.prefetch("query A", session_id="s1")    # SAME query+session
-    assert "cached-A" in out
-    assert len(_assemble_calls(fake)) == 1          # cache hit, no re-fetch
-    assert p._stale_cache_misses == 0
+    p.queue_prefetch("previous turn", session_id="s1")
+    started = time.monotonic()
+    out = p.prefetch("next turn", session_id="s1")
+    elapsed = time.monotonic() - started
+    assert "fresh" in out
+    # Exactly one assemble; joining stale background work (or a second
+    # assemble) would cost at least another `delay`.
+    assert len(_assemble_calls(fake)) == 1
+    assert elapsed < delay * 1.5
+
+
+def test_prefetch_with_open_circuit_never_touches_the_sidecar(
+        provider_mod, monkeypatch):
+    fake = _FakeHttpx(routes={
+        _ASSEMBLE: {"sections": [{"title": "M", "body": "fresh", "priority": 90}]},
+        _TEMPORAL: {"title": "Current Time", "body": "now"},
+    }, delay=0.5)
+    p = _make_provider(provider_mod, fake, monkeypatch)
+    for _ in range(3):
+        p._record_connection_failure()
+    assert p.get_diagnostics()["circuit_open"] is True
+    started = time.monotonic()
+    out = p.prefetch("next turn", session_id="s1")
+    elapsed = time.monotonic() - started
+    assert fake.requests == []
+    assert elapsed < 0.1
+    assert _LOCAL_CLOCK in out          # local clock only, no assembled recall
+    assert "fresh" not in out
+
+
+def test_hung_sidecar_prefetch_is_bounded_and_opens_the_breaker(
+        provider_mod, monkeypatch):
+    delay = 0.15
+    fake = _FakeHttpx(delay=delay, error=_FakeHttpx.HTTPError)
+    p = _make_provider(provider_mod, fake, monkeypatch)
+    for turn in range(3):
+        p.queue_prefetch(f"turn {turn}", session_id="s1")
+        started = time.monotonic()
+        out = p.prefetch(f"turn {turn + 1}", session_id="s1")
+        elapsed = time.monotonic() - started
+        assert _LOCAL_CLOCK in out
+        # Bound: one assemble timeout plus at most one temporal timeout.
+        assert elapsed < delay * 3
+    assert len(_assemble_calls(fake)) == 3
+    assert p.get_diagnostics()["circuit_open"] is True
+    started = time.monotonic()
+    out = p.prefetch("turn 4", session_id="s1")
+    assert time.monotonic() - started < 0.05
+    assert _LOCAL_CLOCK in out
+    assert len(_assemble_calls(fake)) == 3
+    assert p.get_diagnostics()["connection_failures"] == 3
+
+
+def test_temporal_fetch_honours_open_circuit(provider_mod, monkeypatch):
+    fake = _FakeHttpx(routes={
+        _TEMPORAL: {"title": "Current Time", "body": "sidecar clock"},
+    }, delay=0.5)
+    p = _make_provider(provider_mod, fake, monkeypatch)
+    for _ in range(3):
+        p._record_connection_failure()
+    started = time.monotonic()
+    block = p._fresh_temporal_block_sync(contact_id="cid-base")
+    assert time.monotonic() - started < 0.1
+    assert fake.requests == []
+    assert _LOCAL_CLOCK in block
 
 
 # --- U15: per-turn contact in prefetch ---------------------------------------
@@ -753,10 +815,7 @@ def test_resolve_handle_ttl_cache(provider_mod, monkeypatch):
     assert len(resolves) == 2
 
 
-@pytest.mark.parametrize(
-    "flag",
-    ["PROTAGINE_PREFETCH_QUERY_CHECK", "PROTAGINE_PREFETCH_TURN_CONTACT"],
-)
+@pytest.mark.parametrize("flag", ["PROTAGINE_PREFETCH_TURN_CONTACT"])
 def test_mandatory_privacy_flags_cannot_be_disabled(
         provider_mod, monkeypatch, flag):
     monkeypatch.setenv(flag, "0")
@@ -941,7 +1000,7 @@ def test_two_concurrent_senders_never_share_context(
     } == {"cid-a", "cid-b"}
 
 
-def test_queued_cache_for_sender_a_is_never_consumed_by_sender_b(
+def test_queued_prefetch_for_sender_a_never_reaches_sender_b(
         provider_mod, monkeypatch):
     set_turn = _install_session_context(monkeypatch)
 
@@ -966,17 +1025,16 @@ def test_queued_cache_for_sender_a_is_never_consumed_by_sender_b(
     provider = _make_provider(provider_mod, fake, monkeypatch)
     set_turn(platform="sms", sender="a", chat="chat-a")
     provider.queue_prefetch("same", session_id="same")
-    provider._prefetch_thread.join(timeout=5)
+    assert _assemble_calls(fake) == []
     set_turn(platform="sms", sender="b", chat="chat-b")
     result = provider.prefetch("same", session_id="same")
 
     assert "ctx-cid-b" in result
     assert "ctx-cid-a" not in result
-    assert provider._stale_cache_misses == 1
     assert [
         call["json"]["context"]["contact_id"]
         for call in _assemble_calls(fake)
-    ] == ["cid-a", "cid-b"]
+    ] == ["cid-b"]
 
 
 def test_resolve_contact_does_not_mutate_provider_owner_contact(
@@ -1185,3 +1243,35 @@ def test_native_setup_updates_existing_secret_name_without_adding_an_alias(
     provider = provider_mod.ProtagineMemoryProvider()
     secret = next(row for row in provider.get_config_schema() if row['key'] == 'api_key')
     assert secret['env_var'] == 'PROTAGINE_API_KEY'
+
+
+def test_prefetch_with_open_circuit_skips_real_channel_contact_resolution(
+        provider_mod, monkeypatch):
+    set_turn = _install_session_context(monkeypatch)
+    set_turn(platform="telegram", sender="tg-1", chat="chat-1")
+    fake = _FakeHttpx(routes={
+        _RESOLVE: {"contact_id": "cid-tg"},
+        _ASSEMBLE: {"sections": [{"title": "M", "body": "fresh", "priority": 90}]},
+    }, delay=0.5)
+    p = _make_provider(provider_mod, fake, monkeypatch)
+    for _ in range(3):
+        p._record_connection_failure()
+    started = time.monotonic()
+    out = p.prefetch("next turn", session_id="s1")
+    assert fake.requests == []          # no /contacts/resolve, no assemble
+    assert time.monotonic() - started < 0.1
+    assert "fresh" not in out
+
+
+def test_contact_resolution_transport_failures_open_the_breaker(
+        provider_mod, monkeypatch):
+    fake = _FakeHttpx(error=_FakeHttpx.HTTPError)
+    p = _make_provider(provider_mod, fake, monkeypatch)
+    for turn in range(3):
+        p._turn_number = turn           # a later turn retries a cached miss
+        assert p._resolve_handle("telegram", "tg-1") is None
+    assert p.get_diagnostics()["connection_failures"] == 3
+    assert p.get_diagnostics()["circuit_open"] is True
+    p._turn_number = 3
+    assert p._resolve_handle("telegram", "tg-1") is None
+    assert len(fake.requests) == 3      # the open breaker skipped the call

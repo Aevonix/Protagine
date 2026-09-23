@@ -6,6 +6,12 @@ replays return the stored response; different canonical content for the same
 ID is a conflict. An interrupted first attempt is marked ``ambiguous`` and is
 never automatically replayed because some downstream effects may already have
 occurred.
+
+A first attempt whose process died before it could report (a hard kill between
+``reserve`` and ``complete``/``mark_ambiguous``) leaves a ``processing`` row
+nobody will ever finish. Such a row is reclaimed by the next identical retry
+once its lease expires, so a durable outbox retry can still ingest the turn
+instead of being told forever that it is in progress.
 """
 
 from __future__ import annotations
@@ -24,6 +30,11 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional
+
+# How long a 'processing' reservation is trusted before an identical retry may
+# take it over. Comfortably longer than any live ingestion so a slow first
+# attempt is not duplicated, short enough that a hard-killed one is retried.
+PROCESSING_LEASE_SECONDS = 300.0
 
 
 class SourceErased(ValueError):
@@ -94,8 +105,10 @@ def _lexical_chunks(messages):
 class TurnIdempotencyLedger:
     """SQLite reservation ledger safe across threads and sidecar processes."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *,
+                 processing_lease_seconds: float = PROCESSING_LEASE_SECONDS) -> None:
         self.db_path = Path(db_path)
+        self.processing_lease_seconds = float(processing_lease_seconds)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -633,51 +646,51 @@ class TurnIdempotencyLedger:
         expression = " OR ".join('"' + word + '"' for word in words)
         from protagine.turns.audio import evidence_metadata
 
-        @lru_cache(maxsize=4)
-        def canonical_chunks(session, encoded):
-            # Reconstruct only scoped FTS matches, not the whole source store.
-            # The per-query cache is bounded; source envelopes are capped at 8 MiB.
-            chunks, messages = {}, {}
-            for message, text, chunk in _lexical_chunks(json.loads(encoded)):
-                # A long message can have thousands of chunks. Hash its original
-                # envelope and recover its modality once, not once per chunk.
-                key = id(message)
-                if key not in messages:
-                    messages[key] = (source_message_hash(session, message), evidence_metadata(message))
-                message_hash, metadata = messages[key]
-                owners = chunks.setdefault((message.get('role'), chunk), {})
-                owners[message_hash] = {'source_message_hash': message_hash,
-                    **metadata,
-                    **({'excerpt_truncated': True} if chunk != text else {})}
-            return {key: json.dumps(list(owners.values()), sort_keys=True)
-                    for key, owners in chunks.items()}
-
-        def owners(session, encoded, role, chunk):
-            return canonical_chunks(session, encoded).get((role, chunk), '[]')
-
         with closing(self._connect()) as conn:
-            conn.create_function('canonical_lexical_owners', 4, owners)
-            rows = conn.execute("""
-                SELECT DISTINCT f.turn_id, f.role, f.content, s.contact_id, s.session_id, s.scope,
-                       s.occurred_at, s.ingested_at, owner.value AS ownership
+            @lru_cache(maxsize=8)
+            def canonical_chunks(turn_id):
+                # Reconstruct one source envelope (capped at 8 MiB) only when a
+                # ranked candidate from that turn is consumed, never per FTS match.
+                row = conn.execute("SELECT session_id, messages_json FROM turn_sources WHERE turn_id=?",
+                                   (turn_id,)).fetchone()
+                chunks, messages = {}, {}
+                for message, text, chunk in _lexical_chunks(json.loads(row["messages_json"]) if row else []):
+                    # A long message can have thousands of chunks. Hash its original
+                    # envelope and recover its modality once, not once per chunk.
+                    key = id(message)
+                    if key not in messages:
+                        messages[key] = (source_message_hash(row["session_id"], message), evidence_metadata(message))
+                    message_hash, metadata = messages[key]
+                    owners = chunks.setdefault((message.get('role'), chunk), {})
+                    owners[message_hash] = {'source_message_hash': message_hash,
+                        **metadata,
+                        **({'excerpt_truncated': True} if chunk != text else {})}
+                return {key: list(owners.values()) for key, owners in chunks.items()}
+
+            candidates = conn.execute("""
+                SELECT f.turn_id, f.role, f.content, s.contact_id, s.session_id, s.scope,
+                       s.occurred_at, s.ingested_at
                 FROM turn_source_search AS f
                 JOIN turn_sources AS s ON s.turn_id=f.turn_id
-                JOIN json_each(canonical_lexical_owners(
-                    s.session_id, s.messages_json, f.role, f.content)) AS owner
                 WHERE turn_source_search MATCH ? AND s.contact_id=?
                   AND (s.scope='person' OR s.session_id=?)
                   AND NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=s.turn_id)
                 ORDER BY bm25(turn_source_search)
-                LIMIT ?
-            """, (expression, contact_id, session_id, max(1, min(limit, 20)))).fetchall()
-        # Exact chunk ownership and duplicate projection rows are resolved before
-        # LIMIT, so stale rows cannot spend the canonical result budget. This also
-        # reads predecessor-written indexes without a migration or startup rebuild.
-        result = []
-        for row in rows:
-            value = dict(row)
-            ownership = json.loads(value.pop('ownership'))
-            result.append({**value, **ownership})
+            """, (expression, contact_id, session_id))
+            # Candidates are ranked in SQL and consumed lazily. Exact chunk
+            # ownership and duplicate projection rows are still resolved before a
+            # row spends the canonical result budget, so stale rows never do; this
+            # also reads predecessor-written indexes without a migration or rebuild.
+            budget, result, seen = max(1, min(limit, 20)), [], set()
+            for row in candidates:
+                value = dict(row)
+                for ownership in canonical_chunks(value['turn_id']).get((value['role'], value['content']), ()):
+                    key = (value['turn_id'], value['role'], value['content'], ownership['source_message_hash'])
+                    if key not in seen:
+                        seen.add(key)
+                        result.append({**value, **ownership})
+                        if len(result) == budget:
+                            return result
         return result
 
     def reserve(self, turn_id: str, content_sha256: str) -> Reservation:
@@ -691,7 +704,8 @@ class TurnIdempotencyLedger:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT content_sha256, state, response_json "
+                "SELECT content_sha256, state, response_json, "
+                "(julianday('now') - julianday(created_at)) * 86400.0 AS age_seconds "
                 "FROM turn_ingestion WHERE turn_id=?",
                 (turn_id,),
             ).fetchone()
@@ -701,20 +715,32 @@ class TurnIdempotencyLedger:
                     "(turn_id, content_sha256, state) VALUES (?, ?, 'processing')",
                     (turn_id, content_sha256),
                 )
-                conn.commit()
-                return Reservation(ReservationOutcome.CREATED)
-
-            conn.commit()
-            if row["content_sha256"] != content_sha256:
-                return Reservation(ReservationOutcome.CONFLICT)
-            if row["state"] == "completed":
+                reservation = Reservation(ReservationOutcome.CREATED)
+            elif row["content_sha256"] != content_sha256:
+                reservation = Reservation(ReservationOutcome.CONFLICT)
+            elif row["state"] == "completed":
                 response = None
                 if row["response_json"]:
                     response = json.loads(row["response_json"])
-                return Reservation(ReservationOutcome.REPLAYED, response=response)
-            if row["state"] == "ambiguous":
-                return Reservation(ReservationOutcome.AMBIGUOUS)
-            return Reservation(ReservationOutcome.IN_PROGRESS)
+                reservation = Reservation(ReservationOutcome.REPLAYED, response=response)
+            elif row["state"] == "ambiguous":
+                reservation = Reservation(ReservationOutcome.AMBIGUOUS)
+            elif (row["age_seconds"] is not None
+                    and row["age_seconds"] > self.processing_lease_seconds):
+                # The first attempt never completed or reported failure within
+                # its lease: its process is gone. Renew the lease under the same
+                # transaction so exactly one identical retry takes it over.
+                conn.execute(
+                    "UPDATE turn_ingestion "
+                    "SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), error=NULL "
+                    "WHERE turn_id=? AND state='processing'",
+                    (turn_id,),
+                )
+                reservation = Reservation(ReservationOutcome.CREATED)
+            else:
+                reservation = Reservation(ReservationOutcome.IN_PROGRESS)
+            conn.commit()
+            return reservation
         except Exception:
             conn.rollback()
             raise

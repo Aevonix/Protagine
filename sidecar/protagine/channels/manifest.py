@@ -22,7 +22,8 @@ class ChannelManifest(BaseModel):
     session_isolation: bool = False
     provides_channel_id: bool = False
 
-    delivery_webhook: str | None = None
+    # ``delivery_webhook`` was accepted by earlier releases but never used;
+    # pydantic ignores the key if an old channel still sends it.
     delivery_protocol: str = "hermes"
     delivery_aliases: list[str] = Field(default_factory=list)
     home_chat_id: str | None = None

@@ -632,12 +632,16 @@ def _bounded_worker_capabilities(
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO timestamp into aware UTC; a value with no zone is UTC."""
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _approval_store() -> ApprovalAuthorityStore:

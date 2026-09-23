@@ -73,7 +73,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="protagine-artifacts-") as temporary:
         work = Path(temporary)
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(("PYTHON", "HERMES", "AGENT", "PROTAGINE"))}
+               if not key.startswith(("PYTHON", "HERMES", "PROTAGINE"))}
         (work / "home").mkdir()
         env.update(HOME=str(work / "home"), HERMES_HOME=str(work / "hermes"),
                    PYTHONNOUSERSITE="1", PYTHON_DOTENV_DISABLED="1")

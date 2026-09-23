@@ -1,7 +1,9 @@
 """Subsystem health executor skill.
 
-Monitors Protagine's own components (embed pipeline, delivery bridge, event bus, etc.)
-and attempts auto-fix when they are degraded.
+Monitors Protagine's own components (embed pipeline, delivery bridge, event
+bus, etc.) and reports the ones that are degraded. It performs no repair of
+its own: a degraded subsystem is escalated so the initiative reaches the owner
+as a proposal instead of being counted as an executed fix.
 """
 
 import logging
@@ -17,32 +19,28 @@ logger = logging.getLogger(__name__)
 
 
 class SubsystemHealthSkill(InitiativeExecutorSkill):
-    """Skill for monitoring and fixing Protagine subsystem health."""
+    """Skill for diagnosing Protagine subsystem health."""
 
     skill_name = "subsystem_health"
     skill_version = "1.0.0"
 
-    # Known subsystems and their restart procedures
+    # Known subsystems and the telemetry metric that marks them degraded.
     _SUBSYSTEMS = {
         "embed_pipeline": {
             "check": "embedding_latency",
             "threshold_ms": 1000,
-            "restartable": True,
         },
         "delivery_bridge": {
             "check": "delivery_failures",
             "threshold": 5,
-            "restartable": True,
         },
         "event_bus": {
             "check": "event_queue_depth",
             "threshold": 1000,
-            "restartable": True,
         },
         "graph_client": {
             "check": "query_failures",
             "threshold": 10,
-            "restartable": False,
         },
     }
 
@@ -55,7 +53,7 @@ class SubsystemHealthSkill(InitiativeExecutorSkill):
     async def execute(
         self, initiative: InitiativeExecutionContext
     ) -> ExecutionResult:
-        """Diagnose and attempt to fix a subsystem."""
+        """Diagnose a subsystem and escalate it when degraded."""
         entity_id = initiative.entity_id or "unknown"
         self._log("info", "Diagnosing subsystem: %s", entity_id)
 
@@ -72,20 +70,10 @@ class SubsystemHealthSkill(InitiativeExecutorSkill):
         if health.get("status") != "degraded":
             return ExecutionResult.NO_ACTION
 
-        # Attempt auto-fix if restartable
-        if config.get("restartable", False):
-            result = await self._restart(entity_id)
-            if result.get("ok"):
-                self._log("info", "Auto-fixed subsystem %s", entity_id)
-                # Update graph with fix
-                await self._record_fix(entity_id, health, result)
-                return ExecutionResult.AUTO_FIXED
-            else:
-                self._log("error", "Failed to restart %s: %s", entity_id, result.get("error"))
-                return ExecutionResult.FAILED
-
-        # Not restartable — escalate as proposal
-        self._log("info", "Subsystem %s degraded but not restartable", entity_id)
+        # No subsystem has an automatic repair; report it rather than claim one.
+        self._log(
+            "warning", "Subsystem %s is degraded; escalating: %s", entity_id, health,
+        )
         return ExecutionResult.ESCALATED
 
     async def _diagnose(self, entity_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,37 +121,3 @@ class SubsystemHealthSkill(InitiativeExecutorSkill):
                 self._log("warning", "Graph diagnosis failed: %s", e)
 
         return health
-
-    async def _restart(self, entity_id: str) -> Dict[str, Any]:
-        """Attempt to restart a subsystem."""
-        self._log("info", "Restarting subsystem: %s", entity_id)
-
-        # For now, restarting means reloading config or triggering a refresh
-        # In the future, this could send signals to actual subprocesses
-        try:
-            if entity_id == "embed_pipeline":
-                # Clear embedding cache / reload model
-                return {"ok": True, "action": "cache_cleared"}
-            elif entity_id == "delivery_bridge":
-                # Reset delivery queue
-                return {"ok": True, "action": "queue_reset"}
-            elif entity_id == "event_bus":
-                # Compact event queue
-                return {"ok": True, "action": "queue_compacted"}
-            else:
-                return {"ok": False, "error": f"No restart procedure for {entity_id}"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    async def _record_fix(self, entity_id: str, before: Dict[str, Any], after: Dict[str, Any]) -> None:
-        """Record the fix in the graph and telemetry."""
-        if self.graph:
-            try:
-                async with self.graph.driver.session(database=self.graph.database) as session:
-                    await session.run(
-                        "MATCH (s:Subsystem {name: $name}) "
-                        "SET s.status = 'active', s.last_fixed_at = datetime()",
-                        name=entity_id,
-                    )
-            except Exception as e:
-                self._log("warning", "Failed to record fix in graph: %s", e)

@@ -12,7 +12,7 @@ import pytest
 def child(tmp_path, code, *arguments):
     root = Path(__file__).resolve().parents[2]
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('PROTAGINE_', 'PROTAGINE_'))}
+           if not key.startswith('PROTAGINE_')}
     env.update(HOME=str(tmp_path), PROTAGINE_SKIP_DOTENV='1',
                PYTHONPATH=os.pathsep.join([str(root/'sidecar'), str(root/'hostworker')]))
     return subprocess.run([sys.executable, '-c', code, *arguments], env=env,
@@ -52,7 +52,7 @@ def test_container_defaults_preserve_selected_state(tmp_path):
     entry = Path(__file__).resolve().parents[1]/'docker-entrypoint.sh'
     for selected in ({}, {'PROTAGINE_STATE_DIR': '/current'}):
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(('PROTAGINE_', 'PROTAGINE_'))}
+               if not key.startswith('PROTAGINE_')}
         env.update(selected)
         result = subprocess.run(['sh', str(entry), sys.executable, '-c',
             'import os,json;print(json.dumps({k:v for k,v in os.environ.items() if k.endswith("STATE_DIR")}))'],

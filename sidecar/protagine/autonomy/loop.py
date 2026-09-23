@@ -356,6 +356,8 @@ class AutonomyLoop:
         # startup re-push rebuild it after a proactive-mode restart.
         self._governed_delivery_replays: dict[str, dict] = {}
         self._governed_reconcile_task: Optional[asyncio.Task] = None
+        # The task running start(); stop(join_timeout=...) waits on it.
+        self._loop_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -365,6 +367,7 @@ class AutonomyLoop:
         """Start the autonomy loop. Runs until stop() is called."""
         self._running = True
         self._stop_event.clear()
+        self._loop_task = asyncio.current_task()
 
         # Fail loudly at startup if the owner identity is missing or
         # unresolvable (v0.16.0). Relationship generation fails closed at
@@ -437,12 +440,39 @@ class AutonomyLoop:
             self._running = False
             logger.info("Autonomy loop stopped. Stats: %s", self.stats.as_dict())
 
-    async def stop(self) -> None:
-        """Signal the loop to stop after the current tick completes."""
+    async def stop(self, *, join_timeout: Optional[float] = None) -> None:
+        """Signal the loop to stop after the current tick completes.
+
+        With ``join_timeout`` the call also waits for the loop task, so any
+        in-flight tick has finished when it returns; a tick still running
+        after the timeout is cancelled. Without it the call is only a prompt
+        signal, which the governed disable path relies on.
+        """
         logger.info("Autonomy loop stop requested")
         self._stop_event.set()
         self._wake_event.set()
         await self._stop_governed_delivery_reconciler()
+        if join_timeout is None:
+            return
+        task = self._loop_task
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=join_timeout)
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Autonomy loop tick still running %.1fs after stop; cancelling",
+                join_timeout,
+            )
+        except Exception:
+            logger.debug("Autonomy loop task ended with error", exc_info=True)
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     def _start_governed_delivery_reconciler(self) -> None:
         delivery = getattr(self._registry, "delivery", None)
@@ -4209,6 +4239,9 @@ class AutonomyLoop:
     # ------------------------------------------------------------------
 
     async def _sleep_until_next_tick(self) -> None:
+        # A stop requested during the tick must not wait out a whole interval.
+        if self._stop_event.is_set():
+            return
         self._wake_event.clear()
         try:
             await asyncio.wait_for(

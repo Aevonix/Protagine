@@ -3805,6 +3805,52 @@ async def lifespan(app: FastAPI):
                     pass
     except Exception:
         logger.debug("Agent bridge shutdown error", exc_info=True)
+    # Stop the rest of the background work before any store it uses is
+    # closed: the autonomy loop first (it enqueues work and its in-flight
+    # tick must finish), then the execution worker and queue maintenance.
+    try:
+        from protagine.api.routers.host import _autonomy_loop
+        if _autonomy_loop is not None and _autonomy_loop.is_running:
+            await _autonomy_loop.stop(join_timeout=10.0)
+    except Exception:
+        logger.warning("Autonomy loop shutdown failed")
+    set_autonomy_loop(None)
+    # Stop worker node (before queue so in-flight jobs can drain).
+    try:
+        worker = getattr(app.state, "worker", None)
+        if worker is not None:
+            await worker.stop(drain_timeout=10.0)
+        worker_task = getattr(app.state, "worker_task", None)
+        if worker_task is not None:
+            worker_task.cancel()
+    except Exception:
+        logger.debug("Worker shutdown error", exc_info=True)
+    # Stop queue maintenance only after the execution worker has drained, and
+    # before closing the shared queue connection.
+    try:
+        if queue_scheduler is not None:
+            await queue_scheduler.stop()
+        if queue_scheduler_task is not None:
+            try:
+                await asyncio.wait_for(queue_scheduler_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                queue_scheduler_task.cancel()
+                try:
+                    await queue_scheduler_task
+                except asyncio.CancelledError:
+                    pass
+    except Exception:
+        logger.debug("Task queue scheduler shutdown error", exc_info=True)
+    # No stopped/repeated lifespan may retain a usable authority handle.
+    set_worker_governor(None)
+    # Stop task queue
+    try:
+        from protagine.api.routers.host import _task_queue
+        if _task_queue is not None:
+            await _task_queue.queue.stop()
+    except Exception:
+        logger.warning("Task queue shutdown failed")
+    set_task_queue(None)
     if graph is not None:
         try:
             await graph.close()
@@ -3827,6 +3873,11 @@ async def lifespan(app: FastAPI):
     set_signal_collector(None)
     set_embedder(None)
     set_goals_store(None)
+    if contacts_store is not None:
+        try:
+            await contacts_store.close()
+        except Exception:
+            logger.debug("ContactStore close failed", exc_info=True)
     set_contacts_store(None)
     set_briefings_engine(None)
     set_world_store(None)
@@ -3895,50 +3946,6 @@ async def lifespan(app: FastAPI):
     set_session_store(None)
     set_session_report_store(None)
     set_agent_bridge(None)
-    # Stop worker node (before queue so in-flight jobs can drain).
-    try:
-        worker = getattr(app.state, "worker", None)
-        if worker is not None:
-            await worker.stop(drain_timeout=10.0)
-        worker_task = getattr(app.state, "worker_task", None)
-        if worker_task is not None:
-            worker_task.cancel()
-    except Exception:
-        logger.debug("Worker shutdown error", exc_info=True)
-    # Stop queue maintenance only after the execution worker has drained, and
-    # before closing the shared queue connection.
-    try:
-        if queue_scheduler is not None:
-            await queue_scheduler.stop()
-        if queue_scheduler_task is not None:
-            try:
-                await asyncio.wait_for(queue_scheduler_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                queue_scheduler_task.cancel()
-                try:
-                    await queue_scheduler_task
-                except asyncio.CancelledError:
-                    pass
-    except Exception:
-        logger.debug("Task queue scheduler shutdown error", exc_info=True)
-    # No stopped/repeated lifespan may retain a usable authority handle.
-    set_worker_governor(None)
-    # Stop task queue
-    try:
-        from protagine.api.routers.host import _task_queue
-        if _task_queue is not None:
-            await _task_queue.queue.stop()
-    except Exception:
-        logger.warning("Task queue shutdown failed")
-    set_task_queue(None)
-    # Stop autonomy loop if running
-    try:
-        from protagine.api.routers.host import _autonomy_loop
-        if _autonomy_loop is not None and _autonomy_loop.is_running:
-            await _autonomy_loop.stop()
-    except Exception:
-        logger.warning("Autonomy loop shutdown failed")
-    set_autonomy_loop(None)
     # Evidence/P6 periodic reducers are owned by the autonomy scheduler. Close
     # them only after that loop is stopped so an in-flight tick cannot race a
     # closed SQLite handle. Clear HTTP handles before releasing connections.
@@ -4066,7 +4073,7 @@ def create_app() -> FastAPI:
     elif api_key:
         logger.info("Legacy API key authentication enabled")
     else:
-        logger.warning("No API auth configured — API is open (loopback dev mode)")
+        logger.warning("No API auth configured — serving loopback clients only (dev mode)")
 
     app.include_router(host_router)
     app.include_router(host_v2_router)

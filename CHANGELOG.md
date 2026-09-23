@@ -5,8 +5,8 @@
 Remove the duplicate no-host initiative executor and its startup, preset and
 status surfaces. Hermes keeps ownership of registered reviews and accepted
 work. Unsupported initiatives remain proposals. An offline reconciliation
-command preserves terminal records and prevents automatic replay of unfinished
-retired-executor work.
+command preserves completed records and prevents automatic replay of unfinished
+or failed retired-executor work.
 
 Historical procedure win/loss counters are archived once in the existing skill
 database and reset. Retrieval and retention no longer treat runtime completion
@@ -33,6 +33,33 @@ Release CI builds, qualifies and publishes the same wheel, source and container
 artifacts. Installed checks include dependency consistency and the standalone
 hostworker contract. A constraints snapshot and focused lint/type checks make
 the release environment reproducible.
+
+Fixes found in review before release:
+- Task queue deadlines are stored and compared as UTC instants. A job with a
+  timezone-naive deadline no longer stops every worker from claiming work, and
+  deadlines written with an offset no longer expire hours early or late.
+  Worker outcomes that always fail are retired after a fixed number of attempts
+  instead of blocking newer outcomes.
+- A turn reservation abandoned by a killed process is reclaimed by an identical
+  retry after five minutes, so the turn is ingested instead of retried forever.
+- The memory provider performs one bounded context assemble per turn, never
+  waits on a stale background prefetch, and honours its circuit breaker for
+  prefetch, temporal context and contact resolution.
+- Shutdown stops the autonomy loop and background workers before closing stores.
+  A subsystem health check reports degradation instead of claiming a fix it did
+  not make. Tool calls record the real caller instead of always the owner.
+- Failed rows of the retired executor are cancelled and never reactivated. A
+  failed first runtime preparation no longer blocks later `protagine init` runs.
+- Without an API key the API serves only loopback clients with a loopback Host
+  header. Agent updates and deletion need the same protection as registration.
+  Image embedding accepts bytes, base64 or public URLs (validated address,
+  size cap); arbitrary local paths are no longer read. Skill subprocesses run
+  with a minimal environment. The unused channel delivery webhook field is gone.
+- Source erasure compacts vector tables and removes old versions so erased text
+  leaves disk. Lexical recall rebuilds source envelopes only for candidates it
+  uses.
+- Publishing a release requires the test suite. Leftover environment names from
+  earlier project names are removed.
 
 A completed paired evaluation can contain failed tasks. Its CLI now reports
 execution success separately from model quality, preventing campaign tools from
@@ -1067,7 +1094,7 @@ SQLite store for entities, relationships and typed observations. Its HTTP
 creation, health and persistence paths use that same implementation. The separate
 Neo4j memory graph remains active code pending its own retirement.
 
-Canonical `protagine` packages and entry points replace the removed Protagine aliases.
+Canonical `protagine` packages and entry points replace the removed Colony aliases.
 The retired self-knowledge seeding endpoint, command and module are removed;
 guided identity setup and source-backed self queries remain. Obsolete poller
 wrappers are removed, and worker setup selects current executable names.
@@ -2322,7 +2349,7 @@ learning service. See [native review evidence](docs/NATIVE-REVIEW-EVIDENCE.md).
 
 ## v1.0.1 - fresh setup and local work visibility
 
-- Fresh Hermes environments no longer need the legacy Protagine CLI dependency
+- Fresh Hermes environments no longer need the legacy Colony CLI dependency
   `typer` to pass setup. The wizard attaches the private native adapter using
   the selected Hermes core environment.
 - Owner current-work views include accepted local capability briefings and

@@ -67,6 +67,38 @@ def test_retirement_accounts_for_every_row_preserving_native_owner_and_terminal_
     assert store._db.execute('SELECT COUNT(*) FROM assignment_history WHERE action=?', (MIGRATION,)).fetchone()[0] == 4
 
 
+def test_failed_retired_row_is_not_replayed_by_the_generator(queue):
+    store, path = queue
+    item = store.create(type='research', description='Effect unknown', dedup_key='period-1')
+    store.assign(item.id, 'historical-executor')
+    store.fail(item.id, 'historical-executor', 'executor crashed mid-effect')
+    assert row(store, item.id)['status'] == 'failed'
+    receipt = reconcile(path, executor_ids=['historical-executor'], apply=True, executor_stopped=True)
+    assert receipt['counts'] == {'reconcile_effect_before_retry': 1}
+    changed = row(store, item.id)
+    assert changed['status'] == 'cancelled'
+    assert changed['cancelled_reason'] == 'executor_retired_effect_unverified'
+    assert changed['failed_reason'] == 'executor crashed mid-effect'  # Evidence retained.
+    same, outcome = store.create_with_outcome(type='research', description='Retry', dedup_key='period-1')
+    assert same.id == item.id and outcome == 'deduped_terminal'
+    assert row(store, item.id)['status'] == 'cancelled'
+
+
+def test_recorded_but_still_failed_row_is_retired_on_repeat(queue):
+    store, path = queue
+    item = store.create(type='research', description='Recorded, still retryable', dedup_key='period-2')
+    store.assign(item.id, 'protagine-executor')
+    store.fail(item.id, 'protagine-executor', 'timeout')
+    store.log_history(item.id, MIGRATION, MIGRATION, 'Executor retirement',
+                      {'disposition': 'preserve_terminal_record'})
+    receipt = reconcile(path, apply=True, executor_stopped=True)
+    assert receipt['counts'] == {'reconcile_effect_before_retry': 1}
+    assert row(store, item.id)['status'] == 'cancelled'
+    _, outcome = store.create_with_outcome(type='research', description='Retry', dedup_key='period-2')
+    assert outcome == 'deduped_terminal'
+    assert reconcile(path, apply=True, executor_stopped=True)['counts'] == {'already_reconciled': 1}
+
+
 def test_failed_history_write_rolls_back_row_and_receipt(queue):
     store, path = queue
     item = store.create(type='research', description='Old effect unknown')

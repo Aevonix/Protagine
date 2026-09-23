@@ -173,6 +173,7 @@ class SourceVectors:
                 error, job['turn_id'], job['lease_token']))
 
     async def _table(self, generation):
+        # Called with the store's write lock held.
         from protagine.vector.collections import Collection
         table = await self.store._table(Collection.CONVERSATIONS, write=True, generation=generation)
         if 'scope_key' not in (await table.schema()).names:
@@ -208,18 +209,25 @@ class SourceVectors:
                     raise ValueError('source embedding cardinality mismatch')
                 for vector in vectors:
                     self.store._validate_vector(vector)
-                table = await self._table(generation)
-                for (text, meta), vector in zip(batch, vectors):
-                    if not self.store._eligible(Collection.CONVERSATIONS, meta['projection_id'], meta):
-                        continue
-                    now = time.time()
-                    meta['embedding_fingerprint'] = self.store.identity.fingerprint
-                    row = {'id': meta['projection_id'], 'text': text, 'vector': vector, 'metadata': json.dumps(meta),
-                           'scope_key': meta['scope_key'], 'modality': 'text', 'image_hash': '', 'image_ref': '',
-                           'thumbnail_ref': '', 'caption': '', 'created_at': now, 'updated_at': now}
-                    await table.merge_insert('id').when_matched_update_all().when_not_matched_insert_all().execute([row])
-                    if not self.store._eligible(Collection.CONVERSATIONS, meta['projection_id'], meta):
-                        await self.store.delete(Collection.CONVERSATIONS, meta['projection_id'])
+                erased = []
+                # Open the table and commit under the store's write lock: a
+                # table rewrite after erasure replaces the files that a handle
+                # opened earlier still points at, and would drop this commit.
+                async with self.store.write_lock:
+                    table = await self._table(generation)
+                    for (text, meta), vector in zip(batch, vectors):
+                        if not self.store._eligible(Collection.CONVERSATIONS, meta['projection_id'], meta):
+                            continue
+                        now = time.time()
+                        meta['embedding_fingerprint'] = self.store.identity.fingerprint
+                        row = {'id': meta['projection_id'], 'text': text, 'vector': vector, 'metadata': json.dumps(meta),
+                               'scope_key': meta['scope_key'], 'modality': 'text', 'image_hash': '', 'image_ref': '',
+                               'thumbnail_ref': '', 'caption': '', 'created_at': now, 'updated_at': now}
+                        await table.merge_insert('id').when_matched_update_all().when_not_matched_insert_all().execute([row])
+                        if not self.store._eligible(Collection.CONVERSATIONS, meta['projection_id'], meta):
+                            erased.append(meta['projection_id'])
+                for projection_id in erased:
+                    await self.store.delete(Collection.CONVERSATIONS, projection_id)
             self._finish(job, cursor=job['cursor'] + len(batch), complete=not more)
         except asyncio.CancelledError:
             raise

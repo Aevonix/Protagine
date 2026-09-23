@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from protagine.autonomy.registry import SubsystemRegistry
 
 from protagine.tools.definitions import STATIC_TOOL_NAMES, get_tool_definitions
-from protagine.tools.handlers import TOOL_HANDLERS
+from protagine.tools.handlers import TOOL_HANDLERS, tool_actor
 from protagine.reasoning.tool_policy import (
     ToolActorPolicy,
     ToolEffect,
@@ -405,6 +405,7 @@ class ToolExecutor:
         allowed_tools: set[str] | frozenset[str] | None = None,
         actor_policy: ToolActorPolicy | None = None,
         memory_search=None,
+        actor: str | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a batch of tool calls and return results.
 
@@ -414,6 +415,10 @@ class ToolExecutor:
 
         Unknown tools return a "not implemented" result rather than
         raising, so the LLM can see the failure and adjust.
+
+        ``actor`` names who the handlers record as acting; the HTTP entry
+        points pass the authenticated caller. Without it the actor is derived
+        from ``actor_policy``, and no policy is the agent's own execution.
         """
         results = []
         try:
@@ -430,6 +435,37 @@ class ToolExecutor:
                 ))
             return results
 
+        # Attribute the handlers' effects to the real actor: no policy is a
+        # trusted in-process caller (the agent itself); mutation authority is
+        # only ever granted to the owner; anything else is the viewing person.
+        if not actor:
+            if actor_policy is None:
+                actor = "agent"
+            elif actor_policy.allow_mutation:
+                actor = "owner"
+            else:
+                actor = actor_policy.viewer_person_id or "guest"
+        actor_token = tool_actor.set(actor)
+        try:
+            await self._execute_calls(
+                tool_calls, dynamic, results,
+                allowed_tools=allowed_tools, actor_policy=actor_policy,
+                memory_search=memory_search,
+            )
+        finally:
+            tool_actor.reset(actor_token)
+        return results
+
+    async def _execute_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        dynamic: Mapping[str, Any],
+        results: list[dict[str, Any]],
+        *,
+        allowed_tools: set[str] | frozenset[str] | None,
+        actor_policy: ToolActorPolicy | None,
+        memory_search,
+    ) -> None:
         for tc in tool_calls:
             tc_id = tc.get("id", str(uuid.uuid4()))
             name = tc.get("name", "unknown")
@@ -510,5 +546,3 @@ class ToolExecutor:
                     "executed": False,
                     "error": "tool_execution_failed",
                 })
-
-        return results

@@ -46,6 +46,24 @@ def _resolve_sandbox_mode() -> str:
     return _DEFAULT_SANDBOX_MODE
 
 
+# What the runner process needs to start: locale, temp dir, and enough to
+# import ``protagine`` with the same interpreter. Nothing else is inherited,
+# so a skill never sees the sidecar's API keys or provider credentials.
+_CHILD_ENV_KEYS = (
+    "PATH", "HOME", "TMPDIR", "TMP", "TEMP",
+    "LANG", "LC_ALL", "LC_CTYPE",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONIOENCODING",
+)
+
+
+def _child_env(manifest: SkillManifest) -> Dict[str, str]:
+    """Environment for the sandbox runner: the base keys plus any variables
+    the skill's manifest declares in ``permissions.allowed_env_vars``."""
+    declared = getattr(manifest.permissions, "allowed_env_vars", None) or ()
+    wanted = (*_CHILD_ENV_KEYS, *declared)
+    return {key: os.environ[key] for key in wanted if key in os.environ}
+
+
 class SecurityError(RuntimeError):
     """Raised when a skill fails integrity or security checks."""
 
@@ -372,6 +390,7 @@ class SkillExecutor:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_child_env(manifest),
         )
 
         try:

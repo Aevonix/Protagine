@@ -41,7 +41,11 @@ def test_non_loopback_without_key_fails_closed(monkeypatch):
     assert exc.value.code == 2
 
 
-def test_explicit_override_allows_open_bind(monkeypatch):
+def test_removed_open_bind_override_is_not_honored(monkeypatch):
+    # The middleware only serves loopback callers without a key, so an
+    # "open bind" override could never deliver what it promised.
     monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
+    monkeypatch.delenv("PROTAGINE_API_KEYRING_PATH", raising=False)
     monkeypatch.setenv("PROTAGINE_ALLOW_OPEN_BIND", "1")
-    _guard_bind_auth("0.0.0.0")  # override: must not exit
+    with pytest.raises(SystemExit):
+        _guard_bind_auth("0.0.0.0")

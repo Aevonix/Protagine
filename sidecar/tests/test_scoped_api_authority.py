@@ -219,7 +219,7 @@ async def test_canonical_search_requires_scoped_token(tmp_path, graph):
     _write_keyring(keyring, [_principal(scopes=["memory:search"])])
     app = _app(keyring, legacy_key="legacy-secret")
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         scoped = await c.post(
             "/v1/host/memory/search",
             headers=_headers("scoped-secret", "hermes-text"),
@@ -241,7 +241,7 @@ async def test_scoped_token_is_denied_without_exact_route_scope(tmp_path, graph)
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(scopes=["memory:read"])])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/memory/sources/forget",
             headers=_headers("scoped-secret"),
@@ -257,7 +257,7 @@ async def test_query_person_selector_cannot_broaden_scoped_principal(tmp_path, g
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(scopes=["api:access"])])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         allowed = await c.get(
             "/v1/host/goals", headers=_headers("scoped-secret"),
             params={"person_id": "contact-owner"},
@@ -278,7 +278,7 @@ async def test_claimed_principal_header_must_match_token(tmp_path, graph):
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(scopes=["memory:search"])])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/memory/search",
             headers=_headers("scoped-secret", "spoofed-principal"),
@@ -293,7 +293,7 @@ async def test_invalid_keyring_cannot_fall_back_to_unscoped_memory(tmp_path, gra
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal()], mode=0o644)
     app = _app(keyring, legacy_key="legacy-secret")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         scoped = await c.post(
             "/v1/host/memory/search",
             headers=_headers("scoped-secret"),
@@ -313,7 +313,7 @@ async def test_permission_change_invalidates_loaded_scoped_credentials(tmp_path,
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(scopes=["memory:search"])])
     app = _app(keyring, legacy_key="legacy-secret")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         before = await c.post(
             "/v1/host/memory/search", headers=_headers("scoped-secret"),
             json=_memory_payload(query="alpha"),
@@ -336,7 +336,7 @@ async def test_expired_or_revoked_principal_is_rejected(tmp_path, graph):
         _principal(principal="revoked", secret="revoked-key", status="revoked"),
     ])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         expired_response = await c.post(
             "/v1/host/memory/search", headers=_headers("expired-key"),
             json=_memory_payload(query="alpha"),
@@ -354,7 +354,7 @@ async def test_keyring_reloads_after_atomic_replacement(tmp_path, graph):
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(secret="first-key", scopes=["memory:search"])])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         first = await c.post(
             "/v1/host/memory/search", headers=_headers("first-key"),
             json=_memory_payload(query="one"),
@@ -382,7 +382,7 @@ async def test_memory_person_is_derived_and_body_cannot_broaden_it(tmp_path, gra
     _write_keyring(keyring, [_principal()])
     app = _app(keyring)
     headers = _headers("scoped-secret")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         read = await c.post(
             "/v1/host/memory/read", headers=headers, json=_memory_payload()
         )
@@ -410,7 +410,7 @@ async def test_canonical_context_uses_authenticated_viewer_not_body_claim(tmp_pa
         "identity": {"host_id": "test-host"},
         "incoming_message": {"role":"user", "content":"alpha"},
     }
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         valid = await c.post(
             "/v1/host/context/assemble", headers=_headers("scoped-secret"),
             json={
@@ -438,7 +438,7 @@ async def test_canonical_search_rejects_legacy_audience_selectors(tmp_path, grap
         _principal(audiences=["viewer", "owner", "shared", "global"])
     ])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         for audience in ("owner", "shared", "global"):
             response = await c.post(
                 "/v1/host/memory/search", headers=_headers("scoped-secret"),
@@ -454,7 +454,7 @@ async def test_ungranted_audience_lane_is_rejected(tmp_path, graph):
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal(audiences=["viewer"])])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/memory/search", headers=_headers("scoped-secret"),
             json=_memory_payload(query="alpha", audience="global"),
@@ -466,7 +466,7 @@ async def test_ungranted_audience_lane_is_rejected(tmp_path, graph):
 @pytest.mark.asyncio
 async def test_anonymous_dev_mode_never_gets_reserved_authority(graph):
     app = _app(None)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         ordinary = await c.post(
             "/v1/host/memory/search",
             json=_memory_payload(query="alpha", person_id="local-scratch"),
@@ -494,7 +494,7 @@ async def test_turn_contact_is_validated_before_idempotent_ingestion(tmp_path, g
     keyring = tmp_path / "keys.json"
     _write_keyring(keyring, [_principal()])
     app = _app(keyring)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         valid = await c.post(
             "/v1/host/turns/sync", headers=_headers("scoped-secret"),
             json=_turn_payload("contact-owner", "valid-turn"),
@@ -531,7 +531,7 @@ async def test_sender_resolving_adapter_cannot_inherit_viewer_without_contact_st
         "user_id": "transport-user-7",
         "display_name": "Example",
     }
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync", headers=_headers("scoped-secret"),
             json=payload,
@@ -573,7 +573,7 @@ async def test_turn_concern_journal_scope_is_sealed_from_scoped_authority(
         "source_platform_attested": True,
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -620,7 +620,7 @@ async def test_scoped_unkeyed_turn_gets_deterministic_server_lineage_id(
     payload["context"]["session_id"] = "call-owner-0001"
     payload["context"]["channel_id"] = "voice"
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         first = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -694,7 +694,7 @@ async def test_server_resolved_attested_sender_gets_subject_private_turn_scope(
         "display_name": "Guest",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -756,7 +756,7 @@ async def test_dynamic_sender_grant_retry_keeps_attribution_and_digest_stable(
         "platform": "voice", "user_id": "guest-voice", "display_name": "Guest",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         first = await c.post(
             "/v1/host/turns/sync", headers=_headers("scoped-secret"), json=payload,
         )
@@ -814,7 +814,7 @@ async def test_dynamic_sender_grant_cap_failure_does_not_attest_identity(
         "platform": "voice", "user_id": "over-cap", "display_name": "Guest",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync", headers=_headers("scoped-secret"), json=payload,
         )
@@ -875,7 +875,7 @@ async def test_structured_sender_platform_cannot_hide_behind_voice_lane(
         "platform": platform, "user_id": "transport-user", "display_name": "Guest",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync", headers=_headers("scoped-secret"), json=payload,
         )
@@ -937,7 +937,7 @@ async def test_resolved_sender_in_static_grant_needs_no_dynamic_platform_grant(
         "display_name": "Owner",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -991,7 +991,7 @@ async def test_resolved_static_sender_without_resolve_scope_is_not_attested(
         "display_name": "Owner",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -1037,7 +1037,7 @@ async def test_unresolved_structured_sender_cannot_fall_back_to_viewer_attestati
         "display_name": "Unknown",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),
@@ -1077,7 +1077,7 @@ async def test_legacy_body_claim_cannot_mint_turn_concern_attestation(
         "shareability": "owner_private",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("legacy-secret"),
@@ -1113,7 +1113,7 @@ async def test_turn_concern_flag_off_keeps_legacy_journal_shape_exact(
     payload["context"]["channel_id"] = "voice:call-off"
     payload["context"]["metadata"] = {"identity_attested": True}
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as c:
         response = await c.post(
             "/v1/host/turns/sync",
             headers=_headers("scoped-secret"),

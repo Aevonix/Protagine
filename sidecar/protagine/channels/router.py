@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import ipaddress
 import logging
-import os
 from typing import Optional
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel
@@ -67,53 +64,6 @@ class ChannelInfo(BaseModel):
     home_chat_id: Optional[str] = None
 
 
-# ── Webhook validation ───────────────────────────────────────────────────
-
-
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fd00::/8"),
-    ipaddress.ip_network("fe80::/10"),
-]
-
-
-def _validate_webhook(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Webhook URL must be http or https, got '{parsed.scheme}'",
-        )
-    if not parsed.hostname:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Webhook URL has no hostname",
-        )
-
-    allow_private = os.environ.get(
-        "PROTAGINE_ALLOW_PRIVATE_WEBHOOKS", ""
-    ).lower() in ("true", "1", "yes")
-
-    if not allow_private:
-        try:
-            addr = ipaddress.ip_address(parsed.hostname)
-            if any(addr in net for net in _PRIVATE_NETWORKS):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=(
-                        f"Webhook URL resolves to private address {addr}. "
-                        "Set PROTAGINE_ALLOW_PRIVATE_WEBHOOKS=true to allow."
-                    ),
-                )
-        except ValueError:
-            pass
-
-
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
@@ -123,9 +73,6 @@ async def register_channel(
     x_channel_token: Optional[str] = Header(None),
 ) -> RegisterResponse:
     store = _require_store()
-
-    if manifest.delivery_webhook:
-        _validate_webhook(manifest.delivery_webhook)
 
     try:
         registered = store.register(manifest, channel_token=x_channel_token)
@@ -172,8 +119,6 @@ async def update_channel(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="channel_key in body must match URL path",
         )
-    if manifest.delivery_webhook:
-        _validate_webhook(manifest.delivery_webhook)
 
     if not store.verify_token(channel_key, x_channel_token):
         raise HTTPException(

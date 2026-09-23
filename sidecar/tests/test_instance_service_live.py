@@ -14,13 +14,13 @@ import httpx
 import pytest
 
 
-@pytest.mark.skipif((os.environ.get('PROTAGINE_TEST_USER_SERVICE') or os.environ.get('PROTAGINE_TEST_USER_SERVICE')) != '1',
+@pytest.mark.skipif(os.environ.get('PROTAGINE_TEST_USER_SERVICE') != '1',
                     reason='Opt-in native user-manager qualification')
 def test_installed_cli_two_instances_crash_recovery_and_retained_memory(tmp_path):
-    python = os.environ.get('PROTAGINE_TEST_SERVICE_PYTHON') or os.environ['PROTAGINE_TEST_SERVICE_PYTHON']
-    hermes_python = os.environ.get('PROTAGINE_TEST_HERMES_PYTHON') or os.environ['PROTAGINE_TEST_HERMES_PYTHON']
+    python = os.environ['PROTAGINE_TEST_SERVICE_PYTHON']
+    hermes_python = os.environ['PROTAGINE_TEST_HERMES_PYTHON']
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('PROTAGINE_', 'PROTAGINE_', 'HERMES_', 'OPENAI_', 'ANTHROPIC_', 'PYTHONPATH'))}
+           if not key.startswith(('PROTAGINE_', 'HERMES_', 'OPENAI_', 'ANTHROPIC_', 'PYTHONPATH'))}
     env.update(HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
                LITELLM_LOCAL_MODEL_COST_MAP='True')
     # The unit suite deliberately replaces HOME/XDG with fake locations. This

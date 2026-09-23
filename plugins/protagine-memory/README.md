@@ -34,14 +34,15 @@ uses UTC and does not inspect another Protagine instance's state directory.
 Required environment posture:
 
 ```bash
-PROTAGINE_PREFETCH_QUERY_CHECK=1
 PROTAGINE_PREFETCH_TURN_CONTACT=1
 PROTAGINE_MCP_CONTACT_ID=replace-with-exact-owner-contact-id
 PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY=none
 ```
 
-The two prefetch flags are mandatory; explicitly disabling either prevents the
-provider from starting. The general Protagine plugin's explicit
+The turn-contact flag is mandatory; explicitly disabling it prevents the
+provider from starting. Each turn performs one context assembly for its own
+message; nothing is assembled in the background between turns. The general
+Protagine plugin's explicit
 `attested_system_platforms: [cli]` binding supplies the configured owner to
 ordinary CLI recollection through the exact active native turn. This does not
 require a supplied-input wrapper or provider-wide owner fallback. The provider
