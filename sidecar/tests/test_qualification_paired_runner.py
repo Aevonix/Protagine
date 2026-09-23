@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.qualification import paired, paired_report
+from protagine.qualification import paired, paired_arms, paired_body, paired_report
 from protagine.qualification.cli import add_parser, run as cli_run
+from protagine.qualification.paired_cases import cases as real_cases
 from protagine.qualification.records import CaseSpec, digest, read
 from protagine.qualification.runner import evaluate
 
@@ -52,15 +53,19 @@ def fixture(tmp_path, monkeypatch):
                 'episodes': [{'session_id': 'first', 'user': 'do the task'}]},
         oracle={'value': 'done'}, timeout_seconds=1) for index in range(2)]
 
-    def cases(arm, case_ids=None):
-        return [replace(case, inputs={**deepcopy(case.inputs), 'arm': arm})
+    def cases(arm, case_ids=None, profile=None):
+        extra = {'arm': arm} if profile is None else {'arm': arm, 'profile': deepcopy(profile)}
+        return [replace(case, inputs={**deepcopy(case.inputs), **extra})
                 for case in originals if case_ids is None or case.id in case_ids]
 
     def configuration(path, binding, *, image, docker_host=None):
         supplied = read(path)
         return supplied, {'binding': binding, 'declared': {}, 'container': {'image': image,
             'docker_host': docker_host, 'image_id': 'sha256:' + 'a' * 64},
-            'config_sha256': digest(supplied), 'native_runtime': {'status': 'ready', 'scope': 'container'}}
+            'config_sha256': digest(supplied), 'native_runtime': {'status': 'ready', 'scope': 'container'},
+            'container_payload': {'arm_profiles': paired.ARM_PROFILE_PROTOCOL,
+                                  'heartbeat_prompt_sha256': paired.HEARTBEAT['prompt_sha256'],
+                                  'body_protocol': paired_body.PROTOCOL}}
 
     def context(config, recipe):
         return SimpleNamespace(binding=recipe['binding'], trace=trace, modes=modes, usage=usage)
@@ -144,12 +149,12 @@ def test_plan_freezes_identical_tasks_and_alternating_pair_order(fixture):
 def test_explicit_dataset_version_and_source_hash_survive_plan_and_run(fixture, monkeypatch):
     from protagine.qualification import paired_cases
     chosen = []
-    def versioned_cases(arm, case_ids=None, dataset_version=None):
+    def versioned_cases(arm, case_ids=None, dataset_version=None, profile=None):
         chosen.append(dataset_version)
         assert dataset_version == 'reviewed-fixture-2'
         return [replace(case, version=dataset_version, inputs={**case.inputs,
             'dataset': {'version': dataset_version, 'sha256': 'b' * 64}})
-            for case in fixture.cases(arm, case_ids)]
+            for case in fixture.cases(arm, case_ids, profile)]
     monkeypatch.setattr(paired_cases, 'cases', versioned_cases)
     plan = paired.plan(fixture.output, native_binding='candidate',
         evidence_mode='controlled', dataset_version='reviewed-fixture-2', **fixture.resources)
@@ -338,8 +343,8 @@ def test_legacy_first_chunk_is_never_reinterpreted_as_ttft_or_new_tps():
 
 def test_case_mismatch_is_rejected_before_execution(fixture, monkeypatch):
     from protagine.qualification import paired_cases
-    def mismatched(arm, case_ids=None):
-        cases = fixture.cases(arm, case_ids)
+    def mismatched(arm, case_ids=None, profile=None):
+        cases = fixture.cases(arm, case_ids, profile)
         return [replace(case, oracle={'value': 'different'}) for case in cases] if arm == 'protagine' else cases
     monkeypatch.setattr(paired_cases, 'cases', mismatched)
     with pytest.raises(ValueError, match='only in inputs.arm'):
@@ -394,3 +399,151 @@ def test_cli_distinguishes_model_failure_from_unavailable_comparison(fixture, ca
         assert report['arms']['protagine']['attributed_completed'] == 1
     else:
         assert report['paired_score'] is None
+
+
+def custom_profiles():
+    return {'full-x': {'plugin': True, 'overlay': {'PROTAGINE_TEST_FACULTY': 'off'}},
+            'base-plain': {'plugin': False}}
+
+
+def test_three_arms_rotate_first_arm_by_episode_index_and_repetition(fixture):
+    arms = ['base_hermes', 'protagine', 'full-x']
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+        arms=arms, profiles=custom_profiles(), repetitions=2, **fixture.resources)
+    assert [pair['order'] for pair in manifest['pairs']] == [
+        ['base_hermes', 'protagine', 'full-x'], ['protagine', 'full-x', 'base_hermes'],
+        ['protagine', 'full-x', 'base_hermes'], ['full-x', 'base_hermes', 'protagine']]
+    assert manifest['declared_attempts'] == 12
+    assert manifest['comparison']['arms'] == arms and manifest['comparison']['reference_arm'] == 'base_hermes'
+    frozen = manifest['comparison']['profiles']['full-x']
+    assert frozen == {'name': 'full-x', 'plugin': True, 'overlay': {'PROTAGINE_TEST_FACULTY': 'off'}}
+    assert manifest['comparison']['profiles']['base_hermes'] == {'name': 'base_hermes', 'plugin': False, 'overlay': {}}
+    case = manifest['pairs'][0]['arms']['full-x']['case']
+    assert case['inputs']['arm'] == 'full-x' and case['inputs']['profile'] == frozen
+    assert len({member['path'] for pair in manifest['pairs'] for member in pair['arms'].values()}) == 12
+    report = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    assert [row[:2] for row in fixture.trace][:6] == [
+        ('episode-0', 'base_hermes'), ('episode-0', 'protagine'), ('episode-0', 'full-x'),
+        ('episode-1', 'protagine'), ('episode-1', 'full-x'), ('episode-1', 'base_hermes')]
+    assert report['arm_order'] == arms and report['reference_arm'] == 'base_hermes'
+    assert set(report['arms']) == set(arms)
+    assert report['paired_score']['treatment'] == 'protagine' and report['paired_score']['base_hermes_completed'] == 4
+    contrasts = report['statistics']['contrasts']
+    assert [(item['treatment'], item['comparator']) for item in contrasts] == [
+        ('protagine', 'base_hermes'), ('full-x', 'base_hermes')]
+    assert all(item['units'] == 2 and item['ties'] == 2 and item['verdict'] == 'not_demonstrated'
+               and item['sign_test']['p_two_sided'] == 1.0 and item['ci_pp']['lower'] == item['ci_pp']['upper'] == 0
+               for item in contrasts)
+    assert report['resources']['arm_episodes'] == {'declared': 12, 'executed': 12}
+    assert report['resources']['gpu_hours']['observed_episodes'] == 12
+    assert 'full-x vs base_hermes' in paired_report.markdown(report)
+
+
+def test_same_profile_twice_is_an_aa_run_with_its_own_labels(fixture):
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+        arms=['base_hermes', 'base_hermes'], **fixture.resources)
+    assert manifest['comparison']['arms'] == ['base_hermes', 'base_hermes.2']
+    assert manifest['comparison']['profiles']['base_hermes.2'] == {'name': 'base_hermes', 'plugin': False, 'overlay': {}}
+    assert manifest['pairs'][0]['arms']['base_hermes.2']['case']['inputs']['arm'] == 'base_hermes.2'
+    fixture.modes[('episode-0', 'base_hermes.2')] = 'fail'
+    report = asyncio.run(paired.run(fixture.output, **fixture.resources))
+    contrast = report['statistics']['contrasts'][0]
+    assert contrast['same_profile'] is True and contrast['treatment'] == 'base_hermes.2'
+    assert contrast['losses'] == 1 and contrast['delta_pp'] == -50 and contrast['verdict'] == 'not_demonstrated'
+    assert report['paired_score']['base_hermes.2_completed'] == 1
+    assert '(A/A)' in paired_report.markdown(report)
+
+
+def test_plan_identity_covers_arms_reference_temperature_and_seeds(fixture):
+    def identity(**options):
+        manifest, *_ = paired.prepare(output=fixture.output, native_binding='candidate',
+                                      evidence_mode='controlled', **options, **fixture.resources)
+        return manifest
+    base = identity()
+    assert base['comparison']['temperature'] is None and base['comparison']['seeds'] == []
+    assert base['comparison']['rule'] == paired.RULE and base['recipe']['paired_temperature'] is None
+    assert base['comparison']['arms'] == ['base_hermes', 'protagine']
+    variants = [identity(arms=['protagine', 'base_hermes']), identity(reference_arm='protagine'),
+                identity(temperature=0.0), identity(seeds=[1, 2]), identity(seeds=[2, 1])]
+    keys = {base['comparison_key'], *(item['comparison_key'] for item in variants)}
+    hashes = {base['sha256'], *(item['sha256'] for item in variants)}
+    assert len(keys) == len(hashes) == 6
+    assert variants[2]['recipe']['paired_temperature'] == 0.0
+    assert variants[3]['comparison']['seeds'] == [1, 2]
+    # The dataset identity itself does not move with the arm set.
+    assert all(item['dataset'] == base['dataset'] for item in variants)
+    assert identity() == base
+
+
+@pytest.mark.parametrize('options,message', [
+    ({'arms': ['base_hermes']}, 'arms'),
+    ({'arms': ['base_hermes', 'unknown']}, 'arms'),
+    ({'reference_arm': 'other'}, 'reference arm'),
+    ({'profiles': {'protagine': {'plugin': False}}}, 'built-in'),
+    ({'profiles': {'x': {'plugin': 'yes'}}}, 'plugin'),
+    ({'profiles': {'x': {'plugin': True, 'overlay': {'PROTAGINE_EMBED_MODEL': 'other'}}}}, 'model'),
+    ({'profiles': {'x': {'plugin': True, 'overlay': {'PROTAGINE_URL': 'http://x'}}}}, 'model'),
+    ({'profiles': {'x': {'plugin': True, 'overlay': {'PROTAGINE_STATE_DIR': '/x'}}}}, 'model'),
+    ({'profiles': {'x': {'plugin': True, 'overlay': {'HERMES_HOME': '/x'}}}}, 'model'),
+    ({'profiles': {'x': {'plugin': True, 'overlay': {'PROTAGINE_FLAG': 1}}}}, 'printable'),
+    ({'temperature': 3}, 'Temperature'),
+    ({'temperature': True}, 'Temperature'),
+    ({'seeds': [1, 1]}, 'Seeds'),
+    ({'seeds': [-1]}, 'Seeds'),
+])
+def test_invalid_arm_declarations_are_rejected_before_any_execution(fixture, options, message):
+    with pytest.raises(ValueError, match=message):
+        paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                    **options, **fixture.resources)
+    assert fixture.trace == [] and not fixture.output.exists()
+
+
+def test_profiles_beyond_the_built_in_pair_need_a_profile_aware_image(fixture, monkeypatch):
+    from protagine.qualification import paired_container
+    original = paired_container.configuration
+
+    def old_image(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        return supplied, {key: value for key, value in recipe.items() if key != 'container_payload'}
+    monkeypatch.setattr(paired_container, 'configuration', old_image)
+    with pytest.raises(ValueError, match='profiles'):
+        paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                    arms=['base_hermes', 'base_hermes'], **fixture.resources)
+    assert freeze(fixture)['declared_attempts'] == 4
+
+
+def test_results_planned_before_arm_profiles_still_report(fixture):
+    freeze(fixture)
+    asyncio.run(paired.run(fixture.output, **fixture.resources))
+    manifest = read(fixture.output / 'paired.json')
+    for key in ('arms', 'reference_arm', 'profiles', 'temperature', 'seeds', 'rule'):
+        del manifest['comparison'][key]
+        manifest['options'].pop(key, None)
+    manifest['comparison_key'] = digest(manifest['comparison'])
+    manifest['sha256'] = digest({key: value for key, value in manifest.items() if key != 'sha256'})
+    (fixture.output / 'paired.json').write_text(json.dumps(manifest))
+    report = paired_report.summarize(fixture.output)
+    assert report['arm_order'] == ['base_hermes', 'protagine'] and report['reference_arm'] == 'base_hermes'
+    assert report['profiles']['protagine'] == {'name': 'protagine', 'plugin': True, 'overlay': {}}
+    assert report['paired_score']['ties'] == 2 and report['temperature'] is None
+    assert report['statistics']['contrasts'][0]['verdict'] == 'not_demonstrated'
+    assert 'Statistics' in paired_report.markdown(report)
+
+
+def test_cli_plan_accepts_arm_profile_temperature_and_seed_options(fixture, tmp_path, capsys):
+    parser = argparse.ArgumentParser()
+    add_parser(parser.add_subparsers())
+    profiles = tmp_path / 'profiles.json'
+    profiles.write_text(json.dumps(custom_profiles()))
+    assert cli_run(parser.parse_args(['models', 'paired', 'plan',
+        '--native-config', str(fixture.resources['native_config']),
+        '--comparison-policy', str(fixture.resources['comparison_policy']),
+        '--container-image', fixture.resources['container_image'], '--output', str(fixture.output),
+        '--native-binding', 'candidate', '--evidence-mode', 'controlled',
+        '--arms', 'base-plain,full-x', '--reference-arm', 'base-plain',
+        '--profiles', str(profiles), '--temperature', '0', '--seeds', '3,5'])) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest['comparison']['arms'] == ['base-plain', 'full-x']
+    assert manifest['comparison']['reference_arm'] == 'base-plain'
+    assert manifest['comparison']['temperature'] == 0.0 and manifest['comparison']['seeds'] == [3, 5]
+    assert manifest['options']['profiles'] == custom_profiles()

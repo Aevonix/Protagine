@@ -1,6 +1,7 @@
 """Allowlisted public paired results, without agent output or private recipes."""
 from datetime import datetime, timezone
 import hashlib
+import math
 from pathlib import Path
 import re
 
@@ -51,6 +52,43 @@ def _accounting(value):
     return result
 
 
+def score_names(reference, treatment):
+    """Public score keys are named by the two arms of the primary contrast."""
+    return ('episodes', reference + '_completed', treatment + '_completed',
+            reference + '_completion_percent', treatment + '_completion_percent',
+            'delta_percentage_points', 'wins', 'ties', 'losses', 'both_completed', 'neither_completed')
+
+
+def _signed(value):
+    """Deltas and interval bounds may be negative; anything else is unknown."""
+    return value if type(value) in {int, float} and math.isfinite(value) else None
+
+
+def _statistics(value):
+    """Scalars of each contrast only; the basis text is a fixed repository string."""
+    contrasts = []
+    for item in value['contrasts']:
+        entry = {'treatment': identifier(item['treatment']), 'comparator': identifier(item['comparator']),
+                 'same_profile': bool(item['same_profile']), 'unit': 'scenario',
+                 'declared_units': _count(item['declared_units']),
+                 'unavailable_units': _count(item['unavailable_units']),
+                 'verdict': item['verdict']}
+        if entry['verdict'] not in {'demonstrated', 'not_demonstrated', 'unavailable'}:
+            raise ValueError('Unknown public verdict')
+        if entry['verdict'] != 'unavailable':
+            entry.update({key: _count(item[key]) for key in ('units', 'wins', 'losses', 'ties')},
+                delta_pp=_signed(item['delta_pp']), mde_pp=number(item['mde_pp']),
+                p_two_sided=number(item['sign_test']['p_two_sided']),
+                p_one_sided=number(item['sign_test']['p_one_sided']),
+                ci_pp={'lower': _signed(item['ci_pp']['lower']), 'upper': _signed(item['ci_pp']['upper']),
+                       'level': number(item['ci_pp']['level']), 'samples': _count(item['ci_pp']['samples'])},
+                non_inferior_point_estimate=bool(item['non_inferior_point_estimate']))
+        contrasts.append(entry)
+    return {'protocol': paired_report.STATISTICS_PROTOCOL, 'rule': dict(value['rule']),
+            'bootstrap_seed': _count(value['bootstrap_seed']),
+            'basis': paired_report.STATISTICS_BASIS, 'contrasts': contrasts}
+
+
 def _timing(value):
     value = value or {}
     requests = value.get('requests', {})
@@ -76,8 +114,11 @@ def export_record(directory, metadata, *, published_at=None):
     version = manifest['dataset']['version']
     if version not in paired_cases.DATASET_VERSIONS:
         raise ValueError('Only repository-owned synthetic datasets may be published')
-    for arm in paired_report.ARMS:
-        expected = paired_cases.cases(arm, manifest['dataset']['episode_ids'], dataset_version=version)
+    arm_order, reference, profiles, _ = paired_report.arms_of(manifest)
+    declared_profiles = (manifest.get('comparison') or {}).get('profiles')
+    for arm in arm_order:
+        expected = paired_cases.cases(arm, manifest['dataset']['episode_ids'], dataset_version=version,
+            profile=None if declared_profiles is None else declared_profiles[arm])
         actual = [pair['arms'][arm]['case'] for pair in manifest['pairs']]
         repetitions = manifest['dataset'].get('repetitions', 1)
         if type(repetitions) is not int or not 1 <= repetitions <= 3:
@@ -93,8 +134,10 @@ def export_record(directory, metadata, *, published_at=None):
                'frozen_public_evaluation' if version == paired_cases.WORKFLOW_VERSION else 'development')
     score = report['paired_score'] if (quality in {'development', 'frozen_public_evaluation'}
         and report['evidence_mode'] == 'actual_inference') else None
+    treatment = next(arm for arm in arm_order if arm != reference)
+    score_keys = score_names(reference, treatment)
     arms = {}
-    for arm in paired_report.ARMS:
+    for arm in arm_order:
         source = report['arms'][arm]
         if set(source['outcomes']) - OUTCOMES:
             raise ValueError('Unknown public episode outcome')
@@ -107,7 +150,7 @@ def export_record(directory, metadata, *, published_at=None):
     corrected_episodes = 0
     for pair in report['pairs']:
         results = {}
-        for arm in paired_report.ARMS:
+        for arm in arm_order:
             row = pair['results'][arm]
             if row['outcome'] not in OUTCOMES or row['primary_outcome'] not in {'pass', 'fail', 'unverified'}:
                 raise ValueError('Unknown public episode attribution')
@@ -171,7 +214,13 @@ def export_record(directory, metadata, *, published_at=None):
         'budget_verification': 'unverified', 'quality_status': quality,
         'declared_episodes': _count(report['declared_episodes']),
         'comparable_pairs': _count(report['comparable_pairs']), 'unavailable_pairs': _count(report['unavailable_pairs']),
-        'arms': arms, 'paired_score': {key: score[key] for key in SCORES} if score else None,
+        'arm_order': [identifier(arm) for arm in arm_order], 'reference_arm': identifier(reference),
+        'profiles': {arm: {'name': identifier(profiles[arm]['name']), 'plugin': bool(profiles[arm]['plugin']),
+                           'overlay': {text(key): text(value) for key, value in profiles[arm]['overlay'].items()}}
+                     for arm in arm_order},
+        'temperature': number(report.get('temperature')),
+        'arms': arms, 'paired_score': {key: score[key] for key in score_keys} if score else None,
+        'statistics': _statistics(report['statistics']) if score else None,
         'episodes': episodes, 'limitations': limitations}
     if report['report_protocol'] == paired_report.REPORT_PROTOCOL:
         if report.get('completion_projection', {}).get('corrected_episodes') != corrected_episodes:
@@ -191,13 +240,13 @@ def export_record(directory, metadata, *, published_at=None):
                 'family': identifier(row['family']),
                 'memory_condition': row['memory_condition'],
                 **{key: _count(row[key]) for key in ('declared_repetitions', 'comparable_repetitions', 'wins', 'ties', 'losses')},
-                'successes': {arm: _count(row['successes'][arm]) for arm in paired_report.ARMS},
-                'unavailable': {arm: _count(row['unavailable'][arm]) for arm in paired_report.ARMS},
-                'accounting': {arm: _accounting(row['accounting'][arm]) for arm in paired_report.ARMS},
+                'successes': {arm: _count(row['successes'][arm]) for arm in arm_order},
+                'unavailable': {arm: _count(row['unavailable'][arm]) for arm in arm_order},
+                'accounting': {arm: _accounting(row['accounting'][arm]) for arm in arm_order},
                 'dimensions': {dimension: {arm: {
                     'passed_repetitions': _count(counts[arm]['passed_repetitions']),
                     'observed_repetitions': _count(counts[arm]['observed_repetitions'])}
-                    for arm in paired_report.ARMS} for dimension, counts in row['dimensions'].items()},
+                    for arm in arm_order} for dimension, counts in row['dimensions'].items()},
             } for row in groups['workflows']]}
     return record
 

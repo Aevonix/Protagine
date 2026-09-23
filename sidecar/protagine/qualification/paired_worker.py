@@ -2,7 +2,8 @@
 
 No expected answer or grader enters this process. Both arms use native Hermes
 file, planning, memory and session-search tools. Protagine's ordinary adapter,
-source writer and projections are enabled only in the treatment arm.
+source writer and projections are enabled only in the treatment arm. Body
+events (ticks, clock advances) and the capture platform are identical in both.
 """
 import asyncio
 from copy import deepcopy
@@ -18,8 +19,17 @@ import threading
 import time
 import traceback
 
+from . import paired_arms, paired_body
+
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
+# Version 2 adds the binary comparator switches heartbeat and curator to a profile.
+ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-2'
+PROFILE_SWITCHES = ('heartbeat', 'curator')
+# Plans written before arm profiles carried only the arm label.
+LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
+                   'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
 COMMON_TOOLS = ['file', 'memory', 'session_search', 'todo']
+KANBAN_WORKER_TOOLS = ['kanban']
 # This key belongs only to the disposable, single-owner fixture API. Provider
 # context tools use the existing api:access contract; live grants are untouched.
 PAIRED_FIXTURE_SCOPES = ['context:read', 'turns:write', 'memory:read',
@@ -41,10 +51,27 @@ def inspect_payload():
     return {'native_runtime': inspect_runtime(), 'adapters': inspect_adapters(),
             'worker_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
+            'arm_profiles': ARM_PROFILE_PROTOCOL,
+            'heartbeat_prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
             'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
-                Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest()}
+                Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
+            'body_protocol': paired_body.PROTOCOL,
+            'capture_platform_sha256': hashlib.sha256(
+                (paired_body.plugin_source() / '__init__.py').read_bytes()).hexdigest()}
+
+
+def turn_message(entry, kind):
+    """The text an agent turn receives and the platform it arrives on."""
+    if kind == 'user':
+        return entry['user'], 'cli'
+    if kind == 'owner_reaction':
+        # An ordinary owner turn in every arm; no arm gets a structured channel.
+        return entry['owner_reaction']['text'], 'cli'
+    inbound = entry['inbound']
+    return (f"[Message from contact {inbound['contact']} on {inbound['channel']}]\n{inbound['text']}",
+            paired_body.PLUGIN)
 
 
 def seed_workspace(root, files):
@@ -164,6 +191,26 @@ def candidate_extra_body(runtime):
     return deepcopy(body)
 
 
+def arm_profile(inputs):
+    """Resolve the frozen profile; the label alone identifies only the built-in pair."""
+    profile = inputs.get('profile', LEGACY_PROFILES.get(inputs.get('arm')))
+    if (not isinstance(profile, dict) or type(profile.get('plugin')) is not bool
+            or not isinstance(profile.get('overlay'), dict)
+            or any(not isinstance(k, str) or not k.startswith('PROTAGINE_') or not isinstance(v, str)
+                   for k, v in profile['overlay'].items())
+            or any(type(profile.get(switch, False)) is not bool for switch in PROFILE_SWITCHES)):
+        raise ValueError('Unknown experiment arm')
+    return profile
+
+
+def pinned_runtime(runtime, temperature):
+    """Pin the plan's sampling temperature on every call; unset keeps the provider default."""
+    if temperature is None:
+        return runtime
+    body = candidate_extra_body(runtime)
+    return {**runtime, 'request_overrides': {'extra_body': {**body, 'temperature': temperature}}}
+
+
 def source_job_counts(path):
     """Observe the stopped fixture worker's backlog without altering its leases."""
     if not path.is_file():
@@ -177,14 +224,14 @@ def source_job_counts(path):
 
 
 @contextmanager
-def source_worker(app, state, inputs, config):
+def source_worker(app, state, inputs, config, *, temperature=None):
     from protagine.router import LLMRouter
     from protagine.api.routers import host
     from protagine.turns import get_turn_idempotency_ledger
     from protagine.beliefs.source_projection import run_source_claim_worker
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    runtime = resolve_runtime_provider(requested=config['model']['provider'],
-                                       target_model=config['model']['default'])
+    runtime = pinned_runtime(resolve_runtime_provider(requested=config['model']['provider'],
+                                                      target_model=config['model']['default']), temperature)
     router = LLMRouter(tiers={})
     roles = ('chat', 'reasoning', 'planning', 'extraction', 'judging', 'coding')
     router.configure({'provider': 'custom', 'protocol': 'openai-chat',
@@ -255,8 +302,9 @@ def main():
         workflow_observations = TurnObservations(phase['workflow'],
             consumed_before=phase.get('prior_read_failures', []))
     arm = inputs['arm']
-    if arm not in {'base_hermes', 'protagine'}:
-        raise ValueError('Unknown experiment arm')
+    profile = arm_profile(inputs)
+    plugin, overlay = profile['plugin'], dict(profile['overlay'])
+    temperature = request.get('temperature')
     home, workspace = Path('/state/home'), Path('/state/workspace')
     resuming = phase is not None and phase['index'] > 0
     if resuming and not (home.is_dir() and workspace.is_dir()):
@@ -274,9 +322,18 @@ def main():
         seed_workspace(workspace, inputs['initial_files'])
     config.update(plugins={'enabled': [], 'disabled': ['protagine']},
                   terminal={'backend': 'local', 'cwd': str(workspace)})
+    outbox = Path('/state/outbox.json')
+    capture = paired_body.install_capture_platform(home, config, outbox)
+    if profile.get('curator'):
+        paired_arms.install_curator(config)
     (home / 'config.yaml').write_text(json.dumps(config))
     os.chdir(workspace)
-    agents, histories, rows = {}, {}, []
+    from .paired_workflow_runtime import EVENT_KINDS, episode_kind
+    # A restarted phase may hold events only; the dataset loader owns the whole-episode rules.
+    kinds = [episode_kind(entry) for entry in inputs['episodes']]
+    body_before = {'clock_offset_seconds': 0, 'ticks_completed': 0, **((phase or {}).get('body_before', {}))}
+    agents, histories, rows, ticks = {}, {}, [], []
+    tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0}}
     if phase is not None:
@@ -285,8 +342,10 @@ def main():
     from .paired_trace import DiagnosticTrace
     trace = DiagnosticTrace(secrets=request.get('provider_env', {}).values())
     request['_diagnostic_recorder'] = trace
-    trace.record('episode', {'arm': arm, 'case_id': inputs.get('case_id'),
-                             'session_ids': [t['session_id'] for t in inputs['episodes']]})
+    trace.record('episode', {'arm': arm, 'profile': profile, 'temperature': temperature,
+                             'case_id': inputs.get('case_id'),
+                             'session_ids': [t['session_id'] for t in inputs['episodes'] if 'session_id' in t],
+                             'kinds': kinds})
     stop = threading.Event()
     requests = []
 
@@ -312,9 +371,12 @@ def main():
         from .paired_transport import observe_requests, usage_summary
         config = load_config()
         model = config['model']['default']
-        runtime = resolve_runtime_provider(requested=request['binding'], target_model=model)
-        candidate_extra_body(runtime)  # Validate the same recipe in both arms.
+        runtime = pinned_runtime(resolve_runtime_provider(requested=request['binding'], target_model=model),
+                                 temperature)
+        candidate_extra_body(runtime)  # Validate the same recipe in every arm.
         trace.add_secret(runtime.get('api_key'))
+        # Same shifted wall clock in both arms; earlier phases' advances carry over.
+        paired_body.install_clock(body_before['clock_offset_seconds'])
         arguments = dict(model=model,
             **{k: runtime[k] for k in ('base_url', 'api_key', 'provider', 'api_mode',
                 'requested_provider', 'request_overrides', 'capabilities') if k in runtime},
@@ -329,51 +391,132 @@ def main():
         with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
             observer = None
             toolsets = list(COMMON_TOOLS)
-            if arm == 'protagine':
+            if plugin:
+                from functools import partial
                 from .native_memory_worker import prepare
                 # Reuse actual adapter/provider/API setup, not its seeded consumer.
                 # Empty turns: all history enters through native conversations.
-                config['plugins'] = {'enabled': ['protagine']}
+                # The profile overlay is applied after the fixture's forced flags.
+                config['plugins'] = {'enabled': [*config.get('plugins', {}).get('enabled', []), 'protagine']}
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
-                    setup_host=source_worker, scopes=PAIRED_FIXTURE_SCOPES))
+                    setup_host=partial(source_worker, temperature=temperature),
+                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
                 toolsets.append('paired_protagine_memory')
+            else:
+                os.environ.update(overlay)
             resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
                              skip_memory=False, session_db=SessionDB(home / 'state.db'))
+            # Cron jobs (the heartbeat) run under the same frozen temperature and limits.
+            resources.enter_context(paired_arms.pinned_cron_agents(
+                lambda resolved: pinned_runtime(resolved, temperature),
+                max_iterations=inputs['max_iterations'], max_tokens=inputs['max_output_tokens']))
             resources.enter_context(workspace_tools(workspace,
                 workflow_observations=workflow_observations))
+            # The arm's own step of every tick, run before cron and dispatch.
+            hooks = []
+            protagine_tick = paired_body.protagine_tick_entry() if plugin else None
+            if protagine_tick is not None:
+                hooks.append(('protagine', protagine_tick))
+            if profile.get('heartbeat'):
+                from functools import partial
+                job_id = paired_arms.install_heartbeat(list(COMMON_TOOLS))
+                hooks.append(('heartbeat', partial(paired_arms.make_due, job_id)))
+            if profile.get('curator'):
+                hooks.append(('curator', paired_arms.curator_review))
+            arm_tick = (lambda: {name: hook() for name, hook in hooks}) if hooks else None
+
+            def kanban_worker(task, task_workspace, seconds):
+                """Run one claimed kanban task in-process with the same recipe, bounded in time."""
+                from unittest.mock import patch
+                from hermes_cli.kanban_db import kanban_db_path
+                env = {'HERMES_KANBAN_TASK': task.id, 'HERMES_KANBAN_WORKSPACE': task_workspace,
+                       'HERMES_KANBAN_DB': str(kanban_db_path()), 'HERMES_SESSION_SOURCE': 'kanban'}
+                if task.claim_lock:
+                    env['HERMES_KANBAN_CLAIM_LOCK'] = task.claim_lock
+                if task.current_run_id is not None:
+                    env['HERMES_KANBAN_RUN_ID'] = str(task.current_run_id)
+                outcome = {}
+                with patch.dict(os.environ, env):
+                    worker = AIAgent(**{**arguments, 'enabled_toolsets': [*toolsets, *KANBAN_WORKER_TOOLS]},
+                                     session_id='kanban-' + task.id)
+
+                    def work():
+                        try:
+                            outcome.update(worker.run_conversation(f'work kanban task {task.id}',
+                                                                   system_message=SYSTEM))
+                        except Exception as exc:
+                            outcome['error'] = type(exc).__name__
+                    thread = threading.Thread(target=work, name='paired-kanban-worker', daemon=True)
+                    thread.start()
+                    thread.join(seconds)
+                    if thread.is_alive():
+                        worker.hard_interrupt('Body tick worker deadline')
+                        thread.join(10)
+                    try:
+                        worker.close()
+                    except Exception:
+                        outcome['error'] = outcome.get('error') or 'close_failed'
+                trace.record('kanban_worker', {'task_id': task.id, 'completed': outcome.get('completed'),
+                    'failed': outcome.get('failed'), 'interrupted': outcome.get('interrupted'),
+                    'error': outcome.get('error'), 'messages': outcome.get('messages')})
+                return {'completed': outcome.get('completed') is True,
+                        'deadline_exceeded': thread.is_alive(), 'error': outcome.get('error')}
+
             result['stage'] = 'running'
-            for index, turn in enumerate(inputs['episodes']):
+            agent = response = None
+            for index, entry in enumerate(inputs['episodes']):
                 global_index = index + (phase['start_turn'] if phase is not None else 0)
+                kind = kinds[index]
                 if workflow_observations is not None:
                     workflow_observations.turn_index = global_index
                 if stop.is_set():
                     raise InterruptedError('Benchmark interrupted')
-                session_id = turn['session_id']
-                if session_id not in agents:
-                    agents[session_id] = AIAgent(**arguments, session_id=session_id)
-                agent = agents[session_id]
-                response = agent.run_conversation(turn['user'], system_message=SYSTEM,
-                    conversation_history=histories.get(session_id))
-                histories[session_id] = response.get('messages', [])
-                complete = response.get('completed') is True and not any(
-                    response.get(k) for k in ('failed', 'partial', 'interrupted'))
-                trace.record('native_turn', {'index': global_index, 'session_id': session_id,
-                    'completed': response.get('completed'), 'failed': response.get('failed'),
-                    'partial': response.get('partial'), 'interrupted': response.get('interrupted'),
-                    'messages': response.get('messages'), 'final_response': response.get('final_response')})
-                rows.append({'session_id': session_id, 'completed': complete,
-                             'final_response': response.get('final_response')})
+                if kind in EVENT_KINDS:
+                    row = {'event': kind, 'completed': False}
+                    if kind == 'advance_clock':
+                        row['clock_offset_seconds'] = paired_body.advance_clock(entry['advance_clock'])
+                    else:
+                        for _ in range(entry['tick']):
+                            tick_number += 1
+                            observed = paired_body.run_tick(outbox=outbox, arm_tick=arm_tick,
+                                run_task=kanban_worker, wait_seconds=inputs.get(
+                                    'worker_wait_seconds', paired_body.DEFAULT_WORKER_WAIT_SECONDS))
+                            ticks.append({'index': global_index, 'tick': tick_number, **observed})
+                            trace.record('body_tick', ticks[-1])
+                    row['completed'] = complete = True
+                    rows.append(row)
+                else:
+                    session_id = entry['session_id']
+                    message, platform = turn_message(entry, kind)
+                    if session_id not in agents:
+                        agents[session_id] = AIAgent(**{**arguments, 'platform': platform}, session_id=session_id)
+                    agent = agents[session_id]
+                    response = agent.run_conversation(message, system_message=SYSTEM,
+                        conversation_history=histories.get(session_id))
+                    histories[session_id] = response.get('messages', [])
+                    complete = response.get('completed') is True and not any(
+                        response.get(k) for k in ('failed', 'partial', 'interrupted'))
+                    trace.record('native_turn', {'index': global_index, 'session_id': session_id, 'kind': kind,
+                        'completed': response.get('completed'), 'failed': response.get('failed'),
+                        'partial': response.get('partial'), 'interrupted': response.get('interrupted'),
+                        'messages': response.get('messages'), 'final_response': response.get('final_response')})
+                    rows.append({'session_id': session_id, 'kind': kind, 'completed': complete,
+                                 'final_response': response.get('final_response')})
+                    if kind == 'inbound' and response.get('final_response'):
+                        # A reply to a contact is an outbound message, kept apart from unprompted sends.
+                        capture.record(f"{paired_body.PLUGIN}:{entry['inbound']['contact']}",
+                                       response['final_response'], via=capture.VIA_REPLY, path=outbox)
+                    # Fixed, declared settling window in both arms, included in wall
+                    # time. No manually inserted facts, forced review or hidden oracle.
+                    stop.wait(inputs.get('settle_seconds', 5))
                 if phase is not None:
                     rows[-1]['index'] = global_index
                 result['tool_evidence']['turns_completed'] += int(complete)
-                # Fixed, declared settling window in both arms, included in wall
-                # time. No manually inserted facts, forced review or hidden oracle.
-                stop.wait(inputs.get('settle_seconds', 5))
                 if workflow_observations is not None:
                     workflow_observations.after_turn(workspace, snapshot_workspace)
                 if not complete:
@@ -401,8 +544,11 @@ def main():
                 treatment_profile='text-native-memory-and-source-projections',
                 limitations=['no embedding/reranking', 'no channel transport',
                     'no executed coding tests', 'no attested multi-user boundary',
-                    'fixed settling window; background completion not guaranteed'])
-            result['output'] = rows[-1]['final_response'] if rows else None
+                    'fixed settling window; background completion not guaranteed',
+                    'no gateway: deliveries land in the capture outbox; kanban workers run in-process',
+                    'inbound sender identity reaches the agent as message text, not gateway metadata'])
+            result['output'] = next((row['final_response'] for row in reversed(rows)
+                                     if 'final_response' in row), None)
             result['stage'] = 'returned'
     except BaseException as exc:
         result.update(error_origin_stage=result['stage'], stage='error', error_type=type(exc).__name__,
@@ -411,8 +557,12 @@ def main():
         # Summarize only after worker shutdown: mutable request observations
         # may gain usage or a cancellation outcome during resource cleanup.
         from .paired_transport import usage_summary
-        result['tool_evidence'].update(model_requests=requests, resource_usage=usage_summary(requests))
-        if arm == 'protagine':
+        result['tool_evidence'].update(model_requests=requests, resource_usage=usage_summary(requests),
+                                       arm_profile=profile, temperature=temperature,
+            body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
+                  'clock_offset_seconds': paired_body.clock_offset(),
+                  'outbox': paired_body.read_outbox(outbox)})
+        if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
                 home / 'memory-state' / 'turn-idempotency.db')
         result['worker_stopped'] = True

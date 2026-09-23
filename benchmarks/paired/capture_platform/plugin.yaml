@@ -1,0 +1,18 @@
+name: capture
+label: Capture
+kind: platform
+version: 1.0.0
+description: >
+  Benchmark-only gateway platform. Records every outbound message as one entry
+  of a JSON-array outbox file instead of sending it anywhere. No external
+  dependencies; nothing is received from a network.
+author: Protagine paired benchmark
+optional_env:
+  - name: CAPTURE_OUTBOX
+    description: "Outbox file path (default: <HERMES_HOME>/outbox.json)"
+    prompt: "Outbox path"
+    password: false
+  - name: CAPTURE_HOME_CHANNEL
+    description: "Home target for cron deliveries addressed to the bare platform name"
+    prompt: "Home target"
+    password: false

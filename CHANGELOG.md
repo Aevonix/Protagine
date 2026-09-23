@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+The paired benchmark runs named arm profiles instead of a fixed pair. A profile
+says whether the Protagine plugin is installed and which flags are overlaid
+after the fixture's forced flags; two to eight arms rotate their order by
+episode and repetition, the same profile can run twice for an A/A noise floor,
+and a declared reference arm is the comparator. Plans freeze the arms,
+profiles, reference arm, sampling temperature, scenario seeds and decision rule
+into the comparison key. Reports add scenario-level statistics for every
+contrast: an exact sign test, a seeded cluster-bootstrap interval, the minimum
+detectable effect and a pre-registered verdict, plus arm-episode and
+wall-hour accounting. Existing plans, datasets and results report unchanged.
+See [the paired benchmark guide](docs/PAIRED-AGENT-BENCHMARK.md).
+
+Episodes gain body events: inbound contact messages, owner reactions, clock
+advances and body ticks. A tick runs the arm's own step, Hermes cron and the
+kanban dispatcher with workers in-process, identically in every arm, and every
+outbound message lands in a JSON-array capture outbox that is graded per tick.
+Two comparator profiles join the built-ins: `base-heartbeat`, a cron job in
+Hermes' heartbeat wording with the `[SILENT]` convention that fires once per
+tick, and `base-curator`, which runs the curator pass at every tick. Seeded
+scenario generators under `benchmarks/paired/generators/` render template
+families with fixed-width contact ids into byte-hashed datasets that
+`--dataset-dir` freezes into a plan; held-out templates are read from outside
+the repository. The dev family `mind-initiative-1` ships with warranted and
+control templates.
+
 ## v1.9.0 - consolidate execution and qualify runtime contracts
 
 Remove the duplicate no-host initiative executor and its startup, preset and

@@ -93,7 +93,8 @@ def configuration(path, binding, *, image, docker_host=None):
 
 def context(config, recipe):
     return SimpleNamespace(binding=recipe['binding'], native_config=config,
-                           container_spec=recipe['container'])
+                           container_spec=recipe['container'],
+                           temperature=recipe.get('paired_temperature'))
 
 
 def _result_from_log(path):
@@ -142,6 +143,9 @@ async def consume(inputs, context):
                   'HERMES_SKIP_DOTENV', 'PYTHONNOUSERSITE', 'PYTHONUNBUFFERED'}}
     payload = {'binding': context.router.binding, 'config': config,
                'provider_env': forwarded, 'inputs': inputs}
+    temperature = getattr(context.router, 'temperature', None)
+    if temperature is not None:
+        payload['temperature'] = temperature
     command = [*container_args(spec, name), '-I', '-B', '-m',
                'protagine.qualification.paired_worker']
     command[len(docker_command(spec))] = 'create'

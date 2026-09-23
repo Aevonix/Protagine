@@ -446,18 +446,22 @@ def test_runtime_image_pruning_removes_oracles_and_preserves_execution_helpers(t
     repo = tmp_path / 'protagine'
     qualification = repo / 'sidecar/protagine/qualification'
     preserved = ['paired_worker.py', 'paired_transport.py', 'paired_trace.py',
-                 'paired_workflow_runtime.py', 'native_memory_worker.py',
+                 'paired_workflow_runtime.py', 'paired_body.py', 'paired_arms.py', 'native_memory_worker.py',
                  'native_identity.py', 'native_memory_identity.py', '__init__.py']
     removed = ['paired_cases.py', 'paired_report.py', 'paired_workflow_grading.py',
-               'fixtures/paired-agent-pilot-1/cases.json',
+               'paired_body_grading.py', 'fixtures/paired-agent-pilot-1/cases.json',
                'fixtures/paired-agent-workflows-1/scenarios.json']
     for name in preserved + removed:
         path = qualification / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('controlled fixture')
-    for directory in (repo / 'tests', repo / 'sidecar/tests', repo / 'benchmarks', tmp_path / 'hermes-tests'):
+    for directory in (repo / 'tests', repo / 'sidecar/tests', repo / 'benchmarks',
+                      repo / 'benchmarks/paired', repo / 'benchmarks/other', tmp_path / 'hermes-tests'):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'answers.json').write_text('{}')
+    plugin = repo / 'benchmarks/paired/capture_platform'
+    plugin.mkdir()
+    (plugin / '__init__.py').write_text('controlled fixture')
     script = Path(__file__).resolve().parents[2] / 'benchmarks/paired/runtime_prune.py'
     original_path = pathlib.Path
     def sandbox_path(*parts):
@@ -473,4 +477,17 @@ def test_runtime_image_pruning_removes_oracles_and_preserves_execution_helpers(t
     assert all((qualification / name).exists() for name in preserved)
     assert all(not (qualification / name).exists() for name in removed)
     assert not (repo / 'tests').exists() and not (repo / 'sidecar/tests').exists()
-    assert not (repo / 'benchmarks').exists() and not (tmp_path / 'hermes-tests').exists()
+    # Only the capture platform plugin survives under benchmarks/: it is runtime code.
+    assert sorted(path.name for path in (repo / 'benchmarks').rglob('*')) == ['__init__.py', 'capture_platform', 'paired']
+    assert not (tmp_path / 'hermes-tests').exists()
+
+
+def test_pinned_temperature_travels_with_the_payload_only_when_set(tmp_path, selected_config, monkeypatch):
+    records = process_fixture(monkeypatch)
+    context = run_context(tmp_path, selected_config)
+    context.router.temperature = 0.0
+    asyncio.run(paired_container.consume(paired_cases.cases(arm='base_hermes')[0].inputs, context))
+    assert records['payload']['temperature'] == 0.0
+    recipe = {'binding': 'candidate', 'container': {}}
+    assert paired_container.context({}, {**recipe, 'paired_temperature': 0.5}).temperature == 0.5
+    assert paired_container.context({}, recipe).temperature is None

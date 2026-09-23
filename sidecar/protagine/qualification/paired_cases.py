@@ -108,14 +108,80 @@ DATASET_MANIFEST, _SCENARIOS, DATASET_SHA256 = load_dataset()
 
 CASE_IDS = tuple(item['id'] for item in _SCENARIOS)
 
+# Seeded template families (benchmarks/paired/generators) are written outside the
+# frozen fixtures. Their scenarios may hold body events and body oracles.
+GENERATOR_PROTOCOL = 'paired-generator-1'
+GENERATED_SPLITS = ('dev', 'heldout')
+GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
+                                     'episodes', 'limitations', 'oracle'})
 
-def cases(arm, case_ids=None, *, dataset_version=VERSION):
-    """Return fresh independent declarations; only inputs.arm differs by arm."""
-    if arm not in {'base_hermes', 'protagine'}:
-        raise ValueError('Use base_hermes or protagine')
-    if dataset_version not in DATASET_VERSIONS:
+
+def load_generated_dataset(directory):
+    """Verify a generated family's bytes and shape before constructing any executable case."""
+    directory = Path(directory)
+    manifest_raw = (directory / 'manifest.json').read_bytes()
+    scenario_raw = (directory / 'scenarios.json').read_bytes()
+    manifest = json.loads(manifest_raw)
+    expected = manifest['files']['scenarios.json']
+    if (len(scenario_raw) != expected['bytes']
+            or hashlib.sha256(scenario_raw).hexdigest() != expected['sha256']):
+        raise ValueError('Generated dataset checksum mismatch')
+    generator = manifest.get('generator')
+    if (not isinstance(generator, dict) or generator.get('protocol') != GENERATOR_PROTOCOL
+            or generator.get('split') not in GENERATED_SPLITS or type(generator.get('seed')) is not int
+            or not _leaf_name(manifest.get('dataset_id')) or manifest.get('version') != manifest['dataset_id']
+            or manifest['dataset_id'] in DATASET_VERSIONS):
+        raise ValueError('Unsupported generated dataset manifest')
+    scenarios = json.loads(scenario_raw)
+    if (not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 128
+            or len(scenarios) != manifest['scenario_count']):
+        raise ValueError('Generated dataset scenario count mismatch')
+    from .paired_body_grading import validate_body_oracle
+    from .paired_workflow_runtime import validate_episodes
+    identities, counts = set(), {}
+    for item in scenarios:
+        if (not isinstance(item, dict) or set(item) != GENERATED_SCENARIO_KEYS
+                or not _leaf_name(item['id']) or item['id'] in identities
+                or not _leaf_name(item['family']) or not _leaf_name(item['scenario'])
+                or type(item['seed']) is not int or not isinstance(item['role'], str) or not item['role']
+                or not isinstance(item['limitations'], list)):
+            raise ValueError('Invalid generated scenario')
+        identities.add(item['id'])
+        counts[item['family']] = counts.get(item['family'], 0) + 1
+        files, oracle = item['initial_files'], item['oracle']
+        if not isinstance(files, dict) or any(not _leaf_name(k) or not isinstance(v, str) for k, v in files.items()):
+            raise ValueError('Initial files require leaf names and text')
+        kinds = validate_episodes(item['episodes'])
+        artifacts = oracle.get('artifacts') if isinstance(oracle, dict) else None
+        if (not isinstance(oracle, dict) or set(oracle) - {'declared_turns', 'artifacts', 'body'}
+                or oracle.get('declared_turns') != len(kinds) or not isinstance(artifacts, list)
+                or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in artifacts)
+                or len({a['path'] for a in artifacts}) != len(artifacts)
+                or not (artifacts or 'body' in oracle)):
+            raise ValueError('Generated scenarios need artifact or body outcomes')
+        if 'body' in oracle:
+            validate_body_oracle(oracle['body'])
+    if counts != manifest['families']:
+        raise ValueError('Generated dataset family count mismatch')
+    content_hash = hashlib.sha256(b'manifest\0' + manifest_raw + b'\0scenarios\0' + scenario_raw).hexdigest()
+    return manifest, tuple(scenarios), content_hash
+
+
+def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_dir=None):
+    """Return fresh independent declarations; only inputs.arm and inputs.profile differ by arm."""
+    if profile is None and arm not in {'base_hermes', 'protagine'}:
+        raise ValueError('Use base_hermes or protagine, or declare an arm profile')
+    if profile is not None and (not isinstance(profile, dict) or type(profile.get('plugin')) is not bool
+                                or not isinstance(profile.get('overlay'), dict)
+                                or not isinstance(arm, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,41}', arm)):
+        raise ValueError('An arm label needs a profile with plugin and overlay')
+    split = None
+    if dataset_dir is not None:
+        manifest, scenarios, content_hash = load_generated_dataset(dataset_dir)
+        dataset_version, split = manifest['dataset_id'], manifest['generator']['split']
+    elif dataset_version not in DATASET_VERSIONS:
         raise ValueError('Select an installed paired dataset version')
-    if dataset_version == VERSION:
+    elif dataset_version == VERSION:
         scenarios, content_hash = _SCENARIOS, DATASET_SHA256
     else:
         _, scenarios, content_hash = load_dataset(_FIXTURE_DIRECTORY.parent / dataset_version)
@@ -132,17 +198,23 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION):
         inputs.update(arm=arm, max_output_tokens=4096, max_iterations=8,
             cleanup_seconds=5, settle_seconds=5, contact_id='fixture-owner',
             dataset={'id': dataset_version, 'version': dataset_version, 'sha256': content_hash})
+        if profile is not None:
+            inputs['profile'] = copy.deepcopy(profile)
         oracle = copy.deepcopy(scenario['oracle'])
         if dataset_version == WORKFLOW_VERSION:
             inputs.update(workflow=copy.deepcopy(scenario['workflow']),
                           memory_condition=scenario['memory_condition'])
             oracle['workflow_contract'] = copy.deepcopy(scenario['workflow'])
             inputs['dataset']['split'] = 'frozen_public_evaluation'
+        if split is not None:
+            inputs['dataset']['split'] = split
+        # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
+        generous = dataset_version == WORKFLOW_VERSION or split is not None
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
             boundary='native_hermes', consumer='native_paired', evaluator='paired_artifacts',
             inputs=inputs, oracle=oracle,
-            timeout_seconds=600 if dataset_version == WORKFLOW_VERSION else 120 * len(scenario['episodes']) + 30,
-            max_output_bytes=1048576 if dataset_version == WORKFLOW_VERSION else 262144))
+            timeout_seconds=600 if generous else 120 * len(scenario['episodes']) + 30,
+            max_output_bytes=1048576 if generous else 262144))
     return result
 
 
@@ -291,6 +363,9 @@ def assess(observed, oracle):
     if 'workflow_contract' in oracle:
         from .paired_workflow_grading import assess_workflow
         checks.update(assess_workflow(effects, oracle))
+    if 'body' in oracle:
+        from .paired_body_grading import assess_body
+        checks.update(assess_body(effects, oracle['body']))
     return checks
 
 

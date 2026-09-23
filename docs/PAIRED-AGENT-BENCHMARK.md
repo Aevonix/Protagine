@@ -72,7 +72,71 @@ Fixture JSON, task instructions and artifact checks are versioned in the reposit
 
 The supplied model URL must be reachable from the container network. A loopback URL names the container itself, not the machine running the CLI or a remote Docker daemon. Use the endpoint's reachable address; the benchmark does not change model listeners or production routing. [Image build instructions](../benchmarks/paired/README.md) describe the pinned source exports and dependencies.
 
-Execution is sequential. The first episode runs base Hermes first, the second runs Protagine first, and the order continues alternating. An episode has exactly one attempt per arm. There is no best-of selection or adaptive retry. `--resume` continues only untouched attempts. Interrupted attempts retain their outcome and are never replayed. Unconfirmed container cleanup stops further execution.
+Execution is sequential. With the default two arms the first episode runs base Hermes first, the second runs Protagine first, and the order continues alternating. With N arms the first arm rotates by `(episode index + repetition) mod N`, so every arm leads equally often. An episode has exactly one attempt per arm. There is no best-of selection or adaptive retry. `--resume` continues only untouched attempts. Interrupted attempts retain their outcome and are never replayed. Unconfirmed container cleanup stops further execution.
+
+### Arms and profiles
+
+An arm is a named profile: whether the Protagine plugin is installed, an
+optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
+flags, before the plugin loads, and the binary comparator switches that are on
+(`heartbeat`, `curator`; a switch is listed only when it is on). The built-in
+profiles are `base_hermes` (plugin off) and `protagine` (plugin on), the default
+arm set, plus the two comparators `base-heartbeat` and `base-curator` described
+below. `--arms` selects two to eight profiles by name; repeating a name runs the
+same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
+which measures the noise floor. `--reference-arm` names the comparator; it
+defaults to the first arm and every other arm is contrasted against it.
+`--profiles` adds profiles from a JSON object:
+
+```json
+{"full-x": {"plugin": true, "overlay": {"PROTAGINE_SOME_FACULTY": "off"}},
+ "full-heartbeat": {"plugin": true, "heartbeat": true},
+ "base-plain": {"plugin": false}}
+```
+
+A profile cannot redefine a built-in one, and an overlay cannot name a model,
+endpoint, credential, contact, path or database setting: those are shared by
+every arm, never arm differences. The same body runs in every arm, so the image,
+model, budgets, tools and oracle are identical; only the profile differs. Arm
+profiles beyond the built-in pair require an image whose worker declares
+`arm_profiles`; older images run only the default pair.
+
+### Comparator arms
+
+`base-heartbeat` is stock Hermes plus one cron job, created at episode start
+(`paired_arms.install_heartbeat`). Its prompt follows Hermes' own heartbeat
+wording with the cron silence convention:
+
+> Check your memory, sessions and board for anything that needs doing now. If
+> something does, do it with your tools or tell the owner. If nothing does,
+> reply exactly [SILENT].
+
+`[SILENT]` suppresses delivery; anything else is delivered to `capture:owner`
+and lands in the outbox. The job's `context_from` is its own id, so every run
+sees its previous output. Its toolsets are the worker set plus `kanban` and
+`cronjob`, so it can create board tasks, which the same tick dispatches. The
+job's schedule never makes it due on its own: the arm's step of every body tick
+sets `next_run_at` to now, so Hermes cron `tick()` runs it exactly once per
+tick and the heartbeat gets at least as many model calls as the mind's tick.
+The prompt's SHA-256 is frozen in the plan (`comparison.heartbeat`) and the
+image must carry the same prompt. A restarted phase keeps the durable job.
+
+`base-curator` is stock Hermes with `curator.enabled` and `curator.consolidate`
+on; the arm's step of every body tick runs one synchronous `hermes curator run`
+pass (`agent.curator.run_curator_review`). Campaign mode, where the pass runs
+between episodes, comes later.
+
+In the `protagine` arm the arm's step is the plugin's `tick` when it defines
+one. Each tick row records the step's result under `arm_tick`. Base arms have
+no step.
+
+`--temperature` pins the sampling temperature on every model call in every arm,
+foreground and auxiliary, through the same request body the candidate
+compatibility settings use. Unset, the provider default applies and the plan
+records `null`. `--seeds` freezes the scenario seeds a seeded family draws its
+instances from. Arms, profiles, the reference arm, temperature, seeds and the
+decision rule are all part of the comparison key and the plan hash: changing
+any of them is a new plan.
 
 Diagnostic images record bounded private model requests/responses, native turn messages and completion flags, plus context-route statuses in `private-trace.jsonl` next to each attempt's container log. Request headers and configured credentials are excluded or redacted. Each attempt allows 8 MiB total and 512 KiB per event; `container-result.json` records truncation, dropped events and capture errors. Traces are outside the scored workspace and are never included by the public exporter. These observations can affect timing slightly; compare using the same pinned diagnostic image in both arms. Preserve synthetic-only input and private filesystem access when inspecting them.
 
@@ -80,11 +144,140 @@ The isolated single-owner API credential includes the existing `api:access` scop
 
 The private `paired.json` contains the frozen plan. Ordinary immutable runner records live under `runs/`; numbered reports are additional views and never replace an earlier result. Keep this directory private: it can contain supplied configuration hashes, model outputs and diagnostics.
 
+## Episode events, the body tick and the capture outbox
+
+An episode is a list of entries. Besides the owner turn `{"session_id", "user"}`,
+three more shapes are accepted (`paired_workflow_runtime.validate_episodes`):
+
+| Entry | Meaning |
+|---|---|
+| `{"session_id", "inbound": {"contact": "p-03", "channel": "chat", "text"}}` | A message from a synthetic contact arrives on the capture platform. The agent's reply is recorded in the outbox as `capture:p-03` with `via: "reply"`. Contact ids are fixed width (`p-01`..`p-99`). |
+| `{"session_id", "owner_reaction": {"text"}}` | An ordinary owner turn, labelled as a reaction so reports can find it. No arm gets a structured channel. |
+| `{"tick": n}` | Run the body tick `n` times (1..16). |
+| `{"advance_clock": seconds}` | Move the wall clock forward (1 s..366 days). |
+
+Every entry counts as one declared turn, so `all_native_turns_completed` still
+means every declared step ran. Events carry no session id; the fresh-session
+rule across restarts applies to agent turns only. The supervisor hands each
+restarted phase the clock offset and tick count accumulated before it.
+
+**Body tick.** Identical in both arms and run inside the episode container:
+the Protagine tick when the loaded plugin defines one (none does yet), then
+Hermes cron `tick()` (synchronous, so due jobs finish inside the event), then
+kanban `dispatch_once` with `kanban.default_assignee: default`. Ready tasks are
+run in-process by the same agent recipe with the `kanban` toolset added,
+sequentially, within `worker_wait_seconds` (default 120) for the whole tick;
+a worker past the deadline is hard-interrupted. At most 8 tasks spawn per tick.
+Model calls made by workers are observed like every other call.
+
+**Clock.** `advance_clock` shifts `time.time` (kanban timestamps and claims) and
+`hermes_time.now` (cron due times, outbox stamps) by the accumulated offset,
+faketime-style, inside the worker process. Monotonic clocks are untouched, so
+real timeouts still hold. The offset survives process restarts.
+
+**Capture outbox.** Both arms enable the benchmark-only `capture` platform
+(`benchmarks/paired/capture_platform/`), registered through Hermes'
+`register_platform`. Cron deliveries to `capture:owner` (or the bare `capture`
+home target), `send_message` calls and gateway sends append to one JSON array,
+`/state/outbox.json`, as `{"target", "text", "at", "via"}`. Recipients are
+recorded as written. `cron.wrap_response` is off, so the recorded text is the
+agent's own message.
+
+Each tick records `outbox_before`/`outbox_after` counts, the cron jobs run, the
+dispatch counts, the workers run and a kanban snapshot with the ids created in
+that tick. The result carries `effects.body = {protocol, ticks, clock_offset_seconds, outbox}`.
+
+**Grading.** An oracle may add `body`:
+
+```json
+{"action": {"target": "capture:owner", "token": "invoice", "window": [1, 3]}, "forbidden": ["p-01"]}
+{"action": "none", "forbidden": ["p-01"]}
+```
+
+An unprompted effect is a platform send during a tick or a task created during a
+tick; replies to inbound messages and sends during owner turns are not. Effects
+are grouped by tick: a task plus a message in one tick is one action, the same
+obligation acted on in two ticks fails `body:action`, and the delivery kind does
+not matter. `body:window` checks the acting tick; `body:target` every message
+in it, and an action with no message at all reaches only the owner's board, so
+it satisfies only an owner target; `body:forbidden` scans the whole outbox and
+every tick's kanban snapshot with a case-insensitive substring match, so an
+edit in a later tick cannot erase it. `action: "none"` passes only
+with no unprompted effect at all. Frozen datasets without a `body` oracle grade
+exactly as before.
+
+## Generated families
+
+Scenario families beyond the frozen fixtures come from seeded templates under
+[`benchmarks/paired/generators/`](../benchmarks/paired/generators/README.md).
+A template turns deterministic draws (fixed-width contacts `p-01`..`p-99`,
+items, horizons, paraphrases) into one scenario and its oracle; the generator
+writes `manifest.json` and `scenarios.json` in the fixture shape, so the same
+seed always gives the same bytes and the same content hash.
+
+```sh
+python benchmarks/paired/generators/generate.py --family initiative \
+  --split dev --seed 7 --per-template 3 --output /private/families/initiative-dev-7
+protagine models paired plan --dataset-dir /private/families/initiative-dev-7 \
+  --arms base-heartbeat,protagine ...
+```
+
+`--dataset-dir` replaces `--dataset-version`. The directory's content hash,
+split and episode ids are frozen into the plan, and a run refuses a directory
+whose bytes changed. Generated scenarios may hold body events and `body`
+oracles, so they need an image whose worker runs the body tick. Their `family`
+field groups scenarios (`warranted`, `control`) in reports. The dev family
+`mind-initiative-1` has three warranted templates (overdue promise,
+owner-requested follow-up, an awaited reply that never comes) and four
+controls (already done, the owner said not to, the reply arrived, nothing to
+do); every episode is history turns, a clock advance past the horizon and three
+ticks with no user turn. Held-out templates are a Python file outside the
+repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
+the same family; the generator refuses a path inside the repository. Generated
+datasets are private inputs: the public exporter still publishes only the
+repository's frozen fixtures.
+
 ## Read the result
 
 The report shows each arm's completion counts, separate unsupported/error/timeout outcomes, paired wins/ties/losses and completion delta in percentage points. A win means Protagine completed an episode that baseline Hermes did not. A tie can mean both succeeded or both failed; those counts are also separate.
 
 An aggregate delta is available only after every declared episode has two attributable outcomes. Missing, interrupted, unsupported, setup-failed or unattributed attempts keep it unavailable. Infrastructure, consumer and verifier errors also remain unavailable: a broken harness is not a model failure. A returned, attributable episode that fails its task checks counts as noncompletion. A timeout counts as noncompletion only when execution evidence shows dispatch to the declared candidate without fallback; otherwise attribution is unknown. Every error and timeout remains visible in its own category. A partial cohort is never promoted into an improvement score. Reports label this attribution policy `paired-attribution-2`; earlier raw attempts remain unchanged.
+
+### Statistics
+
+Every report tests each non-reference arm against the reference arm with one
+method (`paired-statistics-1`). The unit is the scenario: repetitions of one
+scenario are averaged into one pass value per arm, and a scenario is a win when
+the treatment exceeds the comparator, a loss when it trails, otherwise a tie.
+The report gives, per contrast, the wins, ties and losses, the delta in
+percentage points, the exact sign test over non-tied units (two-sided and
+one-sided p), a 95% percentile interval from a cluster bootstrap over scenarios
+(2,000 resamples, seeded from the plan hash, so a report is reproducible from
+its directory), the observed disagreement rate, and the minimum detectable
+effect: the smallest treatment-minus-comparator difference this many scenarios
+would find with 80% power at that disagreement rate. The MDE models one binary
+outcome per scenario; with repetitions, where a scenario's difference is a
+fraction, it is an upper bound on the pass-rate difference the sign test finds.
+
+The verdict is `demonstrated` only when all three pre-registered rules hold:
+two-sided p below 0.05, at least six winning scenarios, and an interval lower
+bound above zero. Anything else is `not_demonstrated`, reported with n, the
+delta, the interval and the MDE; a non-significant result is not evidence of no
+effect. A contrast with any unattributed scenario is `unavailable`, following
+the attribution policy above. A contrast between two arms of the same profile
+is marked A/A: its delta and interval are the noise floor. The
+`non_inferior_point_estimate` flag (delta at least -10 pp) is a point-estimate
+gate for guard checks only, never a substitute for the primary rule.
+
+`protagine.qualification.paired_statistics` also provides `power(n, win, loss)`,
+the exact power of that rule, and `pilot_sizing(wins, losses, units)`, which
+picks the smallest n in 40, 60 or 80 with 80% power for a +20 pp effect from a
+paired pilot's win and loss rates; a pilot whose best candidate stays under 50%
+runs at 40 and is reported as underpowered.
+
+The `resources` section counts arm-episodes (declared and executed) and the
+observed hours of arm wall time. Those hours equal GPU-hours only at concurrency
+1 on one endpoint; GPU utilization is not measured.
 
 Accounting reports measured model calls, input/output tokens, background calls and arm wall time when available. Partial subtotals are labeled; missing observations are not zero. The first pilot does not claim complete auxiliary-call accounting, enforced equal compute, peak throughput or latency without competing traffic.
 
@@ -118,6 +311,6 @@ protagine models paired export \
   --public-output /private/publication/paired-candidate-01
 ```
 
-The new snapshot contains a hash-pinned `index.json` and an allowlisted public result in `runs/`. It can be staged under a website's `benchmarks/paired/` directory. Export verifies repository-owned fixture inputs and includes scalar outcomes, resource counts, timings and runtime hashes. It excludes conversation bodies, agent artifacts, endpoint URLs, private policy text and exception logs. Existing snapshots are never overwritten. Original pilot grading is flagged under review and its aggregate score is withheld; controlled fixtures also cannot become a public model score.
+The new snapshot contains a hash-pinned `index.json` and an allowlisted public result in `runs/`. It can be staged under a website's `benchmarks/paired/` directory. Export verifies repository-owned fixture inputs and includes scalar outcomes, resource counts, timings, runtime hashes, the arm profiles and, when the comparison is complete, the per-contrast statistics. It excludes conversation bodies, agent artifacts, endpoint URLs, private policy text and exception logs. Existing snapshots are never overwritten. Original pilot grading is flagged under review and its aggregate score is withheld; controlled fixtures also cannot become a public model score.
 
 No model tier is assigned. These public development episodes do not establish broad generalization, hidden-test performance, concurrent-session correctness, comprehensive authorization, deletion from every store, executable code correctness, or voice/vision/embedding quality. Inspect the per-case limitations and effects alongside the aggregate. The earlier endpoint screen and its raw records remain separate protocols.

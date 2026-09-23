@@ -286,7 +286,7 @@ def test_trace_budget_is_global_and_ambiguous_request_ids_are_rejected(monkeypat
     assert trace.errors == 1
 
 
-@pytest.mark.parametrize('arm', ['base_hermes', 'protagine'])
+@pytest.mark.parametrize('arm', ['base_hermes', 'protagine', 'full-x', 'base-y'])
 def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(tmp_path, monkeypatch, capsys, arm):
     """Exercise the real worker loop with stub native APIs, not its model calls."""
     from protagine.qualification import paired_transport
@@ -313,10 +313,16 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         resolve_runtime_provider=lambda **_: {'base_url': 'http://model.invalid/v1'}))
     monkeypatch.setitem(sys.modules, 'hermes_constants', SimpleNamespace(resolve_reasoning_config=lambda *_: {}))
     monkeypatch.setitem(sys.modules, 'hermes_state', SimpleNamespace(SessionDB=lambda _: None))
+    # The body clock and tick need real Hermes modules; this probe exercises the turn loop only.
+    monkeypatch.setattr(worker.paired_body, 'install_clock', lambda offset: float(offset))
+    monkeypatch.setattr(worker.paired_body, 'protagine_tick_entry', lambda: None)
+
+    agent_kwargs = []
 
     class NativeAgent:
         def __init__(self, **kwargs):
             self.session_id = kwargs['session_id']
+            agent_kwargs.append(kwargs)
 
         def run_conversation(self, user, *, system_message, conversation_history):
             assert conversation_history is None
@@ -334,6 +340,11 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
             pass
 
     monkeypatch.setitem(sys.modules, 'run_agent', SimpleNamespace(AIAgent=NativeAgent))
+    # The worker pins the frozen runtime and limits on cron's agent-construction seam.
+    cron = SimpleNamespace(scheduler=SimpleNamespace(
+        _construct_cron_agent=lambda AIAgent, job, config, setup, **kwargs: AIAgent(model='cron-model')))
+    monkeypatch.setitem(sys.modules, 'cron', cron)
+    monkeypatch.setitem(sys.modules, 'cron.scheduler', cron.scheduler)
 
     observed = []
     lifecycle = []
@@ -347,8 +358,11 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         finally:
             lifecycle.append('observe-end')
 
+    overlays = []
+
     @contextmanager
     def provider_setup(*args, **kwargs):
+        overlays.append(kwargs.get('overlay'))
         assert lifecycle[-1] == 'observe-start'
         observed.append({'usage': {'prompt_tokens': 11, 'completion_tokens': 3}})
         lifecycle.append('source-start')
@@ -364,6 +378,14 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
     monkeypatch.setattr(paired_transport, 'observe_requests', no_model_requests)
     payload = request()
     payload['inputs'].update(arm=arm, max_iterations=8, max_output_tokens=512, settle_seconds=0)
+    # Labels beyond the built-in pair carry a frozen profile; one pins the temperature too.
+    profiles = {'full-x': {'name': 'full-x', 'plugin': True, 'overlay': {'PROTAGINE_TEST_FACULTY': 'off'}},
+                'base-y': {'name': 'base-y', 'plugin': False, 'overlay': {'PROTAGINE_TEST_FACULTY': 'on'}}}
+    plugin = arm in {'protagine', 'full-x'}
+    if arm in profiles:
+        payload['inputs']['profile'] = profiles[arm]
+    if arm == 'full-x':
+        payload['temperature'] = 0.0
     for phase in range(2):
         chunk = deepcopy(payload)
         chunk['inputs']['episodes'] = chunk['inputs']['episodes'][phase*2:phase*2+2]
@@ -377,7 +399,9 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         result = json.loads(next(line[len(runtime.RESULT_MARKER):] for line in output.out.splitlines()
                                  if line.startswith(runtime.RESULT_MARKER)))
         assert [turn['index'] for turn in result['tool_evidence']['turns']] == [phase*2, phase*2+1]
-        if arm == 'protagine':
+        assert result['tool_evidence']['arm_profile'] == (profiles[arm] if arm in profiles else worker.LEGACY_PROFILES[arm])
+        assert result['tool_evidence']['temperature'] == (0.0 if arm == 'full-x' else None)
+        if plugin:
             assert lifecycle[-4:] == ['observe-start', 'source-start', 'source-stop', 'observe-end']
             assert result['tool_evidence']['resource_usage']['observed_input_tokens'] == 30
             assert result['tool_evidence']['resource_usage']['observed_output_tokens'] == 10
@@ -389,6 +413,11 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         assert observations['read_recoveries'] == ([] if phase == 0 else [
             {'turn_index': 2, 'path': 'source.txt'}, {'turn_index': 3, 'path': 'source.txt'}])
     assert calls == [0, 1, 2, 3]
+    assert overlays == ([profiles[arm]['overlay']] * 2 if arm == 'full-x' else [{}] * 2 if plugin else [])
+    if arm == 'base-y':
+        assert worker.os.environ['PROTAGINE_TEST_FACULTY'] == 'on'
+    expected = {'extra_body': {'temperature': 0.0}} if arm == 'full-x' else None
+    assert all(kwargs.get('request_overrides') == expected for kwargs in agent_kwargs) and len(agent_kwargs) == 4
 
 
 def test_candidate_compatibility_body_preserved_without_mutating_recipe():
@@ -425,3 +454,28 @@ def test_shutdown_backlog_is_read_only_and_missing_is_not_empty(tmp_path):
     assert worker.source_job_counts(path) == {'status': 'observed',
         'counts': {'complete': 2, 'pending': 1, 'running': 1}}
     assert path.read_bytes() == before
+
+
+def test_arm_profiles_resolve_the_built_in_pair_and_reject_unknown_labels():
+    assert worker.arm_profile({'arm': 'base_hermes'}) == worker.LEGACY_PROFILES['base_hermes']
+    assert worker.arm_profile({'arm': 'protagine'})['plugin'] is True
+    declared = {'name': 'full-x', 'plugin': True, 'overlay': {'PROTAGINE_TEST_FACULTY': 'off'}}
+    assert worker.arm_profile({'arm': 'full-x', 'profile': declared}) == declared
+    for inputs in ({'arm': 'full-x'}, {'arm': 'x', 'profile': {'plugin': 'yes', 'overlay': {}}},
+                   {'arm': 'x', 'profile': {'plugin': True, 'overlay': {'HOME': '/x'}}},
+                   {'arm': 'x', 'profile': {'plugin': True, 'overlay': {'PROTAGINE_FLAG': 1}}}):
+        with pytest.raises(ValueError, match='Unknown experiment arm'):
+            worker.arm_profile(inputs)
+
+
+def test_pinned_temperature_keeps_the_candidate_compatibility_body():
+    runtime = {'base_url': 'http://model.invalid/v1',
+               'request_overrides': {'extra_body': {'chat_template_kwargs': {'enable_thinking': False}}}}
+    assert worker.pinned_runtime(runtime, None) is runtime
+    pinned = worker.pinned_runtime(runtime, 0.0)
+    assert pinned['request_overrides'] == {'extra_body': {
+        'chat_template_kwargs': {'enable_thinking': False}, 'temperature': 0.0}}
+    assert runtime['request_overrides']['extra_body'] == {'chat_template_kwargs': {'enable_thinking': False}}
+    assert worker.pinned_runtime({'base_url': 'x'}, 0.7)['request_overrides'] == {'extra_body': {'temperature': 0.7}}
+    with pytest.raises(ValueError):
+        worker.pinned_runtime({'request_overrides': {'extra_body': {'model': 'other'}}}, 0.0)

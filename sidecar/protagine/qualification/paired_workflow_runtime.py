@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -25,6 +26,76 @@ RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 REQUEST_ID_STRIDE = 1 << 32
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 MAX_TRACE_BYTES = 8 * 1024 * 1024
+# Episode entries are either agent turns (owner text, an inbound contact
+# message, an owner reaction) or body events (ticks and clock advances).
+TURN_KINDS = ('user', 'inbound', 'owner_reaction')
+EVENT_KINDS = ('tick', 'advance_clock')
+MAX_TICKS_PER_EVENT = 16
+MAX_CLOCK_ADVANCE_SECONDS = 366 * 86400
+_LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
+_CONTACT = re.compile(r'p-[0-9]{2}')  # fixed width: "p-01" never substring-matches "p-11"
+
+
+def _text(value, bound=16384):
+    return isinstance(value, str) and value.strip() != '' and len(value) <= bound
+
+
+def episode_kind(entry):
+    """Classify one episode entry, rejecting anything outside the declared grammar."""
+    if not isinstance(entry, dict):
+        raise ValueError('Invalid paired episode entry')
+    keys = set(entry)
+    if keys == {'tick'}:
+        count = entry['tick']
+        if type(count) is not int or not 1 <= count <= MAX_TICKS_PER_EVENT:
+            raise ValueError('Invalid paired tick event')
+        return 'tick'
+    if keys == {'advance_clock'}:
+        seconds = entry['advance_clock']
+        if type(seconds) is not int or not 1 <= seconds <= MAX_CLOCK_ADVANCE_SECONDS:
+            raise ValueError('Invalid paired advance_clock event')
+        return 'advance_clock'
+    if len(keys) != 2 or 'session_id' not in keys:
+        raise ValueError('Invalid paired episode entry')
+    if not isinstance(entry['session_id'], str) or not _LEAF.fullmatch(entry['session_id']):
+        raise ValueError('Invalid paired episode session')
+    kind = next(iter(keys - {'session_id'}))
+    if kind == 'user':
+        if not _text(entry['user']):
+            raise ValueError('Invalid paired user turn')
+    elif kind == 'inbound':
+        inbound = entry['inbound']
+        if (not isinstance(inbound, dict) or set(inbound) != {'contact', 'channel', 'text'}
+                or not isinstance(inbound['contact'], str) or not _CONTACT.fullmatch(inbound['contact'])
+                or not isinstance(inbound['channel'], str) or not _LEAF.fullmatch(inbound['channel'])
+                or len(inbound['channel']) > 32 or not _text(inbound['text'])):
+            raise ValueError('Invalid paired inbound event')
+    elif kind == 'owner_reaction':
+        reaction = entry['owner_reaction']
+        if not isinstance(reaction, dict) or set(reaction) != {'text'} or not _text(reaction['text']):
+            raise ValueError('Invalid paired owner reaction')
+    else:
+        raise ValueError('Invalid paired episode entry')
+    return kind
+
+
+def validate_episodes(episodes):
+    """Return the kind of every entry; an episode needs at least one agent turn."""
+    if not isinstance(episodes, list) or not episodes:
+        raise ValueError('Invalid paired episodes')
+    kinds = [episode_kind(entry) for entry in episodes]
+    if not any(kind in TURN_KINDS for kind in kinds):
+        raise ValueError('Paired episodes require at least one agent turn')
+    return kinds
+
+
+def body_before(episodes, index):
+    """Clock offset and tick count accumulated by the events before ``index``."""
+    offset = ticks = 0
+    for entry in episodes[:index]:
+        offset += entry.get('advance_clock', 0) if isinstance(entry, dict) else 0
+        ticks += entry.get('tick', 0) if isinstance(entry, dict) else 0
+    return {'clock_offset_seconds': offset, 'ticks_completed': ticks}
 
 
 def validate_workflow(workflow, episodes):
@@ -33,6 +104,7 @@ def validate_workflow(workflow, episodes):
             'restart_before', 'snapshot_after', 'read_failures'}
             or not isinstance(episodes, list) or not 1 <= len(episodes) <= 24):
         raise ValueError('Invalid paired workflow contract')
+    kinds = validate_episodes(episodes)
     result = {}
     for name, minimum in (('restart_before', 1), ('snapshot_after', 0)):
         values = workflow.get(name, [])
@@ -46,11 +118,8 @@ def validate_workflow(workflow, episodes):
     boundaries = [0, *result['restart_before'], len(episodes)]
     seen = set()
     for start, end in zip(boundaries, boundaries[1:]):
-        turns = episodes[start:end]
-        if any(not isinstance(turn, dict) or not isinstance(turn.get('session_id'), str)
-               or not turn['session_id'] for turn in turns):
-            raise ValueError('Workflow restart requires fresh session IDs')
-        sessions = {turn['session_id'] for turn in turns}
+        sessions = {entry['session_id'] for entry, kind in zip(episodes[start:end], kinds[start:end])
+                    if kind in TURN_KINDS}
         if seen.intersection(sessions):
             raise ValueError('Workflow restart requires fresh session IDs')
         seen.update(sessions)
@@ -266,7 +335,8 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
             child_request = deepcopy(request)
             child_request['inputs']['episodes'] = episodes[start:end]
             child_request['_workflow_phase'] = {'index': phase, 'start_turn': start,
-                'workflow': workflow, 'prior_read_failures': deepcopy(lifecycle['read_failures_consumed'])}
+                'workflow': workflow, 'prior_read_failures': deepcopy(lifecycle['read_failures_consumed']),
+                'body_before': body_before(episodes, start)}
             result['stage'] = 'running'
             observed = runner(child_request, stop, trace)
             child, code = observed['result'], observed['exit_code']
@@ -299,6 +369,11 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
                 effects[field].extend(items)
             effects['turns_completed'] += evidence.get('turns_completed', 0)
             effects['artifacts'] = evidence.get('artifacts', {})
+            body = evidence.get('body')
+            if isinstance(body, dict):
+                # Ticks accumulate across restarts; the outbox and clock are the latest state.
+                ticks = deepcopy(effects.get('body', {}).get('ticks', []))
+                effects['body'] = {**deepcopy(body), 'ticks': ticks + list(body.get('ticks', []))}
             for field in ('native_memory_enabled', 'session_search_enabled', 'treatment_profile', 'limitations'):
                 if field in evidence:
                     effects[field] = evidence[field]

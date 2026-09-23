@@ -12,8 +12,12 @@ from unittest.mock import patch
 
 
 @contextmanager
-def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
-    """Enable only this fixture's private profile and ledger, before agent construction."""
+def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, overlay=None):
+    """Enable only this fixture's private profile and ledger, before agent construction.
+
+    An arm profile overlay is applied after the forced flags below and before
+    the plugin loads, so a frozen profile can flip any fixture default.
+    """
     inputs = request['inputs']
     person = inputs['contact_id']
     os.environ.update(PROTAGINE_STATE_DIR=str(state / 'memory-state'),
@@ -25,6 +29,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
         PROTAGINE_OWNER_CONTACT_ID=person, PROTAGINE_GUARD_CHAT_MODE='off',
         PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false')
+    os.environ.update(overlay or {})
     (state / 'empty-bundled').mkdir(exist_ok=True)
     from fastapi import FastAPI
     import uvicorn
@@ -81,7 +86,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None):
                 raise RuntimeError('Isolated memory API did not start')
             time.sleep(.01)
         url = f'http://127.0.0.1:{port}'
-        config.update(plugins={'enabled': ['protagine'], 'protagine': {
+        already = [name for name in config.get('plugins', {}).get('enabled', []) if name != 'protagine']
+        config.update(plugins={'enabled': [*already, 'protagine'], 'protagine': {
             **config.get('plugins', {}).get('protagine', {}),
             'url': url, 'api_key': secret, 'owner_contact_id': person,
             'attested_system_platforms': ['cli'], 'turn_writer_platforms': ['cli']}},

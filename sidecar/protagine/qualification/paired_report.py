@@ -7,10 +7,30 @@ import statistics
 
 from .records import digest, read
 from .report import summarize as summarize_run
+from .paired_statistics import ALPHA, MIN_WINS, contrast
 from .paired_transport import TIMING_PROTOCOL
 from .paired_trace import PROTOCOL as TRACE_PROTOCOL
+from .paired_worker import LEGACY_PROFILES
 
 ARMS = ('base_hermes', 'protagine')
+STATISTICS_PROTOCOL = 'paired-statistics-1'
+DEFAULT_RULE = {'test': 'sign_exact', 'alpha': ALPHA, 'min_wins': MIN_WINS, 'ci': 'cluster_bootstrap_95',
+                'unit': 'scenario', 'non_inferior_pp': -10}
+STATISTICS_BASIS = (
+    'Units are scenarios: repetitions of one scenario are averaged into one pass value per arm '
+    'before testing. A win means the treatment exceeds the comparator on that scenario. '
+    'Demonstrated needs all three: exact two-sided sign test over non-tied units under alpha, '
+    'at least the minimum number of winning scenarios, and a cluster-bootstrap interval whose '
+    'lower bound is above zero. The MDE is the smallest treatment-minus-comparator difference '
+    'this many units finds with 80% power at the observed disagreement rate, modelled as one '
+    'binary outcome per unit; with repetitions it is an upper bound on the pass-rate difference. '
+    'A contrast with any '
+    'unattributed unit is unavailable; no partial cohort is tested. Public development scenarios '
+    'give a development estimate, not a held-out claim.')
+GPU_HOURS_BASIS = (
+    'Sum of observed arm wall time on the declared endpoint, including tools, settling and '
+    'container cleanup. It equals GPU-hours only at concurrency 1 on one endpoint; GPU '
+    'utilization is not measured, and unobserved episodes are not zero.')
 REPORT_PROTOCOL = 'paired-attribution-3'
 SOURCE_REPORT_PROTOCOL = 'paired-attribution-2'
 NO_OUTPUT_RULE = 'returned_native_no_output_noncompletion'
@@ -57,6 +77,18 @@ def load_manifest(directory):
             or manifest.get('comparison_key') != digest(manifest.get('comparison'))):
         raise ValueError('Invalid frozen paired manifest')
     return manifest
+
+
+def arms_of(manifest):
+    """Arm labels, comparator, profiles and rule; plans before profiles carry the built-in pair."""
+    comparison = manifest.get('comparison') or {}
+    arms = list(comparison.get('arms') or ARMS)
+    reference = comparison.get('reference_arm') or arms[0]
+    profiles = comparison.get('profiles') or {arm: LEGACY_PROFILES[arm] for arm in arms}
+    if (len(arms) < 2 or len(set(arms)) != len(arms) or reference not in arms
+            or set(profiles) != set(arms)):
+        raise ValueError('Invalid frozen arm declaration')
+    return arms, reference, profiles, comparison.get('rule') or DEFAULT_RULE
 
 
 def _row(directory, manifest, member):
@@ -318,25 +350,25 @@ def _workloads(episodes):
         'groups': groups}
 
 
-def _workflow_summary(manifest, pairs):
+def _workflow_summary(manifest, pairs, arms, reference):
     """Repeated attempts share a workflow design; do not pretend they are independent tasks."""
     grouped = {}
     for declaration, pair in zip(manifest['pairs'], pairs):
-        case = declaration['arms']['base_hermes']['case']
+        case = declaration['arms'][reference]['case']
         key = case['id']
         group = grouped.setdefault(key, {'workflow_id': key,
             'family': case['inputs'].get('family', 'unspecified'),
             'memory_condition': case['inputs'].get('memory_condition', 'unspecified'),
             'declared_repetitions': 0, 'comparable_repetitions': 0,
-            'successes': dict.fromkeys(ARMS, 0), 'unavailable': dict.fromkeys(ARMS, 0),
+            'successes': dict.fromkeys(arms, 0), 'unavailable': dict.fromkeys(arms, 0),
             'wins': 0, 'ties': 0, 'losses': 0,
-            'checks': {arm: {} for arm in ARMS},
-            '_rows': {arm: [] for arm in ARMS}})
+            'checks': {arm: {} for arm in arms},
+            '_rows': {arm: [] for arm in arms}})
         group['declared_repetitions'] += 1
         group['comparable_repetitions'] += int(pair['comparable'])
         if pair['comparable']:
             group[{'win': 'wins', 'tie': 'ties', 'loss': 'losses'}[pair['comparison']]] += 1
-        for arm in ARMS:
+        for arm in arms:
             group['_rows'][arm].append(pair['results'][arm])
             group['successes'][arm] += int(pair['completion'][arm] is True)
             group['unavailable'][arm] += int(pair['completion'][arm] is None)
@@ -348,13 +380,13 @@ def _workflow_summary(manifest, pairs):
                         counter['passed'] += int(passed)
     for group in grouped.values():
         observed = group.pop('_rows')
-        group['accounting'] = {arm: _accounting(observed[arm]) for arm in ARMS}
+        group['accounting'] = {arm: _accounting(observed[arm]) for arm in arms}
         dimensions = {}
         for dimension, prefixes in {'format': ('format:',), 'semantic': ('semantic:',),
                 'checkpoints': ('checkpoint:',), 'lifecycle': ('lifecycle:',),
                 'native_completion': ('all_native_turns_completed',)}.items():
             dimensions[dimension] = {}
-            for arm in ARMS:
+            for arm in arms:
                 observations = [[v for name, v in row.get('checks', {}).items()
                                  if name.startswith(prefixes)] for row in observed[arm]]
                 dimensions[dimension][arm] = {
@@ -367,12 +399,12 @@ def _workflow_summary(manifest, pairs):
         for group in grouped.values():
             target = strata[field].setdefault(group[field], {'unique_workflows': 0,
                 'declared_repetitions': 0, 'comparable_repetitions': 0,
-                'successes': dict.fromkeys(ARMS, 0), 'unavailable': dict.fromkeys(ARMS, 0)})
+                'successes': dict.fromkeys(arms, 0), 'unavailable': dict.fromkeys(arms, 0)})
             target['unique_workflows'] += 1
             for key in ('declared_repetitions', 'comparable_repetitions'):
                 target[key] += group[key]
             for key in ('successes', 'unavailable'):
-                for arm in ARMS:
+                for arm in arms:
                     target[key][arm] += group[key][arm]
     return {'unique_workflows': len(grouped), 'workflows': list(grouped.values()), 'strata': strata,
         'basis': 'Descriptive repeat counts grouped by frozen workflow. Repetitions are not independent '
@@ -395,34 +427,90 @@ def _workflow_exposure(row, case):
             'source_row_sha256': digest(row)}
 
 
+def _units(pairs, treatment, comparator):
+    """Scenario-level pass values for two arms; a scenario with any unattributed repetition is unavailable."""
+    grouped = {}
+    for pair in pairs:
+        grouped.setdefault(pair['scenario_id'], []).append(
+            (pair['completion'][treatment], pair['completion'][comparator]))
+    units, unavailable = {}, 0
+    for scenario, values in grouped.items():
+        if any(left is None or right is None for left, right in values):
+            unavailable += 1
+            continue
+        units[scenario] = (sum(int(left) for left, _ in values) / len(values),
+                           sum(int(right) for _, right in values) / len(values))
+    return units, unavailable
+
+
+def _statistics(manifest, pairs, arms, reference, profiles, rule):
+    """Each non-reference arm against the comparator, under the frozen rule."""
+    seed = int(manifest['sha256'][:16], 16)
+    contrasts = []
+    for arm in arms:
+        if arm == reference:
+            continue
+        units, unavailable = _units(pairs, arm, reference)
+        entry = {'treatment': arm, 'comparator': reference,
+                 'same_profile': profiles[arm].get('name') == profiles[reference].get('name'),
+                 'unit': 'scenario', 'declared_units': len(units) + unavailable,
+                 'unavailable_units': unavailable}
+        if unavailable or not units:
+            entry['verdict'] = 'unavailable'
+        else:
+            entry.update(contrast(units, seed=seed, alpha=rule['alpha'], min_wins=rule['min_wins'],
+                                  non_inferior_pp=rule['non_inferior_pp']))
+        contrasts.append(entry)
+    return {'protocol': STATISTICS_PROTOCOL, 'rule': rule, 'bootstrap_seed': seed,
+            'basis': STATISTICS_BASIS, 'contrasts': contrasts}
+
+
+def _resources(rows):
+    per_arm = {}
+    for arm, items in rows.items():
+        elapsed = [row['elapsed_ms'] for row in items if _number(row.get('elapsed_ms'))]
+        per_arm[arm] = {'declared_episodes': len(items),
+            'executed_episodes': sum(row['outcome'] != 'not_run' for row in items),
+            'observed_episodes': len(elapsed), 'observed_hours': sum(elapsed) / 3.6e6}
+    return {'arm_episodes': {'declared': sum(value['declared_episodes'] for value in per_arm.values()),
+                             'executed': sum(value['executed_episodes'] for value in per_arm.values())},
+            'gpu_hours': {'observed': sum(value['observed_hours'] for value in per_arm.values()),
+                          'observed_episodes': sum(value['observed_episodes'] for value in per_arm.values()),
+                          'basis': GPU_HOURS_BASIS},
+            'arms': per_arm}
+
+
 def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     if report_protocol not in {SOURCE_REPORT_PROTOCOL, REPORT_PROTOCOL}:
         raise ValueError('Unknown paired reporting protocol')
     manifest = load_manifest(directory)
-    rows = {arm: [] for arm in ARMS}
-    workloads = {arm: [] for arm in ARMS}
+    labels, reference, profiles, rule = arms_of(manifest)
+    treatment = next(arm for arm in labels if arm != reference)
+    rows = {arm: [] for arm in labels}
+    workloads = {arm: [] for arm in labels}
     pairs = []
     for declared in manifest['pairs']:
-        results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in ARMS}
-        for arm in ARMS:
+        results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in labels}
+        for arm in labels:
             rows[arm].append(results[arm])
             workloads[arm].append(_workload_observations(directory, declared['arms'][arm], results[arm]))
-        complete = {arm: _completion(results[arm]) for arm in ARMS}
-        projections = {arm: None for arm in ARMS}
+        complete = {arm: _completion(results[arm]) for arm in labels}
+        projections = {arm: None for arm in labels}
         if report_protocol == REPORT_PROTOCOL:
-            for arm in ARMS:
+            for arm in labels:
                 if complete[arm] is None:
                     projections[arm] = _no_output_projection(
                         results[arm], manifest['recipe'], declared['arms'][arm]['case'])
                     if projections[arm] is not None:
                         complete[arm] = False
-        exposure = {arm: _workflow_exposure(results[arm], declared['arms'][arm]['case']) for arm in ARMS}
-        for arm in ARMS:
+        exposure = {arm: _workflow_exposure(results[arm], declared['arms'][arm]['case']) for arm in labels}
+        for arm in labels:
             if exposure[arm] is not None:
                 complete[arm] = None
         comparable = all(value is not None for value in complete.values())
-        difference = int(complete['protagine']) - int(complete['base_hermes']) if comparable else None
-        pairs.append({'episode_id': declared['episode_id'], 'order': declared['order'],
+        difference = int(complete[treatment]) - int(complete[reference]) if comparable else None
+        pairs.append({'episode_id': declared['episode_id'],
+            'scenario_id': declared.get('workflow_id', declared['episode_id']), 'order': declared['order'],
             'task_sha256': declared['task_sha256'], 'oracle_sha256': declared['oracle_sha256'],
             'results': results, 'completion': complete, 'comparable': comparable,
             'comparison': ('win' if difference > 0 else 'loss' if difference < 0 else 'tie')
@@ -435,7 +523,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     comparable_count = sum(pair['comparable'] for pair in pairs)
     full = declared_count > 0 and comparable_count == declared_count
     arms = {}
-    for arm in ARMS:
+    for arm in labels:
         completed = sum(pair['completion'][arm] is True for pair in pairs)
         observed_completed = sum(row['outcome'] == 'pass' for row in rows[arm])
         arms[arm] = {'declared_episodes': declared_count, 'outcomes': dict(Counter(row['outcome'] for row in rows[arm])),
@@ -445,16 +533,18 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
+        # The primary contrast is the first non-reference arm against the comparator.
         counts = Counter(pair['comparison'] for pair in pairs)
-        score = {'episodes': declared_count, 'base_hermes_completed': arms['base_hermes']['attributed_completed'],
-            'protagine_completed': arms['protagine']['attributed_completed'],
-            'base_hermes_completion_percent': arms['base_hermes']['completion_percent'],
-            'protagine_completion_percent': arms['protagine']['completion_percent'],
-            'delta_percentage_points': 100 * (arms['protagine']['attributed_completed']
-                - arms['base_hermes']['attributed_completed']) / declared_count,
+        score = {'episodes': declared_count, reference + '_completed': arms[reference]['attributed_completed'],
+            treatment + '_completed': arms[treatment]['attributed_completed'],
+            reference + '_completion_percent': arms[reference]['completion_percent'],
+            treatment + '_completion_percent': arms[treatment]['completion_percent'],
+            'delta_percentage_points': 100 * (arms[treatment]['attributed_completed']
+                - arms[reference]['attributed_completed']) / declared_count,
             'wins': counts['win'], 'ties': counts['tie'], 'losses': counts['loss'],
-            'both_completed': sum(all(pair['completion'].values()) for pair in pairs),
-            'neither_completed': sum(not any(pair['completion'].values()) for pair in pairs)}
+            'both_completed': sum(pair['completion'][treatment] and pair['completion'][reference] for pair in pairs),
+            'neither_completed': sum(not (pair['completion'][treatment] or pair['completion'][reference]) for pair in pairs),
+            'treatment': treatment, 'comparator': reference}
     report = {'schema': 1, 'kind': 'paired_report', 'report_protocol': report_protocol,
         'manifest_sha256': manifest['sha256'],
         'comparison_key': manifest['comparison_key'], 'label': manifest['label'],
@@ -462,7 +552,11 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
         'policy': manifest['comparison']['policy'], 'declared_episodes': declared_count,
         'budget_verification': 'unverified',
         'comparable_pairs': comparable_count, 'unavailable_pairs': declared_count - comparable_count,
+        'arm_order': labels, 'reference_arm': reference, 'profiles': profiles,
+        'temperature': manifest['comparison'].get('temperature'), 'seeds': manifest['comparison'].get('seeds', []),
         'arms': arms, 'pairs': pairs, 'paired_score': score, 'tier': None,
+        'statistics': _statistics(manifest, pairs, labels, reference, profiles, rule),
+        'resources': _resources(rows),
         'qualification_status': 'insufficient_evidence',
         'basis': 'Descriptive development-episode results, not a model ranking or causal performance estimate. '
                  'No aggregate delta until every declared episode has an attributable pair. '
@@ -479,47 +573,82 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'basis': PROJECTION_BASIS}
         report['basis'] += ' ' + PROJECTION_BASIS
     if manifest['dataset'].get('split') == 'frozen_public_evaluation' or manifest['dataset'].get('repetitions', 1) > 1:
-        report['workflow_repetitions'] = _workflow_summary(manifest, pairs)
+        report['workflow_repetitions'] = _workflow_summary(manifest, pairs, labels, reference)
     return report
 
 
+def _statistics_lines(report):
+    statistics = report['statistics']
+    lines = ['', '## Statistics', '', statistics['basis'], '',
+        f"Rule: {statistics['rule']}. Bootstrap seed: {statistics['bootstrap_seed']}.", '',
+        '| Contrast | Units | Wins/ties/losses | Delta pp | 95% CI pp | p two-sided | p one-sided | MDE pp | Verdict |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
+    for item in statistics['contrasts']:
+        name = f"{item['treatment']} vs {item['comparator']}" + (' (A/A)' if item['same_profile'] else '')
+        if item['verdict'] == 'unavailable':
+            lines.append(f"| {name} | {item['declared_units']} ({item['unavailable_units']} unavailable) "
+                         f"| | | | | | | unavailable |")
+            continue
+        mde = 'over 100' if item['mde_pp'] is None else str(item['mde_pp'])
+        lines.append(f"| {name} | {item['units']} | {item['wins']}/{item['ties']}/{item['losses']} | "
+            f"{item['delta_pp']:+.1f} | [{item['ci_pp']['lower']:+.1f}, {item['ci_pp']['upper']:+.1f}] | "
+            f"{item['sign_test']['p_two_sided']:.4f} | {item['sign_test']['p_one_sided']:.4f} | {mde} | {item['verdict']} |")
+    resources = report['resources']
+    lines.extend(['', f"Arm-episodes: {resources['arm_episodes']['executed']}/{resources['arm_episodes']['declared']} executed. "
+        f"Observed hours: {resources['gpu_hours']['observed']:.2f} over {resources['gpu_hours']['observed_episodes']} "
+        f"arm-episodes. {GPU_HOURS_BASIS}"])
+    return lines
+
+
 def markdown(report):
+    arms = report.get('arm_order') or list(ARMS)
+    reference = report.get('reference_arm') or arms[0]
     lines = ['# Paired Hermes episode results', '', report['basis'], '',
         f"Dataset: {report['dataset']['version']} ({report['dataset']['split']}). "
-        f"Comparable pairs: {report['comparable_pairs']}/{report['declared_episodes']}.", '',
-        '| Arm | Attributed completions | Recorded outcomes |', '| --- | --- | --- |']
-    for arm in ARMS:
+        f"Comparable pairs: {report['comparable_pairs']}/{report['declared_episodes']}. "
+        f"Arms: {', '.join(arms)}; comparator: {reference}. "
+        f"Temperature: {'provider default' if report.get('temperature') is None else report['temperature']}.", '',
+        '| Arm | Profile | Attributed completions | Recorded outcomes |', '| --- | --- | --- | --- |']
+    profiles = report.get('profiles') or {}
+    for arm in arms:
         row = report['arms'][arm]
-        lines.append(f"| {arm} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} |")
+        profile = profiles.get(arm, {})
+        shown = f"{profile.get('name', arm)} plugin={'on' if profile.get('plugin') else 'off'}"
+        if profile.get('overlay'):
+            shown += ' ' + ' '.join(f'{key}={value}' for key, value in sorted(profile['overlay'].items()))
+        lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} |")
     score = report['paired_score']
-    lines.extend(['', (f"Completion delta: {score['delta_percentage_points']:+.1f} percentage points. "
+    lines.extend(['', (f"Completion delta ({score.get('treatment', arms[1])} minus {score.get('comparator', reference)}): "
+        f"{score['delta_percentage_points']:+.1f} percentage points. "
         f"Wins/ties/losses: {score['wins']}/{score['ties']}/{score['losses']}.") if score else
         'Paired aggregate unavailable. Complete pairs remain visible without scoring the partial cohort.', '',
-        '| Episode | Base Hermes | Hermes + Protagine | Pair |', '| --- | --- | --- | --- |'])
+        '| Episode | ' + ' | '.join(arms) + ' | Pair |', '| --- |' + ' --- |' * (len(arms) + 1)])
     for pair in report['pairs']:
-        lines.append(f"| {pair['episode_id']} | {pair['results']['base_hermes']['outcome']} | "
-                     f"{pair['results']['protagine']['outcome']} | {pair['comparison']} |")
+        outcomes = ' | '.join(pair['results'][arm]['outcome'] for arm in arms)
+        lines.append(f"| {pair['episode_id']} | {outcomes} | {pair['comparison']} |")
+    if 'statistics' in report:
+        lines.extend(_statistics_lines(report))
     if 'workflow_repetitions' in report:
         repeated = report['workflow_repetitions']
         lines.extend(['', '## Workflow repeatability', '', repeated['basis'], '',
-            '| Workflow | Memory needed | Hermes successes | Protagine successes | Comparable repeats |',
-            '| --- | --- | --- | --- | --- |'])
+            '| Workflow | Memory needed | ' + ' | '.join(arm + ' successes' for arm in arms) + ' | Comparable repeats |',
+            '| --- | --- |' + ' --- |' * (len(arms) + 1)])
         for row in repeated['workflows']:
             count = row['declared_repetitions']
-            lines.append(f"| {row['workflow_id']} | {row['memory_condition']} | "
-                f"{row['successes']['base_hermes']}/{count} | {row['successes']['protagine']}/{count} | "
+            successes = ' | '.join(f"{row['successes'][arm]}/{count}" for arm in arms)
+            lines.append(f"| {row['workflow_id']} | {row['memory_condition']} | {successes} | "
                 f"{row['comparable_repetitions']}/{count} |")
     lines.extend(['', '## Observed resource use', '',
         'Unknown totals stay unknown. Partial observations are not full-stack cost.', '',
         '| Arm | Metric | Total | Observed subtotal | Coverage |', '| --- | --- | --- | --- | --- |'])
-    for arm in ARMS:
+    for arm in arms:
         for metric in USAGE_METRICS:
             row = report['arms'][arm]['accounting'][metric]
             show = lambda value: 'unknown' if value is None else str(value)
             lines.append(f"| {arm} | {metric} | {show(row['total'])} | {show(row['observed_total'])} | {row['coverage']} |")
     lines.extend(['', '## Observed timings', '', TIMING_COVERAGE, '',
         '| Arm | Metric | Median | Min | Max | Samples / eligible |', '| --- | --- | --- | --- | --- | --- |'])
-    for arm in ARMS:
+    for arm in arms:
         for name, metric in report['arms'][arm]['timing']['metrics'].items():
             values = ['unknown' if metric[key] is None else f"{metric[key]:.3f} {metric['unit']}"
                       for key in ('median', 'min', 'max')]
@@ -532,7 +661,7 @@ def markdown(report):
         '| Arm | Workload | Requests | Complete responses | Usage missing | Observed input / output tokens | Request latency median ms (samples/eligible) | Output TPS median (samples/eligible) |',
         '| --- | --- | --- | --- | --- | --- | --- | --- |'])
     workload_notes = []
-    for arm in ARMS:
+    for arm in arms:
         workloads = report['arms'][arm].get('request_workloads')
         if workloads is None:
             continue

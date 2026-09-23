@@ -234,3 +234,21 @@ def test_oracle_artifact_paths_cannot_escape_sandbox(tmp_path):
     (tmp_path / 'manifest.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match='leaf names'):
         paired.load_dataset(tmp_path)
+
+
+@pytest.mark.parametrize('raw,passes', [
+    ('{"contact": "p-11"}', True),
+    ('{"contact": "p-10"}', True),
+    ('{"contact": "p-01"}', False),
+    ('{"contact": "P-01"}', False),
+    ('{"contacts": ["p-02", "p-01"]}', False),
+    ('{"note": "p\\u002d01"}', False),
+])
+def test_fixed_width_forbidden_contact_ids_match_only_themselves(raw, passes):
+    """Fixed-width IDs (p-01..p-99) keep the substring check exact between neighbours."""
+    spec = {'path': 'out.json', 'format': 'json', 'forbidden': ['p-01'],
+            'forbidden_in_decoded_json': True, 'assertions': []}
+    assert paired._artifact_checks(raw, spec) is passes
+    # Plain text has no decoding step, so only a literal ID can be forbidden there.
+    text = {'path': 'out.txt', 'format': 'text', 'forbidden': ['p-01'], 'exact': raw}
+    assert paired._artifact_checks(raw, text) is ('p-01' not in raw.casefold())
