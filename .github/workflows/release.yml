@@ -22,9 +22,11 @@ jobs:
           name: release-distributions
           path: dist/
       - name: Publish to PyPI
+        # Trusted publishing (OIDC): PyPI is configured with a GitHub
+        # publisher for this repository and workflow, so no API token is
+        # stored here. The id-token: write permission is inherited above.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
           # Re-running a release (e.g. to recover a failed later job) must not
           # fail just because this version is already on PyPI.
