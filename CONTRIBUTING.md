@@ -23,7 +23,7 @@ unless a selected qualification explicitly requires a real model or service.
 | `sidecar/protagine/` | The Python package: FastAPI sidecar, CLI, all subsystems |
 | `sidecar/protagine/api/` | Pydantic schemas and routers: the single source of truth for the HTTP contract |
 | `sidecar/protagine/intelligence/` | Graph memory, mind model, cognition components |
-| `sidecar/protagine/workers/` | Worker daemons (`protagine-worker` etc.) and their systemd/launchd deploy templates under `workers/deploy/` |
+| `sidecar/protagine/mind/` | The mind: authority, the tick, the ranker, outcomes, the outbox and the audit log |
 | `sidecar/tests/` | Sidecar test suite, kept out of the installed product package |
 | `plugins/` | Host integration plugins: `hermes-plugin` (general adapter), `protagine-memory` (memory provider), `feeds-manage` |
 | `docs/` | Public docs (harness integration, channel framework, feeds, prompts) |
@@ -46,11 +46,10 @@ python -m pytest -x                          # stop on first failure
 ```
 
 From the repo root with the qualified Hermes and sidecar installed, run
-the native adapter, hostworker and source-recall harness contracts separately:
+the native adapter and source-recall harness contracts separately:
 
 ```bash
 python -m pytest tests/hermes_adapter -q
-python -m pytest hostworker/tests -q
 python -m pytest benchmarks/source_recall/test_harness.py -q
 ```
 
@@ -96,7 +95,7 @@ document it in `.env.example` instead of hardcoding it.
 Protagine uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`): MINOR for compatible
 features, PATCH for fixes and documentation, and MAJOR for incompatible public
 contracts. The `protagine` sidecar and `protagine-hermes` integration are published together
-on PyPI with the same version. `protagine-hostworker` has its own package version.
+on PyPI with the same version.
 
 Phase 1 establishes the first supported baseline; validation is still in
 progress. Older Protagine releases and migration paths are not supported public
@@ -106,7 +105,7 @@ layers solely to preserve historical names.
 
 ## Release flow
 
-1. Bump the synchronized versions in `pyproject.toml` and `sidecar/pyproject.toml`, including the `hermes` extra, and the two adapter manifests under `plugins/hermes-plugin` and `plugins/protagine-memory`. The release workflow also builds and publishes `protagine-hostworker`; if its packaged contents changed, bump `hostworker/pyproject.toml` and the source version fallback in `hostworker/protagine_hostworker/__init__.py` before tagging. Do not publish changed hostworker bytes under an existing version.
+1. Bump the synchronized versions in `pyproject.toml` and `sidecar/pyproject.toml`, including the `hermes` extra, and the two adapter manifests under `plugins/hermes-plugin` and `plugins/protagine-memory`.
 2. Add an entry at the top of `CHANGELOG.md` (`## vX.Y.Z - title`, prose + bullets)
 3. Commit and tag: `git tag vX.Y.Z && git push --tags`
 4. CI (`.github/workflows/release.yml`) publishes to PyPI, pushes the Docker

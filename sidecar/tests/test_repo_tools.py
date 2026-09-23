@@ -9,7 +9,6 @@ import tempfile
 import pytest
 
 from protagine.repos import RepoMirrorManager, parse_mirror_config
-from protagine.directives import DirectiveManager, DirectiveStore
 
 
 def _make_source_repo(base: str) -> str:
@@ -64,35 +63,3 @@ def test_mirror_unknown_repo_and_path_escape(mirror_env):
     assert mgr.read_file("widget-api", "../../etc/passwd").get("status") in ("error", "not_found")
 
 
-def test_act_boundary_allows_reads(tmp_path):
-    """Tiered semantics: 'leave X alone' (ACT) binds ACTION, not perception --
-    read-only mirror tools stay open."""
-    src = _make_source_repo(str(tmp_path))
-    dm = DirectiveManager(DirectiveStore(db_path=None))
-    dm.capture_from_message("From now on, leave the widget-api repo alone")
-    mgr = RepoMirrorManager(
-        mirror_dir=str(tmp_path / "m2"),
-        config={"widget-api": {"url": f"file://{src}", "aliases": ""}},
-        directive_manager=dm,
-    )
-    r = mgr.refresh("widget-api")
-    assert r["ok"] is True                       # reads open under ACT
-    assert "README.md" in mgr.list_files("widget-api")["files"]
-    assert "handle_retry" in mgr.read_file("widget-api", "src/main.py")["content"]
-
-
-def test_observe_boundary_blocks_reads(tmp_path):
-    """Explicit perception language -> OBSERVE blackout blocks reads too."""
-    src = _make_source_repo(str(tmp_path))
-    dm = DirectiveManager(DirectiveStore(db_path=None))
-    dm.capture_from_message("From now on, don't even look at the widget-api repo")
-    mgr = RepoMirrorManager(
-        mirror_dir=str(tmp_path / "m3"),
-        config={"widget-api": {"url": f"file://{src}", "aliases": ""}},
-        directive_manager=dm,
-    )
-    r = mgr.refresh("widget-api")
-    assert r["ok"] is False and "boundary" in r["reason"]
-    assert mgr.list_files("widget-api").get("status") == "boundary_refused"
-    assert mgr.read_file("widget-api", "README.md").get("status") == "boundary_refused"
-    assert mgr.search("widget-api", "retry").get("status") == "boundary_refused"

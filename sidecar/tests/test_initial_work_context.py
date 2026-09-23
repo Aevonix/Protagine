@@ -108,11 +108,11 @@ async def test_initial_owner_work_is_bounded_and_preserves_family_and_result(sto
 
 def test_existing_work_cap_includes_coverage_and_unavailable_footer():
     view = shaped_work({'items': [], 'truncated': False})
-    for source in ('worker_work', 'native_cron'):
+    for source in ('local_work', 'native_cron'):
         view[source] = {'available': False, 'items': [], 'reason': 'reader_unavailable'}
     original = copy.deepcopy(view)
     result = work.request_work_context(view, max_chars=4000)
     assert len(result['text']) <= 4000
-    assert 'Unavailable sources: worker_work, native_cron.' in result['text']
+    assert 'Unavailable sources: local_work, native_cron.' in result['text']
     assert not result['complete'] and result['work_sources']['native_cron']['status'] == 'unavailable'
     assert view == original

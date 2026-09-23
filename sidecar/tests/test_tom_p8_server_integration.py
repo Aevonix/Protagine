@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 from types import SimpleNamespace
 
-from fastapi import FastAPI, HTTPException
-from httpx import ASGITransport, AsyncClient
 import pytest
 from starlette.requests import Request
 
 from onekey import (
     RequestAuthority,
-    anonymous_authority,
     legacy_authority,
-    required_scope,
 
 )
-from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
 from protagine.api.schemas.host import (
     ContextAssembleRequest,
@@ -26,24 +20,14 @@ from protagine.api.schemas.host import (
     HostMessage,
     HostTurnContext,
     MultimodalSearchRequest,
-    ReasoningTurnRequest,
-    SharedFactCreateRequest,
-    SharedFactUpdateRequest,
-    ToolInvokeRequest,
 )
 from protagine.server import (
     _attach_p8_runtime,
     _build_research_pipeline,
 )
-from protagine.intelligence.relationships.profiler import (
-    RelationshipProfiler,
-)
 from protagine.tom.facts import SharedFactsStore
 from protagine.tom.integration import P8Runtime
-from protagine.tom.leveled import render_level1
-from protagine.tom.tom2 import Tom2Store
 from protagine.turns import TurnIdempotencyLedger
-from onekey import KEY
 
 
 def current_fact_source(facts, tmp_path, person, text):
@@ -123,10 +107,10 @@ def _restore_host_globals(monkeypatch, tmp_path):
         "_p8_runtime", "_facts_store", "_graph", "_tom2_store",
         "_relationship_profiler", "_embedder", "_goals_store",
         "_initiative_store", "_briefings_engine", "_world_store",
-        "_directive_manager", "_surprise_store", "_contacts_store",
+        "_surprise_store", "_contacts_store",
         "_connection_discoverer", "_metalearner", "_commitment_store",
         "_preference_learner", "_affect_store", "_engagement_store",
-        "_comms_log", "_tool_executor", "_reasoning_loop",
+        "_comms_log",
     )
     originals = {name: getattr(host, name, None) for name in names}
     yield
@@ -249,7 +233,6 @@ class _LegacyGlobalContextSpies:
         class World:
             async def property_views(self, *args, **kwargs): return []
         host._world_store = World()
-        host._directive_manager = self.directives
         host._surprise_store = self.surprises
         host._contacts_store = self.contacts
         host._connection_discoverer = self.insights
@@ -428,8 +411,6 @@ async def test_p8_non_owner_never_queries_untyped_global_context(
     assert projection.legacy_global_allowed is False
 
 
-
-
 @pytest.mark.asyncio
 async def test_p8_exact_owner_retains_untyped_global_context(
     tmp_path, monkeypatch,
@@ -452,11 +433,10 @@ async def test_p8_exact_owner_retains_untyped_global_context(
     rendered = repr(assembled)
     for marker in (
         "owner-global-goal", "owner-global-initiative",
-        "owner-global-world-entity",
-        "owner-global-directive", "owner-global-surprise",
+        "owner-global-world-entity", "owner-global-surprise",
     ):
         assert marker in rendered
-    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives", "world", "directive_brief", "surprises"))
+    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives", "world", "surprises"))
     projection = assembled.projection_attestation
     assert projection is not None
     assert projection.viewer_person_id == "owner"
@@ -504,9 +484,6 @@ async def test_p8_off_exact_owner_keeps_legacy_global_context(monkeypatch):
 
     assert "owner-global" in repr(assembled)
     assert spies.calls["goals"] > 0
-    assert spies.calls["directive_ack"] > 0
-
-
 
 
 @pytest.mark.asyncio
@@ -560,8 +537,6 @@ async def test_p8_temporal_keeps_global_owner_heads_up_owner_only(
     assert "owner-global-overdue" in legacy["body"]
     assert "owner-global-cadence" in legacy["body"]
     assert calls == {"commitments": 2, "cadence": 2}
-
-
 
 
 @pytest.mark.asyncio
@@ -623,247 +598,6 @@ async def test_p8_guest_comms_uses_neutral_owner_label(tmp_path, monkeypatch):
     assert "I last reached out" not in comms.body
 
 
-
-
-
-
-class _ToolDirectives:
-    def __init__(self, *, allowed=True, explode=False):
-        self.allowed = allowed
-        self.explode = explode
-        self.calls = []
-
-    def check(self, action):
-        self.calls.append(action)
-        if self.explode:
-            raise RuntimeError("directive dependency unavailable")
-        return SimpleNamespace(
-            allowed=self.allowed,
-            reason="ok" if self.allowed else "standing owner boundary",
-        )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("directives", [
-    _ToolDirectives(allowed=False),
-    _ToolDirectives(explode=True),
-])
-async def test_tool_executor_blocks_mutation_on_boundary_or_guard_failure(
-    directives,
-):
-    from protagine.reasoning.executor import ToolExecutor
-
-    calls = []
-
-    async def mutate(arguments):
-        calls.append(arguments)
-        return "MUTATED"
-
-    executor = ToolExecutor(handlers={"write_file": mutate})
-    executor.configure_execution_policy(
-        directive_manager=directives,
-        boundary_required=True,
-    )
-    result = await executor.execute_batch([{
-        "id": "call-1",
-        "name": "write_file",
-        "arguments": {"path": "x", "content": "secret"},
-    }])
-
-    assert calls == []
-    assert result[0]["executed"] is False
-    assert result[0]["error"] in {
-        "tool_boundary_denied", "tool_boundary_unavailable",
-    }
-    assert len(directives.calls) == 1
-
-
-
-
-@pytest.mark.asyncio
-async def test_p8_non_owner_retains_public_read_tool_only(tmp_path, monkeypatch):
-    from protagine.reasoning.executor import ToolExecutor
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    directives = _ToolDirectives(allowed=True)
-    host._directive_manager = directives
-
-    async def calculate(arguments):
-        return str(arguments["expression"])
-
-    async def private_read(_arguments):
-        raise AssertionError("private read must not execute for a guest")
-
-    executor = ToolExecutor(handlers={
-        "calculate": calculate,
-        "read_file": private_read,
-    })
-    executor.configure_execution_policy(
-        directive_manager=directives,
-        boundary_required=True,
-    )
-    host._tool_executor = executor
-    request = _request(_authority("alice", scopes=("api:access",)))
-
-    public = await host.tools_invoke(ToolInvokeRequest(
-        identity=HostIdentity(host_id="hermes"),
-        name="calculate",
-        arguments={"expression": "2+3"},
-    ), request=request)
-    assert public.result == "2+3"
-
-    with pytest.raises(HTTPException) as private_denied:
-        await host.tools_invoke(ToolInvokeRequest(
-            identity=HostIdentity(host_id="hermes"),
-            name="read_file",
-            arguments={"path": "owner.txt"},
-        ), request=request)
-    assert private_denied.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_p8_model_tool_batch_cannot_call_filtered_mutation(
-    tmp_path, monkeypatch,
-):
-    from protagine.reasoning import ReasoningLoop, ToolExecutor
-
-    class Model:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, messages, **kwargs):
-            self.calls.append((messages, kwargs))
-            if len(self.calls) == 1:
-                function = SimpleNamespace(
-                    name="write_file",
-                    arguments=json.dumps({
-                        "path": "x", "content": "secret",
-                    }),
-                )
-                raw = SimpleNamespace(choices=[SimpleNamespace(
-                    message=SimpleNamespace(tool_calls=[SimpleNamespace(
-                        id="malicious-call", function=function,
-                    )]),
-                )])
-                return SimpleNamespace(raw=raw, content="", usage={})
-            raw = SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(tool_calls=[]),
-            )])
-            return SimpleNamespace(raw=raw, content="done", usage={})
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    directives = _ToolDirectives(allowed=True)
-    calls = []
-
-    async def mutate(arguments):
-        calls.append(arguments)
-        return "MUTATED"
-
-    executor = ToolExecutor(handlers={"write_file": mutate})
-    executor.configure_execution_policy(
-        directive_manager=directives,
-        boundary_required=True,
-    )
-    model = Model()
-    host._reasoning_loop = ReasoningLoop(model=model, tools=executor)
-    host._tool_executor = executor
-
-    response = await host.reasoning_turn(ReasoningTurnRequest(
-        identity=HostIdentity(host_id="hermes"),
-        context=HostTurnContext(
-            contact_id="alice",
-            session_id="session:1",
-            channel_id="channel:1",
-        ),
-        messages=[HostMessage(role="user", content="please mutate")],
-        available_tools=["write_file"],
-    ), request=_request(_authority("alice", scopes=("api:access",))))
-
-    assert response.status == "completed"
-    assert calls == []
-    assert model.calls[0][1]["tools"] is None
-    assert "tool_not_authorized" in repr(model.calls[1][0])
-
-
-@pytest.mark.asyncio
-async def test_tool_executor_rejects_malformed_mutation_verdict():
-    from protagine.reasoning.executor import ToolExecutor
-
-    class MalformedDirectives:
-        def check(self, _action):
-            return SimpleNamespace(allowed="false", reason="not a boolean")
-
-    calls = []
-
-    async def mutate(arguments):
-        calls.append(arguments)
-        return "MUTATED"
-
-    executor = ToolExecutor(handlers={"write_file": mutate})
-    executor.configure_execution_policy(
-        directive_manager=MalformedDirectives(),
-        boundary_required=True,
-    )
-    result = await executor.execute_batch([{
-        "id": "malformed-verdict",
-        "name": "write_file",
-        "arguments": {"path": "x", "content": "secret"},
-    }])
-
-    assert calls == []
-    assert result[0]["executed"] is False
-    assert result[0]["error"] == "tool_boundary_unavailable"
-
-
-@pytest.mark.asyncio
-async def test_unknown_dynamic_tool_defaults_to_mutation_authority():
-    from protagine.reasoning.executor import ToolExecutor
-    from protagine.reasoning.tool_policy import ToolActorPolicy
-
-    calls = []
-
-    async def dynamic_mutation(arguments):
-        calls.append(arguments)
-        return "MUTATED"
-
-    executor = ToolExecutor()
-    executor.set_dynamic_provider(lambda: {
-        "new_dynamic_tool": ({
-            "type": "function",
-            "function": {
-                "name": "new_dynamic_tool",
-                "description": "new tool with no reviewed effect declaration",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }, dynamic_mutation),
-    })
-    result = await executor.execute_batch(
-        [{
-            "id": "dynamic-call",
-            "name": "new_dynamic_tool",
-            "arguments": {},
-        }],
-        allowed_tools=frozenset({"new_dynamic_tool"}),
-        actor_policy=ToolActorPolicy(
-            principal_id="owner-reader",
-            viewer_person_id="owner",
-            allow_private_read=True,
-            allow_mutation=False,
-        ),
-    )
-
-    assert calls == []
-    assert result[0]["error"] == "tool_authority_denied"
-
-
 def _dynamic_provider(name, handler):
     return lambda: {
         name: ({
@@ -884,123 +618,6 @@ def _collision_authority(name):
         return _authority("owner", scopes=("api:access",))
     return _authority(
         "owner", scopes=("api:access", "tools:mutate"))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["calculate", "read_file", "write_file"])
-async def test_p8_direct_dynamic_collision_fails_before_name_authority(
-    tmp_path, monkeypatch, name,
-):
-    from protagine.reasoning.executor import ToolExecutor
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    calls = []
-
-    async def dynamic_handler(arguments):
-        calls.append(arguments)
-        return "DYNAMIC EXECUTED"
-
-    executor = ToolExecutor()
-    executor.set_dynamic_provider(
-        _dynamic_provider(name, dynamic_handler))
-    executor.configure_execution_policy(
-        directive_manager=_ToolDirectives(allowed=True),
-        boundary_required=True,
-    )
-    host._tool_executor = executor
-
-    with pytest.raises(HTTPException) as denied:
-        await host.tools_invoke(ToolInvokeRequest(
-            identity=HostIdentity(host_id="hermes"),
-            name=name,
-            arguments={},
-        ), request=_request(_collision_authority(name)))
-
-    assert denied.value.status_code == 503
-    assert denied.value.detail["code"] == "tool_name_collision"
-    assert calls == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["calculate", "read_file", "write_file"])
-async def test_p8_model_dynamic_collision_fails_before_model_call(
-    tmp_path, monkeypatch, name,
-):
-    from protagine.reasoning import ReasoningLoop, ToolExecutor
-
-    class Model:
-        async def complete(self, *_args, **_kwargs):
-            raise AssertionError("colliding definitions must not reach the model")
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-
-    async def dynamic_handler(_arguments):
-        raise AssertionError("colliding handler must not execute")
-
-    executor = ToolExecutor()
-    executor.set_dynamic_provider(
-        _dynamic_provider(name, dynamic_handler))
-    executor.configure_execution_policy(
-        directive_manager=_ToolDirectives(allowed=True),
-        boundary_required=True,
-    )
-    host._tool_executor = executor
-    host._reasoning_loop = ReasoningLoop(model=Model(), tools=executor)
-    authority = _collision_authority(name)
-
-    with pytest.raises(HTTPException) as denied:
-        await host.reasoning_turn(ReasoningTurnRequest(
-            identity=HostIdentity(host_id="hermes"),
-            context=HostTurnContext(
-                contact_id=authority.viewer_person_id,
-                session_id="collision-session",
-                channel_id="collision-channel",
-            ),
-            messages=[HostMessage(role="user", content="use the tool")],
-            available_tools=[name],
-        ), request=_request(authority))
-
-    assert denied.value.status_code == 503
-    assert denied.value.detail["code"] == "tool_name_collision"
-
-
-@pytest.mark.asyncio
-async def test_p8_off_direct_dynamic_tool_contract_is_unchanged():
-    from protagine.reasoning.executor import ToolExecutor
-
-    host._p8_runtime = None
-    calls = []
-
-    async def dynamic_handler(arguments):
-        calls.append(arguments)
-        return "LEGACY DYNAMIC"
-
-    executor = ToolExecutor()
-    executor.set_dynamic_provider(_dynamic_provider(
-        "fresh_dynamic_action", dynamic_handler))
-    host._tool_executor = executor
-
-    response = await host.tools_invoke(ToolInvokeRequest(
-        identity=HostIdentity(host_id="legacy-host"),
-        name="fresh_dynamic_action",
-        arguments={"value": 1},
-    ), request=_request(anonymous_authority()))
-
-    assert response.available is True
-    assert response.result == "LEGACY DYNAMIC"
-    assert calls == [{"value": 1}]
-
-
-
-
 
 
 def test_default_off_and_live_request_create_no_p8_state(tmp_path, monkeypatch):
@@ -1097,8 +714,6 @@ def test_shadow_attaches_one_runtime_and_restart_closes_cleanly(
     restarted.close()
 
 
-
-
 def test_new_fact_uses_typed_envelope_and_legacy_row_stays_excluded(
     tmp_path, monkeypatch,
 ):
@@ -1145,8 +760,6 @@ def test_new_fact_uses_typed_envelope_and_legacy_row_stays_excluded(
         alice, now=_now(), min_confidence=0.0)
     assert "zero-confidence claim" not in repr(lowered.public())
     assert runtime.project_shared_facts(bob, now=_now()).facts == ()
-
-
 
 
 @pytest.mark.asyncio
@@ -1258,9 +871,6 @@ async def test_default_off_never_queries_obsolete_graph_recall(monkeypatch):
     assert "strict legacy graph memory" not in repr(assembled)
 
 
-
-
-
 @pytest.mark.asyncio
 async def test_canonical_context_never_falls_through_to_raw_legacy_facts(
     tmp_path, monkeypatch,
@@ -1285,8 +895,6 @@ async def test_canonical_context_never_falls_through_to_raw_legacy_facts(
     rendered = "\n".join(section.body for section in response.sections)
     assert "authorized enriched fact" in rendered
     assert "raw legacy enriched leak" not in rendered
-
-
 
 
 @pytest.mark.asyncio
@@ -1422,8 +1030,6 @@ def _principal(
             "id": "current", "secret": secret, "status": "active",
         }],
     }
-
-
 
 
 def test_restart_replays_envelopes_and_all_runtime_stores_close(

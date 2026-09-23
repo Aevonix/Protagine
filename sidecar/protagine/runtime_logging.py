@@ -18,8 +18,7 @@ SLOW_SECONDS = 1.0
 MAX_RECORD_CHARS = 65536
 POLL_ROUTES = frozenset({
     '/v1/host/health', '/v1/host/transport/ingress/receipts',
-    '/v1/host/memory/sources/erasures', '/v1/host/queue/jobs/pending',
-    '/v1/host/queue/stats',
+    '/v1/host/memory/sources/erasures',
 })
 _started = ContextVar('protagine_http_log_started', default=None)
 _handler = None

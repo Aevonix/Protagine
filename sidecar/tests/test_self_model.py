@@ -59,14 +59,13 @@ def test_brief_reports_runtime_counts_without_claiming_ability():
     _fill(s, "research", wins=8, losses=1)
     _fill(s, "scheduling", wins=1, losses=3)
     _fill(s, "coding", wins=2, timeouts=2)
-    text = self_brief(s.snapshot(), {"total": 2, "active_initiatives": 1,
-                                     "active_projects": 1, "queued_jobs": 0})
+    text = self_brief(s.snapshot(), {"total": 2, "active_initiatives": 2})
     assert "research: 8 labeled success, 1 failure, 0 timeout" in text
     assert "scheduling: 1 labeled success, 3 failure, 0 timeout" in text
     assert "coding: 2 labeled success, 0 failure, 2 timeout" in text
     assert "do not verify output quality" in text and "current model's ability" in text
     assert "You reliably complete" not in text and "You often fail at" not in text
-    assert "2 in flight" in text
+    assert "2 initiative(s) in flight" in text
 
 
 def test_brief_empty_without_evidence():

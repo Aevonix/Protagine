@@ -111,13 +111,11 @@ class IdentityBootstrap:
         self,
         protagine_graph: Optional[Any] = None,
         chain_manager: Optional[Any] = None,
-        queue_manager: Optional[Any] = None,
         skill_registry: Optional[Any] = None,
         metrics_collector: Optional[Any] = None,
     ) -> None:
         self._graph = protagine_graph
         self._chain_manager = chain_manager
-        self._queue_manager = queue_manager
         self._skill_registry = skill_registry
         self._metrics = metrics_collector
 
@@ -205,7 +203,6 @@ class IdentityBootstrap:
         from protagine.identity_bootstrap.seeders.goals import GoalsSeeder
         from protagine.identity_bootstrap.seeders.briefings import BriefingsSeeder
         from protagine.identity_bootstrap.seeders.sessions import SessionsSeeder
-        from protagine.identity_bootstrap.seeders.task_queue import TaskQueueSeeder
         from protagine.identity_bootstrap.seeders.neo4j_cognition import Neo4jCognitionSeeder
         from protagine.identity_bootstrap.seeders.skills import SkillsSeeder
 
@@ -239,12 +236,8 @@ class IdentityBootstrap:
         )
         await _run_one(neo4j_seeder)
 
-        # Group 3: task_queue and skills — independent of group 1 results
-        group3 = [
-            TaskQueueSeeder(queue_manager=self._queue_manager),
-            SkillsSeeder(skill_registry=self._skill_registry),
-        ]
-        await asyncio.gather(*[_run_one(s) for s in group3])
+        # Group 3: skills — independent of group 1 results
+        await _run_one(SkillsSeeder(skill_registry=self._skill_registry))
 
         return seeded, failed
 

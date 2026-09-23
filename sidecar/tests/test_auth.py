@@ -174,8 +174,8 @@ def test_create_app_reads_the_key_file(tmp_path, monkeypatch):
     write_api_key("file-key", tmp_path)
     from protagine.server import create_app
     with _client(create_app()) as client:
-        assert client.get("/v1/host/queue/stats", headers={"Authorization": "Bearer file-key"}).status_code != 401
-        assert client.get("/v1/host/queue/stats", headers={"Authorization": "Bearer other"}).status_code == 401
+        assert client.get("/v1/mind/state", headers={"Authorization": "Bearer file-key"}).status_code != 401
+        assert client.get("/v1/mind/state", headers={"Authorization": "Bearer other"}).status_code == 401
 
 
 def test_events_socket_uses_the_key(tmp_path, monkeypatch):

@@ -19,7 +19,7 @@ def test_no_tautological_environment_fallbacks():
     read = r"os\.environ(?:\.get\(|\[)\s*(['\"])(\w+)\1"
     tautology = re.compile(read + r"[^\n]*?os\.environ(?:\.get\(|\[)\s*(['\"])\2\3")
     offenders = []
-    for folder in ('sidecar', 'plugins', 'hostworker', 'tests', 'benchmarks', 'scripts'):
+    for folder in ('sidecar', 'plugins', 'tests', 'benchmarks', 'scripts'):
         for path in sorted((ROOT / folder).rglob('*.py')):
             if '.venv' in path.parts:
                 continue

@@ -25,15 +25,12 @@ jobs:
           cache-dependency-path: requirements/release-py312.txt
       - name: Install qualified build and quality tools
         run: python -m pip install -c requirements/release-py312.txt '.[test,quality]'
-      - name: Check fatal errors and the hostworker contract types
-        run: |
-          python -m ruff check sidecar/protagine plugins/hermes-plugin plugins/protagine-memory scripts/qualify_artifacts.py scripts/check_hermes_record.py scripts/fake_model.py hostworker/protagine_hostworker tests/hermes_adapter
-          python -m mypy
+      - name: Check fatal errors
+        run: python -m ruff check sidecar/protagine plugins/hermes-plugin plugins/protagine-memory scripts/qualify_artifacts.py scripts/check_hermes_record.py scripts/fake_model.py tests/hermes_adapter
       - name: Build distributions from source archives
         run: |
           python -m build --no-isolation --outdir dist .
           python -m build --no-isolation --outdir dist ./sidecar
-          python -m build --no-isolation --outdir dist ./hostworker
           python -m twine check dist/*
       - name: Qualify installed artifacts and record resolved dependencies
         run: |
@@ -126,10 +123,8 @@ jobs:
           python -m pip check
       - name: Qualify the adapter against stock Hermes
         run: python -m pytest tests/hermes_adapter -q --durations=0 --junitxml=hermes-adapter-results.xml
-      - name: Qualify the host worker and the recall harness
-        run: |
-          python -m pytest hostworker/tests -q --durations=0 --junitxml=hostworker-results.xml
-          python -m pytest benchmarks/source_recall/test_harness.py -q --durations=0 --junitxml=source-recall-results.xml
+      - name: Qualify the recall harness
+        run: python -m pytest benchmarks/source_recall/test_harness.py -q --durations=0 --junitxml=source-recall-results.xml
       - name: Retain test results
         if: always()
         uses: actions/upload-artifact@v4

@@ -784,9 +784,9 @@ class CompetenceStore:
 class SelfModel:
     """Competence store + live load probe + brief rendering.
 
-    Load is read live from the wired subsystems (never cached): in-progress
-    executor initiatives, active projects, queued jobs. Any missing subsystem
-    contributes zero.
+    Load is read live (never cached) from the initiative store: intentions
+    the mind has assigned and that are in progress. A missing store counts
+    as zero.
     """
 
     def __init__(self, store: CompetenceStore, registry: Any = None,
@@ -834,37 +834,19 @@ class SelfModel:
 
     # -- live load -------------------------------------------------------
     def load(self) -> Dict[str, int]:
-        active_initiatives = 0
-        active_projects = 0
-        queued_jobs = 0
-        reg = self._registry
-        if reg is not None:
+        store = getattr(self._registry, "initiative_store", None) if self._registry is not None else None
+        if store is None:
             try:
-                istore = getattr(reg, "initiative_store", None)
-                if istore is not None and hasattr(istore, "count"):
-                    active_initiatives = int(
-                        istore.count(status=["assigned", "acknowledged"]) or 0)
+                from protagine.api.routers.host import _initiative_store as store
+            except Exception:
+                store = None
+        active = 0
+        if store is not None and hasattr(store, "count"):
+            try:
+                active = int(store.count(status=["assigned", "acknowledged"]) or 0)
             except Exception:
                 pass
-            try:
-                pengine = getattr(reg, "project_engine", None)
-                pstore = getattr(pengine, "store", None)
-                if pstore is not None and hasattr(pstore, "count"):
-                    active_projects = int(pstore.count(status="active") or 0)
-            except Exception:
-                pass
-            try:
-                queue = getattr(reg, "task_queue", None)
-                if queue is not None and hasattr(queue, "count_pending"):
-                    queued_jobs = int(queue.count_pending() or 0)
-            except Exception:
-                pass
-        return {
-            "active_initiatives": active_initiatives,
-            "active_projects": active_projects,
-            "queued_jobs": queued_jobs,
-            "total": active_initiatives + active_projects + queued_jobs,
-        }
+        return {"active_initiatives": active, "total": active}
 
     def status(self) -> Dict[str, Any]:
         out = {"domains": self.store.snapshot(), "load": self.load()}

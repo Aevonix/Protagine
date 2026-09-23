@@ -2,7 +2,7 @@
 
 Status: persistence primitives integrated into server startup, scoped context,
 and ignored non-real-time delivery shadow observation. See
-`docs/P8-SHARED-INTEGRATION.md`. ResponseGuard, the host deployment, Hermes, and the custom
+`docs/P8-SHARED-INTEGRATION.md`. The host deployment, Hermes, and the custom
 Voice Core remain unchanged.
 
 This slice closes three storage/boundary gaps left by the isolated P8 social
@@ -135,7 +135,7 @@ visibility authority for unrelated graph memories.
 
 The context routers also contain legacy sources that have no visibility
 envelope. With P8 attached, goals, initiatives, global briefings, world-model
-search, insights, known-contact lists, cognition, owner directives, surprises,
+search, insights, known-contact lists, cognition, surprises,
 and global temporal heads-up data are queried only for a server-attested exact
 owner viewer. A non-owner or unsealed caller cannot cause those sources to be
 queried. This fail-closed owner projection preserves useful owner context while
@@ -148,35 +148,6 @@ not select or summarize a human, owner workspace, relationship, communication,
 goal, or memory record. A producer that starts carrying person-specific content
 must move behind an exact-person or visibility-envelope projection rather than
 being added to this generic carve-out.
-
-### Reasoning-tool execution boundary
-
-Filtering the tool definitions sent to an LLM is not authorization. The shared
-`ToolExecutor` therefore re-checks every model-returned batch, direct host tool
-call, and dynamically graduated tool immediately before its handler runs.
-First-party tools have one reviewed effect class:
-
-- `calculate` and `web_search` are public/general reads;
-- memory, relationship, repository, filesystem, goal, boundary, and self-state
-  reads are private reads; and
-- every state-changing tool is a mutation. Unknown/dynamic tools default to
-  mutation until explicitly classified.
-
-While P8 is attached, caller capabilities are derived from middleware
-authority, never `HostIdentity`, turn context, or tool arguments. An unsealed or
-non-owner caller receives only public/general tools. Private reads require the
-server-attested exact owner; mutations additionally require the exact
-`tools:mutate` scope. An explicit tool list may narrow that set but cannot
-broaden it. The executor also receives the allowed-name set, so a model call to
-an unadvertised tool returns `tool_not_authorized` without invoking a handler.
-
-On every configured server, independent of P8 mode, the same executor maps the
-tool and its actual arguments to a `DirectiveGuard` action. An explicit owner
-boundary refuses execution. A missing, crashing, or malformed boundary
-dependency fails closed for private reads and mutations; public/general reads
-remain usable so a directive-store incident does not disable basic calculation
-and research. P8-off keeps the legacy HTTP identity compatibility but does not
-bypass a healthy configured standing-boundary check.
 
 The immediate functional rollback is mode `off` plus a Protagine-sidecar restart.
 Preserve additive databases for forensics; do not edit ledger rows or restore
@@ -210,5 +181,5 @@ python -m pytest -q \
 - The generic shared-context carve-out above needs ongoing content review, and
   legacy private tool handlers still need typed per-argument person/resource
   authority before any can be safely exposed to non-owner callers.
-- P8 stays shadow-only and advisory. No host-deployment, Hermes, ResponseGuard,
+- P8 stays shadow-only and advisory. No host-deployment, Hermes,
   SharedFactsStore, Meet, or Voice Core semantics are changed.

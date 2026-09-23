@@ -462,26 +462,6 @@ def _configured_turn_owner() -> str:
     return value if _SAFE_ID.fullmatch(value) else ""
 
 
-def project_turn_concern_hold_reason(project: Any, concern_store: Any) -> str:
-    """Return the runtime hold for exact cognition-spine turn provenance."""
-
-    if str(getattr(project, "source", "") or "") != "cognition_spine":
-        return ""
-    concern_id = str(getattr(project, "concern_id", "") or "")
-    if not concern_id:
-        return ""
-    if concern_store is None:
-        return "project_hold_reason_unavailable"
-    concern = concern_store.get(concern_id)
-    if concern is None:
-        return "project_hold_reason_unavailable"
-    if str(getattr(concern, "producer_name", "") or "") != "turn_concerns":
-        return ""
-    if turn_concern_mode() != "live":
-        return "turn_concerns_current_mode_not_live"
-    return ""
-
-
 def project_conversation_turn(
     event: Mapping[str, Any],
 ) -> tuple[Optional[EventProjection], str, str]:

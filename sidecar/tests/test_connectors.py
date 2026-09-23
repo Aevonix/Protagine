@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from protagine.directives import Verdict
 from protagine.connectors import ConnectorManager, Observation, EntityHint
 from protagine.connectors.base import Connector
 from protagine.connectors.imap_email import IMAPEmailConnector
@@ -177,14 +176,6 @@ class _MockPopulator:
         self.texts.append((text, source_id))
 
 
-class _FakeDirectives:
-    def __init__(self, allowed):
-        self._v = Verdict(allowed=allowed, reason="ok" if allowed else "blocked")
-
-    def check(self, action):  # noqa: ARG002
-        return self._v
-
-
 def _obs():
     return [Observation(domain="email", external_id="e1", ts=1.0,
                         payload={"subject": "hi"},
@@ -223,18 +214,6 @@ async def test_manager_live_records_and_populates(monkeypatch):
     assert report["observations"] == 1 and report["populated"] == 1
     assert store.batches and store.batches[0][0] == "email"
     assert pop.texts and pop.texts[0][0] == "Email from A"
-
-
-@pytest.mark.asyncio
-async def test_manager_boundary_suppresses_ingest(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_CONNECTORS_MODE", "live")
-    store, pop = _MockObsStore(), _MockPopulator()
-    mgr = ConnectorManager(observation_store=store, populator=pop,
-                           directive_manager=_FakeDirectives(False))
-    mgr.register(_StubConnector(_obs()))
-    report = await mgr.poll_due(now=1000.0)
-    assert report["skipped_boundary"] == 1 and report["observations"] == 0
-    assert store.batches == [] and pop.texts == []
 
 
 def test_register_default_connectors_only_enabled(monkeypatch):

@@ -62,9 +62,7 @@ def resolve_limits() -> SandboxLimits:
 
 
 class SandboxManager:
-    def __init__(self, *, directive_manager: Any = None,
-                 self_model: Any = None) -> None:
-        self._directives = directive_manager
+    def __init__(self, *, self_model: Any = None) -> None:
         self._self_model = self_model
         self._backend = select_backend(sandbox_mode())
 
@@ -77,26 +75,6 @@ class SandboxManager:
         """Keep contained read-only work fast without inventing authority."""
 
         return "auto" if owner_directed or read_only else "flagged"
-
-    # -- boundary gate ----------------------------------------------------
-    def _boundary_ok(self, purpose: str, script: str) -> Dict[str, Any]:
-        if self._directives is None:
-            # No directive manager: nothing was evaluated. Never report the
-            # fabricated "ok" of a real allow — callers/journals must be able
-            # to tell "unchecked" from "checked and allowed".
-            return {"allowed": True, "reason": "boundary_unchecked"}
-        try:
-            from protagine.directives import Action
-            verdict = self._directives.check(Action(
-                kind="execute_tool",
-                text=f"run sandbox script: {purpose}",
-                target=purpose,
-                args={"script": (script or "")[:500]},
-                high_risk=True))
-            return {"allowed": bool(verdict.allowed), "reason": verdict.reason}
-        except Exception:
-            logger.warning("sandbox boundary check failed closed", exc_info=True)
-            return {"allowed": False, "reason": "boundary_check_error"}
 
     # -- the run entry point ----------------------------------------------
     def run(self, script: str, lang: str = "python", *, purpose: str = "",
@@ -111,13 +89,6 @@ class SandboxManager:
             self._journal("sandbox", purpose, decision="held",
                           reasoning="sandbox mode off")
             return {"ran": False, "reason": "sandbox_off", "mode": mode}
-
-        boundary = self._boundary_ok(purpose, script)
-        if not boundary["allowed"]:
-            self._journal("sandbox", purpose, decision="blocked",
-                          reasoning=f"boundary: {boundary['reason']}")
-            return {"ran": False, "reason": "boundary_blocked",
-                    "detail": boundary["reason"], "mode": mode}
 
         if tier == "flagged" and not approved:
             self._journal("sandbox", purpose, decision="asked",

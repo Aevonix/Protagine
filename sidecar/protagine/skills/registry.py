@@ -3,8 +3,6 @@
 Skills are discovered dynamically and can be hot-reloaded.
 """
 
-import importlib
-import inspect
 import logging
 import os
 from typing import Any, Dict, List, Optional, Type
@@ -44,8 +42,7 @@ class _SkillView:
 class SkillRegistry:
     """Registry of initiative executor skills.
 
-    Loads built-in skills automatically. Additional skills can be
-    registered manually or discovered from directories.
+    Skills are registered manually or discovered from directories.
     """
 
     def __init__(self, graph_client=None, event_bus=None, telemetry=None):
@@ -53,42 +50,6 @@ class SkillRegistry:
         self._graph = graph_client
         self._events = event_bus
         self._telemetry = telemetry
-
-        # Auto-load built-in skills
-        self._load_builtin_skills()
-
-    def _load_builtin_skills(self) -> None:
-        """Load all built-in executor skills."""
-        builtin_skills = [
-            "protagine.skills.executors.subsystem_health",
-            "protagine.skills.executors.data_quality",
-            "protagine.skills.executors.operational_hygiene",
-            "protagine.skills.executors.capability_gap",
-            "protagine.skills.executors.knowledge_acquisition",
-            "protagine.skills.executors.behavioral_correction",
-        ]
-
-        for module_path in builtin_skills:
-            try:
-                module = importlib.import_module(module_path)
-                # Find skill classes in the module
-                for name, obj in inspect.getmembers(module, inspect.isclass):
-                    if (
-                        issubclass(obj, InitiativeExecutorSkill)
-                        and obj is not InitiativeExecutorSkill
-                        and not getattr(obj, "__abstractmethods__", None)
-                    ):
-                        skill = obj(
-                            graph_client=self._graph,
-                            event_bus=self._events,
-                            telemetry=self._telemetry,
-                        )
-                        self.register(skill)
-                        logger.info("Loaded built-in skill: %s", skill.skill_name)
-            except ImportError as e:
-                logger.warning("Failed to load built-in skill module %s: %s", module_path, e)
-            except Exception as e:
-                logger.error("Error loading built-in skill %s: %s", module_path, e)
 
     def register(self, skill: InitiativeExecutorSkill) -> None:
         """Register a skill instance."""

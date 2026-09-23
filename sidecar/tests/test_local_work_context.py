@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -18,7 +17,6 @@ from protagine.turns.executions import format_view, request_work_context
 async def test_accepted_local_work_and_result_are_visible_only_to_actual_owner(tmp_path,monkeypatch):
     monkeypatch.setenv('PROTAGINE_STATE_DIR',str(tmp_path))
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID','owner')
-    monkeypatch.setattr(host,'_task_queue',None)
     store=InitiativeStore(tmp_path)
     work=store.create(type='RESEARCH_DEEP_DIVE',description='Use newly installed capabilities',
         source_type='installed_capabilities',created_by='native_local_work',

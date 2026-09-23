@@ -252,8 +252,7 @@ def _work_groups(view):
     return [('local_work', view.get('local_work', {})),
             ('native_kanban', view.get('native_kanban', {})),
             ('reported_worker', view.get('reported_worker', {})),
-            ('execution', view), ('worker_work', view.get('worker_work', {})),
-            ('native_cron', view.get('native_cron', {}))]
+            ('execution', view), ('native_cron', view.get('native_cron', {}))]
 
 
 def work_source_coverage(view):
@@ -355,10 +354,6 @@ def format_view(view: dict) -> str:
                     item = {**item, 'result': {key: value for key, value in result.items()
                                              if key != 'summary'}}
             lines.append('- Accepted local work and unverified draft: '+json.dumps(item, ensure_ascii=True))
-    for item in view.get('worker_work', {}).get('items', []):
-        lines.append('- Worker work: ' + json.dumps(item, ensure_ascii=True))
-    if view.get('worker_work', {}).get('unavailable'):
-        lines.append('Canonical worker work is temporarily unavailable.')
     reported = view.get('reported_worker')
     if reported:
         lines.append('Local worker reports; process liveness and external effects are unverified.')

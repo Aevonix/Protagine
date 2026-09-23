@@ -366,7 +366,7 @@ class BootstrapVerifier:
     # ── Check 12: gate layers ─────────────────────────────────────────────────
 
     async def _check_corpus_gate_layers(self) -> Optional[BootstrapAnomaly]:
-        expected = 7
+        expected = 0
         actual = len(self._corpus.gate_layers)
         if actual != expected:
             return BootstrapAnomaly(

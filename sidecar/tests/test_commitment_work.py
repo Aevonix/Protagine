@@ -1,15 +1,13 @@
 """Two real SQLite clients coordinate one obligation and recover by fencing."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-import json
 from types import SimpleNamespace
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 import pytest
 
 from protagine.api.middleware import ApiKeyMiddleware
-from protagine.api.routers import commitment_work, executions, host
+from protagine.api.routers import commitment_work, host
 from protagine.commitments.store import CommitmentStore
 from protagine.commitments.work import CommitmentWork
 from onekey import KEY, _principal, _write_keyring
@@ -88,38 +86,6 @@ def work_app(tmp_path, monkeypatch, store):
     app = FastAPI(); app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     app.include_router(commitment_work.router)
     return app
-
-
-@pytest.mark.asyncio
-async def test_canonical_worker_queue_view_has_descriptions_and_truthful_liveness(tmp_path, monkeypatch):
-    from protagine.task_queue.queue_manager import QueueManager
-    from protagine.task_queue.models import Job, JobType, JobStatus, WorkerCapabilities
-    clock = [datetime.now(timezone.utc)]
-    queue = QueueManager(tmp_path / 'queue.db', clock=lambda: clock[0])
-    await queue.start()
-    try:
-        job = Job(job_type=JobType.RESEARCH, payload={'description': 'Compare the two repairs', 'secret': 'must-not-appear'})
-        await queue.post(job)
-        claimed = await queue.claim_job('fixture-worker', WorkerCapabilities(node_id='fixture-worker', capabilities=set(), job_types={JobType.RESEARCH}))
-        assert claimed and await queue.start_job(job.job_id, 'fixture-worker', claimed.claim_attempt_id)
-        # start_job stamps its real clock; this reader's injected clock must
-        # not accidentally precede that retained heartbeat.
-        clock[0] = datetime.now(timezone.utc)
-        monkeypatch.setattr(host, '_task_queue', SimpleNamespace(queue=queue))
-        view = await executions.with_queue_work({'items': []}, owner=True)
-        item = view['worker_work']['items'][0]
-        assert item['job_id'] == job.job_id and item['claim_attempt_id'] == claimed.claim_attempt_id
-        assert item['description'] == 'Compare the two repairs' and item['state'] == 'running'
-        assert 'secret' not in json.dumps(view)
-        assert item['liveness'] == 'recently_observed'
-        clock[0] += timedelta(seconds=300)
-        assert (await queue.current_work())['items'][0]['liveness'] == 'unknown'
-        assert await executions.with_queue_work({'items': []}, owner=False) == {'items': []}
-        await queue.complete_job(job.job_id, 'fixture-worker', {'result': 'Comparison complete'}, claim_attempt_id=claimed.claim_attempt_id)
-        assert (await queue.get_job(job.job_id)).status == JobStatus.COMPLETED
-        assert (await queue.current_work())['items'] == []
-    finally:
-        await queue.stop()
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ import tempfile
 import zipfile
 
 
-PROJECTS = {"protagine", "protagine-hermes", "protagine-hostworker"}
+PROJECTS = {"protagine", "protagine-hermes"}
 
 
 def run(args: list[str], *, cwd: Path, env: dict[str, str]) -> str:
@@ -80,16 +80,6 @@ def main() -> None:
         run([sys.executable, "-m", "venv", str(work / "venv")], cwd=work, env=env)
         python = str(work / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
         pip = [python, "-I", "-m", "pip"]
-        # Check the standalone worker before installing any sidecar dependencies.
-        run(pip + ["install", "--no-deps", str(wheels["protagine-hostworker"])], cwd=work, env=env)
-        run(pip + ["check"], cwd=work, env=env)
-        worker_packages = json.loads(run(pip + ["list", "--format=json"], cwd=work, env=env))
-        if any(p["name"].lower() not in {"pip", "setuptools", "protagine-hostworker"}
-               for p in worker_packages):
-            raise ValueError("Standalone hostworker environment contains unexpected packages")
-        conformance = run([python, "-I", "-m", "protagine_hostworker.conformance"], cwd=work, env=env)
-        (output / "hostworker-conformance.txt").write_text(conformance)
-
         run(pip + ["install", "--constraint", str(constraints),
                    str(wheels["protagine-hermes"]) + "[native-memory]",
                    str(wheels["protagine"]) + "[hermes]"], cwd=work, env=env)
@@ -118,11 +108,10 @@ print(json.dumps({'installed_imports': True, 'adapter_entry_points': True}))
         "artifacts": {path.name: {"bytes": path.stat().st_size, "sha256": sha256(path)}
                       for path in sorted([*wheels.values(), *sdists])},
         "installed_packages": packages,
-        "checks": {"standalone_hostworker_conformance": True, "pip_check": True,
-                   "sidecar_cli_help": True, **json.loads(smoke)},
+        "checks": {"pip_check": True, "sidecar_cli_help": True, **json.loads(smoke)},
     }
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    print("Qualified three installed distributions; receipt:", output / "receipt.json")
+    print("Qualified two installed distributions; receipt:", output / "receipt.json")
 
 
 if __name__ == "__main__":

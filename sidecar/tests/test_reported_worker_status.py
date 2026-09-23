@@ -94,7 +94,6 @@ def test_invalid_optional_progress_does_not_hide_legacy_status(tmp_path, monkeyp
 async def test_actual_owner_api_and_context_show_report_without_inventing_execution(tmp_path,monkeypatch):
     monkeypatch.setenv('PROTAGINE_STATE_DIR',str(tmp_path/'state'))
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID','owner')
-    monkeypatch.setattr(host,'_task_queue',None)
     report=tmp_path/'worker.json'
     report.write_text(json.dumps({'state':'uncertain','detail_code':'provider_outcome_uncertain',
                                  'updated_at':time.time()}))

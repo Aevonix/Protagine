@@ -11,8 +11,6 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from protagine.gate.communication_policy import CommunicationPolicyContextV1
-from protagine.gate.surface_policy import ResponseGuardSurfaceName
 
 MAX_NAME_LEN = 256
 
@@ -336,43 +334,6 @@ class MultimodalSearchResponse(BaseModel):
     model: str = ""
 
 
-# --- Reasoning --------------------------------------------------------------
-
-class ReasoningTurnRequest(BaseModel):
-    identity: HostIdentity
-    context: HostTurnContext
-    messages: List[HostMessage]
-    available_tools: List[str] = Field(default_factory=list)
-    model_override: Optional[str] = Field(None, max_length=MAX_NAME_LEN)
-
-
-class ReasoningToolCall(BaseModel):
-    id: str
-    name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ReasoningTurnResponse(BaseModel):
-    status: Literal["completed", "needs_tool", "error"]
-    message: Optional[HostMessage] = None
-    tool_calls: List[ReasoningToolCall] = Field(default_factory=list)
-    usage: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
-
-
-class ToolInvokeRequest(BaseModel):
-    identity: HostIdentity
-    context: Optional[HostTurnContext] = None
-    name: str = Field(..., max_length=MAX_NAME_LEN)
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolInvokeResponse(BaseModel):
-    result: str = ""
-    available: bool = True
-    error: Optional[str] = None
-
-
 class SkillExecuteRequest(BaseModel):
     identity: HostIdentity
     arguments: Dict[str, Any] = Field(default_factory=dict)
@@ -404,13 +365,19 @@ class HostSender(BaseModel):
 
 # --- Signals ----------------------------------------------------------------
 
+class HostToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
 class SignalIngestRequest(BaseModel):
     identity: HostIdentity
     context: HostTurnContext
     sender: Optional[HostSender] = None
     incoming_message: Optional[HostMessage] = None
     outgoing_message: Optional[HostMessage] = None
-    tool_calls: List[ReasoningToolCall] = Field(default_factory=list)
+    tool_calls: List[HostToolCall] = Field(default_factory=list)
     correction: Optional[str] = None
     signals: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -585,29 +552,6 @@ class TurnSyncResponse(BaseModel):
     skipped_reason: Optional[str] = None
     errors: Optional[List[str]] = None
     source_recorded: bool = False
-
-
-# --- Safety -----------------------------------------------------------------
-
-class SafetyCheckRequest(BaseModel):
-    identity: HostIdentity
-    context: HostTurnContext
-    response_text: str
-    incoming_message_text: Optional[str] = None
-    target_gateway: Optional[str] = None
-    trust_tier: Optional[str] = None
-    mentioned_entities: Optional[List[str]] = None
-
-
-class SafetyCheckResponse(BaseModel):
-    # "unavailable" (with HTTP 503) = the gate did not evaluate; never
-    # reported as "pass".
-    decision: Literal["pass", "block", "pending", "unavailable"]
-    blocked: bool
-    blocking_layer: Optional[int] = None
-    reason: Optional[str] = None
-    flagged_excerpt: Optional[str] = None
-    layer_results: Optional[Dict[str, Any]] = None
 
 
 # --- Events -----------------------------------------------------------------
@@ -1853,35 +1797,3 @@ class ScopePromoteRequest(BaseModel):
     to_tier: str = "regular"
 
 
-class ResponseGuardCheckRequest(BaseModel):
-    """A host asks the gate to evaluate an outbound reply before sending it."""
-    surface: ResponseGuardSurfaceName
-    response_text: str
-    incoming_message_text: Optional[str] = None
-    trust_tier: Optional[str] = None
-    target_contact_id: Optional[str] = None
-    target_gateway: Optional[str] = None
-    session_id: Optional[str] = None
-    turn_id: Optional[str] = None
-    conversation_key: Optional[str] = None
-    mentioned_entities: Optional[List[str]] = None
-    mode: Optional[Literal["shadow", "enforce"]] = None
-    # Optional, exact host-owned purpose/disclosure binding.  This narrows the
-    # candidate's permitted use; its literal-false capability fields cannot
-    # grant authority or select owner-private context.
-    communication_policy: Optional[CommunicationPolicyContextV1] = None
-    # A request may strengthen shadow to enforce. It cannot weaken a server
-    # configured for enforce; ResponseGuardSurfacePolicyV1 resolves the mode.
-    # Legacy compatibility input.  The host API never treats a caller-declared
-    # boolean as owner authority; trusted in-process paths derive that fact from
-    # server-owned identity state.
-    authorized: bool = False
-
-    @model_validator(mode="after")
-    def _communication_policy_matches_target(self) -> "ResponseGuardCheckRequest":
-        policy = self.communication_policy
-        if policy is not None and self.target_contact_id != policy.target_contact_id:
-            raise ValueError(
-                "communication policy target must match target_contact_id"
-            )
-        return self

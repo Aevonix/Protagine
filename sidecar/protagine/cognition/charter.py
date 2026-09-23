@@ -245,25 +245,6 @@ ROLE_BLOCKS: Dict[str, Dict[str, str]] = {
         ),
         "output": _SHARED_JSON_RULES,
     },
-    "worker": {
-        "mission": (
-            "You are an Protagine worker agent executing one claimed job from "
-            "the task queue with the tools granted to you."
-        ),
-        "rules": (
-            "- Stay inside the job's scope; the server enforces gates, but "
-            "you do not probe them.\n"
-            "- Verify tool results before building on them; report evidence "
-            "with your result.\n"
-            "- If the job cannot be completed, fail it with the exact "
-            "reason; never fabricate a result.\n"
-            "- Report progress on long jobs at real milestones."
-        ),
-        "output": (
-            "Final report: outcome first, evidence, remaining work, "
-            "confidence 0.0-1.0."
-        ),
-    },
     "narrator": {
         "mission": (
             "Turn structured data into a short natural-language narrative "
@@ -281,24 +262,6 @@ ROLE_BLOCKS: Dict[str, Dict[str, str]] = {
             "Plain prose only (no headings; no lists unless the data is "
             "inherently a list). Calm, direct, specific."
         ),
-    },
-    "directed_intake": {
-        "mission": (
-            "Translate an owner directive about their repositories or "
-            "business assets into a deterministic scoped task the "
-            "directed-action pipeline can dispatch, gate, and audit."
-        ),
-        "rules": (
-            "- Resolve only known, configured targets; never fuzzy-match an "
-            "unknown name into scope.\n"
-            "- Choose the narrowest scope and weakest operations that "
-            "satisfy the directive.\n"
-            "- Anything ambiguous becomes a clarifying question to the "
-            "owner, not a guess.\n"
-            "- The scope spec is data, not prose: exact targets, exact "
-            "allowed operations, exact limits."
-        ),
-        "output": _SHARED_JSON_RULES,
     },
 }
 
@@ -347,7 +310,7 @@ def build_system_prompt(
     Args:
         role: one of ROLE_BLOCKS.
         self_brief: compact competence/calibration brief from the self-model.
-        boundaries: the DirectiveGuard context brief (standing directives).
+        boundaries: the owner's standing boundaries (the mind's deny list).
         skills: retrieved procedure-memory relevant to this work.
         corrections: past-mistake lines; injected with an "avoid:" prefix.
         extra: role-specific context the caller already formats.

@@ -22,21 +22,12 @@ general self-improvement simply by recording a successful review.
   system. Deliberately not wired: fabricating health numbers would violate
   the measurement doctrine. Wire only when a real health/wearable source
   feeds the mind model.
-- **Gate Layer 6 secondary review**: remains disabled by default. If explicitly
-  enabled, a missing/failed client reports `unavailable`; malformed JSON or an
-  unknown verdict reports `invalid`. Neither is a completed review. Valid
-  `appropriate` and `flag_for_review` verdicts alone report `reviewed`. This
-  repairs the optional contract without adding a reviewer model or consent step.
-  The separate ResponseGuard shadow mode still does not establish enforcement.
 
 ## Retained code outside the baseline
 
 - The incompatible manual `plugins/hermes-context/` compressor has been removed.
   Use the native context engine with the current general and memory-provider
   adapters.
-- Desktop/browser task queue workers never shipped. Non-null `desktop_config`
-  or `browser_config` now raises an explicit migration error; use the native
-  runtime's tools. Persisted `desktop` and `browser` job types remain readable.
 - Goal records, saved DAG history, GET/PATCH APIs, context and condition updates
   remain readable and editable. The duplicate planner, decomposition, queue
   dispatch, conversation synthesis and goal-creation endpoint are removed.
@@ -51,14 +42,6 @@ general self-improvement simply by recording a successful review.
   Neo4j memory graph is a different subsystem; its records are not a substitute
   for canonical source memory. Changing databases does not fix memory admission
   quality or recover missing provenance.
-- **ResponseGuard applied-output receipts**: guarded candidates now carry an
-  exact candidate digest, and the proactive send path honors enforce verdicts,
-  but the audit store records evaluations rather than durable proof of the
-  bytes a transport actually withheld or emitted. The general Hermes adapter
-  uses `transform_llm_output`; loading that hook is still not proof of a
-  transport's delivered output. Do not infer enforcement from verdict row
-  counts. Qualify the actual transport and mode before claiming that behavior.
-
 ## Deliberate no-builds (division of responsibility with the host agent)
 
 Protagine is the cognitive substrate; the host agent framework (e.g. Hermes)
@@ -118,12 +101,6 @@ qualification uses the packaged patch set.
   capped under the budget, per-recall touch tasks are strongly referenced,
   and the research gatherer closes its per-call graph driver. Residual noise
   right after a budget-exceeded tick is expected and harmless.
-- **ResponseGuard failure behavior is surface/mode specific**: exact
-  text/artifact surfaces fail open while observing in `shadow` and fail closed
-  on a configured-check outage in `enforce`; exact real-time speech surfaces
-  are excluded. The static contract is documented in
-  `docs/response-guard-surface-policy-v1.md`. The L6 review layer inside the
-  separate gate pipeline fails closed.
 
 ## Settlement semantics (by design, documented here so nobody "fixes" it)
 

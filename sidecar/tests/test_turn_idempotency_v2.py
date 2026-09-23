@@ -63,7 +63,6 @@ def graph(monkeypatch, tmp_path):
     # Keep this contract test focused on synchronous ingestion effects.
     monkeypatch.setattr(host, "_presence_store", None)
     monkeypatch.setattr(host, "_contacts_store", None)
-    monkeypatch.setattr(host, "_context_provenance", None)
     monkeypatch.setattr(host, "_telemetry", None)
     value.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
     value.comms = CommsLog(str(tmp_path / "comms.db"), source_ledger=value.ledger)

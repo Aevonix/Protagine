@@ -8,7 +8,7 @@ commands use this path; there is no separate memory backup service.
 Each database is captured consistently. If SQLite `VACUUM INTO` fails, ordinary
 databases use SQLite's backup API instead of copying only the main file and
 losing committed WAL records. An unavailable consistent snapshot aborts the
-archive. The governed action ledger retains its stricter existing contract.
+archive.
 
 Originals are selected from the captured ledger, not from a later query of live
 state. Hash and byte length must match. Unowned files and regenerable thumbnails
@@ -70,8 +70,8 @@ The bundle contains `turn-idempotency.db`, its owned image originals under
 the archive and selected ledger hashes, output file hashes, counts and erasure
 head. The canonical ledger retains its current ingestion/idempotency records;
 no older version is restored over them. The bundle does not install archived
-identity/keys, contact or authorization databases, configuration, task queues,
-governed effects, native transcripts, graph or external vector directories.
+identity/keys, contact or authorization databases, configuration, native
+transcripts, graph or external vector directories.
 Those systems require separately current recovery bindings.
 
 To use the recovered memory, retain the intended runtime's current identity,

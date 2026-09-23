@@ -32,9 +32,5 @@ def self_brief(domains: List[Dict[str, Any]], load: Dict[str, int]) -> str:
         lines.append("Recorded runtime outcomes: " + "; ".join(sorted(records)) + ".")
     total = int((load or {}).get("total") or 0)
     if total or lines:
-        lines.append(
-            f"Current load: {total} in flight "
-            f"({(load or {}).get('active_initiatives', 0)} initiatives, "
-            f"{(load or {}).get('active_projects', 0)} projects, "
-            f"{(load or {}).get('queued_jobs', 0)} queued jobs).")
+        lines.append(f"Current load: {total} initiative(s) in flight.")
     return "\n".join(lines)

@@ -91,7 +91,7 @@ async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
         private = PrivateProducer()
         for name in ("_graph", "_contacts_store", "_facts_store", "_goals_store", "_initiative_store",
                      "_briefings_engine", "_world_store", "_skills_registry", "_affect_store",
-                     "_relationship_profiler", "_preference_learner", "_tom2_store", "_directive_manager",
+                     "_relationship_profiler", "_preference_learner", "_tom2_store",
                      "_engagement_store", "_comms_log", "_surprise_store"):
             monkeypatch.setattr(host, name, private)
 

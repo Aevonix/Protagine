@@ -149,8 +149,7 @@ model below. The broader producers remain future work:
    Draft producers still need consistent reference propagation.
 5. **Messaging observation (implemented only in shadow):** non-real-time final
    sanitized/revised text is copied into a detached bounded snapshot, sampled,
-   and evaluated, but the result is ignored and has no ResponseGuard or
-   delivery authority. The observer cannot mutate the live message or target.
+   and evaluated, but the result is ignored and has no delivery authority. The observer cannot mutate the live message or target.
 6. **Durable audit and Deck read model (implemented):** the append-only,
    digest-only ledger and scoped bounded endpoints expose would/effective
    action, risk/repair codes, scope revision, references, and coverage without
@@ -171,8 +170,8 @@ This core is not the full P8 graduation:
 - only one conservative social repair rule exists; affect, timing,
   relationship state, promises, and likely-interpretation rules remain future
   shadow work;
-- `live` remains unwired and maps to off in the shared integration; P8 has no
-  ResponseGuard authority and cannot block, allow, mutate, approve, or send.
+- `live` remains unwired and maps to off in the shared integration; P8 cannot
+  block, allow, mutate, approve, or send.
 
 Until these gaps are closed and shadow evidence is reviewed, keep the mode
 `off` or `shadow`; do not describe P8 as a live delivery gate.

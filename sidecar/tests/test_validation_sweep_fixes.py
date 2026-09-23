@@ -62,7 +62,6 @@ def dead_graph(monkeypatch, tmp_path):
     monkeypatch.setattr(host, "_graph", graph)
     monkeypatch.setattr(host, "_presence_store", None)
     monkeypatch.setattr(host, "_contacts_store", None)
-    monkeypatch.setattr(host, "_context_provenance", None)
     monkeypatch.setattr(host, "_telemetry", None)
     return graph
 
@@ -102,30 +101,6 @@ async def test_turns_sync_does_not_greenlight_failed_ingestion(app, dead_graph):
     assert data["errors"], "record_turn failure must be reported, not swallowed"
     assert "record_turn failed" in data["errors"][0]
     assert data["skipped_reason"] == "graph_record_failed"
-
-
-# ---------------------------------------------------------------------------
-# 2. Built-in skills must actually execute through SkillExecutor.invoke
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_builtin_skills_actually_execute():
-    from protagine.skills.executor import SkillExecutor
-    from protagine.skills.registry import SkillRegistry
-    from protagine.skills.security.guards import CapabilityGuard
-    from protagine.skills.security.scanner import ASTScanner
-
-    registry = SkillRegistry()
-    assert "subsystem_health" in registry.list_skills()
-    executor = SkillExecutor(
-        registry=registry, guard=CapabilityGuard(), scanner=ASTScanner(),
-    )
-    # Before the fix this raised
-    # "object SubsystemHealthSkill can't be used in 'await' expression"
-    # (the endpoint surfaced it as a 500) for EVERY built-in skill.
-    result = await executor.invoke("subsystem_health", {})
-    assert result.status == "success", result.error
-    assert result.output == {"result": "no_action"}
 
 
 # ---------------------------------------------------------------------------
@@ -170,38 +145,6 @@ async def test_briefings_returned_and_failures_surface(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. /safety/check must populate session/contact gate context
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_safety_check_populates_gate_context(app, monkeypatch):
-    captured = {}
-
-    class _Gate:
-        async def evaluate(self, payload):
-            captured["payload"] = payload
-            return SimpleNamespace(
-                blocked=False, blocking_layer=None, block_reason=None,
-                flagged_excerpt=None, layer_results=None,
-            )
-
-    monkeypatch.setattr(host, "_response_gate", _Gate())
-    async with _client(app) as client:
-        resp = await client.post("/v1/host/safety/check", json={
-            "identity": {"host_id": "test-host"},
-            "context": {"session_id": "sess-9", "contact_id": "contact-7",
-                        "turn_id": "turn-3"},
-            "response_text": "hello there",
-        })
-    assert resp.status_code == 200
-    payload = captured["payload"]
-    assert payload.session_id == "sess-9", (
-        "gate payload must carry the request's session context")
-    assert payload.target_contact_id == "contact-7"
-    assert payload.turn_id == "turn-3"
-
-
-# ---------------------------------------------------------------------------
 # 5. Memory endpoints: backend-down must be distinguishable from "no data"
 # ---------------------------------------------------------------------------
 
@@ -229,31 +172,6 @@ async def test_health_does_not_claim_unavailable_canonical_memory(app, monkeypat
     assert 'memory' not in data['capabilities']
     assert data['status'] == 'degraded'
     assert 'Canonical source ledger unavailable' in data['notes']['memory']
-
-
-# ---------------------------------------------------------------------------
-# 7a. Invalid job_type is a clear 400, not an unhandled enum ValueError
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_invalid_job_type_is_400_not_500(monkeypatch):
-    from protagine.api.routers import task_queue
-
-    monkeypatch.setattr(task_queue, "_get_queue", lambda: object())
-    app = FastAPI()
-    app.include_router(task_queue.router)
-    async with AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://test",
-    ) as client:
-        resp = await client.post("/v1/host/queue/jobs", json={
-            "job_type": "definitely_not_a_job_type",
-        })
-    assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert detail["code"] == "invalid_job_type"
-    assert "definitely_not_a_job_type" in detail["message"]
-    assert detail["valid_job_types"]
 
 
 # ---------------------------------------------------------------------------

@@ -172,49 +172,6 @@ async def test_golden_thinker_prompt_carries_situation_and_briefs():
 
 # ---- planner goldens ------------------------------------------------------
 
-def _plan_items(*items):
-    return json.dumps(list(items))
-
-
-@pytest.mark.asyncio
-async def test_golden_planner_valid_plan_with_confidence():
-    from protagine.projects.planner import plan_project
-    content = _plan_items(
-        {"ordinal": 1, "description": "Collect the existing notes",
-         "action_kind": "analyze", "depends_on": [], "confidence": 0.9},
-        {"ordinal": 2, "description": "Deliver the summary",
-         "action_kind": "deliver", "depends_on": [1], "confidence": 0.75},
-    )
-    steps = await plan_project(FakeRouter(content), "summarize the notes")
-    assert [s.confidence for s in steps] == [0.9, 0.75]
-    assert steps[1].depends_on == [1]
-
-
-@pytest.mark.asyncio
-async def test_golden_planner_rejects_invented_action_kind():
-    from protagine.projects.planner import plan_project
-    content = _plan_items(
-        {"ordinal": 1, "description": "ok", "action_kind": "analyze"},
-        {"ordinal": 2, "description": "escape the sandbox",
-         "action_kind": "self_modify"},
-    )
-    steps = await plan_project(FakeRouter(content), "objective")
-    assert [s.action_kind for s in steps] == ["analyze"]
-
-
-@pytest.mark.asyncio
-async def test_golden_planner_prompt_composed_via_charter():
-    from protagine.projects.planner import plan_project
-    router = FakeRouter("[]")
-    await plan_project(router, "objective",
-                       boundaries="MUST NOT: touch prod",
-                       self_brief="load high")
-    system = router.messages[0]["content"]
-    assert system.startswith("<charter>")
-    assert "<boundaries>" in system and "touch prod" in system
-    assert "Allowed action kinds" in system     # vocabulary in <context>
-
-
 # ---- trust gate goldens ---------------------------------------------------
 
 def _trust(wins=0, losses=0, stage=None, domain="research"):

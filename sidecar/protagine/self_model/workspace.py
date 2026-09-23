@@ -2249,14 +2249,6 @@ class WorkspaceEngine:
     async def think_once(self) -> Optional[Dict[str, Any]]:
         """Pop the most salient thinkable concern and run one thought.
         Returns the outcome dict, or None if nothing to think about."""
-        # Once P3 is live, every autonomous thought must be a durable queue
-        # job.  Refuse an accidental fallback to the legacy direct LLM path.
-        try:
-            from protagine.cognition.goal_spine import cognition_spine_exclusive
-            if cognition_spine_exclusive():
-                return None
-        except Exception:
-            pass
         if self._thinker is None:
             return None
         concern = None

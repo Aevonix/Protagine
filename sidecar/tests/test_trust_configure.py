@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 import json
 
 import pytest
@@ -106,22 +105,16 @@ async def test_chain_verify_no_chain_returns_invalid():
 
 
 @pytest.mark.asyncio
-async def test_configure_host_preserves_router_and_executor_references(tmp_path, monkeypatch):
-    """A host update reaches retained consumers without replacing tool state."""
+async def test_configure_host_preserves_router_references(tmp_path, monkeypatch):
+    """A host update reaches retained consumers of the shared router."""
     pytest.importorskip("litellm")
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     from protagine.router.router import LLMRouter
-    from protagine.reasoning import ReasoningLoop, ToolExecutor
     previous = LLMRouter(tiers={})
     previous.configure({'provider': 'vllm', 'baseUrl': 'http://127.0.0.1:8080/v1',
                         'models': {'small': 'old-neutral'}})
     retained_extractor = previous
-    tools = ToolExecutor()
-    tools.register("preserved_test_tool", lambda _args: None)
-    loop = ReasoningLoop(model=previous, tools=tools)
     monkeypatch.setattr(host_mod, '_llm_router', previous)
-    monkeypatch.setattr(host_mod, '_tool_executor', tools)
-    monkeypatch.setattr(host_mod, '_reasoning_loop', loop)
     cfg = {'provider': 'vllm', 'baseUrl': 'http://127.0.0.1:8081/v1',
            'apiKey': 'neutral-key', 'models': {'small': 'new-neutral'}}
     app = FastAPI(); app.include_router(host_mod.router)
@@ -129,8 +122,7 @@ async def test_configure_host_preserves_router_and_executor_references(tmp_path,
         resp = await client.post('/v1/host/configure', json={'identity': {'host_id': 'h'}, 'llm': cfg})
         assert resp.status_code == 200, resp.text
         assert resp.json()['routing']['models']['small']['model_id'] == 'openai/new-neutral'
-        assert retained_extractor is host_mod._llm_router is loop._model
-        assert host_mod._reasoning_loop is loop and loop._tools is tools
+        assert retained_extractor is host_mod._llm_router
         old_revision = retained_extractor.routing_status()['config_revision']
         cfg['functionRoles'] = {'vision': ['missing-binding']}
         invalid = await client.post('/v1/host/configure', json={'identity': {'host_id': 'h'}, 'llm': cfg})

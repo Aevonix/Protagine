@@ -3,7 +3,6 @@
 from dataclasses import FrozenInstanceError
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +14,6 @@ from protagine.self_model.situation import (
     SituationObservationV1,
     SituationReducer,
     SituationStore,
-    task_queue_resource_observation,
 )
 
 
@@ -284,97 +282,6 @@ def test_external_service_projection_rejects_invalid_typed_state(monkeypatch):
         JournalSituationAdapter.adapt(
             journal_event("cognition.external.service_state", payload),
         )
-
-
-@pytest.mark.asyncio
-async def test_task_queue_resource_observation_uses_fresh_worker_truth(
-    monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-
-    class Queue:
-        def execution_readiness(self):
-            return {
-                "ready": True,
-                "reason": "scheduler_ready",
-                "routing_ready": True,
-                "routing_reason": "agent_action_routes_ready",
-                "typed_routes": {},
-            }
-
-        async def get_queue_stats(self):
-            return SimpleNamespace(
-                registered_workers=3,
-                active_workers=2,
-                stale_workers=1,
-                available_workers=1,
-                worker_heartbeat_ttl_secs=60.0,
-            )
-
-    item = await task_queue_resource_observation(
-        Queue(), observed_at=NOW,
-    )
-
-    assert item.category == "resource"
-    assert item.entity_id == "task-queue-execution"
-    assert item.state == "available"
-    assert item.active is True
-    assert item.fresh_until == NOW + 60.0
-    assert item.source_kind == "service_probe"
-    assert item.subject_person_id == "person-owner"
-    assert item.viewer_scope == "owner"
-    assert dict(item.attributes) == {
-        "active_workers": 2,
-        "available_workers": 1,
-        "capacity_available": True,
-        "execution_ready": True,
-        "registered_workers": 3,
-        "stale_workers": 1,
-    }
-    assert item.evidence_refs[0].startswith(
-        "health:task-queue-execution:",
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("readiness", "active", "available"),
-    [
-        (False, 1, 1),
-        (True, 0, 0),
-        (True, 1, 0),
-    ],
-)
-async def test_task_queue_resource_observation_never_invents_capacity(
-    readiness,
-    active,
-    available,
-):
-    class Queue:
-        def execution_readiness(self):
-            return {
-                "ready": readiness,
-                "reason": "test",
-                "routing_ready": readiness,
-                "routing_reason": "test",
-                "typed_routes": {},
-            }
-
-        async def get_queue_stats(self):
-            return SimpleNamespace(
-                registered_workers=1,
-                active_workers=active,
-                stale_workers=1 - active,
-                available_workers=available,
-                worker_heartbeat_ttl_secs=60.0,
-            )
-
-    item = await task_queue_resource_observation(
-        Queue(), observed_at=NOW,
-    )
-
-    assert item.state == "unavailable"
-    assert dict(item.attributes)["capacity_available"] is False
 
 
 def test_current_outreach_channel_field_is_supported():

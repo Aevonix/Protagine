@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from protagine.directives.models import normalize_terms
+
+# Generic tokens that carry no discriminating meaning for subject matching.
+_STOPWORDS = frozenset({
+    "the", "a", "an", "to", "of", "on", "in", "for", "with", "about", "at",
+    "my", "your", "me", "you", "it", "that", "this", "any", "some", "and",
+    "or", "please", "just", "really", "anymore", "again", "do", "not", "dont",
+    "don", "ever", "stop", "avoid", "ignore", "never", "leave", "alone",
+    "touch", "is", "are", "be", "when", "if", "should", "would", "can",
+    "track", "tracking", "anything", "everything", "something", "stuff",
+    "thing", "things", "worry", "worrying", "bother", "bothering", "mention",
+    "mentioning", "care", "dealing", "deal", "regarding", "worried",
+})
+_WORD = re.compile(r"[a-z0-9][a-z0-9_+.\-/]*")
+
+
+def normalize_terms(text: Optional[str]) -> List[str]:
+    """Lowercase significant tokens from a subject/target string."""
+    if not text:
+        return []
+    return [t for t in _WORD.findall(str(text).lower()) if t not in _STOPWORDS and len(t) > 1]
 
 
 def situation_signature(text: str) -> str:

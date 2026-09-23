@@ -1,4 +1,6 @@
 """Internal initiative executors are not installed host instruction skills."""
+from types import SimpleNamespace
+
 from httpx import ASGITransport, AsyncClient
 import pytest
 
@@ -11,6 +13,8 @@ from test_turn_source_evidence import source_app
 @pytest.mark.asyncio
 async def test_internal_executor_registry_is_not_advertised_in_turn_context(source_app, tmp_path, monkeypatch):
     registry = SkillRegistry()
+    for name in ('behavioral_correction', 'knowledge_acquisition'):
+        registry.register(SimpleNamespace(skill_name=name, skill_id=name, __doc__='An internal executor.'))
     monkeypatch.setattr(host, '_skills_registry', registry)
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     names = registry.list_skills()

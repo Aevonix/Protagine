@@ -136,11 +136,10 @@ def _parse_obj(content: str) -> Optional[dict]:
 
 class WorldLLMExtractor:
     def __init__(self, store: Any, *, graph: Any = None,
-                 directive_manager: Any = None, journal: Any = None,
+                 journal: Any = None,
                  self_model: Any = None, source_ledger: Any = None, router_provider: Any = None) -> None:
         self._store = store
         self._graph = graph
-        self._directives = directive_manager
         self._journal = journal
         self._self_model = self_model
         self._source_ledger = source_ledger
@@ -250,24 +249,6 @@ class WorldLLMExtractor:
             logger.debug("world llm-extract call failed: %s", exc)
             return None
 
-    def _boundary_ok(self, name: str) -> bool:
-        if self._directives is None:
-            # No directive manager configured: nothing to check against
-            # (distinct from "checked and allowed" — see log line).
-            logger.debug("world llm-extract boundary UNCHECKED for %r "
-                         "(no directive manager)", name)
-            return True
-        try:
-            from protagine.directives import Action
-            return self._directives.check(
-                Action(kind="populate", text=name, target=name)).allowed
-        except Exception:
-            # Fail closed, matching directives.guard.boundary_fail_closed():
-            # an error while evaluating an owner boundary must refuse.
-            logger.warning("world llm-extract boundary check errored for %r "
-                           "— failing closed", name, exc_info=True)
-            return False
-
     # -- supervised rung (H1.5) -----------------------------------------------
 
     def _effective_mode(self) -> str:
@@ -370,9 +351,6 @@ class WorldLLMExtractor:
                         or conf < _MIN_CONF
                         or _looks_like_fragment(name)
                         or _is_low_quality(name, etype)):
-                    report["skipped"] += 1
-                    continue
-                if not self._boundary_ok(name):
                     report["skipped"] += 1
                     continue
                 eid = await self._upsert(name, etype, conf, mode, report)

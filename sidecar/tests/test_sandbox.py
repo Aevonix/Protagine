@@ -18,24 +18,10 @@ from onekey import (
     anonymous_authority,
     required_scope,
 )
-from protagine.directives import Verdict
 from protagine.sandbox import SandboxManager, resolve_limits
 from protagine.sandbox.backend import (
     DisabledSandbox, DockerSandbox, SandboxLimits, SandboxResult,
 )
-
-
-class _FakeDirectives:
-    def __init__(self, allowed: bool, reason: str = "ok") -> None:
-        self._v = Verdict(allowed=allowed, reason=reason)
-
-    def check(self, action):  # noqa: ARG002
-        return self._v
-
-
-class _BrokenDirectives:
-    def check(self, action):  # noqa: ARG002
-        raise RuntimeError("directive store unavailable")
 
 
 class _MockBackend:
@@ -151,42 +137,6 @@ def test_flagged_but_approved_proceeds(monkeypatch):
     mgr = SandboxManager()
     out = mgr.run("print(1)", purpose="p", owner_directed=False, approved=True)
     assert out.get("dry_run") is True
-
-
-# -- boundary gate --------------------------------------------------------
-
-def test_boundary_blocks_run(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_SANDBOX_MODE", "live")
-    mgr = SandboxManager(directive_manager=_FakeDirectives(False, "leave prod alone"))
-    backend = _MockBackend()
-    mgr._backend = backend
-    out = mgr.run("import prod", purpose="poke prod", owner_directed=True)
-    assert out["ran"] is False and out["reason"] == "boundary_blocked"
-    assert backend.calls == []
-
-
-def test_boundary_exception_fails_closed(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_SANDBOX_MODE", "live")
-    mgr = SandboxManager(directive_manager=_BrokenDirectives())
-    backend = _MockBackend()
-    mgr._backend = backend
-    out = mgr.run("print(1)", purpose="boundary failure",
-                  owner_directed=True)
-    assert out == {
-        "ran": False,
-        "reason": "boundary_blocked",
-        "detail": "boundary_check_error",
-        "mode": "live",
-    }
-    assert backend.calls == []
-
-
-def test_boundary_without_directives_reports_unchecked():
-    """No directive manager => the verdict must say "boundary_unchecked",
-    never the fabricated "ok" of a real allow."""
-    verdict = SandboxManager()._boundary_ok("some purpose", "print(1)")
-    assert verdict["allowed"] is True
-    assert verdict["reason"] == "boundary_unchecked"
 
 
 # -- server-side limits (caller cannot widen) ----------------------------

@@ -5,15 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import shutil
-from types import SimpleNamespace
 
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
 import pytest
 
-from onekey import RequestAuthority, required_scope
-from protagine.api.middleware import ApiKeyMiddleware
-from protagine.api.routers import host
+from onekey import RequestAuthority
 from protagine.cognition.external_events import (
     ExternalCognitionEventV1,
     ExternalEventConflict,
@@ -22,9 +17,6 @@ from protagine.cognition.external_events import (
     ExternalEventValidationError,
 )
 from protagine.events.journal import append_event_record, replay_events
-from protagine.projects import ProjectEngine, ProjectStore
-from protagine.work_orders import QueueWorkOrderAdapter
-from onekey import KEY
 
 
 NOW = datetime(2026, 7, 12, 20, 0, tzinfo=timezone.utc)
@@ -601,200 +593,5 @@ def test_projected_replay_cleans_stale_event_key_marker(tmp_path, monkeypatch):
     restarted = ExternalEventIntake(ExternalEventInboxStore(str(db_path)))
     assert restarted.ingest(event, now=NOW) == receipt
     assert list((journal_dir / ".event-keys").iterdir()) == []
-
-
-def _principal(principal, secret, scopes, *, viewer, audiences):
-    return {
-        "principal": principal,
-        "status": "active",
-        "scopes": list(scopes),
-        "viewer_person_id": viewer,
-        "person_ids": [viewer],
-        "audiences": list(audiences),
-        "credentials": [
-            {"id": "current", "secret": secret, "status": "active"},
-        ],
-    }
-
-
-def _app(tmp_path, principals):
-    keyring = tmp_path / "api-keyring.json"
-    keyring.write_text(json.dumps({"version": 1, "principals": principals}))
-    keyring.chmod(0o600)
-    app = FastAPI()
-    app.add_middleware(ApiKeyMiddleware, api_key=KEY)
-    app.include_router(host.router)
-    return app
-
-
-def _headers(secret, principal):
-    return {
-        "Authorization": f"Bearer " + KEY,
-        "X-Protagine-Principal": principal,
-    }
-
-
-class _OwnerGoalQueue:
-    def __init__(self):
-        self.jobs = {}
-        self.posts = 0
-
-    async def get_job(self, job_id):
-        return self.jobs.get(job_id)
-
-    async def post(self, job):
-        if job.job_id in self.jobs:
-            raise AssertionError("owner Goal replay posted duplicate work")
-        self.jobs[job.job_id] = job
-        self.posts += 1
-        return job.job_id
-
-
-class _AllowOwnerGoalBoundaries:
-    def check(self, _action):
-        return SimpleNamespace(allowed=True, reason="owner goal allowed")
-
-
-
-
-@pytest.mark.asyncio
-async def test_owner_rcs_goal_creates_one_project_initial_work_order_and_receipt_trace(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("PROTAGINE_OWNER_PERSON_ID", "person-owner")
-    monkeypatch.setenv("PROTAGINE_EVENT_JOURNAL_DIR", str(tmp_path / "journal"))
-    intake = ExternalEventIntake(ExternalEventInboxStore(
-        str(tmp_path / "external-events.db"),
-    ))
-    project_path = tmp_path / "projects.db"
-    projects = ProjectStore(str(project_path))
-    queue = _OwnerGoalQueue()
-    engine = ProjectEngine(
-        projects,
-        directive_manager=_AllowOwnerGoalBoundaries(),
-        work_order_adapter=QueueWorkOrderAdapter(
-            SimpleNamespace(queue=queue), project_store=projects,
-        ),
-    )
-    original_intake = host._external_event_intake
-    original_projects = host._project_engine
-    host.set_external_event_intake(intake)
-    host.set_project_engine(engine)
-    app = _app(tmp_path, [
-        _principal(
-            "owner-rcs-publisher", "owner-event-key",
-            ["cognition:events-ingest"],
-            viewer="person-owner", audiences=("owner",),
-        ),
-        _principal(
-            "guest-event-publisher", "guest-event-key",
-            ["cognition:events-ingest"],
-            viewer="person-guest", audiences=(),
-        ),
-    ])
-    owner_goal = _payload(
-        event_id="owner-goal-event-0001",
-        kind="text_turn_observation",
-        summary="Owner-authored text observed by the host",
-        attributes={
-            "turn_id": "owner-goal-turn-0001",
-            "channel": "rcs",
-            "observation": (
-                "Goal: verify all four operator surfaces and return a receipt"
-            ),
-        },
-    )
-    owner_chat = _payload(
-        event_id="owner-chat-event-0002",
-        kind="text_turn_observation",
-        summary="Owner-authored text observed by the host",
-        attributes={
-            "turn_id": "owner-chat-turn-0002",
-            "channel": "rcs",
-            "observation": "Tell me how the four operator surfaces look",
-        },
-    )
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test",
-        ) as client:
-            first = await client.post(
-                "/v1/host/cognition/events",
-                headers=_headers("owner-event-key", "owner-rcs-publisher"),
-                json=owner_goal,
-            )
-            replay = await client.post(
-                "/v1/host/cognition/events",
-                headers=_headers("owner-event-key", "owner-rcs-publisher"),
-                json=owner_goal,
-            )
-            chat = await client.post(
-                "/v1/host/cognition/events",
-                headers=_headers("owner-event-key", "owner-rcs-publisher"),
-                json=owner_chat,
-            )
-    finally:
-        host.set_project_engine(original_projects)
-        host.set_external_event_intake(original_intake)
-        intake.close()
-
-    assert first.status_code == replay.status_code == 200
-    assert chat.status_code == 200
-    assert first.json() == replay.json()
-    assert set(first.json()) == {
-        "schema", "version", "receipt_ref", "event_id", "event_digest",
-        "status", "subject_person_id", "viewer_person_id", "shareability",
-        "scope_digest", "journal_seq", "journal_event_id", "accepted_at",
-        "projected_at", "journal_retained",
-    }
-    assert projects.count() == 1
-    project = projects.list_projects(limit=5)[0]
-    assert project.source == "owner"
-    assert project.status == "active"
-    assert project.objective == (
-        "verify all four operator surfaces and return a receipt"
-    )
-    assert project.subject_person_id == "person-owner"
-    assert project.viewer_scope == "owner"
-    assert project.shareability == "owner_private"
-    assert project.source_event_refs == [
-        "xevent:owner-goal-event-0001",
-        f"event:{first.json()['journal_event_id']}",
-    ]
-
-    steps = projects.steps_for(project.id)
-    assert len(steps) == 1
-    assert steps[0].action_kind == "analyze"
-    assert steps[0].work_order_ref
-    assert queue.posts == 1
-    assert len(queue.jobs) == 1
-    work_order = projects.get_work_order(steps[0].work_order_ref)
-    assert work_order is not None
-    payload = work_order["payload"]
-    assert payload["project_id"] == project.id
-    assert payload["step_id"] == steps[0].id
-    assert payload["action_hint"] == "agent_project_analyze"
-    assert payload["risk_class"] == "internal"
-    assert payload["recipient_scope"] == "owner"
-    assert first.json()["receipt_ref"] in payload["context_refs"]
-    assert "xevent:owner-goal-event-0001" in payload["context_refs"]
-    assert f"event:{first.json()['journal_event_id']}" in payload["context_refs"]
-    assert any(
-        ref.startswith("xdigest:") for ref in payload["context_refs"]
-    )
-    assert any(
-        ref.startswith("journal:") for ref in payload["context_refs"]
-    )
-    projects.close()
-    reopened = ProjectStore(str(project_path))
-    try:
-        persisted_project = reopened.get_project(project.id)
-        persisted_order = reopened.get_work_order(steps[0].work_order_ref)
-        assert persisted_project is not None
-        assert persisted_project.source_event_refs == project.source_event_refs
-        assert persisted_order is not None
-        assert persisted_order["payload"] == payload
-    finally:
-        reopened.close()
 
 

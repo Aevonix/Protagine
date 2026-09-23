@@ -3,11 +3,10 @@ import json
 import sqlite3
 import asyncio
 import threading
-from types import SimpleNamespace
 
 import pytest
 
-from protagine.api.routers import executions, host
+from protagine.api.routers import executions
 from protagine.turns import hermes_kanban, hermes_work, local_work, reported_workers
 from protagine.turns.executions import format_view, request_work_context
 
@@ -23,7 +22,6 @@ def isolate(monkeypatch):
     for module, name in ((hermes_work,'cron_view'), (local_work,'local_work_view'),
                          (reported_workers,'reported_worker_view')):
         monkeypatch.setattr(module, name, lambda **_: dict(empty))
-    monkeypatch.setattr(host, '_task_queue', None)
 
 
 @pytest.mark.asyncio
@@ -35,15 +33,12 @@ async def test_failed_reader_does_not_erase_successful_turn_start_context(monkey
     monkeypatch.setattr(hermes_kanban,'kanban_view', lambda **_: {'items':[],'recent':[], 'available':False,'reason':'not_selected'})
     module, name = (hermes_kanban,'kanban_view') if failed=='native_kanban' else (local_work,'local_work_view')
     monkeypatch.setattr(module,name,broken)
-    async def pending(**_):
-        return {'items':[{'job_id':'independent-worker-job','state':'running'}], 'available':True}
-    monkeypatch.setattr(host,'_task_queue', SimpleNamespace(current_work=pending))
     view = await executions.with_queue_work(base_view(), owner=True)
     rendered = format_view(view)
-    assert 'voice-session' in rendered and 'independent-worker-job' in rendered
+    assert 'voice-session' in rendered
     assert 'unavailable' in rendered and view['work_sources'][failed]['status']=='unavailable'
     projected = request_work_context(view)
-    assert 'real-turn' in projected['text'] and 'independent-worker-job' in projected['text']
+    assert 'real-turn' in projected['text']
 
 
 def board(path, identifier):

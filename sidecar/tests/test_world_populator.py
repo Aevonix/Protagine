@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from protagine.world_model.store import WorldModelStore
 from protagine.world_model.config import WorldModelConfig
 from protagine.world_model.populator import WorldModelPopulator
-from protagine.directives import DirectiveManager, DirectiveStore
 
 
 _TEXT = "I met Alice Chen who works at Acme Corp about the launch. Bob Smith joined too."
@@ -59,36 +58,6 @@ def test_off_mode_is_noop():
             rep = await pop.populate_from_text(_TEXT, "msg-3")
             assert rep.total() == 0
     asyncio.run(run())
-
-
-def test_boundary_skips_prohibited_subject():
-    async def run():
-        async with _store() as s:
-            dm = DirectiveManager(DirectiveStore(db_path=None))
-            dm.capture_from_message("From now on, don't track anything about Acme Corp")
-            pop = WorldModelPopulator(s, directive_manager=dm, mode="shadow")
-            rep = await pop.populate_from_text(_TEXT, "msg-4")
-            created_names = {c["name"] for c in rep.created}
-            # Acme was boundary-skipped; Alice still surfaced
-            assert not any("acme" in n.lower() for n in created_names)
-            assert any("acme" in x.lower() for x in rep.skipped_boundary)
-            assert "Alice Chen" in created_names
-    asyncio.run(run())
-
-
-def test_boundary_check_error_fails_closed():
-    """An exception inside the boundary check must REFUSE (False), never
-    silently allow the very subject the owner may have prohibited."""
-    class _BoomDM:
-        def check(self, action):
-            raise RuntimeError("directive store down")
-
-    pop = WorldModelPopulator(None, directive_manager=_BoomDM(), mode="shadow")
-    assert pop._boundary_ok("Acme Corp") is False
-
-    from protagine.world_model.llm_extract import WorldLLMExtractor
-    ext = WorldLLMExtractor(None, directive_manager=_BoomDM())
-    assert ext._boundary_ok("Acme Corp") is False
 
 
 def test_dedup_within_message():

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -35,9 +32,6 @@ async def client(app):
 # ---------------------------------------------------------------------------
 
 SUBSYSTEMS = [
-    ("protagine.reasoning.loop", "ReasoningLoop"),
-    ("protagine.reasoning.executor", "ToolExecutor"),
-    ("protagine.gate.pipeline", "ResponseGate"),
     ("protagine.intelligence.graph.client", "ProtagineGraph"),
     ("protagine.intelligence.cognition.metalearner", "MetaLearner"),
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
@@ -83,17 +77,6 @@ def test_openapi_spec_export():
     paths = spec.get("paths", {})
     assert len(schemas) >= 50, f"Only {len(schemas)} schemas"
     assert len(paths) >= 25, f"Only {len(paths)} paths"
-
-
-def test_unrecognised_guard_mode_refuses():
-    """A PROTAGINE_GUARD_MODE typo must refuse loudly, never silently shadow."""
-    from protagine.gate.response_guard import GuardMode
-    from protagine.server import _resolve_guard_mode
-    assert _resolve_guard_mode(None) is GuardMode.SHADOW
-    assert _resolve_guard_mode("shadow") is GuardMode.SHADOW
-    assert _resolve_guard_mode("ENFORCE") is GuardMode.ENFORCE
-    with pytest.raises(RuntimeError):
-        _resolve_guard_mode("enforec")   # the typo that used to silently shadow
 
 
 # ---------------------------------------------------------------------------
@@ -171,41 +154,6 @@ async def test_enriched_context(client):
         "message": "hello",
     })
     assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# Reasoning
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_reasoning_turn_not_wired(client):
-    resp = await client.post("/v1/host/reasoning/turn", json={
-        "identity": {"host_id": "test"},
-        "context": {"session_id": "s1", "contact_id": "c1"},
-        "messages": [{"role": "user", "content": "hello"}],
-    })
-    assert resp.status_code == 501
-
-
-# ---------------------------------------------------------------------------
-# Safety
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_safety_check_unavailable_when_gate_missing(client, monkeypatch):
-    """No response gate => 503 + decision "unavailable", NEVER "pass" —
-    a caller must not mistake "not evaluated" for "evaluated and clean"."""
-    from protagine.api.routers import host as host_mod
-    monkeypatch.setattr(host_mod, "_response_gate", None)
-    resp = await client.post("/v1/host/safety/check", json={
-        "identity": {"host_id": "test"},
-        "context": {"session_id": "s1", "contact_id": "c1"},
-        "response_text": "Hello!",
-    })
-    assert resp.status_code == 503
-    data = resp.json()
-    assert data["decision"] == "unavailable"
-    assert data["blocked"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -493,93 +441,6 @@ def test_setup_wizard_import():
     """Verify setup module imports correctly."""
     from protagine.setup import run_init
     assert callable(run_init)
-
-
-# ---------------------------------------------------------------------------
-# ReasoningLoop unit tests
-# ---------------------------------------------------------------------------
-
-def test_tool_call_extraction():
-    """Verify tool call extraction from a mock LiteLLM response."""
-    from protagine.reasoning.loop import ReasoningLoop
-
-    class MockFunc:
-        name = "read_file"
-        arguments = '{"path": "/tmp/test"}'
-
-    class MockToolCall:
-        id = "tc_123"
-        function = MockFunc()
-
-    class MockMessage:
-        tool_calls = [MockToolCall()]
-
-    class MockChoice:
-        message = MockMessage()
-
-    class MockResponse:
-        choices = [MockChoice()]
-
-    result = ReasoningLoop._extract_tool_calls(MockResponse())
-    assert len(result) == 1
-    assert result[0]["name"] == "read_file"
-    assert result[0]["arguments"] == {"path": "/tmp/test"}
-
-
-def test_tool_call_extraction_empty():
-    from protagine.reasoning.loop import ReasoningLoop
-    assert ReasoningLoop._extract_tool_calls(None) == []
-    assert ReasoningLoop._extract_tool_calls(type("R", (), {"choices": []})()) == []
-
-
-def test_build_assistant_message():
-    from protagine.reasoning.loop import ReasoningLoop
-    msg = ReasoningLoop._build_assistant_message(None, "hello", [])
-    assert msg["role"] == "assistant"
-    assert msg["content"] == "hello"
-
-    msg_with_tools = ReasoningLoop._build_assistant_message(
-        None, "", [{"id": "tc_1", "name": "run", "arguments": {"cmd": "ls"}}]
-    )
-    assert msg_with_tools["tool_calls"]
-    assert msg_with_tools["tool_calls"][0]["function"]["name"] == "run"
-
-
-# ---------------------------------------------------------------------------
-# ToolExecutor unit tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_tool_executor_unknown_tool():
-    """Unknown tools return a structured error envelope so the LLM can
-    see the miss and adjust — the executor does NOT defer back to the
-    host (that earlier design was superseded when Protagine grew its own
-    native-tool surface)."""
-    from protagine.reasoning.executor import ToolExecutor
-    executor = ToolExecutor()
-    results = await executor.execute_batch([
-        {"id": "tc_1", "name": "unknown_tool", "arguments": {}}
-    ])
-    assert len(results) == 1
-    parsed = json.loads(results[0]["content"])
-    assert parsed["error"] is True
-    assert "unknown_tool" in parsed["message"]
-    assert "available_tools" in parsed
-
-
-@pytest.mark.asyncio
-async def test_tool_executor_custom_handler():
-    from protagine.reasoning.executor import ToolExecutor
-
-    async def mock_handler(args):
-        return f"result: {args.get('x', 0)}"
-
-    executor = ToolExecutor(handlers={"add": mock_handler})
-    results = await executor.execute_batch([
-        {"id": "tc_1", "name": "add", "arguments": {"x": 42}}
-    ])
-    assert len(results) == 1
-    assert results[0]["content"] == "result: 42"
 
 
 # ---------------------------------------------------------------------------

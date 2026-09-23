@@ -14,7 +14,7 @@ def child(tmp_path, code, *arguments):
     env = {key: value for key, value in os.environ.items()
            if not key.startswith('PROTAGINE_')}
     env.update(HOME=str(tmp_path), PROTAGINE_SKIP_DOTENV='1',
-               PYTHONPATH=os.pathsep.join([str(root/'sidecar'), str(root/'hostworker')]))
+               PYTHONPATH=str(root/'sidecar'))
     return subprocess.run([sys.executable, '-c', code, *arguments], env=env,
         cwd=tmp_path, capture_output=True, text=True, timeout=20)
 

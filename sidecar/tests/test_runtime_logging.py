@@ -42,7 +42,6 @@ try:
     assert server.started
     for path,method in [('/v1/host/health','GET'),('/v1/host/memory/sources/erasures','GET'),
         ('/v1/host/transport/ingress/receipts?ids=bounded-fixture','GET'),
-        ('/v1/host/queue/jobs/pending','GET'),('/v1/host/queue/stats','GET'),
         ('/v1/host/health?slow=1','GET'),('/v1/host/health?fail=1','GET'),
         ('/v1/host/health','POST'),('/v1/host/unusual','GET')]:
         try:
@@ -52,7 +51,7 @@ finally:
     server.should_exit=True;thread.join(5);assert not thread.is_alive();sock.close()
 value=log.read_text()
 assert 'GET /v1/host/health HTTP' not in value,value
-for route in ('sources/erasures','ingress/receipts','queue/jobs/pending','queue/stats'):
+for route in ('sources/erasures','ingress/receipts'):
     assert route not in value,value
 for marker in ('health?slow=1','health?fail=1','POST /v1/host/health','GET /v1/host/unusual','503','elapsed_ms='):
     assert marker in value,(marker,value)

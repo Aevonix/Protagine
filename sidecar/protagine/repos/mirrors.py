@@ -46,12 +46,10 @@ class RepoMirrorManager:
         self,
         mirror_dir: str,
         config: Optional[Dict[str, Dict[str, str]]] = None,
-        directive_manager: Any = None,
     ) -> None:
         self._dir = Path(mirror_dir)
         self._config = config if config is not None else parse_mirror_config(
             os.environ.get("PROTAGINE_REPO_MIRRORS", ""))
-        self._directives = directive_manager
         self._last_refresh: Dict[str, float] = {}
 
     def configured(self) -> Dict[str, Dict[str, str]]:
@@ -63,27 +61,12 @@ class RepoMirrorManager:
         p = self._dir / name
         return str(p) if (p / ".git").exists() or (p / "HEAD").exists() else None
 
-    # -- boundary gate --------------------------------------------------
-    def _boundary_ok(self, name: str, extra: str = "") -> Any:
-        if self._directives is None:
-            return None
-        try:
-            from protagine.directives import Action
-            verdict = self._directives.check(Action(
-                kind="repo_read", text=f"{name} {extra}", target=name))
-            return verdict if not verdict.allowed else None
-        except Exception:
-            return None
-
     # -- sync -------------------------------------------------------------
     def refresh(self, name: str, min_interval_secs: float = 300.0) -> Dict[str, Any]:
         """Clone or pull one mirror (read-only; no credentials added)."""
         info = self._config.get(name)
         if info is None:
             return {"ok": False, "reason": "unknown_repo"}
-        blocked = self._boundary_ok(name, "refresh")
-        if blocked is not None:
-            return {"ok": False, "reason": blocked.reason}
         now = time.time()
         if now - self._last_refresh.get(name, 0) < min_interval_secs and self.path_for(name):
             return {"ok": True, "action": "fresh"}
@@ -114,9 +97,6 @@ class RepoMirrorManager:
 
     # -- read tools ---------------------------------------------------------
     def list_files(self, name: str, subpath: str = "", limit: int = 200) -> Dict[str, Any]:
-        blocked = self._boundary_ok(name, subpath)
-        if blocked is not None:
-            return {"error": blocked.reason, "status": "boundary_refused"}
         root = self.path_for(name)
         if root is None:
             return {"error": f"repo {name!r} not mirrored", "status": "unavailable"}
@@ -138,9 +118,6 @@ class RepoMirrorManager:
         return {"repo": name, "path": subpath or "/", "count": len(files), "files": files}
 
     def read_file(self, name: str, path: str, max_bytes: int = _MAX_READ_BYTES) -> Dict[str, Any]:
-        blocked = self._boundary_ok(name, path)
-        if blocked is not None:
-            return {"error": blocked.reason, "status": "boundary_refused"}
         root = self.path_for(name)
         if root is None:
             return {"error": f"repo {name!r} not mirrored", "status": "unavailable"}
@@ -158,9 +135,6 @@ class RepoMirrorManager:
 
     def search(self, name: str, query: str, glob: str = "",
                max_results: int = 40) -> Dict[str, Any]:
-        blocked = self._boundary_ok(name, query)
-        if blocked is not None:
-            return {"error": blocked.reason, "status": "boundary_refused"}
         root = self.path_for(name)
         if root is None:
             return {"error": f"repo {name!r} not mirrored", "status": "unavailable"}

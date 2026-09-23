@@ -22,7 +22,7 @@ def test_wheel_contains_the_adapter_modules_and_nothing_else(artifacts):
         assert provider == {f"{m}.py" for m in PROVIDER_MODULES} | {"plugin.yaml", "SKILL.md"}, provider
         for module in ADAPTER_MODULES:
             assert archive.read(f"protagine_hermes/{module}.py") == (ROOT / f"plugins/hermes-plugin/{module}.py").read_bytes()
-        assert not any(n.startswith(("protagine/", "protagine_hostworker/")) or "/ops/" in n or "bundled_skills" in n
+        assert not any(n.startswith("protagine/") or "/ops/" in n or "bundled_skills" in n
                        for n in names)
         metadata = BytesParser().parsebytes(archive.read(next(n for n in names if n.endswith(".dist-info/METADATA"))))
         for package in ("protagine_hermes", "protagine_memory"):
@@ -35,7 +35,7 @@ def test_wheel_contains_the_adapter_modules_and_nothing_else(artifacts):
     with tarfile.open(source) as archive:
         names = archive.getnames()
         assert any(n.endswith("/plugins/hermes-plugin/guard.py") for n in names)
-        assert not any("hostworker" in n or "/ops/" in n for n in names)
+        assert not any("/ops/" in n for n in names)
 
 
 def test_adapter_line_count_is_reported():

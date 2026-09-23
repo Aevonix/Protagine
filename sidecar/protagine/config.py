@@ -387,7 +387,6 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
                                              else "protagine-contacts.db")),
         "PROTAGINE_EMBED_PROVIDER": "openai_api" if config.get("router.embed_url") else "skip",
         "PROTAGINE_GRAPH_ENABLED": "false",
-        "PROTAGINE_EMBEDDED_WORKER_ENABLED": "false",
     }
     if key:
         values["PROTAGINE_API_KEY"] = key

@@ -7,15 +7,11 @@ etc.) as a plugin via the ``/v1/host`` API surface.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 # CLI and direct service starts use the same selected private instance.
 from protagine.util.instance import load_environment
@@ -28,11 +24,8 @@ from protagine.api.routers.host import (
     v2_router as host_v2_router,
     set_llm_router,
     set_chain_manager,
-    set_reasoning_loop,
-    set_tool_executor,
     set_graph,
     set_consolidator,
-    set_response_gate,
     set_signal_collector,
     set_embedder,
     set_reranker,
@@ -51,13 +44,10 @@ from protagine.api.routers.host import (
     set_skill_executor,
     set_secrets_manager,
     set_session_store,
-    set_task_queue,
     set_commitment_store,
     set_affect_store,
     set_facts_store,
     set_p8_runtime,
-    set_context_provenance_store,
-    set_response_guard,
     set_engagement_store,
     set_comms_log,
     set_preference_learner,
@@ -72,14 +62,8 @@ from protagine.api.routers.host import (
     set_websocket_manager,
     set_telemetry,
     set_session_report_store,
-    set_agent_bridge,
     set_situation_spine,
-    set_cognition_evidence,
-    set_drive_governance,
-    set_cognition_spine,
-    set_cognition_attachment_status,
     set_external_event_intake,
-    set_worker_governor,
     supported_capabilities,
 )
 
@@ -91,117 +75,6 @@ logger = logging.getLogger(__name__)
 def _state_dir() -> Path:
     """Resolve the Protagine state directory (wrapper for get_state_dir)."""
     return get_state_dir()
-
-
-def _embedded_worker_enabled() -> bool:
-    """Whether this process may construct its in-process execution worker.
-
-    Generic installs retain the historical default (enabled). Deployment
-    cutovers can pin ``PROTAGINE_EMBEDDED_WORKER_ENABLED=false`` while keeping
-    queue maintenance, health, and durable outcome reconciliation online.
-    """
-
-    raw = os.environ.get(
-        "PROTAGINE_EMBEDDED_WORKER_ENABLED", "true"
-    ).strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    raise RuntimeError(
-        "PROTAGINE_EMBEDDED_WORKER_ENABLED must be true or false"
-    )
-
-
-def _configured_embedded_worker_enabled() -> bool:
-    """Read the same posture for startup wiring outside worker construction.
-
-    The host's release attestation intentionally reserves
-    ``_embedded_worker_enabled`` for the exact lifespan branch that constructs
-    ``WorkerNode``. Cognition readiness still needs the same strict setting
-    before that branch, so keep this non-construction reader behaviorally
-    identical and lock both parsers together in lifecycle tests.
-    """
-
-    raw = os.environ.get(
-        "PROTAGINE_EMBEDDED_WORKER_ENABLED", "true"
-    ).strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    raise RuntimeError(
-        "PROTAGINE_EMBEDDED_WORKER_ENABLED must be true or false"
-    )
-
-
-def _resolve_guard_mode(raw: Optional[str]):
-    """Strict PROTAGINE_GUARD_MODE parser: 'enforce', 'shadow', or unset only.
-
-    An unrecognised value (e.g. a typo of 'enforce') must never silently
-    fall back to shadow — that would quietly disable the enforcement the
-    operator asked for. Log loudly and raise; the ResponseGuard then stays
-    uninitialized and the gate endpoints report unavailable (fail closed).
-    """
-    from protagine.gate.response_guard import GuardMode
-    value = (raw or "").strip().lower()
-    if value in ("", "shadow"):
-        return GuardMode.SHADOW
-    if value == "enforce":
-        return GuardMode.ENFORCE
-    logger.error(
-        "PROTAGINE_GUARD_MODE=%r is not a recognised guard mode "
-        "(expected 'enforce' or 'shadow') — refusing to silently "
-        "fall back to shadow", raw,
-    )
-    raise RuntimeError(
-        f"PROTAGINE_GUARD_MODE must be 'enforce' or 'shadow', got {raw!r}"
-    )
-
-
-def _cognition_owner_spec(*, router, node_id: str):
-    """Build the mechanically isolated embedded ThoughtJobV1 owner."""
-
-    from protagine.task_queue.handlers.inference import (
-        ThoughtOnlyInferenceHandler,
-    )
-    from protagine.task_queue.models import JobType, WorkerCapabilities
-    from protagine.task_queue.routing import THOUGHT_ROUTE
-
-    handlers = {
-        JobType.THOUGHT: ThoughtOnlyInferenceHandler(router),
-    }
-    capabilities = WorkerCapabilities(
-        node_id=node_id,
-        capabilities={"cognition_scoped", THOUGHT_ROUTE},
-        job_types={JobType.THOUGHT},
-        max_concurrent=1,
-    )
-    return handlers, capabilities
-
-
-def _cognition_worker_profile(*, configured_mode: str, attached: bool) -> str:
-    """Select the embedded worker profile without inspecting partial objects.
-
-    A configured cognition owner is never allowed to become a generic action
-    worker merely because P3 attachment failed.  The caller must hold worker
-    startup when this returns ``held``.
-    """
-
-    mode = str(configured_mode or "off").strip().lower()
-    if mode in {"shadow", "live"}:
-        return "thought_only" if attached else "held"
-    return "generic"
-
-
-def _queue_seconds_env(name: str, default: float) -> float:
-    try:
-        value = float(os.environ.get(name, str(default)))
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be numeric") from exc
-    if not math.isfinite(value) or value <= 0:
-        raise RuntimeError(f"{name} must be positive")
-    return value
 
 
 def _attach_p8_runtime(*, state_dir: Path, facts_store, graph=None):
@@ -291,438 +164,12 @@ def _build_research_pipeline(*, graph, p8_runtime):
     )
 
 
-def _work_order_runtime_hold_reason(job, project_store, concern_store) -> str:
-    """Resolve one canonical cognition WorkOrder to its current source hold."""
+def _attach_situation_spine(*, state_dir: Path):
+    """Attach the P6 situation observer when its migration flag is on.
 
-    from collections.abc import Mapping
-    from protagine.self_model.event_concerns import (
-        project_turn_concern_hold_reason,
-    )
-    from protagine.task_queue.models import JobType
-    from protagine.work_orders import WorkOrderV1
-
-    payload = getattr(job, "payload", None)
-    if not isinstance(payload, Mapping) or payload.get("schema") != "WorkOrderV1":
-        return ""
-    try:
-        order = WorkOrderV1.from_payload(payload)
-    except Exception:
-        # A malformed row is not a canonical WorkOrder.  Fail closed only
-        # when it asserts the cognition-spine source this fence owns; generic
-        # and external queue jobs retain their existing lifecycle.
-        if str(payload.get("source") or "") == "cognition_spine":
-            raise
-        return ""
-    if order.source != "cognition_spine":
-        return ""
-    if (
-        getattr(job, "job_type", None) is not JobType.AGENT_ACTION
-        or str(getattr(job, "job_id", "") or "") != order.work_order_id
-    ):
-        raise RuntimeError("canonical cognition WorkOrder queue identity mismatch")
-    ledger = project_store.get_work_order(order.work_order_id)
-    if ledger is None:
-        raise RuntimeError("canonical cognition WorkOrder ledger row unavailable")
-    ledger_order = WorkOrderV1.from_payload(ledger.get("payload") or {})
-    if (
-        ledger_order.work_order_digest != order.work_order_digest
-        or str(ledger.get("work_order_digest") or "")
-        != order.work_order_digest
-        or str(ledger.get("project_id") or "") != order.project_id
-        or str(ledger.get("step_id") or "") != order.step_id
-    ):
-        raise RuntimeError("canonical cognition WorkOrder ledger binding mismatch")
-    project = project_store.get_project(order.project_id)
-    if project is None or str(project.source or "") != order.source:
-        raise RuntimeError("canonical cognition WorkOrder project binding mismatch")
-    return project_turn_concern_hold_reason(project, concern_store)
-
-
-_COGNITION_RUNTIME_INITIALIZATION_HOLD = (
-    "cognition_runtime_initialization_pending"
-)
-
-
-def _cognition_work_order_startup_hold_reason(job) -> str:
-    """Hold only cognition WorkOrders until their durable stores are wired.
-
-    This deliberately relies only on the queue payload declaration.  The
-    digest-bound verifier cannot run until ProjectStore initialization has
-    succeeded, so a payload asserting the owned source must remain held even
-    when the rest of that payload is malformed.
-    """
-
-    from collections.abc import Mapping
-
-    payload = getattr(job, "payload", None)
-    if not isinstance(payload, Mapping):
-        return ""
-    if (
-        payload.get("schema") == "WorkOrderV1"
-        and str(payload.get("source") or "") == "cognition_spine"
-    ):
-        return _COGNITION_RUNTIME_INITIALIZATION_HOLD
-    return ""
-
-
-def _install_cognition_work_order_startup_fence(task_queue) -> None:
-    """Install the pre-initialization queue fence when a queue is present."""
-
-    if task_queue is not None:
-        task_queue.queue.configure_runtime_claim_hold(
-            _cognition_work_order_startup_hold_reason,
-        )
-
-
-def _install_cognition_work_order_runtime_fence(
-    task_queue, project_store, concern_store,
-) -> None:
-    """Replace the startup fence with the complete digest-bound verifier."""
-
-    if task_queue is None:
-        return
-
-    def _runtime_hold(job) -> str:
-        return _work_order_runtime_hold_reason(
-            job, project_store, concern_store,
-        )
-
-    task_queue.queue.configure_runtime_claim_hold(_runtime_hold)
-
-
-def _attach_cognition_spine(
-    *,
-    state_dir: Path,
-    task_queue,
-    workspace,
-    concern_store,
-    project_store,
-    project_engine,
-    directive_manager,
-    llm_router=None,
-    embedded_worker_enabled: Optional[bool] = None,
-    proposal_store=None,
-):
-    """Attach the typed P3 cognition spine when its migration flag is on.
-
-    This is kept as one small, directly testable startup seam.  In particular,
-    the default-off path must not create a database, and an enabled spine must
-    never fall back to a partial attachment when a durable dependency is
-    absent.
-    """
-
-    from protagine.cognition.goal_spine import (
-        CognitionSpine,
-        CognitionSpineStore,
-        ThoughtQueueAdapter,
-        ThoughtProposalPresentationSink,
-        cognition_spine_enabled,
-        cognition_spine_mode,
-    )
-    from protagine.cognition.runtime import CognitionRuntimeContractV1
-
-    configured_mode = cognition_spine_mode()
-    configured_catalog = (
-        ["thought"] if configured_mode in {"shadow", "live"} else []
-    )
-    set_cognition_spine(None, attachment_status={
-        "configured_mode": configured_mode,
-        "state": "attaching" if cognition_spine_enabled() else "off",
-        "reason": (
-            "attachment_in_progress" if cognition_spine_enabled()
-            else "cognition_not_configured"
-        ),
-        "configured_handler_catalog": configured_catalog,
-        "effective_handler_catalog": [],
-    })
-    if not cognition_spine_enabled():
-        return None
-
-    required = {
-        "task_queue": task_queue,
-        "workspace": workspace,
-        "concern_store": concern_store,
-        "project_store": project_store,
-        "project_engine": project_engine,
-        "directive_manager": directive_manager,
-    }
-    missing = sorted(name for name, value in required.items() if value is None)
-    if missing:
-        raise RuntimeError(
-            "P3 cognition spine missing durable dependencies: "
-            + ", ".join(missing)
-        )
-
-    if cognition_spine_mode() == "live":
-        from protagine.directives import Action
-        from protagine.projects.models import projects_mode
-
-        if projects_mode() != "live":
-            raise RuntimeError(
-                "P3 live cognition requires ProjectEngine live mode"
-            )
-        if getattr(project_engine, "_work_orders", None) is None:
-            raise RuntimeError(
-                "P3 live cognition requires the canonical WorkOrder adapter"
-            )
-        try:
-            # This is a read-only health probe. An active boundary (including
-            # an observation blackout) may deny it; either verdict proves the
-            # store was readable. Only an exception or malformed result is
-            # unhealthy. A read avoids manufacturing a global-pause action
-            # block during startup.
-            boundary_probe = directive_manager.check(Action(
-                kind="read",
-                text="protagine cognition startup boundary health probe",
-                target="cognition startup",
-                high_risk=False,
-            ))
-        except Exception as exc:
-            raise RuntimeError(
-                "P3 live cognition requires a readable DirectiveGuard"
-            ) from exc
-        if not isinstance(getattr(boundary_probe, "allowed", None), bool):
-            raise RuntimeError(
-                "P3 live cognition received a malformed DirectiveGuard verdict"
-            )
-        if llm_router is None:
-            raise RuntimeError(
-                "P3 live cognition requires the ThoughtJobV1 LLM router"
-            )
-        enabled = (
-            _configured_embedded_worker_enabled()
-            if embedded_worker_enabled is None
-            else bool(embedded_worker_enabled)
-        )
-        if not enabled:
-            raise RuntimeError(
-                "P3 live cognition requires the embedded strict ThoughtJobV1 "
-                "handler"
-            )
-        configured_owner = os.environ.get(
-            "PROTAGINE_THOUGHT_WORKER_NODE_ID", ""
-        ).strip()
-        if not configured_owner:
-            raise RuntimeError(
-                "P3 live cognition requires PROTAGINE_THOUGHT_WORKER_NODE_ID"
-            )
-        from protagine.chain.node import get_or_create_node_id
-
-        actual_owner = get_or_create_node_id(state_dir)
-        if configured_owner != actual_owner:
-            raise RuntimeError(
-                "PROTAGINE_THOUGHT_WORKER_NODE_ID does not match the local "
-                "cognition worker node"
-            )
-
-    try:
-        project_limit = int(
-            os.environ.get("PROTAGINE_PROJECTS_MAX_CONCURRENT", "3")
-        )
-    except ValueError as exc:
-        raise RuntimeError(
-            "PROTAGINE_PROJECTS_MAX_CONCURRENT must be an integer"
-        ) from exc
-    if not 1 <= project_limit <= 100:
-        raise RuntimeError(
-            "PROTAGINE_PROJECTS_MAX_CONCURRENT must be between 1 and 100"
-        )
-
-    available_capabilities = {
-        value.strip()
-        for value in os.environ.get(
-            "PROTAGINE_COGNITION_AVAILABLE_CAPABILITIES",
-            "memory:read,reasoning,web:read",
-        ).split(",")
-        if value.strip()
-    }
-
-    def _charter(proposal, concern):
-        # Parsing already enforces the typed schema.  This deployment seam
-        # adds a deterministic minimum: a goal needs an objective and cited
-        # evidence from its originating concern.
-        allowed = bool(proposal.objective and proposal.evidence_refs)
-        return allowed, (
-            "typed_goal_with_source_evidence"
-            if allowed
-            else "typed_goal_missing_objective_or_source_evidence"
-        )
-
-    def _situation(proposal, concern):
-        active = project_engine.open_capacity_used()
-        allowed = active < project_limit
-        return allowed, (
-            "capacity_available" if allowed else "project_capacity_exhausted"
-        )
-
-    runtime_bindings = {
-        "charter_store": None,
-        "situation_status": None,
-    }
-
-    def _runtime_contract():
-        from protagine.cognition.drive_governance import (
-            drive_governance_mode,
-        )
-        from protagine.self_model.event_concerns import event_concern_mode
-        from protagine.self_model.workspace import workspace_mode
-
-        active_id = None
-        blockers = []
-        charter_store = runtime_bindings["charter_store"]
-        if drive_governance_mode() == "live" and charter_store is not None:
-            try:
-                active = charter_store.active_revision("default")
-                active_id = active.revision_id if active is not None else None
-            except Exception:
-                blockers.append("active_charter_read_failed")
-        return CognitionRuntimeContractV1.compose(
-            requested_mode=cognition_spine_mode(),
-            workspace_mode=workspace_mode(),
-            event_concern_mode=event_concern_mode(),
-            drive_governance_mode=drive_governance_mode(),
-            charter_revision_id=active_id,
-            charter_store_attached=charter_store is not None,
-            attachment_blockers=tuple(blockers),
-        )
-
-    def _revision_snapshot():
-        try:
-            boundary_payload = directive_manager.context_brief() or ""
-        except Exception:
-            boundary_payload = "directive-store-unavailable"
-        policy_payload = {
-            "goal_admission_policy": "v1",
-            "available_capabilities": sorted(available_capabilities),
-        }
-        try:
-            capacity_payload = {
-                "planning": project_store.count("planning"),
-                "active": project_store.count("active"),
-                "used": project_engine.open_capacity_used(),
-                "limit": project_limit,
-            }
-        except Exception:
-            capacity_payload = {"status": "capacity-store-unavailable"}
-        situation_provider = runtime_bindings["situation_status"]
-        if callable(situation_provider):
-            try:
-                governed_situation = situation_provider()
-            except Exception:
-                governed_situation = {"status": "unavailable"}
-        else:
-            governed_situation = {"status": "p6-not-attached"}
-        situation_payload = {
-            "capacity": capacity_payload,
-            "governed_situation": governed_situation,
-        }
-
-        def _revision(label, payload):
-            encoded = json.dumps(
-                payload, sort_keys=True, separators=(",", ":"), default=str,
-            ).encode("utf-8")
-            return f"{label}:{hashlib.sha256(encoded).hexdigest()[:24]}"
-
-        return {
-            "policy_revision": _revision("policy", policy_payload),
-            "situation_revision": _revision("situation", situation_payload),
-            "boundary_revision": _revision("boundary", boundary_payload),
-        }
-
-    cognition_store = CognitionSpineStore(
-        str(state_dir / "protagine-cognition.db")
-    )
-    spine = CognitionSpine(
-        concern_store=concern_store,
-        cognition_store=cognition_store,
-        project_engine=project_engine,
-        thought_queue=ThoughtQueueAdapter(
-            task_queue, cognition_store=cognition_store
-        ),
-        directive_manager=directive_manager,
-        charter_validator=_charter,
-        situation_validator=_situation,
-        available_capabilities=available_capabilities,
-        enforce_runtime_contract=True,
-        runtime_contract_provider=_runtime_contract,
-        revision_provider=_revision_snapshot,
-        worker_health_provider=(
-            task_queue.queue.execution_readiness
-            if callable(getattr(task_queue.queue, "execution_readiness", None))
-            else None
-        ),
-        proposal_presentation_sink=(
-            ThoughtProposalPresentationSink(proposal_store)
-            if proposal_store is not None else None
-        ),
-        owner_person_id=(
-            os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-            or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-            or "owner"
-        ),
-    )
-    spine._runtime_bindings = runtime_bindings
-    workspace.cognition_spine = spine
-    set_cognition_spine(spine, attachment_status={
-        "configured_mode": configured_mode,
-        "state": "attached",
-        "reason": "cognition_spine_attached_worker_pending",
-        "configured_handler_catalog": configured_catalog,
-        "effective_handler_catalog": [],
-    })
-    return spine
-
-
-def _validator_allowed(result) -> bool:
-    """Interpret P3's existing validator shapes without changing its verdict."""
-
-    if isinstance(result, dict):
-        return result.get("allowed") is True
-    if isinstance(result, (tuple, list)):
-        return bool(result and result[0] is True)
-    return result is True
-
-
-def _situation_failure(reason: str) -> dict:
-    """Stable fail-closed result consumed by P3's policy normalizer."""
-
-    return {
-        "allowed": False,
-        "reason": reason,
-        "evidence_refs": [],
-        "does_not_grant_authority": True,
-    }
-
-
-def _capacity_plus_attachment_failure(original_validator, reason: str):
-    """Preserve an existing P3 denial but never allow past failed P6 startup."""
-
-    def _validator(proposal, concern):
-        try:
-            capacity = original_validator(proposal, concern)
-        except Exception:
-            logger.exception("P3 capacity validator failed during P6 failure")
-            return _situation_failure("capacity_validator_failed_closed")
-        if not _validator_allowed(capacity):
-            return capacity
-        return _situation_failure(reason)
-
-    return _validator
-
-
-def _attach_situation_spine(
-    *,
-    state_dir: Path,
-    cognition_spine,
-    scheduler=None,
-    task_queue=None,
-):
-    """Attach P6 as an observer in shadow and a composed P3 gate in live.
-
-    The off path clears stale in-process router handles before returning and
-    constructs nothing.  Shadow deliberately does not replace P3's situation
-    validator.  Live preserves the exact capacity denial and consults P6 only
-    after capacity allows; any reducer, snapshot, or gate failure is a denial.
+    The off path clears stale in-process handles and constructs nothing. Any
+    other mode attaches the store, the reducer and the gate as an observer;
+    there is no second decision path left for it to compose with.
     """
 
     from protagine.self_model.situation import (
@@ -731,7 +178,6 @@ def _attach_situation_spine(
         SituationStore,
         situation_spine_enabled,
         situation_spine_mode,
-        task_queue_resource_observation,
     )
 
     set_situation_spine(None, None)
@@ -739,117 +185,22 @@ def _attach_situation_spine(
         return None
 
     mode = situation_spine_mode()
-    if mode == "live" and cognition_spine is None:
-        raise RuntimeError("P6 live situation spine requires the P3 cognition spine")
-    original_validator = (
-        getattr(cognition_spine, "_situation", None)
-        if mode == "live" else None
-    )
-    if mode == "live" and not callable(original_validator):
-        raise RuntimeError(
-            "P6 live situation spine requires P3's capacity validator"
-        )
-    queue_resource = getattr(task_queue, "queue", None)
-    if queue_resource is not None and (
-        not callable(getattr(queue_resource, "execution_readiness", None))
-        or not callable(getattr(queue_resource, "get_queue_stats", None))
-    ):
-        raise RuntimeError(
-            "P6 task queue observation requires readiness and worker truth"
-        )
-
     store = SituationStore(str(state_dir / "protagine-situation.db"))
     try:
         reducer = SituationReducer(store)
         gate = AppropriatenessGate()
         try:
             initial_status = reducer.run_once(limit=100)
-        except Exception as exc:  # the live wrapper remains explicitly fail closed
+        except Exception as exc:
             initial_status = {
                 "enabled": True,
                 "mode": mode,
                 "processed": 0,
                 "error": f"initial_reduce_failed:{type(exc).__name__}",
             }
-
-        if scheduler is not None:
-            try:
-                interval = int(
-                    os.environ.get(
-                        "PROTAGINE_SITUATION_REDUCE_INTERVAL_SECONDS", "30"
-                    )
-                )
-            except ValueError:
-                interval = 30
-            interval = max(5, min(3600, interval))
-
-            if queue_resource is None:
-
-                def _reduce_situation():
-                    return reducer.run_once(limit=100)
-
-            else:
-
-                async def _reduce_situation():
-                    observation = await task_queue_resource_observation(
-                        queue_resource,
-                    )
-                    observed = store.ingest(observation)
-                    result = dict(reducer.run_once(limit=100))
-                    result["resource_observation"] = {
-                        "disposition": observed["disposition"],
-                        "observation_id": observation.observation_id,
-                        "state": observation.state,
-                    }
-                    return result
-
-            scheduler.register(
-                "situation_reduce",
-                _reduce_situation,
-                interval_seconds=interval,
-                metadata={
-                    "description": (
-                        "Reduce durable evidence into the scoped P6 situation spine"
-                    ),
-                    "mode": mode,
-                },
-            )
     except Exception:
         store.close()
         raise
-
-    if mode == "live":
-
-        def _capacity_plus_situation(proposal, concern):
-            try:
-                capacity = original_validator(proposal, concern)
-            except Exception:
-                logger.exception("P3 capacity validator failed before P6")
-                return _situation_failure("capacity_validator_failed_closed")
-            if not _validator_allowed(capacity):
-                return capacity
-            try:
-                reduced = reducer.run_once(limit=100)
-                if not isinstance(reduced, dict) or reduced.get("error"):
-                    return _situation_failure("situation_reducer_unhealthy")
-                snapshot = store.snapshot(
-                    subject_person_id=proposal.subject_person_id,
-                    viewer_scope=proposal.viewer_scope,
-                )
-                verdict = gate.for_goal_proposal(proposal, concern, snapshot)
-                if not isinstance(verdict, dict):
-                    return _situation_failure("situation_gate_invalid_result")
-                return verdict
-            except Exception:
-                logger.exception("P6 live gate failed closed")
-                return _situation_failure("situation_gate_failed_closed")
-
-        cognition_spine._situation = _capacity_plus_situation
-
-    runtime_bindings = getattr(cognition_spine, "_runtime_bindings", None)
-    if isinstance(runtime_bindings, dict):
-        runtime_bindings["situation_status"] = reducer.status
-
     set_situation_spine(store, reducer)
     return {
         "mode": mode,
@@ -857,436 +208,6 @@ def _attach_situation_spine(
         "reducer": reducer,
         "gate": gate,
         "initial_status": initial_status,
-        "original_validator": original_validator,
-    }
-
-
-def _attach_cognition_evidence(
-    *,
-    state_dir: Path,
-    project_store,
-    self_model=None,
-    expectations=None,
-    scheduler=None,
-):
-    """Attach the project outbox and optional receipt-derived learning loop.
-
-    Project events are operational truth, so their journal projector remains
-    active even when learning is off. Off mode keeps only a minimal durable
-    passthrough cursor so outcomes already counted by the legacy writer cannot
-    be replayed as new learning after live is re-enabled. Live mode requires
-    the canonical SelfModel and fails closed on an unhealthy initial
-    projection/reduction instead of falling back to self-reported success.
-    """
-
-    from protagine.cognition.evidence_pipeline import (
-        CognitionEvidenceReducer,
-        CognitionEvidenceStore,
-        cognition_evidence_mode,
-    )
-    from protagine.projects.event_outbox import ProjectEventProjector
-
-    mode = cognition_evidence_mode()
-    set_cognition_evidence(None, None, None, {
-        "configured_mode": mode,
-        "state": "attaching" if project_store is not None else "off",
-        "reason": (
-            "attachment_in_progress" if project_store is not None
-            else "project_store_unavailable"
-        ),
-    })
-    if project_store is None:
-        if mode == "live":
-            raise RuntimeError(
-                "live cognition evidence requires the canonical ProjectStore"
-            )
-        return None
-    if mode == "live" and self_model is None:
-        raise RuntimeError(
-            "live cognition evidence requires the canonical SelfModel"
-        )
-    if mode == "live" and scheduler is None:
-        raise RuntimeError(
-            "live cognition evidence requires the autonomy scheduler"
-        )
-
-    projector = ProjectEventProjector(project_store)
-    evidence_store = None
-    reducer = None
-    try:
-        initial_outbox = projector.run_once(limit=100)
-        if mode == "live" and (
-            initial_outbox.get("failed")
-            or initial_outbox.get("acknowledgement_failures")
-            or initial_outbox.get("outbox", {}).get("last_error")
-        ):
-            raise RuntimeError(
-                "live cognition evidence project outbox is unhealthy"
-            )
-
-        try:
-            interval = int(os.environ.get(
-                "PROTAGINE_COGNITION_EVIDENCE_INTERVAL_SECONDS", "30",
-            ))
-        except ValueError as exc:
-            raise RuntimeError(
-                "PROTAGINE_COGNITION_EVIDENCE_INTERVAL_SECONDS must be an integer"
-            ) from exc
-        interval = max(5, min(3600, interval))
-
-        evidence_store = CognitionEvidenceStore(
-            str(state_dir / "protagine-cognition-evidence.db")
-        )
-        reducer = CognitionEvidenceReducer(
-            evidence_store,
-            project_store=project_store,
-            self_model=self_model,
-            expectations=expectations,
-            project_event_projector=projector,
-        )
-        attachment_armed = {"value": False}
-        if scheduler is not None:
-
-            def _reduce_cognition_evidence():
-                if not attachment_armed["value"]:
-                    return {
-                        "enabled": mode != "off", "mode": mode,
-                        "processed": 0, "error": "attachment_not_armed",
-                    }
-                return reducer.run_once(limit=100)
-
-            # Register before any live sink can mutate. A registration failure
-            # therefore leaves competence, expectations, and the evidence
-            # cursor untouched. If a scheduler ticks concurrently during
-            # attachment, the captured callback remains inert until armed.
-            scheduler.register(
-                "cognition_evidence_reduce",
-                _reduce_cognition_evidence,
-                interval_seconds=interval,
-                metadata={
-                    "description": (
-                        "Checkpoint or reduce receipt-bound project evidence"
-                    ),
-                    "mode": mode,
-                },
-            )
-        initial_status = reducer.run_once(limit=100)
-        if mode == "live" and initial_status.get("error"):
-            raise RuntimeError(
-                "live cognition evidence initial reduction failed: "
-                + str(initial_status["error"])[:300]
-            )
-        attachment = {
-            "configured_mode": mode,
-            "state": "attached" if scheduler is not None else "degraded",
-            "reason": (
-                "evidence_passthrough_cursor_attached_learning_off"
-                if mode == "off" and scheduler is not None else
-                "evidence_passthrough_cursor_restart_only"
-                if mode == "off" else
-                "receipt_derived_evidence_attached"
-                if scheduler is not None else
-                "receipt_derived_evidence_restart_replay_only"
-            ),
-        }
-        set_cognition_evidence(
-            evidence_store, reducer, projector, attachment,
-        )
-        attachment_armed["value"] = True
-        return {
-            "mode": mode,
-            "store": evidence_store,
-            "reducer": reducer,
-            "projector": projector,
-            "initial_status": initial_status,
-            "attachment": attachment,
-        }
-    except Exception:
-        if evidence_store is not None:
-            evidence_store.close()
-        set_cognition_evidence(None, None, None, {
-            "configured_mode": mode,
-            "state": "failed",
-            "reason": "cognition_evidence_attachment_failed",
-        })
-        raise
-
-
-def _compose_p7_charter_admission(
-    original_validator, charter_store, directive_manager=None,
-):
-    """Narrow P3 admission to the active owner-ratified P7 charter.
-
-    P7 lifecycle activation is already bound to the canonical approval
-    authority. This adapter consumes that durable fact; it never creates a
-    second approval path and never treats charter prose as executable policy.
-    """
-
-    from protagine.cognition.drive_governance import (
-        CharterAdmissionConstraintsV1,
-        ScopeV1,
-    )
-
-    def _parts(result):
-        if isinstance(result, dict):
-            return (
-                result.get("allowed") is True,
-                str(result.get("reason") or "charter_validator_denied")[:500],
-                [str(ref) for ref in result.get("evidence_refs") or ()],
-            )
-        if isinstance(result, (tuple, list)):
-            return (
-                bool(result and result[0] is True),
-                str(result[1] if len(result) > 1 else "charter_validator_denied")[:500],
-                [str(ref) for ref in (result[2] if len(result) > 2 else ())],
-            )
-        return result is True, "charter_validator_denied", []
-
-    def _validator(proposal, concern):
-        try:
-            base = original_validator(proposal, concern)
-        except Exception:
-            return {
-                "allowed": False,
-                "reason": "base_charter_validator_failed",
-                "evidence_refs": [],
-            }
-        allowed, _reason, evidence = _parts(base)
-        if not allowed:
-            return base
-        try:
-            active = charter_store.active_revision("default")
-        except Exception:
-            return {
-                "allowed": False,
-                "reason": "active_charter_read_failed",
-                "evidence_refs": list(dict.fromkeys(evidence)),
-            }
-        if active is None:
-            return {
-                "allowed": False,
-                "reason": "active_owner_ratified_charter_required",
-                "evidence_refs": list(dict.fromkeys(evidence)),
-            }
-        try:
-            proposal_scope = ScopeV1(
-                proposal.subject_person_id,
-                proposal.viewer_scope,
-                proposal.shareability,
-            )
-        except Exception:
-            return {
-                "allowed": False,
-                "reason": "goal_scope_invalid_for_active_charter",
-                "evidence_refs": list(dict.fromkeys(evidence)),
-            }
-        charter_evidence = [
-            active.revision_id,
-            f"charter-active:{active.revision_id}",
-            *active.evidence_refs,
-        ]
-        combined = list(dict.fromkeys([*charter_evidence, *evidence]))[:30]
-        if not active.scope.permits_child(proposal_scope):
-            return {
-                "allowed": False,
-                "reason": "active_charter_scope_holds_goal",
-                "evidence_refs": combined,
-            }
-        constraints = (
-            active.admission_constraints
-            if getattr(active, "admission_constraints", None) is not None
-            else CharterAdmissionConstraintsV1()
-        )
-        required_boundaries = set(constraints.required_boundary_refs)
-        if required_boundaries:
-            if directive_manager is None:
-                return {
-                    "allowed": False,
-                    "reason": "charter_boundary_reader_unavailable",
-                    "evidence_refs": combined,
-                }
-            try:
-                active_boundaries = {
-                    str(item.id) for item in directive_manager.active()
-                }
-            except Exception:
-                return {
-                    "allowed": False,
-                    "reason": "charter_boundary_read_failed",
-                    "evidence_refs": combined,
-                }
-            if not required_boundaries.issubset(active_boundaries):
-                return {
-                    "allowed": False,
-                    "reason": "charter_required_boundary_missing",
-                    "evidence_refs": combined,
-                }
-        objective = (
-            f"{getattr(proposal, 'title', '')} "
-            f"{getattr(proposal, 'objective', '')}"
-        ).casefold()
-        if any(term in objective for term in constraints.objective_deny_terms):
-            return {
-                "allowed": False,
-                "reason": "charter_objective_explicitly_denied",
-                "evidence_refs": combined,
-            }
-        if constraints.objective_allow_terms and not any(
-            term in objective for term in constraints.objective_allow_terms
-        ):
-            return {
-                "allowed": False,
-                "reason": "charter_objective_not_explicitly_allowed",
-                "evidence_refs": combined,
-            }
-        destructive_terms = {
-            "delete", "destroy", "drop", "format", "overwrite", "wipe",
-        }
-        if (
-            any(term in objective for term in destructive_terms)
-            and not constraints.allow_destructive
-        ):
-            return {
-                "allowed": False,
-                "reason": "charter_destructive_objective_not_allowed",
-                "evidence_refs": combined,
-            }
-        requested = set(getattr(proposal, "required_capabilities", ()) or ())
-        denied = sorted(requested.intersection(constraints.capability_deny))
-        if denied:
-            return {
-                "allowed": False,
-                "reason": "charter_capability_explicitly_denied:" + ",".join(denied),
-                "evidence_refs": combined,
-            }
-        if not requested.issubset(set(constraints.capability_ceiling)):
-            return {
-                "allowed": False,
-                "reason": "charter_capability_ceiling_exceeded",
-                "evidence_refs": combined,
-            }
-        if "root:shell" in requested and not constraints.allow_root_shell:
-            return {
-                "allowed": False,
-                "reason": "charter_root_shell_not_allowed",
-                "evidence_refs": combined,
-            }
-        if "messaging:send" in requested:
-            if not constraints.allow_messaging:
-                return {
-                    "allowed": False,
-                    "reason": "charter_messaging_not_allowed",
-                    "evidence_refs": combined,
-                }
-            # GoalProposalV1 deliberately has no recipient field. Until a
-            # digest-bound recipient envelope exists, even an explicit
-            # charter allowance cannot infer one from the concern/model.
-            return {
-                "allowed": False,
-                "reason": "charter_recipient_envelope_required",
-                "evidence_refs": combined,
-            }
-        if proposal.shareability not in set(constraints.allowed_shareability):
-            return {
-                "allowed": False,
-                "reason": "charter_shareability_not_allowed",
-                "evidence_refs": combined,
-            }
-        return {
-            "allowed": True,
-            "reason": "active_owner_ratified_charter",
-            "evidence_refs": combined,
-        }
-
-    return _validator
-
-
-def _attach_drive_governance(
-    *,
-    state_dir: Path,
-    cognition_spine,
-    workspace,
-    project_store,
-    directive_manager,
-    approval_authority=None,
-):
-    """Attach P7 only to the complete, durable P3 dependency graph."""
-
-    from protagine.cognition.drive_governance import (
-        DriveGovernance,
-        DriveGovernanceStore,
-        DriveRanker,
-        drive_governance_mode,
-    )
-
-    set_drive_governance(None, None, None)
-    mode = drive_governance_mode()
-    if mode == "off":
-        return None
-
-    required = {
-        "cognition_spine": cognition_spine,
-        "workspace": workspace,
-        "project_store": project_store,
-        "directive_manager": directive_manager,
-    }
-    missing = sorted(name for name, value in required.items() if value is None)
-    cognition_store = getattr(cognition_spine, "store", None)
-    project_engine = getattr(cognition_spine, "project_engine", None)
-    if cognition_store is None:
-        missing.append("cognition_store")
-    if project_engine is None:
-        missing.append("project_engine")
-    elif getattr(project_engine, "store", None) is not project_store:
-        missing.append("shared_project_store")
-    if missing:
-        raise RuntimeError(
-            "P7 drive governance missing durable dependencies: "
-            + ", ".join(sorted(set(missing)))
-        )
-    resolver = getattr(cognition_store, "get_policy_decision", None)
-    if not callable(resolver):
-        raise RuntimeError(
-            "P7 drive governance requires the P3 policy decision resolver"
-        )
-
-    store = DriveGovernanceStore(state_dir / "cognition-drive-governance.db")
-    try:
-        # The approval ledger is gone; charter transitions that need one
-        # raise approval_store_required until the mind's asks cover them.
-        shared_authority = None
-        governance = DriveGovernance(store, shared_authority, mode=mode)
-        ranker = DriveRanker(
-            store,
-            policy_decision_resolver=resolver,
-            directive_manager=directive_manager,
-        )
-    except Exception:
-        store.close()
-        raise
-    original_charter_validator = getattr(cognition_spine, "_charter", None)
-    if mode == "live":
-        if not callable(original_charter_validator):
-            store.close()
-            raise RuntimeError(
-                "P7 live governance requires P3's charter validator"
-            )
-        cognition_spine._charter = _compose_p7_charter_admission(
-            original_charter_validator, store, directive_manager,
-        )
-    runtime_bindings = getattr(cognition_spine, "_runtime_bindings", None)
-    if isinstance(runtime_bindings, dict):
-        runtime_bindings["charter_store"] = store
-    workspace.drive_governance = governance
-    workspace.drive_ranker = ranker
-    set_drive_governance(governance, ranker, project_store)
-    return {
-        "mode": mode,
-        "store": store,
-        "governance": governance,
-        "ranker": ranker,
-        "approval_authority": shared_authority,
-        "original_charter_validator": original_charter_validator,
     }
 
 
@@ -1412,9 +333,6 @@ async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
     state_dir = _state_dir()
     _p8_wiring = None
-    # Clear stale process authority before any queue/worker can be constructed.
-    # A repeated lifespan that later fails remains fail-closed in live mode.
-    set_worker_governor(None)
 
     # --- Phase C external text/system evidence intake ---
     _external_event_intake = None
@@ -1485,23 +403,10 @@ async def lifespan(app: FastAPI):
             llm_router.watch_config(config_path)
             logger.info("LLMRouter awaiting explicit host config")
     except Exception as exc:
-        logger.warning("LLMRouter init failed — reasoning will not be available: %s", exc)
+        logger.warning("LLMRouter init failed — model calls will not be available: %s", exc)
 
     if llm_router is not None:
         set_llm_router(llm_router)
-
-    # --- 2. Reasoning loop ---
-    if llm_router is not None:
-        try:
-            from protagine.reasoning import ReasoningLoop, ToolExecutor
-            tool_executor = ToolExecutor()
-            reasoning_loop = ReasoningLoop(model=llm_router, tools=tool_executor)
-            set_reasoning_loop(reasoning_loop)
-            # Native tools will be registered after search orchestrator is wired
-            set_tool_executor(tool_executor)
-            logger.info("ReasoningLoop initialized")
-        except Exception as exc:
-            logger.warning("ReasoningLoop init failed: %s", exc)
 
     # --- 3. Neo4j Graph memory ---
     graph = None
@@ -1528,14 +433,6 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.warning("Graph migrations failed (queries may be degraded): %s", exc)
             set_graph(graph)
-            # Wire graph into ToolExecutor for capability-gap detection
-            try:
-                import protagine.api.routers.host as _host_router
-                te = _host_router._tool_executor
-                if te is not None:
-                    te._graph = graph
-            except Exception:
-                logger.warning("ToolExecutor graph wiring failed (capability-gap detection degraded)")
             logger.info("ProtagineGraph initialized (uri=%s db=%s)", neo4j_uri, neo4j_db)
 
             # Ensure Protagine self-representation in graph (v0.11.0)
@@ -1563,35 +460,6 @@ async def lifespan(app: FastAPI):
     else:
         set_graph(None)
         logger.info("Graph disabled; canonical source memory and SQLite state remain available")
-
-    # --- 4. Response Gate (safety pipeline) ---
-    _gate_ref = None
-    _gate_config = None
-    _gate_audit = None
-    try:
-        from protagine.gate import ResponseGate, GateConfig
-        from protagine.gate.audit import InMemoryAuditLog
-        # L7 send-delay (the cancel window) is env-tunable; default 0 = no
-        # hold. Set PROTAGINE_GATE_SEND_DELAY_SECS>0 to enable a real cancel
-        # window on the request-path gate.
-        try:
-            _gate_delay = float(os.environ.get("PROTAGINE_GATE_SEND_DELAY_SECS", "0"))
-        except ValueError:
-            _gate_delay = 0.0
-        gate_config = GateConfig(send_delay_seconds=_gate_delay)
-        gate_audit = InMemoryAuditLog()
-        gate = ResponseGate(gate_config, session_store=None, audit_log=gate_audit)
-        set_response_gate(gate)
-        # Stash refs for re-wiring after session store is available
-        _gate_ref = gate
-        _gate_config = gate_config
-        _gate_audit = gate_audit
-        logger.info("ResponseGate initialized (send_delay=%.1fs, secondary_review=%s)",
-                    _gate_delay, getattr(gate_config, "enable_secondary_review", False))
-
-        # Re-wire ResponseGate with session store once available
-    except Exception as exc:
-        logger.warning("ResponseGate init failed — safety checks will pass-through: %s", exc)
 
     # --- 5. Signal Collector ---
     signal_collector = None
@@ -1952,55 +820,6 @@ async def lifespan(app: FastAPI):
         set_presence_store(presence_store)
         logger.info("ConversationPresenceStore initialized (db=%s)", presence_db)
 
-        from protagine.gate.context_provenance import (
-            ContextProvenanceStore, ProvenanceCrossContextGuard)
-        provenance_db = state_dir / "protagine-context-provenance.db"
-        provenance_store = ContextProvenanceStore(db_path=str(provenance_db))
-        set_context_provenance_store(provenance_store)
-        logger.info("ContextProvenanceStore initialized (db=%s)", provenance_db)
-
-        # Outbound response gate (opt-in; shadow by default). Applicability is
-        # resolved by the static, deployment-neutral surface policy: guarded
-        # text/artifacts and excluded real-time speech. Gateway labels grant
-        # no bypass authority.
-        from protagine.gate.response_guard import ResponseGuard, GuardMode
-        from protagine.gate.surface_policy import (
-            POLICY_DIGEST as _guard_policy_digest,
-            POLICY_ID as _guard_policy_id,
-        )
-        from protagine.world_model.extraction.conversation_extractor import (
-            ConversationExtractor)
-        _guard_mode = _resolve_guard_mode(os.environ.get("PROTAGINE_GUARD_MODE"))
-        from protagine.gate.guard_audit import GuardAuditStore
-        guard_audit_db = state_dir / "protagine-guard-audit.db"
-        guard_audit_store = GuardAuditStore(db_path=str(guard_audit_db))
-        # Injection-taint registry (L3.1) + tom2 epistemic egress net (L3.2).
-        # The check is INERT (zero findings) until the leveled tom2 wiring
-        # registers a taint, which is why it may sit on the default enforce
-        # allowlist from day one.
-        from protagine.gate.taint import TaintRegistry
-        from protagine.gate.layers.tom2_epistemic import Tom2EpistemicGuard
-        from protagine.api.routers.host import set_taint_registry
-        taint_db = state_dir / "protagine-tom2-taint.db"
-        taint_registry = TaintRegistry(db_path=str(taint_db))
-        set_taint_registry(taint_registry)
-        _guard = ResponseGuard(
-            cross_context=ProvenanceCrossContextGuard(provenance_store, extractor=ConversationExtractor()),
-            default_mode=_guard_mode, audit_store=guard_audit_store,
-            tom2_epistemic=Tom2EpistemicGuard(taint_registry, facts_store=facts_store))
-        set_response_guard(_guard)
-        logger.info(
-            "ResponseGuard initialized (mode=%s, surface_policy=%s:%s, "
-            "audit=%s, taints=%s)",
-            _guard_mode.value, _guard_policy_id, _guard_policy_digest,
-            guard_audit_db, taint_db,
-        )
-        # Verdict rows prove evaluation, not that an egress mediator actually
-        # withheld or revised the exact bytes.  Keep Tom2 capped at level 1
-        # until a digest-bound applied-output receipt exists.
-        from protagine.tom.levels import set_evidence_probe
-        set_evidence_probe(None)
-
         from protagine.tom.engagement import EngagementStore
         engagement_db = state_dir / "protagine-engagement.db"
         engagement_store = EngagementStore(db_path=engagement_db, source_ledger=source_ledger)
@@ -2026,43 +845,7 @@ async def lifespan(app: FastAPI):
         set_preference_learner(preference_learner)
         logger.info("PreferenceLearner initialized (db=%s)", state_dir / "protagine-preferences.db")
     except Exception as exc:
-        try:
-            from protagine.tom.levels import set_evidence_probe
-            set_evidence_probe(None)
-        except Exception:
-            logger.debug("Tom2 evidence probe init cleanup failed", exc_info=True)
         logger.warning("Theory of Mind init failed: %s", exc)
-
-    # --- Directive / boundary memory (safety foundation) ---
-    # Durable store of the owner's standing directives (MUST NOT / MUST) with an
-    # enforcement guard consulted before autonomous actions. Boundaries must be
-    # available before any action-taking, so this is wired unconditionally.
-    try:
-        from protagine.directives import DirectiveManager, DirectiveStore
-        from protagine.api.routers.host import set_directive_manager
-        from protagine.turns import get_turn_idempotency_ledger
-        _directive_store = DirectiveStore(db_path=str(state_dir / "protagine-directives.db"),
-                                         ledger=get_turn_idempotency_ledger(state_dir))
-        _directive_manager = DirectiveManager(_directive_store)
-        set_directive_manager(_directive_manager)
-        if locals().get("tool_executor") is not None:
-            tool_executor.configure_execution_policy(
-                directive_manager=_directive_manager,
-                boundary_required=True,
-            )
-        logger.info(
-            "DirectiveManager initialized (db=%s, active=%d)",
-            state_dir / "protagine-directives.db", _directive_store.count_active(),
-        )
-    except Exception as exc:
-        if locals().get("tool_executor") is not None:
-            # A configured server may keep public information tools usable,
-            # but private reads/mutations cannot silently lose their boundary.
-            tool_executor.configure_execution_policy(
-                directive_manager=None,
-                boundary_required=True,
-            )
-        logger.warning("DirectiveManager init failed (boundaries disabled): %s", exc)
 
     # --- Proposal store (self-directed thinking + research -> proposals) ---
     try:
@@ -2095,7 +878,6 @@ async def lifespan(app: FastAPI):
             set_self_model, _feedback_store as _fb_for_trust,
         )
         if self_model_enabled():
-            from protagine.tools.subsystems import SubsystemRegistry as _Reg
             _competence = CompetenceStore(
                 db_path=str(state_dir / "protagine-self-model.db"))
             _journal = ActionJournal(
@@ -2103,8 +885,7 @@ async def lifespan(app: FastAPI):
             _trust = TrustEngine(
                 _competence, db_path=str(state_dir / "protagine-self-model.db"),
                 feedback_store=_fb_for_trust, journal=_journal)
-            _sm_for_directed = SelfModel(_competence, registry=_Reg(),
-                                         trust=_trust, journal=_journal)
+            _sm_for_directed = SelfModel(_competence, trust=_trust, journal=_journal)
             _sm_for_directed.perspective = getattr(locals().get('preference_learner'), 'perspective', None)
             set_self_model(_sm_for_directed)
             if _adaptive_params is not None:
@@ -2166,14 +947,6 @@ async def lifespan(app: FastAPI):
                 library_root=str(state_dir / "toolsmith_library"))
             _toolsmith = Toolsmith(_tool_registry)
             set_toolsmith(_toolsmith)
-            # advertise graduated tools to the reasoning loop
-            try:
-                from protagine.api.routers.host import _tool_executor
-                if _tool_executor is not None:
-                    _tool_executor.set_dynamic_provider(
-                        _toolsmith.build_dynamic_provider())
-            except Exception as texc:
-                logger.warning("toolsmith dynamic provider wiring: %s", texc)
             logger.info("Toolsmith ready (mode=%s, db=%s)",
                         os.environ.get("PROTAGINE_TOOLSMITH", "off"),
                         state_dir / "protagine-toolsmith.db")
@@ -2322,8 +1095,8 @@ async def lifespan(app: FastAPI):
 
             def _mining_router_getter():
                 try:
-                    from protagine.api.routers.host import _reasoning_loop
-                    return getattr(_reasoning_loop, "_model", None)
+                    from protagine.api.routers.host import _llm_router
+                    return _llm_router
                 except Exception:
                     return None
 
@@ -2340,20 +1113,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Mining init failed: %s", exc)
 
-    # --- Read-only repo mirrors + directed action (option A) ---
+    # --- Read-only repo mirrors ---
     try:
         from protagine.repos import RepoMirrorManager
-        from protagine.directed import (
-            DirectedActionService, ScopedTaskStore, directed_mode,
-        )
-        from protagine.api.routers.host import (
-            set_repo_mirrors, set_directed_service,
-            get_directive_manager as _get_dm2,
-        )
-        _mirrors_mgr = RepoMirrorManager(
-            mirror_dir=str(state_dir / "repo-mirrors"),
-            directive_manager=_get_dm2(),
-        )
+        from protagine.api.routers.host import set_repo_mirrors
+        _mirrors_mgr = RepoMirrorManager(mirror_dir=str(state_dir / "repo-mirrors"))
         set_repo_mirrors(_mirrors_mgr)
         _n_repos = len(_mirrors_mgr.configured())
         if _n_repos:
@@ -2374,37 +1138,8 @@ async def lifespan(app: FastAPI):
                     logger.debug("mirror sync failed", exc_info=True)
             asyncio.create_task(_sync_mirrors())
         logger.info("RepoMirrorManager initialized (%d repo(s) configured)", _n_repos)
-
-        async def _directed_deliver(payload: dict) -> bool:
-            # The reach-out path: a message request goes through the mind's
-            # authority into the outbox, which the plugin sends verbatim.
-            try:
-                from protagine.api.routers.mind import get_mind
-                mind = get_mind()
-                if mind is not None:
-                    return await mind.request_message(payload, source="directed")
-            except Exception:
-                logger.debug("directed deliver failed", exc_info=True)
-            return False
-
-        from protagine.api.routers.host import _feedback_store as _fb_store
-        _directed_svc = DirectedActionService(
-            store=ScopedTaskStore(db_path=str(state_dir / "protagine-directed.db")),
-            directive_manager=_get_dm2(),
-            mirrors=_mirrors_mgr,
-            feedback_store=_fb_store,
-            delivery_router=_directed_deliver,
-            self_model=_sm_for_directed,
-        )
-        set_directed_service(_directed_svc)
-        logger.info("DirectedActionService initialized (mode=%s)", directed_mode())
-
-        # The once-per-boundary critical flag rides the same guarded delivery.
-        _dm_for_flags = _get_dm2()
-        if _dm_for_flags is not None:
-            _dm_for_flags.set_delivery_router(_directed_deliver)
     except Exception as exc:
-        logger.warning("Directed-action init failed: %s", exc)
+        logger.warning("Repo mirror init failed: %s", exc)
 
     # --- Pattern Extraction + Surprise ---
     try:
@@ -2515,10 +1250,8 @@ async def lifespan(app: FastAPI):
         # (off|shadow|live, default shadow).
         try:
             from protagine.world_model.populator import WorldModelPopulator, populate_mode
-            from protagine.api.routers.host import (
-                get_directive_manager as _get_dm, set_world_populator,
-            )
-            _populator = WorldModelPopulator(world_store, directive_manager=_get_dm())
+            from protagine.api.routers.host import set_world_populator
+            _populator = WorldModelPopulator(world_store)
             set_world_populator(_populator)
             logger.info("WorldModelPopulator initialized (mode=%s)", populate_mode())
         except Exception as pexc:
@@ -2529,11 +1262,9 @@ async def lifespan(app: FastAPI):
             from protagine.world_model.llm_extract import (
                 WorldLLMExtractor, llm_extract_mode,
             )
-            from protagine.api.routers.host import (
-                get_directive_manager as _get_dm3, set_world_llm_extractor, get_llm_router,
-            )
+            from protagine.api.routers.host import set_world_llm_extractor, get_llm_router
             _wle = WorldLLMExtractor(
-                world_store, graph=graph, directive_manager=_get_dm3(),
+                world_store, graph=graph,
                 journal=getattr(_sm_for_directed, "journal", None),
                 self_model=_sm_for_directed,
                 source_ledger=get_turn_idempotency_ledger(state_dir), router_provider=get_llm_router)
@@ -2657,25 +1388,6 @@ async def lifespan(app: FastAPI):
             logger.info("Search provider: DuckDuckGo (default fallback)")
 
         set_search_orchestrator(search_orchestrator)
-
-        # Register native tools with the ToolExecutor
-        try:
-            import protagine.api.routers.host as _host_router
-            te = _host_router._tool_executor
-        except Exception:
-            te = None
-        if te is not None:
-            sandbox_dir = os.environ.get("PROTAGINE_SANDBOX_DIR", str(state_dir / "sandbox"))
-            # Ensure the sandbox directory exists so file_ops don't fail on first call.
-            Path(sandbox_dir).mkdir(parents=True, exist_ok=True)
-            te.register_native_tools(
-                search_orchestrator=search_orchestrator,
-                sandbox_dir=sandbox_dir,
-            )
-            logger.info(
-                "Native tools registered (calculate, web_search, file_ops; sandbox=%s)",
-                sandbox_dir,
-            )
 
         research = _build_research_pipeline(
             graph=graph, p8_runtime=_p8_wiring)
@@ -2895,42 +1607,8 @@ async def lifespan(app: FastAPI):
         session_store = InMemorySessionStore()
         set_session_store(session_store)
         logger.info("InMemorySessionStore initialized")
-
-        # Re-wire ResponseGate now that session store is available
-        if _gate_ref is not None:
-            from protagine.gate import ResponseGate
-            new_gate = ResponseGate(_gate_config, session_store=session_store, audit_log=_gate_audit)
-            set_response_gate(new_gate)
-            logger.info("ResponseGate re-wired with SessionStore")
     except Exception as exc:
         logger.warning("SessionStore init failed: %s", exc)
-
-    # --- 20. Task queue ---
-    task_queue = None
-    try:
-        from protagine.task_queue.queue_manager import TaskQueueManager
-        task_queue = await TaskQueueManager.initialize(
-            db_path=state_dir / "task_queue.db",
-        )
-        # The queue facade becomes process-visible below, before the project
-        # verifier and ProjectStore are constructed.  Keep persisted
-        # cognition WorkOrders fail-closed throughout that startup window;
-        # successful project wiring replaces this with the digest-bound
-        # callback later.
-        _install_cognition_work_order_startup_fence(task_queue)
-        task_queue.queue.set_execution_ready(False, "scheduler_starting")
-        set_task_queue(task_queue)
-        logger.info("TaskQueueManager initialized")
-    except Exception as exc:
-        logger.warning("TaskQueueManager init failed: %s", exc)
-
-    # The embedded worker starts only after the central governor is installed.
-    worker_task = None
-    queue_scheduler = None
-    queue_scheduler_task = None
-    queue_execution_ready = False
-    agent_bridge_service = None
-    agent_bridge_task = None
 
     # --- 20c. Multi-Agent System (v0.7.0) ---
     try:
@@ -3018,188 +1696,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Mind init failed: %s", exc)
 
-    # Wire the subsystem registry into ToolExecutor so Protagine-native tools
-    # (memory_search, goals, relationships, etc.) are available to the
-    # shared internal reasoning API and project analysis steps.
-    if locals().get("tool_executor") is not None:
-        from protagine.tools.subsystems import SubsystemRegistry
-        registry = SubsystemRegistry()
-        te = locals()["tool_executor"]
-        from protagine.tools.handlers import TOOL_HANDLERS as _protagine_handlers
-        for _tname, _thandler in _protagine_handlers.items():
-            if _tname not in te._handlers:
-                te._handlers[_tname] = lambda args, h=_thandler, r=registry: h(args, r)
-        logger.info(
-            "Protagine tool handlers wired into ToolExecutor (%d protagine tools, %d total)",
-            len(_protagine_handlers),
-            len(te._handlers),
-        )
-
-    # --- 22b. Project engine (goal persistence, cognition item 1) ---
+    # The belief engine was built in the world-model section, before the
+    # initiative store existed; hand it the store now.
     try:
-        from protagine.projects import ProjectEngine, ProjectStore, projects_mode
-        from protagine.work_orders import (
-            QueueWorkOrderAdapter,
-            load_receipt_verifier_from_env,
-        )
-        from protagine.api.routers.host import (
-            set_project_engine,
-            get_directive_manager as _get_dm_p,
-            _directed_service as _dsvc_for_projects,
-            _proposal_store as _pstore_for_projects,
-            _feedback_store as _fb_for_projects,
-        )
+        from protagine.api.routers.host import _belief_engine as _be
+        if _be is not None:
+            _be._initiatives = locals().get("initiative_store")
+    except Exception:
+        pass
 
-        async def _project_deliver(payload: dict) -> bool:
-            # The reach-out path: a message request goes through the mind's
-            # authority into the outbox, which the plugin sends verbatim.
-            try:
-                from protagine.api.routers.mind import get_mind
-                mind = get_mind()
-                if mind is not None:
-                    return await mind.request_message(payload, source="project")
-            except Exception:
-                logger.debug("project deliver failed", exc_info=True)
-            return False
-
-        # A failed verifier import/configuration must not leave a project
-        # engine from an earlier lifespan reachable in this process.
-        set_project_engine(None)
-        _receipt_verifier = load_receipt_verifier_from_env()
-        _project_store = ProjectStore(db_path=str(state_dir / "protagine-projects.db"))
-        _project_concern_store = locals().get("_concern_store")
-
-        def _project_hold_reason(project) -> str:
-            from protagine.self_model.event_concerns import (
-                project_turn_concern_hold_reason,
-            )
-            return project_turn_concern_hold_reason(
-                project, _project_concern_store,
-            )
-
-        _project_engine_obj = ProjectEngine(
-            _project_store,
-            directive_manager=_get_dm_p(),
-            llm_router=llm_router,
-            reasoning_loop=locals().get("reasoning_loop"),
-            tool_executor=locals().get("tool_executor"),
-            directed_service=_dsvc_for_projects,
-            proposal_store=_pstore_for_projects,
-            feedback_store=_fb_for_projects,
-            self_model=_sm_for_directed,
-            skill_store=_skills_mem_store,
-            delivery_router=_project_deliver,
-            initiative_store=locals().get("initiative_store"),
-            work_order_adapter=(
-                QueueWorkOrderAdapter(
-                    task_queue,
-                    project_store=_project_store,
-                    receipt_verifier=_receipt_verifier,
-                )
-                if task_queue is not None else None
-            ),
-            project_hold_reason=_project_hold_reason,
-        )
-        if task_queue is not None:
-            _install_cognition_work_order_runtime_fence(
-                task_queue, _project_store, _project_concern_store,
-            )
-            await task_queue.queue.reconcile_runtime_claim_holds()
-        set_project_engine(_project_engine_obj)
-        if _receipt_verifier is not None:
-            logger.info(
-                "External WorkOrder receipt verifier initialized (%s)",
-                getattr(_receipt_verifier, "identity", type(_receipt_verifier).__name__),
-            )
-        logger.info("ProjectEngine initialized (db=%s, mode=%s)",
-                    state_dir / "protagine-projects.db", projects_mode())
-        # Late-attach the initiative store to the belief engine (it is wired
-        # after the world-model section where the engine was created).
-        try:
-            from protagine.api.routers.host import _belief_engine as _be
-            if _be is not None:
-                _be._initiatives = locals().get("initiative_store")
-        except Exception:
-            pass
-    except Exception as exc:
-        logger.warning("ProjectEngine init failed: %s", exc)
-
-    # --- 22b.1 Receipt-derived cognition evidence (migration-gated) ---
-    _evidence_wiring = None
-    try:
-        _evidence_wiring = _attach_cognition_evidence(
-            state_dir=state_dir,
-            project_store=locals().get("_project_store"),
-            self_model=_sm_for_directed,
-            expectations=locals().get("_expectations"),
-            scheduler=locals().get("scheduler"),
-        )
-        if _evidence_wiring is not None:
-            logger.info(
-                "Cognition evidence attached (mode=%s, db=%s, initial=%s)",
-                _evidence_wiring["mode"],
-                (
-                    state_dir / "protagine-cognition-evidence.db"
-                    if _evidence_wiring["store"] is not None else "disabled"
-                ),
-                _evidence_wiring["initial_status"],
-            )
-    except Exception as exc:
-        # A requested live pipeline suppresses the legacy direct competence
-        # writer independently, so attachment failure loses no authority by
-        # silently falling back to self-reported outcomes.
-        logger.error("Cognition evidence attachment failed closed: %s", exc)
-
-    # --- 22b.2 Typed cognition/goal spine (P3, migration-gated) ---
-    try:
-        _cognition_spine = _attach_cognition_spine(
-            state_dir=state_dir,
-            task_queue=task_queue,
-            workspace=locals().get("_workspace"),
-            concern_store=locals().get("_concern_store"),
-            project_store=locals().get("_project_store"),
-            project_engine=locals().get("_project_engine_obj"),
-            directive_manager=(
-                _get_dm_p() if "_get_dm_p" in locals() else None
-            ),
-            llm_router=llm_router,
-            embedded_worker_enabled=_configured_embedded_worker_enabled(),
-            proposal_store=locals().get("_proposal_store"),
-        )
-        if _cognition_spine is not None:
-            from protagine.cognition.goal_spine import cognition_spine_mode
-            logger.info(
-                "Typed cognition spine attached (db=%s, mode=%s)",
-                state_dir / "protagine-cognition.db",
-                cognition_spine_mode(),
-            )
-    except Exception as exc:
-        # In live mode, P3's legacy-writer guards remain active and the
-        # workspace loop refuses a missing spine.  The failure is therefore
-        # fail-closed for autonomous goal creation without taking the whole
-        # sidecar (and daily owner-directed work) offline.
-        from protagine.cognition.goal_spine import cognition_spine_mode
-        failed_mode = cognition_spine_mode()
-        set_cognition_attachment_status({
-            "configured_mode": failed_mode,
-            "state": "failed",
-            "reason": str(exc)[:500],
-            "configured_handler_catalog": (
-                ["thought"] if failed_mode in {"shadow", "live"} else []
-            ),
-            "effective_handler_catalog": [],
-        })
-        logger.error("Typed cognition spine attachment failed: %s", exc)
-
-    # --- 22b.3 Evidence-derived situation spine (P6, migration-gated) ---
+    # --- 22b. Situation spine (P6, migration-gated) ---
     _situation_wiring = None
     try:
-        _situation_wiring = _attach_situation_spine(
-            state_dir=state_dir,
-            cognition_spine=locals().get("_cognition_spine"),
-            scheduler=locals().get("scheduler"),
-            task_queue=task_queue,
-        )
+        _situation_wiring = _attach_situation_spine(state_dir=state_dir)
         if _situation_wiring is not None:
             logger.info(
                 "Situation spine attached (db=%s, mode=%s, initial=%s)",
@@ -3208,228 +1717,13 @@ async def lifespan(app: FastAPI):
                 _situation_wiring["initial_status"],
             )
     except Exception as exc:
-        # A configured live P6 that cannot attach must not silently leave P3's
-        # capacity-only allow path active. Preserve capacity denials, then hold
-        # everything else until a healthy pinned restart.
-        try:
-            from protagine.self_model.situation import situation_spine_mode
-            cognition = locals().get("_cognition_spine")
-            existing = getattr(cognition, "_situation", None)
-            if situation_spine_mode() == "live" and callable(existing):
-                cognition._situation = _capacity_plus_attachment_failure(
-                    existing, "situation_attachment_failed_closed",
-                )
-        except Exception:
-            logger.exception("Could not install P6 attachment failure gate")
         logger.error("Situation spine attachment failed closed: %s", exc)
-
-    # --- 22b.4 Owner-ratified drive governance (P7, migration-gated) ---
-    _drive_wiring = None
-    try:
-        _drive_wiring = _attach_drive_governance(
-            state_dir=state_dir,
-            cognition_spine=locals().get("_cognition_spine"),
-            workspace=locals().get("_workspace"),
-            project_store=locals().get("_project_store"),
-            directive_manager=(
-                _get_dm_p() if "_get_dm_p" in locals() else None
-            ),
-            approval_authority=_controlled_learning.get(
-                "approval_authority"
-            ),
-        )
-        if _drive_wiring is not None:
-            logger.info(
-                "Drive governance attached (db=%s, mode=%s, shared_authority=%s)",
-                state_dir / "cognition-drive-governance.db",
-                _drive_wiring["mode"],
-                getattr(
-                    _drive_wiring["approval_authority"], "path", None,
-                ),
-            )
-    except Exception as exc:
-        logger.error("Drive governance attachment failed closed: %s", exc)
-
-    # --- 22c. Worker governor (server-side queue enforcement, item 5) ---
-    try:
-        from protagine.api.routers.host import (
-            get_directive_manager as _get_dm_w,
-            _feedback_store as _fb_for_workers,
-        )
-        from protagine.task_queue.governor import WorkerGovernor, workers_mode
-
-        async def _worker_deliver(payload: dict) -> bool:
-            # The reach-out path: a message request goes through the mind's
-            # authority into the outbox, which the plugin sends verbatim.
-            try:
-                from protagine.api.routers.mind import get_mind
-                mind = get_mind()
-                if mind is not None:
-                    return await mind.request_message(payload, source="worker")
-            except Exception:
-                logger.debug("worker deliver failed", exc_info=True)
-            return False
-
-        _worker_gov = WorkerGovernor(
-            directive_manager=_get_dm_w(),
-            feedback_store=_fb_for_workers,
-            self_model=_sm_for_directed,
-            delivery_router=_worker_deliver,
-            proposal_store=locals().get("_proposal_store"),
-            skill_store=_skills_mem_store,
-            llm_router=llm_router,
-            boundary_required=True,
-        )
-        set_worker_governor(_worker_gov)
-        logger.info("WorkerGovernor initialized (mode=%s)", workers_mode())
-    except Exception as exc:
-        logger.warning("WorkerGovernor init failed: %s", exc)
-
-    # Queue maintenance is independent from execution-worker enablement. It
-    # expires deadlines and leases, reconciles holds, and drains durable
-    # outcome evidence even during a health-only deployment cutover.
-    if task_queue is not None:
-        try:
-            from protagine.task_queue.scheduler import Scheduler
-
-            queue_scheduler = Scheduler(
-                queue=task_queue.queue,
-                tick_interval_secs=_queue_seconds_env(
-                    "PROTAGINE_QUEUE_SCHEDULER_TICK_SECS", 2.0,
-                ),
-                claim_timeout_secs=_queue_seconds_env(
-                    "PROTAGINE_QUEUE_CLAIM_TIMEOUT_SECS", 30.0,
-                ),
-                readiness_callback=task_queue.queue.set_execution_ready,
-            )
-            # A successful synchronous first tick is the execution-readiness
-            # gate. Configuration/import/database failures leave the API and
-            # read surfaces online but no worker may claim work.
-            await queue_scheduler.tick_once()
-            queue_scheduler_task = asyncio.create_task(
-                queue_scheduler.run()
-            )
-            app.state.queue_scheduler = queue_scheduler
-            app.state.queue_scheduler_task = queue_scheduler_task
-            queue_readiness = task_queue.queue.execution_readiness()
-            queue_execution_ready = bool(queue_readiness.get("ready"))
-            if queue_execution_ready:
-                logger.info("Task queue scheduler started")
-            else:
-                logger.error(
-                    "Task queue maintenance started but execution remains "
-                    "held: %s",
-                    queue_readiness.get("reason"),
-                )
-        except Exception as exc:
-            queue_execution_ready = False
-            task_queue.queue.set_execution_ready(
-                False, f"scheduler_unavailable:{exc}",
-            )
-            logger.error(
-                "Task queue scheduler unavailable; execution workers disabled: %s",
-                exc,
-                exc_info=True,
-            )
-
-    # --- 22c.0 Agent Bridge (after claim authority + scheduler readiness) ---
-    # The bridge can still forward initiatives when queue execution is held,
-    # but it receives no queue handle and therefore cannot claim jobs.
-    try:
-        from protagine.services.agent_bridge import (
-            create_from_env as _create_bridge,
-        )
-        agent_bridge_service = _create_bridge(
-            initiative_store=locals().get("initiative_store"),
-            task_queue=(task_queue if queue_execution_ready else None),
-            observation_store=locals().get("observation_store"),
-        )
-        if agent_bridge_service is not None:
-            set_agent_bridge(agent_bridge_service)
-            agent_bridge_task = asyncio.create_task(
-                agent_bridge_service.start()
-            )
-            logger.info("AgentBridgeService auto-start scheduled")
-    except Exception as exc:
-        logger.warning("AgentBridgeService init failed (non-fatal): %s", exc)
-
-    # --- 22c.1 Embedded worker (after mandatory central authority wiring) ---
-    if task_queue is not None and _embedded_worker_enabled():
-        try:
-            if not queue_execution_ready:
-                raise RuntimeError("queue scheduler is not execution-ready")
-            import asyncio as _asyncio
-            from protagine.task_queue.worker import WorkerNode
-            from protagine.task_queue.handlers.registry import build_default_handlers
-            from protagine.chain.node import get_or_create_node_id
-            import protagine.api.routers.host as _host_mod
-
-            worker_node_id = get_or_create_node_id(state_dir)
-            from protagine.cognition.goal_spine import cognition_spine_mode
-            worker_profile = _cognition_worker_profile(
-                configured_mode=cognition_spine_mode(),
-                attached=locals().get("_cognition_spine") is not None,
-            )
-            if worker_profile == "held":
-                raise RuntimeError(
-                    "configured cognition owner is held because P3 attachment "
-                    "is unavailable"
-                )
-            if worker_profile == "thought_only":
-                handlers, worker_capabilities = _cognition_owner_spec(
-                    router=_host_mod._llm_router,
-                    node_id=worker_node_id,
-                )
-            else:
-                handlers = build_default_handlers(
-                    router=_host_mod._llm_router,
-                    world_model_store=_host_mod._world_store,
-                    contact_store=_host_mod._contacts_store,
-                    response_gate=_host_mod._response_gate,
-                    node_id=worker_node_id,
-                )
-                worker_capabilities = None
-            worker = WorkerNode(
-                node_id=worker_node_id,
-                queue=task_queue.queue,
-                handlers=handlers,
-                capabilities=worker_capabilities,
-            )
-            worker_task = _asyncio.create_task(worker.start())
-            app.state.worker = worker
-            app.state.worker_task = worker_task
-            if worker_profile == "thought_only":
-                set_cognition_attachment_status({
-                    "configured_mode": cognition_spine_mode(),
-                    "state": "attached",
-                    "reason": "cognition_thought_worker_started",
-                    "configured_handler_catalog": ["thought"],
-                    "effective_handler_catalog": ["thought"],
-                })
-            logger.info(
-                "WorkerNode started after central governor "
-                "(node=%s, handlers=%s, governance=%s)",
-                worker_node_id,
-                [jt.value for jt in handlers.keys()],
-                task_queue.queue.governance_configuration(),
-            )
-        except Exception as exc:
-            logger.warning(
-                "WorkerNode init failed — queued jobs will not execute: %s",
-                exc,
-                exc_info=True,
-            )
 
     # --- 22d. Exploration sandbox (gated isolated execution, item 6) ---
     try:
         from protagine.sandbox import SandboxManager, sandbox_mode
-        from protagine.api.routers.host import (
-            set_sandbox, get_directive_manager as _get_dm_sb,
-        )
-        _sandbox_mgr = SandboxManager(
-            directive_manager=_get_dm_sb(),
-            self_model=_sm_for_directed,
-        )
+        from protagine.api.routers.host import set_sandbox
+        _sandbox_mgr = SandboxManager(self_model=_sm_for_directed)
         set_sandbox(_sandbox_mgr)
         logger.info("SandboxManager initialized (mode=%s, backend=%s)",
                     sandbox_mode(), _sandbox_mgr.backend_name())
@@ -3442,13 +1736,11 @@ async def lifespan(app: FastAPI):
             ConnectorManager, connectors_mode,
         )
         from protagine.api.routers.host import (
-            set_connector_manager, get_directive_manager as _get_dm_c,
-            _world_populator as _pop_for_conn,
+            set_connector_manager, _world_populator as _pop_for_conn,
         )
         _conn_mgr = ConnectorManager(
             observation_store=locals().get("observation_store"),
             populator=_pop_for_conn,
-            directive_manager=_get_dm_c(),
             self_model=_sm_for_directed,
         )
         n_conn = _conn_mgr.register_default_connectors()
@@ -3474,61 +1766,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("Sidecar capabilities: %s", supported_capabilities())
 
-    # Dedicated, owner-bound governed action execution.  This ledger is
-    # separate from the general API and task queue so a crash after an effect
-    # starts can be recovered honestly as ambiguous without ever retrying the
-    # mutation.  No live action is enabled merely by constructing the service;
-    # the exact scoped keyring principal is still required at the HTTP edge.
-    governed_action_service = None
-    try:
-        import protagine.api.routers.host as _host_actions
-        from protagine.api.routers.governed_actions import (
-            set_governed_action_service,
-        )
-        from protagine.governed_actions import (
-            ProtagineSubsystemActionExecutor,
-            GovernedActionLedger,
-            GovernedActionService,
-        )
-
-        from protagine.api.routers.mind import get_mind as _get_mind_for_actions
-
-        async def _autonomy_enable():
-            current = _get_mind_for_actions()
-            if current is None:
-                raise RuntimeError("the mind is not running")
-            current.on(by="governed_action")
-
-        async def _autonomy_disable():
-            current = _get_mind_for_actions()
-            if current is None:
-                raise RuntimeError("the mind is not running")
-            current.off(reason="governed_action", by="governed_action")
-
-        def _autonomy_running():
-            current = _get_mind_for_actions()
-            return bool(current is not None and current.enabled)
-
-        governed_action_service = GovernedActionService(
-            GovernedActionLedger(
-                state_dir / "governed-actions" / "ledger.db"
-            ),
-            ProtagineSubsystemActionExecutor(
-                graph=_host_actions._graph,
-                goals=_host_actions._goals_store,
-                commitments=_host_actions._commitment_store,
-                initiatives=_host_actions._initiative_store,
-                projects=_host_actions._project_engine,
-                feedback=_host_actions._feedback_store,
-                autonomy_enable=_autonomy_enable,
-                autonomy_disable=_autonomy_disable,
-                autonomy_running=_autonomy_running,
-            ),
-        )
-        set_governed_action_service(governed_action_service)
-        logger.info("Governed action ledger initialized")
-    except Exception as exc:
-        logger.warning("Governed action ledger init failed: %s", exc)
     source_claim_task = None
     claims_enabled = os.environ.get("PROTAGINE_SOURCE_CLAIMS", "on").strip().lower() in {"on", "1", "true"}
     from protagine.vector import get_store as source_vector_store
@@ -3559,24 +1796,8 @@ async def lifespan(app: FastAPI):
                 "external cognition event intake shutdown failed",
                 exc_info=True,
             )
-    # Stop the queue-consuming bridge before its stores, governor, or queue.
-    try:
-        if agent_bridge_service is not None:
-            await agent_bridge_service.stop()
-        if agent_bridge_task is not None:
-            try:
-                await asyncio.wait_for(agent_bridge_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                agent_bridge_task.cancel()
-                try:
-                    await agent_bridge_task
-                except asyncio.CancelledError:
-                    pass
-    except Exception:
-        logger.debug("Agent bridge shutdown error", exc_info=True)
-    # Stop the rest of the background work before any store it uses is
-    # closed: the mind tick first (its in-flight tick must finish), then the
-    # execution worker and queue maintenance.
+    # Stop the mind tick before any store it uses is closed: its in-flight
+    # tick must finish.
     try:
         from protagine.api.routers.mind import get_mind as _get_mind_for_shutdown, set_mind as _set_mind
         _running_mind = _get_mind_for_shutdown()
@@ -3585,42 +1806,6 @@ async def lifespan(app: FastAPI):
         _set_mind(None)
     except Exception:
         logger.warning("Mind shutdown failed")
-    # Stop worker node (before queue so in-flight jobs can drain).
-    try:
-        worker = getattr(app.state, "worker", None)
-        if worker is not None:
-            await worker.stop(drain_timeout=10.0)
-        worker_task = getattr(app.state, "worker_task", None)
-        if worker_task is not None:
-            worker_task.cancel()
-    except Exception:
-        logger.debug("Worker shutdown error", exc_info=True)
-    # Stop queue maintenance only after the execution worker has drained, and
-    # before closing the shared queue connection.
-    try:
-        if queue_scheduler is not None:
-            await queue_scheduler.stop()
-        if queue_scheduler_task is not None:
-            try:
-                await asyncio.wait_for(queue_scheduler_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                queue_scheduler_task.cancel()
-                try:
-                    await queue_scheduler_task
-                except asyncio.CancelledError:
-                    pass
-    except Exception:
-        logger.debug("Task queue scheduler shutdown error", exc_info=True)
-    # No stopped/repeated lifespan may retain a usable authority handle.
-    set_worker_governor(None)
-    # Stop task queue
-    try:
-        from protagine.api.routers.host import _task_queue
-        if _task_queue is not None:
-            await _task_queue.queue.stop()
-    except Exception:
-        logger.warning("Task queue shutdown failed")
-    set_task_queue(None)
     if graph is not None:
         try:
             await graph.close()
@@ -3637,9 +1822,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("SkillRegistry close failed", exc_info=True)
     set_llm_router(None)
-    set_reasoning_loop(None)
     set_graph(None)
-    set_response_gate(None)
     set_signal_collector(None)
     set_embedder(None)
     set_goals_store(None)
@@ -3690,13 +1873,6 @@ async def lifespan(app: FastAPI):
         _set_presence_store(None)
     except Exception:
         logger.debug("presence store shutdown failed", exc_info=True)
-    set_context_provenance_store(None)
-    set_response_guard(None)
-    try:
-        from protagine.tom.levels import set_evidence_probe
-        set_evidence_probe(None)
-    except Exception:
-        logger.debug("Tom2 evidence probe shutdown failed", exc_info=True)
     set_pattern_store(None)
     set_surprise_store(None)
     set_tom_extractor(None)
@@ -3714,62 +1890,18 @@ async def lifespan(app: FastAPI):
     set_secrets_manager(None)
     set_session_store(None)
     set_session_report_store(None)
-    set_agent_bridge(None)
-    # Evidence/P6 periodic reducers are owned by the autonomy scheduler. Close
-    # them only after that loop is stopped so an in-flight tick cannot race a
-    # closed SQLite handle. Clear HTTP handles before releasing connections.
-    set_cognition_evidence(None, None, None, {
-        "configured_mode": "off",
-        "state": "off",
-        "reason": "sidecar_stopped",
-    })
-    try:
-        evidence_wiring = locals().get("_evidence_wiring")
-        if evidence_wiring is not None and evidence_wiring.get("store") is not None:
-            evidence_wiring["store"].close()
-    except Exception:
-        logger.debug("cognition evidence shutdown failed", exc_info=True)
     set_situation_spine(None, None)
-    set_drive_governance(None, None, None)
     try:
         situation_wiring = locals().get("_situation_wiring")
         if situation_wiring is not None:
-            original = situation_wiring.get("original_validator")
-            cognition = locals().get("_cognition_spine")
-            if original is not None and cognition is not None:
-                cognition._situation = original
             situation_wiring["store"].close()
     except Exception:
         logger.debug("situation spine shutdown failed", exc_info=True)
-    try:
-        drive_wiring = locals().get("_drive_wiring")
-        if drive_wiring is not None:
-            drive_wiring["store"].close()
-    except Exception:
-        logger.debug("drive governance shutdown failed", exc_info=True)
-    try:
-        from protagine.api.routers.host import set_project_engine
-        set_project_engine(None)
-        project_store = locals().get("_project_store")
-        if project_store is not None:
-            project_store.close()
-    except Exception:
-        logger.debug("project store shutdown failed", exc_info=True)
     set_session_store(None)
-    set_task_queue(None)
     # Multi-Agent cleanup
     set_agent_store(None)
     set_invite_store(None)
     set_initiative_store(None)
-    try:
-        from protagine.api.routers.governed_actions import (
-            set_governed_action_service,
-        )
-        set_governed_action_service(None)
-        if governed_action_service is not None:
-            governed_action_service.close()
-    except Exception:
-        logger.debug("Governed action ledger shutdown failed", exc_info=True)
     set_assignment_engine(None)
     set_websocket_manager(None)
     try:
@@ -3827,29 +1959,15 @@ def create_app() -> FastAPI:
     from protagine.api.routers import followup_plans
     app.include_router(followup_plans.router)
 
-    # Exact PUT/GET action endpoint.  Middleware maps these methods to
-    # actions:execute/actions:verify; the router independently rejects legacy,
-    # unscoped, non-owner, and differently named principals.
-    from protagine.api.routers import governed_actions as governed_actions_router
-    app.include_router(governed_actions_router.router)
-
     # Channel registration router
     from protagine.channels.router import router as channels_router
     app.include_router(channels_router)
-
-    # Task queue router (v0.13.0)
-    from protagine.api.routers import task_queue as task_queue_router
-    app.include_router(task_queue_router.router)
 
     # Observations router (v0.16.0) — agent-as-sensor ingestion
     from protagine.api.routers import observations as observations_router
     app.include_router(observations_router.router)
     from protagine.api.routers import mining as mining_router
     app.include_router(mining_router.router)
-
-    # Context gate (v0.32.0) — budget-aware context preparation
-    from protagine.api.routers import context_gate as context_gate_router
-    app.include_router(context_gate_router.router)
 
     # MCP streamable HTTP endpoint
     try:

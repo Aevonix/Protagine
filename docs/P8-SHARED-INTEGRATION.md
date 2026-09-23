@@ -75,8 +75,8 @@ Older global context producers do not yet carry P8 visibility envelopes.
 While P8 is attached, `/context/assemble` queries
 those sources only for a server-attested exact owner viewer. A guest or an
 unsealed migration caller receives no global goals, initiatives, briefings,
-world-model entities, insights, contact list, cognition snapshot, directives,
-or surprises; the sources are not queried at all. The temporal endpoint and
+world-model entities, insights, contact list, cognition snapshot or surprises;
+the sources are not queried at all. The temporal endpoint and
 assembled temporal block likewise keep owner-last-seen, global overdue
 commitments, and other-contact cadence heads-up content owner-only while still
 providing the current viewer's clock/timezone context. P8-off preserves the
@@ -84,14 +84,6 @@ legacy behavior. This is containment, not invented fact authority: exact
 recipient memories and relationship context retain their existing scoped
 paths, and the legacy global producers still need typed envelopes before they
 can be shared with a non-owner.
-
-The reasoning surface uses the same containment principle. Model-advertised
-tool definitions are never treated as an execution gate: `ToolExecutor`
-enforces the exact allowed-name set again, classifies unknown/dynamic tools as
-mutations, and consults standing owner directives at dispatch. With P8 attached,
-only a scoped exact owner can read private Protagine/tool state, and mutations also
-require `tools:mutate`; guests retain general calculation and web search. Body
-contact claims and tool argument selectors cannot grant tool authority.
 
 The non-real-time autonomy delivery seam constructs a detached, structurally
 bounded value snapshot of the exact final sanitized text (or guard-cleared
@@ -147,7 +139,7 @@ that turns those rows into model/user-visible content must use P8 projection.
   therefore exact-owner-only while P8 is attached.
 - Initiative producers do not yet consistently retain exact fact references;
   absent references are reported as provenance uncertainty, not fabricated.
-- No ResponseGuard semantics, SharedFactsStore schema/behavior, host-deployment code,
+- No SharedFactsStore schema/behavior, host-deployment code,
   Hermes code, voice code, Meet code, or live service configuration changes.
 
 ## Verification

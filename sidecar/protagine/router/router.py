@@ -366,7 +366,7 @@ class LLMRouter:
             response_format = {'type': 'json_schema', 'json_schema': {**schema, 'strict': True}}
         has_images = any(isinstance(m.get('content'), list) and any(
             isinstance(b, dict) and b.get('type') in {'image_url', 'input_image'} for b in m['content']) for m in messages)
-        from protagine.contextgate import estimate_tokens
+        from protagine.router.tokens import estimate_tokens
         text = '\n'.join(m['content'] if isinstance(m.get('content'), str) else '\n'.join(
             b.get('text', '') for b in (m.get('content') or []) if isinstance(b, dict) and isinstance(b.get('text'), str)) for m in messages)
         schema_tokens = estimate_tokens(json.dumps(response_format)) if response_format else 0

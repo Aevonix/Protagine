@@ -45,10 +45,9 @@ def connectors_mode() -> str:
 
 class ConnectorManager:
     def __init__(self, *, observation_store: Any = None, populator: Any = None,
-                 directive_manager: Any = None, self_model: Any = None) -> None:
+                 self_model: Any = None) -> None:
         self._obs = observation_store
         self._populator = populator
-        self._directives = directive_manager
         self._self_model = self_model
         self._connectors: List[Connector] = []
         self._last: Dict[str, Dict[str, Any]] = {}
@@ -93,34 +92,12 @@ class ConnectorManager:
                              exc_info=True)
         return len(self._connectors)
 
-    # -- boundary gate ----------------------------------------------------
-    def _boundary_ok(self, obs: Observation) -> bool:
-        """OBSERVE-capability check: a subject under a perception blackout is
-        suppressed. Reads survive an ACT-level "leave X alone"."""
-        if self._directives is None:
-            return True
-        try:
-            from protagine.directives import Action
-            subject = " ".join([e.name for e in obs.entities]
-                               + [str(obs.payload.get("subject", ""))]).strip()
-            return self._directives.check(Action(
-                kind="observe", text=subject or obs.domain,
-                target=subject)).allowed
-        except Exception:
-            # Fail CLOSED: a broken boundary check must not convert into
-            # permission to ingest — the observation is only delayed until
-            # the directive engine answers again.
-            logger.warning("connector boundary check failed; withholding "
-                           "observation this cycle", exc_info=True)
-            return False
-
     # -- the ingest phase -------------------------------------------------
     async def poll_due(self, now: Optional[float] = None) -> Dict[str, Any]:
         now = now if now is not None else time.time()
         mode = connectors_mode()
         report: Dict[str, Any] = {"mode": mode, "connectors": [],
-                                  "observations": 0, "populated": 0,
-                                  "skipped_boundary": 0}
+                                  "observations": 0, "populated": 0}
         if mode == "off" or not self._connectors:
             return report
 
@@ -137,13 +114,7 @@ class ConnectorManager:
                 observations = []
             c.mark_polled(now)
 
-            kept: List[Observation] = []
-            for obs in observations:
-                if not self._boundary_ok(obs):
-                    report["skipped_boundary"] += 1
-                    continue
-                kept.append(obs)
-
+            kept = list(observations)
             counts = await self._ingest(c, kept, mode)
             self._last[c.name] = {
                 "at": now, "domain": c.domain, "count": len(kept),
@@ -154,7 +125,7 @@ class ConnectorManager:
             report["observations"] += len(kept)
             report["populated"] += counts["populated"]
 
-        if report["observations"] or report["skipped_boundary"]:
+        if report["observations"]:
             self._journal(report)
         return report
 
@@ -210,8 +181,7 @@ class ConnectorManager:
                 "connectors",
                 f"ingested {report['observations']} observation(s) from "
                 f"{len(report['connectors'])} connector(s)",
-                reasoning=f"mode={report['mode']}, "
-                          f"skipped_boundary={report['skipped_boundary']}",
+                reasoning=f"mode={report['mode']}",
                 decision="acted" if report["mode"] == "live" else "held",
                 reversibility="reversible")
         except Exception:

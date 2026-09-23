@@ -99,15 +99,3 @@ async def test_off_mode_does_nothing(monkeypatch):
     assert report["batches"] == 0 and world.entities == []
 
 
-@pytest.mark.asyncio
-async def test_boundary_suppresses_entity(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_WORLD_LLM_EXTRACT", "live")
-    from protagine.directives import DirectiveManager, DirectiveStore
-    dm = DirectiveManager(DirectiveStore())
-    dm.add_explicit("Initech", polarity="prohibit",
-                    raw_text="don't even look at Initech",)
-    world = FakeWorld()
-    x = _Extractor(world, directive_manager=dm, payload=_payload())
-    await x.run(texts=["text"])
-    names = {e.name for e in world.entities}
-    assert "Initech" not in names

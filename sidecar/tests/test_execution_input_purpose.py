@@ -162,12 +162,12 @@ def test_long_purpose_cannot_displace_active_queue_fairness_or_execution_family(
         store.observe(observation('sibling-' + str(n), parent_execution_id=parent['execution_id']),
                       principal_id='host', contact_id='owner')
     view = store.view(contact_id='owner', owner=True)
-    for name in ('local_work', 'native_kanban', 'reported_worker', 'worker_work', 'native_cron'):
+    for name in ('local_work', 'native_kanban', 'reported_worker', 'native_cron'):
         view[name] = {'available': True, 'items': [{'id': name, 'status': 'running'}]}
     result = request_work_context(view, session_id=child['session_id'])
     rows = [json.loads(line) for line in result['text'].splitlines() if line.startswith('{')
             and json.loads(line).get('source') != 'native_kanban_coverage']
-    assert {row['source'] for row in rows} == {'execution', 'local_work', 'native_kanban', 'reported_worker', 'worker_work', 'native_cron'}
+    assert {row['source'] for row in rows} == {'execution', 'local_work', 'native_kanban', 'reported_worker', 'native_cron'}
     assert len(rows) <= 8 and len(result['text']) <= 4000
     native = {row['execution_id']: row for row in rows if row['source'] == 'execution'}
     assert parent['execution_id'] in native and child['execution_id'] in native

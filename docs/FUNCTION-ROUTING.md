@@ -208,8 +208,7 @@ A fallback must retain the request's modality and configured capability
 constraints. The existing text token estimator also excludes obviously
 undersized declared contexts, including the requested output allowance. This
 is a heuristic, not exact tokenizer accounting; image token usage and unknown
-legacy context sizes remain unknown. The existing queue context gate reads
-function configuration when a named pool has no corresponding legacy tier.
+legacy context sizes remain unknown.
 
 All automatic function candidates must be local. Default networks are loopback,
 RFC1918 IPv4 and IPv6 unique-local ranges. `localNetworks` can replace these with

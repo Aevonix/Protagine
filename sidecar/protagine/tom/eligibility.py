@@ -40,7 +40,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
-from protagine.gate.env_risk import _tier_rank, env_risk_window_hours
+from protagine.tom.env_risk import _tier_rank, env_risk_window_hours
 from protagine.identity.participants import SYSTEM_CONTACT_ID
 from protagine.tom.tom2 import render_inference_for_contact
 

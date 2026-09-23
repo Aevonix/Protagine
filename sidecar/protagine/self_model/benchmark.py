@@ -569,7 +569,7 @@ class SelfhoodBenchmark:
     # -- lazy dependency resolution -------------------------------------
     _HOST_GLOBALS = {
         "commitments": "_commitment_store", "comms": "_comms_log",
-        "graph": "_graph", "facts": "_facts_store", "queue": "_task_queue",
+        "graph": "_graph", "facts": "_facts_store",
         "corrections": "_learning_feedback_store",
     }
 

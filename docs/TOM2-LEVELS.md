@@ -39,7 +39,7 @@ effective = min( PROTAGINE_TOM2_LEVEL          (default 0),
        … and 0 on ANY error anywhere.
 ```
 
-Environment risk (`gate/env_risk.py`) grades each (conversation, reader)
+Environment risk (`tom/env_risk.py`) grades each (conversation, reader)
 pair R0–R3, **monotone and fail-closed**: a lower grade needs positive,
 verified evidence (declared-private gateway, strong identity resolution,
 known census, tier floors); every missing signal — and every error — is
@@ -48,12 +48,9 @@ R3. `PROTAGINE_ENV_RISK_GATEWAY_CLASS` must explicitly bless a gateway as
 names.
 
 Enforce evidence must prove that a transport-owned egress mediator actually
-withheld or emitted the exact digest-bound output on this gateway. A
-`GuardAuditStore` row proves only that ResponseGuard evaluated a candidate;
-evaluation rows never count as applied-output evidence, regardless of mode,
-decision, recency, or row count. No receipt-backed egress mediator is wired in
-the current build, so the evidence term remains 1 and Tom2 level 2 remains
-capped at level 1. Silence and verdict counts prove nothing.
+withheld or emitted the exact digest-bound output on this gateway. No
+receipt-backed egress mediator is wired in the current build, so the evidence
+term remains 1 and Tom2 level 2 remains capped at level 1.
 
 ## Forced-downgrade list (no human in the loop)
 
@@ -77,40 +74,21 @@ Any one of these drops the level THAT TURN, silently:
 The resolution is cached ≤ 60s per (conversation, reader); a decayed
 brake takes effect within a minute, everywhere at once.
 
-## The egress net
-
-Every level-2 rendering is **ledger-first**: an exposure row
-(`tom/exposure.py`, refs only) and an injection **taint**
-(`gate/taint.py`, TTL 900s) are durably recorded before a line may enter
-context. While a taint is live, the `tom2_epistemic` guard check
-(block-severity, on the default enforce allowlist) blocks replies that
-voice an epistemic claim about a tainted subject, make self-referential
-modeling claims, or carry tainted fact text into a different
-conversation. With no live taint the check is inert — one in-memory clock
-comparison, zero findings, zero false positives.
-
-Honest limitation: the net is lexical; a paraphrase escapes it
-(test-documented). The structural guarantee lives upstream — the renderer
-cannot inject content the reader does not already hold.
-
 ## Graduation ladder
 
 1. **Ship dark** (all defaults). Observe presence, `/env-risk`, and
    `/tom2/status` for a while; confirm your private DM surfaces grade
    R0/R1 and the doctor is clean.
 2. `PROTAGINE_TOM2_LEVEL=1` — self-reflexive priors only.
-3. Ramp the chat guard to enforce on the target gateway and keep
-   `tom2_epistemic` allowlisted. Use `/response-guard/audit` only to calibrate
-   evaluation behavior; those rows do not accrue applied-output evidence.
-4. Build and verify a transport-owned egress mediator that persists receipts
+3. Build and verify a transport-owned egress mediator that persists receipts
    binding the policy, evaluated candidate digest, decision, and exact applied
    output digest. Only that receipt-backed mediator may supply the resolver's
    enforce-evidence probe.
-5. `PROTAGINE_TOM2_MAX_LEVEL=2` + `PROTAGINE_TOM2_CROSS_CONTEXT=1` +
+4. `PROTAGINE_TOM2_MAX_LEVEL=2` + `PROTAGINE_TOM2_CROSS_CONTEXT=1` +
    `PROTAGINE_TOM2_LEVEL=2`, with `PROTAGINE_TOM2_L2_APPROVAL=required`
    (default) and per-pair approvals via `POST /v1/host/tom2/approvals`.
 
-The current system cannot complete step 4 and therefore cannot run level 2:
+The current system cannot complete step 3 and therefore cannot run level 2:
 no receipt-backed applied-output evidence means the min-chain caps at level 1
 — by construction, not by policy or audit-row volume.
 
@@ -118,15 +96,13 @@ no receipt-backed applied-output evidence means the min-chain caps at level 1
 
 **`PROTAGINE_TOM2_LEVEL=0`** is the single-variable kill: the context wiring
 is skipped entirely (level 1 AND 2, every conversation) on the next turn.
-Nothing else needs to change; already-registered taints keep protecting
-egress until they expire. Verify with `GET /v1/host/tom2/status`
+Nothing else needs to change. Verify with `GET /v1/host/tom2/status`
 (`configured: 0`) and `protagine doctor` (`tom2-level-coherence` reports the
 kill switch).
 
 For a full stand-down beyond rendering: revoke pairs
 (`POST /v1/host/tom2/approvals` with `action=revoke`) and set
-`PROTAGINE_TOM2_CONTEXT=0` to drop the owner section too. Leave the guard
-and its allowlist alone — the egress net is protection, not exposure.
+`PROTAGINE_TOM2_CONTEXT=0` to drop the owner section too.
 
 ## Reversibility
 
@@ -146,8 +122,6 @@ and its allowlist alone — the egress net is protection, not exposure.
   risk_caps, sample_decision}` (every brake term of a live resolution).
 - `GET /v1/host/env-risk?conversation_key=…&contact_id=…` — grade + census.
 - `GET /v1/host/tom2/exposure`, `GET /v1/host/tom2/approvals`.
-- `GET /v1/host/response-guard/audit` — evaluation-only per-check rates and
-  breaker posture; these verdict rows are never applied-enforcement evidence.
 - `protagine doctor` — `tom2-cross-context`, `tom2-risk-caps`,
   `tom2-level-coherence`.
 
@@ -161,12 +135,9 @@ and its allowlist alone — the egress net is protection, not exposure.
 | `PROTAGINE_TOM2_CROSS_CONTEXT` | `0` | H3.5 render gate (half of the level-2 requirement). |
 | `PROTAGINE_TOM2_L2_APPROVAL` | `required` | Owner pair-approval requirement. |
 | `PROTAGINE_TOM2_BUDGET_PAIR_DAY` / `_READER_DAY` / `_GLOBAL_DAY` | `1` / `3` / `10` | Exposure budgets per rolling 24h. |
-| `PROTAGINE_TOM2_TAINT_TTL_SECS` | `900` | How long an injection stays hot for the egress net. |
 | `PROTAGINE_TOM2_MUTUAL_WINDOW_DAYS` | `30` | Mutual-knowledge co-sighting window. |
 | `PROTAGINE_ENV_RISK_GATEWAY_CLASS` | *(empty)* | `gateway:private\|public\|embodied` pairs; unclassified = hostile. |
 | `PROTAGINE_ENV_RISK_WINDOW_HOURS` | `48` | Census / subject-presence window. |
-| `PROTAGINE_GUARD_ENFORCE_CHECKS` | `secret_leak,tom2_epistemic` | Per-check enforce allowlist. |
-| `PROTAGINE_GUARD_DERIVE_CONTEXT` | `1` | Server-side guard-context completion (chat hot path). |
 | `PROTAGINE_CONV_PRESENCE` | `on` | Passive conversation census recording. |
 
 ## Residual risk (accepted, not hidden)
@@ -174,8 +145,8 @@ and its allowlist alone — the egress net is protection, not exposure.
 Level 2 discloses *that* the system models people, to trusted readers, at
 a budgeted rate. Irreducibles: implication leaks (behavior divergence is
 observable), aggregation over time (slowed by budgets, not stopped),
-elicitation (a voiced prior is one paraphrase away — the egress net
-narrows this lexically). Structurally impossible through the renderer:
+elicitation (a voiced prior is one paraphrase away). Structurally impossible
+through the renderer:
 new fact content crossing contexts, owner-ignorance narration,
 co-present-subject surfacing, rendering to unknown / group / public
 audiences.

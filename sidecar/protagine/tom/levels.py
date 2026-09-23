@@ -221,7 +221,7 @@ async def resolve_effective_level(
 async def _resolve(conversation_key: str, reader_contact_id: str, *,
                    presence_store: Any, contacts_store: Any,
                    owner_id: Optional[str]) -> LevelResolution:
-    from protagine.gate.env_risk import classify
+    from protagine.tom.env_risk import classify
     from protagine.tom.tom2 import tom2_cross_context_enabled
 
     terms: Dict[str, int] = {}

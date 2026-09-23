@@ -45,7 +45,6 @@ class PopulationReport:
     merged: List[Dict[str, Any]] = field(default_factory=list)    # {name,type,into}
     proposed: List[Dict[str, Any]] = field(default_factory=list)
     relationships: List[Dict[str, Any]] = field(default_factory=list)  # {source,rel,target}
-    skipped_boundary: List[str] = field(default_factory=list)
 
     def total(self) -> int:
         return len(self.created) + len(self.merged) + len(self.proposed)
@@ -157,12 +156,10 @@ class WorldModelPopulator:
     def __init__(
         self,
         store: Any,
-        directive_manager: Any = None,
         mode: Optional[str] = None,
         min_confidence: float = 0.30,
     ) -> None:
         self._store = store
-        self._directives = directive_manager
         self._mode = mode or populate_mode()
         self._min_conf = min_confidence
         self._extractor = ConversationExtractor()
@@ -177,23 +174,6 @@ class WorldModelPopulator:
     @property
     def mode(self) -> str:
         return self._mode
-
-    def _boundary_ok(self, name: str) -> bool:
-        if self._directives is None:
-            # No directive manager configured: nothing to check against
-            # (distinct from "checked and allowed" — see log line).
-            logger.debug("world populate boundary UNCHECKED for %r "
-                         "(no directive manager)", name)
-            return True
-        try:
-            from protagine.directives import Action
-            return self._directives.check(Action(kind="populate", text=name, target=name)).allowed
-        except Exception:
-            # Fail closed, matching directives.guard.boundary_fail_closed():
-            # an error while evaluating an owner boundary must refuse.
-            logger.warning("world populate boundary check errored for %r "
-                           "— failing closed", name, exc_info=True)
-            return False
 
     async def populate_from_text(self, text: str, source_id: str) -> PopulationReport:
         report = PopulationReport(source_id=source_id, mode=self._mode)
@@ -217,9 +197,6 @@ class WorldModelPopulator:
             # Reject sentence-fragment "names" and low-quality/noise candidates
             # that slip through rule-based NER (high-precision population).
             if _looks_like_fragment(c.text) or _is_low_quality(c.text, c.entity_type):
-                continue
-            if not self._boundary_ok(c.text):
-                report.skipped_boundary.append(c.text)
                 continue
             candidates.append(c)
 

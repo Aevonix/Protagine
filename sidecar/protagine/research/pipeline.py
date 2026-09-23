@@ -428,58 +428,21 @@ class ResearchPipeline:
         artifact: Artifact,
         run: PipelineRun,
     ) -> ReviewResult:
-        """Content-safety review of a research artifact.
+        """Content review of a research artifact: credentials, personal data and injections."""
+        from protagine.research.review import scan_injection, scan_pii
 
-        A research artifact has no recipient/trust-tier, so the full
-        ResponseGate (recipient verification, cross-context, trust tiering)
-        does not apply — but its PII scanner (L2) and injection detector (L5)
-        do. Run those two layers directly. (The previous code constructed
-        ResponseGate() with the wrong arguments, threw on every call, and
-        silently degraded to a 4-string substring scan.)"""
-        try:
-            from protagine.gate.layers.l2_pii import PIIScanner
-            from protagine.gate.layers.l5_injection import InjectionDetector
-            from protagine.gate.config import GateConfig
-            from protagine.gate.models import GatePayload, TrustTier
-
-            cfg = GateConfig()
-            payload = GatePayload(
-                response_text=artifact.content,
-                target_contact_id="", target_gateway="",
-                session_id=str(run.metadata.get("session_id", "research")),
-                trust_tier=TrustTier.PERIPHERAL,
-                mentioned_entities=frozenset(),
-                turn_id=str(getattr(run, "run_id", "") or "research"),
-                incoming_message_text="",
-            )
-            pii = await PIIScanner(cfg).check(payload)
-            inj = await InjectionDetector(cfg).check(payload)
-            pii_clean = not pii.blocked
-            injection_clean = not inj.blocked
-            notes = []
-            if not pii_clean:
-                notes.append(f"pii:{pii.code}")
-            if not injection_clean:
-                notes.append(f"injection:{inj.reason or inj.code}")
-            return ReviewResult(
-                passed=pii_clean and injection_clean,
-                pii_clean=pii_clean,
-                injection_clean=injection_clean,
-                gate_notes="; ".join(notes) or "clean",
-            )
-        except Exception as exc:
-            logger.warning("research review gate failed (%s); "
-                           "falling back to injection-marker scan", exc)
-
-        # Fallback only when the gate layers are genuinely unavailable.
-        content = artifact.content
-        injection_markers = ["<script", "javascript:", "data:text/html", "eval("]
-        injection_found = any(m in content.lower() for m in injection_markers)
+        pii = scan_pii(artifact.content)
+        injection = scan_injection(artifact.content)
+        notes = []
+        if pii is not None:
+            notes.append(f"pii:{pii[0]}")
+        if injection is not None:
+            notes.append(f"injection:{injection}")
         return ReviewResult(
-            passed=not injection_found,
-            pii_clean=True,
-            injection_clean=not injection_found,
-            gate_notes="basic-review" if not injection_found else "injection-detected",
+            passed=pii is None and injection is None,
+            pii_clean=pii is None,
+            injection_clean=injection is None,
+            gate_notes="; ".join(notes) or "clean",
         )
 
     # ------------------------------------------------------------------

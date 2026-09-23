@@ -164,16 +164,16 @@ def test_many_siblings_never_show_a_child_without_its_selected_parent(budget, li
 
 def test_ancestry_that_cannot_fit_is_omitted_without_hiding_independent_short_work():
     family = [execution(3, parent=2), execution(2, parent=1), execution(1, age=200)]
-    result = request_work_context({'items': family, 'worker_work': {
-        'available': True, 'items': [{'job_id': 'short-worker', 'state': 'running'}]}}, limit=2)
+    result = request_work_context({'items': family, 'native_cron': {
+        'available': True, 'items': [{'job_id': 'short-worker', 'status': 'running'}]}}, limit=2)
     projected = rows(result)
     native = {row['execution_id']: row for row in projected if row['source'] == 'execution'}
     assert f'{3:064x}' not in native
     assert len(projected) <= 2 and result['truncated']
     # With a tighter character budget, neither long child chain fits, but the
-    # independent worker can still be shown; no global early break is allowed.
-    result = request_work_context({'items': family, 'worker_work': {
-        'available': True, 'items': [{'job_id': 'short-worker', 'state': 'running'}]}}, max_chars=950)
+    # independent schedule can still be shown; no global early break is allowed.
+    result = request_work_context({'items': family, 'native_cron': {
+        'available': True, 'items': [{'job_id': 'short-worker', 'status': 'running'}]}}, max_chars=950)
     assert any(row.get('job_id') == 'short-worker' for row in rows(result))
     assert len(result['text']) <= 950 and result['truncated']
 
@@ -205,7 +205,6 @@ def test_recent_sibling_burst_preserves_other_active_sources_before_history():
             + [execution(1, age=180)], 'total': 31, 'truncated': True,
         'local_work': {'items': [{'initiative_id': 'accepted-draft', 'status': 'running'}]},
         'native_kanban': {'items': [{'native_task_id': 'active-board-task', 'status': 'running'}]},
-        'worker_work': {'items': [{'job_id': 'active-queue-job', 'state': 'running'}]},
         'native_cron': {'items': [{'job_id': 'active-schedule', 'status': 'running'}]},
         'reported_worker': {'items': [
             {'label': 'active-download', 'state': 'running'},
@@ -213,7 +212,7 @@ def test_recent_sibling_burst_preserves_other_active_sources_before_history():
     result = request_work_context(view, session_id='current-child')
     projected = rows(result)
     assert {row['source'] for row in projected} == {
-        'execution', 'local_work', 'native_kanban', 'worker_work', 'native_cron', 'reported_worker'}
+        'execution', 'local_work', 'native_kanban', 'native_cron', 'reported_worker'}
     native = {row['execution_id']: row for row in projected if row['source'] == 'execution'}
     assert f'{1:064x}' in native and current['execution_id'] in native
     assert all(not row.get('parent_execution_id') or row['parent_execution_id'] in native for row in native.values())

@@ -727,14 +727,29 @@ def run_store_migrations(home: Path) -> list[str]:
 
 
 # State owned by code that no longer exists: the autonomy scheduler, the queue
-# approval ledger, standing grants and the proactive delivery bridge. An
-# upgrade moves them into the backup instead of leaving orphans behind.
+# approval ledger, standing grants, the proactive delivery bridge, the task
+# queue, the project engine, the governed action ledger, the directive store,
+# directed tasks, the response guard's ledgers and the agent bridge poller's
+# seen-lists. An upgrade moves them into the backup instead of leaving orphans
+# behind. A directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
     "standing_approvals.json",
     "protagine-delivery-rate-limit.db",
     "protagine-governed-gateway-outcomes.db",
+    "task_queue.db",
+    "protagine-projects.db",
+    "protagine-cognition.db",
+    "protagine-cognition-evidence.db",
+    "cognition-drive-governance.db",
+    "governed-actions",
+    "protagine-directives.db",
+    "protagine-directed.db",
+    "protagine-guard-audit.db",
+    "protagine-context-provenance.db",
+    "protagine-tom2-taint.db",
+    "bridge",
 )
 INITIATIVES_DB = "initiatives.db"
 
@@ -749,10 +764,13 @@ def retire_state(home: Path, backup_dir: Path) -> list[str]:
     destination = backup_dir / "retired"
     for name in retired_state_present(home):
         destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            source = home / (name + suffix)
-            if source.exists():
-                shutil.move(str(source), str(destination / (name + suffix)))
+        if (home / name).is_dir():
+            shutil.move(str(home / name), str(destination / name))
+        else:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                source = home / (name + suffix)
+                if source.exists():
+                    shutil.move(str(source), str(destination / (name + suffix)))
         notes.append(f"retired {name} (moved to {destination})")
     return notes
 

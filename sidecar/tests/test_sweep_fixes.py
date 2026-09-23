@@ -2,12 +2,10 @@
 goal aggregator + goal tool shape, and the hourly condition-check phase."""
 
 import json
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import pytest
 
 from protagine.events.journal import replay_events
 from protagine.tom.affect import AffectStore
@@ -128,37 +126,6 @@ def test_goal_engine_aggregator(tmp_path):
     assert stats.total_completed == 1
     assert stats.total_initiated == 5          # all created inside the window
     assert 0.0 < stats.completion_rate <= 1.0
-
-
-# --- tools: protagine_list_goals handler uses the real engine API ---------------
-
-class _Registry:
-    def __init__(self, goals):
-        self.goals = goals
-
-
-async def test_handle_list_goals_returns_goals():
-    from protagine.tools.handlers import handle_list_goals
-    from enum import Enum
-
-    class _St(str, Enum):
-        ACTIVE = "active"
-
-    @dataclass
-    class _G:
-        goal_id: str
-        title: str
-        status: _St
-        progress_pct: float
-
-    class _Eng:
-        def list_goals(self, status=None, limit=50, offset=0):
-            return [_G("g1", "test goal", _St.ACTIVE, 0.5)]
-
-    out = json.loads(await handle_list_goals({}, _Registry(_Eng())))
-    assert out["count"] == 1
-    assert out["goals"][0] == {"id": "g1", "title": "test goal",
-                               "status": "active", "progress": 0.5}
 
 
 # --- autonomy: hourly condition-check phase exists and dedups ----------------

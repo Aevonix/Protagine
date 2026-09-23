@@ -14,12 +14,6 @@ There are two safe outcomes:
   evidence and publishes affected benchmark metrics with `value: null` and an
   evidence-gap reason. It never estimates which rows were probably wrong.
 
-The worker governor now records its job id, versioned outcome contract,
-outcome-classification reason, and audit verdict with every non-neutral event.
-This provides exact provenance for future reconciliation. Older events are
-labelled `legacy_unattributed` / `legacy.unversioned` unless their call site
-already supplied provenance.
-
 ## Rollback-first workflow
 
 Do not run this against live state until code containing this schema is the

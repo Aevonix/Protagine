@@ -2,15 +2,13 @@
 
 > **Status.** Two tiers, different maturity:
 > - **Supported:** local agent hosts and MCP coding tools connecting to one
->   Protagine over its HTTP/WebSocket API and sharing unified context; the
->   installable `protagine-worker` daemon claiming typed jobs under the
->   server-side WorkerGovernor; and the local identity anchor (protagine_id,
->   node keypair, signed node certificate).
+>   Protagine over its HTTP/WebSocket API and sharing unified context, and
+>   the local identity anchor (protagine_id, node keypair, signed node
+>   certificate).
 > - **Experimental — not production-ready:** the *remote* agent-connect
 >   handshake, cert-chain verification, and the blockchain/consensus layer
 >   (`chain/`). No consensus loop is started at boot; the remote handshake is
->   not verified end-to-end. Use the worker daemon or MCP for real
->   multi-agent work today.
+>   not verified end-to-end. Use MCP for real multi-agent work today.
 
 Protagine's multi-agent support enables multiple agent hosts, coding agents, and other AI systems to connect to a central Protagine instance and share unified context.
 
@@ -109,14 +107,10 @@ Protagine supports several agent paths out of the box:
 
 - **Hermes plugin** (`plugins/hermes-plugin/`) — connects Protagine to native
   Hermes tools, context and turn capture. Install with `protagine init`; the
-  adapter submits governed actions through the separate action mediator.
+  mind's work reaches Hermes as kanban tasks and outbox messages.
 - **MCP** (`protagine mcp setup`) — configures a coding harness (Claude Code,
   Codex, Crush, OpenCode) to use Protagine over the Model Context Protocol
   (stdio transport).
-- **protagine-worker daemon** (`sidecar/protagine/workers/protagine_worker.py`,
-  console script `protagine-worker`) — an installable, capability-typed worker
-  that claims queued jobs and executes them with an LLM in a read/analyse
-  posture. Stdlib-only, so it runs on hosts without the full sidecar stack.
 - **Python Agent SDK** (`protagine.agent.AgentClient`) — for custom
   agents; reads `~/.protagine/agent.json` and connects via WebSocket (see below).
 
@@ -365,14 +359,12 @@ await client.start()
 The client handles authentication, the heartbeat loop, initiative delivery,
 and reconnection with exponential backoff.
 
-### Hermes plugin and workers
+### Hermes plugin
 
-The Hermes adapter uses native tool execution and the governed action
-mediator. Install it through `protagine init`; see [HERMES-ADAPTER.md](HERMES-ADAPTER.md).
-The separate packaged workers are `protagine-agent-bridge`,
-`protagine-queue-worker` and `protagine-skills-sync`. They run through installed
-commands or `python -m protagine.workers.<module>`; no loose poller scripts
-are shipped with the adapter.
+The Hermes adapter uses native tool execution; the mind's tasks run as Hermes
+kanban workers. Install it through `protagine init`; see
+[HERMES-ADAPTER.md](HERMES-ADAPTER.md). No separate worker daemon or poller
+ships with the adapter.
 
 ## Security Model
 

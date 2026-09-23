@@ -114,13 +114,6 @@ and consent. Closed obligations cannot be reclaimed. Context contains the
 commitment ID, description, due state and work/session state. Expiration means
 the previous observation is stale, not that work completed.
 
-The owner current-work view also reads bounded claimed/running records directly
-from the existing task queue. It includes a short task description, worker ID,
-canonical claim attempt, status and heartbeat age. This covers Protagine workers
-and the private action executor while they use that queue protocol. No duplicate
-worker observations or heartbeat writer are introduced. Guest views receive no
-global queue rows. Missing heartbeats mean unknown liveness, never completion.
-
 This lease is not external-effect authority. Spending, sending, production
 changes and other consequential work retain their existing consent and effect
 idempotency contracts. It cannot cancel an already-running shell command,

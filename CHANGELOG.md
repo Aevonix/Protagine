@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased - the dormant executor and the ceremony are gone
+
+Nothing on a default install ran the second executor once the mind loop
+owned dispatch, so it is deleted rather than kept dormant: the task queue
+and its router, the embedded worker node and scheduler, the worker governor,
+the packaged worker daemons (`protagine-agent-bridge`,
+`protagine-queue-worker`, `protagine-skills-sync`, `protagine-worker`) and
+the in-process agent bridge, the standalone `protagine-hostworker`
+distribution, governed actions with their ledger and backup posture, work
+orders and execution results, the project engine and planner, the reasoning
+loop with its native `read_file`/`web_search` tools, the executor skills,
+the P3 cognition spine, the receipt-derived evidence pipeline and the P7
+drive governance that only fed projects into that queue. The governance
+ceremony went with it: directed actions (HMAC webhook, dry run), the
+seven-layer response gate, the response guard with its audit ledger, surface
+policy, taint registry and context provenance, the directive store with its
+fuzzy matching and global-pause directive, and the context gate. Every
+effect goes through the mind's intention -> authority -> body path; Hermes
+approvals and the plugin guard mediate it; a standing "leave X alone" is
+`mind.deny`, and a global pause is `protagine mind off` plus `hermes pause`.
+
+What a non-autonomy reader still needed moved: the environment-risk
+classifier (`tom/env_risk.py`), the research review scans
+(`research/review.py`), the router's token estimator (`router/tokens.py`)
+and skills memory's term normaliser. `protagine upgrade` backs up and
+retires `task_queue.db`, `protagine-projects.db`, the cognition stores, the
+`governed-actions/` directory, and the directive, directed, guard-audit,
+provenance and taint stores. The doctor's authenticated probe reads
+`/v1/mind/state`. The sidecar goes from 191,751 to 143,767 lines of Python.
+
+Review fixes on the sweep: the tests of what survived come back (the
+external event intake's schema, restart replay, receipt and journal pruning;
+contact scope lifecycle and promotion; the router's token estimator, now in
+`tests/test_router_tokens.py`); `protagine upgrade` also retires the agent
+bridge poller's `bridge/` seen-lists; the environment example, the charter
+roles, the reconciliation note and the ignore list no longer name the removed
+workers, queue, gates, directed actions, cognition spine, projects, drive
+governance or release pins.
+
 ## Unreleased - the first closed loop (duty initiative)
 
 The mind runs one loop end to end on a default install: a commitment in a

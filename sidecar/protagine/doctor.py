@@ -303,7 +303,7 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
     results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN,
                            detail=f"sidecar at {base_url} reports status={body.get('status', 'unknown')}")]
     try:
-        status, _ = _http_get(f"{base_url}/v1/host/queue/stats", api_key, timeout)
+        status, _ = _http_get(f"{base_url}/v1/mind/state", api_key, timeout)
     except Exception as exc:  # noqa: BLE001
         results.append(CheckResult("sidecar-auth", FAIL, detail=f"authenticated request failed: {exc}"))
         return results

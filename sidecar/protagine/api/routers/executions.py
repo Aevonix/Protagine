@@ -201,11 +201,8 @@ async def with_queue_work(view, *, owner, limit=8):
     from protagine.turns.local_work import local_work_view
     from protagine.turns.hermes_kanban import kanban_view
     from protagine.turns.reported_workers import reported_worker_view
-    from protagine.api.routers import host
     from protagine.turns.executions import work_source_coverage
     import time
-
-    queue = getattr(host._task_queue, 'queue', host._task_queue)
 
     async def read(reader, *, asynchronous=False, **reader_kwargs):
         # These are independent read-only snapshots. One unavailable ledger
@@ -221,19 +218,13 @@ async def with_queue_work(view, *, owner, limit=8):
             return {'items': [], 'recent': [], 'available': False, 'unavailable': True,
                     'reason': 'work_source_unavailable', 'observed_at': time.time()}
 
-    async def queue_view():
-        if queue is None or not callable(getattr(queue, 'current_work', None)):
-            return {'items': [], 'available': False, 'unavailable': True,
-                    'reason': 'queue_not_attached', 'source': 'canonical_task_queue'}
-        return await read(queue.current_work, asynchronous=True)
-
     # All sources share the existing request budget, rather than each taking
     # another sequential budget after the native ledgers finish.
-    view['native_cron'], view['local_work'], view['native_kanban'], reported, view['worker_work'] = await asyncio.gather(
+    view['native_cron'], view['local_work'], view['native_kanban'], reported = await asyncio.gather(
         # Leave executor/return slack for the multi-board reader to retain
         # faster boards when its own partial-read budget is exhausted.
         read(cron_view), read(local_work_view), read(kanban_view, read_budget=.15),
-        read(reported_worker_view), queue_view())
+        read(reported_worker_view))
     if reported is not None:
         view['reported_worker'] = reported
     view['work_sources'] = work_source_coverage(view)

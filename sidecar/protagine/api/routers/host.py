@@ -56,13 +56,11 @@ from protagine.api.schemas.host import (
     ScopeAuthzResponse,
     ScopeCreateRequest,
     ScopeDeactivateRequest,
-    ScopeMemberIn,
     ScopePromoteRequest,
     ScopeResponse,
     SourceReference,
     SourceAnnotationCheck,
     SourceInputReference,
-    ResponseGuardCheckRequest,
     ContextAssembleRequest,
     ContextAssembleResponse,
     ContextProjectionAttestation,
@@ -84,7 +82,6 @@ from protagine.api.schemas.host import (
     GoalResponse,
     GoalUpdateRequest,
     HostHealthResponse,
-    HostMessage,
     IdentityInitRequest,
     IdentityStatusResponse,
     ImageBatchEmbedRequest,
@@ -113,18 +110,11 @@ from protagine.api.schemas.host import (
     MigrateResponse,
     MultimodalSearchRequest,
     MultimodalSearchResponse,
-    ReasoningToolCall,
-    ReasoningTurnRequest,
-    ReasoningTurnResponse,
     SkillExecuteRequest,
     SkillExecuteResponse,
-    ToolInvokeRequest,
-    ToolInvokeResponse,
     ResearchListResponse,
     ResearchRunResponse,
     ResearchStartRequest,
-    SafetyCheckRequest,
-    SafetyCheckResponse,
     SecretDeleteRequest,
     SecretDeleteResponse,
     SecretGetRequest,
@@ -247,10 +237,8 @@ v2_router = APIRouter(prefix="/v2/host", tags=["host-v2"])
 # ---------------------------------------------------------------------------
 
 _graph = None
-_response_gate = None
 _signal_collector = None
 _embedder = None
-_reasoning_loop = None
 _consolidator = None
 _event_subscribers: list[EventSubscriberBuffer] = []
 _event_broadcast_lock = threading.RLock()
@@ -328,11 +316,6 @@ def set_graph(graph) -> None:
     _graph = graph
 
 
-def set_response_gate(gate) -> None:
-    global _response_gate
-    _response_gate = gate
-
-
 def set_signal_collector(collector) -> None:
     global _signal_collector
     _signal_collector = collector
@@ -341,19 +324,6 @@ def set_signal_collector(collector) -> None:
 def set_embedder(embedder) -> None:
     global _embedder
     _embedder = embedder
-
-
-def set_reasoning_loop(loop) -> None:
-    global _reasoning_loop
-    _reasoning_loop = loop
-
-
-_tool_executor = None
-
-
-def set_tool_executor(executor) -> None:
-    global _tool_executor
-    _tool_executor = executor
 
 
 def set_consolidator(consolidator) -> None:
@@ -399,16 +369,12 @@ def set_telemetry(telemetry) -> None:
 def supported_capabilities() -> List[str]:
     """Return the list of capabilities this sidecar advertises."""
     caps: list[str] = ["memory"]
-    if _response_gate is not None:
-        caps.append("response_gate")
     if _signal_collector is not None:
         caps.append("signals")
     if _embedder is not None:
         caps.append("embed")
     if _consolidator is not None:
         caps.append("consolidate")
-    if _reasoning_loop is not None:
-        caps.append("reasoning")
     if _goals_store is not None:
         caps.append("goals")
     if _contacts_store is not None:
@@ -419,18 +385,8 @@ def supported_capabilities() -> List[str]:
         caps.append("world_model")
     if _metalearner is not None:
         caps.append("cognition")
-    if _cognition_spine is not None:
-        caps.append("cognition_spine")
     if _situation_store is not None and _situation_reducer is not None:
         caps.append("situation")
-    if _project_event_projector is not None:
-        caps.append("project_event_outbox")
-    if _cognition_evidence_store is not None\
-            and _cognition_evidence_reducer is not None\
-            and getattr(_cognition_evidence_reducer, "mode", "shadow") != "off":
-        caps.append("cognition_evidence")
-    if _drive_governance is not None and _drive_ranker is not None:
-        caps.append("drive_governance")
     if _research_pipeline is not None:
         caps.append("research")
     if _connection_discoverer is not None:
@@ -447,8 +403,6 @@ def supported_capabilities() -> List[str]:
         caps.append("mind")
     if _session_store is not None:
         caps.append("sessions")
-    if _task_queue is not None:
-        caps.append("task_queue")
     caps.append("events")
     if _commitment_store is not None:
         caps.append("commitments")
@@ -503,8 +457,6 @@ async def configure_host(body: HostConfigureRequest) -> HostConfigureResponse:
     Validate and persist one configuration, then atomically update the shared
     router. Existing consumer references and in-flight snapshots are retained.
     """
-    global _reasoning_loop
-
     if body.llm is None:
         return HostConfigureResponse(configured=False)
 
@@ -536,8 +488,6 @@ async def configure_host(body: HostConfigureRequest) -> HostConfigureResponse:
             prepared.watch_config(config_path)
             new_router = prepared
             set_llm_router(new_router)
-        if _reasoning_loop is not None:
-            _reasoning_loop._model = new_router
         return HostConfigureResponse(
             configured=True, provider=body.llm.get("provider"),
             models=body.llm.get("models", {}), routing=new_router.routing_status())
@@ -675,14 +625,6 @@ async def health() -> HostHealthResponse:
         memory_backend_down = True
         caps = [c for c in caps if c != 'memory']
         notes['memory'] = 'Canonical source ledger unavailable (' + type(exc).__name__ + ')'
-    if _response_gate is not None:
-        notes["response_gate"] = "ResponseGate wired"
-    else:
-        notes["response_gate"] = "ResponseGate not wired — gate/check passes everything"
-    if _reasoning_loop is not None:
-        notes["reasoning"] = "ReasoningLoop wired (max_iterations=%d)" % _reasoning_loop._config.max_iterations
-    else:
-        notes["reasoning"] = "ReasoningLoop not wired — /reasoning/turn returns 501"
     if _goals_store is not None:
         notes["goals"] = "Goal records available"
     if _contacts_store is not None:
@@ -749,19 +691,8 @@ async def health() -> HostHealthResponse:
     mind = _mind()
     if mind is not None:
         notes["mind"] = f"mind {'on' if mind.enabled else 'off'} (autonomy {mind.level}, ticks={mind.ticks})"
-    if _agent_bridge is not None:
-        if getattr(_agent_bridge, "is_running", False):
-            s = getattr(_agent_bridge, "stats", {})
-            notes["agent_bridge"] = (
-                f"AgentBridge running (fwd={s.get('initiatives_forwarded', 0)}, "
-                f"jobs={s.get('jobs_dispatched', 0)}, wh_fail={s.get('webhook_failures', 0)})"
-            )
-        else:
-            notes["agent_bridge"] = "AgentBridge wired (not started)"
     if _session_store is not None:
         notes["sessions"] = "InMemorySessionStore wired"
-    if _task_queue is not None:
-        notes["task_queue"] = "TaskQueueManager wired"
     if _commitment_store is not None:
         if "commitment_resolution_recovery_v1" in caps:
             notes["commitments"] = (
@@ -1026,62 +957,6 @@ def _canonical_shared_commitments(rows, contact_id):
                     visible.append(row)
                     break
     return visible[:5]
-
-
-def _request_tool_actor(
-    request: Request | None,
-    resolved_person_id: str | None,
-) -> str:
-    """Name the caller an HTTP tool call is recorded as.
-
-    Attribution does not depend on P8 gating: the resolved owner contact is
-    the owner, another resolved person is that person and anything else is a
-    guest. Only in-process execution, which never passes through here, is the
-    agent's own.
-    """
-    authority = request_authority(request)
-    policy = _p8_tool_actor_policy(
-        request, resolved_person_id or authority.viewer_person_id)
-    if policy.allow_private_read:
-        return "owner"
-    return policy.viewer_person_id or "guest"
-
-
-def _p8_tool_actor_policy(
-    request: Request | None,
-    resolved_person_id: str | None,
-):
-    """Derive tool capabilities only from authenticated request authority.
-
-    P8 legacy handlers still accept arbitrary selectors inside tool argument
-    dictionaries. Until each handler has typed person/resource envelopes, only
-    the resolved owner contact may use private reads and mutations. Guests
-    retain the public information tools.
-    """
-
-    from protagine.reasoning.tool_policy import ToolActorPolicy
-
-    authority = request_authority(request)
-    person = str(resolved_person_id or "").strip()
-    sealed = bool(
-        authority.authenticated
-        and not authority.anonymous
-        and person
-        and authority.viewer_person_id == person
-        and person in authority.person_ids
-    )
-    owner = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    is_owner = sealed and person == owner
-    return ToolActorPolicy(
-        principal_id=str(authority.principal_id or "unsealed"),
-        viewer_person_id=person if sealed else "",
-        allow_private_read=is_owner,
-        allow_mutation=is_owner,
-    )
 
 
 @router.get("/tom/p8/status")
@@ -2053,7 +1928,7 @@ async def context_assemble(
                                    include_ancestors=True, include_inputs=False)
             work = await with_queue_work(work, owner=True, limit=8)
             current_work_available = True
-            if work["items"] or work.get('worker_work', {}).get('items') or work.get('native_cron') or work.get('reported_worker'):
+            if work["items"] or work.get('native_cron') or work.get('reported_worker'):
                 observed = request_work_context(work, session_id=body.context.session_id,
                                                 limit=8, max_chars=4000)
                 sections.append(ContextSection(id="protagine-executions", title="Work observed at turn start", body=observed['text'], priority=73))
@@ -2487,33 +2362,20 @@ async def context_assemble(
                                       if _tom2_exposure is not None
                                       else None),
                     )
-                    # Ledger-first (L2.3/L3.1): a row renders only AFTER its
-                    # exposure row and injection taint are durably recorded;
-                    # missing ledger/taint stores render nothing, and any
-                    # bookkeeping failure aborts the whole section via the
-                    # enclosing except (over-recording is safe, silent
-                    # rendering is not).
+                    # Ledger-first (L2.3): a row renders only AFTER its
+                    # exposure row is durably recorded; a missing ledger
+                    # renders nothing, and any bookkeeping failure aborts the
+                    # whole section via the enclosing except (over-recording
+                    # is safe, silent rendering is not).
                     _booked: list = []
-                    if _tom2_exposure is not None\
-                            and _taint_registry is not None:
+                    if _tom2_exposure is not None:
                         for _row in _elig:
                             _subj = str(_row.get("contact_id") or "")
-                            _names = [_subj]
-                            if _contacts_store is not None:
-                                _sc = await _contacts_store.get(_subj)
-                                _dn = str(getattr(_sc, "display_name", "")
-                                          or "")
-                                if _dn:
-                                    _names.append(_dn)
                             _tom2_exposure.record_exposure(
                                 reader_contact_id=contact_id,
                                 subject_contact_id=_subj,
                                 fact_ref=str(_row.get("fact_ref") or ""),
                                 conversation_key=_conv_key)
-                            _taint_registry.register(
-                                _conv_key, _subj, subject_names=_names,
-                                fact_ref=str(_row.get("fact_ref") or ""),
-                                kind=str(_row.get("kind") or ""))
                             _booked.append(_row)
                     _l2_body = render_level2(_booked, _tom2_facts,
                                              contact_id, limit=3)
@@ -2526,36 +2388,6 @@ async def context_assemble(
                         ))
         except Exception as exc:
             logger.debug("context_assemble leveled tom2 failed: %s", exc)
-
-    # --- Standing boundaries (owner directives: MUST NOT / MUST) ---
-    # This is the SOFT layer; the DirectiveGuard hard-gate at each action
-    # chokepoint is the enforced floor. Under P8, directive text is owner-only
-    # because legacy directives do not yet carry visibility envelopes.
-    if _legacy_global_allowed and _directive_manager is not None:
-        try:
-            _parts = []
-            # One-shot acknowledgment to echo (confirms a just-captured/lifted
-            # directive so the owner sees it -- 1a).
-            _ack = _directive_manager.consume_ack()
-            if _ack:
-                _parts.append("Tell the owner, in your own voice: " + _ack)
-            # A boundary lift awaiting explicit confirmation (asymmetric friction
-            # -- 1c). Ask for confirmation; do not resume until confirmed.
-            _pending = _directive_manager.pending_confirmation()
-            if _pending:
-                _parts.append(_pending)
-            _boundaries = _directive_manager.context_brief()
-            if _boundaries:
-                _parts.append(_boundaries)
-            if _parts:
-                sections.append(ContextSection(
-                    id="protagine-boundaries",
-                    title="Standing boundaries the owner set (obey without exception)",
-                    body="\n".join(_parts),
-                    priority=99,
-                ))
-        except Exception as exc:
-            logger.debug("context_assemble boundaries failed: %s", exc)
 
     # --- How to engage (evolving engagement profile) ---
     if _exact_person_allowed and _engagement_store is not None and contact_id:
@@ -2655,254 +2487,6 @@ async def context_assemble(
 # ---------------------------------------------------------------------------
 # Reasoning
 # ---------------------------------------------------------------------------
-
-def _reasoning_memory_search(request, identity, context):
-    """Bind one tool's query to this request, without global scope or body grants."""
-    if context is None:
-        return None
-    async def search(args):
-        if not request_authority(request).authenticated:
-            raise ValueError('memory search requires the API key')
-        if not isinstance(args, dict) or set(args) - {'query', 'limit'}:
-            raise ValueError('memory authority and source selectors are not model arguments')
-        body = MemorySearchRequest(identity=identity, person_id=context.contact_id,
-            session_id=context.session_id, query=args.get('query', ''), limit=args.get('limit', 5),
-            timezone=context.timezone)
-        return (await memory_search(body, request)).model_dump()
-    return search
-
-
-@router.post("/reasoning/turn", response_model=ReasoningTurnResponse)
-async def reasoning_turn(
-    body: ReasoningTurnRequest,
-    request: Request,
-) -> ReasoningTurnResponse:
-    if _reasoning_loop is None:
-        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=_NOT_WIRED)
-
-    messages = [{"role": m.role, "content": m.content} for m in body.messages]
-    session_id = body.context.session_id if body.context and body.context.session_id else str(uuid.uuid4())
-
-    available_tools = body.available_tools or None
-    actor_policy = None
-    resolved_person = None
-    if _p8_runtime is not None:
-        from protagine.reasoning.executor import ToolRegistryError
-        from protagine.reasoning.tool_policy import filter_tools_for_actor
-
-        resolved_person = resolve_request_person(
-            request,
-            context_person_id=body.context.contact_id,
-        )
-        actor_policy = _p8_tool_actor_policy(request, resolved_person)
-        executor = getattr(_reasoning_loop, "_tools", None) or _tool_executor
-        try:
-            # In P8, an empty list means the actor-filtered registered default,
-            # and an explicit list can only narrow it. Production executors
-            # resolve handler provenance before authority: a dynamic handler
-            # is mutation even if its name resembles a shipped read.
-            if executor is not None\
-                    and hasattr(executor, "filter_names_for_actor"):
-                available_tools = executor.filter_names_for_actor(
-                    body.available_tools or None, actor_policy)
-            else:
-                registered = (
-                    executor.available_names()
-                    if executor is not None
-                    and hasattr(executor, "available_names")
-                    else []
-                )
-                available_tools = filter_tools_for_actor(
-                    body.available_tools or registered, actor_policy)
-        except ToolRegistryError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={"code": exc.code, "message": str(exc)},
-            ) from exc
-
-    result = await _reasoning_loop.run_turn(
-        session_id=session_id,
-        messages=messages,
-        available_tools=available_tools,
-        model_override=body.model_override or None,
-        actor_policy=actor_policy,
-        memory_search=_reasoning_memory_search(request, body.identity, body.context),
-        actor=_request_tool_actor(request, resolved_person),
-    )
-
-    response_msg = None
-    if result.message:
-        response_msg = HostMessage(
-            role=result.message.get("role", "assistant"),
-            content=result.message.get("content", ""),
-        )
-
-    return ReasoningTurnResponse(
-        status=result.status,
-        message=response_msg,
-        tool_calls=[
-            ReasoningToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
-            for tc in result.tool_calls
-        ],
-        usage=result.usage,
-        error=result.error,
-    )
-
-
-@router.post("/reasoning/tools/invoke", response_model=ToolInvokeResponse)
-async def tools_invoke(
-    body: ToolInvokeRequest,
-    request: Request,
-) -> ToolInvokeResponse:
-    """Invoke a single sidecar-resident tool by name.
-
-    Used by the OpenClaw plugin to expose Protagine's native tools
-    (calculate, web_search, read_file, write_file, list_directory) as
-    first-class OpenClaw tools without routing them through the full
-    reasoning loop.
-    """
-    if _tool_executor is None:
-        return ToolInvokeResponse(
-            result="", available=False, error="tool_executor_not_initialized",
-        )
-
-    actor_policy = None
-    if _p8_runtime is not None:
-        from protagine.reasoning.executor import ToolRegistryError
-        from protagine.reasoning.tool_policy import actor_allows_tool
-
-        authority = request_authority(request)
-        actor_policy = _p8_tool_actor_policy(
-            request, authority.viewer_person_id)
-        if hasattr(_tool_executor, "filter_names_for_actor"):
-            try:
-                actor_tools = _tool_executor.filter_names_for_actor(
-                    [body.name], actor_policy)
-            except ToolRegistryError as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail={"code": exc.code, "message": str(exc)},
-                ) from exc
-            if body.name not in actor_tools:
-                try:
-                    registered = _tool_executor.available_names()
-                except ToolRegistryError as exc:
-                    raise HTTPException(
-                        status_code=503,
-                        detail={"code": exc.code, "message": str(exc)},
-                    ) from exc
-                if body.name not in registered:
-                    return ToolInvokeResponse(
-                        result="",
-                        available=False,
-                        error=f"Tool '{body.name}' is not registered",
-                    )
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "code": "tool_authority_denied",
-                        "message": "tool exceeds authenticated caller authority",
-                    },
-                )
-        elif not actor_allows_tool(body.name, actor_policy):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "tool_authority_denied",
-                    "message": "tool exceeds authenticated caller authority",
-                },
-            )
-
-    if hasattr(_tool_executor, "execute_batch"):
-        if _p8_runtime is None:
-            from protagine.reasoning.executor import ToolRegistryError
-
-            try:
-                available_names = (
-                    _tool_executor.available_names()
-                    if hasattr(_tool_executor, "available_names")
-                    else list(getattr(_tool_executor, "_handlers", {}).keys())
-                )
-            except ToolRegistryError as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail={"code": exc.code, "message": str(exc)},
-                ) from exc
-            if body.name not in available_names:
-                return ToolInvokeResponse(
-                    result="", available=False,
-                    error=f"Tool '{body.name}' is not registered",
-                )
-        result = (await _tool_executor.execute_batch(
-            [{
-                "id": f"direct:{uuid.uuid4()}",
-                "name": body.name,
-                "arguments": body.arguments,
-            }],
-            allowed_tools=frozenset({body.name}),
-            actor_policy=actor_policy,
-            actor=_request_tool_actor(request, None),
-            **({'memory_search': _reasoning_memory_search(request, body.identity, body.context)}
-               if body.name == 'protagine_memory_search' and body.context is not None else {}),
-        ))[0]
-        if result.get("executed") is True:
-            return ToolInvokeResponse(result=result["content"], available=True)
-        error = str(result.get("error") or "tool_execution_failed")
-        detail_message = str(result.get("content") or error)
-        try:
-            detail_payload = json.loads(detail_message)
-            if isinstance(detail_payload, dict):
-                detail_message = str(
-                    detail_payload.get("message")
-                    or detail_payload.get("error")
-                    or error
-                )
-        except (TypeError, ValueError):
-            pass
-        if error in {"tool_authority_denied", "tool_not_authorized",
-                     "tool_boundary_denied"}:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": error, "message": detail_message},
-            )
-        if error == "tool_boundary_unavailable":
-            raise HTTPException(
-                status_code=503,
-                detail={"code": error, "message": detail_message},
-            )
-        if error in {
-            "tool_name_collision",
-            "tool_registry_malformed",
-            "tool_registry_unavailable",
-        }:
-            raise HTTPException(
-                status_code=503,
-                detail={"code": error, "message": detail_message},
-            )
-        return ToolInvokeResponse(
-            result="",
-            available=(error != "tool_unavailable"),
-            error=detail_message,
-        )
-
-    # Minimal third-party/test executors without the shared batch contract keep
-    # the historical direct handler adapter. Production ToolExecutor instances
-    # always take the governed branch above, including when P8 is off.
-    handler = _tool_executor._handlers.get(body.name)
-    if handler is None:
-        return ToolInvokeResponse(
-            result="", available=False,
-            error=f"Tool '{body.name}' is not registered",
-        )
-    try:
-        raw = await handler(body.arguments)
-        return ToolInvokeResponse(result=str(raw), available=True)
-    except Exception as exc:
-        logger.warning("tools_invoke('%s') failed: %s", body.name, exc)
-        return ToolInvokeResponse(
-            result="", available=True, error=f"{type(exc).__name__}: {exc}",
-        )
-
 
 # ---------------------------------------------------------------------------
 # Signals
@@ -3952,21 +3536,6 @@ async def _process_turn_sync(
                 words = user_text.split()
                 body.topics = [w.lower().strip(".,!?;:") for w in words if len(w) > 4][:10]
 
-    # Rule-based NER serves context provenance. Canonical turn history no
-    # longer needs a second entity-scored graph summary.
-    _extracted_ents: List[str] = []
-    _user_text = getattr(body.user_message, "content", "") if body.user_message else ""
-    if _user_text and _context_provenance is not None:
-        _extractor = _get_conversation_extractor()
-        if _extractor is not None:
-            try:
-                _src = body.context.turn_id or body.context.session_id or "turn"
-                _res = await _extractor.extract(_user_text, _src)
-                _extracted_ents = [getattr(c, "text", None) or getattr(c, "name", "")
-                                   for c in getattr(_res, "entities", [])]
-            except Exception:
-                logger.debug("turn entity extraction failed", exc_info=True)
-
     # Preserve the legacy summary-only contract. Canonical evidence already
     # has scoped lexical/semantic recall and must not duplicate every exchange
     # into a durable graph memory or depend on that optional store's uptime.
@@ -3987,20 +3556,6 @@ async def _process_turn_sync(
         except Exception as exc:
             graph_error = f"record_turn failed: {type(exc).__name__}: {exc}"
             logger.warning("turns_sync failed: %s", exc)
-
-    # Context provenance: record this turn's entities under its conversation context, so a
-    # later reply in a DIFFERENT context that surfaces an entity known only from here can be
-    # flagged as a cross-context leak. Entities come from the host plus rule-based NER on the
-    # incoming message (what the other party brought up = what belongs to this conversation),
-    # reusing the single extraction above.
-    if _context_provenance is not None:
-        ents = list(body.entities or []) + _extracted_ents
-        if ents:
-            try:
-                _context_provenance.record(
-                    body.context.channel_id, ents, contact_id=body.context.contact_id)
-            except Exception:
-                logger.debug("context provenance record failed", exc_info=True)
 
     # Fire cognition trigger (best-effort, non-blocking)
     try:
@@ -4060,44 +3615,6 @@ async def _process_turn_sync(
                         pass
         except Exception:
             logger.debug("owner directive learning failed", exc_info=True)
-
-    # Owner boundary/directive capture: durably record standing directives the
-    # owner states ("from now on, don't touch X", "always check before Y", "you can do Z
-    # again"). Owner-ONLY (a boundary can only be set/lifted by the owner) so a
-    # third party can never install or remove the assistant's boundaries.
-    if (_directive_manager is not None and body.user_message is not None and source_recorded
-            and not getattr(getattr(request, 'state', None), 'task_instruction_only', False)):
-        try:
-            from protagine.identity import get_owner_contact_id
-            owner_id = get_owner_contact_id()
-            if owner_id and body.context.contact_id == owner_id:
-                _cap = _directive_manager.capture_from_message(
-                    getattr(body.user_message, "content", "") or "",
-                    source_id=source_id, contact_id=owner_id,
-                )
-                if _cap.captured:
-                    logger.info(
-                        "Captured %d owner directive(s): %s",
-                        len(_cap.captured),
-                        "; ".join(f"[{d.polarity.value}] {d.id}" for d in _cap.captured),
-                    )
-                if _cap.revoked:
-                    logger.info("Lifted %d boundary(ies) on owner confirmation: %s",
-                                len(_cap.revoked),
-                                "; ".join(d.id for d in _cap.revoked))
-                if _cap.needs_confirmation:
-                    logger.info("Boundary-lift staged, awaiting confirmation")
-                if _cap.any():
-                    try:
-                        from protagine.events.broadcaster import emit as _emit
-                        _emit("directive.captured",
-                              {"captured_ids": [d.id for d in _cap.captured],
-                               "revoked_ids": [d.id for d in _cap.revoked],
-                               "needs_confirmation": bool(_cap.needs_confirmation)})
-                    except Exception:
-                        pass
-        except Exception:
-            logger.debug("owner directive capture failed", exc_info=True)
 
     # World-model population (shadow-first): learn people/companies/projects/
     # products from what is said. Best-effort, non-blocking, boundary-checked.
@@ -4226,60 +3743,6 @@ async def _process_turn_sync(
 # ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
-
-def _safety_unavailable(reason: str):
-    """503 + decision="unavailable": the gate did NOT evaluate this text.
-
-    Never "pass" — a caller must not mistake "not evaluated" for
-    "evaluated and clean". ``blocked=True`` so callers keying only on the
-    boolean fail closed as well.
-    """
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        status_code=503,
-        content=SafetyCheckResponse(
-            decision="unavailable", blocked=True, reason=reason,
-        ).model_dump(),
-    )
-
-
-@router.post("/safety/check", response_model=SafetyCheckResponse)
-@router.post("/response-gate/check", response_model=SafetyCheckResponse, include_in_schema=False)
-async def safety_check(body: SafetyCheckRequest) -> SafetyCheckResponse:
-    if _response_gate is None:
-        return _safety_unavailable("response gate not initialized")
-
-    try:
-        from protagine.gate.models import GatePayload
-        from protagine.intelligence.relationships.trust_tiers import TrustTier
-        # session_id/contact_id/turn_id live on body.context (HostTurnContext),
-        # not on the request root — the old getattr(body, ...) lookups always
-        # returned their defaults, so context-dependent gate layers never saw
-        # a session and could not fire.
-        payload = GatePayload(
-            response_text=body.response_text,
-            incoming_message_text=body.incoming_message_text or "",
-            target_gateway=body.target_gateway or "",
-            target_contact_id=body.context.contact_id or "",
-            session_id=body.context.session_id or "",
-            turn_id=body.context.turn_id or "",
-            trust_tier=TrustTier(body.trust_tier.strip().lower())
-                       if body.trust_tier else TrustTier.REGULAR,
-            mentioned_entities=frozenset(body.mentioned_entities or []),
-        )
-        result = await _response_gate.evaluate(payload)
-        return SafetyCheckResponse(
-            decision="block" if result.blocked else "pass",
-            blocked=result.blocked,
-            blocking_layer=result.blocking_layer,
-            reason=getattr(result, "block_reason", None),
-            flagged_excerpt=getattr(result, "flagged_excerpt", None),
-            layer_results=getattr(result, "layer_results", None),
-        )
-    except Exception as exc:
-        logger.warning("safety_check failed — unavailable (503): %s", exc)
-        return _safety_unavailable("response gate evaluation failed")
-
 
 # ---------------------------------------------------------------------------
 # Events (WebSocket)
@@ -5934,163 +5397,13 @@ async def scope_promote(body: ScopePromoteRequest) -> Dict[str, Any]:
     return {"ok": True, "contact_id": body.contact_id, "changed": changed}
 
 
-def guard_derive_context_enabled() -> bool:
-    """PROTAGINE_GUARD_DERIVE_CONTEXT (default on): complete a guard-check
-    request server-side when the host omits context. Off restores the
-    legacy null-key behavior (context-dependent checks silently pass)."""
-    return os.environ.get("PROTAGINE_GUARD_DERIVE_CONTEXT", "1").strip().lower()\
-        not in ("0", "off", "false", "no")
-
-
-async def _derive_guard_context(body: ResponseGuardCheckRequest) -> None:
-    """L3.3 — server-side completion of the guard-check context.
-
-    The chat hot path's host plugin sends only text + ids today, so the
-    context-dependent checks (cross_context, tom2_epistemic) evaluated
-    against a null conversation_key and returned [] — dead in exactly the
-    place they matter. Derive what the host omitted, from what the sidecar
-    already knows:
-
-      * ``conversation_key``  — the same derivation turns/sync uses
-        (_ensure_channel_id: session gateway, then primary handle gateway,
-        then unknown:<contact>), so guard keys and provenance keys AGREE;
-      * ``trust_tier``        — the contact store's tier for the target;
-      * ``mentioned_entities``— rule-based NER over the INCOMING message
-        (entities the counterpart just introduced belong to this
-        conversation and must not read as leaks).
-
-    Mutates ``body`` in place; never raises — any failure evaluates with
-    whatever the host sent (today's behavior).
-    """
-    if not guard_derive_context_enabled():
-        return
-    try:
-        from types import SimpleNamespace
-        if not body.conversation_key and body.target_contact_id:
-            body.conversation_key = await _ensure_channel_id(
-                SimpleNamespace(channel_id=None,
-                                contact_id=body.target_contact_id))
-        if not body.trust_tier and body.target_contact_id\
-                and _contacts_store is not None:
-            contact = await _contacts_store.get(body.target_contact_id)
-            tier = str(getattr(contact, "trust_tier", "") or "")\
-                if contact is not None else ""
-            if tier:
-                body.trust_tier = tier
-        if not body.mentioned_entities and body.incoming_message_text:
-            extractor = _get_conversation_extractor()
-            if extractor is not None:
-                res = await extractor.extract(body.incoming_message_text,
-                                              "guard-context")
-                names: List[str] = []
-                seen: set = set()
-                for cand in getattr(res, "entities", []):
-                    name = (getattr(cand, "text", None)
-                            or getattr(cand, "name", "") or "").strip()
-                    if name and name.lower() not in seen:
-                        seen.add(name.lower())
-                        names.append(name)
-                    if len(names) >= 10:
-                        break
-                if names:
-                    body.mentioned_entities = names
-    except Exception:
-        logger.debug("guard context derivation failed (evaluating with "
-                     "what the host sent)", exc_info=True)
-
-
-@router.post("/response-guard/check")
-async def response_guard_check(body: ResponseGuardCheckRequest) -> Dict[str, Any]:
-    """Evaluate an outbound reply under the exact outbound-surface policy.
-
-    Speech surfaces bypass without context derivation. A missing configured
-    guard allows in shadow and blocks in enforce for guarded text/artifacts.
-    Missing context (conversation_key / trust_tier / mentioned_entities) is
-    derived server-side (PROTAGINE_GUARD_DERIVE_CONTEXT, default on) so the
-    context-dependent checks actually fire on the chat hot path."""
-    from protagine.gate.response_guard import (
-        GuardMode,
-        unavailable_guard_result,
-    )
-    from protagine.gate.surface_policy import EXCLUDED_SPEECH_SURFACES
-
-    if _response_guard is None:
-        configured_mode = (
-            GuardMode.ENFORCE
-            if os.environ.get("PROTAGINE_GUARD_MODE", "").strip().lower()
-            == GuardMode.ENFORCE.value
-            else GuardMode.SHADOW
-        )
-        return unavailable_guard_result(
-            surface=body.surface,
-            configured_mode=configured_mode,
-            requested_mode=body.mode,
-            response_text=body.response_text,
-            communication_policy=body.communication_policy,
-        ).to_dict()
-
-    if body.surface not in EXCLUDED_SPEECH_SURFACES:
-        await _derive_guard_context(body)
-    mode = GuardMode(body.mode) if body.mode else None
-    result = await _response_guard.evaluate(
-        surface=body.surface,
-        response_text=body.response_text,
-        incoming_message_text=body.incoming_message_text or "",
-        trust_tier=body.trust_tier or "regular",
-        target_contact_id=body.target_contact_id or "",
-        target_gateway=body.target_gateway or "",
-        session_id=body.session_id or "",
-        turn_id=body.turn_id or "",
-        conversation_key=body.conversation_key,
-        mentioned_entities=body.mentioned_entities,
-        mode=mode,
-        # A bearer that can request an evaluation is not thereby allowed to
-        # exempt its own cross-context transfer.  Owner-directed exemptions are
-        # available only to trusted in-process paths that derive identity from
-        # server-owned state.
-        authorized=False,
-        communication_policy=body.communication_policy,
-    )
-    return result.to_dict()
-
-
-@router.get("/response-guard/audit")
-async def response_guard_audit(limit: int = 50, authorized: Optional[bool] = None,
-                               check: Optional[str] = None) -> Dict[str, Any]:
-    """Review guard audit events (any check, not just cross_context), split by authorized
-    (owner-directed) vs not, optionally filtered to one check. The summary carries 24h/7d/14d
-    windows with per-check counts and the would_block_rate — the numbers that decide whether
-    a check is inside its false-positive budget before enforce is turned on. When present,
-    digest-bound communication-policy evaluations are returned separately so clean policy
-    checks do not alter those metrics."""
-    audit = getattr(_response_guard, "_audit", None) if _response_guard is not None else None
-    breaker = None
-    if _response_guard is not None and hasattr(_response_guard, "breaker_status"):
-        try:
-            breaker = _response_guard.breaker_status()
-        except Exception:
-            breaker = None
-    if audit is None:
-        return {"summary": {"total": 0}, "events": [], "breaker": breaker}
-    policy_reader = getattr(audit, "recent_communication_policy", None)
-    policy_evaluations = (
-        policy_reader(limit=limit) if callable(policy_reader) else []
-    )
-    result = {"summary": audit.summary(),
-              "events": audit.recent(limit=limit, authorized=authorized, check=check),
-              "breaker": breaker}
-    if policy_evaluations:
-        result["communication_policy_evaluations"] = policy_evaluations
-    return result
-
-
 @router.get("/env-risk")
 async def env_risk(conversation_key: str, contact_id: str) -> Dict[str, Any]:
     """Owner observability for the environment-risk classifier (L1.2): grade
     one (conversation, reader) pair R0..R3 and show the census it was graded
     on. Identity/topology only — contact ids, methods, timestamps; never
     message content. Fail-closed: any missing store or error grades R3."""
-    from protagine.gate.env_risk import classify, env_risk_window_hours
+    from protagine.tom.env_risk import classify, env_risk_window_hours
     risk = await classify(conversation_key, contact_id,
                           presence_store=_presence_store,
                           contacts_store=_contacts_store)
@@ -6110,7 +5423,6 @@ async def env_risk(conversation_key: str, contact_id: str) -> Dict[str, Any]:
     return {"conversation_key": conversation_key, "contact_id": contact_id,
             "window_hours": env_risk_window_hours(),
             **risk.to_dict(), "census": census}
-
 
 
 @router.post("/contacts/{contact_id}/timezone", response_model=ContactResponse)
@@ -7054,14 +6366,6 @@ def _render_tom2_context(
     return "\n".join(lines)
 
 
-_context_provenance = None
-
-
-def set_context_provenance_store(store):
-    global _context_provenance
-    _context_provenance = store
-
-
 _channel_store = None
 
 
@@ -7079,17 +6383,6 @@ def set_presence_store(store) -> None:
     feed the census the environment-risk classifier reads."""
     global _presence_store
     _presence_store = store
-
-
-_taint_registry = None
-
-
-def set_taint_registry(registry) -> None:
-    """Wire the injection-taint registry (L3.1). The level-2 context wiring
-    registers a taint per rendered epistemic line; the tom2_epistemic guard
-    check reads it. No registry => level 2 never renders (fail closed)."""
-    global _taint_registry
-    _taint_registry = registry
 
 
 def _observe_channel(channel_id: str) -> None:
@@ -7239,14 +6532,6 @@ async def _world_context_entities(query_text: str, limit: int = 5) -> list:
     return await _world_store.find_entities(query=query_text, limit=limit)
 
 
-_response_guard = None
-
-
-def set_response_guard(guard):
-    global _response_guard
-    _response_guard = guard
-
-
 _engagement_store = None
 
 
@@ -7366,18 +6651,6 @@ def set_preference_learner(learner):
 
 
 # --- Directive / boundary memory (owner standing directives + enforcement) ---
-_directive_manager = None
-
-
-def set_directive_manager(manager) -> None:
-    global _directive_manager
-    _directive_manager = manager
-
-
-def get_directive_manager():
-    return _directive_manager
-
-
 # --- World-model population from conversation (shadow-first) ---
 _world_populator = None
 
@@ -7419,91 +6692,12 @@ async def get_type_feedback() -> dict:
 
 
 # --- Directed action (option A) + read-only repo mirrors ---
-_directed_service = None
 _repo_mirrors = None
-
-
-def set_directed_service(svc) -> None:
-    global _directed_service
-    _directed_service = svc
 
 
 def set_repo_mirrors(mgr) -> None:
     global _repo_mirrors
     _repo_mirrors = mgr
-
-
-@router.post("/directed/tasks")
-async def directed_intake(body: dict) -> dict:
-    """Owner directive -> gated ScopedTask (boundary check first, then
-    approval tiering). Optionally dispatches when already approved.
-
-    body: {directive: str, dispatch?: bool}
-    """
-    if _directed_service is None:
-        return {"ok": False, "reason": "directed_not_wired"}
-    directive = (body or {}).get("directive", "").strip()
-    if not directive:
-        return {"ok": False, "reason": "directive_required"}
-    task = await _directed_service.intake(directive)
-    out = {"ok": True, "task": task.to_dict()}
-    if (body or {}).get("dispatch") and task.status == "approved":
-        out["dispatch"] = await _directed_service.dispatch(task.id)
-        out["task"] = (_directed_service.store.get(task.id) or task).to_dict()
-    return out
-
-
-@router.get("/directed/tasks")
-async def directed_list(status: str = "", limit: int = 30) -> dict:
-    if _directed_service is None:
-        return {"ok": False, "tasks": []}
-    tasks = _directed_service.store.list(status=status or None, limit=limit)
-    return {"ok": True, "count": len(tasks), "tasks": [t.to_dict() for t in tasks]}
-
-
-@router.post("/directed/tasks/{task_id}/approve")
-async def directed_approve(
-    task_id: str,
-    body: dict = Body(default={}),
-    request: Request = None,
-) -> dict:
-    if _directed_service is None:
-        return {"ok": False, "reason": "directed_not_wired"}
-    from protagine.api.routers.task_queue import _decision_authority
-
-    actor, _evidence, _mode = _decision_authority(request)
-    try:
-        grant_ttl = int(
-            (body or {}).get("grant_expires_in_seconds", 7 * 24 * 60 * 60)
-        )
-        grant_uses = int((body or {}).get("grant_max_uses", 5))
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail="invalid bounded grant limits") from exc
-    if not 60 <= grant_ttl <= 30 * 24 * 60 * 60 or not 1 <= grant_uses <= 100:
-        raise HTTPException(status_code=422, detail="bounded grant limits are out of range")
-    task = _directed_service.approve(
-        task_id,
-        approved_by=actor,
-        standing=bool((body or {}).get("standing")),
-        grant_expires_in_seconds=grant_ttl,
-        grant_max_uses=grant_uses,
-    )
-    return {"ok": task is not None, "task": task.to_dict() if task else None}
-
-
-@router.post("/directed/tasks/{task_id}/dispatch")
-async def directed_dispatch(task_id: str) -> dict:
-    if _directed_service is None:
-        return {"ok": False, "reason": "directed_not_wired"}
-    return await _directed_service.dispatch(task_id)
-
-
-@router.post("/directed/tasks/{task_id}/report")
-async def directed_report(task_id: str, body: dict = Body(default={})) -> dict:
-    """Delegate report-back: audited against the granted scope."""
-    if _directed_service is None:
-        return {"ok": False, "reason": "directed_not_wired"}
-    return await _directed_service.complete(task_id, body or {})
 
 
 @router.get("/repos")
@@ -7529,10 +6723,8 @@ async def repos_refresh() -> dict:
 # --- Cognition program (items 1/3/4/7 + Amendment 1) ---
 _self_model = None
 _skill_store = None
-_project_engine = None
 _belief_engine = None
 _world_llm_extractor = None
-_worker_governor = None
 _sandbox = None
 _connector_manager = None
 _adaptive_params = None
@@ -7553,11 +6745,6 @@ def set_skill_store(store) -> None:
     _skill_store = store
 
 
-def set_project_engine(engine) -> None:
-    global _project_engine
-    _project_engine = engine
-
-
 def set_belief_engine(engine) -> None:
     global _belief_engine
     _belief_engine = engine
@@ -7566,29 +6753,6 @@ def set_belief_engine(engine) -> None:
 def set_world_llm_extractor(x) -> None:
     global _world_llm_extractor
     _world_llm_extractor = x
-
-
-def set_worker_governor(g) -> None:
-    global _worker_governor
-    _worker_governor = g
-    # QueueManager is the authority chokepoint. Keep the singleton and the
-    # router handle synchronized so HTTP, embedded, mesh, and direct claimers
-    # cannot observe different governors.
-    queues = []
-    queue = getattr(_task_queue, "queue", None)
-    if queue is not None:
-        queues.append(queue)
-    try:
-        from protagine.task_queue.queue_manager import TaskQueueManager
-        instance = TaskQueueManager._instance
-        singleton_queue = getattr(instance, "queue", None)
-        if singleton_queue is not None and singleton_queue not in queues:
-            queues.append(singleton_queue)
-    except Exception:
-        pass
-    for queue in queues:
-        if hasattr(queue, "configure_governance"):
-            queue.configure_governance(g)
 
 
 def set_sandbox(s) -> None:
@@ -7745,50 +6909,12 @@ def set_toolsmith(t) -> None:
 
 
 _workspace = None
-_cognition_spine = None
 _external_event_intake = None
-_cognition_attachment_status = {
-    "configured_mode": "off",
-    "state": "off",
-    "reason": "cognition_not_configured",
-    "configured_handler_catalog": [],
-    "effective_handler_catalog": [],
-}
 _situation_store = None
 _situation_reducer = None
-_cognition_evidence_store = None
-_cognition_evidence_reducer = None
-_project_event_projector = None
-_cognition_evidence_attachment_status = {
-    "configured_mode": "off",
-    "state": "off",
-    "reason": "cognition_evidence_not_configured",
-}
-_drive_governance = None
-_drive_ranker = None
-_drive_project_store = None
-
-
 def set_workspace(w) -> None:
     global _workspace
     _workspace = w
-
-
-def set_cognition_spine(spine, attachment_status=None) -> None:
-    global _cognition_spine, _cognition_attachment_status
-    _cognition_spine = spine
-    if attachment_status is not None:
-        _cognition_attachment_status = dict(attachment_status)
-    elif spine is not None:
-        # Test/local embedders that attach the already-built spine directly
-        # still get truthful, non-stale attachment state.
-        _cognition_attachment_status = {
-            "configured_mode": "attached",
-            "state": "attached",
-            "reason": "cognition_spine_attached_directly",
-            "configured_handler_catalog": [],
-            "effective_handler_catalog": [],
-        }
 
 
 def set_external_event_intake(intake) -> None:
@@ -7796,13 +6922,6 @@ def set_external_event_intake(intake) -> None:
 
     global _external_event_intake
     _external_event_intake = intake
-
-
-def set_cognition_attachment_status(status) -> None:
-    """Publish truthful configured/effective P3 attachment state."""
-
-    global _cognition_attachment_status
-    _cognition_attachment_status = dict(status or {})
 
 
 def set_situation_spine(store, reducer) -> None:
@@ -7813,35 +6932,6 @@ def set_situation_spine(store, reducer) -> None:
     _situation_reducer = reducer
 
 
-def set_cognition_evidence(
-    store, reducer, project_event_projector, attachment_status=None,
-) -> None:
-    """Publish or clear the complete receipt-derived evidence graph."""
-
-    global _cognition_evidence_store, _cognition_evidence_reducer
-    global _project_event_projector, _cognition_evidence_attachment_status
-    _cognition_evidence_store = store
-    _cognition_evidence_reducer = reducer
-    _project_event_projector = project_event_projector
-    if attachment_status is not None:
-        _cognition_evidence_attachment_status = dict(attachment_status)
-
-
-def set_drive_governance(governance, ranker, project_store) -> None:
-    """Publish or clear the complete P7 graph atomically."""
-
-    global _drive_governance, _drive_ranker, _drive_project_store
-    _drive_governance = governance
-    _drive_ranker = ranker
-    _drive_project_store = project_store
-
-
-class CognitionConcernPromotionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_material_digest: str = Field(min_length=1, max_length=128)
-
-
 class ExternalCognitionEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -7850,100 +6940,6 @@ class ExternalCognitionEventRequest(BaseModel):
     occurred_at: str = Field(min_length=20, max_length=64)
     summary: str = Field(min_length=1, max_length=1000)
     attributes: Dict[str, Any] = Field(default_factory=dict)
-
-
-class CognitionGoalPromotionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_thought_result_ref: str = Field(min_length=1, max_length=256)
-
-
-def _external_owner_goal_objective(event, authority) -> str:
-    """Return the exact owner RCS ``Goal:`` objective, otherwise no intent.
-
-    External cognition events remain reported evidence.  This narrow adapter
-    promotes only an identity that the server has already authenticated and
-    bound to the configured owner, on the RCS text lane, with the explicit
-    case-sensitive control prefix.  All other text continues through the
-    ordinary observation path.
-    """
-
-    owner = _owner_person_id()
-    if not (
-        authority.authenticated
-        and not authority.anonymous
-        and authority.viewer_person_id == owner
-        and owner in authority.person_ids
-        and "owner" in authority.audiences
-        and event.kind == "text_turn_observation"
-        and event.subject_person_id == owner
-        and event.viewer_person_id == owner
-        and event.viewer_scope == "owner"
-        and event.shareability == "owner_private"
-        and tuple(event.audience_scope) == ("owner",)
-        and event.attributes.get("channel") == "rcs"
-    ):
-        return ""
-    observation = str(event.attributes.get("observation") or "")
-    if not observation.startswith("Goal:"):
-        return ""
-    return " ".join(observation[len("Goal:"):].split()).strip()
-
-
-def _cognition_owner_authority(request: Request):
-    authority = request_authority(request)
-    owner = _owner_person_id()
-    allowed = bool(
-        authority.authenticated
-        and not authority.anonymous
-        and "owner" in authority.audiences
-        and authority.viewer_person_id == owner
-        and authority.principal_id
-        and authority.credential_id
-    )
-    if not allowed:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "owner_authority_required",
-                "message": "the API key bound to the owner is required",
-            },
-        )
-    return authority
-
-
-@router.get("/cognition/spine")
-async def get_cognition_spine_health(request: Request, limit: int = 100) -> dict:
-    """Viewer-filtered P3 mode, worker-independent health, and read trace."""
-
-    if _cognition_spine is None:
-        return {
-            "available": False,
-            "healthy": _cognition_attachment_status.get("state") == "off",
-            "attachment": dict(_cognition_attachment_status),
-        }
-    authority = request_authority(request)
-    viewer = authority.viewer_person_id or ""
-    if not viewer:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "person_binding_required",
-                "message": "the credential has no exact viewer binding",
-            },
-        )
-    snapshot = _cognition_spine.health_snapshot(
-        viewer_person_id=viewer,
-        owner_person_id=_owner_person_id(),
-        audiences=authority.audiences,
-        limit=max(1, min(int(limit), 500)),
-    )
-    snapshot["attachment"] = dict(_cognition_attachment_status)
-    snapshot["healthy"] = bool(
-        snapshot.get("healthy")
-        and _cognition_attachment_status.get("state") == "attached"
-    )
-    return snapshot
 
 
 @router.post("/cognition/events")
@@ -7985,41 +6981,7 @@ async def ingest_external_cognition_event(
         event = ExternalCognitionEventV1.from_authority(
             body.model_dump(), authority=authority,
         )
-        receipt = _external_event_intake.ingest(event)
-        owner_goal = _external_owner_goal_objective(event, authority)
-        if owner_goal:
-            if _project_engine is None:
-                raise ExternalEventProjectionError(
-                    "owner goal Project engine is unavailable"
-                )
-            try:
-                promotion = await _project_engine.create_owner_goal_work_order(
-                    owner_goal,
-                    external_event_id=event.event_id,
-                    external_event_digest=event.event_digest,
-                    intake_receipt=receipt,
-                    subject_person_id=event.subject_person_id,
-                    viewer_scope=event.viewer_scope,
-                    shareability=event.shareability,
-                    occurred_at=event.occurred_at,
-                )
-            except ExternalEventProjectionError:
-                raise
-            except Exception as exc:
-                logger.error(
-                    "owner Goal promotion failed (%s)", type(exc).__name__,
-                )
-                raise ExternalEventProjectionError(
-                    "owner goal Project/WorkOrder promotion is retryable"
-                ) from exc
-            logger.info(
-                "Owner Goal promoted: event=%s project=%s work_order=%s status=%s",
-                event.event_id,
-                promotion.get("project_id"),
-                promotion.get("work_order_id"),
-                promotion.get("status"),
-            )
-        return receipt
+        return _external_event_intake.ingest(event)
     except ExternalEventConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ExternalEventValidationError as exc:
@@ -8032,91 +6994,6 @@ async def ingest_external_cognition_event(
                 "message": str(exc),
             },
         ) from exc
-
-
-@router.post("/cognition/concerns/{concern_id}/promote")
-async def promote_cognition_concern(
-    concern_id: str,
-    body: CognitionConcernPromotionRequest,
-    request: Request,
-) -> dict:
-    """Owner-attest one exact shadow/legacy concern material version.
-
-    Promotion only makes that immutable concern version eligible for P3. It
-    does not run cognition, create a project, approve an action, or execute an
-    effect; all downstream canonical gates remain in force.
-    """
-
-    if _cognition_spine is None:
-        return {"available": False, "effect_executed": False}
-    authority = _cognition_owner_authority(request)
-    concern = _cognition_spine.concern_store.get(concern_id)
-    if concern is None:
-        raise HTTPException(status_code=404, detail="concern not found")
-    authority_payload = {
-        "schema": "ConcernPromotionAuthorityV1",
-        "version": 1,
-        "concern_id": concern_id,
-        "material_digest": body.expected_material_digest,
-        "principal_id": authority.principal_id,
-        "credential_id": authority.credential_id,
-    }
-    encoded = json.dumps(
-        authority_payload, sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")
-    promotion_ref = (
-        "owner-promotion:" + hashlib.sha256(encoded).hexdigest()[:24]
-    )
-    try:
-        promoted = _cognition_spine.concern_store.promote_concern(
-            concern_id,
-            expected_material_digest=body.expected_material_digest,
-            promotion_ref=promotion_ref,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {
-        "available": True,
-        "status": "concern_material_promoted",
-        "concern": promoted.public(),
-        "effect_executed": False,
-    }
-
-
-@router.post("/cognition/goals/{proposal_id}/promote")
-async def promote_cognition_goal(
-    proposal_id: str,
-    body: CognitionGoalPromotionRequest,
-    request: Request,
-) -> dict:
-    """Owner-promote one exact shadow GoalProposal through current gates."""
-
-    if _cognition_spine is None:
-        return {"available": False, "effect_executed": False}
-    authority = _cognition_owner_authority(request)
-    authority_payload = {
-        "schema": "GoalPromotionAuthorityV1",
-        "version": 1,
-        "proposal_id": proposal_id,
-        "expected_thought_result_ref": body.expected_thought_result_ref,
-        "principal_id": authority.principal_id,
-        "credential_id": authority.credential_id,
-    }
-    encoded = json.dumps(
-        authority_payload, sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")
-    promotion_ref = (
-        "owner-goal-promotion:" + hashlib.sha256(encoded).hexdigest()[:24]
-    )
-    try:
-        result = await _cognition_spine.promote_goal_proposal(
-            proposal_id,
-            expected_thought_result_ref=body.expected_thought_result_ref,
-            promotion_ref=promotion_ref,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"available": True, **result}
 
 
 _expectations = None
@@ -8163,47 +7040,6 @@ def _authority_view(request: Request, *, person_id: str = "") -> tuple:
     return authority, subject, viewer, viewer_scope
 
 
-def _scope_from_authority(request: Request):
-    """Build a P7 scope without accepting person/scope fields from JSON."""
-
-    from protagine.cognition.drive_governance import ScopeV1
-
-    authority, subject, viewer, viewer_scope = _authority_view(request)
-    if viewer_scope == "owner":
-        return authority, ScopeV1(subject, "owner", "owner_private")
-    return authority, ScopeV1(
-        subject, f"person:{subject}", "subject_private",
-    )
-
-
-def _governance_error(exc, *, not_found: bool = False) -> HTTPException:
-    code = str(getattr(exc, "code", "drive_governance_error"))
-    message = str(getattr(exc, "message", str(exc)))[:500]
-    if not_found or code.endswith("_unknown") or code.endswith("_missing"):
-        status_code = 404
-    elif code in {
-        "operation_replay_conflict", "immutable_drive_conflict",
-        "approval_binding_mismatch", "authority_replay",
-        "transition_not_live", "transition_not_authoritative",
-        "bootstrap_operation_held", "bootstrap_transition_held",
-        "approval_not_approved", "approval_expired",
-        "approval_binding_stale", "stale_action_digest",
-        "stale_request_digest",
-    }:
-        status_code = 409
-    elif code in {
-        "owner_authority_required",
-        "owner_charter_approval_authority_required",
-    }:
-        status_code = 403
-    else:
-        status_code = 400
-    return HTTPException(
-        status_code=status_code,
-        detail={"code": code, "message": message},
-    )
-
-
 @router.get("/self/situation")
 async def get_situation(request: Request, person_id: str = "") -> dict:
     """Return only the snapshot lane granted by the request credential."""
@@ -8225,734 +7061,6 @@ async def get_situation(request: Request, person_id: str = "") -> dict:
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/cognition/evidence")
-async def get_cognition_evidence(
-    request: Request,
-    person_id: str = "",
-    project_id: str = "",
-    limit: int = 100,
-) -> dict:
-    """Return a request-scoped receipt/learning trace for operator diagnosis."""
-
-    _authority, subject, _viewer, viewer_scope = _authority_view(
-        request, person_id=person_id,
-    )
-    status = dict(_cognition_evidence_attachment_status)
-    if _cognition_evidence_reducer is not None:
-        try:
-            status = _cognition_evidence_reducer.status()
-            status["attachment"] = dict(
-                _cognition_evidence_attachment_status
-            )
-        except Exception as exc:
-            status = {
-                **status,
-                "healthy": False,
-                "last_error": f"status_failed:{type(exc).__name__}",
-            }
-    elif _project_event_projector is not None:
-        status["project_outbox"] = _project_event_projector.status()
-    trace = []
-    trace_error = ""
-    if _cognition_evidence_store is not None:
-        try:
-            trace = _cognition_evidence_store.trace(
-                project_id=str(project_id or "").strip(),
-                subject_person_id=(
-                    "" if viewer_scope == "owner" and not person_id else subject
-                ),
-                viewer_scope=viewer_scope,
-                limit=max(1, min(int(limit), 500)),
-            )
-        except ValueError as exc:
-            # Never return an unverifiable row as operator truth.
-            trace_error = str(exc)[:500]
-            status["healthy"] = False
-            status["last_error"] = "evidence_ledger_integrity_failed"
-    return {
-        "available": _project_event_projector is not None,
-        "learning_available": (
-            _cognition_evidence_reducer is not None
-            and getattr(_cognition_evidence_reducer, "mode", "shadow") != "off"
-        ),
-        "status": status,
-        "trace": trace,
-        "trace_error": trace_error,
-    }
-
-
-class _StrictGovernanceBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class DriveProposalRequest(_StrictGovernanceBody):
-    operation_id: str
-    key: str
-    version: str
-    title: str
-    definition_summary: str
-    max_abs_contribution: float
-    max_signals_per_goal: int
-    state: str = "enabled"
-    evidence_refs: List[str] = Field(min_length=1, max_length=20)
-    ttl_seconds: Optional[int] = Field(
-        default=None, ge=60, le=366 * 24 * 60 * 60,
-    )
-
-
-class DriveSignalRequest(_StrictGovernanceBody):
-    operation_id: str
-    drive_id: str
-    project_id: str
-    normalized_value: float
-    confidence: float
-    state: str = "active"
-    rationale_summary: str
-    evidence_refs: List[str] = Field(min_length=1, max_length=20)
-    ttl_seconds: int = Field(default=21600, ge=60, le=90 * 24 * 60 * 60)
-
-
-class RankingBudgetRequest(_StrictGovernanceBody):
-    max_goals: int = 50
-    max_signals_per_drive: int = 5
-    max_total_signals: int = 250
-    max_evidence_refs_per_goal: int = 20
-
-
-class CharterAdmissionConstraintsRequest(_StrictGovernanceBody):
-    objective_allow_terms: List[str] = Field(default_factory=list, max_length=30)
-    objective_deny_terms: List[str] = Field(
-        default_factory=lambda: [
-            "destroy", "drop", "format", "overwrite", "wipe",
-        ],
-        max_length=30,
-    )
-    capability_ceiling: List[str] = Field(
-        default_factory=lambda: [
-            "concerns:read", "directives:read", "memory:read",
-            "projects:read", "reasoning", "situation:read", "web:read",
-            "world_model:read",
-        ],
-        max_length=30,
-    )
-    capability_deny: List[str] = Field(
-        default_factory=lambda: ["messaging:send", "root:shell"],
-        max_length=30,
-    )
-    required_boundary_refs: List[str] = Field(default_factory=list, max_length=30)
-    allowed_shareability: List[str] = Field(
-        default_factory=lambda: ["owner_private"], min_length=1, max_length=4,
-    )
-    allowed_recipient_ids: List[str] = Field(default_factory=list, max_length=30)
-    allow_destructive: bool = False
-    allow_root_shell: bool = False
-    allow_messaging: bool = False
-
-
-class CharterProposalRequest(_StrictGovernanceBody):
-    operation_id: str
-    charter_key: str = "default"
-    revision_label: str
-    parent_revision_id: Optional[str] = None
-    title: str
-    purpose_summary: str
-    principles: List[str] = Field(min_length=1, max_length=20)
-    drive_weights: Dict[str, float] = Field(min_length=1, max_length=20)
-    ranking_budget: RankingBudgetRequest = Field(
-        default_factory=RankingBudgetRequest
-    )
-    evidence_refs: List[str] = Field(min_length=1, max_length=30)
-    ttl_seconds: int = Field(
-        default=90 * 24 * 60 * 60,
-        ge=3600,
-        le=366 * 24 * 60 * 60,
-    )
-    admission_constraints: CharterAdmissionConstraintsRequest = Field(
-        default_factory=CharterAdmissionConstraintsRequest,
-    )
-
-
-class CharterTransitionRequest(_StrictGovernanceBody):
-    ttl_seconds: int = Field(default=3600, ge=60, le=24 * 60 * 60)
-
-
-class CharterRatifyRequest(_StrictGovernanceBody):
-    transition: str
-    approval_request_id: str
-    operation_id: str
-
-
-class CharterApprovalDecisionRequest(_StrictGovernanceBody):
-    decision: str
-    decision_id: str
-    expected_action_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    expected_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-def _observer_identity(request: Request) -> tuple:
-    authority, _subject, viewer, _viewer_scope = _authority_view(request)
-    return authority, viewer, _owner_person_id()
-
-
-def _owner_charter_approval_authority(request: Request, scope: str):
-    """Require one exact scoped owner principal for the typed surface."""
-
-    authority = request_authority(request)
-    allowed = bool(
-        authority.authenticated
-        and not authority.anonymous
-        and "owner" in authority.audiences
-        and authority.viewer_person_id == _owner_person_id()
-        and _owner_person_id() in authority.person_ids
-    )
-    if not allowed:
-        raise HTTPException(status_code=403, detail={
-            "code": "owner_charter_approval_authority_required",
-            "message": "the API key bound to the owner is required",
-        })
-    return authority
-
-
-def _scope_visible_to_request(scope, request: Request) -> bool:
-    authority, viewer, owner = _observer_identity(request)
-    return bool(scope.visible_to(
-        viewer_person_id=viewer,
-        owner_person_id=owner,
-        audiences=set(authority.audiences),
-    ))
-
-
-def _durable_p3_rank_input(project):
-    """Build one rank input from a complete persisted P3 project or None."""
-    from protagine.cognition.drive_governance import (
-        GoalRankInputV1,
-        ScopeV1,
-    )
-
-    if (
-        project is None
-        or project.source != "cognition_spine"
-        or project.status not in {"planning", "active"}
-        or not all((
-            project.id,
-            project.goal_proposal_id,
-            project.goal_fingerprint,
-            project.title,
-            project.objective,
-            project.evidence_refs,
-            project.policy_decision_refs,
-            project.subject_person_id,
-            project.viewer_scope,
-            project.shareability,
-        ))
-    ):
-        return None
-    try:
-        return GoalRankInputV1(
-            goal_id=project.id,
-            proposal_id=project.goal_proposal_id,
-            goal_fingerprint=project.goal_fingerprint,
-            title=project.title[:160],
-            objective_summary=project.objective[:600],
-            rationale_summary=(
-                "Durable P3 project admitted through persisted policy gates."
-            ),
-            evidence_refs=tuple(project.evidence_refs[:30]),
-            policy_decision_refs=tuple(project.policy_decision_refs[:20]),
-            scope=ScopeV1(
-                project.subject_person_id,
-                project.viewer_scope,
-                project.shareability,
-            ),
-        )
-    except (TypeError, ValueError):
-        logger.warning(
-            "Skipping malformed durable P3 project %s during P7 ranking",
-            getattr(project, "id", "<unknown>"),
-        )
-        return None
-
-
-def _durable_p3_rank_inputs(limit: int):
-    """Project immutable rank inputs solely from persisted P3 projects."""
-
-    if _drive_project_store is None:
-        return ()
-    bounded = max(1, min(200, int(limit)))
-    result = []
-    # Pull extra rows because legacy/malformed entries are intentionally
-    # filtered and must not crowd durable P3 candidates out of the bound.
-    for project in _drive_project_store.list_projects(limit=min(1000, bounded * 5)):
-        if len(result) >= bounded:
-            break
-        goal = _durable_p3_rank_input(project)
-        if goal is not None:
-            result.append(goal)
-    return tuple(result)
-
-
-@router.get("/cognition/drives")
-async def get_cognition_drives(request: Request, limit: int = 100) -> dict:
-    if _drive_governance is None:
-        return {"available": False, "drives": [], "signals": []}
-    authority, viewer, owner = _observer_identity(request)
-    projection = _drive_governance.store.observer_projection(
-        viewer_person_id=viewer,
-        owner_person_id=owner,
-        audiences=set(authority.audiences),
-        signal_limit=max(1, min(500, limit)),
-    )
-    return {
-        "available": True,
-        "mode": _drive_governance.mode,
-        "drives": projection["drives"],
-        "signals": projection["signals"],
-        "generated_at": projection["generated_at"],
-    }
-
-
-@router.get("/cognition/charters")
-async def get_cognition_charters(request: Request) -> dict:
-    if _drive_governance is None:
-        return {"available": False, "charters": []}
-    authority, viewer, owner = _observer_identity(request)
-    projection = _drive_governance.store.observer_projection(
-        viewer_person_id=viewer,
-        owner_person_id=owner,
-        audiences=set(authority.audiences),
-    )
-    return {
-        "available": True,
-        "mode": _drive_governance.mode,
-        "active_charter_revision_id": projection[
-            "active_charter_revision_id"
-        ],
-        "charters": projection["charter_revisions"],
-        "generated_at": projection["generated_at"],
-    }
-
-
-@router.get("/cognition/rankings")
-async def get_cognition_rankings(request: Request, limit: int = 50) -> dict:
-    if _drive_governance is None or _drive_ranker is None:
-        return {"available": False, "ranking": None}
-    authority, viewer, owner = _observer_identity(request)
-    goals = _durable_p3_rank_inputs(limit)
-    batch = _drive_ranker.rank(goals, mode=_drive_governance.mode)
-    return {
-        "available": True,
-        "mode": _drive_governance.mode,
-        "project_count": len(goals),
-        "ranking": batch.observer_projection(
-            viewer_person_id=viewer,
-            owner_person_id=owner,
-            audiences=set(authority.audiences),
-        ),
-    }
-
-
-@router.post("/cognition/drives")
-async def propose_cognition_drive(
-    body: DriveProposalRequest,
-    request: Request,
-) -> dict:
-    if _drive_governance is None:
-        return {"available": False}
-    from protagine.cognition.drive_governance import DriveV1
-
-    _authority, scope = _scope_from_authority(request)
-    now = datetime.now(timezone.utc)
-    expires = (
-        now + timedelta(seconds=body.ttl_seconds)
-        if body.ttl_seconds is not None else None
-    )
-    try:
-        drive = DriveV1.create(
-            key=body.key,
-            version=body.version,
-            title=body.title,
-            definition_summary=body.definition_summary,
-            max_abs_contribution=body.max_abs_contribution,
-            max_signals_per_goal=body.max_signals_per_goal,
-            state=body.state,
-            scope=scope,
-            evidence_refs=body.evidence_refs,
-            created_at=now,
-            expires_at=expires,
-        )
-        result = _drive_governance.register_drive(
-            drive, operation_id=body.operation_id,
-        )
-        return {"available": True, **result, "drive": drive.payload()}
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-
-
-@router.post("/cognition/drive-signals")
-async def propose_cognition_drive_signal(
-    body: DriveSignalRequest,
-    request: Request,
-) -> dict:
-    if _drive_governance is None or _drive_project_store is None:
-        return {"available": False}
-    from protagine.cognition.drive_governance import DriveSignalV1
-
-    project = _drive_project_store.get_project(body.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "project_unavailable",
-            "message": "a visible complete durable P3 project is required",
-        })
-    # Reuse the exact durable projection check; signals cannot target a body
-    # fingerprint or a legacy/partially-provenanced project.
-    goal = _durable_p3_rank_input(project)
-    if goal is None or not _scope_visible_to_request(goal.scope, request):
-        # Do not distinguish a hidden project from an unknown one.
-        raise HTTPException(status_code=404, detail={
-            "code": "project_unavailable",
-            "message": "a visible complete durable P3 project is required",
-        })
-    drive = _drive_governance.store.get_drive(body.drive_id)
-    if drive is None or not _scope_visible_to_request(drive.scope, request):
-        raise HTTPException(status_code=404, detail={
-            "code": "drive_unavailable",
-            "message": "a visible drive was not found",
-        })
-    _authority, scope = _scope_from_authority(request)
-    now = datetime.now(timezone.utc)
-    try:
-        signal = DriveSignalV1.derive(
-            drive=drive,
-            goal_fingerprint=goal.goal_fingerprint,
-            normalized_value=body.normalized_value,
-            confidence=body.confidence,
-            state=body.state,
-            rationale_summary=body.rationale_summary,
-            evidence_refs=body.evidence_refs,
-            observed_at=now,
-            expires_at=now + timedelta(seconds=body.ttl_seconds),
-            scope=scope,
-        )
-        result = _drive_governance.record_signal(
-            signal, operation_id=body.operation_id,
-        )
-        return {"available": True, **result, "signal": signal.payload()}
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-
-
-@router.post("/cognition/charters")
-async def propose_cognition_charter(
-    body: CharterProposalRequest,
-    request: Request,
-) -> dict:
-    if _drive_governance is None:
-        return {"available": False}
-    from protagine.cognition.drive_governance import (
-        CharterAdmissionConstraintsV1,
-        CharterRevisionV1,
-        RankingBudgetV1,
-    )
-
-    authority, scope = _scope_from_authority(request)
-    now = datetime.now(timezone.utc)
-    try:
-        for drive_id in body.drive_weights:
-            drive = _drive_governance.store.get_drive(drive_id)
-            if drive is None or not _scope_visible_to_request(
-                drive.scope, request,
-            ):
-                raise HTTPException(status_code=404, detail={
-                    "code": "drive_unavailable",
-                    "message": "every proposed drive must be visible",
-                })
-        revision = CharterRevisionV1.create(
-            charter_key=body.charter_key,
-            revision_label=body.revision_label,
-            parent_revision_id=body.parent_revision_id,
-            title=body.title,
-            purpose_summary=body.purpose_summary,
-            principles=body.principles,
-            drive_weights=body.drive_weights,
-            ranking_budget=RankingBudgetV1(
-                **body.ranking_budget.model_dump()
-            ),
-            scope=scope,
-            evidence_refs=body.evidence_refs,
-            proposed_by=authority.principal_id,
-            proposed_at=now,
-            expires_at=now + timedelta(seconds=body.ttl_seconds),
-            admission_constraints=CharterAdmissionConstraintsV1(
-                objective_allow_terms=tuple(sorted({
-                    str(item).strip().casefold()
-                    for item in body.admission_constraints.objective_allow_terms
-                    if str(item).strip()
-                })),
-                objective_deny_terms=tuple(sorted({
-                    str(item).strip().casefold()
-                    for item in body.admission_constraints.objective_deny_terms
-                    if str(item).strip()
-                })),
-                capability_ceiling=tuple(sorted(set(
-                    body.admission_constraints.capability_ceiling
-                ))),
-                capability_deny=tuple(sorted(set(
-                    body.admission_constraints.capability_deny
-                ))),
-                required_boundary_refs=tuple(dict.fromkeys(
-                    body.admission_constraints.required_boundary_refs
-                )),
-                allowed_shareability=tuple(sorted(set(
-                    body.admission_constraints.allowed_shareability
-                ))),
-                allowed_recipient_ids=tuple(sorted(set(
-                    body.admission_constraints.allowed_recipient_ids
-                ))),
-                allow_destructive=body.admission_constraints.allow_destructive,
-                allow_root_shell=body.admission_constraints.allow_root_shell,
-                allow_messaging=body.admission_constraints.allow_messaging,
-            ),
-        )
-        result = _drive_governance.propose_charter(
-            revision, operation_id=body.operation_id,
-        )
-        return {"available": True, **result, "charter": revision.payload()}
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-
-
-async def _request_charter_transition(
-    revision_id: str,
-    transition: str,
-    body: CharterTransitionRequest,
-    request: Request,
-) -> dict:
-    if _drive_governance is None:
-        return {"available": False}
-    authority, viewer, owner = _observer_identity(request)
-    projection = _drive_governance.store.observer_projection(
-        viewer_person_id=viewer,
-        owner_person_id=owner,
-        audiences=set(authority.audiences),
-    )
-    visible_ids = {
-        item.get("revision_id")
-        for item in projection.get("charter_revisions", ())
-    }
-    if revision_id not in visible_ids:
-        raise HTTPException(status_code=404, detail={
-            "code": "charter_unavailable",
-            "message": "a visible charter revision was not found",
-        })
-    try:
-        result = _drive_governance.ensure_transition_request(
-            revision_id,
-            transition=transition,
-            ttl_seconds=body.ttl_seconds,
-        )
-        return {"available": True, **result}
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-
-
-@router.post("/cognition/charters/{revision_id}/request-activation")
-async def request_cognition_charter_activation(
-    revision_id: str,
-    body: CharterTransitionRequest,
-    request: Request,
-) -> dict:
-    return await _request_charter_transition(
-        revision_id, "activate", body, request,
-    )
-
-
-@router.post("/cognition/charters/{revision_id}/request-revocation")
-async def request_cognition_charter_revocation(
-    revision_id: str,
-    body: CharterTransitionRequest,
-    request: Request,
-) -> dict:
-    return await _request_charter_transition(
-        revision_id, "revoke", body, request,
-    )
-
-
-@router.get("/cognition/charter-transition-approvals/readiness")
-async def charter_transition_approval_readiness(request: Request) -> dict:
-    _owner_charter_approval_authority(request, "charter:approval-read")
-    if _drive_governance is None:
-        return {
-            "schema": "ProtagineCharterApprovalReadinessV1",
-            "version": 1,
-            "available": False,
-            "ready": False,
-            "route_ready": False,
-            "status": "unavailable",
-            "mode": "off",
-            "authority_mode": "unavailable",
-            "pending_count": 0,
-            "approved_unapplied_count": 0,
-            "approved_stale_count": 0,
-            "stale_count": 0,
-            "invalid_hidden_count": 0,
-            "blockers": ["drive_governance_unavailable"],
-        }
-    try:
-        inventory = _drive_governance.transition_approval_inventory()
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-    projections = inventory["requests"]
-    blockers = []
-    if _drive_governance.mode not in {"bootstrap", "live"}:
-        blockers.append("drive_governance_not_authoritative")
-    if _drive_governance.approval_store is None:
-        blockers.append("approval_authority_store_unavailable")
-    approved_unapplied = sum(
-        item["status"] == "approved_unapplied" for item in projections
-    )
-    approved_stale = sum(
-        item["status"] == "approved_stale" for item in projections
-    )
-    stale = sum(item["status"] == "stale_pending" for item in projections)
-    if approved_unapplied:
-        blockers.append("approved_transition_recovery_required")
-    if stale:
-        blockers.append("stale_transition_decision_required")
-    invalid_hidden = int(inventory["invalid_hidden_count"])
-    if invalid_hidden:
-        blockers.append("invalid_hidden_transition_approval")
-    # The queue approval ledger is gone; charter transitions wait for the
-    # mind's asks, so no approval store is ever wired here.
-    route_ready = False
-    return {
-        "schema": "ProtagineCharterApprovalReadinessV1",
-        "version": 1,
-        "available": True,
-        "ready": not blockers,
-        "route_ready": route_ready,
-        "status": "ready" if not blockers else "blocked",
-        "mode": _drive_governance.mode,
-        "authority_mode": "removed",
-        "pending_count": sum(
-            item["status"] == "pending" for item in projections
-        ),
-        "approved_unapplied_count": approved_unapplied,
-        "approved_stale_count": approved_stale,
-        "stale_count": stale,
-        "invalid_hidden_count": invalid_hidden,
-        "request_count": len(projections),
-        "blockers": blockers,
-        "observed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@router.get("/cognition/charter-transition-approvals")
-async def list_charter_transition_approvals(
-    request: Request,
-    status: Optional[str] = None,
-    limit: int = Query(100, ge=1, le=500),
-) -> dict:
-    _owner_charter_approval_authority(request, "charter:approval-read")
-    if _drive_governance is None:
-        return {"available": False, "requests": []}
-    try:
-        inventory = _drive_governance.transition_approval_inventory(
-            status=status, limit=limit,
-        )
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-    projections = inventory["requests"]
-    return {
-        "available": True,
-        "mode": _drive_governance.mode,
-        "requests": projections,
-        "count": len(projections),
-        "complete": inventory["complete"],
-        "observed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@router.get("/cognition/charter-transition-approvals/{request_id}")
-async def get_charter_transition_approval(
-    request_id: str,
-    request: Request,
-) -> dict:
-    _owner_charter_approval_authority(request, "charter:approval-read")
-    if _drive_governance is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "charter_transition_approval_unavailable",
-            "message": "charter transition approval was not found",
-        })
-    try:
-        projection = _drive_governance.transition_approval_projection(
-            request_id,
-        )
-    except ValueError as exc:
-        raise _governance_error(exc, not_found=True) from exc
-    return {"available": True, **projection}
-
-
-@router.post(
-    "/cognition/charter-transition-approvals/{request_id}/decision"
-)
-async def decide_charter_transition_approval(
-    request_id: str,
-    body: CharterApprovalDecisionRequest,
-    request: Request,
-) -> dict:
-    authority = _owner_charter_approval_authority(
-        request, "charter:approval-decide",
-    )
-    if _drive_governance is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "charter_transition_approval_unavailable",
-            "message": "charter transition approval was not found",
-        })
-    try:
-        projection = _drive_governance.decide_transition_request(
-            request_id,
-            decision=body.decision,
-            decision_id=body.decision_id,
-            expected_action_digest=body.expected_action_digest,
-            expected_request_digest=body.expected_request_digest,
-            authority=authority,
-        )
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
-    return {"available": True, **projection}
-
-
-@router.post("/cognition/charters/{revision_id}/ratify")
-async def ratify_cognition_charter(
-    revision_id: str,
-    body: CharterRatifyRequest,
-    request: Request,
-) -> dict:
-    if _drive_governance is None:
-        return {"available": False}
-    authority = request_authority(request)
-    if not (
-        authority.authenticated
-        and not authority.anonymous
-        and "owner" in authority.audiences
-    ):
-        raise HTTPException(status_code=403, detail={
-            "code": "owner_authority_required",
-            "message": "ratification requires the API key bound to the owner",
-        })
-    try:
-        result = _drive_governance.ratify_transition(
-            revision_id,
-            transition=body.transition,
-            approval_request_id=body.approval_request_id,
-            operation_id=body.operation_id,
-            authority=authority,
-        )
-        return {"available": True, **result}
-    except ValueError as exc:
-        raise _governance_error(exc) from exc
 
 
 @router.get("/self/expectations")
@@ -9648,15 +7756,12 @@ async def get_autonomy_posture(request: Request) -> dict:
             ("PROTAGINE_COGNITION_ENABLED", ("true", "false"), "false"),
             ("PROTAGINE_INTROSPECT_ENABLED", ("true", "false"), "false"),
             ("PROTAGINE_THINKING_MODE", ("off", "shadow", "live"), "off"),
-            ("PROTAGINE_PROJECTS_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_BELIEFS_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_WORLD_POPULATE_MODE", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_WORLD_LLM_EXTRACT", ("off", "shadow", "live"), "off"),
             ("PROTAGINE_SKILLS_DISTILL", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_ESCALATION_MINING", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off"),
-            ("PROTAGINE_WORKERS_MODE", ("off", "shadow", "live"), "shadow"),
-            ("PROTAGINE_DIRECTED_MODE", ("off", "dry_run", "live"), "dry_run"),
             ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
             ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "on"),
             ("PROTAGINE_WORKSPACE", ("off", "shadow", "live"), "off"),
@@ -9697,141 +7802,6 @@ async def get_skills_memory() -> dict:
         return {"available": True, **_skill_store.snapshot()}
     except Exception as exc:
         return {"available": True, "error": str(exc)}
-
-
-def _project_visible_to_request(project, request: Request | None) -> bool:
-    """Apply the persisted Project visibility envelope before serialization."""
-
-    authority = request_authority(request)
-    owner = _owner_person_id()
-    viewer = str(authority.viewer_person_id or "").strip()
-    if not viewer:
-        return False
-    if viewer == owner:
-        return True
-    try:
-        from protagine.cognition.drive_governance import ScopeV1
-        scope = ScopeV1(
-            str(project.subject_person_id or ""),
-            str(project.viewer_scope or ""),
-            str(project.shareability or ""),
-        )
-        return scope.visible_to(
-            viewer_person_id=viewer,
-            owner_person_id=owner,
-            audiences=authority.audiences,
-        )
-    except Exception:
-        # Legacy rows without a valid visibility envelope remain owner-only.
-        return False
-
-
-def _project_owner_request(request: Request | None) -> bool:
-    """Recognize the key bound to the owner.
-
-    Project creation and lifecycle changes are owner-directed operations.
-    """
-
-    authority = request_authority(request)
-    owner = _owner_person_id()
-    return bool(
-        authority.authenticated
-        and not authority.anonymous
-        and authority.viewer_person_id == owner
-        and owner in authority.person_ids
-        and "owner" in authority.audiences
-    )
-
-
-def _project_mutation_not_found() -> dict:
-    """One existence-hiding result for missing or unauthorized projects."""
-
-    return {"ok": False, "reason": "not_found", "project": None}
-
-
-@router.get("/projects")
-async def list_projects(
-    request: Request, status: str = "", limit: int = 30,
-) -> dict:
-    if _project_engine is None:
-        return {
-            "available": False,
-            "reason": "projects_not_wired",
-            "projects": [],
-        }
-    try:
-        from protagine.projects.models import projects_mode
-        items = _project_engine.store.list_projects(status=status or None,
-                                                    limit=limit)
-        items = [
-            project for project in items
-            if _project_visible_to_request(project, request)
-        ]
-        return {"available": True, "count": len(items),
-                "mode": projects_mode(),
-                "projects": [p.to_row() for p in items]}
-    except Exception as exc:
-        logger.warning("list_projects failed (%s)", type(exc).__name__)
-        return {
-            "available": False,
-            "reason": "projects_unavailable",
-            "projects": [],
-        }
-
-
-@router.get("/projects/{project_id}")
-async def get_project(project_id: str, request: Request) -> dict:
-    if _project_engine is None:
-        return {"available": False}
-    project = _project_engine.store.get_project(project_id)
-    if project is None or not _project_visible_to_request(project, request):
-        return {"available": True, "error": "not_found"}
-    out = _project_engine.project_status(project_id)
-    return {"available": True, **(out or {"error": "not_found"})}
-
-
-@router.post("/projects")
-async def create_project(
-    request: Request, body: dict = Body(default={}),
-) -> dict:
-    """Owner-directed project creation (boundary-gated; planning happens on
-    the next autonomy tick; step dispatch carries its own gates)."""
-    if _project_engine is None:
-        return {"ok": False, "reason": "projects_not_wired"}
-    if not _project_owner_request(request):
-        return {
-            "ok": False,
-            "reason": "owner_authority_required",
-            "project": None,
-        }
-    objective = (body or {}).get("objective", "").strip()
-    project, reason = _project_engine.create_project(
-        objective, title=(body or {}).get("title", ""),
-        # The transport body is not a provenance authority.  Governed and
-        # cognition-spine projects are minted only by their typed pipelines.
-        source="owner")
-    return {"ok": project is not None, "reason": reason,
-            "project": project.to_row() if project else None}
-
-
-@router.post("/projects/{project_id}/abandon")
-async def abandon_project(
-    project_id: str, request: Request, body: dict = Body(default={}),
-) -> dict:
-    if _project_engine is None:
-        return {"ok": False, "reason": "projects_not_wired"}
-    project = _project_engine.store.get_project(project_id)
-    if (
-        project is None
-        or not _project_owner_request(request)
-        or not _project_visible_to_request(project, request)
-    ):
-        return _project_mutation_not_found()
-    project = _project_engine.abandon(
-        project_id, reason=(body or {}).get("reason", "owner_request"))
-    return {"ok": project is not None,
-            "reason": "ok" if project is not None else "not_found",
-            "project": project.to_row() if project else None}
 
 
 @router.get("/beliefs")
@@ -10015,59 +7985,6 @@ async def world_populate_status() -> dict:
         except Exception as exc:
             out["stats_error"] = str(exc)
     return out
-
-
-@router.get("/directives")
-async def list_directives(status: str = "active") -> dict:
-    """List the owner's standing directives / boundaries (observability)."""
-    if _directive_manager is None:
-        return {"available": False, "directives": []}
-    try:
-        items = (_directive_manager.store.active() if status == "active"
-                 else _directive_manager.store.list(status=status))
-        return {
-            "available": True,
-            "count": len(items),
-            "directives": [
-                {
-                    "id": d.id, "polarity": d.polarity.value, "subject": d.subject,
-                    "raw_text": d.raw_text, "source": d.source,
-                    "status": d.status.value, "match_terms": d.match_terms,
-                    "entity_ids": d.entity_ids,
-                }
-                for d in items
-            ],
-        }
-    except Exception as exc:
-        return {"available": True, "error": str(exc), "directives": []}
-
-
-@router.post("/directives")
-async def add_directive(body: dict) -> dict:
-    """Explicitly record an owner directive/boundary.
-
-    body: {subject, polarity(prohibit|require|prefer), raw_text?, entity_ids?}
-    """
-    if _directive_manager is None:
-        return {"stored": False, "reason": "directives_not_wired"}
-    subject = (body or {}).get("subject", "").strip()
-    if not subject:
-        return {"stored": False, "reason": "subject_required"}
-    d = _directive_manager.add_explicit(
-        subject=subject,
-        polarity=(body or {}).get("polarity", "prohibit"),
-        raw_text=(body or {}).get("raw_text", ""),
-        entity_ids=(body or {}).get("entity_ids") or [],
-    )
-    return {"stored": True, "id": d.id, "polarity": d.polarity.value, "subject": d.subject}
-
-
-@router.post("/directives/{directive_id}/revoke")
-async def revoke_directive(directive_id: str) -> dict:
-    if _directive_manager is None:
-        return {"revoked": False, "reason": "directives_not_wired"}
-    ok = _directive_manager.store.revoke(directive_id)
-    return {"revoked": ok, "id": directive_id}
 
 
 @router.get("/preferences")
@@ -10561,14 +8478,6 @@ def set_session_store(store) -> None:
     _session_store = store
 
 
-def set_task_queue(queue) -> None:
-    global _task_queue
-    _task_queue = queue
-    manager = getattr(queue, "queue", None)
-    if manager is not None and hasattr(manager, "configure_governance"):
-        manager.configure_governance(globals().get("_worker_governor"))
-
-
 def set_session_report_store(store) -> None:
     global _session_report_store
     _session_report_store = store
@@ -10657,29 +8566,10 @@ async def secrets_delete(body: SecretDeleteRequest) -> SecretDeleteResponse:
 _reranker = None
 _context_recall_selector = None
 _session_store = None
-_task_queue = None
 _session_report_store = None
-_agent_bridge = None
-
-def set_agent_bridge(bridge) -> None:
-    global _agent_bridge
-    _agent_bridge = bridge
-
-
 # ---------------------------------------------------------------------------
 # Agent Bridge status
 # ---------------------------------------------------------------------------
-
-@router.get("/bridge/status")
-async def bridge_status() -> dict:
-    if _agent_bridge is None:
-        return {"running": False, "wired": False}
-    return {
-        "running": getattr(_agent_bridge, "is_running", False),
-        "wired": True,
-        "stats": getattr(_agent_bridge, "stats", {}),
-    }
-
 
 # ---------------------------------------------------------------------------
 # Commitment Tracking
@@ -12591,81 +10481,12 @@ async def respond_to_initiative(
     details: Optional[dict] = Body(None),
     request: Request = None,
 ) -> Dict[str, Any]:
-    """Record a response; approval authority still comes from transport.
-
-    Initiative text/action is feedback, not proof that a human approved an
-    external effect. A linked queue decision is therefore routed through the
-    same immutable ApprovalRequest gate as the dedicated queue endpoints.
-    """
+    """Record the owner's response to an initiative as feedback."""
     if _initiative_store is None:
         raise HTTPException(status_code=501, detail="Initiative store not initialized")
     initiative = _initiative_store.get(initiative_id)
     if initiative is None:
         raise HTTPException(status_code=404, detail="Initiative not found")
-
-    # Validate and durably apply a linked approval decision before changing
-    # initiative status, feedback, delivery state, or history. A denied
-    # transport principal must leave no false evidence that the owner acted.
-    job_id = getattr(initiative, "job_id", None)
-    if job_id and action in {
-        "approve", "approved", "dismiss", "dismissed", "reject", "rejected",
-    }:
-        try:
-            from protagine.api.routers import task_queue as approval_router
-
-            decision_details = details if isinstance(details, dict) else {}
-            if action in {"approve", "approved"}:
-                grant_body = decision_details.get("grant")
-                grant = (
-                    approval_router.BoundedGrantRequest(**grant_body)
-                    if isinstance(grant_body, dict) else None
-                )
-                await approval_router.approve_job(
-                    job_id,
-                    approval_router.JobApproveRequest(
-                        approval_request_id=decision_details.get("approval_request_id"),
-                        expected_action_digest=decision_details.get("expected_action_digest"),
-                        decision_id=decision_details.get("decision_id"),
-                        grant=grant,
-                    ),
-                    request,
-                )
-            else:
-                await approval_router.reject_job(
-                    job_id,
-                    approval_router.JobRejectRequest(
-                        reason=str(
-                            decision_details.get("reason")
-                            or "owner_rejected_via_initiative"
-                        ),
-                        approval_request_id=decision_details.get("approval_request_id"),
-                        expected_action_digest=decision_details.get("expected_action_digest"),
-                        decision_id=decision_details.get("decision_id"),
-                    ),
-                    request,
-                )
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "approval_queue_unavailable",
-                    "message": "linked approval could not be validated",
-                },
-            ) from exc
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Failed to sync initiative %s response to job %s: %s",
-                initiative_id, job_id, exc,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "approval_decision_unavailable",
-                    "message": "linked approval could not be validated",
-                },
-            ) from exc
 
     # Update status based on action
     status_map = {

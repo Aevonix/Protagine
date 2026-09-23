@@ -74,7 +74,7 @@ class CognitionPhase:
 
 @dataclass
 class GateLayerRecord:
-    """A single layer in the Protagine ResponseGate safety pipeline."""
+    """A named safety layer; the corpus ships none since the response gate left."""
     layer_id: str
     name: str
     description: str
@@ -193,22 +193,10 @@ LAYERS: List[LayerRecord] = [
         layer_index=5,
     ),
     LayerRecord(
-        name="TaskQueue",
-        description="Distributed hardware-aware task queue: job scheduler, worker nodes, handler registry, monitoring.",
-        subsystems=["protagine.task_queue"],
-        layer_index=6,
-    ),
-    LayerRecord(
         name="Federation",
         description="Multi-agent mesh networking: protagine chain, P2P protocol, ledger sync, consensus, identity federation.",
         subsystems=["protagine.chain", "protagine.mesh", "protagine.network", "protagine.federation"],
         layer_index=7,
-    ),
-    LayerRecord(
-        name="Safety",
-        description="ResponseGate pipeline (7 layers), PII scrubbing, injection detection, trust-tier gating, rate limiting.",
-        subsystems=["protagine.gate", "protagine.gate.layers"],
-        layer_index=8,
     ),
     LayerRecord(
         name="Inference",
@@ -382,15 +370,7 @@ COGNITION_PHASES: List[CognitionPhase] = [
     ),
 ]
 
-GATE_LAYERS: List[GateLayerRecord] = [
-    GateLayerRecord("L1", "RecipientAllowlist", "Blocks messages to recipients not on the contact allowlist.", layer_index=1),
-    GateLayerRecord("L2", "PIIScrubber", "Detects and redacts PII before any outbound transmission.", layer_index=2),
-    GateLayerRecord("L3", "CrossContextGuard", "Prevents leakage of data from one session context to another.", layer_index=3),
-    GateLayerRecord("L4", "TrustTierGate", "Enforces trust-tier permissions — lower tiers get restricted output.", layer_index=4),
-    GateLayerRecord("L5", "InjectionDetector", "Detects and blocks prompt-injection attempts in outbound content.", layer_index=5),
-    GateLayerRecord("L6", "HumanReview", "Routes sensitive content to a human-review queue when configured.", layer_index=6, blocking=False),
-    GateLayerRecord("L7", "SendDelay", "Applies configurable send delay for rate-limiting and pacing.", layer_index=7, blocking=False),
-]
+GATE_LAYERS: List[GateLayerRecord] = []
 
 INFERENCE_TIERS: List[InferenceTier] = [
     InferenceTier(
@@ -431,7 +411,6 @@ SUBSYSTEMS: List[str] = [
     "world_model",
     "goals",
     "skills",
-    "task_queue",
     "federation",
     "safety_gate",
     "inference",

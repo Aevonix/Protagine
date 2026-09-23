@@ -1,13 +1,11 @@
 """P2 — Feature A polish: scope lifecycle is auditable, and group_guest is a
-first-class, restrictively-gated trust tier (not a silent peripheral fallback).
+first-class, restrictive trust tier (not a silent peripheral fallback).
 """
 
 import pytest
 
 from protagine.contacts.config import ContactsConfig
 from protagine.contacts.store import SQLiteContactStore
-from protagine.gate.layers.l4_trust_tier import TrustTierChecker
-from protagine.gate.models import GatePayload
 from protagine.intelligence.relationships.trust_tiers import (
     TIER_CAPABILITIES,
     TrustTier,
@@ -45,31 +43,7 @@ async def test_scope_lifecycle_is_audited(store):
     assert "scope_member_removed" in actions
 
 
-# ── group_guest is a real, restrictive gate tier ─────────────────────────────
-
-def _payload(text, tier):
-    return GatePayload(
-        response_text=text,
-        target_contact_id="c1",
-        target_gateway="rcs",
-        session_id="s1",
-        trust_tier=tier,
-        mentioned_entities=frozenset(),
-        turn_id="t1",
-        incoming_message_text="hi",
-    )
-
-
-@pytest.mark.asyncio
-async def test_group_guest_gated_like_peripheral():
-    checker = TrustTierChecker()
-    # internal-state, relationship-assessment, and private-detail disclosures all blocked
-    assert (await checker.check(_payload("I store and track everything about you", TrustTier.GROUP_GUEST))).blocked
-    assert (await checker.check(_payload("based on my interactions with Sam he stays busy", TrustTier.GROUP_GUEST))).blocked
-    assert (await checker.check(_payload("his home address is on file", TrustTier.GROUP_GUEST))).blocked
-    # benign group chatter passes
-    assert not (await checker.check(_payload("sounds good, see you at 6", TrustTier.GROUP_GUEST))).blocked
-
+# ── group_guest is a real, restrictive tier ──────────────────────────────────
 
 def test_group_guest_capabilities_are_restrictive():
     caps = TIER_CAPABILITIES[TrustTier.GROUP_GUEST]
@@ -78,8 +52,8 @@ def test_group_guest_capabilities_are_restrictive():
     assert caps["contact_can_request_reminders"] is False
 
 
-def test_group_guest_is_in_the_gate_enum():
-    # the inference gate path does TrustTier(contact.trust_tier); group_guest must resolve
+def test_group_guest_resolves_from_its_stored_name():
+    # readers do TrustTier(contact.trust_tier); group_guest must resolve
     assert TrustTier("group_guest") is TrustTier.GROUP_GUEST
 
 

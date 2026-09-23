@@ -81,6 +81,12 @@ effect on effects: nothing is dispatched or sent, unsent messages are
 cancelled and mind-originated runs are blocked; what was approved waits for
 the level to come back.
 
+A standing "leave X alone" is the deny list (`mind.deny`: tool names, text
+patterns and shell commands), enforced by the mind's authority on every
+intention and mirrored into the worker profile's `approvals.deny`. A global
+pause is the off switch plus stock `hermes pause`; the body holds dispatch
+and sends while Hermes is paused.
+
 ## Configuration
 
 ```yaml

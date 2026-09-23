@@ -116,12 +116,10 @@ class WorldModelSeeder:
             except Exception as exc:
                 logger.warning("world_model: WM_PART_OF rel failed for %s: %s", subsystem, exc)
 
-        # WM_DEPENDS_ON: goals → task_queue, intelligence → world_model
+        # WM_DEPENDS_ON: intelligence → world_model, briefings → goals
         dep_pairs = [
-            ("goals", "task_queue"),
             ("intelligence", "world_model"),
             ("briefings", "goals"),
-            ("skills", "task_queue"),
             ("federation", "world_model"),
         ]
         for src_sub, tgt_sub in dep_pairs:

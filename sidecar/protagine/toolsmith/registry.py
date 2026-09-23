@@ -29,7 +29,6 @@ from protagine.toolsmith.integrity import (
     artifact_digest as compute_artifact_digest,
     digest_json,
 )
-from protagine.tools.definitions import STATIC_TOOL_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -242,9 +241,6 @@ class ToolRegistry:
                      candidate_digest: str = "") -> Optional[Tool]:
         if not self.valid_name(name):
             logger.warning("toolsmith: invalid tool name %r", name)
-            return None
-        if name in STATIC_TOOL_NAMES:
-            logger.warning("toolsmith: reserved first-party tool name %r", name)
             return None
         if self.get_by_name(name) is not None:
             logger.info("toolsmith: tool named %r already exists", name)
@@ -474,11 +470,6 @@ class ToolRegistry:
                         "tool_not_found", "tool was not found"
                     )
                 tool = self._row_to_tool(row)
-                if tool.name in STATIC_TOOL_NAMES:
-                    raise GraduationAuthorityError(
-                        "tool_name_reserved",
-                        "tool name collides with a first-party capability",
-                    )
                 if tool.status != ToolStatus.SHADOW:
                     raise GraduationAuthorityError(
                         "tool_not_shadow", "tool is not in shadow state"

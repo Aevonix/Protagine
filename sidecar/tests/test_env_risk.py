@@ -13,7 +13,7 @@ import pytest
 
 from protagine.api.routers import host as host_mod
 from protagine.channels.presence import ConversationPresenceStore
-from protagine.gate.env_risk import (
+from protagine.tom.env_risk import (
     R0, R1, R2, R3, classify, env_risk_window_hours, gateway_class)
 
 OWNER = "cid-owner"

@@ -15,14 +15,13 @@ import pytest
 
 from protagine.api.routers.host import router as host_router
 from protagine.api.routers.observations import router as observations_router
-from protagine.api.routers.task_queue import router as task_queue_router
 from protagine.api.routers.executions import router as executions_router
 from protagine.api.routers.commitment_work import router as commitment_work_router
 
 from protagine.api.routers import social_state, temporal_followups, transport, followup_plans
 
 # Every router the app mounts under /v1/host — the plugin may hit any of them.
-_HOST_ROUTERS = (host_router, task_queue_router, observations_router, executions_router, commitment_work_router, social_state.router, temporal_followups.router, transport.router, followup_plans.router)
+_HOST_ROUTERS = (host_router, observations_router, executions_router, commitment_work_router, social_state.router, temporal_followups.router, transport.router, followup_plans.router)
 
 _INTEGRATION = pathlib.Path(__file__).resolve().parents[2] / "plugins" / "hermes-plugin"
 _HOST_PATH = re.compile(r"/v1/host/(?:[A-Za-z0-9/_.-]|\{[^{}\r\n]*\})*")

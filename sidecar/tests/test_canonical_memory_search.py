@@ -1,8 +1,6 @@
 """Explicit search shares automatic recall's evidence, scope and model projections."""
 import asyncio
-import json
 import threading
-from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -11,7 +9,7 @@ from protagine.api.routers import host
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.turns import TurnIdempotencyLedger
 from onekey import KEY, _principal, _write_keyring
-from test_turn_source_evidence import source_app, recalled
+from test_turn_source_evidence import source_app, recalled  # noqa: F401 (fixture)
 from test_source_vectors import setup, drain, Pipeline
 
 
@@ -86,8 +84,6 @@ async def test_search_matches_automatic_scope_and_correction_budget(memory_app, 
         monkeypatch.setenv('PROTAGINE_RECALL_CONTEXT_MAX_CHARS', '100')
         empty = await search(client)
         assert empty['content'] == '' and empty['count'] == 0 and empty['source_refs'] == []
-
-
 
 
 @pytest.mark.asyncio
@@ -240,57 +236,3 @@ async def test_erasure_during_semantic_await_never_returns_stale_excerpt(memory_
         assert result['content'] == '' and result['source_refs'] == []
 
 
-@pytest.mark.asyncio
-async def test_direct_reasoning_tool_uses_only_trusted_request_scope(memory_app, monkeypatch):
-    from protagine.reasoning import ToolExecutor
-    app, _ = memory_app
-    class Graph:
-        async def recall(self, **kwargs):
-            raise AssertionError('graph fallback')
-    executor = ToolExecutor(registry=SimpleNamespace(graph=Graph()))
-    monkeypatch.setattr(host, '_tool_executor', executor)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        async def invoke(person, args, context=True):
-            request = {'identity': {'host_id': 'fixture'}, 'name': 'protagine_memory_search', 'arguments': args}
-            if context:
-                request['context'] = {'contact_id': person, 'session_id': 'later'}
-            r = await client.post('/v1/host/reasoning/tools/invoke', headers={'Authorization':'Bearer ' + KEY}, json=request)
-            assert r.status_code == 200, r.text
-            return json.loads(r.json()['result'])
-        owner, other = await asyncio.gather(invoke('person', {'query':'hydrofoil'}),
-                                           invoke('other', {'query':'hydrofoil'}))
-        assert 'Friday at nine' in owner['content'] and 'amber' not in owner['content']
-        assert 'amber' in other['content'] and 'Friday' not in other['content']
-        denied = await invoke('person', {'query':'hydrofoil', 'person_id':'other'})
-        assert denied['status'] == 'unavailable'
-        unbound = await invoke('person', {'query':'hydrofoil'}, context=False)
-        assert unbound['status'] == 'unavailable'
-        current = await invoke('person', {'query':'hydrofoil'})
-        assert current['source_refs'] == owner['source_refs']
-
-
-@pytest.mark.asyncio
-async def test_reasoning_http_loop_supplies_canonical_tool_packet_to_processor(memory_app, monkeypatch):
-    from protagine.reasoning import ToolExecutor, ReasoningLoop
-    app, _ = memory_app
-    class Processor:
-        def __init__(self): self.calls = []
-        async def complete(self, messages, **kwargs):
-            self.calls.append(messages)
-            calls = [] if len(self.calls) > 1 else [SimpleNamespace(id='search', function=SimpleNamespace(
-                name='protagine_memory_search', arguments=json.dumps({'query':'hydrofoil'})))]
-            return SimpleNamespace(content='done' if not calls else '', usage={},
-                raw=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(tool_calls=calls))]))
-    processor = Processor()
-    monkeypatch.setattr(host, '_reasoning_loop', ReasoningLoop(model=processor,
-        tools=ToolExecutor(registry=SimpleNamespace(graph=None))))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
-                           headers={'Authorization':'Bearer ' + KEY}) as client:
-        r = await client.post('/v1/host/reasoning/turn', json={
-            'identity':{'host_id':'fixture'}, 'context':{'contact_id':'person','session_id':'later'},
-            'messages':[{'role':'user','content':'Find the hydrofoil time.'}],
-            'available_tools':['protagine_memory_search']})
-        assert r.status_code == 200 and r.json()['status'] == 'completed', r.text
-    evidence = json.loads(next(m['content'] for m in processor.calls[-1] if m['role']=='tool'))
-    assert 'Friday at nine' in evidence['content'] and evidence['source_refs'][0]['source_id'] == 'report'
-    assert 'amber' not in evidence['content']

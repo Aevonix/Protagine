@@ -515,8 +515,8 @@ class Toolsmith:
         )
 
     def build_dynamic_provider(self):
-        """Return a callable for ToolExecutor.set_dynamic_provider that maps
-        every LIVE tool to its (openai_definition, async_handler)."""
+        """Return a callable that maps every LIVE tool to its
+        (openai_definition, async_handler) pair."""
         def provider() -> Dict[str, Any]:
             out: Dict[str, Any] = {}
             for tool in self.registry.list(status=ToolStatus.LIVE):

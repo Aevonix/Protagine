@@ -104,7 +104,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
         HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1',
         PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_TURN_WRITER='disabled',
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
-        PROTAGINE_OWNER_CONTACT_ID=person, PROTAGINE_GUARD_CHAT_MODE='off',
+        PROTAGINE_OWNER_CONTACT_ID=person,
         PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false',
         # The body tick drives the adapter (tick() and flush()); its own thread stays parked
         # so no dispatch or send lands between two observed ticks.

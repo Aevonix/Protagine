@@ -128,20 +128,36 @@ def test_upgrade_retires_old_stores_and_adds_the_intention_columns(installed, ca
                    "stale_reason TEXT, recovery_reason TEXT, job_id TEXT, context TEXT)")
         db.execute("INSERT INTO initiatives (id, type, description, status, created_at) VALUES "
                    "('old-1', 'relationship', 'old row', 'completed', '2026-01-01T00:00:00+00:00')")
-    for name in ("approval_authority.db", "schedules.db"):
+    for name in ("approval_authority.db", "schedules.db", "task_queue.db", "protagine-projects.db",
+                 "protagine-directives.db"):
         with sqlite3.connect(home / name) as db:
             db.execute("CREATE TABLE t (x TEXT)")
+            db.execute("INSERT INTO t VALUES ('row')")
     (home / "standing_approvals.json").write_text("{}")
-    assert set(init.retired_state_present(home)) == {"approval_authority.db", "schedules.db", "standing_approvals.json"}
+    (home / "governed-actions").mkdir()
+    with sqlite3.connect(home / "governed-actions" / "ledger.db") as db:
+        db.execute("CREATE TABLE actions (id TEXT)")
+    (home / "bridge").mkdir()
+    (home / "bridge" / "seen_initiatives.txt").write_text("init-1\n")
+    assert set(init.retired_state_present(home)) == {
+        "approval_authority.db", "schedules.db", "standing_approvals.json", "task_queue.db",
+        "protagine-projects.db", "protagine-directives.db", "governed-actions", "bridge"}
     assert "initiatives.db:kind" in init.pending_initiative_columns(home)
 
     assert init.run_upgrade(_upgrade_args(home)) == 0
     out = capsys.readouterr().out
     assert "retired approval_authority.db" in out and "migration applied: initiatives.db:kind" in out
-    for name in ("approval_authority.db", "schedules.db", "standing_approvals.json"):
+    assert "retired task_queue.db" in out and "retired governed-actions" in out
+    for name in ("approval_authority.db", "schedules.db", "standing_approvals.json", "task_queue.db",
+                 "protagine-projects.db", "protagine-directives.db", "governed-actions", "bridge"):
         assert not (home / name).exists()
     retired = {p.name for p in (home / "backups").rglob("retired/*")}
-    assert retired >= {"approval_authority.db", "schedules.db", "standing_approvals.json"}
+    assert retired >= {"approval_authority.db", "schedules.db", "standing_approvals.json", "task_queue.db",
+                       "protagine-projects.db", "governed-actions"}
+    assert next((home / "backups").rglob("retired/governed-actions/ledger.db")).is_file()
+    assert next((home / "backups").rglob("retired/bridge/seen_initiatives.txt")).read_text() == "init-1\n"
+    with sqlite3.connect(next((home / "backups").rglob("retired/task_queue.db"))) as db:
+        assert db.execute("SELECT x FROM t").fetchone()[0] == "row"
     with sqlite3.connect(home / "initiatives.db") as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(initiatives)")}
         assert {"kind", "cls", "decision", "hermes_ref", "outcome", "verified", "verdict", "ask_code"} <= columns

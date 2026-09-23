@@ -1,4 +1,4 @@
-"""Environment-risk classifier (L1.2) — the auto-ratchet under leveled tom2.
+"""Environment-risk classifier: the auto-ratchet under leveled tom2.
 
 ``classify()`` grades ONE conversation, as experienced by ONE reader, into
 R0..R3. It is the input that lets the effective-level resolver auto-degrade

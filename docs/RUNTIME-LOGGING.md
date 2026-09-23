@@ -21,8 +21,6 @@ than one second:
 - `/v1/host/health`
 - `/v1/host/transport/ingress/receipts`
 - `/v1/host/memory/sources/erasures`
-- `/v1/host/queue/jobs/pending`
-- `/v1/host/queue/stats`
 
 Failed, redirected, slow, unmeasured and other requests remain visible.
 Successful receipt-query parameters are marked `<omitted>` when that request

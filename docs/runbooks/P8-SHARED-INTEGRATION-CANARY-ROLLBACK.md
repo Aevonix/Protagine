@@ -1,7 +1,7 @@
 # P8 shared integration canary and rollback
 
 This runbook deploys the P8 shared integration without changing the host deployment, Hermes,
-the custom voice system, ResponseGuard policy, or SharedFactsStore semantics.
+the custom voice system or SharedFactsStore semantics.
 Use one repository writer and one deployment operator.
 
 ## 1. Capture independent rollback points

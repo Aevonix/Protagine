@@ -4,7 +4,6 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -14,7 +13,6 @@ import protagine.api.routers.host as host_mod
 from onekey import (
     RequestAuthority,
     anonymous_authority,
-    required_scope,
 )
 from protagine.toolsmith.authority import (
     GraduationAuthorityError,
@@ -234,46 +232,6 @@ def test_registry_draft_and_files(tmp_path):
                             test_source="") is None
 
 
-@pytest.mark.parametrize("name", ["calculate", "read_file", "write_file"])
-def test_registry_reserves_every_shipped_tool_name(tmp_path, name):
-    _, reg, _ = make_toolsmith(tmp_path)
-    assert reg.create_draft(
-        name=name,
-        description="must not shadow a first-party capability",
-        source_code=GOOD_SPEC,
-        input_schema={},
-        test_source="",
-    ) is None
-
-
-def test_legacy_reserved_name_cannot_graduate(tmp_path):
-    _, reg, _ = make_toolsmith(tmp_path)
-    tool = reg.create_draft(
-        name="legacy_dynamic_tool",
-        description="legacy row predating name reservation",
-        source_code=GOOD_SPEC["source_code"],
-        input_schema=GOOD_SPEC["input_schema"],
-        test_source=GOOD_SPEC["test_source"],
-    )
-    assert tool is not None
-    assert reg.set_status(tool.tool_id, ToolStatus.SHADOW)
-    reg._conn.execute(
-        "UPDATE tools SET name='calculate' WHERE tool_id=?",
-        (tool.tool_id,),
-    )
-    reg._conn.commit()
-    legacy = reg.get(tool.tool_id)
-
-    with pytest.raises(
-        GraduationAuthorityError,
-        match="first-party capability",
-    ):
-        reg.graduate_with_authority(
-            graduation_authority(legacy),
-            shadow_min=5,
-        )
-
-
 def test_registry_migrates_legacy_digests_without_blessing_tamper(tmp_path):
     db = tmp_path / "legacy.db"
     conn = sqlite3.connect(db)
@@ -481,23 +439,6 @@ async def test_dynamic_provider_exposes_live(tmp_path):
     assert definition["function"]["name"] == "add_numbers"
     result = json.loads(await handler({"a": 1, "b": 2}))
     assert result["result"]["sum"] == 3
-
-
-def test_executor_merges_dynamic_defs(tmp_path):
-    from protagine.reasoning.executor import ToolExecutor
-    ts, reg, _ = make_toolsmith(tmp_path)
-    te = ToolExecutor()
-
-    async def add_numbers(_arguments):
-        return "3"
-
-    te.set_dynamic_provider(lambda: {
-        "add_numbers": ({"type": "function",
-                         "function": {"name": "add_numbers",
-                                      "description": "d",
-                                      "parameters": {}}}, add_numbers)})
-    names = [d["function"]["name"] for d in te.get_definitions()]
-    assert "add_numbers" in names
 
 
 # --- API -------------------------------------------------------------------

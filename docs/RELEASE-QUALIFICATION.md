@@ -1,8 +1,7 @@
 # Release artifact qualification
 
-The adapter, sidecar and hostworker have independent versions. The changelog
-states which components change in each release. Do not increase an unchanged
-component's version merely to match the tag.
+The adapter and the sidecar are published together under one version. The
+changelog states which components change in each release.
 
 `requirements/release-py312.txt` records the dependency versions used for the
 Python 3.12 Linux artifact checks. It covers the core sidecar, adapter with native
@@ -18,7 +17,6 @@ In a disposable Python 3.12 environment, from the repository root:
 python -m pip install -c requirements/release-py312.txt '.[test,quality]'
 python -m build --no-isolation --outdir dist .
 python -m build --no-isolation --outdir dist ./sidecar
-python -m build --no-isolation --outdir dist ./hostworker
 python -m twine check dist/*
 python scripts/qualify_artifacts.py --dist dist \
   --constraints requirements/release-py312.txt --output artifact-qualification
@@ -26,10 +24,9 @@ python scripts/qualify_artifacts.py --dist dist \
 
 Use an empty `dist` directory for a candidate. Each default build creates an
 sdist and builds its wheel from that source archive. The qualifier installs
-the hostworker alone in a new environment outside the checkout and executes
-its SQLite store conformance suite. It then installs the sidecar and adapter,
-checks dependency consistency, installed import locations and entry points,
-and exercises CLI help. It does not attach to a Hermes profile, run inference,
+the sidecar and adapter in a new environment outside the checkout, checks
+dependency consistency, installed import locations and entry points, and
+exercises CLI help. It does not attach to a Hermes profile, run inference,
 or mutate deployment state.
 
 `artifact-qualification/receipt.json` contains component versions, wheel/sdist
@@ -52,7 +49,6 @@ paths), then rerun artifact and native qualification. Commit the candidate
 snapshot with the observed results; do not regenerate it during a release.
 The paired benchmark's separate lock and frozen images remain unchanged.
 
-CI checks fatal Python errors throughout the sidecar, artifact qualifier and
-hostworker, plus the packaging tests it changes. Mypy
-checks the small hostworker wire contract. This adds no mass formatting change,
-global typing migration, or arbitrary coverage threshold.
+CI checks fatal Python errors throughout the sidecar, the adapter and the
+artifact qualifier, plus the packaging tests it changes. This adds no mass
+formatting change, global typing migration, or arbitrary coverage threshold.

@@ -25,7 +25,7 @@ gives every role the same spine and lets each role stay a slim overlay.
 | `<charter>` | static | shared identity + the 8-point agency doctrine |
 | `<role>` | `ROLE_BLOCKS[role]` | mission + role rules |
 | `<self_model>` | caller (self-model brief) | calibrated competence: route, decline, escalate |
-| `<boundaries>` | caller (DirectiveGuard `context_brief`) | standing owner directives; cite on refusal |
+| `<boundaries>` | caller (the mind's `deny` list) | standing owner boundaries; cite on refusal |
 | `<skills>` | caller (procedure-memory retrieval) | how similar work succeeded before |
 | `<corrections>` | caller (post-mortems, owner feedback) | past mistakes, each line `avoid:`-prefixed |
 | `<context>` | caller | role-specific context |
@@ -59,8 +59,7 @@ Do not remove or default these fields.
 ## Roles
 
 `thought_job` (bounded concern judgment), `executor`, `thinker`, `planner`, `observer` (turn/event cognition),
-`synthesis` (goal/fact inference), `worker` (queue workers),
-`directed_intake` (owner directive -> scoped task). Add new roles as slim
+`synthesis` (goal/fact inference). Add new roles as slim
 mission/rules/output blocks; put shared behavior in the charter, never in
 role blocks.
 
@@ -86,12 +85,10 @@ persona. `PROTAGINE_AGENT_NAME` supplies the agent's name at compose time.
 ## Integration status
 
 New adopters should import `build_system_prompt` and delete their inline
-prompt constants. Existing modules migrate as they are touched (see
-ROADMAP-COGNITION.md program state for which have adopted). Adopted so far:
-thinker (confidence + evidence now
-mandatory; ungrounded items dropped), planner (per-step confidence,
-persisted), project step runner, observer (cognition trigger; worked
-examples ride in as `<context>`), narrator (briefing enhancer).
+prompt constants. Existing modules migrate as they are touched. Adopted so
+far: thinker (confidence + evidence now mandatory; ungrounded items dropped),
+observer (cognition trigger; worked examples ride in as `<context>`),
+narrator (briefing enhancer).
 
 Deliberately standalone (mechanical, purpose-built prompts where the full
 charter adds tokens without behavior gain): introspection turn-audit,
