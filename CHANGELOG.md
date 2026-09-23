@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.9.1 - republish without deployment details
+
+Republishes 1.9.0 with no functional change. The repository history was
+rewritten to remove private deployment details, contributor contact details
+and a third party's name from code comments, fixtures and documentation, and
+these packages are built from that tree. Earlier packages under the project's
+former names are withdrawn.
+
 ## Unreleased
 
 The paired benchmark runs named arm profiles instead of a fixed pair. A profile
