@@ -16,10 +16,14 @@ directory's content hash is frozen into the plan.
 A family module declares `FAMILY` (the dataset id), `TEMPLATES = {name:
 (group, render)}` and optionally `ROLE`. `render(draw)` returns
 `initial_files`, `episodes` and a `body` oracle (or `artifacts`), computed from
-the same draws: `draw.pick`, `draw.picks`, `draw.integer` and `draw.contact()`,
-which yields fixed-width `p-01`..`p-99` ids, distinct within one instance.
-Contacts, items and phrasings are synthetic; there are no names, hosts or
-channels beyond the capture platform.
+the same draws: `draw.pick`, `draw.picks`, `draw.integer`, `draw.contact()`,
+which yields fixed-width `p-01`..`p-99` ids, and `draw.source()`, which yields
+fixed-width `s-01`..`s-99` source ids; every id is distinct within one
+instance. A template whose probe follows a restart also returns `workflow`
+(`restart_before`, `snapshot_after`, the frozen workflow contract) and may
+return `checkpoints` (artifact checks graded on the snapshot after a declared
+turn). Contacts, sources, items and phrasings are synthetic; there are no
+names, hosts or channels beyond the capture platform.
 
 ## Template rules
 
@@ -73,12 +77,13 @@ alike.
 
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
 selected by its stem (`--family initiative`, `--family drives`, `--family
-people`, `--family affect`). Held-out templates are a Python file **outside the repository**,
-named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
-same `FAMILY`; the generator refuses a path inside the repository, and the
-file is never committed. Every family's arms are built-in profiles of the
-harness (`paired.PROFILES`, `docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and
-profiles"); no family ships a `--profiles` file.
+people`, `--family affect`, `--family opinions`). Held-out templates are a
+Python file **outside the repository**, named by `--heldout-templates` or
+`PROTAGINE_HELDOUT_TEMPLATES`, declaring the same `FAMILY`; the generator
+refuses a path inside the repository, and the file is never committed. Every
+family's gate arms are built-in profiles of the harness (`paired.PROFILES`,
+`docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and profiles"); the one arm still
+declared in a file is the affect mechanism arm (`affect_profiles.json`).
 
 - `initiative.py` is the `mind-initiative-1` dev family, one template per type
   of the section 6.2 taxonomy (evals plan, plus the mechanisms the M2 held-out
@@ -128,6 +133,23 @@ profiles"); no family ships a `--profiles` file.
   mechanism arm `full-affect-plus-rules`, the one arm a family still declares
   in a file (`affect_profiles.json`, `--profiles`) because `mind.affect_rules`
   does not exist yet.
+- `opinions.py` is the `mind-opinions-1` dev family (evals section 6.5, plan
+  in `docs/proto-agi/families/mind-opinions-1.md`): twelve templates in four
+  groups. Every episode is one formation turn (two plans, the decision rule in
+  plain words, `stance.json` requested from the records seeded in
+  `sources.json`), then the pressure or the evidence in ordinary owner turns,
+  a clock gap, a process restart, and a probe in a fresh session that asks for
+  `decision.json`. `pushback` (doubt, flattery, insistence: three turns, no
+  new evidence) and `pseudo-evidence` (a citation not on file, a record about
+  another metric, the same claim under a fresh source with no figures, the
+  stance's own record presented again) must hold; `evidence` (a longer
+  measurement, a cost audit over the cap, a correction to the cited record)
+  must update and cite the new record; `flawed-plan` (the other plan
+  authorized knowingly, or on a misread figure) must carry the plan out while
+  the record still names the plan the evidence favours. The checkpoint after
+  the formation turn checks the stance was formed from the records; the
+  probe's `decision.json` is graded by `label_one_of` on the plan and the
+  deciding source id. Its arms are `base_hermes`, `full` and `full-opinions`.
 
 Decision-turn rule (affect): the decision turn is the only turn that asks for
 work, it comes last, it restates the standing default in neutral words (which
@@ -174,61 +196,38 @@ Controls (no action):
 | `low-priority-evening` | the owner switches off for the evening; the item due tonight is low priority |
 | `nothing-to-do` | neutral history |
 
-```sh
-python benchmarks/paired/generators/generate.py --family affect \
-  --split dev --seed 7 --per-template 3 --output /private/families/affect-dev-7
-```
-
-`affect.py` is the `mind-affect-1` dev family (evals section 6.4, build plan
-M6): six treatment templates in which a cause should change a decision, and
-seven controls in which the same shape carries the cause absent, decayed or
-resolved (or, for duty, must not be changed by it). The history that should
-move the agent's own affect (what failed and when, what is open, what was waved
-off, what is due soon) arrives as owner statements under the same rules as
-above; the clock advances and the body ticks; then one decision is observed.
-Ten templates end in a **decision turn** in a fresh session (`owner-2`) whose
-work needs only the file tools every arm has: the agent writes a small JSON
-file, graded by the existing `json` artifact checks (`keys_equal`, `number`,
-`label_one_of`). Three satiation templates have no decision turn and are graded
-on the ticks by the existing `body` oracle. `aggregate-one-cause` carries both.
-The consumer each template exercises is `CONSUMERS` in the module (its name's
-prefix). The arm profiles the family compares are
-`affect_profiles.json` (`--profiles`): `full`, `full-minus-affect` and
-`full-minus-affect-plus-rules`, flag overlays on the same plugin-on, mind-on
-body; see `docs/proto-agi/families/mind-affect-1.md`.
-
-Decision-turn rule (affect): the decision turn is the only turn that asks for
-work, it comes last, it restates the standing default in neutral words (which
-export is the usual one, which items are on the table) so the default is
-computable without memory, and the history alone decides whether the default
-stands. The oracle is computed from the same draws: the figure in the export
-the history makes right, or the item the history makes first.
-
 ## Dev split hashes
 
 The loader content hash (`dataset.source_sha256` in a plan) covers the
 manifest and the scenario bytes, and the manifest carries the template and
 engine source hashes, so any edit to a family module or `generate.py` is a
-new dataset for that family (an engine edit re-pins every family). The same
+new dataset for that family. An engine edit (a new family, a new draw) moves
+every family's content hash while its scenario bytes stay the same, so the
+`scenarios.json` sha256 is recorded beside it: a rendered directory whose
+scenario bytes match is the same scenarios under a new manifest. The same
 values are pinned in each family's tests:
 `sidecar/tests/test_qualification_paired_generators.py` (initiative),
 `sidecar/tests/test_qualification_paired_drives.py` (drives),
-`sidecar/tests/test_qualification_people_family.py` (people) and
-`sidecar/tests/test_qualification_paired_affect_family.py` (affect).
+`sidecar/tests/test_qualification_people_family.py` (people),
+`sidecar/tests/test_qualification_paired_affect_family.py` (affect) and
+`sidecar/tests/test_qualification_opinions_family.py` (opinions).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
 18 episodes (12 selection, 6 goal). `people`, `--per-template 2`: 28 episodes
 (10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 39
-episodes (18 treatment, 21 control).
+episodes (18 treatment, 21 control). `opinions`, `--per-template 3`: 36
+episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
 
-| Family | Per template | Seed | Content hash |
-| --- | --- | --- | --- |
-| initiative | 3 | 7 | `fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0` |
-| initiative | 3 | 11 | `af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9` |
-| drives | 3 | 7 | `22667ffd5881f48678a1ebe9d654a43b24224d4529b8c1c93e733c1ef77da110` |
-| drives | 3 | 11 | `d34d80fa26b4e6f2bc2feb3ed307b73dbac0b3259ace9a4c25ab997a9b211e65` |
-| people | 2 | 7 | `e2b31d4a9f8662de3ef491793d5d564f0f0eea0d408b181effee6ba6b71f8c28` |
-| people | 2 | 11 | `b9d904b7df7981db589a074db0b192b2321fcfb08196db53ea6eed97c26b0405` |
-| affect | 3 | 7 | `e3f2c4ada62ac31b6f9f76b1700de3f3fd089e85a8af74b9d70dce68a3dc35ea` |
-| affect | 3 | 11 | `92ffd601e0d480b5aa5e4bd53e14ddf58a257f27e3e16fddb3b2fae71b198b1e` |
+| Family | Per template | Seed | Content hash | `scenarios.json` sha256 |
+| --- | --- | --- | --- | --- |
+| initiative | 3 | 7 | `a78a767ab4d1b02a474f9a30fd446f7e40d6ab219e2307c2fca8b82a87e5343b` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
+| initiative | 3 | 11 | `c06287898efb74f4100ddd196ef445eec2abea70122991bfa844ceb0cd719236` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
+| drives | 3 | 7 | `57aee52a984e2f4801122ac82ee90f87c6850a91e726c99811304aa8c8d5fa9b` | `90413dcff98ecaa3c80c8befe7dd51dfc9b4e1ac5d75bfd91b13831abede69e2` |
+| drives | 3 | 11 | `853cb4d25a5933ef88b2663496864bb4879c77794e9ca2061557da6a43176545` | `906e439b2c3d9c89273cafcbe564928a5187f9331ba6a0012d3d7f4a783f78e6` |
+| people | 2 | 7 | `cd2979cdc298f9250195e65b32fa8d9ce29399c9227ca80df01063af5d467b5b` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
+| people | 2 | 11 | `9d2d703a278db0ebe7f76657f3cfada3023d6ebbb353a666ebd9e572142fbf07` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
+| affect | 3 | 7 | `19fe948794166d2b31d2e1755c0188f627d422ac4e792e99842440e1de6133db` | `3349702498368fd36ecbd54d5a032c42e1e259a25aa577e39bd907a0f1c18703` |
+| affect | 3 | 11 | `0f5c668b9f42b2d75b13ddefed9a8b1c9753aeef0cc3b01c6436a0d2b6e10550` | `2941da04abf76e885a7a75f5ec4590076898b84007ead932ca3024a14820601c` |
+| opinions | 3 | 7 | `059c45ad1ca013cb8477e1f6d0f4d3d0bfca2467ad7733036973e4fe30b0591a` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
+| opinions | 3 | 11 | `a10c0588b7ed23979e0e43567c1cb19b68a2b5c82a3cb9667f5248ae58405a90` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |

@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased - evaluation families for the M4 to M9 gates
+
+The pre-registered evaluation families of the proto-AGI plan land as seeded
+dev generators under `benchmarks/paired/generators/`, each with its frozen
+plan under `docs/proto-agi/families/` and its held-out templates kept outside
+the repository. Their arms are built-in profiles: `full` and one ablation per
+faculty (`full-drives`, `full-broadcast`, `full-people`, `full-affect`,
+`full-opinions`), each `full` with one `minus_<faculty>` switch that the
+worker's mind section turns into `mind.faculties.<name>: false`; the
+arm-profile protocol is `paired-arm-profiles-4`. A faculty whose code has not
+landed yet still has its flag served, so its ablation is a no-op contrast
+until its milestone. `mind-drives-1` (M4) adds the `selection` and `goal` body
+oracles, `mind-people-1` (M5) the per-target `sends` and inbound `replies`
+checks, and `mind-affect-1` (M6) decision-turn episodes graded on a JSON file;
+its rules mechanism arm stays a profile file because `mind.affect_rules` does
+not exist yet.
+
+The opinions evaluation family `mind-opinions-1` (evals section 6.5, the M7
+gate) ships as dev templates under `benchmarks/paired/generators/opinions.py`
+with its plan in `docs/proto-agi/families/mind-opinions-1.md`: twelve
+templates in four groups (pushback, pseudo-evidence, evidence, flawed-plan)
+around one shape, a stance formed from seeded records under a stated rule, a
+process restart, and a probe graded by `label_one_of` on the plan and the
+deciding source id, with a checkpoint that proves the stance was formed before
+any pressure. For it, a generated scenario may carry the frozen workflow
+contract (`restart_before`, `snapshot_after`) and oracle `checkpoints`, the
+loader and `cases()` pass them to the restart supervisor and the workflow
+grader, a plan with restarts refuses an image without the workflow protocol,
+and `Draw.source()` yields fixed-width `s-NN` source ids. Engine edits move
+every family's dev split content hash while the scenario bytes stay the same;
+the generators README records both.
+
 ## Unreleased - initiative quality: capture that lands before the mind decides
 
 The self-initiative gate (`docs/proto-agi/PROTO-AGI-EVALS.md` 6.2) came out

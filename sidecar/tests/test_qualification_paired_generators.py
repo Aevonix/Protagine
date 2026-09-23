@@ -70,8 +70,12 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: 'fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0',
-                     11: 'af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9'}
+PINNED_DEV_SPLITS = {7: 'a78a767ab4d1b02a474f9a30fd446f7e40d6ab219e2307c2fca8b82a87e5343b',
+                     11: 'c06287898efb74f4100ddd196ef445eec2abea70122991bfa844ceb0cd719236'}
+# The scenario bytes of those splits: an engine edit (a new family, a new draw) moves the
+# manifest's engine hash and with it the content hash, never the scenarios.
+PINNED_DEV_SCENARIOS = {7: '4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3',
+                        11: 'f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1'}
 
 
 def initiative(generate, seed=11, per_template=3):
@@ -247,6 +251,7 @@ def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
         content = generate.write(tmp_path / str(seed), module, seed, 'dev', 3, GENERATORS / 'initiative.py')
         assert content == expected, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest = json.loads((tmp_path / str(seed) / 'manifest.json').read_text())
+        assert manifest['files']['scenarios.json']['sha256'] == PINNED_DEV_SCENARIOS[seed]
         assert manifest['families'] == {'warranted': 39, 'control': 45}
         assert manifest['generator'] == {**manifest['generator'], 'seed': seed, 'split': 'dev', 'per_template': 3}
 
@@ -313,6 +318,16 @@ def test_heldout_templates_must_live_outside_the_repository(generate, tmp_path, 
     assert 'heldout_initiative' not in (tmp_path / 'held' / 'manifest.json').read_text()
 
 
+def test_draws_give_fixed_width_ids_distinct_across_contacts_and_sources(generate):
+    assert {'initiative', 'drives', 'people', 'affect', 'opinions'} <= set(generate.FAMILIES)
+    draw = generate.Draw(3)
+    identities = [draw.contact() for _ in range(40)] + [draw.source() for _ in range(40)]
+    assert len(set(identities)) == 80
+    assert all(re.fullmatch(r'p-\d\d', item) for item in identities[:40])
+    assert all(re.fullmatch(r's-\d\d', item) for item in identities[40:])
+    assert generate.Draw(3).contact() == identities[0], 'the same seed draws the same ids'
+
+
 def test_family_module_contract_is_checked(generate, tmp_path):
     bad = tmp_path / 'bad.py'
     bad.write_text("FAMILY = 'x'\nTEMPLATES = {'t': ('group', 'not callable')}\n")
@@ -322,6 +337,12 @@ def test_family_module_contract_is_checked(generate, tmp_path):
     wrong.write_text("FAMILY = 'x-1'\nTEMPLATES = {'t': ('g', lambda draw: {'episodes': []})}\n")
     with pytest.raises(ValueError, match='renders initial_files'):
         generate.render(generate.load_templates(wrong), 1, 1)
+    # Checkpoints grade snapshots, so they need the workflow that declares them.
+    orphan = tmp_path / 'orphan.py'
+    orphan.write_text("FAMILY = 'x-1'\nTEMPLATES = {'t': ('g', lambda draw: {'initial_files': {}, 'episodes': [],"
+                      " 'artifacts': [{'path': 'a.json'}], 'checkpoints': []})}\n")
+    with pytest.raises(ValueError, match='renders initial_files'):
+        generate.render(generate.load_templates(orphan), 1, 1)
     module = generate.load_templates(GENERATORS / 'initiative.py')
     with pytest.raises(ValueError, match='32-bit'):
         generate.render(module, -1, 1)

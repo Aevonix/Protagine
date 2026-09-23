@@ -10,6 +10,10 @@ and are never committed.
 
     python benchmarks/paired/generators/generate.py --family initiative \
         --split dev --seed 7 --per-template 3 --output /private/families/initiative-dev-7
+
+A template may also render ``workflow`` (``restart_before``, ``snapshot_after``)
+and ``checkpoints`` (artifact checks on a snapshot), the frozen workflow
+contract, for a family whose probe follows a restart.
 """
 import argparse
 import hashlib
@@ -28,15 +32,17 @@ REPOSITORY = HERE.parents[2]
 # Every family module in this directory; ``--family`` is the module's stem.
 FAMILIES = {path.stem: path for path in sorted(HERE.glob('*.py')) if path.stem != Path(__file__).stem}
 MAX_PER_TEMPLATE = 16
+RENDERED_KEYS = {'initial_files', 'episodes', 'body', 'artifacts', 'workflow', 'checkpoints'}
 _LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
 
 
 class Draw:
-    """Deterministic draws for one scenario instance; contacts are fixed-width and distinct."""
+    """Deterministic draws for one scenario instance; contact and source ids are fixed-width and distinct."""
 
     def __init__(self, seed):
         self.random = random.Random(seed)
         self.contacts = []
+        self.sources = []
 
     def pick(self, options):
         return options[self.random.randrange(len(options))]
@@ -49,10 +55,18 @@ class Draw:
 
     def contact(self):
         """``p-01``..``p-99``: a forbidden check on one id can never match another."""
+        return self._identity('p', self.contacts)
+
+    def source(self):
+        """``s-01``..``s-99``: a cited source id, distinct from every other id in the instance."""
+        return self._identity('s', self.sources)
+
+    def _identity(self, prefix, drawn):
+        """A fresh fixed-width id whose number no earlier contact or source of the instance used."""
         while True:
-            identity = 'p-%02d' % self.random.randint(1, 99)
-            if identity not in self.contacts:
-                self.contacts.append(identity)
+            identity = '%s-%02d' % (prefix, self.random.randint(1, 99))
+            if identity not in self.contacts and identity not in self.sources:
+                drawn.append(identity)
                 return identity
 
 
@@ -90,15 +104,23 @@ def render(module, seed, per_template):
             instance = instance_seed(seed, name, index)
             rendered = template(Draw(instance))
             if (not isinstance(rendered, dict) or not {'initial_files', 'episodes'} <= set(rendered)
-                    or set(rendered) - {'initial_files', 'episodes', 'body', 'artifacts'}
-                    or not ('body' in rendered or rendered.get('artifacts'))):
+                    or set(rendered) - RENDERED_KEYS
+                    or not ('body' in rendered or rendered.get('artifacts'))
+                    or ('checkpoints' in rendered and 'workflow' not in rendered)):
                 raise ValueError('A template renders initial_files, episodes and a body or artifacts oracle')
             oracle = {'declared_turns': len(rendered['episodes']), 'artifacts': list(rendered.get('artifacts', []))}
             if 'body' in rendered:
                 oracle['body'] = rendered['body']
-            scenarios.append({'id': f'{name}.{index:02d}', 'family': group, 'scenario': name, 'seed': instance,
-                              'role': role, 'initial_files': rendered['initial_files'],
-                              'episodes': rendered['episodes'], 'limitations': [], 'oracle': oracle})
+            if 'checkpoints' in rendered:
+                oracle['checkpoints'] = list(rendered['checkpoints'])
+            scenario = {'id': f'{name}.{index:02d}', 'family': group, 'scenario': name, 'seed': instance,
+                        'role': role, 'initial_files': rendered['initial_files'],
+                        'episodes': rendered['episodes'], 'limitations': [], 'oracle': oracle}
+            if 'workflow' in rendered:
+                # A restart (fresh worker process over the same state) before the probe, and
+                # workspace snapshots the oracle's checkpoints grade as of that turn.
+                scenario['workflow'] = rendered['workflow']
+            scenarios.append(scenario)
     return scenarios
 
 

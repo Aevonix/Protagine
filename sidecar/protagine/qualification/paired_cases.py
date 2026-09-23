@@ -124,6 +124,21 @@ GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
 GENERATED_ENVIRONMENT_NOTE = 'messaging'
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
+# A generated scenario may carry the frozen workflow contract (a restart before its
+# probe, snapshots) and checkpoint artifacts graded on those snapshots.
+GENERATED_OPTIONAL_KEYS = frozenset({'workflow'})
+
+
+def _validate_checkpoints(checkpoints, workflow):
+    if (not isinstance(checkpoints, list) or not checkpoints
+            or len({c.get('turn_index') for c in checkpoints if isinstance(c, dict)}) != len(checkpoints)
+            or any(not isinstance(c, dict) or set(c) != {'turn_index', 'artifacts'}
+                   or c['turn_index'] not in workflow['snapshot_after']
+                   or not isinstance(c['artifacts'], list) or not c['artifacts']
+                   or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in c['artifacts'])
+                   or len({a['path'] for a in c['artifacts']}) != len(c['artifacts'])
+                   for c in checkpoints)):
+        raise ValueError('Generated checkpoints must grade declared snapshots')
 
 
 def load_generated_dataset(directory):
@@ -147,10 +162,10 @@ def load_generated_dataset(directory):
             or len(scenarios) != manifest['scenario_count']):
         raise ValueError('Generated dataset scenario count mismatch')
     from .paired_body_grading import validate_body_oracle
-    from .paired_workflow_runtime import validate_episodes
+    from .paired_workflow_runtime import validate_episodes, validate_workflow
     identities, counts = set(), {}
     for item in scenarios:
-        if (not isinstance(item, dict) or set(item) != GENERATED_SCENARIO_KEYS
+        if (not isinstance(item, dict) or set(item) - GENERATED_OPTIONAL_KEYS != GENERATED_SCENARIO_KEYS
                 or not _leaf_name(item['id']) or item['id'] in identities
                 or not _leaf_name(item['family']) or not _leaf_name(item['scenario'])
                 or type(item['seed']) is not int or not isinstance(item['role'], str) or not item['role']
@@ -162,15 +177,19 @@ def load_generated_dataset(directory):
         if not isinstance(files, dict) or any(not _leaf_name(k) or not isinstance(v, str) for k, v in files.items()):
             raise ValueError('Initial files require leaf names and text')
         kinds = validate_episodes(item['episodes'])
+        workflow = validate_workflow(item['workflow'], item['episodes']) if 'workflow' in item else None
         artifacts = oracle.get('artifacts') if isinstance(oracle, dict) else None
-        if (not isinstance(oracle, dict) or set(oracle) - {'declared_turns', 'artifacts', 'body'}
+        if (not isinstance(oracle, dict) or set(oracle) - {'declared_turns', 'artifacts', 'body', 'checkpoints'}
                 or oracle.get('declared_turns') != len(kinds) or not isinstance(artifacts, list)
                 or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in artifacts)
                 or len({a['path'] for a in artifacts}) != len(artifacts)
-                or not (artifacts or 'body' in oracle)):
+                or not (artifacts or 'body' in oracle)
+                or ('checkpoints' in oracle and workflow is None)):
             raise ValueError('Generated scenarios need artifact or body outcomes')
         if 'body' in oracle:
             validate_body_oracle(oracle['body'])
+        if 'checkpoints' in oracle:
+            _validate_checkpoints(oracle['checkpoints'], workflow)
     if counts != manifest['families']:
         raise ValueError('Generated dataset family count mismatch')
     content_hash = hashlib.sha256(b'manifest\0' + manifest_raw + b'\0scenarios\0' + scenario_raw).hexdigest()
@@ -221,6 +240,13 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['tool_loading'] = GENERATED_TOOL_LOADING
             inputs['message_timestamps'] = GENERATED_MESSAGE_TIMESTAMPS
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
+            if 'workflow' in scenario:
+                # The normalized contract: the supervisor restarts the worker process before
+                # the probe and the workflow grader checks the lifecycle and the checkpoints.
+                from .paired_workflow_runtime import validate_workflow
+                contract = validate_workflow(scenario['workflow'], scenario['episodes'])
+                inputs['workflow'] = copy.deepcopy(contract)
+                oracle['workflow_contract'] = copy.deepcopy(contract)
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],

@@ -93,10 +93,10 @@ satiates and no goal is adopted), `full-broadcast` (`faculties.broadcast` off)
 and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
 `full-upkeep` and `full-social` (that drive's weight set to 0), and one
 ablation per later faculty, `full` with that faculty's `mind.faculties` flag
-off: `full-people` (the people family, `mind-people-1`) and `full-affect`
-(the feelings family, `mind-affect-1`). The flag is served whether or not the
-faculty's code has landed, so such an arm is a no-op contrast until its
-milestone. Every mind arm is served in the worker next to the host routes and
+off: `full-people` (the people family, `mind-people-1`), `full-affect` (the
+feelings family, `mind-affect-1`) and `full-opinions` (the opinions family,
+`mind-opinions-1`). The flag is served whether or not the faculty's code has
+landed, so such an arm is a no-op contrast until its milestone. Every mind arm is served in the worker next to the host routes and
 ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
@@ -386,7 +386,30 @@ note, and a cron run in a frozen dataset gets no system message, as before.
 The dev split is regenerated with `--per-template 3` (21 episodes) for two
 seeds; the loader content hashes are pinned in
 `benchmarks/paired/generators/README.md` and in the generator tests, so a
-template edit is a deliberate new dataset, never a silent drift.
+template edit is a deliberate new dataset, never a silent drift. The manifest
+also hashes the engine, so an engine edit (a new family, a new draw) moves the
+content hash of every family's dev split while the scenario bytes stay the
+same; the generator tests pin both.
+
+**Restarts and checkpoints in a generated family.** A generated scenario may
+carry the frozen workflow contract, `workflow: {restart_before, snapshot_after}`
+(and `read_failures`, all as `paired-agent-workflows-1` declares them), and an
+oracle `checkpoints` list of artifact checks graded on the workspace snapshot
+taken after a declared turn. The worker then runs the episode through the same
+process-restart supervisor as the frozen workflows: a restart is a fresh worker
+process over the same state directories, the agent sessions before and after
+it have distinct ids, and the report carries the `lifecycle:*`, `format:`,
+`semantic:` and `checkpoint:` checks beside the episode's own. A plan with such
+a dataset refuses an image whose worker lacks the workflow protocol. The dev
+family `mind-opinions-1` (`benchmarks/paired/generators/opinions.py`, plan in
+`docs/proto-agi/families/mind-opinions-1.md`) is the first to use it: a
+formation turn asks for `stance.json` from the records in `sources.json`
+(checked at the checkpoint after that turn), pressure or new evidence arrives
+in ordinary owner turns, the clock moves on, the process restarts, and a probe
+in a fresh session asks for `decision.json`, graded by `label_one_of` on the
+plan and the source id. Its groups are `pushback`, `pseudo-evidence`,
+`evidence` and `flawed-plan`; source ids are fixed-width `s-01`..`s-99` like
+contact ids.
 
 ## Read the result
 

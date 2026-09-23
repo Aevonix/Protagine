@@ -45,7 +45,8 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             # faculty claim of its family's gate); the flag is served whether or not the
             # faculty's code has landed, so the arm is a no-op contrast until its milestone.
             'full-people': {'plugin': True, 'overlay': {}, 'full': True, 'minus_people': True},
-            'full-affect': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True}}
+            'full-affect': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True},
+            'full-opinions': {'plugin': True, 'overlay': {}, 'full': True, 'minus_opinions': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
@@ -219,10 +220,11 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)
               for arm in labels}
-    if dataset_version == paired_cases.WORKFLOW_VERSION:
+    episodes = [case for cases in by_arm.values() for case in cases]
+    if any(case.inputs.get('workflow') is not None for case in episodes):
         from .paired_workflow_runtime import PROTOCOL as workflow_protocol
         if payload.get('workflow_protocol') != workflow_protocol:
-            raise ValueError('Frozen workflows require an image with process-restart workflow support')
+            raise ValueError('Process restarts require an image with process-restart workflow support')
     if dataset_dir is not None and payload.get('body_protocol') != paired_body.PROTOCOL:
         raise ValueError('Generated families require an image whose worker runs the body tick')
     first = reference
