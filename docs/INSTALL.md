@@ -57,8 +57,22 @@ protagine doctor
 ```
 
 It checks the Hermes version, the instance files, the adapter version, `pip
-check`, the Hermes keys, the worker profile, the plugin registration and the
-sidecar.
+check`, the Hermes keys, the worker profile, the plugin registration, the
+sidecar and, when an embedding endpoint is configured, that its embedder is
+serving.
+
+`/v1/host/health` answers `ok` or `degraded`, and a `problems` list says in
+words why it is not `ok`. Degraded means something the sidecar itself runs is
+not working: the source ledger is unreadable, a configured embedder or its
+vector store did not come up, the mind's tick has not run (ten of its
+intervals, at least a quarter hour), or capture jobs have waited over an hour
+without landing. Quiet is not degradation: how long since the last
+`turns/sync` or `context/assemble` is reported under `temporal.silence_hours`
+and never changes the status, so a fresh install is `ok` before anyone has
+talked to it. `protagine service start` and `protagine service status` report
+`ready` as soon as the sidecar answers, with the served `health` and its
+`problems` beside it; `protagine doctor` warns on `degraded` and fails the
+check that names the cause.
 
 ## Update
 

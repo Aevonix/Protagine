@@ -626,10 +626,19 @@ def install_service(cfg: Config) -> str:
         return f"sidecar service not installed: {exc}"
     installed = f"sidecar service installed ({status['manager']}: {status['label']})"
     try:
-        service.start()  # enable alone starts nothing before the next login
+        started = service.start()  # enable alone starts nothing before the next login
     except (ServiceError, OSError) as exc:
         return f"{installed}, not running: {exc}; start it with 'protagine service start'"
-    return f"{installed} and running"
+    return f"{installed} and running{_health_words(started)}"
+
+
+def _health_words(result: Any) -> str:
+    """The served health verdict when it is not ``ok``: the status and its reasons, in words."""
+    health = (result or {}).get("health") if isinstance(result, dict) else None
+    if not health or health == "ok":
+        return ""
+    problems = "; ".join(str(item) for item in result.get("problems") or []) or "run 'protagine doctor'"
+    return f"; health {health}: {problems}"
 
 
 def service_status(cfg: Config) -> dict[str, Any] | None:
@@ -651,10 +660,10 @@ def restart_service(cfg: Config) -> str:
     if not status.get("running"):
         return "sidecar service is installed but not running; start it with 'protagine service start'"
     try:
-        _service(cfg).start(restart=True)
+        started = _service(cfg).start(restart=True)
     except (ServiceError, OSError) as exc:
         return f"sidecar service restart failed: {exc}"
-    return "sidecar service restarted"
+    return f"sidecar service restarted{_health_words(started)}"
 
 
 def uninstall_service(cfg: Config) -> str:

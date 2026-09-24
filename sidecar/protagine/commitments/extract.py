@@ -213,11 +213,16 @@ def initialize(conn) -> None:
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
         lease_token TEXT NOT NULL DEFAULT '', disposition TEXT, error TEXT,
-        hold_until REAL NOT NULL DEFAULT 0)''')
+        hold_until REAL NOT NULL DEFAULT 0, enqueued_at REAL NOT NULL DEFAULT 0)''')
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(commitment_runs)").fetchall()}
     # ``hold_until``: while a job backs off, the person's later jobs are held only until this time;
     # after it the worker retries the job early. Rows from before the column count as held out.
-    if "hold_until" not in {row[1] for row in conn.execute("PRAGMA table_info(commitment_runs)")}:
+    if "hold_until" not in columns:
         conn.execute("ALTER TABLE commitment_runs ADD COLUMN hold_until REAL NOT NULL DEFAULT 0")
+    # When a job was enqueued, so health can tell a queue that is landing from one that is
+    # stuck. A table from before the column carries 0, which reads as "unknown".
+    if "enqueued_at" not in columns:
+        conn.execute("ALTER TABLE commitment_runs ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0")
     # The claim reads unfinished rows twice per candidate (the row itself, and any earlier one of the
     # same person); finished rows are the bulk of the table and are never among them.
     conn.execute("CREATE INDEX IF NOT EXISTS commitment_runs_status ON commitment_runs(status)")
@@ -226,7 +231,8 @@ def initialize(conn) -> None:
 def enqueue(conn, turn_id, contact_id, messages, *, scope) -> None:
     """A person-scoped turn with the person's own words is a capture job."""
     if contact_id and scope == "person" and any(m.get("role") == "user" for m in messages):
-        conn.execute("INSERT OR IGNORE INTO commitment_runs(turn_id) VALUES (?)", (turn_id,))
+        conn.execute("INSERT OR IGNORE INTO commitment_runs(turn_id, enqueued_at) VALUES (?, ?)",
+                     (turn_id, time.time()))
 
 
 def erase_removed(conn, turn_id, session_id, retained) -> None:
@@ -659,6 +665,21 @@ class CommitmentExtractor:
             rendered.append(f"[earlier turn{stamp}]\n  They said: {user_message}\n"
                             f"  Assistant replied: {assistant_message}")
         return "\n".join(reversed(rendered))[-CONTEXT_CHARS:]
+
+    def oldest_unfinished_seconds(self) -> Optional[float]:
+        """How long the oldest job still pending or running has waited, or None when nothing waits.
+
+        Health reads this: capture jobs that sit for hours mean the projection worker and the
+        tick's drain are both not landing them, whatever the reason. Rows from before the
+        ``enqueued_at`` column (0) are of unknown age and never counted.
+        """
+        with closing(self.ledger._connect()) as conn:
+            row = conn.execute("SELECT MIN(enqueued_at) AS oldest FROM commitment_runs "
+                               "WHERE status IN ('pending', 'running') AND enqueued_at > 0").fetchone()
+        oldest = row[0] if row is not None else None
+        if not oldest:
+            return None
+        return max(0.0, float(self.clock()) - float(oldest))
 
     def pending_counts(self) -> Dict[str, int]:
         """``commitment_runs`` rows by status; ``pending`` and ``running`` are always present."""

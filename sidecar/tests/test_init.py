@@ -272,3 +272,22 @@ def test_init_records_the_embedding_width_when_given(homes):
     # Left out, the width stays as recorded; the endpoint defines it when none was ever given.
     assert init.run_init(_args(home, hermes_home, embed_url="http://127.0.0.1:8092")) == 0
     assert load_config(home, environ={}).get("router.embed_dims") == 4096
+
+
+def test_init_repeats_a_degraded_health_verdict_in_words(homes, monkeypatch, capsys):
+    """The service started, but health is not ok: init says why, from the served problems."""
+    home, hermes_home = homes
+    monkeypatch.delenv("PROTAGINE_INIT_NO_SERVICE", raising=False)
+
+    class Degraded(_FakeService):
+        def start(self):
+            self.calls.append("start")
+            return {"ready": True, "health": "degraded",
+                    "problems": ["semantic recall is off: the embedder (provider=openai_api, model=m) did not "
+                                 "initialise: ValueError: dimension 4096 differs from the configured 384"]}
+
+    monkeypatch.setattr(init, "_service", lambda cfg: Degraded())
+    assert init.run_init(_args(home, hermes_home, no_service=False)) == 0
+    output = capsys.readouterr().out
+    assert ("and running; health degraded: semantic recall is off: the embedder (provider=openai_api, model=m) "
+            "did not initialise: ValueError: dimension 4096 differs from the configured 384") in output

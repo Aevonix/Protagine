@@ -601,24 +601,51 @@ async def list_models() -> ModelListResponse:
 # Health
 # ---------------------------------------------------------------------------
 
-_TEMPORAL_HEALTH_POLICIES = frozenset({"enforce", "advisory"})
 _INDEX_HEALTH_TIMEOUT_SECONDS = 5.0
+#: The mind's tick is stale after ten of its intervals, and never sooner than this.
+TICK_STALE_FLOOR_HOURS = 0.25
+#: A capture job still unfinished after this long means capture is not landing.
+CAPTURE_STALE_HOURS = 1.0
 
 
-def _temporal_health_policy() -> str:
-    """Return the fail-closed policy for temporal activity warnings.
+def _tick_stale_hours(mind) -> float:
+    """How long the mind's tick may be silent: ``PROTAGINE_STALE_TICK_HOURS`` when pinned,
+    else ten of the mind's own intervals with a quarter-hour floor."""
+    pinned = os.environ.get("PROTAGINE_STALE_TICK_HOURS", "").strip()
+    if pinned:
+        try:
+            return float(pinned)
+        except ValueError:
+            pass
+    try:
+        interval = float(getattr(mind, "interval", 60.0) or 60.0)
+    except (TypeError, ValueError):
+        interval = 60.0
+    return max(10 * interval / 3600.0, TICK_STALE_FLOOR_HOURS)
 
-    ``stale_flags`` remain observable under both policies.  ``advisory`` only
-    prevents those activity timestamps from changing the host's top-level
-    readiness; it never clears another degradation source.
-    """
 
-    configured = os.environ.get(
-        "PROTAGINE_TEMPORAL_HEALTH_POLICY", "enforce"
-    ).strip().lower()
-    if configured not in _TEMPORAL_HEALTH_POLICIES:
-        return "enforce"
-    return configured
+def _capture_stale_hours() -> float:
+    pinned = os.environ.get("PROTAGINE_STALE_CAPTURE_HOURS", "").strip()
+    if pinned:
+        try:
+            return float(pinned)
+        except ValueError:
+            pass
+    return CAPTURE_STALE_HOURS
+
+
+def _capture_backlog_hours(mind) -> Optional[float]:
+    """How long the oldest unfinished capture job has waited, or None when nothing waits
+    (or no capture queue is wired)."""
+    probe = getattr(getattr(mind, "capture", None), "oldest_unfinished_seconds", None)
+    if probe is None:
+        return None
+    try:
+        age = probe()
+    except Exception as exc:
+        logger.warning("capture backlog probe failed: %s", type(exc).__name__)
+        return None
+    return None if age is None else float(age) / 3600.0
 
 
 @router.get("/health", response_model=HostHealthResponse)
@@ -763,30 +790,32 @@ async def health() -> HostHealthResponse:
         health_status = "degraded"
         problems.append("commitment resolution recovery is unavailable")
 
-    # Build temporal metrics
+    # Temporal metrics. What the sidecar runs on its own is tracked for staleness: the
+    # mind's tick (it beats whether the mind is on or off) and the capture queue (jobs
+    # that sit for hours are not landing). What inbound traffic drives (sync =
+    # turns/sync, prefetch = context/assemble) is reported as silence and never flags:
+    # a quiet day is not a failure, and a fresh install must be able to be ready.
     temporal = None
     try:
         if _telemetry is not None:
-            thresholds = {
-                "sync": float(os.environ.get("PROTAGINE_STALE_SYNC_HOURS", "2.0")),
-                "tick": float(os.environ.get("PROTAGINE_STALE_TICK_HOURS", "24.0")),
-                "initiative": float(os.environ.get("PROTAGINE_STALE_INITIATIVE_HOURS", "48.0")),
-                # prefetch = last /context/assemble, which is driven by INBOUND
-                # conversation turns, not an internal schedule. Multi-hour gaps are
-                # normal idle (overnight, focus time), so a tight threshold would
-                # false-flag the whole system "degraded" during any quiet period AND
-                # mask real degradation. 24h matches the agent-snapshot views and
-                # means "the host hasn't asked for context in a full day" — the point
-                # at which idle becomes a genuine integration-down signal.
-                "prefetch": float(os.environ.get("PROTAGINE_STALE_PREFETCH_HOURS", "24.0")),
-            }
-            temporal_data = await _telemetry.to_dict(thresholds)
-            if (
-                temporal_data.get("stale_flags")
-                and _temporal_health_policy() == "enforce"
-            ):
+            temporal_data = await _telemetry.to_dict({"tick": _tick_stale_hours(mind)})
+            flags = list(temporal_data.get("stale_flags") or [])
+            silence = dict(temporal_data.get("silence_hours") or {})
+            for flag in flags:
+                if flag == "tick:never_ran":
+                    problems.append("the mind's tick has not run since the sidecar started")
+                elif flag == "tick":
+                    problems.append(f"the mind's tick has not run for {silence.get('tick') or 0:.1f} h")
+            backlog = _capture_backlog_hours(mind)
+            if backlog is not None:
+                silence["capture"] = backlog
+                if backlog > _capture_stale_hours():
+                    flags.append("capture")
+                    problems.append("capture jobs are not landing: the oldest unfinished job has waited "
+                                    f"{backlog:.1f} h")
+            temporal_data["stale_flags"], temporal_data["silence_hours"] = flags, silence
+            if flags:
                 health_status = "degraded"
-                problems.append("stale: " + ", ".join(temporal_data["stale_flags"]))
             from protagine.api.schemas.host import TemporalMetrics
             temporal = TemporalMetrics(**temporal_data)
     except Exception as exc:
@@ -9424,12 +9453,6 @@ async def create_initiative(body: InitiativeCreateRequest) -> InitiativeResponse
         context=body.context or None,
     )
 
-    if _telemetry is not None:
-        try:
-            await _telemetry.touch("last_initiative_at")
-        except Exception:
-            pass
-
     try:  # timeline (v0.21.0)
         from protagine.events.journal import append_event
         append_event("initiative.generated", {
@@ -9840,7 +9863,7 @@ async def agent_snapshot() -> AgentSnapshotResponse:
     now = datetime.now(timezone.utc)
 
     # Telemetry
-    thresholds = {"sync": 1.0, "tick": 1.0, "initiative": 4.0, "prefetch": 24.0}
+    thresholds = {"tick": _tick_stale_hours(_mind())}
     telemetry_dict = await _telemetry.to_dict(thresholds) if _telemetry else {}
 
     # Pending initiatives (top 20 by priority)
@@ -9865,8 +9888,6 @@ async def agent_snapshot() -> AgentSnapshotResponse:
 
     # Flags: high-signal items the agent should know about
     flags = []
-    if (telemetry_dict.get("silence_hours", {}).get("initiative") or 0) > 4:
-        flags.append("long_initiative_silence")
     if failed:
         flags.append("failed_initiatives")
     if pending and any(i.priority > 0.8 for i in pending):
@@ -10078,7 +10099,7 @@ async def context_digest(
         pending = _initiative_store.list(status=["pending"], limit=initiative_limit)
 
     # System state (reuse agent-snapshot logic)
-    thresholds = {"sync": 1.0, "tick": 1.0, "initiative": 4.0, "prefetch": 24.0}
+    thresholds = {"tick": _tick_stale_hours(_mind())}
     telemetry_dict = await _telemetry.to_dict(thresholds) if _telemetry else {}
 
     tick_age = None

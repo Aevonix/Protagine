@@ -14,7 +14,7 @@ def test_ready_instance_accepts_a_delayed_health_response(tmp_path, monkeypatch)
             requests.append((self.path, self.headers.get('Authorization')))
             # The actual restored service took 1.0235 seconds to return healthy.
             time.sleep(1.1)
-            body = b'{"status":"ok"}'
+            body = b'{"status":"degraded","problems":["the mind\'s tick has not run for 1.0 h"]}'
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -35,8 +35,9 @@ def test_ready_instance_accepts_a_delayed_health_response(tmp_path, monkeypatch)
     monkeypatch.setenv('PROTAGINE_CLIENT_API_KEY', 'test-instance-client')
     service = InstanceService(tmp_path/'instance', tmp_path/'hermes', home=tmp_path/'user')
     try:
-        assert service.healthy()
+        assert service.health() == {'status': 'degraded', 'problems': ["the mind's tick has not run for 1.0 h"]}
         assert requests == [('/v1/host/health', 'Bearer test-instance-client')]
+        assert service.healthy()
     finally:
         server.shutdown()
         server.server_close()

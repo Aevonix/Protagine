@@ -17,6 +17,7 @@ without the model endpoint: it is a marker file and an in-memory flag.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -117,9 +118,11 @@ class Mind:
                  interval: float = 60.0, backups: bool = True, timezone_name: str | None = None,
                  persist: Callable[[Dict[str, Any]], None] | None = None, router: Any = None,
                  appraisals: Any = None, interests: Iterable[str] = (), concerns: Concerns | None = None,
-                 backlog: Callable[[], Mapping[str, int]] | None = None, capture: Any = None) -> None:
+                 backlog: Callable[[], Mapping[str, int]] | None = None, capture: Any = None,
+                 heartbeat: Callable[[], Any] | None = None) -> None:
         mind = dict(config or {})
         self.config = mind
+        self.heartbeat = heartbeat  # called (awaited if it returns an awaitable) at the start of every tick
         self.policy = Policy.from_config(mind)
         self.store = store
         self.state_dir = Path(state_dir)
@@ -344,6 +347,7 @@ class Mind:
             now = now or self.clock()
             self.ticks += 1
             self.last_tick_at = now
+            await self._beat()
             summary: Dict[str, Any] = {"tick": self.ticks, "at": now.isoformat(), "formed": [], "skipped": None,
                                        "model_calls": 0}
             if not self.enabled:
@@ -374,6 +378,19 @@ class Mind:
             notice = self.outbox.notify_asks(self.store.intentions(status=["asked"], limit=200))
             summary["ask_notice"] = notice.id if notice is not None else None
             return summary
+
+    async def _beat(self) -> None:
+        """Tell whoever watches (the sidecar's telemetry) that the tick ran; the tick itself
+        never depends on it, and it beats whether the mind is on or off, since it is the loop's
+        liveness that is reported, not the mind's willingness to act."""
+        if self.heartbeat is None:
+            return
+        try:
+            result = self.heartbeat()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("tick heartbeat failed", exc_info=True)
 
     # -- timers ----------------------------------------------------------------------------
 

@@ -1556,6 +1556,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Multi-Agent System init failed: %s", exc)
 
+    # Temporal telemetry: the mind's tick beats into it, turns/sync and context/assemble
+    # touch it, and /v1/host/health reads it. Built before the mind so the tick can report.
+    from protagine.telemetry import TelemetryStore
+    telemetry = TelemetryStore()
+    telemetry.load()  # restore last_*_at across restart (v0.21.0)
+    telemetry.started_at = datetime.now(timezone.utc)
+    app.state.telemetry = telemetry
+    set_telemetry(telemetry)
+    logger.info("TelemetryStore initialized")
+
     # --- 21. The mind tick (architecture 3.2) ---
     # Replaces the autonomy loop and its scheduler: health_check became the
     # tick's upkeep probes, digest_flush became the outbox digest, and the
@@ -1608,7 +1618,7 @@ async def lifespan(app: FastAPI):
             ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
             interests=_mind_interests, capture=_mind_capture,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
-            persist=_persist_mind_setting)
+            persist=_persist_mind_setting, heartbeat=lambda: telemetry.touch("last_tick_at"))
         set_mind(mind)
         mind.start()
         logger.info("Mind tick started (autonomy=%s, enabled=%s, owner=%s)",
@@ -1669,14 +1679,6 @@ async def lifespan(app: FastAPI):
                     connectors_mode(), n_conn)
     except Exception as exc:
         logger.warning("ConnectorManager init failed: %s", exc)
-
-    from protagine.telemetry import TelemetryStore
-    telemetry = TelemetryStore()
-    telemetry.load()  # restore last_*_at across restart (v0.21.0)
-    telemetry.started_at = datetime.now(timezone.utc)
-    app.state.telemetry = telemetry
-    set_telemetry(telemetry)
-    logger.info("TelemetryStore initialized")
 
     # Session report store (cross-session context bridge)
     from protagine.sessions.reports import SessionReportStore
