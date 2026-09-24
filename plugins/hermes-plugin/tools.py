@@ -15,6 +15,7 @@ import json
 import os
 import re
 from typing import Any, Callable
+from urllib.parse import quote
 
 from .body import mind_state
 from .capture import SessionMap
@@ -25,6 +26,12 @@ ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 # Turns nobody typed: stock cron runs its agents with ``platform="cron"`` and no sender.
 AUTOMATED_PLATFORMS = frozenset({"cron"})
+PEOPLE_OPERATIONS = ("who", "inspect", "propose_link", "merge", "set_permission", "set_cadence")
+OWNER_PEOPLE_OPERATIONS = frozenset({"merge", "set_permission", "set_cadence"})
+# What a person looks like to the model: everyone sees who someone is; the owner also sees the
+# permission, cadence, recency, digest and handles (a guest never reads another person's record).
+PUBLIC_PERSON = ("contact_id", "display_name", "trust_tier")
+OWNER_PERSON = PUBLIC_PERSON + ("may_contact", "cadence_minutes", "last_interaction_at", "digest", "handles")
 
 # Every schema is sent with every model request, so each says only what the model needs to pick
 # the tool and fill its arguments; the handlers validate and explain the rest.
@@ -41,11 +48,15 @@ SELF_SCHEMA = {
 }
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
-    "description": "Known contacts: list, show one, or set_permission (owner only) for whether the agent may "
-                   "reach out to them: never, ask or auto.",
+    "description": "People you know. who: find by name, handle or id. inspect: one person. propose_link: suggest "
+                   "that a handle (gateway, address) is a person; the owner confirms. Owner only: set_permission "
+                   "(may you reach out to them: never, ask or auto), set_cadence (check-in minutes, 0 clears) and "
+                   "merge (fold drop into keep, two records of one person).",
     "parameters": {"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["list", "show", "set_permission"]},
-        "contact_id": {"type": "string"}, "permission": {"type": "string", "enum": ["never", "ask", "auto"]},
+        "operation": {"type": "string", "enum": list(PEOPLE_OPERATIONS)},
+        "q": {"type": "string"}, "contact_id": {"type": "string"}, "keep": {"type": "string"},
+        "drop": {"type": "string"}, "gateway": {"type": "string"}, "address": {"type": "string"},
+        "permission": {"type": "string", "enum": ["never", "ask", "auto"]}, "minutes": {"type": "integer"},
         "limit": {"type": "integer"}},
         "required": ["operation"]},
 }
@@ -158,32 +169,102 @@ class Tools:
     # -- protagine_people ----------------------------------------------------------
 
     def people_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
+        """``/v1/mind/people``. Reads for everyone (a guest sees only who someone is), a link proposal
+        for everyone (the owner confirms it), permission, cadence and merge from the owner's own
+        session only; the sidecar checks the owner again from the ``contact_id`` sent."""
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
+        if operation not in PEOPLE_OPERATIONS:
+            return _error(f"operation is one of {', '.join(PEOPLE_OPERATIONS)}")
+        owner = self._owner(session_id)
+        viewer = self.sessions.contact_id(session_id) or ""
+        if operation in OWNER_PEOPLE_OPERATIONS and not owner:
+            return _error("only the owner can change who may be contacted, cadences or merges")
+        sender = viewer or self.settings.owner_contact_id() or None
+        who = str(args.get("contact_id") or "").strip()
+        if operation == "who":
+            params = {"q": str(args.get("q") or who)[:256], "limit": max(1, min(int(args.get("limit") or 10), 50))}
+            if not owner:
+                params["contact_id"] = viewer
+            return self._person_reply(self._people("GET", "/v1/mind/people", params=params), owner)
+        if operation == "inspect":
+            reference = who or str(args.get("q") or "").strip()
+            if not reference:
+                return _error("contact_id (or a name or handle in q) is required")
+            return self._person_reply(self._people("GET", f"/v1/mind/people/{quote(reference, safe='')}",
+                                                   params={} if owner else {"contact_id": viewer}), owner)
+        if operation == "propose_link":
+            gateway, address = str(args.get("gateway") or "").strip(), str(args.get("address") or "").strip()
+            if not who or not gateway or not address:
+                return _error("contact_id, gateway and address are required")
+            return self._people_text(self._people("POST", "/v1/mind/people/link", json={
+                "contact_id": who, "gateway": gateway, "address": address,
+                "evidence_refs": [f"session:{session_id}"[:256]], "by": viewer or ("owner" if owner else "guest")}))
+        if operation == "merge":
+            keep, drop = str(args.get("keep") or "").strip(), str(args.get("drop") or "").strip()
+            if not keep or not drop:
+                return _error("keep and drop are required")
+            return self._people_text(self._people("POST", "/v1/mind/people/merge", timeout=60, json={
+                "keep": keep, "drop": drop, "contact_id": sender, "by": "owner"}))
+        if not who:
+            return _error("contact_id is required")
+        path = f"/v1/mind/people/{quote(who, safe='')}"
+        if operation == "set_permission":
+            if args.get("permission") not in {"never", "ask", "auto"}:
+                return _error("permission is never, ask or auto")
+            return self._people_text(self._people("POST", path + "/permission", json={
+                "may_contact": args["permission"], "contact_id": sender, "by": "owner"}))
         try:
-            if operation == "list":
-                response = self.client.get("/v1/host/contacts", params={"limit": int(args.get("limit") or 20)})
-            elif operation == "show":
-                if not args.get("contact_id"):
-                    return _error("contact_id is required")
-                response = self.client.get(f"/v1/host/contacts/{args['contact_id']}")
-            elif operation == "set_permission":
-                if not self._owner(session_id):
-                    return _error("only the owner can change who may be contacted")
-                if not args.get("contact_id") or args.get("permission") not in {"never", "ask", "auto"}:
-                    return _error("contact_id and permission (never|ask|auto) are required")
-                return self._mind("POST", f"/v1/mind/people/{args['contact_id']}/permission",
-                                  json={"may_contact": args["permission"]})
-            else:
-                return _error("unknown operation")
+            minutes = int(args.get("minutes") or 0)
+        except (TypeError, ValueError):
+            return _error("minutes is a whole number (0 clears the cadence)")
+        return self._people_text(self._people("POST", path + "/cadence", json={
+            "minutes": minutes if minutes > 0 else None, "contact_id": sender, "by": "owner"}))
+
+    def _people(self, method: str, path: str, **kwargs: Any) -> Any:
+        """The parsed answer of a people route, or an error string for the model."""
+        if self.client.has_mind_routes() is not True:
+            return _error(ROUTES_MISSING)
+        try:
+            response = self.client.request(method, path, timeout=kwargs.pop("timeout", 5), **kwargs)
         except SidecarUnavailable:
             return _error("the sidecar is unreachable")
+        try:
+            value = response.json()
+        except ValueError:
+            value = {}
         if not response.is_success:
-            return _error(f"sidecar HTTP {response.status_code}")
-        value = response.json()
-        contacts = value.get("contacts") if isinstance(value, dict) and "contacts" in value else [value]
-        keep = ("contact_id", "display_name", "trust_tier", "interaction_allowed", "tags", "last_interaction_at")
-        return _json([{key: item.get(key) for key in keep if key in item} for item in contacts if isinstance(item, dict)])
+            detail = value.get("detail") if isinstance(value, dict) else None
+            if isinstance(detail, dict):
+                return _error(str(detail.get("message") or detail.get("code")))
+            return _error(ROUTES_MISSING if response.status_code == 404 else f"sidecar HTTP {response.status_code}")
+        return value
+
+    @staticmethod
+    def _person_reply(value: Any, owner: bool) -> str:
+        if isinstance(value, str):
+            return value
+        keep = OWNER_PERSON if owner else PUBLIC_PERSON
+
+        def person(item: dict[str, Any]) -> dict[str, Any]:
+            row = {key: item.get(key) for key in keep if key in item}
+            if "handles" in row:
+                row["handles"] = [f"{h.get('gateway')}:{h.get('address')}" for h in row["handles"] or []]
+            return row
+
+        if "contacts" in value:
+            return _json([person(item) for item in value["contacts"] if isinstance(item, dict)])
+        record = person(value.get("contact") or {})
+        if owner and value.get("proposals"):
+            record["proposals"] = [f"{p.get('gateway')}:{p.get('address')}" for p in value["proposals"]]
+        return _json(record)
+
+    @staticmethod
+    def _people_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        return _json({key: value[key] for key in ("ok", "text", "status", "may_contact", "cadence_minutes",
+                                                  "candidate_id", "dropped") if key in value})
 
     # -- memory tools ----------------------------------------------------------------
 
@@ -227,5 +308,5 @@ class Tools:
         return response.text
 
 
-__all__ = ["ASK_CODE", "AUTOMATED_PLATFORMS", "FORGET_SCHEMA", "PEOPLE_SCHEMA", "SEARCH_SCHEMA", "SELF_SCHEMA",
-           "Tools", "VERDICTS"]
+__all__ = ["ASK_CODE", "AUTOMATED_PLATFORMS", "FORGET_SCHEMA", "PEOPLE_OPERATIONS", "PEOPLE_SCHEMA", "SEARCH_SCHEMA",
+           "SELF_SCHEMA", "Tools", "VERDICTS"]
