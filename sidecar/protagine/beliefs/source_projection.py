@@ -35,6 +35,10 @@ def initialize(conn):
         id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, message_hash TEXT NOT NULL,
         subject_key TEXT NOT NULL, predicate TEXT NOT NULL, value_key TEXT NOT NULL, data_json TEXT NOT NULL,
         valid_from TEXT, valid_to TEXT, superseded_by TEXT, retracted_by TEXT)''')
+    # Nightly dedupe (P/mind/consolidate.py) folds identical live scalar claims into the earliest one;
+    # a folded row keeps its evidence but leaves the assertion set that key reads return.
+    if 'duplicate_of' not in {row[1] for row in conn.execute('PRAGMA table_info(source_claims)')}:
+        conn.execute('ALTER TABLE source_claims ADD COLUMN duplicate_of TEXT')
     conn.execute('CREATE INDEX IF NOT EXISTS source_claim_turn ON source_claims(turn_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS source_claim_key ON source_claims(subject_key,predicate)')
     conn.execute('CREATE INDEX IF NOT EXISTS source_claim_message ON source_claims(message_hash)')
@@ -62,6 +66,10 @@ def erase_removed(conn, turn_id, session_id, retained):
         conn.execute('DELETE FROM source_claim_jobs WHERE turn_id=?', (turn_id,))
     # Supersession/retraction links on surviving claims retain IDs, not erased
     # values. Deleting a correction must never silently revive its old value.
+    # A folded duplicate whose canonical claim was erased is a witness again
+    # until the next nightly dedupe: erasing one source never hides the others.
+    conn.execute('UPDATE source_claims SET duplicate_of=NULL WHERE duplicate_of IS NOT NULL '
+                 'AND duplicate_of NOT IN (SELECT id FROM source_claims)')
 
 
 def _subject_basis_source_sql(identifier_sql, contact_sql):
@@ -277,11 +285,21 @@ class SourceClaimProjection:
             return {**result, "status": "current", "deadline_at": deadline['at']}
 
     def _rows(self, conn, contact_id, session_id, *, turn_ids=None, message_hashes=None, ids=None,
-              key=None, time_query=None, distinct_values=False, limit=256):
+              key=None, time_query=None, distinct_values=False, limit=256, include_duplicates=False):
+        """The scoped claim rows; the one reader context, preferences and the nightly stages share.
+
+        A claim the nightly dedupe folded (``duplicate_of`` set) is hidden from
+        the assertion set a key read or a scan returns. A lookup by claim id,
+        turn or message hash still sees it, so a retrieved quote's span is
+        claimed by its own row and folds into the bundle instead of surfacing
+        as a second witness. ``include_duplicates=True`` shows folded rows everywhere.
+        """
         from protagine.turns.idempotency import source_message_hash
         where = ["s.contact_id=?", "(s.scope='person' OR s.session_id=?)",
                  "NOT EXISTS (SELECT 1 FROM source_attribution_invalidations i WHERE i.source_id=s.turn_id)"]
         args = [contact_id, session_id]
+        if not include_duplicates and ids is None and turn_ids is None and message_hashes is None:
+            where.append("c.duplicate_of IS NULL")
         if ids is not None:
             if not ids:
                 return []
