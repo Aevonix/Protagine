@@ -287,8 +287,9 @@ class Outcomes:
                                         at=self.clock(), **updates)
         self._feedback(updated, verdict)
         if self.autobiography is not None and updated is not None:
-            self.autobiography.record(updated.id, "rated", f"The owner rated '{updated.description}' as {verdict}.",
-                                      verdict=verdict)
+            text = (f"The owner rated '{updated.description}' as {verdict}." if by == "owner"
+                    else f"'{updated.description}' was scored {verdict} ({by}).")
+            self.autobiography.record(updated.id, "rated", text, verdict=verdict, by=by)
         return updated
 
     # -- helpers -------------------------------------------------------------------------

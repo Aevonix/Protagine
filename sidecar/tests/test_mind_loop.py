@@ -90,9 +90,9 @@ class Fixture:
         self.feedback = TypeFeedbackStore(str(tmp_path / "protagine-feedback.db"))
         self.expectations = ExpectationEngine(ExpectationStore(str(tmp_path / "protagine-expectations.db")))
         self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
-        self.contacts = FakeContacts({OWNER: {"contact_id": OWNER, "interaction_allowed": True},
-                                      CONTACT: {"contact_id": CONTACT, "interaction_allowed": True},
-                                      "p-03": {"contact_id": "p-03", "interaction_allowed": False}})
+        self.contacts = FakeContacts({OWNER: {"contact_id": OWNER, "may_contact": "auto"},
+                                      CONTACT: {"contact_id": CONTACT, "may_contact": "ask"},
+                                      "p-03": {"contact_id": "p-03", "may_contact": "never"}})
         self.config = {"autonomy": autonomy, **(config or {})}
         self.router, self.drain = router, drain      # the mind's router; drain = wire the extractor as production does
         self.persisted = []
@@ -305,10 +305,10 @@ async def test_ask_path_with_code_expiry_and_unrelated_work(fx):
     assert len(notice) == 1 and code in notice[0].context["text"]
 
     with pytest.raises(PermissionError):
-        fx.mind.answer(code, yes=True, contact_id="p-03")                 # a guest cannot approve
+        await fx.mind.answer(code, yes=True, contact_id="p-03")                 # a guest cannot approve
     with pytest.raises(PermissionError):
-        fx.mind.answer(code, yes=True, contact_id=OWNER, message="yes please")  # no code in the message
-    assert fx.mind.answer("ZZZ", yes=True) is None
+        await fx.mind.answer(code, yes=True, contact_id=OWNER, message="yes please")  # no code in the message
+    assert await fx.mind.answer("ZZZ", yes=True) is None
 
     fx.shift(hours=71)
     await fx.mind.tick(force=True)
@@ -318,7 +318,7 @@ async def test_ask_path_with_code_expiry_and_unrelated_work(fx):
     expired = fx.store.get(asks[0]["id"])
     assert expired.status == "expired" and expired.outcome == "expired" and expired.verdict == "ignored"
     assert fx.feedback.multiplier("commitment_overdue:duty") < 1.0
-    assert fx.mind.answer(code, yes=True) is None                          # the code is gone
+    assert await fx.mind.answer(code, yes=True) is None                          # the code is gone
 
 
 async def test_ask_approval_creates_the_task_and_no_wins(fx):
@@ -332,7 +332,7 @@ async def test_ask_approval_creates_the_task_and_no_wins(fx):
     assert by_type["p-03"]["decision"] == "drop"                         # never: dropped, never asked
     code = fx.store.get(by_type[CONTACT]["id"]).ask_code
     assert fx.mind.dispatch() == []
-    approved = fx.mind.answer(code, yes=True, contact_id=OWNER, message=f"yes {code} go ahead")
+    approved = await fx.mind.answer(code, yes=True, contact_id=OWNER, message=f"yes {code} go ahead")
     assert approved.status == "approved" and approved.verdict == "actioned"
     assert [item["id"] for item in fx.mind.dispatch()] == [approved.id]
     assert fx.feedback.multiplier("commitment_overdue:duty") > 1.0
@@ -342,7 +342,7 @@ async def test_ask_approval_creates_the_task_and_no_wins(fx):
     fx.shift(minutes=10)
     summary = await fx.mind.tick(force=True)
     code = fx.store.get(summary["formed"][0]["id"]).ask_code
-    refused = fx.mind.answer(code, yes=False)
+    refused = await fx.mind.answer(code, yes=False)
     assert refused.status == "cancelled" and refused.outcome == "denied" and refused.verdict == "dismissed"
 
 
@@ -799,7 +799,7 @@ async def test_guard_reads_stock_targets_and_authorizes_cron_recipients(tmp_path
         # One contact message queued today spends the contact budget for cron delivery too.
         assert await fx.mind.request_message({"message": "hello there", "entity_id": CONTACT}) is True
         code = fx.store.intentions(status=["asked"], limit=1)[0].ask_code
-        assert fx.mind.answer(code, yes=True, contact_id=OWNER, message=f"yes {code}").status == "approved"
+        assert (await fx.mind.answer(code, yes=True, contact_id=OWNER, message=f"yes {code}")).status == "approved"
         verdict = await guard(tool="cronjob_manage", args=cron, run="guest", recipients=[CONTACT])
         assert verdict["action"] == "block" and "budget" in verdict["reason"]
         verdict = await guard(tool="send_message", args={"target": f"telegram:{CONTACT}-handle"}, run="guest")

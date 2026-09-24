@@ -178,12 +178,16 @@ def test_ask_codes_avoid_ambiguous_letters_and_taken_codes():
     assert not set("0O1IL") & set(code)
 
 
-def test_may_contact_derivation_until_the_column_arrives():
+def test_may_contact_comes_from_the_column_and_the_owner_is_auto_by_identity():
     assert may_contact_of("p-01", owner_id="p-01") == "auto"
-    assert may_contact_of({"contact_id": "p-02", "interaction_allowed": False}, owner_id="p-01") == "never"
-    assert may_contact_of({"contact_id": "p-03", "interaction_allowed": True}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-01", "may_contact": "never"}, owner_id="p-01") == "auto"
+    assert may_contact_of({"contact_id": "p-02", "may_contact": "never"}, owner_id="p-01") == "never"
     assert may_contact_of({"contact_id": "p-04", "may_contact": "auto"}, owner_id="p-01") == "auto"
-    assert may_contact_of(None, owner_id="p-01") == "ask"
+    # No column value, an unknown value or a legacy flag: ``ask``, never a tier- or flag-derived grant.
+    assert may_contact_of({"contact_id": "p-03"}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-03", "may_contact": "maybe"}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-05", "interaction_allowed": False}, owner_id="p-01") == "ask"
+    assert may_contact_of(None, owner_id="p-01") == "ask" and may_contact_of("p-09", owner_id="p-01") == "ask"
 
 
 # ---------------------------------------------------------------------------

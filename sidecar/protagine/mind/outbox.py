@@ -53,6 +53,7 @@ class Outbox:
         self.store = store
         self.owner_id = owner_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.on_sent = None   # callable(row) set by the tick: a sent message may settle what it was for
 
     # -- the queue --------------------------------------------------------------
 
@@ -117,9 +118,15 @@ class Outbox:
         result = str(result or "uncertain").lower()
         note = summary or error or None
         if result in {"sent", "ok", "done", "delivered"}:
-            return self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
-                                         hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
-                                         result=note, completed_at=now, at=now)
+            updated = self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
+                                            hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
+                                            result=note, completed_at=now, at=now)
+            if callable(self.on_sent) and updated is not None:
+                try:
+                    self.on_sent(updated)
+                except Exception as error:
+                    logger.warning("sent hook failed for %s (%s)", intention_id, type(error).__name__)
+            return updated
         if result in {"failed", "error"}:
             return self.store.transition(intention_id, "failed", action="send_failed", outcome="failed",
                                          verified="hermes_failure", hermes_kind="message",

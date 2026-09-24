@@ -239,3 +239,15 @@ def test_metadata_aggregates_use_erasure_ids_without_hashing_source_text(tmp_pat
     assert log.stats('person')['total'] == 1
     assert log.rollup()['unknown'] == {'in': 1, 'out': 0}
     assert log._conn.execute('SELECT count(*) FROM communications').fetchone()[0] == 1
+
+
+def test_reattribute_moves_every_exchange_of_a_merged_contact(tmp_path):
+    log = CommsLog(str(tmp_path / 'communications.db'),
+                   source_ledger=TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db'))
+    log.log('dup', summary='Asked about the lease.', direction='in')
+    log.log('dup', summary='Sent the lease.', direction='out')
+    log.log('keep', summary='Said hello.', direction='in')
+    assert log.reattribute('dup', 'keep') == 2
+    assert log.counts('dup') == {'inbound': 0, 'outbound': 0, 'channels': 0}
+    assert log.counts('keep')['inbound'] == 2 and log.counts('keep')['outbound'] == 1
+    assert log.reattribute('dup', 'keep') == 0 and log.reattribute('keep', 'keep') == 0
