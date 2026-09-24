@@ -140,7 +140,10 @@ def plan_hash(body: Any) -> str:
 
 def discretionary(candidate: Any) -> bool:
     """Work the agent may hold without anyone being owed it: recurring self-chosen work, curiosity and
-    social outreach, and anything below the owed priority. An unreadable priority counts as owed."""
+    social outreach, and anything below the owed priority. The step of an adopted goal is owed whatever
+    its drive (rank.py), and an unreadable priority counts as owed."""
+    if getattr(candidate, "parent_goal_id", None):
+        return False
     if getattr(candidate, "dedup_base", None) is not None:
         return True
     if str(getattr(candidate, "drive", "") or "") in {"curiosity", "social"}:
@@ -152,7 +155,10 @@ def discretionary(candidate: Any) -> bool:
 
 
 def postponable(candidate: Any) -> bool:
-    """What overload postpones: curiosity and social work, and optional messages."""
+    """What overload postpones: curiosity and social work, and optional messages; never the step of an
+    adopted goal (owed to the goal, whatever its drive)."""
+    if getattr(candidate, "parent_goal_id", None):
+        return False
     drive = str(getattr(candidate, "drive", "") or "")
     if drive in {"curiosity", "social"}:
         return True

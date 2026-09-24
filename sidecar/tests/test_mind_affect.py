@@ -678,6 +678,13 @@ def test_optional_nudges_wait_under_load_and_after_dismissals_but_contacts_are_n
     assert curious.score_factor(reminder) == 1.0, "worry lifts owed duty only"
 
 
+def test_the_step_of_an_adopted_goal_is_owed_whatever_its_drive():
+    step = candidate(drive="curiosity", type="goal_step", parent_goal_id="g-1", priority=0.5)
+    loaded = AffectView(route={}, owner_id=OWNER, overloaded=True, load=0.8, satiated=True, boost=0.5)
+    assert not discretionary(step) and not postponable(step) and loaded.threshold_factor(step) == 1.0
+    assert postponable(candidate(drive="curiosity", type="research", dedup_base="research:x"))
+
+
 # -- 10. calm rendering ------------------------------------------------------------------------------
 
 def test_rendering_is_calm_banded_and_bounded(world):

@@ -587,6 +587,17 @@ async def test_overload_postpones_optional_work_until_the_obligations_are_done(a
     assert sorted(item["type"] for item in after["formed"]) == ["commitment_reminder", "research"]
 
 
+async def test_overload_never_stalls_the_step_of_an_adopted_goal(ax):
+    no_mastery(ax)
+    await adopted_goal(ax, GoalRouter())
+    for n in range(3):
+        ax.owe(f"Prepare the board pack part {n}", hours=6 + n)
+    summary = await ax.mind.tick(force=True)
+    assert summary["affect"]["overloaded"] is True
+    step, = [item for item in summary["formed"] if item["type"] == "goal_step"]
+    assert step["decision"] == "act"
+
+
 async def test_worry_notes_what_is_due_soon_and_lifts_owed_duty(ax):
     ax.owe("File the tax return", hours=0.5)
     ax.owe("Send the owner the summary", hours=-1, obligor="assistant")

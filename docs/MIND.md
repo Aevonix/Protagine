@@ -254,7 +254,8 @@ decision is the strategy switch's question, which turns an `act` into an
    of the source's window (7 days for the state, 24 h for the rule). A task
    formed before the failures gets the note when the body pulls it.
 2. **Overload** (load 0.6 or more). Curiosity and social work and optional
-   messages wait; replies stay brief.
+   messages wait; replies stay brief. The step of an adopted goal is owed
+   whatever its drive and never waits.
 3. **Priority.** Owed duty scores x (1 + 0.5 x worry); curiosity work x (1 +
    curiosity).
 4. **Satiation.** Satisfaction of 0.5 or dismissals of 0.4 or more raise the
