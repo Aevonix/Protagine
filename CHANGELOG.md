@@ -91,6 +91,33 @@ nothing to settle) and answers an id nobody listed with one final
 `session_search` in a non-owner session is final in the same words; the
 adapter sends six tools in 3,314 characters.
 
+Upgrade rehearsal follow-ups. The vector tables are compacted routinely, not
+only after a forget: an upgraded store's conversations table held 74.7 GB of
+version manifests around 1.67 GB of data, and appends grow them again. One
+background task per store, never a request, compacts one table at a time and
+deletes its older versions after a forget, once per night crossed (the mind's
+tick schedules it, with the mind on or off) and whenever a table holds
+`PROTAGINE_VECTOR_COMPACT_VERSIONS` (1000) versions. A pass reads every
+retained manifest, whatever it prunes, so a table with more than
+`PROTAGINE_VECTOR_COMPACT_DAY_BYTES` (1 GiB) of manifests waits for the nightly
+pass, for at most a day. Each table's pass is logged at info with its versions,
+size before and after, and duration (operability-11). A forget's canonical
+closure no longer tests every message against every erasure rule on every
+pass: the rules are indexed, a source no rule can reach is not parsed, and the
+full-text index is rewritten in one scan instead of one per changed source. On
+a synthetic history shaped like a real one (38k sources, 258 MB) one forget
+took 4.3 s through the route before and 1.3 s after (a repeat 1.4 s and 0.65
+s). The route logs each forget's timings. The adapter's forget tool and the
+memory provider wait 5 s (the provider waited 3 s), and past that they say the
+removal is unconfirmed and may have completed, never that it failed. Only a
+request that never left counts as failed (operability-11). A turn sent to
+`turns/sync` without a session, such as a gateway recording a dispatched task's
+result, is no longer refused with 422. It becomes its own session, derived
+from the caller's principal and the envelope, so retries stay replays. A
+checkpoint or an input-linked answer still needs the caller's session. See
+[docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md) and
+[docs/RELATIONSHIPS.md](docs/RELATIONSHIPS.md).
+
 ## Unreleased - opinions
 
 The agent now holds opinions that change only on evidence (build plan M7,
