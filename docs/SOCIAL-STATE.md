@@ -22,7 +22,9 @@ call also lists outcomes: how pieces of work went as the current evidence report
 them (failed, succeeded, dismissed or corrected, with the topic and the approach
 used). Outcomes are counted occurrences, not votes: "the export failed twice" is
 two entries, a restatement of an earlier report adds nothing, and only the owner's
-own turns are stored, once per turn, deleted with their source. They are how the
+own turns are stored, once per turn, deleted with their source. An outcome that
+does not validate is dropped on its own, never failing the rest of the answer, and
+a contact's turn is not held to outcomes at all. They are how the
 owner's statements reach the agent's own feelings (docs/MIND.md). A cited repair report
 can settle an exact prior incident; the report remains attributed evidence.
 Each bounded supplied incident requires an explicit unchanged, uncertain or

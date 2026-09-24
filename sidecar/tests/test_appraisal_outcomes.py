@@ -92,15 +92,17 @@ def test_validate_returns_items_and_outcomes_and_accepts_a_missing_key(state):
 
 @pytest.mark.parametrize('change', ['unknown_event', 'extra_key', 'missing_key', 'empty_topic', 'long_topic',
                                     'long_approach', 'no_support', 'three_citations', 'fabricated_quote',
-                                    'prior_citation', 'too_many', 'not_a_list', 'unknown_top_level'])
-def test_validate_rejects_malformed_outcomes(state, change):
+                                    'prior_citation', 'not_a_dict', 'not_a_list'])
+def test_validate_drops_a_malformed_outcome_and_keeps_the_rest(state, change):
+    """An outcome is a side output: one that is off is dropped on its own, and the valid outcomes, the
+    observations and the incident decisions of the same answer stand."""
     _, first = prepared(state, 'first', 'The export stalled at validation.')
     state._commit({'turn_id': 'first'}, state._prepare({'turn_id': 'first'})[0], *_one_incident(state, first))
     _, payload = prepared(state)
     prior = next((e for e in payload['evidence'] if not e['current']), None)
-    item = reported(payload)
-    value = {'observations': [], 'incident_decisions': [
-        {'record_id': i, 'outcome': 'unchanged'} for i in payload['incident_ids']], 'outcomes': [item]}
+    item, good = reported(payload), reported(payload, event='succeeded', topic='the ledger figures')
+    value = {'observations': [observation(payload, topic='ledger task')], 'incident_decisions': [
+        {'record_id': i, 'outcome': 'unchanged'} for i in payload['incident_ids']], 'outcomes': [item, good]}
     if change == 'unknown_event':
         item['event'] = 'annoyed'
     elif change == 'extra_key':
@@ -122,14 +124,34 @@ def test_validate_rejects_malformed_outcomes(state, change):
     elif change == 'prior_citation':
         assert prior is not None
         item['support'] = [{'handle': prior['handle'], 'quote': prior['quotes'][0]}]
-    elif change == 'too_many':
-        value['outcomes'] = [item] * 5
-    elif change == 'not_a_list':
-        value['outcomes'] = item
+    elif change == 'not_a_dict':
+        value['outcomes'] = ['failed', good]
     else:
-        value['mood'] = []
+        value['outcomes'] = item
+    items, outcomes = state._validate(json.dumps(value), payload)
+    assert [record['topic'] for record, _ in items] == ['ledger task']
+    assert [outcome for outcome, _ in outcomes] == (
+        [] if change == 'not_a_list' else [{'event': 'succeeded', 'topic': 'the ledger figures',
+                                            'approach': 'the archive export'}])
+
+
+def test_validate_keeps_at_most_four_outcomes_and_still_rejects_an_unknown_top_level_key(state):
+    _, payload = prepared(state)
+    value = {'observations': [], 'incident_decisions': [], 'outcomes': [reported(payload)] * 5}
+    assert len(state._validate(json.dumps(value), payload)[1]) == 4
     with pytest.raises(ValueError):
-        state._validate(json.dumps(value), payload)
+        state._validate(json.dumps({**value, 'mood': []}), payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('topic', ['export task', 'the export task ' * 6], ids=['ok', 'long'])
+async def test_a_contacts_turn_is_never_held_to_outcomes_it_cannot_store(state, topic):
+    """Outcomes are stored for the owner only, so a contact's turn does not validate them: an outcome that
+    is off never costs the contact's observation (the job completes, the record is written)."""
+    source(state, 't', 'The export stalled at validation again.')
+    assert await state.process_one(Processor(answer(lambda p: reported(p, topic=topic), observations=[observation])))
+    assert run_of(state, 't')['status'] == 'complete' and len(view(state)['records']) == 1
+    assert outcomes_of(state) == []
 
 
 def _one_incident(store, payload):

@@ -620,30 +620,38 @@ class AppraisalStore:
                     continue
             item = {**item, 'topic': _topic(item['topic']), 'repairs': None}
             result.append((item, dependencies))
-        return result, self._outcomes(value.get('outcomes', []), evidence)
+        # Outcomes are stored for the owner only (``_commit``), so a contact's turn is not held to them.
+        owner = any(e.get('current') and e.get('source_contact_id') == self.owner_id for e in payload['evidence'])
+        return result, self._outcomes(value.get('outcomes', []), evidence) if owner else []
 
     def _outcomes(self, value, evidence):
-        """Owner-reported occurrences: exact keys, a known event, and support quoting current evidence only."""
-        if not isinstance(value, list) or len(value) > 4:
-            raise ValueError('invalid_appraisal_outcomes')
+        """Owner-reported occurrences: exact keys, a known event, and support quoting current evidence only.
+        They are a side output: one that is off is dropped on its own (the rest of the answer stands), and
+        at most four are kept."""
         result = []
-        for item in value:
-            if not isinstance(item, dict) or set(item) != {'event', 'topic', 'approach', 'support'}:
-                raise ValueError('invalid_appraisal_outcome')
-            if item['event'] not in OUTCOME_EVENTS or not isinstance(item['topic'], str) \
-                    or not isinstance(item['approach'], str):
-                raise ValueError('invalid_appraisal_outcome')
-            topic, approach = _topic(item['topic']), ' '.join(item['approach'].split())
-            if not 1 <= len(topic) <= 80 or len(approach) > 80:
-                raise ValueError('invalid_appraisal_text')
-            support = item['support']
-            if not isinstance(support, list) or not 1 <= len(support) <= 2 or not all(
-                    isinstance(ref, dict) and isinstance(ref.get('handle'), str)
-                    and evidence.get(ref['handle'], {}).get('current') for ref in support):
-                raise ValueError('invalid_appraisal_support')
-            dependencies = self._citations({'support': support, 'contrary': []}, evidence)
-            result.append(({'event': item['event'], 'topic': topic, 'approach': approach}, dependencies))
-        return result
+        for item in value if isinstance(value, list) else []:
+            try:
+                result.append(self._outcome(item, evidence))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return result[:4]
+
+    def _outcome(self, item, evidence):
+        if not isinstance(item, dict) or set(item) != {'event', 'topic', 'approach', 'support'}:
+            raise ValueError('invalid_appraisal_outcome')
+        if item['event'] not in OUTCOME_EVENTS or not isinstance(item['topic'], str) \
+                or not isinstance(item['approach'], str):
+            raise ValueError('invalid_appraisal_outcome')
+        topic, approach = _topic(item['topic']), ' '.join(item['approach'].split())
+        if not 1 <= len(topic) <= 80 or len(approach) > 80:
+            raise ValueError('invalid_appraisal_text')
+        support = item['support']
+        if not isinstance(support, list) or not 1 <= len(support) <= 2 or not all(
+                isinstance(ref, dict) and isinstance(ref.get('handle'), str)
+                and evidence.get(ref['handle'], {}).get('current') for ref in support):
+            raise ValueError('invalid_appraisal_support')
+        dependencies = self._citations({'support': support, 'contrary': []}, evidence)
+        return {'event': item['event'], 'topic': topic, 'approach': approach}, dependencies
 
     def _finish(self, conn, job, disposition):
         conn.execute("UPDATE appraisal_runs SET status='complete',disposition=? WHERE turn_id=? AND status='running'",
