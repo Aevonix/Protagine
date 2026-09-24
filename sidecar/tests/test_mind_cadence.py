@@ -243,3 +243,20 @@ async def test_a_cadence_naming_someone_unknown_asks_the_owner_who_they_are(make
     ask = fx.store.get(formed["id"])
     assert ask.entity_id == OWNER and "Kim" in ask.context["text"]
     assert (await fx.tick())["formed"] == [] and fx.contacts.cadences == []
+
+
+async def test_the_cadence_question_is_the_owners_question_not_duty_work(make):
+    """Like a link question it is reporting, not a drive's work: the owner turning duty's weight to
+    0 does not cancel an open one, and answering it satiates nothing."""
+    named = {**CADENCE_ITEM, "metadata": {**CADENCE_ITEM["metadata"], "recipient": "Sam"}, "counterpart": "Sam"}
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")], router=CadenceRouter(named))
+    fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
+    owner_turn(fx, "turn-1", cadence_turns()[0].replace(CONTACT, "Sam"))
+    question, = (await fx.tick())["formed"]
+    fx.mind.drive_weights["duty"] = 0.0
+    await fx.tick()
+    asked = fx.store.get(question["id"])
+    assert asked.status == "asked"
+    await fx.mind.answer(asked.ask_code, yes=True, contact_id=OWNER)
+    assert fx.store.get(asked.id).status == "done"
+    assert float((fx.mind.mind_state.get("satiety.duty") or {}).get("level") or 0.0) == 0.0
