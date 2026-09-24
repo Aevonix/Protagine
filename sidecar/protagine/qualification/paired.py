@@ -87,6 +87,11 @@ CLOCK_START = {value: {'protocol': paired_body.CLOCK_START_PROTOCOL, 'utc': valu
                for value in paired_body.CLOCK_STARTS}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
+# A campaign plan (paired_cases.CAMPAIGN_PROTOCOL; the improve family, evals 6.8): the unit is the
+# probe and the bootstrap cluster the campaign, whose probes share its training; the old-family
+# probe is a point-estimate non-inferiority row and cost per success is compared to the comparator.
+CAMPAIGN = {'unit': 'probe', 'cluster': 'campaign', 'old_family': {'non_inferior_pp': -10},
+            'cost_per_success': {'max_increase_pct': 20}}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
 OVERLAY_DENIED = re.compile(r'URL|MODEL|KEY|TOKEN|CONTACT|PASSPHRASE|WEBHOOK|_DIR$|_DB$|_PATH$')
 # The plan's one embedding endpoint (semantic recall, evals 6.1): the same block in every arm; an arm
@@ -310,6 +315,10 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
     if people_seeded and payload.get('people_instrument') != PEOPLE_INSTRUMENT_PROTOCOL:
         raise ValueError('Contact records require an image whose worker seeds the plugin arm\'s people store')
+    campaigns = {isinstance(case.inputs.get('campaign'), dict) for case in episodes}
+    if len(campaigns) != 1:
+        raise ValueError('Every episode of a plan is a campaign, or none is')
+    campaign = campaigns == {True}
     clock_start = declared_mode(by_arm, 'clock_start', paired_body.CLOCK_STARTS, 'clock start')
     if clock_start is not None and payload.get('clock_start') != paired_body.CLOCK_START_PROTOCOL:
         raise ValueError('A pinned clock start requires an image whose worker pins it in every arm')
@@ -364,6 +373,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['embedding'] = deepcopy(embedding)
     if clock_start is not None:
         comparison['clock_start'] = deepcopy(CLOCK_START[clock_start])
+    if campaign:
+        comparison['campaign'] = {'protocol': paired_cases.CAMPAIGN_PROTOCOL, **deepcopy(CAMPAIGN)}
+        comparison['rule'] = {**RULE, 'unit': CAMPAIGN['unit'], 'cluster': CAMPAIGN['cluster']}
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,

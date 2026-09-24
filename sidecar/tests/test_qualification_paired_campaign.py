@@ -12,7 +12,11 @@ from protagine.qualification import paired, paired_cases
 from protagine.qualification.records import (CaseSpec, MAX_CAMPAIGN_OUTPUT_BYTES, MAX_CAMPAIGN_SECONDS,
                                              MAX_CASE_OUTPUT_BYTES, MAX_CASE_SECONDS)
 
+from test_qualification_paired_runner import fixture  # noqa: F401  (pytest fixture)
+
 REPOSITORY = Path(__file__).resolve().parents[2]
+# The runner fixture replaces paired_cases.cases with its controlled cases; campaign plans need the real one.
+CASES = paired_cases.cases
 GENERATORS = REPOSITORY / 'benchmarks' / 'paired' / 'generators'
 
 
@@ -148,3 +152,34 @@ def test_a_campaign_sized_result_line_is_read_from_the_container_log(tmp_path):
     log = tmp_path / 'container.log'
     log.write_bytes(b'noise\n' * 1000 + RESULT_MARKER.encode() + json.dumps(result).encode() + b'\n')
     assert paired_container._result_from_log(log) == result
+
+
+def campaign_plan(fixture, monkeypatch, rendered, tmp_path, *, arms=('full-lessons', 'full'), name='plan'):
+    monkeypatch.setattr(paired_cases, 'cases', CASES)
+    directory = tmp_path / ('data-' + name)
+    if not directory.exists():
+        write_dataset(directory, rendered)
+    fixture.output.mkdir(mode=0o700, exist_ok=True)
+    return paired.plan(fixture.output / name, native_binding='candidate', evidence_mode='controlled',
+                       dataset_dir=directory, arms=list(arms), reference_arm=arms[0], **fixture.resources)
+
+
+def test_a_campaign_plan_freezes_the_probe_unit_the_campaign_cluster_and_the_old_family_rule(
+        fixture, monkeypatch, rendered, tmp_path):
+    manifest = campaign_plan(fixture, monkeypatch, rendered, tmp_path)
+    comparison = manifest['comparison']
+    assert comparison['campaign'] == {'protocol': paired_cases.CAMPAIGN_PROTOCOL, 'unit': 'probe',
+                                      'cluster': 'campaign', 'old_family': {'non_inferior_pp': -10},
+                                      'cost_per_success': {'max_increase_pct': 20}}
+    assert comparison['rule'] == {**paired.RULE, 'unit': 'probe', 'cluster': 'campaign'}
+    assert manifest['declared_seconds'] == 8 * 2 * 11400
+    assert all(pair['arms'][arm]['case']['inputs']['campaign']['days'] == 15
+               for pair in manifest['pairs'] for arm in ('full-lessons', 'full'))
+    # A plan over plain scenarios keeps the scenario unit and no campaign block.
+    plain = copy.deepcopy(rendered)
+    for item in plain:
+        for spec in item['oracle']['artifacts']:
+            del spec['probe']
+    write_dataset(tmp_path / 'data-plain', plain)
+    other = campaign_plan(fixture, monkeypatch, plain, tmp_path, name='plain')
+    assert 'campaign' not in other['comparison'] and other['comparison']['rule'] == paired.RULE
