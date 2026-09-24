@@ -345,17 +345,3 @@ class TrustEngine:
                 self.set_stage(domain, "act_first",
                                reason=f"confidence {conf:.2f} over "
                                       f"{len(real)} real outcomes")
-
-    # -- adaptive delivery cap (Amendment 1.6) -------------------------------
-    def delivery_cap(self, base: int) -> int:
-        """Per-recipient daily cap: base, earned upward with delivery track
-        record, bounded by PROTAGINE_TRUST_DELIVERY_CAP_MAX."""
-        cap_max = _ienv("PROTAGINE_TRUST_DELIVERY_CAP_MAX", 6)
-        real = self._store.events("delivery", include_shadow=False)
-        if len(real) < 10:
-            return base
-        conf = self.confidence("delivery")
-        if conf <= 0.8:
-            return base
-        extra = int((conf - 0.8) * 20)  # 0.85 -> +1, 0.9 -> +2, 0.95 -> +3
-        return max(base, min(cap_max, base + extra))

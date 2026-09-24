@@ -14,13 +14,10 @@ from onekey import KEY
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('scoped_projection', [False, True])
 async def test_ordinary_recall_preserves_source_and_history_without_global_briefs(
-        contact_context, monkeypatch, scoped_projection):
+        contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-    if not scoped_projection:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     keys = json.loads(runtime.keyring.read_text())
     keys['principals'][0]['allow_unscoped_api'] = True
     keys['principals'][0]['scopes'].append('api:access')

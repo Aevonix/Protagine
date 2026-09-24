@@ -147,9 +147,6 @@ async def test_owner_context_observes_other_sessions_but_guest_context_omits_the
     from protagine.api.routers import host
     from protagine.api.schemas.host import ContextAssembleRequest
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
-    monkeypatch.setattr(host, "_p8_runtime", None)
-    # Other producer behavior is outside this focused read-view test.
-    monkeypatch.setattr(host, "_require_scoped_context_runtime_for_guest", lambda *a: None)
     store.observe(observation("voice"), principal_id="host", contact_id="owner")
     store.observe(observation("cron", platform="cron"), principal_id="host", contact_id="owner")
     for person in ("owner", "contact-a"):

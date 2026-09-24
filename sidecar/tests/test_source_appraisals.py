@@ -307,41 +307,6 @@ async def test_durable_view_retains_pending_contrary_evidence_until_interval(sta
 
 
 @pytest.mark.asyncio
-async def test_canonical_preference_changes_cached_profiler_and_erasure_removes_it(state, tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock
-    from protagine import identity
-    from protagine.tom.engagement import EngagementStore
-    from protagine.intelligence.relationships.profiler import RelationshipProfiler
-    monkeypatch.setattr(identity, 'get_owner_contact_id', lambda: 'owner')
-    engagement = EngagementStore(tmp_path/'engagement.db', source_ledger=state.ledger)
-    contacts = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(
-        display_name='A contact', trust_tier='regular', interaction_count=5)))
-    profiler = RelationshipProfiler(contacts_store=contacts, engagement_store=engagement,
-        db_path=str(tmp_path/'relationships.db'))
-    try:
-        assert 'concise explanations' not in (await profiler.profile('person')).render()
-        source(state, 'preference', 'I prefer concise explanations.')
-        admitted_preference(state, 'preference')
-        # No new contact interaction or scheduled profile refresh required.
-        assert 'concise explanations' in profiler.cached('person').render()
-        assert engagement.get_profile('person')['dims'] == {}
-        state.ledger.erase_sources(contact_id='person', turn_ids=['preference'])
-        assert 'concise explanations' not in profiler.cached('person').render()
-    finally:
-        engagement._conn.close()
-        profiler._conn.close()
-
-
-@pytest.mark.asyncio
-async def test_retired_numeric_engagement_does_not_call_another_model():
-    from unittest.mock import AsyncMock
-    from protagine.tom.extractor import TomExtractor
-    router = AsyncMock()
-    assert await TomExtractor(router).extract_engagement('I prefer concise explanations.', 'person') is None
-    assert router.mock_calls == []
-
-
-@pytest.mark.asyncio
 async def test_revision_rehydrates_original_quotes_and_erasure_follows_both_sources(state):
     decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
     source(state, 'first', 'The export report claimed completion before output existed.')

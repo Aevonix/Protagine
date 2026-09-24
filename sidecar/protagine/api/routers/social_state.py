@@ -172,7 +172,7 @@ async def reconcile_identity_sources(store, ledger, operation):
         evidence_refs=operation['evidence_refs'])
     from protagine.api.routers import host
     affected = result['affected_source_ids']
-    for projection in (host._facts_store, host._affect_store, host._engagement_store):
+    for projection in (host._facts_store, host._affect_store):
         if projection is not None:
             projection.purge_erased_sources(affected)
     if host._graph is not None:

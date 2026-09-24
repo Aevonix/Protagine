@@ -15,9 +15,8 @@ from onekey import KEY
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
 async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_preserves_inspection(
-        contact_context, monkeypatch, p8_enabled):
+        contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     keys = json.loads(runtime.keyring.read_text())
@@ -27,8 +26,6 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
     keys['principals'][0]['allow_unscoped_api'] = True
     keys['principals'][0]['scopes'].append('api:access')
     runtime.keyring.write_text(json.dumps(keys))
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     old = runtime.add('Hydrofoil legacy queue status repeats forever.', source_linked=False)
     # The graph contains both historical mirror formats, including one whose
     # original SQLite fact is subsequently deleted. No graph deletion is done.
@@ -58,13 +55,10 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
 async def test_current_linked_estimate_has_native_citations_then_revision_and_erasure_exclude_it(
-        contact_context, monkeypatch, p8_enabled):
+        contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     runtime.ledger.record_source('origin', contact_id='contact-a', session_id='earlier',
         messages=[{'role': 'user', 'content': 'The hydrofoil gate is violet.'}], derive_claims=False)
     lineage, _ = runtime.facts.source_input('origin', 'contact-a')
@@ -115,7 +109,6 @@ def test_automatic_window_filters_unlinked_before_limit_and_rechecks_scope(tmp_p
 async def test_linked_estimate_keeps_current_correction_and_exact_source_refs(contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-    monkeypatch.setattr(host, '_p8_runtime', None)
     original = 'The hydrofoil gate is violet.'
     runtime.ledger.record_source('annotated-origin', contact_id='contact-a', session_id='prior',
         messages=[{'role': 'user', 'content': original}], derive_claims=False)
@@ -143,12 +136,9 @@ async def test_linked_estimate_keeps_current_correction_and_exact_source_refs(co
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
 async def test_canonical_estimate_keeps_correction_refs_and_never_revives_erased_note(
-        contact_context, monkeypatch, p8_enabled):
+        contact_context, monkeypatch):
     runtime = contact_context
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     original = 'The hydrofoil gate is violet.'
     runtime.ledger.record_source('enriched-origin', contact_id='contact-a', session_id='prior',
         messages=[{'role': 'user', 'content': original}], derive_claims=False)

@@ -1,9 +1,8 @@
-"""L1.1 — ConversationPresenceStore: passive conversation census.
+"""ConversationPresenceStore: passive conversation census.
 
 Fed from the turns/sync attribution chokepoint (after the ParticipantResolver
-settles WHO), gated by PROTAGINE_CONV_PRESENCE (default on). The system sentinel
-is never recorded; reads PROPAGATE errors so a broken store can never look
-like an empty (safe) room to the risk classifier.
+settles WHO); there is no switch. The system sentinel is never recorded; reads
+PROPAGATE errors so a broken store can never look like an empty (safe) room.
 """
 
 from __future__ import annotations
@@ -16,15 +15,15 @@ import pytest
 from protagine.api.routers import host as host_mod
 from protagine.api.schemas.host import (
     HostIdentity, HostMessage, HostSender, HostTurnContext, TurnSyncRequest)
-from protagine.channels.presence import (
-    STRONG_METHODS, ConversationPresenceStore, conv_presence_enabled)
+from protagine.channels import presence
+from protagine.channels.presence import STRONG_METHODS, ConversationPresenceStore
 
 
-def test_gate_default_on(monkeypatch):
-    monkeypatch.delenv("PROTAGINE_CONV_PRESENCE", raising=False)
-    assert conv_presence_enabled() is True
+def test_recording_has_no_switch(monkeypatch):
     monkeypatch.setenv("PROTAGINE_CONV_PRESENCE", "off")
-    assert conv_presence_enabled() is False
+    assert not hasattr(presence, "conv_presence_enabled")
+    s = ConversationPresenceStore()
+    assert s.record("c1", "cid-a", method="handle") is True
 
 
 def test_record_and_census():
@@ -59,13 +58,6 @@ def test_system_sentinel_and_empties_never_recorded():
     assert s.record("c1", "system") is False
     assert s.record("c1", "") is False
     assert s.record("", "cid-a") is False
-    assert s.census("c1") == []
-
-
-def test_gate_off_is_noop(monkeypatch):
-    monkeypatch.setenv("PROTAGINE_CONV_PRESENCE", "off")
-    s = ConversationPresenceStore()
-    assert s.record("c1", "cid-a", method="handle") is False
     assert s.census("c1") == []
 
 

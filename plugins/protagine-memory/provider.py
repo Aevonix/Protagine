@@ -535,7 +535,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                     "session_history": "compressed" if (session_id or self._session_id) in self._compressed_sessions
                     else "intact",
                     "include_initiatives": not guest,
-                    **({"audience": "viewer", "projection_policy": "scoped_viewer_required"} if guest else {}),
+                    **({"audience": "viewer"} if guest else {}),
                 })
                 resp.raise_for_status()
                 data = resp.json()

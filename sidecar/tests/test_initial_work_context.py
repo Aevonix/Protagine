@@ -40,8 +40,6 @@ def shaped_work(view):
 @pytest.mark.asyncio
 async def test_initial_owner_work_is_bounded_and_preserves_family_and_result(store, monkeypatch):
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setattr(host, '_p8_runtime', None)
-    monkeypatch.setattr(host, '_require_scoped_context_runtime_for_guest', lambda *a: None)
     parent = observation('parent', platform='whatsapp')
     instruction = {'role': 'user', 'content': 'Original task conditions require the scoped source reader.'}
     store.ledger.record_source('original-input', contact_id='owner',

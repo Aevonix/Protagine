@@ -210,6 +210,30 @@ def test_upgrade_retires_the_drives_milestone_stores_and_tables(installed, capsy
     assert "nothing to do" in capsys.readouterr().out
 
 
+def test_upgrade_retires_the_people_milestone_stores(installed, capsys):
+    """The theory-of-mind stores the per-contact digest replaced (second-order inferences,
+    their exposure ledger, the engagement profiles, the relationship briefs and the P8
+    shadow stores) move into the backup instead of staying behind as orphans."""
+    import sqlite3
+    home, _ = installed
+    names = ("protagine-tom2.db", "protagine-tom2-exposure.db", "protagine-engagement.db",
+             "protagine-relationships.db", "protagine-p8-visibility.db", "protagine-p8-arcs.db",
+             "protagine-p8-recipient-audit.db")
+    for name in names:
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x TEXT)")
+            db.execute("INSERT INTO t VALUES ('row')")
+    assert set(names) <= set(init.retired_state_present(home))
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    for name in names:
+        assert f"retired {name}" in out and not (home / name).exists()
+    with sqlite3.connect(next((home / "backups").rglob("retired/protagine-engagement.db"))) as db:
+        assert db.execute("SELECT x FROM t").fetchone()[0] == "row"
+    assert init.retired_state_present(home) == []
+
+
 def test_upgrade_adopts_the_ingress_rows_of_retired_producers(installed, capsys):
     """An earlier line stamped durable intake rows with its client principals; this line
     authenticates one key, so the upgrade re-scopes those rows to the instance producer and
