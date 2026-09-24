@@ -934,7 +934,8 @@ async def test_a_router_that_never_answers_returns_at_the_budget_with_the_job_st
 
 
 async def test_a_forced_drain_takes_a_job_that_is_backed_off(tmp_path, monkeypatch):
-    """(d) A job re-queued 60 s ahead after a transport failure is claimed by the forced drain now."""
+    """(d) A job re-queued 60 s ahead after a transport failure is claimed by the forced drain now,
+    without spending one of its scheduled attempts."""
     import sqlite3
     import time as _time
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
@@ -1305,3 +1306,22 @@ async def test_an_unroutable_reminder_that_expires_is_raised_again_rather_than_l
     assert fx.mind.outbox.sending(offered["id"], target=TARGET).status == "sending"
     assert fx.mind.outbox.sent(offered["id"], result="sent").status == "sent"
     assert (await fx.mind.tick(force=True))["formed"] == []                # reported once
+
+
+async def test_a_contacts_promise_captured_on_their_turn_reminds_the_owner_and_stays_open(fx):
+    """The contact promises the owner something on the contact's own lane. When it lapses the owner
+    gets the reminder; no worker task is formed to "fulfil" it, so nothing can mark the contact's
+    promise fulfilled on the body's word."""
+    fx.turn("t-1", CONTACT, "I'll have the signed form to you by Friday.", "Thanks, I'll pass that on.")
+    router = FakeRouter(fx.now + timedelta(hours=1), description="p-02 sends the signed form", obligor=CONTACT)
+    assert await fx.capture(router)
+    fx.shift(hours=2)
+    formed = (await fx.mind.tick(force=True))["formed"]
+    assert [(item["type"], item["kind"], item["decision"]) for item in formed] == [
+        ("commitment_reminder", "message", "act")]
+    assert fx.store.get(formed[0]["id"]).entity_id == OWNER and fx.mind.dispatch() == []
+    ready = await fx.mind.outbox_ready()
+    assert [item["type"] for item in ready] == ["commitment_reminder"]
+    row, = fx.commitments.list(status=["pending", "overdue"])["commitments"]
+    assert row["description"] == "p-02 sends the signed form" and row["status"] == "overdue"
+

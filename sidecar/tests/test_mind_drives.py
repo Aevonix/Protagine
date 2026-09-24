@@ -344,10 +344,8 @@ def test_an_owner_commitment_from_conversation_is_a_reminder_message_not_a_worke
     assert reminder.success_check == {"kind": "commitment_resolved", "commitment_id": "c-7"}
     assert reminder.salience == pytest.approx(0.8) and reminder.cost == pytest.approx(0.05)
     assert commitment_candidate(_owner_row(priority=90), due, NOW, owner_id=OWNER).salience == pytest.approx(0.9)
-    # Work the agent itself must do (a row not spoken by the owner) and a contact's row stay tasks.
+    # Work the agent itself must do (a row not spoken in a conversation) stays a task.
     assert commitment_candidate(_owner_row(source_type="manual"), due, NOW, owner_id=OWNER).kind == "task"
-    contact = commitment_candidate(_owner_row(person_id="p-02"), due, NOW, owner_id=OWNER)
-    assert contact.kind == "task" and contact.type == "commitment_overdue" and contact.recipient == "p-02"
     # A deliverable keeps its own message form.
     deliverable = commitment_candidate(_owner_row(metadata={"kind": "deliverable", "content": "Here."}), due, NOW,
                                        owner_id=OWNER)
@@ -372,6 +370,24 @@ def test_who_owes_the_work_decides_between_a_reminder_and_a_task():
     assert promised.dedup_key == commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key
     _, candidates = duty(inputs(commitments=[_owner_row(metadata={"obligor": "assistant"})]))
     assert [c.type for c in candidates] == ["commitment_overdue"]
+
+
+def test_a_row_from_a_contacts_turn_is_routed_by_its_obligor_not_by_whose_turn_it_was():
+    """Capture files a row under the speaker, so a contact's turn yields rows the contact owes, rows
+    the owner owes and rows the assistant took on. Only the assistant's own work is a task (owed to
+    that contact); a promise anyone else made comes back to the owner as a reminder, never as a
+    worker task to "fulfil" someone else's promise."""
+    due = NOW - timedelta(hours=2, minutes=5)
+    for metadata in (None, {"obligor": "p-02"}, {"obligor": "owner"}, {"obligor": OWNER}, {"obligor": "Kim"}):
+        candidate = commitment_candidate(_owner_row(person_id="p-02", description="p-02 sends the signed form",
+                                                    metadata=metadata), due, NOW, owner_id=OWNER)
+        assert (candidate.type, candidate.kind, candidate.recipient) == ("commitment_reminder", "message", OWNER), \
+            metadata
+        assert "Fulfil" not in candidate.text and "p-02 sends the signed form" in candidate.text
+    owed = commitment_candidate(_owner_row(person_id="p-02", metadata={"obligor": "assistant"}), due, NOW,
+                                owner_id=OWNER)
+    assert (owed.type, owed.kind, owed.recipient) == ("commitment_overdue", "task", "p-02")
+    assert "Fulfil the overdue commitment to contact p-02: send the report" in owed.text
 
 
 def test_due_intentions_are_keyed_by_the_schedule_so_a_moved_deadline_earns_one_more():

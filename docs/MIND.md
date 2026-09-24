@@ -86,15 +86,17 @@ audit log, the outbox, outcomes and the off switch. The design is in
    |---|---|---|---|
    | duty | overdue and due-soon commitments, due reply waits, stale owner kanban tasks and stalled Hermes goals (both from the body's board observations), duty-domain expectation misses | fulfilled commitments, done tasks | owner reminders and heads-ups (messages), follow-up tasks, owner notices |
 
-   A commitment the owner spoke in conversation (`source_type: cognition`)
-   and owes themselves, or is tracking for a third party (`metadata.obligor`
-   is `owner`, a contact id, or absent), that comes due becomes a
-   `commitment_reminder` **message to the owner** (the description, the due
-   time, how overdue it is), not a board task: the reminder is the effect.
-   The assistant's own promise (`metadata.obligor: assistant`, "I'll send
-   you the report by 3pm"), work the agent itself must do (a row created
-   through the API or by another subsystem) and a commitment owed to a
-   contact keep the task form; an owed deliverable keeps its own message.
+   A commitment from a conversation (`source_type: cognition`) that the
+   owner owes, or that someone else owes and the owner is tracking
+   (`metadata.obligor` is `owner`, a contact id or a name; absent reads as
+   the speaker of the turn), becomes a `commitment_reminder` **message to
+   the owner** when it comes due (the description, the due time, how
+   overdue it is), not a board task, on whichever lane it was captured: the
+   reminder is the effect. The assistant's own promise
+   (`metadata.obligor: assistant`, "I'll send you the report by 3pm"), to
+   the owner or to a contact, and work the agent itself must do (a row
+   created through the API or by another subsystem) keep the task form; an
+   owed deliverable keeps its own message.
    When the row carries a heads-up time and `heads_up_at <= now < due_at`,
    duty raises a `commitment_due_soon` message first; once that went out,
    the overdue reminder for the same row waits `mind.heads_up_grace_minutes`
