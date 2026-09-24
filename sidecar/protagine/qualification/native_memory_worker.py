@@ -24,8 +24,9 @@ def mind_section(switches):
     initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
     faculty flag and drive weight to its release-candidate value from the
     shipped defaults; a ``minus_<faculty>`` switch turns that faculty's flag
-    off and a ``minus_<drive>`` switch sets that drive's weight to 0 (evals
-    section 3, the ``full-X`` arms). The flag is written whether or not the
+    off, a ``plus_<faculty>`` switch turns on one that ships off, and a
+    ``minus_<drive>`` switch sets that drive's weight to 0 (evals section 3,
+    the ``full-X`` arms). The flag is written whether or not the
     faculty's code has landed, so an ablation of a faculty nothing reads yet
     is a no-op contrast until its milestone. Quiet hours and the daily digest
     are off in every mind arm because an episode's clock advance would
@@ -48,6 +49,8 @@ def mind_section(switches):
     for name in MIND_FACULTIES:
         if switches.get(f'minus_{name}'):
             faculties[name] = False
+        if switches.get(f'plus_{name}'):
+            faculties[name] = True
     for name in drives:
         if switches.get(f'minus_{name}'):
             drives[name] = 0.0

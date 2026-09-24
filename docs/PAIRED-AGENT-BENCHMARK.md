@@ -79,8 +79,8 @@ Execution is sequential. With the default two arms the first episode runs base H
 An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
 flags, before the plugin loads, and the binary switches that are on
-(`heartbeat`, `curator`, and the mind switches `initiative`, `full` and the
-`minus_*` ablations; a switch is listed only when it is on). The built-in
+(`heartbeat`, `curator`, and the mind switches `initiative`, `full`, the
+`minus_*` ablations and `plus_skills`; a switch is listed only when it is on). The built-in
 profiles are `base_hermes` (plugin off) and `protagine` (plugin on, the mind
 off), the default arm set, the two comparators `base-heartbeat` and
 `base-curator` described below, `protagine-initiative`, the treatment arm of
@@ -96,9 +96,12 @@ ablation per later faculty, `full` with that faculty's `mind.faculties` flag
 off: `full-people` (the people family, `mind-people-1`), `full-affect` (the
 feelings family, `mind-affect-1`), `full-opinions` (the opinions family,
 `mind-opinions-1`), `full-semantic_recall` and `full-consolidation` (the
-memory family, `mind-memory-1`) and `full-self_narrative` (the identity
-family, `mind-self-1`). The flag is served whether or not the faculty's code
-has landed, so such an arm is a no-op contrast until its milestone. Every mind arm is served in the worker next to the host routes and
+memory family, `mind-memory-1`), `full-self_narrative` (the identity family,
+`mind-self-1`) and `full-lessons` (the self-improvement family,
+`mind-improve-1`), plus `full-plus-skills`, `full` with the one faculty that
+ships off (`faculties.skills`) turned on. The flag is served whether or not
+the faculty's code has landed, so such an arm is a no-op contrast until its
+milestone. Every mind arm is served in the worker next to the host routes and
 ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
@@ -306,7 +309,11 @@ artifact checks, next to tick-graded satiation scenarios. Held-out templates are
 repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the
-repository's frozen fixtures.
+repository's frozen fixtures. The second dev family, `mind-improve-1`, renders
+campaigns: fifteen-day episodes with training days, held-out probe days at
+fixed positions and an old-family probe, graded by workspace files whose
+artifact specs carry `probe` metadata (`benchmarks/paired/generators/README.md`);
+its arms are `full-lessons`, `full`, `full-plus-skills` and `base-curator`.
 
 A generated scenario may carry two more keys. `workflow` is a process-restart
 contract in the frozen workflows' shape (`{"restart_before": [i],

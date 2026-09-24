@@ -33,13 +33,15 @@ ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
 # only the initiative faculty (mind-initiative-1); ``full`` sets every faculty flag and drive
 # weight to its release-candidate value (native_memory_worker.mind_section), each
 # ``minus_<faculty>`` switch turns that faculty's flag off and each ``minus_<drive>`` switch
-# sets that drive's weight to 0 (evals section 3, the full-X arms). A faculty whose code has
+# sets that drive's weight to 0 (evals section 3, the full-X arms); a ``plus_<faculty>`` switch
+# turns on a faculty that ships off (skills, the full-plus-skills arm). A faculty whose code has
 # not landed yet still has its flag written, so its ablation is a no-op contrast until then.
 MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect', 'minus_opinions',
-                          'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative')
+                          'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative', 'minus_lessons')
 MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
 MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
-MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS)
+MIND_ADDITIONS = ('plus_skills',)
+MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS, *MIND_ADDITIONS)
 PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'
 

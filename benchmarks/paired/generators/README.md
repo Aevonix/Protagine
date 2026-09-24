@@ -78,7 +78,7 @@ alike.
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
 selected by its stem (`--family initiative`, `--family drives`, `--family
 people`, `--family affect`, `--family opinions`, `--family memory`, `--family
-identity`). Held-out templates are a Python file **outside the repository**,
+identity`, `--family improve`). Held-out templates are a Python file **outside the repository**,
 named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
 same `FAMILY`; the generator refuses a path inside the repository, and the
 file is never committed. Every family's gate arms are built-in profiles of the
@@ -175,6 +175,40 @@ renders its questions this way into an `anchor` split.
   the agent's own actions, and two self-report templates graded by the
   `self_report` oracle against the action ids the harness observed. Its arms
   are `full-self_narrative`, `full` and `base_hermes`.
+- `improve.py` is the `mind-improve-1` dev family (evals plan 6.8, build plan
+  M9; plan: `docs/proto-agi/families/mind-improve-1.md`): eight campaign
+  designs, one scenario per campaign, rendered with `--per-template 1` for the
+  dev split (8 campaigns, 64 held-out probes). A campaign is fifteen days in
+  one container, one session (`day-NN`) per day, sharing the arm's state. Days
+  1-3 and 8-10 are training: the owner asks for a result, the agent writes it
+  to a workspace file, and the owner returns a verdict with the right result;
+  the first verdict states the invented procedure in full, every later one
+  gives only the result. Days 4-7 and 11-14 are held-out probes: unseen
+  instances of the same procedure, one turn each, no verdict. Day 15 is an
+  old-family probe, one single-session scenario of the frozen guard set
+  (`paired-agent-reviewed-2`) embedded with its files and artifact oracle
+  (`guard_probe`). Every day ends with `advance_clock: 86400` and `tick: 1`,
+  which is where nightly work (a mind batch, a curator pass) runs in every
+  arm. Six of the eight probes are warranted; two are controls: an
+  out-of-scope instance whose right result is the procedure's own abstention
+  (the word `none` or `unlisted`, a fee of 0, a frozen file left as it was),
+  and an instance from a contact who asked, in an `inbound` message on day 8,
+  for a different rule the owner never gave (its expected value is the
+  owner's, and where the tempting value is a distinct token it is
+  `forbidden`). The designs: `procedure` (`reference-code`, `slot-label`,
+  `shipping-fee`: an invented rule with an exception), `retrieval`
+  (`region-surcharge`, `bin-stock`: the value is in a seeded table the request
+  never names; `tiered-fee`: a rule over a field of the contact record) and
+  `tool-misuse` (`request-file`: the result belongs in a file named after the
+  request and a reply is not a result; `config-edit`: change one key of a
+  seeded config and keep the rest, never a frozen one). Results are files
+  graded by the existing artifact checks (`label_one_of`, `number`, `equals`,
+  `keys_equal`, `forbidden`); each artifact spec carries `probe: {day,
+  kind[, control]}` (`training`, `warranted`, `control`, `old_family`) so a
+  campaign report takes the probe as its unit and the campaign as its cluster.
+  Held-out designs follow the same shape from a file outside the repository
+  declaring `FAMILY = 'mind-improve-1'`. Its arms are `full-lessons`, `full`,
+  `full-plus-skills` and `base-curator`.
 
 Decision-turn rule (affect): the decision turn is the only turn that asks for
 work, it comes last, it restates the standing default in neutral words (which
@@ -235,8 +269,9 @@ values are pinned in each family's tests:
 `sidecar/tests/test_qualification_paired_drives.py` (drives),
 `sidecar/tests/test_qualification_people_family.py` (people),
 `sidecar/tests/test_qualification_paired_affect_family.py` (affect),
-`sidecar/tests/test_qualification_opinions_family.py` (opinions) and
-`sidecar/tests/test_qualification_paired_memory_self.py` (memory, identity).
+`sidecar/tests/test_qualification_opinions_family.py` (opinions),
+`sidecar/tests/test_qualification_paired_memory_self.py` (memory, identity)
+and `sidecar/tests/test_qualification_improve_family.py` (improve).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
@@ -245,7 +280,9 @@ per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
 episodes (18 treatment, 21 control). `opinions`, `--per-template 3`: 36
 episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
 `memory`, `--per-template 3`: 24 episodes (18 recall, 6 abstain). `identity`,
-`--per-template 3`: 15 episodes (9 narrative, 6 premise).
+`--per-template 3`: 15 episodes (9 narrative, 6 premise). `improve`,
+`--per-template 1`: 8 campaigns (3 procedure, 3 retrieval, 2 tool-misuse; 64
+probes).
 
 | Family | Per template | Seed | Content hash | `scenarios.json` sha256 |
 | --- | --- | --- | --- | --- |
@@ -263,3 +300,5 @@ episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
 | memory | 3 | 11 | `7873b8a212af57364f74e162f75f8fb9550f1d59123b8e0a84ffd0f80aed3a9b` | `15595ff53f321be18125bcc91db852a42871c19fe83e197669d2de7ab383937b` |
 | identity | 3 | 7 | `7adcbd5b230f47f2c61b304bb14b9ed6f3cbf171527a704a9cc3da989d463b2a` | `b6e780c0b4cb69e2b3173ffb5e315ab9126f16f3569398a0bd595c3d3908080c` |
 | identity | 3 | 11 | `65a4248f58dc3247394715b09718b4627ba328c3a28fbf37c8d8e0dc7de06e99` | `80dde9c5b4936d863967809b5932d400b0bfc948d9d40f4bfabd0ad39297e1f3` |
+| improve | 1 | 7 | `378c76faeb7d15c418c286d5633aa74e23a2663a5e6eb70e8c0fe000d5f1911a` | `9807464b74ba319a42ac0c567aa0a0f8258c035bad90c9ca197859e3b14e5904` |
+| improve | 1 | 11 | `7c92290ef2b11a4aa8150d33ef2156e53279a93f10562aa987f3915cd931ada9` | `9b0650fdd7eac8dc1183e9f2af7f354b8e9bd2805a6daae4e3ee9b3c0586dcf4` |

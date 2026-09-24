@@ -119,6 +119,13 @@ def test_every_later_faculty_has_a_built_in_ablation_arm_that_flips_only_its_fla
         assert section['faculties'] == {**full['faculties'], name: False}
         assert section['drives'] == full['drives'] and section['budgets'] == full['budgets']
     assert 'minus_people' in paired_worker.MIND_FACULTY_ABLATIONS
+    # The one addition: skills ships off, and full-plus-skills is full with it on.
+    assert paired.PROFILES['full-plus-skills'] == {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True}
+    assert DEFAULTS['mind']['faculties']['skills'] is False and full['faculties']['skills'] is False
+    plus = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full-plus-skills']))
+    assert plus['faculties'] == {**full['faculties'], 'skills': True} and plus['drives'] == full['drives']
+    assert set(paired_worker.MIND_SWITCHES) == {'initiative', 'full', *paired_worker.MIND_ABLATIONS,
+                                                 *paired_worker.MIND_ADDITIONS}
 
 
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):

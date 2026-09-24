@@ -49,7 +49,10 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'full-opinions': {'plugin': True, 'overlay': {}, 'full': True, 'minus_opinions': True},
             'full-semantic_recall': {'plugin': True, 'overlay': {}, 'full': True, 'minus_semantic_recall': True},
             'full-consolidation': {'plugin': True, 'overlay': {}, 'full': True, 'minus_consolidation': True},
-            'full-self_narrative': {'plugin': True, 'overlay': {}, 'full': True, 'minus_self_narrative': True}}
+            'full-self_narrative': {'plugin': True, 'overlay': {}, 'full': True, 'minus_self_narrative': True},
+            'full-lessons': {'plugin': True, 'overlay': {}, 'full': True, 'minus_lessons': True},
+            # The skills question of the improve family: full with the one faculty that ships off on.
+            'full-plus-skills': {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,

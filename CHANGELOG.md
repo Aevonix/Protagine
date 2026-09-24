@@ -7,9 +7,11 @@ dev generators under `benchmarks/paired/generators/`, each with its frozen
 plan under `docs/proto-agi/families/` and its held-out templates kept outside
 the repository. Their arms are built-in profiles: `full` and one ablation per
 faculty (`full-drives`, `full-broadcast`, `full-people`, `full-affect`,
-`full-opinions`), each `full` with one `minus_<faculty>` switch that the
-worker's mind section turns into `mind.faculties.<name>: false`; the
-arm-profile protocol is `paired-arm-profiles-4`. A faculty whose code has not
+`full-opinions`, `full-semantic_recall`, `full-consolidation`,
+`full-self_narrative`, `full-lessons`), each `full` with one `minus_<faculty>`
+switch that the worker's mind section turns into `mind.faculties.<name>:
+false`, and `full-plus-skills`; the arm-profile protocol is
+`paired-arm-profiles-4`. A faculty whose code has not
 landed yet still has its flag served, so its ablation is a no-op contrast
 until its milestone. `mind-drives-1` (M4) adds the `selection` and `goal` body
 oracles, `mind-people-1` (M5) the per-target `sends` and inbound `replies`
@@ -50,6 +52,20 @@ their haystack sessions as history into an `anchor` split. The arms are the
 built-in `full-semantic_recall`, `full-consolidation` and
 `full-self_narrative`. The frozen plan is
 `docs/proto-agi/families/mind-memory-1.md`.
+
+The self-improvement family `mind-improve-1` (evals plan 6.8, build plan M9)
+ships as `benchmarks/paired/generators/improve.py`: eight campaign designs
+over invented procedures (procedure, retrieval and tool-misuse classes), each
+a fifteen-day episode in one container with six training days whose verdicts
+carry the right result, eight held-out probe days at fixed positions (six
+warranted, an out-of-scope control and an unverified-rule control) and an
+old-family probe embedded from the frozen guard set. Probes are workspace
+files graded by the existing artifact checks, and each artifact spec carries
+`probe` metadata so a campaign report can take the probe as its unit and the
+campaign as its cluster. Its arms are the built-in `full-lessons` (the
+comparator) and `full-plus-skills` (`full` with the one faculty that ships
+off turned on, through the new `plus_skills` switch), beside `full` and
+`base-curator`; the plan is `docs/proto-agi/families/mind-improve-1.md`.
 
 ## Unreleased - initiative quality: capture that lands before the mind decides
 
