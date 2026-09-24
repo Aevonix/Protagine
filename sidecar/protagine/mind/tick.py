@@ -1033,7 +1033,7 @@ class Mind:
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
                                         may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now,
                                         cooldown_hours=candidate.cooldown_hours)
-        if candidate.type in OWNER_QUESTIONS and verdict.decision == "act":
+        if (candidate.type in OWNER_QUESTIONS or candidate.ask_owner) and verdict.decision == "act":
             verdict = Verdict(decision="ask", reason="only the owner's word settles this", cls=verdict.cls)
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         context: Dict[str, Any] = {
@@ -1218,9 +1218,12 @@ class Mind:
     # -- people (architecture 4.7) -------------------------------------------------------------
 
     async def _resolve_recipients(self, commitments: List[Dict[str, Any]]) -> None:
-        """The contact behind each third party the owner named for a granted message, written back
-        to the row (``metadata.recipient_id``) so it is resolved once. An unknown name stays
-        unresolved and the duty drive asks the owner who it is."""
+        """The contact behind each third party the owner named for a granted message or a cadence,
+        written back to the row (``metadata.recipient_id``) so it is resolved once, with
+        ``recipient_exact``: whether the owner identified them exactly (an id, a handle, a number)
+        or the store matched a name. Only an exact recipient carries the owner's grant; a name
+        match becomes an owner ask. An unknown name stays unresolved and the duty drive asks the
+        owner who it is."""
         resolver = getattr(self.contacts, "resolve_reference", None)
         if not callable(resolver):
             return
@@ -1228,17 +1231,21 @@ class Mind:
             name = drive_functions.unresolved_recipient(row, owner_id=self.owner_id)
             if name is None:
                 continue
+            contact, exact = None, True
             try:
-                contact = await resolver(name)
+                contact = await resolver(name, exact=True)
+                if contact is None:
+                    contact, exact = await resolver(name), False
             except Exception as error:
                 logger.debug("recipient %r not resolved (%s)", name, type(error).__name__)
                 continue
             contact_id = getattr(contact, "contact_id", None) if contact is not None else None
             if not contact_id:
                 continue
-            row["metadata"] = {**(row.get("metadata") or {}), "recipient_id": str(contact_id)}
+            found = {"recipient_id": str(contact_id), "recipient_exact": exact}
+            row["metadata"] = {**(row.get("metadata") or {}), **found}
             try:
-                self.commitments.update(row["id"], metadata={"recipient_id": str(contact_id)})
+                self.commitments.update(row["id"], metadata=found)
             except Exception as error:
                 logger.warning("recipient of commitment %s not recorded (%s)", row.get("id"), type(error).__name__)
 

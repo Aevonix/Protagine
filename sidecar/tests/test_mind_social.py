@@ -65,10 +65,12 @@ class FakeContacts:
         return [dict(r) for r in self.records.values()
                 if r["may_contact"] != "never" and (r["cadence_minutes"] is not None or r["trust_tier"] in REGULAR)][:limit]
 
-    async def resolve_reference(self, reference):
+    async def resolve_reference(self, reference, *, exact=False):
+        """An id (or its capture handle) is exact; a display name only when ``exact`` is off."""
         wanted = str(reference or "").strip().lower()
         for record in self.records.values():
-            if wanted in {record["contact_id"].lower(), str(record["display_name"] or "").lower()}:
+            names = {record["contact_id"].lower()} | (set() if exact else {str(record["display_name"] or "").lower()})
+            if wanted in names:
                 return self._obj(record)
         return None
 

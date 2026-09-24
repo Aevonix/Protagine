@@ -154,9 +154,13 @@ audit log, the outbox, outcomes and the off switch. The design is in
    list. The owner's granted message to a third party is a
    `commitment_notice` or `commitment_check_in` at its time; the grant counts
    as `may_contact: auto` for that recipient only, never over `never` (the
-   owner hears `grant_refused`); a name the contact store cannot resolve
-   becomes a `recipient_unknown` ask; a sent one settles its commitment.
-   An owner's `cadence` item sets that contact's cadence once (audited as
+   owner hears `grant_refused`), and only for a recipient the owner named
+   exactly (an id, a handle, a number or an email): one the store matched by
+   name is an owner ask showing the name given and the contact matched, and
+   a notice whose words are not in the owner's turn is stored as a check-in
+   around its matter. A name the contact store cannot resolve becomes a
+   `recipient_unknown` ask; a sent one settles its commitment. An owner's
+   `cadence` item for an exactly named contact sets its cadence once (audited as
    `cadence_set` by `owner-turn:commitment:<id>`; a cadence the owner later
    sets by hand stands), and while it stays open every check-in to that
    contact carries its topic.

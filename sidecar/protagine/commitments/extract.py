@@ -47,6 +47,7 @@ import inspect
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from contextlib import closing
@@ -98,7 +99,8 @@ SYSTEM = (
     '{"kind":"notice","recipient":"<contact as named>","content":"<the words the person wants delivered, ready '
     'as-is>","grant":"owner"} when the person dictates what to say, or '
     '{"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, at most 6 words>","grant":"owner"} '
-    "when the person asks you to check on, chase or ask them about something. The topic names the matter only: "
+    "when the person asks you to check on, chase or ask them about something. content is only the person's own "
+    "words for the contact, never your paraphrase. The topic names the matter only: "
     "never figures, amounts, codes or reasons. A message the person wants sent NOW to a third party is the "
     "reply's own job: record nothing for it. A check-in that repeats (every N minutes, hours or days) is case 4, "
     "never case 3.\n"
@@ -189,6 +191,11 @@ SYSTEM = (
     '"due_at":null,"priority":60,"source_type":"cognition","metadata":{"kind":"cadence","recipient":"p-09",'
     '"topic":"the kitchen quote","cadence_minutes":10080},"listed_due":null,"counterpart":"p-09",'
     '"obligor":"assistant"}]\n'
+    "They said: Do not message p-05 until I say so. | Assistant replied: Understood.\n"
+    "[]   (a withheld permission is no message and no check-in)\n"
+    "They said: p-05 wants a word about the lease, but I have not said you may write to p-05 yet. | "
+    "Assistant replied: Noted.\n"
+    "[]   (nothing is sent until the owner says so)\n"
     "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
     "[]   (a message to send now is the reply's own job)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
@@ -417,7 +424,8 @@ MESSAGE_KINDS = ("notice", "check_in")
 # Case 4: the owner's recurring check-in with a contact, undated; the tick sets the contact's
 # cadence from it once and the social drive's check-ins carry its topic. Never a grant.
 CADENCE_KIND = "cadence"
-MESSAGE_FIELDS = ("kind", "recipient", "content", "topic", "grant", "recipient_id", "cadence_minutes")
+MESSAGE_FIELDS = ("kind", "recipient", "content", "topic", "grant", "recipient_id", "recipient_exact",
+                  "cadence_minutes")
 TOPIC_WORDS = 6
 MAX_CADENCE_MINUTES = 60 * 24 * 366
 
@@ -438,12 +446,20 @@ def _minutes(value: Any) -> Optional[int]:
     return minutes if 0 < minutes <= MAX_CADENCE_MINUTES else None
 
 
-def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Optional[Dict[str, Any]]:
+def _words(text: Any) -> str:
+    """Lower-case words only: how a notice's content is found in the turn it came from."""
+    return " ".join(re.sub(r"[^\w\s]", " ", str(text or "").lower()).split())
+
+
+def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool, turn_text: Optional[str] = None,
+                     description: str = "") -> Optional[Dict[str, Any]]:
     """Case 3 and case 4 metadata as stored: a notice needs its words and a check-in its recipient;
     the topic keeps at most six words and none with a digit in it; the grant survives only on the
-    owner's own turn. A cadence (case 4) is the owner's alone and never carries a grant: from anyone
-    else's turn, or without a recipient or a whole number of minutes, it is None (nothing is
-    recorded). Anything else is an ordinary commitment."""
+    owner's own turn. A notice goes out verbatim, so its words must be the person's own: when
+    ``turn_text`` is given and does not contain them, the notice becomes a check-in around the
+    matter (the topic from ``description``). A cadence (case 4) is the owner's alone and never
+    carries a grant: from anyone else's turn, or without a recipient or a whole number of minutes,
+    it is None (nothing is recorded). Anything else is an ordinary commitment."""
     kind = metadata.get("kind")
     if kind not in (*MESSAGE_KINDS, CADENCE_KIND):
         return metadata
@@ -462,6 +478,9 @@ def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Optional[
         content = str(metadata.get("content") or "").strip()
         if not content:
             return cleaned
+        if turn_text is not None and _words(content) not in _words(turn_text):
+            kind, metadata = "check_in", {**metadata, "topic": metadata.get("topic") or description}
+    if kind == "notice":
         cleaned.update(kind="notice", recipient=recipient, content=content[:1000])
     else:
         cleaned.update(kind="check_in", recipient=recipient, topic=_topic(metadata.get("topic")))
@@ -473,7 +492,7 @@ def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Optional[
 def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_store: Any,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]],
                  source_context: str = "turn commitment extraction", turn_id: str = "",
-                 owner_id: Optional[str] = None) -> Dict[str, Any]:
+                 owner_id: Optional[str] = None, owner_text: Optional[str] = None) -> Dict[str, Any]:
     """Apply what the model proposed: create new items, act on listed ones.
 
     Deadlines are resolved against the turn's own time, so a promise captured
@@ -489,7 +508,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     caller to rerun the extraction, and left as the newer writer left it.
     A message to a third party (case 3) is stored through ``message_metadata``:
     the owner's grant only when ``person_id`` is ``owner_id``; an owner's cadence (case 4)
-    only then, and never from anyone else's turn.
+    only then, and never from anyone else's turn. ``owner_text`` is what the person said in the
+    turn: a notice's words must be found in it.
     """
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
     listed = list(existing[:OPEN_ITEMS_LISTED])
@@ -546,7 +566,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if any(_similar_desc(norm, k) for k in known):
             skipped += 1
             continue
-        metadata = message_metadata(dict(stated or {}), owner_turn=bool(owner_id) and person_id == owner_id)
+        metadata = message_metadata(dict(stated or {}), owner_turn=bool(owner_id) and person_id == owner_id,
+                                    turn_text=owner_text, description=description)
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes
             continue
@@ -887,7 +908,8 @@ class CommitmentExtractor:
             return {}
         from protagine.identity import get_owner_contact_id
         result = record_items(items, person_id=person_id, commitment_store=commitments, existing=existing,
-                              rejections=rejections, turn_id=job["turn_id"], owner_id=get_owner_contact_id())
+                              rejections=rejections, turn_id=job["turn_id"], owner_id=get_owner_contact_id(),
+                              owner_text=user_message)
         if result.get("conflicts") and job.get("error") != "stale_snapshot":
             # A row moved between the listing and the write (the owner corrected it while the model
             # was thinking): what landed stays, the job runs once more against the fresh state.

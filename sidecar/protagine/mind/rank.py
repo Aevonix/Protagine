@@ -59,6 +59,7 @@ class Candidate:
     cooldown_hours: Optional[float] = None  # a message's own per-contact cooldown (a check-in's backoff)
     purpose: Optional[str] = None           # check_in | follow_up:<id> | reply_wait:<id>: the composer's enum
     grant: Optional[str] = None             # "owner": a per-commitment owner grant for this recipient only
+    ask_owner: bool = False                 # the owner confirms before it acts (a recipient matched by name)
 
     def as_detail(self) -> Dict[str, Any]:
         """The candidate as a concern's stored detail (JSON); ``from_detail`` restores it."""

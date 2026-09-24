@@ -1061,15 +1061,26 @@ class SQLiteContactStore(ContactStore):
             })
         return out
 
-    async def resolve_reference(self, reference: str) -> Optional[Contact]:
-        """One contact for the way the owner names people: a contact id, an E.164 number, an email,
-        ``gateway:address``, a unique display or given name (or a unique first word of a display
-        name), or a handle address nobody else has. Ambiguity or an unknown name is None."""
+    async def resolve_reference(self, reference: str, *, exact: bool = False) -> Optional[Contact]:
+        """One contact for the way the owner names people: a contact id, a handle address only one
+        contact holds, an E.164 number, an email, ``gateway:address``, and then (unless ``exact``) a
+        unique display or given name, or a unique first word of a display name. A name is a guess:
+        ``exact`` refuses it, so an owner's grant never sends to someone matched by name alone.
+        Ambiguity or an unknown reference is None."""
         ref = (reference or "").strip()
         if not ref:
             return None
         if ref.startswith("cid-"):
             return await self.get(ref)
+        db = self._require_db()
+        async with db.execute(
+            "SELECT DISTINCT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
+            "WHERE h.address = ? AND c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name')",
+            (ref,),
+        ) as cur:
+            rows = await cur.fetchall()
+        if len(rows) == 1:
+            return Contact.from_row(dict(rows[0]))
         if is_e164(ref):
             return await self._match_canonical("", ref)
         if "@" in ref and ":" not in ref:
@@ -1080,7 +1091,8 @@ class SQLiteContactStore(ContactStore):
                 found = await self.resolve_messaging_handle(gateway, address)
                 if found is not None:
                     return found
-        db = self._require_db()
+        if exact or rows:
+            return None
         wanted = ref.lower()
         async with db.execute(
             "SELECT * FROM contacts WHERE deleted_at IS NULL AND (lower(display_name) = ? OR lower(given_name) = ?)",
@@ -1091,16 +1103,6 @@ class SQLiteContactStore(ContactStore):
             async with db.execute("SELECT * FROM contacts WHERE deleted_at IS NULL AND display_name IS NOT NULL") as cur:
                 rows = [r for r in await cur.fetchall()
                         if str(r["display_name"] or "").strip().lower().split(" ")[0] == wanted]
-        if len(rows) == 1:
-            return Contact.from_row(dict(rows[0]))
-        if len(rows) > 1:
-            return None
-        async with db.execute(
-            "SELECT DISTINCT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
-            "WHERE h.address = ? AND c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name')",
-            (ref,),
-        ) as cur:
-            rows = await cur.fetchall()
         return Contact.from_row(dict(rows[0])) if len(rows) == 1 else None
 
     async def set_timezone(

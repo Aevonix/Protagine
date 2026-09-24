@@ -185,3 +185,16 @@ async def test_a_contacts_own_cadence_turn_and_people_off_set_nothing(make):
     owner_turn(off, "turn-1", cadence_turns()[2])
     await off.tick()
     assert off.contacts.records[CONTACT]["cadence_minutes"] is None and cadence_log(off) == []
+
+
+async def test_a_cadence_for_someone_matched_only_by_name_is_not_applied(make):
+    """A cadence times check-ins to that person; set on a name guess it could time them to the
+    wrong one, so only a recipient the owner identified exactly gets it (audit M4)."""
+    named = {**CADENCE_ITEM, "metadata": {**CADENCE_ITEM["metadata"], "recipient": "Sam"}, "counterpart": "Sam"}
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")], router=CadenceRouter(named))
+    fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
+    owner_turn(fx, "turn-1", cadence_turns()[0].replace(CONTACT, "Sam"))
+    await fx.tick()
+    row, = fx.commitments.get_pending_for_person(OWNER)
+    assert row["metadata"]["recipient_id"] == CONTACT and row["metadata"]["recipient_exact"] is False
+    assert fx.contacts.records[CONTACT]["cadence_minutes"] is None and cadence_log(fx) == []

@@ -159,8 +159,11 @@ handle kinds; deployments supply the recognizers.
 One interface, three doors: the router `/v1/mind/people`
 (`api/routers/people.py`), the tool `protagine_people` and the CLI
 `protagine people`. `<who>` is a contact id, a phone number, an email,
-`gateway:address` or a unique name (`store.resolve_reference`; an ambiguous
-name resolves to nobody).
+`gateway:address` or a unique name (`store.resolve_reference`: a handle
+address only one contact holds comes before any name, and an ambiguous name
+resolves to nobody; with `exact=True` names are refused, which is how an
+owner's grant to message a third party is kept to someone the owner
+identified).
 
 | Router | Tool | CLI | Who |
 |---|---|---|---|

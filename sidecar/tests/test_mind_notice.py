@@ -67,6 +67,29 @@ def test_a_contacts_own_request_to_message_a_third_party_carries_no_grant(tmp_pa
     assert row["metadata"]["kind"] == "notice" and "grant" not in row["metadata"]
 
 
+def test_a_notice_carries_only_words_the_owner_said(tmp_path):
+    """Audit M4(d): the notice path sends the owner's own words verbatim, so words the owner never
+    said (a model's paraphrase, or owner-only detail) become a check-in around the matter."""
+    store = _store(tmp_path)
+    said = f"If {CONTACT} has not confirmed within 30 minutes, tell them: the parcel is running late,  sorry!"
+    kept = record_items([NOTICE], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
+                        owner_id=OWNER, owner_text=said)
+    assert store.get(kept["created"][0])["metadata"]["content"] == "The parcel is running late, sorry."
+    invented = {**NOTICE, "description": f"Warn {CONTACT} about the late parcel",
+                "metadata": {**NOTICE["metadata"], "content": "The parcel is late; the reserve is amber-cobalt-42."}}
+    moved = record_items([invented], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
+                         owner_id=OWNER, owner_text=said)
+    row = store.get(moved["created"][0])
+    assert row["metadata"]["kind"] == "check_in" and "content" not in row["metadata"]
+    assert row["metadata"]["grant"] == "owner" and row["metadata"]["topic"] == "Warn about the late parcel"
+
+
+def test_the_extractor_contract_says_a_withheld_permission_is_no_message():
+    """Audit M4(c): permission-ask-holds is release-blocking, so the contract shows the negatives."""
+    assert "Do not message p-05 until I say so." in extract.SYSTEM
+    assert "I have not said you may write to p-05 yet" in extract.SYSTEM
+
+
 def test_a_notice_without_words_is_a_plain_commitment(tmp_path):
     store = _store(tmp_path)
     empty = {**NOTICE, "metadata": {"kind": "notice", "recipient": CONTACT, "content": "  ", "grant": "owner"}}
@@ -82,7 +105,7 @@ def test_a_notice_without_words_is_a_plain_commitment(tmp_path):
 def _row(ident, item, *, recipient_id=CONTACT, due=T0 - timedelta(minutes=5)):
     metadata = dict(item["metadata"], counterpart=item["counterpart"], obligor=item["obligor"])
     if recipient_id:
-        metadata["recipient_id"] = recipient_id
+        metadata.update(recipient_id=recipient_id, recipient_exact=True)   # as the tick resolves an id
     return {"id": ident, "person_id": OWNER, "description": item["description"], "priority": 70, "status": "overdue",
             "due_at": due.isoformat(), "source_type": "cognition", "metadata": metadata}
 
@@ -146,6 +169,20 @@ async def test_the_grant_acts_under_standard_for_an_ask_contact_and_the_sent_row
     resolved = fx.commitments.get(row["id"])
     assert resolved["status"] == "fulfilled" and resolved["metadata"]["resolution"]["by"] == "body"
     assert fx.messages_to(OTHER) == [] and (await fx.tick())["formed"] == []
+
+
+async def test_a_grant_to_someone_matched_only_by_name_is_an_owner_ask(make):
+    """Audit M4(a): the owner named "Sam"; the store found Sam by name only. The mind does not send
+    on a guess: the owner is asked, seeing both the name they gave and who it matched."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    row = _seed(fx, {**NOTICE, "metadata": {**NOTICE["metadata"], "recipient": "Sam"}, "counterpart": "Sam"})
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "commitment_notice" and formed["decision"] == "ask" and formed["status"] == "asked"
+    stored = fx.store.get(formed["id"])
+    assert stored.entity_id == CONTACT and "Sam" in stored.description and CONTACT in stored.description
+    assert fx.commitments.get(row["id"])["metadata"]["recipient_exact"] is False
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
 
 
 async def test_a_never_contact_is_never_overridden_and_the_owner_hears_why(make):

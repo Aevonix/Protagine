@@ -323,6 +323,23 @@ async def test_resolve_reference_by_id_handle_email_address_or_unique_name(store
     assert await store.resolve_reference("cid-nope-1") is None
 
 
+@pytest.mark.asyncio
+async def test_an_exact_reference_never_matches_by_name_and_a_handle_outranks_a_name(store):
+    """Audit M4: an owner's grant may send automatically only to someone the owner identified
+    exactly (an id, a handle, a number, an email); a name is a guess the owner confirms."""
+    sam = await store.create(display_name="Sam Rivera", given_name="Sam")
+    await store.add_handle(sam.contact_id, "sms", "+15550001234")
+    await store.add_handle(sam.contact_id, "capture", "p-05")
+    namesake = await store.create(display_name="p-05")          # a display name that looks like the handle
+    for reference in (sam.contact_id, "p-05", "capture:p-05", "+15550001234", "sms:+1 (555) 000-1234"):
+        assert (await store.resolve_reference(reference, exact=True)).contact_id == sam.contact_id, reference
+    assert (await store.resolve_reference("p-05")).contact_id == sam.contact_id  # the handle, not the name
+    for name in ("Sam", "Sam Rivera", "sam"):
+        assert await store.resolve_reference(name, exact=True) is None, name
+        assert (await store.resolve_reference(name)).contact_id == sam.contact_id, name
+    assert namesake.contact_id != sam.contact_id
+
+
 # -- C1: one phone identity on any gateway ------------------------------------------------------
 
 def test_is_e164_and_canonical_handle():

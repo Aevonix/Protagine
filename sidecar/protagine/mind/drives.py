@@ -197,9 +197,12 @@ def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tu
 def owner_cadence(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tuple[str, int, str]]:
     """``(recipient_id, cadence_minutes, topic)`` of a recurring check-in the owner set for a
     contact (capture's ``metadata.kind`` ``cadence`` on the owner's own row), once the tick
-    resolved the recipient; None otherwise. It sets a rhythm and a matter, never a permission."""
+    resolved the recipient exactly; None otherwise, and for a name match (a cadence on a guess
+    would time check-ins to the wrong person). It sets a rhythm and a matter, never a permission."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     if str(metadata.get("kind") or "") != CADENCE_KIND or not owner_id or str(row.get("person_id") or "") != owner_id:
+        return None
+    if metadata.get("recipient_exact") is not True:
         return None
     recipient = str(metadata.get("recipient_id") or "").strip()
     minutes = metadata.get("cadence_minutes")
@@ -250,18 +253,23 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
     granted = granted_message(row, owner_id=owner_id) if people_on else None
     if granted is not None:
         kind, recipient = granted
-        common = dict(drive="duty", kind="message", recipient=recipient, grant="owner", evidence=evidence,
+        # The grant reaches only someone the owner identified exactly; a name the store matched is
+        # the owner's to confirm, shown with the name they gave and the contact it matched.
+        exact = metadata.get("recipient_exact") is True
+        named = "" if exact else f" (you said {str(metadata.get('recipient') or '').strip()!r}; matched {recipient})"
+        common = dict(drive="duty", kind="message", recipient=recipient, grant="owner" if exact else None,
+                      ask_owner=not exact, evidence=evidence,
                       invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
                       source_type="commitment", source_id=row["id"], priority=priority / 100.0,
                       concern_kind="obligation", salience=0.9, cost=0.05)
         if kind == "notice":
             # The owner's own words, sent verbatim once the condition time has passed.
-            return Candidate(type="commitment_notice", title=f"Notice to {recipient}: {description}"[:160],
+            return Candidate(type="commitment_notice", title=f"Notice to {recipient}{named}: {description}"[:160],
                              dedup_key=f"commitment:{row['id']}:notice", text=str(metadata["content"]).strip(),
                              rationale="the owner asked for this to be said if the deadline passed",
                              concern=f"owed notice: {description}", **common)
         # A check-in the owner asked for: composed from the recipient's own packet at send time.
-        return Candidate(type="commitment_check_in", title=f"Check in with {recipient}: {description}"[:160],
+        return Candidate(type="commitment_check_in", title=f"Check in with {recipient}{named}: {description}"[:160],
                          dedup_key=f"commitment:{row['id']}:check_in", text="", purpose=f"follow_up:{row['id']}",
                          topic=str(metadata.get("topic") or "").strip(),
                          rationale="the owner asked for this to be chased if the deadline passed",
