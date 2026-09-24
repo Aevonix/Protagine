@@ -2362,13 +2362,20 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             logger.warning('source erasure affect cleanup is pending', exc_info=True)
     vector_cleanup = ('disabled_not_checked' if os.environ.get('PROTAGINE_EMBED_PROVIDER') == 'skip'
                       else 'unavailable')
+    vector_purge = 'not_run'
     from protagine.vector import get_store
     vector_store = get_store()
     if vector_store is not None and getattr(vector_store, 'catalog', None) is not None:
         vector_cleanup = 'pending'
         try:
-            await vector_store.erase_source_projections(list(dict.fromkeys(result['source_ids'] + result['affected_source_ids'])))
+            await vector_store.erase_source_projections(
+                list(dict.fromkeys(result['source_ids'] + result['affected_source_ids'])), purge=False)
             vector_cleanup = 'complete'
+            # The rows are out of the served view now. Compacting the tables, which takes
+            # the text out of the data files and old versions, runs after the answer: on a
+            # large store never compacted before it takes minutes (operability-11).
+            vector_store.schedule_purge()
+            vector_purge = 'scheduled'
         except Exception:
             logger.warning('source erasure vector generation cleanup is pending', exc_info=True)
     transport_cleanup = 'pending'
@@ -2388,7 +2395,7 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
         except Exception:
             logger.warning('Source erasure communication summary cleanup remains pending', exc_info=True)
     return {"source_erased": True, **result,
-            "shared_facts_cleanup": fact_cleanup, "vector_cleanup": vector_cleanup,
+            "shared_facts_cleanup": fact_cleanup, "vector_cleanup": vector_cleanup, "vector_purge": vector_purge,
             "transport_cleanup": transport_cleanup, **tom_cleanup,
             "communications_cleanup": communications_cleanup,
             "communications_scope": "source_linked_summaries_only",

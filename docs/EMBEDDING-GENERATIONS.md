@@ -64,7 +64,12 @@ ID from active, staged and retained generations. Canonical-source erasure also
 scans exact source links, including orphaned vectors whose graph row has already
 disappeared. Recall and late writes check the same fences. The forget response
 reports `vector_cleanup` independently; `pending` requires a retry and does not
-mean that physical cleanup completed. Unlinked historical vectors cannot acquire
+mean that physical cleanup completed. `complete` means the rows are gone from
+every generation's served view. Compacting the tables, which takes the erased
+text out of the Lance data files and old versions, runs after the response
+(`vector_purge: scheduled`): on a large store that was never compacted the
+first pass takes minutes. A forget that arrives during a pass gets one more,
+and a failed pass is retried by the next forget. Unlinked historical vectors cannot acquire
 invented source ownership from matching text. Their source provenance remains
 unknown.
 

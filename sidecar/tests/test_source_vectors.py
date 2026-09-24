@@ -475,3 +475,55 @@ async def test_purge_rewrite_waits_for_a_concurrent_projection_commit(tmp_path, 
         assert files_containing(tmp_path / 'lancedb', secret) == []
     hits, _ = await projection.search('workplace', contact_id='c', session_id='s', limit=20)
     assert {hit['turn_id'] for hit in hits} == {f'kept-{index}' for index in range(11)} | {'late'}
+
+
+@pytest.mark.asyncio
+async def test_forget_answers_before_the_compaction_which_then_purges_the_text(tmp_path, monkeypatch):
+    """Cutover operability-11: compacting every table (a first compaction of a large, never-compacted
+    store takes minutes) is off the forget request path. The request removes the rows from the served
+    view and answers; the purge that takes the text out of the data files and old versions runs after,
+    and a forget that arrives while it runs gets one more pass."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    import protagine.vector as vector_module
+    from protagine.api.routers import host
+
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    ledger, store, pipeline, projection = await setup(tmp_path)
+    for index in range(3):
+        ledger.record_source(f'kept-{index}', contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'Office {index} is beside the orchard.'}])
+    secrets = {'first': 'cedar-9x', 'second': 'willow-4q'}
+    for turn, secret in secrets.items():
+        ledger.record_source(turn, contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'The hydrofoil code is {secret}.'}])
+    await drain(projection)
+    monkeypatch.setattr(vector_module, '_store', store)
+    release, purged = asyncio.Event(), []
+    real_purge = store._purge_deleted
+
+    async def slow_purge(db, name):
+        await release.wait()
+        purged.append(name)
+        await real_purge(db, name)
+
+    monkeypatch.setattr(store, '_purge_deleted', slow_purge)
+    app = FastAPI()
+    app.include_router(host.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        for turn in secrets:
+            response = await asyncio.wait_for(client.post('/v1/host/memory/sources/forget', json={
+                'contact_id': 'c', 'source_ids': [turn]}), timeout=10)
+            assert response.status_code == 200, response.text
+            assert response.json()['vector_cleanup'] == 'complete'
+            assert response.json()['vector_purge'] == 'scheduled'
+    assert purged == []
+    hits, _ = await projection.search('hydrofoil', contact_id='c', session_id='s', limit=20)
+    assert not {hit['turn_id'] for hit in hits} & set(secrets)
+    release.set()
+    await asyncio.wait_for(store._purge_task, timeout=30)
+    assert purged and set(purged) <= {collection.value for collection in Collection}
+    for secret in secrets.values():
+        assert files_containing(tmp_path / 'lancedb', secret) == []
+    hits, _ = await projection.search('workplace', contact_id='c', session_id='s', limit=20)
+    assert {hit['turn_id'] for hit in hits} == {f'kept-{index}' for index in range(3)}

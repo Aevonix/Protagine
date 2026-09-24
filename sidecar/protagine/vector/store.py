@@ -128,6 +128,10 @@ class VectorStore:
         # table rewrite after erasure snapshots and replaces a whole table, and
         # would drop any row another writer commits in between.
         self.write_lock = asyncio.Lock()
+        # The compaction after an erasure runs as one background task; a request
+        # while it runs asks for one more pass (``schedule_purge``).
+        self._purge_task: asyncio.Task | None = None
+        self._purge_wanted = False
 
     async def connect(self, dimensions: int) -> None:
         """Open (or create) the LanceDB database directory."""
@@ -551,11 +555,13 @@ class VectorStore:
         self._db = None
         self._generation_dbs.clear()
 
-    async def erase_source_projections(self, turn_ids):
+    async def erase_source_projections(self, turn_ids, *, purge=True):
         """Remove exact linked rows even when the old graph row is already gone.
 
-        Every table is compacted afterwards, so the erased text also leaves the
-        Lance data files and version history rather than only the current view.
+        With ``purge`` every table is compacted afterwards, so the erased text
+        also leaves the Lance data files and version history rather than only
+        the current view. The forget route passes ``purge=False`` and calls
+        ``schedule_purge``: a first compaction of a large store takes minutes.
         """
         if self.catalog is None:
             return 0
@@ -589,12 +595,49 @@ class VectorStore:
                     if matched:
                         # The reader retains its snapshot as each bounded
                         # deletion commits. Later batches must still be read.
-                        await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
+                        # Under the write lock, so a purge's table rewrite
+                        # (snapshot, then overwrite) never brings the rows back.
+                        async with self.write_lock:
+                            await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
                         deleted.update((collection.value, value) for value in matched)
-                # Unconditional, so a retry after a failed compaction still
-                # finishes the job and earlier soft deletes are purged as well.
-                await self._purge_deleted(db, collection.value)
+                if purge:
+                    # Unconditional, so a retry after a failed compaction still
+                    # finishes the job and earlier soft deletes are purged as well.
+                    await self._purge_deleted(db, collection.value)
         return len(deleted)
+
+    async def purge_deleted(self):
+        """Compact every collection of every generation (``_purge_deleted``)."""
+        if self.catalog is None:
+            return
+        for generation in await asyncio.to_thread(self.catalog.generations):
+            db = await self._generation_db(generation)
+            names = await db.table_names()
+            for collection in Collection:
+                if collection.value in names:
+                    await self._purge_deleted(db, collection.value)
+
+    def schedule_purge(self) -> asyncio.Task:
+        """Run ``purge_deleted`` in the background, off the request that erased.
+
+        One task at a time: a request while it runs asks for one more pass, so
+        rows deleted after the pass began are purged too. A failed pass is
+        logged; the next erasure's pass purges what it left, since compaction
+        takes every soft delete in the table.
+        """
+        self._purge_wanted = True
+        if self._purge_task is None or self._purge_task.done():
+            self._purge_task = asyncio.get_running_loop().create_task(self._purge_while_wanted())
+        return self._purge_task
+
+    async def _purge_while_wanted(self):
+        while self._purge_wanted:
+            self._purge_wanted = False
+            try:
+                await self.purge_deleted()
+            except Exception:
+                logger.warning('vector purge after source erasure failed; the next erasure retries it',
+                               exc_info=True)
 
     async def _purge_deleted(self, db, name):
         """Rewrite a table so soft-deleted rows leave its data files and history.
