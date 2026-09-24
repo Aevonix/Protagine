@@ -32,6 +32,13 @@ from protagine.qualification import paired, paired_body, paired_worker
 from protagine.qualification.paired_cases import assess
 from protagine.qualification.paired_workflow_runtime import episode_kind
 
+# These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
+# no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
+needs_hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_time") is None,
+                                  reason="needs stock Hermes in the test interpreter")
+pytestmark = needs_hermes
+
+
 GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'generators'
 OWNER = 'fixture-owner'          # the paired cases' owner contact (paired_cases.cases)
 KEY = 'walk-key-' + 'x' * 32

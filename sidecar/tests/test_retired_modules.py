@@ -43,7 +43,11 @@ ALLOWED_LITERAL = re.compile(r"""["'](?:world_model|protagine_world_model\.db)["
 
 @pytest.mark.parametrize("module", RETIRED_MODULES)
 def test_retired_modules_do_not_exist(module):
-    assert find_spec(module) is None, f"{module} still exists"
+    try:
+        spec = find_spec(module)
+    except ModuleNotFoundError:  # a retired parent package: the module cannot exist either
+        spec = None
+    assert spec is None, f"{module} still exists"
 
 
 def test_research_gathers_from_no_graph():

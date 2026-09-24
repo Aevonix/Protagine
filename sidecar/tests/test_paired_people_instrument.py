@@ -25,6 +25,12 @@ from protagine.qualification.paired_cases import cases as real_cases
 from test_qualification_body_events import INBOUND, TICK, USER, run_worker, stubbed_hermes  # noqa: F401
 from test_qualification_paired_runner import fixture  # noqa: F401  (pytest fixture)
 
+# These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
+# no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
+needs_hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_time") is None,
+                                  reason="needs stock Hermes in the test interpreter")
+
+
 GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'generators'
 
 CONTACTS = {'p-02': {'channel': 'chat', 'address': 'capture:p-02', 'may_contact': 'auto', 'cadence_minutes': 12},
@@ -311,6 +317,7 @@ def _seconds_apart(stamp, moment):
     return abs((parse_iso(stamp) - moment).total_seconds())
 
 
+@needs_hermes
 async def test_an_inbound_turn_after_a_clock_advance_is_recorded_on_the_body_clock(sync_host):
     with body_clock() as body:
         contact = await sync_host.store.create(display_name='p-02', trust_tier='regular', may_contact='auto',
@@ -335,6 +342,7 @@ async def test_an_inbound_turn_after_a_clock_advance_is_recorded_on_the_body_clo
         assert _seconds_apart(seen.last_interaction_at, worker.mind_clock()) <= 5
 
 
+@needs_hermes
 async def test_a_conversation_after_a_clock_advance_satisfies_the_cadence_end_to_end(sync_host):
     """The family's cadence-satisfied-by-conversation control on the real store and the body clock:
     the contact writes 0.7 cadences in, the ticks run at 1.3 cadences, and no check-in forms."""

@@ -10,6 +10,7 @@ resolution and one real tick (audit m9), and invariant episode 2 on the real sto
 from __future__ import annotations
 
 from datetime import timedelta
+import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,12 @@ from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
 from protagine.qualification import native_memory_worker as worker
 from protagine.turns import TurnIdempotencyLedger
+
+# These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
+# no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
+needs_hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_time") is None,
+                                  reason="needs stock Hermes in the test interpreter")
+
 
 @pytest.fixture
 async def arm(tmp_path, monkeypatch):
@@ -69,6 +76,7 @@ async def arm(tmp_path, monkeypatch):
         await store.close()
 
 
+@needs_hermes
 async def test_a_group_chat_of_ten_unknown_members_raises_no_check_in_and_no_ask(arm):
     """Build plan M5: ten strangers writing in one group become ten contacts, none of whom the
     social drive may consider, so a real tick forms nothing: no check-in and no owner ask."""
@@ -87,6 +95,7 @@ async def test_a_group_chat_of_ten_unknown_members_raises_no_check_in_and_no_ask
     assert arm.initiatives.intentions(limit=100) == [] and arm.mind.asks() == []
 
 
+@needs_hermes
 async def test_invariant_episode_two_a_never_contact_under_every_reason_gets_nothing(arm):
     """Evals 7.3 episode 2 on the real stores: a ``never`` contact with an owner cadence, an owner
     grant to message them and their own open item gets no message over a day of ticks; the owner

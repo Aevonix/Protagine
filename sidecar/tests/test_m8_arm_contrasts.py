@@ -48,6 +48,12 @@ from protagine.qualification.native_memory_worker import mind_clock, mind_sectio
 from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
 from protagine.turns.idempotency import TurnIdempotencyLedger
 
+# These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
+# no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
+needs_hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_time") is None,
+                                  reason="needs stock Hermes in the test interpreter")
+
+
 GENERATORS = Path(__file__).resolve().parents[2] / "benchmarks" / "paired" / "generators"
 OWNER = "p-00"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -265,6 +271,7 @@ def differing(views, left, right):
             if probe_view(views[(ident, left)]) != probe_view(views[(ident, right)])}
 
 
+@needs_hermes
 async def test_consolidation_runs_inside_every_memory_episode_and_changes_what_its_probe_sees(harness):
     views = await harness("memory.py", ("full", "full-consolidation"))
     scenarios = sorted({ident for ident, _ in views})
@@ -293,6 +300,7 @@ async def test_consolidation_runs_inside_every_memory_episode_and_changes_what_i
             assert full["questions"] == [], ident
 
 
+@needs_hermes
 async def test_the_nightly_narrative_changes_what_the_self_probe_sees(harness):
     views = await harness("identity.py", ("full", "full-consolidation", "full-self_narrative"))
     scenarios = sorted({ident for ident, _ in views})
