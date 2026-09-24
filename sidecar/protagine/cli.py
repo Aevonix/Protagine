@@ -162,6 +162,8 @@ def main() -> None:
     # --- mind ---
     from protagine.mind.cli import add_parser as add_mind_parser
     add_mind_parser(sub)
+    from protagine.contacts.cli import add_parser as add_people_parser
+    add_people_parser(sub)
 
     # --- feeds ---
     feeds_p = sub.add_parser("feeds", help="Manage spec-driven intelligence feeds")
@@ -599,6 +601,11 @@ def main() -> None:
         _load_dotenv()
         from protagine.mind.cli import run as run_mind_command
         sys.exit(run_mind_command(args))
+
+    elif args.command == "people":
+        _load_dotenv()
+        from protagine.contacts.cli import run as run_people_command
+        sys.exit(run_people_command(args))
 
     elif args.command == "feeds":
         from protagine.feeds.cli import main as feeds_main
