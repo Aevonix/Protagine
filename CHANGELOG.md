@@ -65,7 +65,8 @@ recall never shows a lesson as something the owner said and forgetting a turn
 a lesson quotes forgets the lesson. The night gains a lesson stage (one call,
 charged to the night inside `learn_share`) over the owner's own sessions since
 the last review and the agent's verified results: every operation cites what
-it rests on and an owner citation quotes the owner's exact words, a strategy
+it rests on, an owner citation is a verdict the call reports on the agent's
+earlier work (never a request) and quotes the owner's exact words, a strategy
 needs the owner or a check that reads state the worker cannot write (a
 `result_field` check reads only the worker's own report, so it verifies no
 lesson), a Hermes failure with its reason teaches only a pitfall, and a

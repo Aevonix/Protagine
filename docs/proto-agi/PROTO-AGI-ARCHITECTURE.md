@@ -595,7 +595,10 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    - **Admission.** Only on a verified outcome, as the table above allows. Extraction is batched
      nightly (one tool-less call) over the owner's own sessions since the last review and the
      verified results of the last two weeks; every operation cites what it rests on, and an owner
-     citation quotes the owner's exact words, validated before anything is written.
+     citation quotes the owner's exact words, validated before anything is written. An owner
+     message is the `owner` verifier only as a verdict the same call reports: one that follows an
+     agent reply in its session and judges that work (a request is not one). A retirement needs a
+     verdict or a check that shows the lesson wrong.
    - **Edits** are delta edits: a newer lesson on the same signature supersedes the old one.
      Whole rewrites are not allowed.
    - **Use.** Up to 2 lessons go into deliberation and kanban task bodies, and 1 into turn

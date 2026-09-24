@@ -520,14 +520,20 @@ erases it together with its evidence.
   (sessions with at least two owner messages: a verdict follows work; the
   agent's replies beside them) and the agent's tasks and goals of the last two
   weeks that a verifier stands behind, with the current lessons they bear on.
-  The model returns `add`, `supersede` or `retire` operations and per-turn
-  verdicts; each is validated before anything is written. Every citation must
-  be in the packet; an operation citing an owner message quotes the owner's
-  exact words (at least 12 characters); a strategy needs the owner or an
-  external check, while a Hermes failure with its reason teaches only a
-  pitfall; a result nobody verified can never be cited; a contact's session is
-  never read. At most six operations a night are applied. One current lesson
-  per class and kind: an add that meets one supersedes it.
+  The model returns `add`, `supersede` or `retire` operations and its
+  verdicts: the owner messages that judge the agent's earlier work, right or
+  wrong, each with a quote. Everything is validated before anything is
+  written. A verdict counts only for an owner message that follows an agent
+  reply in its session, and only a verdict is the `owner` verifier: an
+  operation may cite an owner message only when the answer reports it as a
+  verdict, and quotes the owner's exact words (at least 12 characters), so a
+  request never verifies a lesson. Every citation must be in the packet; a
+  strategy needs an owner verdict or an external check, while a Hermes failure
+  with its reason teaches only a pitfall; a retirement needs an owner verdict
+  that the work was wrong or a verified result that failed; a result nobody
+  verified can never be cited; a contact's session is never read. At most six
+  operations a night are applied. One current lesson per class and kind: an
+  add that meets one supersedes it.
 - **Use.** A task body and its deliberation carry at most two lessons, those of
   the task's own failure class first, then active lessons whose title and use
   share at least two terms and a third of their terms with the work; the
