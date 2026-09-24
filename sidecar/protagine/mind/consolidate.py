@@ -528,9 +528,11 @@ class Consolidation:
                  [item["key"]]) for item in items[:SECTION_LINES["interests"]]]
 
     def _strength_lines(self, rows: Sequence[Any]) -> List[Tuple[str, List[str]]]:
+        """Per task type, the agent's own work of the last 30 days: only intentions it acted on or asked
+        about (``audit.is_action``), never ones it dropped or deferred, so every cited id is an action."""
         by_type: Dict[str, List[Any]] = {}
         for row in rows:
-            if row.kind in {"task", "goal"} and row.type:
+            if row.kind in {"task", "goal"} and row.type and self._narratable(audit.entry(row)):
                 by_type.setdefault(str(row.type), []).append(row)
         lines = []
         for type_name, group in sorted(by_type.items(), key=lambda item: (-len(item[1]), item[0])):

@@ -44,7 +44,8 @@ next night.
    rebuilt from the stores and stored: `self.interests` (the three strongest seeded and declared
    interests, each citing its own record, `interest:<slug>`), `self.strengths` (the two task
    types with the most work over 30 days: `research: 3 done, 1 failed, 2 verified of 4`, or
-   `weak at <type>` when failures outnumber successes, citing up to two intention ids) and
+   `weak at <type>` when failures outnumber successes, citing up to two intention ids; only the
+   agent's own actions count, never an intention it dropped or deferred) and
    `self.stances` (three of the judgments store's current revisions, each citing
    `judgment:<revision id>`, until M7's opinion store replaces the reader). Only `self.recent`
    ("the last 7 days") is model-written, by delta edits of at most 4 lines. Its evidence is the

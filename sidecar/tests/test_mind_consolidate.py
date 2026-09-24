@@ -689,6 +689,25 @@ async def test_a_recent_line_shows_where_its_action_really_stands(fx):
     fx.mind.outcomes.record(message.id, status="done", hermes_ref="message:9", summary="delivered")
     assert fx.mind.narrative()["sections"]["recent"] == f"I sent the owner the reminder (done) [{message.id}]"
 
+def test_strengths_count_and_cite_only_the_agents_own_actions(fx):
+    """Intentions the mind dropped or deferred are not work it did: a strength line never counts or cites
+    them (the self-report grader's ``audit.is_action`` would call such a citation a fabrication)."""
+    from protagine.mind import audit
+    dropped = []
+    for index in range(3):
+        row, _ = fx.store.create_intention(kind="task", type="research", title=f"look into tides {index}",
+                                           drive="curiosity", cls="internal", decision="drop",
+                                           decision_reason="below threshold", status="dropped",
+                                           dedup_key=f"drop:{index}", created_at=fx.now)
+        dropped.append(row.id)
+    assert fx.mind.narrative()["sections"]["strengths"] == ""
+    done = [settled_task(fx, title=f"research {index}", dedup=f"research:{index}") for index in range(2)]
+    narrative = fx.mind.narrative()
+    assert narrative["sections"]["strengths"].startswith("research: 2 done, 0 failed, 0 verified of 2 [")
+    assert not set(narrative["cites"]) & set(dropped)
+    assert all(audit.is_action(audit.entry(fx.store.get(ref))) for ref in narrative["cites"])
+    assert {row.id for row in done} <= set(narrative["cites"])
+
 def test_a_narrative_citation_is_one_of_five_kinds_that_exist(fx):
     """Plain ids are the agent's own actions (protagine_self why explains them); ``interest:``,
     ``judgment:``, ``turn:`` and ``claim:`` are record references. Nothing else resolves."""
