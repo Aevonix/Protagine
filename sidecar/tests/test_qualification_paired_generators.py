@@ -70,8 +70,8 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: '5918d52fe5d1dccb6aa81413f3e4295aac6a458eba792c3dab86128a8680ef94',
-                     11: 'f8963e5b2f7e81269450519ddd8500c9537834cdca84d14b3e160cf7e36e0c05'}
+PINNED_DEV_SPLITS = {7: 'fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0',
+                     11: 'af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9'}
 
 
 def initiative(generate, seed=11, per_template=3):

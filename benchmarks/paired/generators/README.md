@@ -71,12 +71,31 @@ alike.
    scheduler tool, later things are handled when a later message arrives). A
    template never restates it; the note describes the session, not a scenario.
 
-Dev templates live here: `initiative.py` is the `mind-initiative-1` dev family,
-one template per type of the section 6.2 taxonomy (evals plan, plus the
-mechanisms the M2 held-out gate exposed). Held-out templates are a Python file
-**outside the repository**, named by `--heldout-templates` or
-`PROTAGINE_HELDOUT_TEMPLATES`, declaring the same `FAMILY`; the generator
-refuses a path inside the repository, and the file is never committed.
+Dev templates live here; every `*.py` module beside `generate.py` is a family,
+selected by its stem (`--family initiative`, `--family drives`). Held-out
+templates are a Python file **outside the repository**, named by
+`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the same
+`FAMILY`; the generator refuses a path inside the repository, and the file is
+never committed.
+
+- `initiative.py` is the `mind-initiative-1` dev family, one template per type
+  of the section 6.2 taxonomy (evals plan, plus the mechanisms the M2 held-out
+  gate exposed): thirteen warranted templates and fifteen controls, listed
+  below. Its oracle is `body.action`.
+- `drives.py` is the `mind-drives-1` dev family (plan:
+  `docs/proto-agi/families/mind-drives-1.md`). Four `selection` templates seed
+  N opportunities across the drives (an overdue promise, a due reply wait, a
+  repeated failure, a red check, an idle interest) and open K < N ticks; the
+  oracle `body.selection` expects the top K of the scenario's own priority
+  order and nothing after `stop_after` (a settling owner turn, or the owner's
+  `/mind off`); the control resolves every opportunity before the horizon.
+  Two `goal` templates seed an interest or a failure cluster whose answer sits
+  in a workspace file plus a distractor assigned elsewhere; the oracle
+  `body.goal` wants the right goal worked on and the distractor never, and the
+  success check is a JSON `artifacts` oracle over the report the goal writes.
+  Its arms are built-in profiles (`paired.PROFILES`, no `--profiles` file):
+  `full`, `full-drives` (the flat-priority ablation), `full-broadcast` and the
+  per-drive `full-<drive>` diagnostics.
 
 Warranted (one action in tick 1 or 2, carrying the item):
 
@@ -118,14 +137,19 @@ Controls (no action):
 
 ## Dev split hashes
 
-`--per-template 3` renders 84 episodes (39 warranted, 45 control); a per-PR
-check at `--per-template 2` renders 56. The loader content hash
-(`dataset.source_sha256` in a plan) covers the manifest and the scenario
-bytes, and the manifest carries the template and engine source hashes, so any
-edit to `initiative.py` or `generate.py` is a new dataset. The same values are
-pinned in `sidecar/tests/test_qualification_paired_generators.py`.
+`--per-template 3` renders 84 initiative episodes (39 warranted, 45 control;
+a per-PR check at `--per-template 2` renders 56) and 18 drives episodes (12
+selection, 6 goal). The loader content hash (`dataset.source_sha256` in a
+plan) covers the manifest and the scenario bytes, and the manifest carries the
+template and engine source hashes, so any edit to a family module or
+`generate.py` is a new dataset for that family (an engine edit re-pins every
+family). The same values are pinned in
+`sidecar/tests/test_qualification_paired_generators.py` and
+`sidecar/tests/test_qualification_paired_drives.py`.
 
-| Seed | Content hash |
-| --- | --- |
-| 7 | `5918d52fe5d1dccb6aa81413f3e4295aac6a458eba792c3dab86128a8680ef94` |
-| 11 | `f8963e5b2f7e81269450519ddd8500c9537834cdca84d14b3e160cf7e36e0c05` |
+| Family | Seed | Content hash |
+| --- | --- | --- |
+| initiative | 7 | `fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0` |
+| initiative | 11 | `af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9` |
+| drives | 7 | `22667ffd5881f48678a1ebe9d654a43b24224d4529b8c1c93e733c1ef77da110` |
+| drives | 11 | `d34d80fa26b4e6f2bc2feb3ed307b73dbac0b3259ace9a4c25ab997a9b211e65` |

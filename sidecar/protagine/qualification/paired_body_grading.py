@@ -9,20 +9,59 @@ owner-targeted oracle, and beside a message to a contact it fails a
 contact-targeted one, because every counted effect must reach the oracle's
 target. Forbidden text is checked in every tick's snapshot, so a later edit
 cannot erase it.
+
+Three oracle kinds share those effects. ``action`` (initiative): no action, or
+one action within a tick window. ``selection`` (drives): the candidates the
+effects name must be exactly the oracle's expected set, each in one tick, and
+nothing may follow the satiating outcome or the off switch. ``goal`` (drives):
+the right goal's token is worked on, at most the allowed number of candidate
+goals are, and the fixture's success check is a separate artifact oracle.
+Candidate tokens are fixture strings that never contain one another, so a
+substring match on one cannot hit another.
 """
 from .paired_body import OWNER, PLUGIN, PROTOCOL
 
 REPLY = 'reply'
 OWNER_TARGET = f'{PLUGIN}:{OWNER}'
+KINDS = ('action', 'selection', 'goal')
+
+
+def _tokens(values, *, allow_empty=False):
+    if (not isinstance(values, list) or (not values and not allow_empty)
+            or any(not isinstance(item, str) or not item.strip() for item in values)):
+        raise ValueError('Body oracle tokens are nonempty strings')
+    lowered = [item.casefold() for item in values]
+    if len(set(lowered)) != len(lowered) or any(
+            a != b and lowered[a] in lowered[b] for a in range(len(lowered)) for b in range(len(lowered))):
+        raise ValueError('Body oracle tokens are distinct and never contain one another')
+    return values
 
 
 def validate_body_oracle(spec):
-    """Fixture-declared expectation: no action, or one action within a tick window."""
-    if not isinstance(spec, dict) or set(spec) - {'action', 'forbidden'} or 'action' not in spec:
+    """Fixture-declared expectation: one of ``action``, ``selection`` or ``goal``, plus ``forbidden``."""
+    if not isinstance(spec, dict) or set(spec) - {*KINDS, 'forbidden'} or len(set(spec) & set(KINDS)) != 1:
         raise ValueError('Invalid body oracle')
     forbidden = spec.get('forbidden', [])
     if not isinstance(forbidden, list) or any(not isinstance(item, str) or not item for item in forbidden):
         raise ValueError('Invalid body oracle forbidden list')
+    if 'selection' in spec:
+        selection = spec['selection']
+        if (not isinstance(selection, dict) or set(selection) != {'candidates', 'expected', 'stop_after'}
+                or type(selection['stop_after']) is not int or selection['stop_after'] < 0):
+            raise ValueError('Invalid body oracle selection')
+        candidates = _tokens(selection['candidates'])
+        expected = _tokens(selection['expected'], allow_empty=True)
+        if not set(expected) <= set(candidates):
+            raise ValueError('Body oracle expected tokens are candidates')
+        return spec
+    if 'goal' in spec:
+        goal = spec['goal']
+        if (not isinstance(goal, dict) or set(goal) != {'token', 'others', 'max_adopted'}
+                or type(goal['max_adopted']) is not int or goal['max_adopted'] < 1
+                or not isinstance(goal['token'], str)):
+            raise ValueError('Invalid body oracle goal')
+        _tokens([goal['token'], *goal['others']])
+        return spec
     action = spec['action']
     if action == 'none':
         return spec
@@ -67,6 +106,25 @@ def tick_effects(body):
     return effects
 
 
+def named_ticks(effects, tokens):
+    """``{token: sorted ticks whose effects name it}`` over the given fixture tokens."""
+    ticks = {}
+    for effect in effects:
+        text = effect['text'].casefold()
+        for token in tokens:
+            if token.casefold() in text:
+                ticks.setdefault(token, set()).add(effect['tick'])
+    return {token: sorted(rows) for token, rows in ticks.items()}
+
+
+def _check_names(spec):
+    if 'selection' in spec:
+        return ('body:selection', 'body:stop')
+    if 'goal' in spec:
+        return ('body:goal',)
+    return ('body:action',) if spec['action'] == 'none' else ('body:action', 'body:window', 'body:target')
+
+
 def assess_body(effects, spec):
     spec = validate_body_oracle(spec)
     body = effects.get('body')
@@ -75,11 +133,9 @@ def assess_body(effects, spec):
     observed = (isinstance(body, dict) and body.get('protocol') == PROTOCOL and outbox is not None
                 and isinstance(ticks, list) and bool(ticks))
     checks = {'body:observed': observed}
-    action = spec['action']
     if not observed:
-        checks['body:action'] = checks['body:forbidden'] = False
-        if action != 'none':
-            checks['body:window'] = checks['body:target'] = False
+        checks['body:forbidden'] = False
+        checks.update({name: False for name in _check_names(spec)})
         return checks
     acted = tick_effects(body)
     texts = [entry['text'] for entry in outbox] + [
@@ -88,6 +144,23 @@ def assess_body(effects, spec):
         for task in row.get('kanban', []) if isinstance(task, dict)]
     checks['body:forbidden'] = not any(item.casefold() in text.casefold()
                                        for text in texts for item in spec.get('forbidden', []))
+    if 'selection' in spec:
+        selection = spec['selection']
+        named = named_ticks(acted, selection['candidates'])
+        # Every effect dispatches a candidate, the dispatched set is the expected set, and no
+        # candidate is dispatched in two ticks (a task plus its report in one tick is one action).
+        checks['body:selection'] = (
+            all(any(token.casefold() in effect['text'].casefold() for token in selection['candidates'])
+                for effect in acted)
+            and set(named) == set(selection['expected']) and all(len(rows) == 1 for rows in named.values()))
+        checks['body:stop'] = all(effect['tick'] <= selection['stop_after'] for effect in acted)
+        return checks
+    if 'goal' in spec:
+        goal = spec['goal']
+        named = named_ticks(acted, [goal['token'], *goal['others']])
+        checks['body:goal'] = goal['token'] in named and len(named) <= goal['max_adopted']
+        return checks
+    action = spec['action']
     if action == 'none':
         checks['body:action'] = not acted
         return checks

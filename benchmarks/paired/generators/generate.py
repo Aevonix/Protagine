@@ -25,7 +25,8 @@ PROTOCOL = 'paired-generator-1'
 HELDOUT_ENV = 'PROTAGINE_HELDOUT_TEMPLATES'
 HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[2]
-FAMILIES = {'initiative': HERE / 'initiative.py'}
+# Every family module in this directory; ``--family`` is the module's stem.
+FAMILIES = {path.stem: path for path in sorted(HERE.glob('*.py')) if path.stem != Path(__file__).stem}
 MAX_PER_TEMPLATE = 16
 _LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
 
