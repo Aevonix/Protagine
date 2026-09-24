@@ -18,6 +18,36 @@ def validator(module):
     return Draft202012Validator(schema)
 
 
+def _optional_properties(node, path=''):
+    """Every object level (with its path) whose properties are not all listed in ``required``."""
+    found = []
+    if isinstance(node, dict):
+        if isinstance(node.get('properties'), dict):
+            missing = sorted(set(node['properties']) - set(node.get('required') or []))
+            if missing:
+                found.append((path or '/', missing))
+        for key, value in node.items():
+            found += _optional_properties(value, f'{path}/{key}')
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found += _optional_properties(value, f'{path}[{index}]')
+    return found
+
+
+def test_every_memory_response_schema_requires_every_property_at_every_level():
+    """The router sends every response schema with ``strict: true``, and a strict endpoint rejects
+    an object whose properties are not all required: an optional block fails every call there
+    (integration map X3). Optional content is a nullable type instead."""
+    from protagine.commitments import extract
+    schemas = {'claims': source_claims.RESPONSE_SCHEMA, 'claims (per source)':
+               source_claims.claim_response_schema('The kettle is on the second shelf.'),
+               'commitments': extract.RESPONSE_SCHEMA, 'appraisals': appraisals.RESPONSE_SCHEMA,
+               'judgments': judgments.RESPONSE_SCHEMA}
+    for name, schema in schemas.items():
+        Draft202012Validator.check_schema(schema['schema'])
+        assert _optional_properties(schema['schema']) == [], name
+
+
 def test_claim_schema_preserves_procedure_and_empty_output_but_not_unquoted_content():
     check = validator(source_claims)
     check.validate({'claims': []})
@@ -102,7 +132,7 @@ def test_judgment_schema_has_exact_abstain_retain_revise_shapes():
 
 def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims():
     check = validator(appraisals)
-    empty = {'observations': [], 'incident_decisions': []}
+    empty = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': None, 'opt_out': False}}
     check.validate(empty)
     item = {'kind': 'preference', 'dimension': 'communication', 'topic': 'review order',
             'text': 'The contact requests risk, edit, then links in reviews.',
@@ -119,6 +149,8 @@ def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims()
     for outcome in ('unchanged', 'uncertain'):
         check.validate({**empty, 'incident_decisions': [{'record_id': 'previous-incident', 'outcome': outcome}]})
     for bad in [{'observations': []},
+                {'observations': [], 'incident_decisions': []},          # the contact block is required
+                {**empty, 'contact': {'their_valence': None}},
                 {**empty, 'observations': [item] * 5},
                 {**empty, 'observations': [{**item, 'dimension': 'format'}]},
                 {**empty, 'observations': [{**item, 'intensity': 'strong'}]},

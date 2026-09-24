@@ -515,9 +515,14 @@ def with_contact(block):
     return decide
 
 
-def test_the_contact_block_is_optional_and_strictly_shaped(state):
+def test_the_contact_block_is_required_by_the_schema_tolerated_when_missing_and_strictly_shaped(state):
+    """A strict binding rejects a schema with an optional property, so the block is required and
+    "no signal" is {their_valence: null, opt_out: false}; a prompt-only binding that leaves it out
+    is still read (integration map X3)."""
     payload = {'evidence': [], 'previous': [], 'incident_ids': []}
     assert state._validate(json.dumps({'observations': [], 'incident_decisions': []}), payload) == []
+    quiet = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': None, 'opt_out': False}}
+    assert state._validate(json.dumps(quiet), payload) == []
     ok = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': -0.4, 'opt_out': False}}
     assert state._validate(json.dumps(ok), payload) == []
     assert module.contact_signal(ok) == {'their_valence': -0.4, 'opt_out': False}
@@ -531,8 +536,10 @@ def test_the_contact_block_is_optional_and_strictly_shaped(state):
     with pytest.raises(ValueError):
         state._validate(json.dumps({**ok, 'stance': {}}), payload)
     schema = module.RESPONSE_SCHEMA['schema']
-    assert 'contact' in schema['properties'] and 'contact' not in schema['required']
+    assert 'contact' in schema['properties'] and 'contact' in schema['required']
     assert 'their_valence' in module.SYSTEM and 'opt_out' in module.SYSTEM
+    assert '"their_valence": null, "opt_out": false' in module.SYSTEM
+    assert module.VERSION == 'source-appraisals-v5'
 
 
 @pytest.mark.asyncio
