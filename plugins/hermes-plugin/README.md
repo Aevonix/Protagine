@@ -15,6 +15,7 @@ needs; nothing else is required.
 | `commands.py` | `/mind status|log|why <id>|asks|off` |
 | `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`), `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
 | `reminders.py` | `protagine_reminder` on stock cron; the plugin keeps only the job id |
+| `opinions.py` | `protagine_opinions` (`list|why <id>`, owner only `withdraw|reconsider <id>`); reads carry the session's contact |
 
 Hermes config written by `protagine init`:
 

@@ -186,6 +186,17 @@ goals) and "Waiting for your say on" (open asks with their codes). Guests
 never see it. With `faculties.broadcast` off the concerns are neither shown
 nor added to the recall query.
 
+## Opinions
+
+With `faculties.opinions` on, the mind keeps the agent's opinions (docs/OPINIONS.md).
+Three failed attempts in a row at the same work (the failure signature `type:topic`)
+become an `avoid` approach opinion with no model call, and a verified success turns it
+into `prefer`; the next task at that work carries the view in its body
+("Your recorded view on this work [opinion N]: ...", with `context.opinion_ids`). Turn
+context gets a `protagine-stances` section of at most three relevant views for any
+viewer, filtered by audience. `protagine mind opinions` and `/v1/mind/opinions` list and
+show them, and let the owner withdraw or reconsider one.
+
 ## Asks
 
 An ask lives only in the sidecar. Nothing is created in Hermes until the owner
@@ -269,6 +280,7 @@ protagine mind stats               the in-vivo panel over the audit log
 protagine mind concerns            what is on the mind: drive levels, open concerns, the broadcast set
 protagine mind goals               the agent-owned goals that are open
 protagine mind interest <topic>    seed an interest for the curiosity drive
+protagine mind opinions [list|show <id>|withdraw <id>|reconsider <id>] [--query Q] [--history] [--reason R]
 ```
 
 ## The API (`/v1/mind`, one bearer key)

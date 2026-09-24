@@ -3,7 +3,7 @@
 `protagine-hermes` is one wheel with two Hermes plugins:
 
 - `protagine` (general): turn capture, the guard, `/mind`, and the self, people,
-  memory and reminder tools
+  opinions, memory and reminder tools
 - `protagine-memory` (memory provider): per-turn recall through
   `/v1/host/context/assemble`, turn sync when the general plugin is absent, and
   the owner's commitment and affect writes
@@ -65,7 +65,8 @@ memory; a cron run (`platform: cron`) is a stored prompt rather than the
 owner typing, so it cannot answer an ask, rate, change a permission or
 forget. Any other sender is a guest: `session_search` is blocked for guests,
 delivering cron jobs need a permitted recipient, and every mutation through
-`protagine_self`, `protagine_people` and `protagine_memory_forget` is refused.
+`protagine_self`, `protagine_people`, `protagine_opinions` and
+`protagine_memory_forget` is refused.
 
 ## Mind-originated runs
 
@@ -189,6 +190,13 @@ word; the sidecar checks the contact and the message again and answers
 A guest, a worker whose task body quotes the code, or a page injected into an
 owner session cannot approve. `protagine_self rate {id, verdict}` posts
 `POST /v1/mind/rate` for the owner only.
+
+`protagine_opinions` reads the agent's recorded opinions (`list` with an optional
+`query`, `why <id>`) through `GET /v1/mind/opinions` with the session's contact, so a
+guest sees only everyone-audience views; `withdraw` and `reconsider <id>` with the
+owner's `reason` post `POST /v1/mind/opinions/{id}/withdraw|reconsider` from the
+owner's own interactive session only, never a guest, a kanban worker or a cron run
+(docs/OPINIONS.md). The guard treats the tool as read-only.
 
 ## Memory provider
 

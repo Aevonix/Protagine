@@ -6,11 +6,12 @@ correct an exact handle and selected source attribution through `protagine_conta
 The correction preserves its receipt, invalidates dependent projections and
 reconciles surviving sources. A relationship update grants no permission.
 
-The existing source ledger holds preferences, temporary appraisals and narrow
-person/topic judgments with quotations, contrary evidence, source revisions,
-processor provenance and owner corrections. `protagine_judgments` inspects these
-records. Recollection selects relevant records for the current participant;
-private owner opinions are not disclosed to other contacts. Erasing or correcting
+The existing source ledger holds preferences and temporary appraisals; the
+agent's own person, topic and approach views live in the opinion store
+(docs/OPINIONS.md) with their premises, revisions, processor provenance and owner
+corrections, and `protagine_opinions` inspects them. Recollection selects relevant
+records for the current participant; private owner opinions are not disclosed to
+other contacts. Erasing or correcting
 supporting evidence removes its influence. Delayed extraction cannot resurrect
 invalidated evidence.
 
