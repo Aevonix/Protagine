@@ -396,6 +396,35 @@ def test_the_same_failures_three_days_old_or_followed_by_a_success_do_not_switch
     recovered.store.close()
 
 
+def test_the_switch_needs_two_failures_since_the_topics_last_success(world, tmp_path):
+    """A success halves frustration, and the next single failure lifts it back over 0.5; that is one
+    failure since the success, so it does not switch (the rule does not either) and the approach that
+    just worked is not abandoned after one miss. One failure and two corrections do not switch either."""
+    world.outcome("failed", hours=3, approach="the archive export")
+    world.outcome("failed", hours=2.5, approach="the archive export")
+    world.outcome("succeeded", hours=2, approach="the ledger database")
+    world.update()
+    world.outcome("failed", approach="the ledger database")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) >= SWITCH_AT
+    assert world.affect.view().frustrations == () and world.affect.note_for(TOPIC) == ""
+    assert affect_rules.view(world.affect.gather(world.now)).frustrations == ()
+    assert world.affect.state()["levels"]["frustration"][0]["failures"] == 1
+    world.shift(minutes=30)
+    world.outcome("failed", approach="the ledger database")
+    world.update()
+    [frustration] = world.affect.view().frustrations
+    assert frustration.failures == 2 and frustration.approaches == ("the ledger database",)
+
+    corrected = World(tmp_path / "corrected")
+    corrected.outcome("failed", approach="the archive export")
+    corrected.outcome("corrected")
+    corrected.outcome("corrected")
+    corrected.update()
+    assert corrected.level(FRUSTRATION_KEY) == pytest.approx(CAP) and corrected.affect.view().frustrations == ()
+    corrected.store.close()
+
+
 def test_failures_on_one_topic_and_a_success_on_another_do_not_spread(world):
     world.outcome("failed", hours=3, approach="the archive export")
     world.outcome("failed", hours=2, approach="the archive export")

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 CAP = 0.7                      # architecture 4.3: levels stay calm
 SWITCH_AT = 0.5                # frustration at which a topic switches strategy
+SWITCH_FAILURES = 2            # ... given this many failed attempts since the topic's last success (both sources)
 OVERLOAD_AT = 0.6              # load at which optional work waits
 RENDER_FLOOR = 0.05            # below this a level is not rendered and a frustration row is pruned
 SATIATED_DISMISSED, SATIATED_SATISFACTION = 0.4, 0.5
@@ -670,16 +671,19 @@ class Affect:
         return len(fresh)
 
     def _state_view(self, inputs: AffectInputs) -> AffectView:
-        rows = [row for row in self._frustration_rows() if float(row.get("level") or 0.0) >= SWITCH_AT]
-        frustrations = tuple(
-            frustration(row.get("text") or row["key"][len(FRUSTRATION):], row["key"], round(float(row["level"]), 3),
-                        recent_failures(inputs.events, row.get("text") or ""), row.get("causes") or [])
-            for row in rows)
+        # The level is the feeling; the switch also needs SWITCH_FAILURES failed attempts since the topic's last
+        # success, so a success followed by one miss, or corrections alone, never abandon an approach.
+        frustrations = []
+        for row in self._frustration_rows():
+            failures = recent_failures(inputs.events, row.get("text") or "")
+            if float(row.get("level") or 0.0) >= SWITCH_AT and len(failures) >= SWITCH_FAILURES:
+                frustrations.append(frustration(row.get("text") or row["key"][len(FRUSTRATION):], row["key"],
+                                                round(float(row["level"]), 3), failures, row.get("causes") or []))
         levels = {name: self._level(key) for name, key in LEVEL_KEYS.items()}
         load = load_of(inputs)
         satiated = levels["dismissed"] >= SATIATED_DISMISSED or levels["satisfaction"] >= SATIATED_SATISFACTION
         return AffectView(
-            route={name: "state" for name in CONSUMERS}, owner_id=self.owner_id, frustrations=frustrations,
+            route={name: "state" for name in CONSUMERS}, owner_id=self.owner_id, frustrations=tuple(frustrations),
             overloaded=load >= OVERLOAD_AT, load=load, obligations=inputs.obligations,
             worry=round(levels["worry"], 3), curiosity=round(levels["curiosity"], 3),
             due_soon=inputs.due_soon if levels["worry"] >= RENDER_FLOOR else (),
@@ -810,5 +814,6 @@ class Affect:
 
 
 __all__ = ["Affect", "AffectEvent", "AffectInputs", "AffectView", "CAP", "CONSUMERS", "DISCRETIONARY_PRIORITY",
-           "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "compose", "discretionary", "effects", "frustration", "load_of", "plan_hash", "postponable",
+           "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "SWITCH_FAILURES",
+           "compose", "discretionary", "effects", "frustration", "load_of", "plan_hash", "postponable",
            "recent_failures", "topic_matches"]

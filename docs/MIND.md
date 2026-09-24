@@ -232,9 +232,11 @@ raises its bar, and never raises authority. The one change it makes to a
 decision is the strategy switch's question, which turns an `act` into an
 `ask` for the owner.
 
-1. **Strategy switch.** A topic at frustration 0.5 or more puts "Prior
-   attempts at T failed N times using A; choose a different approach or ask
-   one question." into the task body and the owner's Mind section;
+1. **Strategy switch.** A topic at frustration 0.5 or more with at least two
+   failed attempts since its last success (a success followed by one miss,
+   or corrections alone, never switch) puts "Prior attempts at T failed N
+   times using A; choose a different approach or ask one question." into the
+   task body and the owner's Mind section;
    the deliberation prompt also names the failures' reasons as pitfalls and
    the approaches to avoid, and the model proposes another approach or
    returns kind `ask` (one question for the owner; the step is asked with a

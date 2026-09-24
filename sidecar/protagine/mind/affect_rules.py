@@ -14,12 +14,13 @@ from datetime import timedelta
 from typing import List
 
 from .affect import (
-    CONSUMERS, AffectInputs, AffectView, dismissals_of, frustration, load_of, recent_failures, topic_matches,
+    CONSUMERS, SWITCH_FAILURES, AffectInputs, AffectView, dismissals_of, frustration, load_of, recent_failures,
+    topic_matches,
 )
 from .drives import slug
 
 RULE_CONSUMERS: frozenset = frozenset()   # consumers the gate assigned to their rule; none at M6
-SWITCH_FAILURES, SWITCH_WINDOW = 2, timedelta(hours=24)
+SWITCH_WINDOW = timedelta(hours=24)       # the rule counts SWITCH_FAILURES (shared with the state) in this window
 OVERLOAD_OBLIGATIONS = 3
 SATIATION_DISMISSALS, SATIATION_WINDOW, SATIATION_BOOST = 2, timedelta(days=7), 0.5
 PRIORITY_WORRY = 0.5                       # owed duty x 1.25 while anything owed is due soon and not started
