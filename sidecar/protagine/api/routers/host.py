@@ -3980,17 +3980,14 @@ async def deactivate_authz_scope(body: ScopeDeactivateRequest) -> Dict[str, Any]
 
 @router.get("/scopes/promotion-candidates")
 async def scope_promotion_candidates() -> Dict[str, Any]:
-    """Group-scope members with sustained contact but no 1:1 rights yet — the people the owner
-    can promote (group_guest -> regular). ``auto_promote`` reports the configured mode: when
-    True the consumer auto-promotes; when False these are proposals for the owner to approve."""
+    """Group-scope members with sustained contact but no 1:1 rights yet: the people the owner
+    can promote (group_guest -> regular). They are proposals; only the owner promotes."""
     if _contacts_store is None:
         raise HTTPException(status_code=501, detail="Contact store not initialized")
     cfg = getattr(_contacts_store, "_config", None)
-    auto = bool(getattr(cfg, "auto_promote_group_to_1on1", False))
     min_int = int(getattr(cfg, "group_promote_min_interactions", 5))
     cands = await _contacts_store.group_promotion_candidates(min_interactions=min_int)
     return {
-        "auto_promote": auto,
         "min_interactions": min_int,
         "candidates": [
             {"contact_id": c.contact_id, "display_name": c.display_name,
@@ -4002,8 +3999,8 @@ async def scope_promotion_candidates() -> Dict[str, Any]:
 
 @router.post("/scopes/promote")
 async def scope_promote(body: ScopePromoteRequest) -> Dict[str, Any]:
-    """Promote one group-scope member to global 1:1 (tier >= to_tier + interaction allowed).
-    Only ever raises standing. Called after owner approval, or by the auto-promote sweep."""
+    """Promote one group-scope member to global 1:1 (tier >= to_tier). Only ever raises the
+    tier, never the permission to message them. Called after the owner's approval."""
     if _contacts_store is None:
         raise HTTPException(status_code=501, detail="Contact store not initialized")
     try:

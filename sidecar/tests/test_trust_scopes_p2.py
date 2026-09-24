@@ -86,9 +86,11 @@ async def test_promote_never_lowers_standing(store):
 
 
 def test_config_flag_from_env(monkeypatch):
+    """Group membership never grants 1:1 rights by itself: promotion is the owner's call through
+    /scopes/promote, so no switch turns it automatic (audit m8; nothing consumed the old one)."""
+    import dataclasses
     from protagine.contacts.config import ContactsConfig
-    monkeypatch.setenv("PROTAGINE_AUTO_PROMOTE_GROUP_TO_1ON1", "true")
     monkeypatch.setenv("PROTAGINE_GROUP_PROMOTE_MIN_INTERACTIONS", "3")
     cfg = ContactsConfig.from_env()
-    assert cfg.auto_promote_group_to_1on1 is True
     assert cfg.group_promote_min_interactions == 3
+    assert "auto_promote_group_to_1on1" not in {field.name for field in dataclasses.fields(ContactsConfig)}

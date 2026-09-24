@@ -53,14 +53,11 @@ class ContactsConfig:
                 state_dir = os.path.join(os.path.expanduser("~"),
                                          ".protagine", "data")
             path = os.path.join(state_dir, "protagine-contacts.db")
-        auto_promote = os.environ.get("PROTAGINE_AUTO_PROMOTE_GROUP_TO_1ON1", "").strip().lower() in (
-            "1", "true", "yes", "on")
         try:
             min_int = int(os.environ.get("PROTAGINE_GROUP_PROMOTE_MIN_INTERACTIONS", "") or 5)
         except ValueError:
             min_int = 5
-        return cls(sqlite_path=path, auto_promote_group_to_1on1=auto_promote,
-                   group_promote_min_interactions=min_int)
+        return cls(sqlite_path=path, group_promote_min_interactions=min_int)
     default_inbound_tier: str = "unknown"
     unknown_tier_grace_hours: int = 48
     auto_merge_confidence_threshold: float = 0.95
@@ -72,8 +69,6 @@ class ContactsConfig:
     enrichment: ContactsEnrichmentConfig = field(default_factory=ContactsEnrichmentConfig)
     import_cfg: ContactsImportConfig = field(default_factory=ContactsImportConfig)
     export_cfg: ContactsExportConfig = field(default_factory=ContactsExportConfig)
-    # When True, a scope (group) member with sustained contact is auto-promoted to a
-    # global ``regular`` 1:1 contact. When False (default), such members are surfaced as
-    # promotion candidates for the owner to approve — membership never auto-grants 1:1.
-    auto_promote_group_to_1on1: bool = False
+    # A scope (group) member with this many interactions is listed as a promotion candidate for
+    # the owner to approve; membership never grants 1:1 rights by itself.
     group_promote_min_interactions: int = 5
