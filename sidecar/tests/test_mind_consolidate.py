@@ -1,0 +1,836 @@
+"""Nightly consolidation (M8 Part A): digests, dedupe, contradictions, episodes, the self-narrative delta.
+
+Everything runs against the real ledger, claim projection, initiative store
+and mind, with a fake router that answers by ``context["task"]`` and reports
+its own token usage (build plan M8 acceptance tests 1-4; architecture 4.1,
+4.2; docs/CONSOLIDATION.md).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import re
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.beliefs.source_time import MemoryTimeQuery
+from protagine.commitments.store import CommitmentStore
+from protagine.feedback import TypeFeedbackStore
+from protagine.initiatives.store import InitiativeStore
+from protagine.mind import Mind
+from protagine.mind.consolidate import (CITE, LAST_KEY, SELF_TURN_SQL, TASK_DIGEST, TASK_EPISODE, TASK_NARRATIVE,
+                                        Consolidation)
+from protagine.mind.outcomes import Autobiography
+from protagine.mind.tick import DEFAULT_FACULTIES
+from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
+from protagine.turns.idempotency import TurnIdempotencyLedger
+from test_source_claim_projection import Model, claim
+
+OWNER = "p-01"
+CONTACT = "p-02"
+UTC = timezone.utc
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+CLAIM = re.compile(r"claim:[0-9a-f]{64}")
+
+
+def cite_uuids(messages, context):
+    """A narrative answer that cites every intention id shown in the evidence."""
+    ids = list(dict.fromkeys(UUID.findall(messages[-1]["content"])))
+    return {"lines": [{"text": f"I did the work behind {ident[:8]} and learned from it", "cites": [ident]}
+                      for ident in ids[:3]]}
+
+
+def cite_claims(messages, context):
+    """A digest answer that rests on every claim id shown in the prompt."""
+    ids = list(dict.fromkeys(CLAIM.findall(messages[-1]["content"])))
+    prompt = messages[-1]["content"]
+    facts = "; ".join(sorted(set(re.findall(r"room \d", prompt)))) or "nothing in particular"
+    return {"digest": f"They told me about their office: {facts}.", "sources": ids}
+
+
+class NightRouter:
+    """Answers each consolidation task with a canned or computed JSON object and reports token usage."""
+
+    supports_function_routing = True
+
+    def __init__(self, answers=None, *, tokens=100):
+        self.answers = {TASK_NARRATIVE: cite_uuids, TASK_DIGEST: cite_claims,
+                        TASK_EPISODE: {"summary": "They asked for the slides; the assistant promised them by Friday."},
+                        **(answers or {})}
+        self.tokens, self.calls = tokens, []
+
+    def function_deadline_seconds(self, *, context=None):
+        return 20
+
+    def tasks(self):
+        return [context["task"] for _, context in self.calls]
+
+    async def complete(self, messages, *, context=None, **_):
+        self.calls.append((messages, context))
+        schema = (context or {}).get("response_schema")
+        assert isinstance(schema, dict) and set(schema) == {"name", "schema"}
+        assert context.get("allow_fallback") is False
+        answer = self.answers.get(context["task"])
+        payload = answer(messages, context) if callable(answer) else (answer or {})
+        return SimpleNamespace(content=json.dumps(payload), usage={"total_tokens": self.tokens})
+
+
+class FakeContacts:
+    def __init__(self, ids):
+        self.ids = list(ids)
+
+    async def get(self, contact_id):
+        return SimpleNamespace(contact_id=contact_id, to_dict=lambda: {"contact_id": contact_id, "interaction_allowed": True}) \
+            if contact_id in self.ids else None
+
+    async def list(self, limit=100, **_):
+        return [SimpleNamespace(contact_id=cid) for cid in self.ids[:limit]]
+
+    async def get_handles(self, contact_id):
+        return [SimpleNamespace(gateway="telegram", address=f"{contact_id}-handle", is_primary=True, verified=True)]
+
+
+class Fixture:
+    def __init__(self, tmp_path, *, autonomy="standard", config=None, router=None, at=None, contacts=True,
+                 timezone_name=None):
+        self.now = at or datetime.now(UTC).replace(microsecond=0)
+        self.state = tmp_path
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        self.store = InitiativeStore(state_dir=tmp_path)
+        self.commitments = CommitmentStore(tmp_path / "protagine-commitments.db")
+        self.feedback = TypeFeedbackStore(str(tmp_path / "protagine-feedback.db"))
+        self.expectations = ExpectationEngine(ExpectationStore(str(tmp_path / "protagine-expectations.db")))
+        self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+        self.contacts = FakeContacts([OWNER, CONTACT, "p-03"]) if contacts else None
+        self.config = {"autonomy": autonomy, **(config or {})}
+        self.router = NightRouter() if router is None else router
+        self.timezone_name = timezone_name
+        self.mind = self.build()
+
+    def build(self) -> Mind:
+        mind = Mind(config=self.config, store=self.store, state_dir=self.state, owner_id=OWNER,
+                    commitments=self.commitments, feedback=self.feedback, expectations=self.expectations,
+                    contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
+                    router=self.router, timezone_name=self.timezone_name)
+        mind.digest_hour = 25
+        return mind
+
+    def restart(self) -> Mind:
+        self.mind = self.build()
+        return self.mind
+
+    def shift(self, **delta) -> None:
+        self.now += timedelta(**delta)
+
+    def turn(self, turn_id, contact_id, session_id, user, assistant="Noted.", *, at=None) -> None:
+        self.ledger.record_source(turn_id, contact_id=contact_id, session_id=session_id, messages=[
+            {"role": "user", "content": user}, {"role": "assistant", "content": assistant}],
+            occurred_at=(at or self.now).isoformat())
+
+    async def fact(self, turn_id, contact_id, session_id, text, value, *, predicate="office_location",
+                   subject="I", memory_kind="personal_context", at=None, dated=True, **extra) -> str:
+        """One turn whose user message asserts one claim, through the real projection."""
+        self.ledger.record_source(turn_id, contact_id=contact_id, session_id=session_id, messages=[
+            {"role": "user", "content": text}, {"role": "assistant", "content": "Noted."}],
+            occurred_at=(at or self.now).isoformat() if dated else None)
+        projection = SourceClaimProjection(self.ledger)
+        assert await projection.process_one(Model({text: claim(
+            text, value, subject=subject, predicate=predicate, memory_kind=memory_kind, **extra)}))
+        with closing(self.ledger._connect()) as conn:
+            return conn.execute("SELECT id FROM source_claims WHERE turn_id=?", (turn_id,)).fetchone()[0]
+
+    def claims(self):
+        with closing(self.ledger._connect()) as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT id, turn_id, subject_key, predicate, value_key, duplicate_of, retracted_by, data_json "
+                "FROM source_claims ORDER BY rowid")]
+
+    def assertions(self, query, *, session_id="fresh-session", contact_id=OWNER):
+        """What recall's ``prepare_context`` would show a new session for ``query``."""
+        projection = SourceClaimProjection(self.ledger)
+        hits = self.ledger.search_sources(query, contact_id=contact_id, session_id=session_id, limit=10)
+        _, rows = projection.prepare_context([], hits, contact_id=contact_id, session_id=session_id,
+                                             time_query=MemoryTimeQuery("current", (self.now + timedelta(minutes=1)).isoformat()))
+        return [json.loads(row["content"]) for row in rows if row.get("claim_status")]
+
+    def messages(self, type_=None):
+        rows = self.store.intentions(kind=["message"], limit=200)
+        return [row for row in rows if type_ is None or row.type == type_]
+
+
+@pytest.fixture
+def fx(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fixture = Fixture(tmp_path)
+    yield fixture
+    fixture.store.close()
+
+
+# ---------------------------------------------------------------------------
+# 1. A fact from one session and channel serves another; the digest cites it
+# ---------------------------------------------------------------------------
+
+async def test_a_fact_crosses_sessions_and_the_owner_digest_cites_its_claim(fx):
+    claim_id = await fx.fact("turn-a", OWNER, "telegram-1", "My office is room 4.", "room 4")
+    shown = fx.assertions("office", session_id="discord-2")
+    assert any(bundle["status"] == "source_assertion" and any(a["value"] == "room 4" for a in bundle["assertions"])
+               for bundle in shown)
+
+    night = await fx.mind.consolidate()
+    assert night["counts"]["digests"] == 1 and night["calls"] >= 1 and night["errors"] == []
+    digest = fx.mind.mind_state.get(f"digest:{OWNER}")
+    assert claim_id in digest["causes"] and "room 4" in digest["text"] and len(digest["text"]) <= 600
+    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}")["text"]
+    section = fx.mind.person_section(OWNER)
+    assert section.startswith(f"About {OWNER} (digest, {fx.now.date().isoformat()}): ")
+    assert "room 4" in section and len(section) <= 600
+    assert fx.mind.person_section(CONTACT) == ""                       # nothing recorded about p-02
+    # The same claims the next night: no second digest call.
+    again = await fx.mind.consolidate()
+    assert again["counts"].get("digests_unchanged") == 1 and fx.router.tasks().count(TASK_DIGEST) == 1
+
+
+async def test_digests_are_written_through_the_sink_and_read_back_for_the_person(fx):
+    """I-5: the contact model of M5 passes its own writer; consolidation itself only calls the sink."""
+    written = []
+    fx.mind.consolidation.digest_sink = lambda cid, text, sources: written.append((cid, text, list(sources)))
+    claim_id = await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
+    await fx.mind.consolidate()
+    assert written == [(OWNER, written[0][1], [claim_id])] and "room 4" in written[0][1]
+    assert fx.mind.mind_state.get(f"digest:{OWNER}") is None            # the default store was not used
+    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}")["text"]      # the skip marker still is
+
+
+async def test_an_async_digest_sink_and_source_are_awaited(fx):
+    """I-5: M5's contact store is async; its writer and reader are awaited, never left as coroutines."""
+    stored = {}
+
+    async def sink(cid, text, sources):
+        stored[cid] = {"text": text, "causes": list(sources), "updated_at": fx.now.isoformat()}
+
+    async def source(cid):
+        return stored.get(cid)
+
+    fx.mind.consolidation.digest_sink, fx.mind.consolidation.digest_source = sink, source
+    claim_id = await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
+    night = await fx.mind.consolidate()
+    assert night["counts"]["digests"] == 1 and stored[OWNER]["causes"] == [claim_id]
+    await fx.fact("turn-b", OWNER, "s-2", "My desk is by the window.", "by the window", predicate="desk_location")
+    await fx.mind.consolidate()
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_DIGEST][-1][-1]["content"]
+    assert "They told me about their office: room 4." in prompt           # the previous digest, read back
+
+
+async def test_a_digest_with_unknown_or_no_sources_is_rejected(fx):
+    await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
+    fx.router.answers[TASK_DIGEST] = {"digest": "Made up.", "sources": ["claim:" + "0" * 64]}
+    night = await fx.mind.consolidate()
+    assert night["counts"].get("digests_rejected") == 1 and fx.mind.mind_state.get(f"digest:{OWNER}") is None
+    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}") is None      # so the next night tries again
+
+
+async def test_person_section_is_empty_when_consolidation_is_off_or_the_mind_is_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path)
+    fx.mind.mind_state.set(f"digest:{OWNER}", text="They like short answers.", causes=["claim:" + "a" * 64])
+    assert "short answers" in fx.mind.person_section(OWNER)
+    fx.mind.off()
+    assert fx.mind.person_section(OWNER) == ""
+    off = Fixture(tmp_path / "off", config={"faculties": {"consolidation": False}})
+    off.mind.mind_state.set(f"digest:{OWNER}", text="They like short answers.", causes=[])
+    assert off.mind.person_section(OWNER) == ""
+
+
+# ---------------------------------------------------------------------------
+# 2. The agent's own outcome is narrated with its id and recalled in a new session
+# ---------------------------------------------------------------------------
+
+def settled_task(fx, *, title="Research the venue hours", type_="research", summary="finding: the venue opens at nine on weekdays",
+                 outcome="done", dedup="research:venue"):
+    row, _ = fx.store.create_intention(kind="task", type=type_, title=title, drive="curiosity", cls="internal",
+                                       decision="act", decision_reason="a declared interest", status="dispatched",
+                                       dedup_key=dedup, context={"topic": "venue hours", "body": "look it up"},
+                                       created_at=fx.now)
+    fx.mind.outcomes.record(row.id, status=outcome, hermes_ref=f"kanban:{dedup}", summary=summary)
+    return fx.store.get(row.id)
+
+
+async def test_an_own_outcome_is_narrated_with_its_id_and_recalled_in_a_new_session(fx):
+    row = settled_task(fx)
+    night = await fx.mind.consolidate()
+    assert night["counts"]["narrative"] == 1 and night["rejected_lines"] == 0
+    recent = fx.mind.mind_state.get("self.recent")
+    assert row.id in recent["text"] and row.id in recent["causes"]
+    narrative = fx.mind.narrative()
+    assert narrative["enabled"] is True and row.id in narrative["cites"]
+    assert narrative["sections"]["recent"].endswith(f"[{row.id}]")
+    assert set(narrative["sections"]) == {"interests", "strengths", "recent", "stances"}
+    assert narrative["updated_at"] and len(narrative["text"]) <= 2000
+    # The autobiography row is what a later session recalls, lexically, in any session.
+    hits = fx.ledger.search_sources("venue opens nine weekdays", contact_id=OWNER, session_id="brand-new-session")
+    assert any(hit["session_id"] == "mind" and "opens at nine" in hit["content"] for hit in hits)
+    # The prompt's evidence carried the audit row and the finding as citable ids.
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][0][-1]["content"]
+    assert row.id in prompt and f"turn:mind:{row.id}:finding" in prompt
+
+
+# ---------------------------------------------------------------------------
+# 3. A contradiction: exactly one owner question, one broadcast concern, resolved when settled
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("autonomy,status", [("standard", "approved"), ("suggest", "asked")])
+async def test_a_contradiction_asks_the_owner_once_and_resolves_when_one_side_is_retracted(tmp_path, monkeypatch, autonomy, status):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, autonomy=autonomy)
+    fx.router.answers[TASK_DIGEST] = None                                  # keep the night about the contradiction
+    first = await fx.fact("turn-a", OWNER, "telegram-1", "My office is room 4.", "room 4")
+    fx.shift(days=1)
+    second = await fx.fact("turn-b", OWNER, "discord-2", "My office is room 7.", "room 7")
+    assert any(b["status"] == "unresolved_conflict" for b in fx.assertions("office"))   # recall's own rule
+
+    night = await fx.mind.consolidate()
+    assert night["counts"]["contradictions"] == 1
+    again = await fx.mind.consolidate()
+    assert again["counts"].get("contradictions", 0) == 0                 # already asked: nothing new
+
+    asks = fx.messages("reach_out:contradiction")
+    assert len(asks) == 1 and asks[0].status == status and asks[0].entity_id == OWNER
+    text = asks[0].context["text"]
+    assert "room 4" in text and "room 7" in text and "which is right" in text.lower()
+    assert text.startswith("You told me two things about your office location: 'room 4' on ")
+    questions = [c for c in fx.mind.broadcast() if c.kind == "question"]
+    assert len(questions) == 1 and questions[0].drive == "curiosity"
+    concern = questions[0]
+    subject_key, predicate = fx.claims()[0]["subject_key"], fx.claims()[0]["predicate"]
+    assert concern.dedup_key == f"contradiction:{OWNER}:{subject_key}:{predicate}"
+    assert set(concern.sources) == {first, second} and "type" not in concern.detail   # broadcast only, never a task
+    assert "which is right" in fx.mind.section().lower()
+    assert (await fx.mind.tick(force=True))["formed"] == []                # no research task from the question
+
+    with closing(fx.ledger._connect()) as conn, conn:
+        conn.execute("UPDATE source_claims SET retracted_by='owner-correction' WHERE id=?", (second,))
+    resolved = await fx.mind.consolidate()
+    assert resolved["counts"].get("resolved") == 1
+    assert fx.mind.concerns.by_key(concern.dedup_key).status == "resolved"
+    assert fx.mind.broadcast() == [] and len(fx.messages("reach_out:contradiction")) == 1
+    fx.store.close()
+
+
+async def test_a_resolved_contradiction_withdraws_its_owner_question_while_it_is_still_pending(tmp_path, monkeypatch):
+    """The question is moot once the claims agree: an ask not yet answered (or a message not yet sent) is
+    cancelled by the check, and the concern resolves; the answered-and-sent case is left alone."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, autonomy="suggest")
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("turn-a", OWNER, "telegram-1", "My office is room 4.", "room 4")
+    fx.shift(hours=2)
+    second = await fx.fact("turn-b", OWNER, "discord-2", "My office is room 7.", "room 7")
+    await fx.mind.consolidate()
+    ask, = fx.messages("reach_out:contradiction")
+    assert ask.status == "asked"
+    with closing(fx.ledger._connect()) as conn, conn:
+        conn.execute("UPDATE source_claims SET retracted_by='owner-correction' WHERE id=?", (second,))
+    night = await fx.mind.consolidate()
+    assert night["counts"].get("resolved") == 1 and night["counts"].get("withdrawn") == 1
+    ask = fx.store.get(ask.id)
+    assert ask.status == "cancelled" and ask.verified == "check" and "no longer contradict" in ask.result
+    assert ask.verdict is None                                               # the check's cancellation, not a dismissal
+    fx.store.close()
+
+
+async def test_a_contradiction_between_a_contacts_own_claims_names_the_contact(fx):
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("c-1", CONTACT, "sms-1", "My office is room 4.", "room 4")
+    fx.shift(hours=1)
+    await fx.fact("c-2", CONTACT, "sms-2", "My office is room 7.", "room 7")
+    night = await fx.mind.consolidate()
+    assert night["counts"]["contradictions"] == 1
+    ask, = fx.messages("reach_out:contradiction")
+    assert ask.entity_id == OWNER and CONTACT in ask.context["text"]     # the owner is asked, the contact is named
+    assert ask.context["text"].startswith(f"Contact {CONTACT} told me two things about their office location: ")
+    concern, = [c for c in fx.mind.broadcast() if c.kind == "question"]
+    assert concern.detail["contact_id"] == CONTACT and concern.dedup_key.startswith(f"contradiction:{CONTACT}:")
+
+
+# ---------------------------------------------------------------------------
+# 4. Dedupe: identical live claims fold into the earliest; erasure revives the witnesses
+# ---------------------------------------------------------------------------
+
+async def test_identical_claims_fold_and_revive_when_the_canonical_source_is_erased(fx):
+    ids = [await fx.fact(turn, OWNER, f"session-{turn}", "My office is room 4.", "room 4", dated=False)
+           for turn in ("turn-1", "turn-2", "turn-3")]
+    night = await fx.mind.consolidate()
+    assert night["counts"]["duplicates"] == 2
+    rows = {row["id"]: row for row in fx.claims()}
+    canonical = [row for row in rows.values() if row["duplicate_of"] is None]
+    assert len(canonical) == 1 and all(row["duplicate_of"] == canonical[0]["id"] for row in rows.values()
+                                       if row["id"] != canonical[0]["id"])
+    bundles = [b for b in fx.assertions("office") if b["status"] == "source_assertion"]
+    assert len(bundles) == 1 and len(bundles[0]["assertions"]) == 1        # one witness in recall
+    assert (await fx.mind.consolidate())["counts"]["duplicates"] == 0     # idempotent
+
+    fx.ledger.erase_sources(contact_id=OWNER, turn_ids=[canonical[0]["turn_id"]])
+    survivors = fx.claims()
+    assert len(survivors) == 2 and all(row["duplicate_of"] is None for row in survivors)   # revived
+    assert (await fx.mind.consolidate())["counts"]["duplicates"] == 1     # folded again the next night
+    assert set(ids) > {row["id"] for row in fx.claims()}
+
+
+async def test_preferences_and_differing_validity_are_never_folded(fx):
+    text = "I prefer green tea after lunch."
+    for turn in ("pref-1", "pref-2"):
+        await fx.fact(turn, OWNER, f"s-{turn}", text, text, predicate="drink", memory_kind="preference",
+                      representation="preference", dated=False)
+    # The same value with two different validity intervals: both stay.
+    await fx.fact("dated-1", OWNER, "s-d1", "My office is room 4.", "room 4")
+    await fx.fact("dated-2", OWNER, "s-d2", "Since 2026-05-03 my office is room 4.", "room 4",
+                  valid_from_text="2026-05-03")
+    night = await fx.mind.consolidate()
+    assert night["counts"]["duplicates"] == 0
+    rows = fx.claims()
+    assert len(rows) == 4 and all(row["duplicate_of"] is None for row in rows)
+    assert {json.loads(r["data_json"]).get("representation") for r in rows if r["predicate"] == "drink"} == {"preference"}
+
+
+# ---------------------------------------------------------------------------
+# 5. The narrative cites ids that exist; strengths are computed; the flag turns it off
+# ---------------------------------------------------------------------------
+
+async def test_narrative_lines_must_cite_evidence_ids_that_exist(fx):
+    done = settled_task(fx)
+    failed = settled_task(fx, title="Research the venue parking", summary="worker crashed", outcome="failed",
+                          dedup="research:parking")
+    fx.router.answers[TASK_NARRATIVE] = lambda messages, context: {"lines": [
+        {"text": "I researched the venue hours and recorded the finding", "cites": [done.id]},
+        {"text": "I invented a triumph", "cites": ["deadbeef"]},
+        {"text": "I cited something real that was not evidence", "cites": [done.id, "turn:turn-x"]},
+        {"text": "no citation at all", "cites": []},
+    ]}
+    night = await fx.mind.consolidate()
+    assert night["rejected_lines"] == 3 and night["counts"]["narrative"] == 1
+    narrative = fx.mind.narrative()
+    text = narrative["text"]
+    assert "invented" not in text and "not evidence" not in text and "no citation" not in text
+    assert done.id in text
+    cited = [ref.strip() for line in text.splitlines() for match in CITE.findall(line) for ref in match.split(",")]
+    assert cited and set(cited) == set(narrative["cites"])
+    assert all(fx.mind.consolidation._ref_exists(ref) for ref in cited)
+    strengths = narrative["sections"]["strengths"]
+    assert strengths.startswith("research: 1 done, 1 failed, 0 verified of 2 [") and done.id in strengths and failed.id in strengths
+    # The computed sections are stored for the delta prompt and never model-written.
+    assert fx.mind.mind_state.get("self.strengths")["text"] == strengths
+    assert fx.router.answers[TASK_NARRATIVE]  # (the model was never asked for strengths: only ``lines``)
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][0][-1]["content"]
+    assert "strengths" in prompt.lower() and done.id in prompt
+    # An intention pruned from the audit log drops its line at the next render.
+    with fx.store._db as db:
+        db.execute("DELETE FROM initiatives WHERE id=?", (done.id,))
+    assert done.id not in fx.mind.narrative()["text"]
+
+
+async def test_the_narrative_is_never_shown_other_peoples_business(fx):
+    """The narrative is rendered in every session, a guest's included: its evidence holds the agent's own
+    work and what it told the owner, never a message to someone else or a question quoting what people said."""
+    row = settled_task(fx)
+    assert await fx.mind.request_message({"id": "m-1", "message": "Your parcel for the Harbour St flat arrived.",
+                                          "title": "Parcel for the Harbour St flat", "recipient": CONTACT,
+                                          "type": "delivery"}, source="reach_out")
+    assert await fx.mind.request_message({"id": "m-2", "message": "Your 3pm call moved to 4pm.",
+                                          "title": "Call moved to 4pm", "recipient": OWNER, "type": "reminder"},
+                                         source="reach_out")
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("c-1", CONTACT, "sms-1", "My office is room 4.", "room 4")
+    fx.shift(hours=1)
+    await fx.fact("c-2", CONTACT, "sms-2", "My office is room 7.", "room 7")
+    await fx.mind.consolidate()                                             # the contradiction question is asked
+    assert fx.messages("reach_out:contradiction")
+    fx.shift(days=1)
+    await fx.mind.consolidate()
+    prompts = [m[-1]["content"] for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE]
+    assert prompts and row.id in prompts[-1] and "Call moved to 4pm" in prompts[-1]
+    assert "Harbour St" not in prompts[-1] and "Which is right" not in prompts[-1]
+    assert "every conversation" in [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][-1][0]["content"]
+
+
+async def test_narrative_flag_off_renders_nothing_and_skips_the_delta_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"faculties": {"self_narrative": False}})
+    settled_task(fx)
+    night = await fx.mind.consolidate()
+    assert TASK_NARRATIVE not in fx.router.tasks() and "narrative" in night["done"]
+    assert fx.mind.narrative() == {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
+    assert fx.mind.mind_state.get("self.recent") is None
+    fx.store.close()
+
+
+async def test_narrative_still_renders_computed_sections_with_consolidation_off(tmp_path, monkeypatch):
+    """``full-consolidation`` keeps a (computed) narrative; ``full-self_narrative`` has none (D6)."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"faculties": {"consolidation": False}})
+    settled_task(fx)
+    settled_task(fx, title="Research the venue parking", dedup="research:parking")
+    fx.mind.add_interest("local history", why="a declared identity interest")
+    fx.mind.add_interest("venue hours", why="asked about twice")
+    narrative = fx.mind.narrative()
+    assert narrative["enabled"] is True
+    assert "research: 2 done, 0 failed, 0 verified of 2" in narrative["sections"]["strengths"]
+    assert "local history" in narrative["sections"]["interests"] and narrative["sections"]["recent"] == ""
+    # An interest cites the work it led to (research intentions on that topic); none yet: no citation.
+    lines = dict(line.split(" (weight", 1) for line in narrative["sections"]["interests"].splitlines())
+    assert lines["local history"].endswith(")") and "[" not in lines["local history"]
+    worked = {fx.store.get_by_dedup_key(key).id for key in ("research:venue", "research:parking")}
+    assert set(CITE.search(lines["venue hours"]).group(1).split(", ")) == worked
+    assert worked <= set(narrative["cites"])
+    fx.store.close()
+
+
+async def test_stances_come_from_the_stances_reader_and_cite_their_source_turn(fx):
+    fx.turn("t-stance", OWNER, "s-1", "Checkpoints saved the day again.")
+    fx.mind.consolidation.stances = lambda: [{"id": 7, "topic": "checkpoints", "stance": "I favour explicit checkpoints.",
+                                              "source_turn_id": "t-stance"},
+                                             {"id": 8, "topic": "ghosts", "stance": "unsupported", "source_turn_id": "no-such-turn"}]
+    narrative = fx.mind.narrative()
+    lines = narrative["sections"]["stances"].splitlines()
+    assert lines[0] == "checkpoints: I favour explicit checkpoints. [turn:t-stance]"
+    assert lines[1] == "ghosts: unsupported"                                # no citation it cannot back
+    assert "turn:t-stance" in narrative["cites"]
+
+
+# ---------------------------------------------------------------------------
+# 6. The schedule: once per local date, in the quiet window, off the tick's lock
+# ---------------------------------------------------------------------------
+
+def test_default_faculties_include_the_memory_flags():
+    assert DEFAULT_FACULTIES["consolidation"] is True and DEFAULT_FACULTIES["self_narrative"] is True
+    assert DEFAULT_FACULTIES["semantic_recall"] is True
+
+
+async def test_consolidation_runs_once_per_night_in_the_quiet_window_and_survives_a_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    settled_task(fx)
+    fx.shift(minutes=10)                                                   # the body never pulled: stale
+    summary = await fx.mind.tick()                                         # a timer tick, not forced
+    assert summary["skipped"] == "body stale" and summary["consolidation"] == "started"
+    assert fx.mind.state()["consolidation"]["running"] is True
+    await fx.mind._consolidation_task
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
+    note = fx.store.get_by_dedup_key("consolidation:2026-09-24")
+    assert note.status == "done" and note.outcome == "done" and note.kind == "note" and note.cost_tokens == 100
+    assert fx.mind.state()["consolidation"] == {"last": "2026-09-24", "running": False, "last_tokens": 100}
+    fx.shift(minutes=30)
+    assert (await fx.mind.tick())["consolidation"] is None                 # the same night: once
+    fx.restart()
+    assert (await fx.mind.tick())["consolidation"] is None                 # the marker persists across a restart
+    assert fx.mind.state()["consolidation"]["last"] == "2026-09-24"
+    fx.shift(days=1)
+    assert (await fx.mind.tick())["consolidation"] == "started"            # the next night runs again
+    await fx.mind._consolidation_task
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
+    fx.store.close()
+
+
+async def test_consolidation_waits_for_the_window_and_respects_every_off_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    noon = Fixture(tmp_path / "noon", config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC))
+    assert (await noon.mind.tick())["consolidation"] is None
+    noon.store.close()
+    # Without quiet hours the window opens at 03:00 local (the backup's rule), in the configured timezone.
+    early = Fixture(tmp_path / "early", config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 2, 30, tzinfo=UTC),
+                    timezone_name="UTC")
+    assert (await early.mind.tick())["consolidation"] is None
+    early.shift(minutes=40)
+    assert (await early.mind.tick())["consolidation"] == "started"
+    await early.mind._consolidation_task
+    early.store.close()
+    local = Fixture(tmp_path / "local", config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 6, 30, tzinfo=UTC),
+                    timezone_name="America/New_York")                       # 02:30 local: not yet
+    assert (await local.mind.tick())["consolidation"] is None
+    local.shift(minutes=40)                                                 # 03:10 local
+    assert (await local.mind.tick())["consolidation"] == "started"
+    await local.mind._consolidation_task
+    assert local.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"     # the local date
+    local.store.close()
+    off = Fixture(tmp_path / "off", config={"quiet_hours": "22:00-07:00", "faculties": {"consolidation": False}},
+                  at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    assert (await off.mind.tick())["consolidation"] is None
+    off.store.close()
+    switched = Fixture(tmp_path / "switched", config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    switched.mind.off()
+    assert (await switched.mind.tick()).get("consolidation") is None
+    switched.store.close()
+    routerless = Fixture(tmp_path / "routerless", config={"quiet_hours": "22:00-07:00"},
+                         at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    routerless.mind.router = None                                          # the setter reaches consolidation too
+    assert (await routerless.mind.tick())["consolidation"] is None
+    routerless.store.close()
+
+
+async def test_a_running_night_is_reported_and_not_started_twice(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+
+    class SlowRouter(NightRouter):
+        async def complete(self, messages, *, context=None, **kwargs):
+            await asyncio.sleep(0.2)
+            return await super().complete(messages, context=context, **kwargs)
+
+    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+                 router=SlowRouter())
+    settled_task(fx)
+    assert (await fx.mind.tick())["consolidation"] == "started"
+    await asyncio.sleep(0.05)
+    assert (await fx.mind.tick())["consolidation"] == "running"
+    assert (await fx.mind.consolidate())["skipped"] == "running"            # the force path does not overlap it
+    await fx.mind._consolidation_task
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
+    await fx.mind.stop()
+    fx.store.close()
+
+
+async def test_stop_cancels_a_night_in_flight_and_the_next_run_resumes_the_same_note(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+
+    class HangingRouter(NightRouter):
+        async def complete(self, messages, *, context=None, **kwargs):
+            await asyncio.Event().wait()
+
+    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+                 router=HangingRouter())
+    settled_task(fx)
+    assert (await fx.mind.tick())["consolidation"] == "started"
+    await asyncio.sleep(0.05)
+    await fx.mind.stop()
+    assert fx.mind._consolidation_task is None and fx.mind.mind_state.get(LAST_KEY) is None
+    note = fx.store.get_by_dedup_key("consolidation:2026-09-24")
+    assert note.status == "dispatched"                                      # the night is not marked done
+    fx.mind.router = NightRouter()
+    night = await fx.mind.consolidate(force=False)
+    assert night["id"] == note.id and fx.store.get(note.id).status == "done"
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
+    fx.store.close()
+
+
+async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both_switches(tmp_path, monkeypatch):
+    """7.9: no further effects, at once. A night in flight is cancelled (its row stays resumable), and
+    neither ``mind off`` nor ``faculties.consolidation=false`` can be bypassed by forcing a run."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+
+    class HangingRouter(NightRouter):
+        async def complete(self, messages, *, context=None, **kwargs):
+            await asyncio.Event().wait()
+
+    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+                 router=HangingRouter())
+    settled_task(fx)
+    assert (await fx.mind.tick())["consolidation"] == "started"
+    await asyncio.sleep(0.05)
+    task = fx.mind._consolidation_task
+    fx.mind.off()
+    await asyncio.sleep(0.05)
+    assert task.cancelled() and fx.mind.state()["consolidation"]["running"] is False
+    assert fx.store.get_by_dedup_key("consolidation:2026-09-24").status == "dispatched"
+    assert fx.mind.mind_state.get(LAST_KEY) is None
+    fx.mind.router = NightRouter()
+    assert (await fx.mind.consolidate())["skipped"] == "off" and fx.mind.router.calls == []
+    fx.mind.on()
+    night = await fx.mind.consolidate()
+    assert night["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id   # resumed, not a second row
+    assert fx.store.get(night["id"]).status == "done"
+    fx.store.close()
+    flagged = Fixture(tmp_path / "flag", config={"faculties": {"consolidation": False}})
+    settled_task(flagged)
+    assert (await flagged.mind.consolidate())["skipped"] == "consolidation off" and flagged.router.calls == []
+    assert flagged.store.intentions(kind=["note"], limit=10) == []
+    flagged.store.close()
+
+
+async def test_a_forced_run_after_a_finished_night_is_a_new_row_and_old_interrupted_nights_are_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, at=datetime(2026, 9, 24, 4, 0, tzinfo=UTC))
+    stale, _ = fx.store.create_intention(
+        kind="note", type="consolidation", title="nightly consolidation 2026-09-22", drive="upkeep", cls="internal",
+        decision="act", decision_reason="nightly", status="dispatched", dedup_key="consolidation:2026-09-22",
+        hermes_kind="none", created_at=fx.now - timedelta(days=2))
+    first = await fx.mind.consolidate(force=False)
+    assert first["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id
+    closed = fx.store.get(stale.id)
+    assert closed.status == "cancelled" and "interrupted" in closed.result          # the log never shows it running
+    again = await fx.mind.consolidate()                                             # forced: a second row that night
+    assert again["id"] != first["id"] and fx.store.get(again["id"]).status == "done"
+    assert (await fx.mind.consolidate(force=False))["skipped"] == "done"
+    fx.store.close()
+
+
+# ---------------------------------------------------------------------------
+# 7. Budget: learn_share x llm_tokens_per_day, real usage charged to the note row
+# ---------------------------------------------------------------------------
+
+async def test_the_night_stops_at_its_share_of_the_day_budget_and_charges_real_usage(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"budgets": {"learn_share": 0.01}}, router=NightRouter(tokens=1500))
+    settled_task(fx)                                                        # one narrative call
+    await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")   # one digest call wanted
+    for index in range(4):                                                  # one episode call wanted
+        fx.turn(f"e-{index}", CONTACT, "sms-1", f"Question {index} about the slides", "Answer.")
+    night = await fx.mind.consolidate()
+    assert night["budget"] == 2000 and night["calls"] == 1 and night["tokens"] == 1500 and night["peak"] == 1500
+    assert fx.router.tasks() == [TASK_NARRATIVE]                            # cheapest and most valuable first
+    assert night["counts"].get("digests", 0) == 0 and night["counts"].get("episodes", 0) == 0
+    assert night["exhausted"] is True
+    note = fx.store.get(night["id"])
+    assert note.cost_tokens == 1500 and note.type == "consolidation" and note.status == "done"
+    assert fx.store.tokens_since(fx.now - timedelta(days=1)) == 1500       # the shared day budget sees it
+    assert fx.mind.stats()["mind_tokens"] == 1500
+    fx.store.close()
+
+
+async def test_no_call_is_made_when_the_day_budget_is_already_spent(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"budgets": {"llm_tokens_per_day": 1000}})
+    spent, _ = fx.store.create_intention(kind="note", type="deliberation", title="earlier thinking", drive="upkeep",
+                                         cls="internal", decision="act", decision_reason="r", status="done",
+                                         dedup_key=None, hermes_kind="none", created_at=fx.now - timedelta(hours=1))
+    fx.store.update(spent.id, cost_tokens=1000)
+    assert fx.mind.authority.tokens_allowed() is False
+    settled_task(fx)
+    night = await fx.mind.consolidate()
+    assert night["calls"] == 0 and fx.router.calls == [] and night["exhausted"] is True
+    assert fx.store.get(night["id"]).status == "done"                       # the 0-token stages still ran
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == fx.now.date().isoformat()
+    fx.store.close()
+
+
+# ---------------------------------------------------------------------------
+# 8. Episodes land under their own contact; self-turns are never inputs
+# ---------------------------------------------------------------------------
+
+def episode_rows(fx):
+    with closing(fx.ledger._connect()) as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT turn_id, contact_id, session_id, scope, messages_json FROM turn_sources "
+            "WHERE turn_id LIKE 'mind:episode:%' ORDER BY turn_id")]
+
+
+async def test_a_contact_session_is_summarised_under_that_contact_once(fx):
+    for index in range(4):
+        fx.turn(f"c-{index}", CONTACT, "sms-p02", f"Can you send me slide {index}?", f"Slide {index} is on its way.")
+    fx.turn("o-1", OWNER, "telegram-owner", "Morning.", "Morning.")
+    fx.turn("o-2", OWNER, "telegram-owner", "Anything new?", "Nothing yet.")                  # 2 turns: skipped
+    night = await fx.mind.consolidate()
+    assert night["counts"]["episodes"] == 1
+    row, = episode_rows(fx)
+    date = fx.now.date().isoformat()
+    assert row["turn_id"] == f"mind:episode:sms-p02:{date}:episode_summary"
+    assert row["contact_id"] == CONTACT and row["session_id"] == "mind" and row["scope"] == "person"
+    message, = json.loads(row["messages_json"])
+    assert message["role"] == "assistant" and "slides" in message["content"]
+    assert message["metadata"]["origin"] == "mind" and message["metadata"]["session"] == "sms-p02"
+    assert set(message["metadata"]["sources"]) == {f"c-{i}" for i in range(4)}
+    assert not any(hit["contact_id"] == OWNER for hit in fx.ledger.search_sources(
+        "slides Friday", contact_id=OWNER, session_id="x"))                 # nothing under the owner
+    assert fx.ledger.search_sources("slides Friday", contact_id=CONTACT, session_id="later-session")
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_EPISODE][0][-1]["content"]
+    assert "slide 3" in prompt and "They said" in prompt
+    assert (await fx.mind.consolidate())["counts"].get("episodes", 0) == 0  # already summarised today
+    assert len(episode_rows(fx)) == 1 and fx.router.tasks().count(TASK_EPISODE) == 1
+    # The summary row is not a claim and derives none.
+    assert fx.claims() == []
+
+
+async def test_self_turns_are_not_consolidation_inputs(fx):
+    """A.6: with only the mind's own rows in the last 24 h, episodes and digests select nothing."""
+    autobiography = Autobiography(fx.ledger, owner_id=OWNER, clock=lambda: fx.now)
+    for index in range(4):
+        assert autobiography.record(f"i-{index}", "decided_act", f"I will act on 'thing {index}' (duty drive).")
+    fx.ledger.record_source("mind:episode:old:2026-01-01:episode_summary", contact_id=CONTACT, session_id="mind",
+                            messages=[{"role": "assistant", "content": "an old summary"}] * 3, scope="person",
+                            occurred_at=fx.now.isoformat(), derive_claims=False)
+    night = await fx.mind.consolidate()
+    assert night["counts"].get("episodes", 0) == 0 and night["counts"].get("digests", 0) == 0
+    assert fx.router.tasks() == []
+    assert [row["turn_id"] for row in episode_rows(fx)] == ["mind:episode:old:2026-01-01:episode_summary"]
+    assert "session_id<>'mind'" in SELF_TURN_SQL and "NOT LIKE 'mind:%'" in SELF_TURN_SQL
+
+
+async def test_the_whole_night_is_bounded_and_a_failing_stage_does_not_stop_the_rest(fx, monkeypatch):
+    monkeypatch.setattr("protagine.mind.consolidate.RUN_DEADLINE_S", 0.2)
+
+    class Hanging(NightRouter):
+        async def complete(self, messages, *, context=None, **kwargs):
+            if context["task"] == TASK_NARRATIVE:
+                await asyncio.Event().wait()
+            return await super().complete(messages, context=context, **kwargs)
+
+    fx.mind.router = Hanging()
+    settled_task(fx)
+    night = await fx.mind.consolidate()
+    assert "deadline" in night["errors"] and fx.store.get(night["id"]).status == "done"
+
+    fx.mind.router = NightRouter()
+    def boom(night, now):
+        raise RuntimeError("dedupe exploded")
+    fx.mind.consolidation.dedupe = boom
+    for index in range(3):
+        fx.turn(f"c-{index}", CONTACT, "sms-p02", f"Question {index}?", "Answer.")
+    night = await fx.mind.consolidate()
+    assert night["errors"] == ["dedupe: RuntimeError"] and night["counts"]["episodes"] == 1
+    assert night["done"] == ["narrative", "contradictions", "digests", "episodes"]
+
+
+# ---------------------------------------------------------------------------
+# 10. The CLI
+# ---------------------------------------------------------------------------
+
+def test_cli_consolidate_and_narrative_reach_the_sidecar(tmp_path, monkeypatch, capsys):
+    from protagine.config import DEFAULTS, save_config
+    from protagine.mind import cli as mind_cli
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
+    save_config({**DEFAULTS, "owner": {"contact_id": OWNER}}, tmp_path)
+    (tmp_path / "api.key").write_text("k\n")
+    calls = []
+    routes = {("POST", "/v1/mind/consolidate"): {"local_date": "2026-09-24", "calls": 3, "tokens": 4200,
+                                                   "counts": {"digests": 2, "episodes": 1}, "errors": [], "done": []},
+              ("GET", "/v1/mind/narrative"): {"enabled": True, "text": "recent: I did a thing [abc]",
+                                               "sections": {}, "cites": ["abc"], "updated_at": None}}
+    real_client = httpx.Client
+
+    def client(**kwargs):
+        def handler(request):
+            calls.append((request.method, request.url.path, kwargs.get("timeout")))
+            return httpx.Response(200, json=routes[(request.method, request.url.path)])
+        return real_client(transport=httpx.MockTransport(handler), timeout=kwargs.get("timeout", 5))
+
+    monkeypatch.setattr(httpx, "Client", client)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--instance", default=None)
+    sub = parser.add_subparsers(dest="command")
+    mind_cli.add_parser(sub)
+    assert "consolidate" in mind_cli.COMMANDS and "narrative" in mind_cli.COMMANDS
+    assert mind_cli.run(parser.parse_args(["mind", "consolidate"])) == 0
+    out = capsys.readouterr().out
+    assert "2026-09-24" in out and "3 call(s)" in out and "4200 tokens" in out and "digests=2" in out
+    assert calls[-1][:2] == ("POST", "/v1/mind/consolidate") and calls[-1][2] >= 900
+    routes[("POST", "/v1/mind/consolidate")] = {"skipped": "off", "local_date": "2026-09-24"}
+    assert mind_cli.run(parser.parse_args(["mind", "consolidate"])) == 0
+    assert capsys.readouterr().out.strip() == "consolidation 2026-09-24: skipped (off)"
+    assert mind_cli.run(parser.parse_args(["mind", "narrative"])) == 0
+    assert "I did a thing [abc]" in capsys.readouterr().out
+    assert mind_cli.run(parser.parse_args(["mind", "--json", "narrative"])) == 0
+    assert json.loads(capsys.readouterr().out)["cites"] == ["abc"]
+    routes[("GET", "/v1/mind/narrative")] = {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
+    assert mind_cli.run(parser.parse_args(["mind", "narrative"])) == 0
+    assert "off" in capsys.readouterr().out
+
+
+def test_consolidation_is_exported_from_the_mind_package():
+    from protagine import mind
+    assert mind.Consolidation is Consolidation

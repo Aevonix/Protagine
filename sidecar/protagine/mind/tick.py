@@ -35,6 +35,7 @@ from .authority import (
     parse_quiet_hours,
 )
 from .concerns import BROADCAST, MIND_DB, RESOLVED_RETENTION, SETTLED_FOR, Concern, Concerns
+from .consolidate import Consolidation
 from .deliberate import Deliberation, refresh_context
 from .drives import DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
@@ -60,7 +61,8 @@ MESSAGING_TOOLS = frozenset({"send_message", "react_to_message", "discord", "dis
 # Stock ``send_message`` targets: ``platform:chat_id``, and on these platforms ``platform:chat_id:thread_id``.
 THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
-DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True}
+DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
+                     "semantic_recall": True, "consolidation": True, "self_narrative": True}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
@@ -170,6 +172,14 @@ class Mind:
                                          enabled=self.faculties["deliberation"], budgets=self.policy.budgets)
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
+        # Nightly consolidation (architecture 3.1, 4.1, 4.2): off the tick's lock, once per local date.
+        self.consolidation = Consolidation(
+            store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
+            router=router, outbox=self.outbox, autobiography=self.autobiography, request_message=self.request_message,
+            owner_id=self.owner_id, budgets=self.policy.budgets, tokens_allowed=self.authority.tokens_allowed,
+            faculties=self.faculties, clock=self.clock, expectations=expectations, tz=self.tz, quiet=self.quiet,
+            cancel=self._cancel_stale)
+        self._consolidation_task: Optional[asyncio.Task] = None
         if expectations is not None and hasattr(expectations, "register_resolver"):
             expectations.register_resolver("intention:", self._resolve_intention_expectation)
         for topic in interests or []:
@@ -222,6 +232,7 @@ class Mind:
     @router.setter
     def router(self, value: Any) -> None:
         self.deliberation.router = value
+        self.consolidation.router = value
 
     def off(self, *, reason: str = "owner", by: str = "owner") -> Dict[str, Any]:
         """No further effects, at once and without the model endpoint (7.9)."""
@@ -233,6 +244,9 @@ class Mind:
             logger.warning("off marker not written (%s)", type(error).__name__)
         self.authority.set_enabled(False)
         self.off_reason = reason
+        night = self._consolidation_task
+        if night is not None and not night.done():
+            night.cancel()          # its row stays ``dispatched`` and resumes after ``mind on``
         cancelled = self.outbox.cancel_unsent("mind off")
         row, created = self.store.create_intention(
             kind="note", type="off_switch", title=f"mind off ({reason}) by {by}", drive="upkeep", cls="internal",
@@ -328,6 +342,14 @@ class Mind:
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 task.cancel()
         self._task = None
+        night = self._consolidation_task
+        if night is not None and not night.done():
+            night.cancel()
+            try:
+                await night
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._consolidation_task = None
 
     def wake(self) -> None:
         self._wake.set()
@@ -359,6 +381,7 @@ class Mind:
             summary["expectations"] = self._resolve_expectations(now)
             summary["retention"] = self._retention(now)
             summary["backup"] = await self._backup(now)
+            summary["consolidation"] = self._schedule_consolidation(now)
             if self.body_stale(now) and not force:
                 summary["skipped"] = "body stale"
                 return summary
@@ -569,6 +592,58 @@ class Mind:
                 item.unlink(missing_ok=True)
             old.rmdir()
         return str(target)
+
+    def _schedule_consolidation(self, now: datetime) -> Optional[str]:
+        """Start the night's consolidation as a background task when it is due (D1).
+
+        Sleep-time compute needs no body, so it sits before the body-stale
+        return; it sits after the off-switch return, so ``mind off`` stops it.
+        One task at a time; its failure is logged, never raised into the tick.
+        """
+        task = self._consolidation_task
+        if task is not None and not task.done():
+            return "running"
+        if not self.faculties.get("consolidation", True) or not self.consolidation.available:
+            return None
+        if not self.consolidation.due(now, tz=self.tz, quiet=self.quiet) or not self.authority.tokens_allowed(now):
+            return None
+        self._consolidation_task = asyncio.get_running_loop().create_task(
+            self.consolidation.run(now), name="protagine-consolidation")
+        self._consolidation_task.add_done_callback(self._consolidation_done)
+        return "started"
+
+    @staticmethod
+    def _consolidation_done(task: asyncio.Task) -> None:
+        if task.cancelled():
+            logger.info("consolidation cancelled")
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning("consolidation failed (%s)", type(error).__name__)
+
+    async def consolidate(self, *, force: bool = True) -> Dict[str, Any]:
+        """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness; I-2).
+
+        Forcing skips the window and the once-a-night marker, never a switch: with the mind off or
+        ``faculties.consolidation`` false nothing runs.
+        """
+        now = self.clock()
+        local_date = self.consolidation.local_date(now, self.tz)
+        if not self.enabled:
+            return {"skipped": "off", "local_date": local_date}
+        if not self.faculties.get("consolidation", True):
+            return {"skipped": "consolidation off", "local_date": local_date}
+        return await self.consolidation.run(now, force=force)
+
+    def narrative(self) -> Dict[str, Any]:
+        """The self-narrative the plugin renders once per session (I-1)."""
+        return self.consolidation.narrative(enabled=bool(self.enabled and self.faculties.get("self_narrative", True)))
+
+    def person_section(self, contact_id: str) -> str:
+        """The person's digest for their own turn's context, ``""`` when there is none (I-3)."""
+        if not self.enabled or not self.faculties.get("consolidation", True):
+            return ""
+        return self.consolidation.person_section(contact_id)
 
     async def _reconsider(self, now: datetime) -> int:
         """Deferred intentions are re-decided every tick; a budget frees up, they proceed."""
@@ -1382,7 +1457,19 @@ class Mind:
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "body": self.body_heartbeat or None,
             "running": self._running,
+            "consolidation": self._consolidation_state(),
         }
+
+    def _consolidation_state(self) -> Dict[str, Any]:
+        last = self.consolidation.last_date()
+        task = self._consolidation_task
+        night = self.consolidation.last
+        if night is not None and night.local_date == last:
+            tokens = int(night.tokens)
+        else:
+            row = self.store.get_by_dedup_key(f"consolidation:{last}") if last else None
+            tokens = int(row.cost_tokens or 0) if row is not None else 0
+        return {"last": last, "running": bool(task is not None and not task.done()), "last_tokens": tokens}
 
     def stats(self) -> Dict[str, Any]:
         return audit.stats(self.store, now=self.clock())

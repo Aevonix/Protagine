@@ -11,6 +11,7 @@ concerns and the mind state.
 
 from .authority import Authority, Policy, Verdict, classify, decide_table, floor_class, may_contact_of
 from .concerns import Concern, Concerns, MindState
+from .consolidate import Consolidation
 from .deliberate import Deliberation
 from .drives import DRIVES, DriveInputs
 from .goals import Goals
@@ -18,7 +19,7 @@ from .rank import Candidate, eligible, pick, score
 from .tick import Mind
 
 __all__ = [
-    "Authority", "Candidate", "Concern", "Concerns", "DRIVES", "Deliberation", "DriveInputs", "Goals", "Mind",
+    "Authority", "Candidate", "Concern", "Concerns", "Consolidation", "DRIVES", "Deliberation", "DriveInputs", "Goals", "Mind",
     "MindState", "Policy", "Verdict", "classify", "decide_table", "eligible", "floor_class", "may_contact_of",
     "pick", "score",
 ]
