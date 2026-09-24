@@ -32,7 +32,7 @@ campaigns of unseen instances, and does not lose the old-family probe.
 | Body clock | `message_timestamps: gateway` on every owner turn, inbound message and cron prompt | `comparison.message_timestamps` |
 | Environment note | `environment_note: messaging` on every turn and cron run | `comparison.environment_note` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn | case inputs |
-| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the plugin arms add the adapter's memory tools; the curator arm adds nothing | worker |
+| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the plugin arms add the adapter's memory tools and `protagine_self`; the curator arm adds nothing | worker |
 | Ticks | one body tick at the end of every day (15 per campaign): the arm's step (the mind's tick in plugin arms, the curator pass in `base-curator`), Hermes cron, kanban dispatch | scenario |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm | `recipe.container.image_id` |

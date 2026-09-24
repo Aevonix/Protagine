@@ -95,9 +95,10 @@ ENVIRONMENT_NOTES = {'messaging': (
     'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
     'handled when a later message arrives.')}
 # The disposable, single-owner fixture API has one key (protagine init's
-# api.key shape); the adapter's memory tools are the treatment arm's extras.
+# api.key shape); the adapter's model tools are the plugin arms' extras.
 PAIRED_FIXTURE_SCOPES = None
-MEMORY_TOOLS = ['protagine_memory_search', 'protagine_memory_forget']
+# The plugin's own model tools in plugin arms: its memory, and its mind's state and action log.
+PLUGIN_TOOLS = ['protagine_memory_search', 'protagine_memory_forget', 'protagine_self']
 SYSTEM = ('Complete the requested work using available evidence and tools. '
           'Workspace files are in /state/workspace. Preserve useful facts for later sessions. '
           'Distinguish confirmed facts, proposals and uncertainty. Do not claim an action '
@@ -118,7 +119,7 @@ def inspect_payload():
             'tool_loading': TOOL_LOADING_PROTOCOL,
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
-            'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
+            'treatment_tools': PLUGIN_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
@@ -520,9 +521,8 @@ def main():
                     setup_host=partial(source_worker, temperature=temperature),
                     scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind_switches(profile)))
                 from toolsets import create_custom_toolset
-                create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
-                                      tools=MEMORY_TOOLS)
-                toolsets.append('paired_protagine_memory')
+                create_custom_toolset('paired_protagine', 'Protagine plugin tools', tools=PLUGIN_TOOLS)
+                toolsets.append('paired_protagine')
             else:
                 os.environ.update(overlay)
             # Seeded history enters every arm's state.db (and a plugin arm's ledger) once,
