@@ -99,10 +99,9 @@ fallback turn writer; it still requires an exact per-turn participant.
 Every schema and the provider's one system block are sent with every model
 request, so both say only what the model needs; the static reading rules
 (quotations are evidence, each turn's clock is that turn's) live in the system
-block once rather than inside every turn's injected context. Recall tells the
-sidecar whether Hermes still shows this session's earlier turns
-(`session_history: intact`) so it never quotes them back; after a compression
-checkpoint they become recallable again.
+block once rather than inside every turn's injected context. Recall includes
+this session's own earlier turns, since no provider instance can tell whether
+Hermes still shows them verbatim after a compaction or an agent rebuild.
 
 Explicit memory search belongs to the general adapter's `protagine_memory_search`
 tool, which searches canonical evidence and supplies references for opening the

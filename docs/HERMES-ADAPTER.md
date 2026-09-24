@@ -197,10 +197,11 @@ owner session cannot approve. `protagine_self rate {id, verdict}` posts
 
 `prefetch` assembles context for the turn's participant. A guest request sets
 `audience: viewer` and `projection_policy: scoped_viewer_required`, so the
-sidecar never returns owner-only sections to a guest. The request also says
-whether Hermes still shows this session's earlier turns (`session_history:
-intact`, `compressed` after a checkpoint), so recall never quotes back what the
-model is already reading. The provider's direct tools are offered on the
+sidecar never returns owner-only sections to a guest. Recall includes this
+session's own earlier turns: Hermes compacts sessions in place, rebuilds agents
+after an idle eviction or a restart and compacts on detached agents, so no
+provider instance knows whether the model still reads them verbatim. The
+provider's direct tools are offered on the
 owner's own lane only: a guest session or a channel
 with no sender binding gets none of them, and a call that still arrives, like
 `protagine_memory_search` for a turn with no resolved participant, is answered

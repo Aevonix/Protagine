@@ -199,10 +199,6 @@ class ContextAssembleRequest(BaseModel):
     projection_policy: Optional[
         Literal["scoped_viewer_required"]
     ] = None
-    # ``intact``: the host still shows this session's earlier turns verbatim, so recall must not
-    # repeat them; ``compressed``: it summarised them, so their sources are recallable again.
-    # Absent: the host said nothing, and recall includes them as before.
-    session_history: Optional[Literal["intact", "compressed"]] = None
 
 
 class ContextSection(BaseModel):
