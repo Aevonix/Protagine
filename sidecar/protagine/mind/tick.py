@@ -1127,6 +1127,8 @@ class Mind:
                     shaped.kind, shaped.goal = "task", None  # the budget is full or the topic has its goal: one task
                 else:
                     shaped = goal_candidate
+            # A failure-class investigation asks for lesson operations (the reflector); a goal keeps M4's path.
+            self.lessons.reflector(shaped)
             row = await self._form(shaped, score, now)
             if row is None:
                 # A thought was spent and formed nothing: charge it (anti-rumination bounds the retries)
@@ -1295,6 +1297,12 @@ class Mind:
                     context["body"] = (f"{context['body']}\n\nLessons from verified results:\n"
                                        + "\n".join(lesson_lines)).strip()
                     context["lesson_ids"] = lesson_ids
+            if candidate.reflector:
+                reflector = dict(candidate.reflector)
+                request = str(reflector.pop("request", "") or "")
+                if request:
+                    context["body"] = f"{context['body']}\n\n{request}".strip()
+                context["reflector"] = reflector
             context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
             context["max_retries"] = self.policy.budgets.task_max_retries
             if candidate.parent_goal_id:
@@ -1435,6 +1443,12 @@ class Mind:
                 logger.warning("approach opinion not updated for %s (%s)", row.id, type(error).__name__)
         concern = self.concerns.by_intention(row.id)
         now = self.clock()
+        if outcome == "done" and isinstance(row.context, dict) and row.context.get("reflector"):
+            try:
+                self.lessons.apply_reflection(row, summary=row.result or "",
+                                              result=(row.result_metadata or {}).get("result"), now=now)
+            except Exception as error:
+                logger.warning("reflector report not applied for %s (%s)", row.id, type(error).__name__)
         if outcome == "done":
             self._close_commitment(row)
             if concern is not None:

@@ -57,6 +57,14 @@ LESSON_SESSIONS, LESSON_SESSION_TURNS, MESSAGE_CHARS = 6, 8, 500
 EVENT_WINDOW, LESSON_EVENTS, PACKET_LESSONS, PLAN_CHARS = timedelta(days=14), 6, 8, 400
 MAX_OPS, MIN_QUOTE, OUTPUT_TOKENS = 6, 12, 1200
 OPS = ("add", "supersede", "retire")
+# The mastery reflector (architecture 4.8 item 3): a failure-class investigation's task body ends with this
+# fixed request; its report's operations are validated and admitted as ``candidate`` lessons of that class.
+REFLECTOR_OPS = 3
+REFLECTOR_FORMAT = (
+    'End your report with one JSON object {"lesson_ops": [...]}: at most 3 operations about this failure '
+    'class, each {"op": "add", "kind": "strategy"|"pitfall", "title", "when_to_use", "content"}, '
+    '{"op": "supersede", "lesson_id", "kind", "title", "when_to_use", "content"} or '
+    '{"op": "retire", "lesson_id", "why"}; the lessons you may change: ')
 STRENGTH = {"owner": 3, "check": 2, "hermes_failure": 1}
 LESSON_SYSTEM = (
     "You keep an agent's lessons: short, transferable procedures learned from verified results. A strategy "
@@ -504,6 +512,120 @@ class Lessons:
         except Exception as error:
             logger.warning("lesson note not written (%s)", type(error).__name__)
 
+    # -- the mastery reflector ----------------------------------------------------------------
+
+    def reflector(self, candidate: Any) -> bool:
+        """Make a failure-class investigation a reflector: its body asks for lesson operations, its check
+        reads them and ``candidate.reflector`` names the class and the failures it rests on. Anything else
+        (lessons off, a corrections investigation, a goal) keeps the M8 investigation."""
+        if (not self.enabled or not self.available or getattr(candidate, "kind", None) != "task"
+                or getattr(candidate, "type", None) != "mastery_investigation"
+                or getattr(candidate, "source_type", None) != "failure_signature"
+                or not getattr(candidate, "source_id", None)):
+            return False
+        signature = str(candidate.source_id)
+        changeable = [lesson for lesson in self.all() if lesson.signature == signature and lesson.status == "candidate"]
+        listed = "; ".join(f"{lesson.id} ({lesson.status}, {lesson.kind}): {lesson.title}" for lesson in changeable)
+        evidence = [str(ref).split(":", 1)[1] for ref in candidate.evidence if str(ref).startswith("intention:")]
+        # ``request`` closes the task body (the tick appends it after any lesson lines).
+        candidate.reflector = {"signature": signature, "evidence": evidence[:12],
+                               "request": f"{REFLECTOR_FORMAT}{listed or 'none'}."}
+        candidate.success_check = {"kind": "result_field", "field": "lesson_ops"}
+        return True
+
+    @staticmethod
+    def _reflection_ops(summary: Any, result: Any) -> Optional[List[Any]]:
+        """The report's ``lesson_ops``: the structured result first, else the last JSON object in the summary
+        that holds them."""
+        if isinstance(result, dict) and isinstance(result.get("lesson_ops"), list):
+            return list(result["lesson_ops"])
+        text = str(summary or "")
+        for match in reversed(list(re.finditer(r'\{\s*"lesson_ops"', text))):
+            try:
+                value, _ = json.JSONDecoder().raw_decode(text[match.start():])
+            except ValueError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("lesson_ops"), list):
+                return list(value["lesson_ops"])
+        return None
+
+    def _reflect(self, op: Any, signature: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        """One reflector operation checked: adds bounded and of a known kind; supersede and retire only on a
+        candidate of the investigated class, never an active lesson."""
+        if not isinstance(op, dict) or op.get("op") not in OPS:
+            return None, "unknown operation"
+        target = None
+        if op["op"] in {"supersede", "retire"}:
+            target = self.get(str(op.get("lesson_id") or ""))
+            if target is None or target.signature != signature or target.status not in CURRENT:
+                return None, "names no current lesson of this class"
+            if target.status == "active":
+                return None, "an active lesson changes only on verified results"
+            if op["op"] == "retire":
+                return {"op": "retire", "target": target, "why": _clean(op.get("why"), 200) or "retired by a reflector"}, ""
+        kind = str(op.get("kind") or "")
+        if kind not in KINDS:
+            return None, "no lesson kind"
+        values = {name: " ".join(str(op.get(name) or "").split()) for name in ("title", "when_to_use", "content")}
+        limits = {"title": TITLE_CHARS, "when_to_use": WHEN_CHARS, "content": CONTENT_CHARS}
+        if any(not value or len(value) > limits[name] for name, value in values.items()):
+            return None, "title, when_to_use and content are required and bounded"
+        if target is not None and target.kind != kind:
+            return None, "supersedes a lesson of another kind"
+        head = self.current(signature, kind)
+        if head is not None and head.status == "active":
+            return None, "an active lesson holds this class; only verified results replace it"
+        return {"op": op["op"], "target": target, "fields": {"signature": signature, "kind": kind, **values}}, ""
+
+    def apply_reflection(self, row: Any, *, summary: Any, result: Any = None,
+                         now: datetime | None = None) -> Dict[str, Any]:
+        """Validate a reflector's report and admit what passes as ``candidate`` lessons of its class; the
+        row's ``result_metadata.lesson_ops`` and one autobiography line say what happened."""
+        context = row.context if isinstance(getattr(row, "context", None), dict) else {}
+        reflection = context.get("reflector") if isinstance(context.get("reflector"), dict) else None
+        if not self.enabled or not self.available or reflection is None or not reflection.get("signature"):
+            return {}
+        now = now or self.clock()
+        signature = str(reflection["signature"])
+        failures = [str(ident) for ident in reflection.get("evidence") or []]
+        evidence = [*(f"intention:{ident}" for ident in failures), f"intention:{row.id}"]
+        lineage = [*(f"mind:{ident}:outcome_failed" for ident in failures), f"mind:{row.id}:outcome_done"]
+        ops = self._reflection_ops(summary, result)
+        applied: List[str] = []
+        rejected: List[Dict[str, str]] = []
+        for index, op in enumerate(ops or []):
+            name = str(op.get("op") or "") if isinstance(op, dict) else ""
+            if index >= REFLECTOR_OPS:
+                rejected.append({"op": name, "why": f"at most {REFLECTOR_OPS} operations"})
+                continue
+            plan, why = self._reflect(op, signature)
+            if plan is None:
+                rejected.append({"op": name, "why": why})
+                continue
+            if plan["op"] == "retire":
+                if self.set_status(plan["target"].id, "retired", reason=plan["why"], by="reflector", now=now):
+                    applied.append(plan["target"].id)
+                continue
+            lesson = self.admit(plan["fields"], verified="none", origin="reflector", status="candidate",
+                                evidence=evidence, lineage=lineage,
+                                supersedes=plan["target"].id if plan["target"] is not None else None, now=now)
+            if lesson is None:
+                rejected.append({"op": name, "why": "not written"})
+            else:
+                applied.append(lesson.id)
+        outcome = {"applied": applied, "rejected": rejected, **({"missing": True} if ops is None else {})}
+        metadata = dict(row.result_metadata or {}) if isinstance(row.result_metadata, dict) else {}
+        metadata["lesson_ops"] = outcome
+        self.store.update(row.id, result_metadata=metadata)
+        name = _clean(getattr(row, "description", ""), 120)
+        if ops is None:
+            text = f"My investigation '{name}' returned no lesson operations."
+        else:
+            text = (f"My investigation '{name}' proposed {len(ops)} lesson operation(s): {len(applied)} applied "
+                    f"as candidates, {len(rejected)} refused.")
+        self.autobiography.record(str(row.id), "lesson_ops", text, applied=applied, rejected=len(rejected))
+        return outcome
+
     # -- the night ------------------------------------------------------------------------------
 
     def _owner_sessions(self, now: datetime) -> Tuple[List[Dict[str, Any]], Optional[str]]:
@@ -836,7 +958,7 @@ class Lessons:
                 "use_rate": round(wins / uses, 3) if uses else None}
 
 
-__all__ = ["CURRENT", "EXTERNAL_CHECKS", "LESSON_SCHEMA", "LESSON_SYSTEM", "LESSON_TASK", "WATERMARK", "KINDS", "LINE_CHARS", "Lesson", "Lessons", "MIN_SHARED", "RELEVANCE",
+__all__ = ["CURRENT", "EXTERNAL_CHECKS", "REFLECTOR_FORMAT", "REFLECTOR_OPS", "LESSON_SCHEMA", "LESSON_SYSTEM", "LESSON_TASK", "WATERMARK", "KINDS", "LINE_CHARS", "Lesson", "Lessons", "MIN_SHARED", "RELEVANCE",
            "RETIRE_RATE", "RETIRE_USES", "SECTION_CHARS", "STATUSES", "TALLY_WINDOW", "TASK_LESSONS",
            "TURN_LESSONS", "VERIFYING_SOURCES", "lesson_id", "lesson_ids_of", "relevance", "relevant",
            "task_signature", "terms"]
