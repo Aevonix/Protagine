@@ -640,3 +640,20 @@ async def test_concern_goal_and_interest_routes(fx):
         state = (await client.get("/v1/mind/state", headers=AUTH)).json()
         assert state["faculties"]["drives"] is True and state["interests"] == [{"topic": "local history", "weight": 1.0}]
         assert state["deliberation"]["available"] is False
+
+
+async def test_obligations_that_ended_unresolved_do_not_starve_other_concerns(fx):
+    """An overdue commitment the owner said no to keeps its key (reported once) while it stays
+    overdue, so duty raises it again every tick. Such concerns are passed over before the top three
+    are taken: three of them do not hold every slot and starve the rest of the mind."""
+    fx.mind.set_level("suggest")
+    for i in range(3):
+        fx.commitments.create(description=f"send the draft {i}", person_id=OWNER, priority=90, allow_overdue=True,
+                              due_at=(fx.now - timedelta(hours=2)).isoformat())
+    asked = (await fx.mind.tick(force=True))["formed"]
+    assert [item["decision"] for item in asked] == ["ask"] * 3
+    for item in asked:
+        fx.mind.answer(fx.store.get(item["id"]).ask_code, yes=False)
+    fx.mind.add_interest("bees")
+    fx.shift(minutes=1)
+    assert [item["type"] for item in (await fx.mind.tick(force=True))["formed"]] == ["research"]

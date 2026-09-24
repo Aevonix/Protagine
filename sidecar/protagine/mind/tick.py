@@ -855,10 +855,17 @@ class Mind:
     # -- forming intentions ------------------------------------------------------------------
 
     async def _act(self, now: datetime) -> tuple[List[Dict[str, Any]], int]:
-        """The top concerns, ranked on the effective score, become intentions through authority."""
+        """The top concerns, ranked on the effective score, become intentions through authority.
+
+        The top ``BROADCAST`` are taken after passing over what cannot compete: a concern with no
+        template, and one whose key was reported already. An obligation that ended unresolved
+        (a no, a lapsed ask, a failed run) is raised again every tick while its source stays open;
+        it must not hold a slot, or three of them starve every other concern."""
         pairs = []
-        for concern in self.concerns.top(k=BROADCAST):
-            if not concern.detail.get("type"):
+        for concern in self.concerns.open(limit=200):
+            if len(pairs) >= BROADCAST:
+                break
+            if concern.exhausted or not concern.detail.get("type"):
                 continue
             if self.store.get_by_dedup_key(concern.dedup_key) is not None:
                 # The obligation was reported once already (architecture 3.3); it does not compete again.
