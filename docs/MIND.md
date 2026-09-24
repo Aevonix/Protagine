@@ -271,11 +271,13 @@ consumer reads it. `mind.faculties.affect_rules` (off): every consumer reads
 its frozen stateless rule (`P/mind/affect_rules.py`) over the same snapshot
 instead (two failures on a topic within 24 h of its last success; three near
 obligations or a full worker pool; worry 0.5 while anything owed is due soon;
-two dismissals in 7 days hold optional nudges); the state, if on, stays for
-self-report and tone. With both off, affect reads and writes nothing. Which
-consumers read their rule after the affect family's gate is a code constant
-(`affect_rules.RULE_CONSUMERS`), never a setting, and neither switch has an
-environment variable.
+two dismissals in 7 days hold optional nudges), and the rules replace the
+state: nothing is kept and no tone renders, whatever `affect` says, so the
+two switches make three modes (off, the state, the rules) and no unmeasured
+mix. With both off, affect reads and writes nothing. Which consumers read
+their rule after the affect family's gate is a code constant
+(`affect_rules.RULE_CONSUMERS`, with the state kept for self-report and
+tone), never a setting, and neither switch has an environment variable.
 
 **Self-report.** `protagine_self state`, `GET /v1/mind/state` (`affect`) and
 `protagine mind status` show each level with its cited causes (`failed

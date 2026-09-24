@@ -10,7 +10,8 @@ topics, near-term owed obligations and the worker counts. Two readings share it:
   ``affect.curiosity``, ``affect.satisfaction``, ``affect.dismissed``), each capped at 0.7 with at
   most 5 cited causes; a late event is applied as if at its time and then decayed;
 - **the stateless rules** (``mind.faculties.affect_rules``, ``affect_rules.py``): windowed counts
-  over the same snapshot, the mechanism arm of the affect family.
+  over the same snapshot, the mechanism arm of the affect family. With it on the rules replace the
+  state (nothing is kept), so the two switches make three modes: off, the state, the rules.
 
 Four consumers read one ``AffectView`` whichever source produced it: ``strategy_switch`` (a
 topic that keeps failing gets a different approach or one question), ``overload`` (optional work
@@ -418,7 +419,10 @@ class Affect:
         self.expectations = expectations
         self.budgets = budgets
         self.owner_id = owner_id or None
-        self.state_on, self.rules_on = bool(state_on), bool(rules_on)
+        # Two switches, three modes: with ``affect_rules`` on the rules replace the state, whatever
+        # ``affect`` says, so no unmeasured mix of rule-driven decisions and a kept state exists.
+        self.rules_on = bool(rules_on)
+        self.state_on = bool(state_on) and not self.rules_on
         self.tz = tz or timezone.utc
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._novel: Deque[AffectEvent] = deque(maxlen=NOVEL_MAX)
@@ -434,7 +438,7 @@ class Affect:
         """``affect_rules`` on: every consumer reads its rule; else the gate's ``RULE_CONSUMERS`` do."""
         if not self.active:
             return {}
-        if self.rules_on or not self.state_on:
+        if self.rules_on:
             return {name: "rules" for name in CONSUMERS}
         from . import affect_rules
         return {name: "rules" if name in affect_rules.RULE_CONSUMERS else "state" for name in CONSUMERS}

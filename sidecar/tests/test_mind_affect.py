@@ -897,12 +897,21 @@ def test_each_consumer_reads_its_routed_source_and_the_tone_always_reads_the_sta
     assert mixed.satiated is True and mixed.frustrations == state_view.frustrations
     assert mixed.line == state_view.line and mixed.line.startswith("Mood: ")
 
-    everything = world.build(rules_on=True)
-    everything.update(world.now)
-    view = everything.view()
-    assert set(view.route.values()) == {"rules"} and view.satiated is False and view.overloaded is False
-    assert view.line == state_view.line, "the tone line comes from the state even when every consumer reads rules"
-    assert everything.state()["source"] == "rules" and everything.state()["levels"]
+
+
+def test_the_rules_switch_replaces_the_state_so_there_is_no_mixed_mode(tmp_path):
+    """Two switches, three modes: off, the state, the rules. With both switches on the rules replace the
+    state: nothing is kept or written, no tone renders, and the report says so."""
+    both = World(tmp_path, state_on=True, rules_on=True)
+    both.outcome("failed", hours=2, approach="the archive export")
+    both.outcome("failed", hours=1, approach="the archive export")
+    both.outcome("dismissed", "the stretch nudge")
+    both.affect.note_novel_topic("tidal energy storage", NOW)
+    result = both.update()
+    assert result["source"] == "rules" and result["switch"] == [TOPIC] and both.affect.state_on is False
+    assert both.state.items("affect.") == [] and both.affect.view().line == ""
+    assert set(both.affect.view().route.values()) == {"rules"} and both.affect.state()["levels"] == {}
+    both.store.close()
 
 
 # -- 16. nothing raises ----------------------------------------------------------------------------------
