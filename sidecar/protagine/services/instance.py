@@ -162,11 +162,12 @@ class InstanceService:
                 return ['an unreadable definition']
             if str(self.log) in {plist.get('StandardOutPath'), plist.get('StandardErrorPath')}:
                 stale.append('launchd writes into the rotating sidecar.log')
-            if int(plist.get('ThrottleInterval') or 10) < RESTART_SECONDS:
-                stale.append(f"a crash restarts after {plist.get('ThrottleInterval')} s")
+            delay = int(plist.get('ThrottleInterval') or 10)  # launchd's default is 10 s
+            if delay < RESTART_SECONDS:
+                stale.append(f'a crash restarts after {delay} s')
             return stale
         unit = content.decode(errors='replace')
-        if 'append:' + str(self.log) + '\n' in unit:
+        if 'append:' + _systemd_path(self.log) + '\n' in unit:
             stale.append('systemd writes into the rotating sidecar.log')
         delay = re.search(r'^RestartSec=([0-9]+)$', unit, re.MULTILINE)
         if delay and int(delay[1]) < RESTART_SECONDS:
