@@ -144,3 +144,25 @@ def test_contrast_averages_repetitions_before_counting_wins():
     assert result['verdict'] == 'not_demonstrated'
     with pytest.raises(ValueError):
         stats.contrast({}, seed=1)
+
+
+def test_cluster_bootstrap_resamples_whole_campaigns():
+    """Probes of one campaign share its training, so the interval resamples campaigns, not probes:
+    with correlated probes the campaign-clustered interval is wider than per-probe resampling, while
+    the sign test and the point estimate stay over probes."""
+    units, clusters = {}, {}
+    for campaign in range(8):
+        for probe in range(8):
+            key = f'c{campaign}:p{probe}'
+            units[key] = (1.0 if campaign < 4 else 0.0, 0.0)
+            clusters[key] = f'c{campaign}'
+    by_probe = stats.contrast(units, seed=5)
+    by_campaign = stats.contrast(units, seed=5, clusters=clusters)
+    assert by_probe['clusters'] == by_probe['units'] == 64 and by_campaign['clusters'] == 8
+    assert by_campaign['units'] == 64 and by_campaign['wins'] == by_probe['wins'] == 32
+    assert by_campaign['sign_test'] == by_probe['sign_test'] and by_campaign['delta_pp'] == by_probe['delta_pp']
+    width = lambda result: result['ci_pp']['upper'] - result['ci_pp']['lower']
+    assert width(by_campaign) > 2 * width(by_probe)
+    assert by_campaign['ci_pp']['clusters'] == 8
+    with pytest.raises(ValueError, match='cluster'):
+        stats.contrast(units, seed=5, clusters={key: 'c0' for key in list(units)[:-1]})

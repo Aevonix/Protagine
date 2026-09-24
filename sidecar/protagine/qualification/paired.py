@@ -16,8 +16,8 @@ from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMEN
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
                             MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
                             OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
-                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL,
-                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL, SKILL_TOOLS,
+                            SKILLS_PROTOCOL, TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -87,6 +87,11 @@ CLOCK_START = {value: {'protocol': paired_body.CLOCK_START_PROTOCOL, 'utc': valu
                for value in paired_body.CLOCK_STARTS}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
+# A campaign plan (paired_cases.CAMPAIGN_PROTOCOL; the improve family, evals 6.8): the unit is the
+# probe and the bootstrap cluster the campaign, whose probes share its training; the old-family
+# probe is a point-estimate non-inferiority row and cost per success is compared to the comparator.
+CAMPAIGN = {'unit': 'probe', 'cluster': 'campaign', 'old_family': {'non_inferior_pp': -10},
+            'cost_per_success': {'max_increase_pct': 20}}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
 OVERLAY_DENIED = re.compile(r'URL|MODEL|KEY|TOKEN|CONTACT|PASSPHRASE|WEBHOOK|_DIR$|_DB$|_PATH$')
 # The plan's one embedding endpoint (semantic recall, evals 6.1): the same block in every arm; an arm
@@ -268,6 +273,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
             and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
         raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
+    if any(labels[arm].get('plus_skills') for arm in labels) and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('A skills arm requires an image whose worker mounts the mind\'s skills directory')
     if embedding is not None and payload.get('embedding') != EMBEDDING_PROTOCOL:
         raise ValueError('An embedding endpoint requires an image whose worker serves semantic recall through it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
@@ -305,11 +312,18 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     outbound = declared_mode(by_arm, 'outbound', OUTBOUND_MODES, 'outbound path')
     if outbound is not None and payload.get('outbound') != OUTBOUND_PROTOCOL:
         raise ValueError('A declared outbound path requires an image whose worker registers it in every arm')
+    skill_tools = declared_mode(by_arm, 'skill_tools', tuple(SKILL_TOOLS), 'skill tools')
+    if skill_tools is not None and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('Declared skill tools require an image whose worker gives them to every arm')
     # A plugin arm reads the contact records every arm is given only from its people store.
     people_seeded = any(labels[arm].get('plugin') for arm in labels) and any(
         PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
     if people_seeded and payload.get('people_instrument') != PEOPLE_INSTRUMENT_PROTOCOL:
         raise ValueError('Contact records require an image whose worker seeds the plugin arm\'s people store')
+    campaigns = {isinstance(case.inputs.get('campaign'), dict) for case in episodes}
+    if len(campaigns) != 1:
+        raise ValueError('Every episode of a plan is a campaign, or none is')
+    campaign = campaigns == {True}
     clock_start = declared_mode(by_arm, 'clock_start', paired_body.CLOCK_STARTS, 'clock start')
     if clock_start is not None and payload.get('clock_start') != paired_body.CLOCK_START_PROTOCOL:
         raise ValueError('A pinned clock start requires an image whose worker pins it in every arm')
@@ -358,12 +372,18 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if outbound is not None:
         # The path every arm reaches a contact by (families/mind-people-1.md 7.1).
         comparison['outbound'] = deepcopy(OUTBOUND[outbound])
+    if skill_tools is not None:
+        comparison['skill_tools'] = {'protocol': SKILLS_PROTOCOL, 'mode': skill_tools,
+                                     'tools': list(SKILL_TOOLS[skill_tools])}
     if people_seeded:
         comparison['people_instrument'] = PEOPLE_INSTRUMENT_PROTOCOL
     if embedding is not None:
         comparison['embedding'] = deepcopy(embedding)
     if clock_start is not None:
         comparison['clock_start'] = deepcopy(CLOCK_START[clock_start])
+    if campaign:
+        comparison['campaign'] = {'protocol': paired_cases.CAMPAIGN_PROTOCOL, **deepcopy(CAMPAIGN)}
+        comparison['rule'] = {**RULE, 'unit': CAMPAIGN['unit'], 'cluster': CAMPAIGN['cluster']}
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,

@@ -76,6 +76,8 @@ class Candidate:
     grant: Optional[str] = None             # "owner": a per-commitment owner grant for this recipient only
     ask_owner: bool = False                 # the owner confirms before it acts (a recipient matched by name)
     affect_ask: str = ""          # the owner question when affect demotes an act to an ask (strategy switch)
+    lesson_ids: List[str] = field(default_factory=list)   # the lessons its body and deliberation carry
+    reflector: Optional[Dict[str, Any]] = None  # a mastery investigation asked for lesson operations
 
     def as_detail(self) -> Dict[str, Any]:
         """The candidate as a concern's stored detail (JSON); ``from_detail`` restores it."""

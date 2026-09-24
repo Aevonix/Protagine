@@ -30,6 +30,20 @@ emit(name=provider.name, url=provider.sidecar_url, key=provider._api_key, contex
     call, = sidecar.calls("/v1/host/context/assemble", "POST")
     assert call["authorization"] == f"Bearer {API_KEY}"
     assert call["json"]["context"]["contact_id"] == OWNER and "audience" not in call["json"]
+    assert "metadata" not in call["json"]["context"]
+
+
+def test_a_kanban_workers_prefetch_names_its_task(home, sidecar):
+    """A worker's prefetch reaches the sidecar on the owner's lane with its task body as the message. It names
+    its kanban task, so the sidecar treats it as task work, not the owner's turn: the body carries its own
+    lessons, and no owner verdict can ever score a turn lesson in a worker session."""
+    probe('''
+provider.prefetch("Research order codes for order 6633.", session_id="worker-run-1")
+emit(ok=True)
+''', home, prelude=PROVIDER_PRELUDE, env={"HERMES_KANBAN_TASK": "t_abc", "HERMES_KANBAN_WORKSPACE": str(home.root)})
+    call, = sidecar.calls("/v1/host/context/assemble", "POST")
+    assert call["json"]["context"]["contact_id"] == OWNER
+    assert call["json"]["context"]["metadata"] == {"kanban_task": "t_abc"}
 
 
 def test_guest_prefetch_carries_the_viewer_scope_and_no_owner_only_text(home, sidecar):

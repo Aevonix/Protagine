@@ -14,7 +14,7 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 
-from .records import CaseSpec
+from .records import CaseSpec, MAX_CAMPAIGN_OUTPUT_BYTES, MAX_CAMPAIGN_SECONDS
 
 VERSION = 'paired-agent-pilot-1'
 REVIEWED_VERSION = 'paired-agent-reviewed-1'
@@ -128,6 +128,10 @@ GENERATED_ENVIRONMENT_NOTE = 'messaging'
 # path (paired_worker.OUTBOUND_SCHEMA, families/mind-people-1.md 7.1); in every other family
 # no arm has a send tool, as their plans say.
 GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
+# The families whose question involves skills give every arm the same read-only skill tools
+# (paired_worker.SKILL_TOOLS): Hermes lists skills only to an agent with a skill tool, so without them
+# no arm could see one (evals section 11, 2026-09-24). No arm has skill_manage.
+GENERATED_SKILL_TOOLS = {'mind-improve-1': 'read'}
 # Every episode of a generated family starts its body clock at this UTC time of day, in
 # every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
 GENERATED_CLOCK_START = '12:00'
@@ -139,6 +143,39 @@ GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role',
 # first turn.
 GENERATED_OPTIONAL_KEYS = frozenset({'workflow', 'history'})
 GENERATED_ORACLE_KEYS = frozenset({'declared_turns', 'artifacts', 'body', 'checkpoints', 'self_report'})
+# A campaign (the improve family, evals section 6.8) is one scenario of ordered days sharing one
+# arm's state, whose artifacts are probes: every artifact spec carries ``probe`` with its day and
+# kind (training, warranted, control, old_family). Its deadline grows with the day count (one tick
+# entry ends each day) and its output bound is the campaign one; the report takes the probe as
+# its unit and the campaign as its cluster (paired_report).
+CAMPAIGN_PROTOCOL = 'paired-campaign-1'
+CAMPAIGN_DAY_SECONDS = 720
+PROBE_KINDS = ('training', 'warranted', 'control', 'old_family')
+PROBE_KEYS = frozenset({'day', 'kind', 'control', 'source'})
+
+
+def validate_probes(item):
+    """True when the scenario is a campaign (every artifact carries a valid probe), False when none does."""
+    artifacts = (item.get('oracle') or {}).get('artifacts') or []
+    marked = [spec for spec in artifacts if isinstance(spec, dict) and 'probe' in spec]
+    if not marked:
+        return False
+    if len(marked) != len(artifacts):
+        raise ValueError('A campaign declares a probe on every artifact')
+    for spec in marked:
+        probe = spec['probe']
+        if (not isinstance(probe, dict) or set(probe) - PROBE_KEYS or not {'day', 'kind'} <= set(probe)
+                or type(probe['day']) is not int or probe['day'] < 1 or probe['kind'] not in PROBE_KINDS
+                or any(key in probe and (not isinstance(probe[key], str) or not probe[key])
+                       for key in ('control', 'source'))):
+            raise ValueError('A probe is {day >= 1, kind in ' + ', '.join(PROBE_KINDS)
+                             + ', control?, source?}')
+    return True
+
+
+def campaign_days(episodes):
+    """A campaign's days: one tick entry ends each day."""
+    return sum(isinstance(entry, dict) and 'tick' in entry for entry in episodes)
 
 
 def _validate_checkpoints(checkpoints, workflow):
@@ -176,7 +213,7 @@ def load_generated_dataset(directory):
     from .paired_body_grading import validate_body_oracle, validate_self_report_oracle
     from .paired_history import validate_history
     from .paired_workflow_runtime import validate_episodes, validate_workflow
-    identities, counts = set(), {}
+    identities, counts, campaigns = set(), {}, set()
     for item in scenarios:
         if (not isinstance(item, dict) or set(item) - GENERATED_OPTIONAL_KEYS != GENERATED_SCENARIO_KEYS
                 or not _leaf_name(item['id']) or item['id'] in identities
@@ -210,6 +247,9 @@ def load_generated_dataset(directory):
             validate_self_report_oracle(oracle['self_report'])
         if 'checkpoints' in oracle:
             _validate_checkpoints(oracle['checkpoints'], workflow)
+        campaigns.add(validate_probes(item))
+    if len(campaigns) != 1:
+        raise ValueError('A generated dataset is all campaigns (every artifact a probe) or none')
     if counts != manifest['families']:
         raise ValueError('Generated dataset family count mismatch')
     content_hash = hashlib.sha256(b'manifest\0' + manifest_raw + b'\0scenarios\0' + scenario_raw).hexdigest()
@@ -262,6 +302,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
             if dataset_version in GENERATED_OUTBOUND:
                 inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
+            if dataset_version in GENERATED_SKILL_TOOLS:
+                inputs['skill_tools'] = GENERATED_SKILL_TOOLS[dataset_version]
             inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
@@ -274,11 +316,16 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
                 inputs['history'] = copy.deepcopy(scenario['history'])
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
+        timeout_seconds = 600 if generous else 120 * len(scenario['episodes']) + 30
+        max_output_bytes = 1048576 if generous else 262144
+        if split is not None and validate_probes(scenario):
+            days = campaign_days(scenario['episodes'])
+            inputs['campaign'] = {'protocol': CAMPAIGN_PROTOCOL, 'days': days}
+            timeout_seconds = min(MAX_CAMPAIGN_SECONDS, 600 + CAMPAIGN_DAY_SECONDS * days)
+            max_output_bytes = MAX_CAMPAIGN_OUTPUT_BYTES
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
             boundary='native_hermes', consumer='native_paired', evaluator='paired_artifacts',
-            inputs=inputs, oracle=oracle,
-            timeout_seconds=600 if generous else 120 * len(scenario['episodes']) + 30,
-            max_output_bytes=1048576 if generous else 262144))
+            inputs=inputs, oracle=oracle, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes))
     return result
 
 

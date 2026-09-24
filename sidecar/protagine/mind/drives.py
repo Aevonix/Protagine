@@ -575,6 +575,8 @@ def mastery(inputs: DriveInputs) -> DriveResult:
         candidate.dedup_base = f"mastery:{signature}"
         candidate.concern_kind = "failure"
         candidate.cost = 0.2
+        # The class it investigates: a reflector's lessons are lessons of this signature (lessons.py).
+        candidate.source_type, candidate.source_id = "failure_signature", signature
         candidates.append(candidate)
     corrected: Dict[str, List[Dict[str, Any]]] = {}
     for row in inputs.corrections:
@@ -590,6 +592,7 @@ def mastery(inputs: DriveInputs) -> DriveResult:
         candidate.dedup_key = f"mastery:corrections:{slug(type_name)}:{period(inputs.now)}"
         candidate.dedup_base = f"mastery:corrections:{slug(type_name)}"
         candidate.concern_kind = "failure"
+        candidate.source_type, candidate.source_id = "corrections", f"corrections:{type_name}"
         candidates.append(candidate)
     return _level(candidates), inputs.wanted(candidates)
 

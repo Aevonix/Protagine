@@ -100,8 +100,6 @@ from protagine.api.schemas.host import (
     MigrateResponse,
     MultimodalSearchRequest,
     MultimodalSearchResponse,
-    SkillExecuteRequest,
-    SkillExecuteResponse,
     ResearchListResponse,
     ResearchRunResponse,
     ResearchStartRequest,
@@ -113,9 +111,6 @@ from protagine.api.schemas.host import (
     SecretListResponse,
     SecretSetRequest,
     SecretSetResponse,
-    SkillDetailResponse,
-    SkillSummary,
-    SkillsListResponse,
     SynthesisConnection,
     SynthesisDiscoverRequest,
     SynthesisDiscoverResponse,
@@ -278,8 +273,6 @@ def broadcast_event(event: dict) -> Optional[dict]:
         return frame
 
 
-
-
 #: Why semantic recall is off although it was configured: set by the server when the
 #: embedder or the vector store failed to initialise, cleared when they come up.
 _embed_failure: Optional[str] = None
@@ -342,6 +335,25 @@ def _mind_stances(query_text: str, *, viewer_contact_id: str, viewer_is_owner: b
         return ""
 
 
+def _mind_lessons(query_text: str, *, viewer_is_owner: bool, owner_turn: bool, session_id: str,
+                  task_run: bool = False) -> str:
+    """The one lesson relevant to the owner's own turn (architecture 4.8), or nothing: never for a guest,
+    a recipient packet (session ``mind:<contact>``), a kanban worker's run (``task_run``: its task body
+    carries its own lessons), with the mind off or with ``faculties.lessons`` off. Rendering it logs the
+    lesson's use for this owner message, which the owner's next message later scores."""
+    mind = _mind()
+    lessons = getattr(mind, "lessons", None) if mind is not None else None
+    if (lessons is None or not mind.enabled or not lessons.enabled or not viewer_is_owner or not owner_turn
+            or task_run or not session_id or str(session_id).startswith("mind:")):
+        return ""
+    try:
+        text, _ = lessons.for_turn(query_text, session_id=str(session_id))
+        return str(text or "")
+    except Exception:
+        logger.debug("lesson section unavailable", exc_info=True)
+        return ""
+
+
 def _mind_recall_query(query_text: str) -> str:
     """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
     mind = _mind()
@@ -395,16 +407,12 @@ def supported_capabilities() -> List[str]:
         caps.append("contacts")
     if _briefings_engine is not None:
         caps.append("briefings")
-    if _metalearner is not None:
-        caps.append("cognition")
     if _situation_store is not None and _situation_reducer is not None:
         caps.append("situation")
     if _research_pipeline is not None:
         caps.append("research")
     if _connection_discoverer is not None:
         caps.append("synthesis")
-    if _skills_registry is not None:
-        caps.append("skills")
     if _secrets_manager is not None:
         caps.append("secrets")
     if _mind() is not None:
@@ -435,8 +443,6 @@ def supported_capabilities() -> List[str]:
         caps.append("rerank")
     caps.append("context")
     caps.append("event_journal")
-    caps.append("skill_sandbox")
-    caps.append("security_scanner")
     return caps
 
 
@@ -659,8 +665,6 @@ async def health() -> HostHealthResponse:
         notes["contacts"] = "ContactsStore wired"
     if _briefings_engine is not None:
         notes["briefings"] = "BriefingEngine wired"
-    if _metalearner is not None:
-        notes["cognition"] = "MetaLearner wired"
     embed_degraded = False
     if _embed_failure:
         # Semantic recall was configured and is not running: say so in words, so the
@@ -710,8 +714,6 @@ async def health() -> HostHealthResponse:
             logger.warning("embedder health probe failed: %s", exc)
 
         notes["embed"] = embed_note
-    if _skills_registry is not None:
-        notes["skills"] = "SkillRegistry wired"
     if _secrets_manager is not None:
         notes["secrets"] = "SecretsManager wired"
     if _research_pipeline is not None:
@@ -892,14 +894,6 @@ async def llm_health() -> dict:
 # ---------------------------------------------------------------------------
 
 _NOT_WIRED = {"error": {"code": "not_wired", "message": "Backend not configured"}}
-
-# Skill identifiers must be safe for filesystem paths and registry keys.
-_SKILL_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
-
-
-def _validate_skill_id(skill_id: str) -> None:
-    if not _SKILL_ID_RE.match(skill_id):
-        raise HTTPException(status_code=400, detail="invalid skill_id")
 
 
 @router.post("/memory/read", response_model=MemoryReadResponse)
@@ -1914,6 +1908,13 @@ async def _assemble_sections(
     if stance_text:
         sections.append(ContextSection(id='protagine-stances', title='Your recorded views',
                                        body=stance_text, priority=87))
+    # --- What the mind learned (lessons): the owner's own turn only, at most one (architecture 4.8) ---
+    lesson_text = _mind_lessons(query_text, viewer_is_owner=_viewer_is_owner, owner_turn=_owner_turn,
+                                session_id=body.context.session_id,
+                                task_run=bool((body.context.metadata or {}).get("kanban_task")))
+    if lesson_text:
+        sections.append(ContextSection(id='protagine-lessons', title='What you learned',
+                                       body=lesson_text, priority=86))
 
     if contact_id:
         try:
@@ -2968,26 +2969,6 @@ async def _process_turn_sync(
             append_event("conversation.turn", turn_event_data)
         except Exception:
             logger.debug("journal conversation.turn failed", exc_info=True)
-    # Mining: verbatim turn capture + escalation detection (best-effort; the
-    # miner mode gates everything internally, see protagine/mining/).
-    try:
-        from protagine.api.routers.mining import get_mining_engine as _get_miner
-        _miner = _get_miner()
-        if _miner is not None:
-            _miner.observe_turn(
-                session_id=body.context.session_id,
-                contact_id=body.context.contact_id,
-                channel_id=body.context.channel_id or "",
-                user_text=(getattr(body.user_message, "content", "") or "")
-                          if body.user_message else "",
-                assistant_text=(getattr(body.assistant_message, "content", "") or "")
-                               if body.assistant_message else "",
-                summary=body.summary or "",
-                tools_used=body.tools_used,
-                model=body.model or "",
-            )
-    except Exception:
-        logger.debug("mining observe_turn failed", exc_info=True)
     # Opt-out: a contact who asks not to be messaged lowers their own may_contact
     # to never (only the owner ever raises it). Runs on the resolved sender.
     if (_contacts_store is not None and body.context.contact_id and not _is_system_turn
@@ -4060,17 +4041,6 @@ async def list_briefings(limit: int = 10) -> BriefingListResponse:
 
 
 # ---------------------------------------------------------------------------
-# Cognition
-# ---------------------------------------------------------------------------
-
-_metalearner = None
-
-def set_metalearner(learner) -> None:
-    global _metalearner
-    _metalearner = learner
-
-
-# ---------------------------------------------------------------------------
 # Research
 # ---------------------------------------------------------------------------
 
@@ -4267,11 +4237,6 @@ async def submit_correction(
     return {"accepted": True, "correction_id": correction.correction_id}
 
 
-# ---------------------------------------------------------------------------
-# Skills
-# ---------------------------------------------------------------------------
-
-_skills_registry = None
 _commitment_store = None
 
 
@@ -4382,8 +4347,6 @@ async def _ensure_channel_id(
     return f"{gateway or 'unknown'}:{contact}"
 
 
-
-
 _comms_log = None
 
 
@@ -4488,30 +4451,12 @@ async def repos_refresh() -> dict:
 
 # --- Cognition program (items 1/3/4/7 + Amendment 1) ---
 _self_model = None
-_skill_store = None
-_sandbox = None
 _connector_manager = None
-_adaptive_params = None
 
 
 def set_self_model(sm) -> None:
     global _self_model
     _self_model = sm
-
-
-def set_adaptive_params(store) -> None:
-    global _adaptive_params
-    _adaptive_params = store
-
-
-def set_skill_store(store) -> None:
-    global _skill_store
-    _skill_store = store
-
-
-def set_sandbox(s) -> None:
-    global _sandbox
-    _sandbox = s
 
 
 def set_connector_manager(m) -> None:
@@ -4646,22 +4591,6 @@ async def post_benchmark_recall_probe(body: RecallProbeRequest) -> dict:
         return {"available": True, "error": str(exc)}
 
 
-_experiments = None
-
-
-def set_experiments(e) -> None:
-    global _experiments
-    _experiments = e
-
-
-_toolsmith = None
-
-
-def set_toolsmith(t) -> None:
-    global _toolsmith
-    _toolsmith = t
-
-
 _situation_store = None
 _situation_reducer = None
 
@@ -4756,414 +4685,6 @@ async def get_expectations(limit: int = 50) -> dict:
         return {"available": True, "error": str(exc)}
 
 
-@router.get("/self/tools")
-async def list_tools(status: str = "") -> dict:
-    """Self-built tools: the toolsmith registry (draft/verified/shadow/live/
-    retired/rejected), each with usage and verification detail."""
-    if _toolsmith is None:
-        return {"available": False}
-    try:
-        tools = _toolsmith.registry.list(status=status or None)
-        projected = []
-        for tool in tools:
-            item = tool.public()
-            audit = _toolsmith.registry.audit_projection(tool.tool_id)
-            item["clean_comparison_receipts"] = sum(
-                1 for row in audit["shadow_comparisons"] if row.get("success"))
-            item["graduation_receipts"] = len(audit["graduations"])
-            projected.append(item)
-        return {"available": True, "mode": os.environ.get("PROTAGINE_TOOLSMITH", "off"),
-                "trust_stage": _toolsmith.trust_stage(),
-                "tools": projected}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.get("/self/tools/{tool_id}")
-async def get_tool(tool_id: str) -> dict:
-    if _toolsmith is None:
-        return {"available": False}
-    tool = _toolsmith.registry.get(tool_id)
-    if tool is None:
-        raise HTTPException(status_code=404, detail="tool not found")
-    d = tool.public()
-    d["source_code"] = tool.source_code
-    d["test_source"] = tool.test_source
-    audit = _toolsmith.registry.audit_projection(tool_id)
-    clean_comparisons = _toolsmith.registry.clean_comparison_count(tool_id)
-    try:
-        from protagine.toolsmith.engine import _shadow_min
-        shadow_min = _shadow_min()
-    except Exception:
-        shadow_min = 5
-    return {
-        "available": True,
-        "tool": d,
-        "graduation_binding": {
-            "tool_id": tool.tool_id,
-            "candidate_digest": tool.candidate_digest,
-            "artifact_digest": tool.artifact_digest,
-            "clean_comparisons": clean_comparisons,
-            "required_clean_comparisons": shadow_min,
-            "eligible": (
-                tool.status == "shadow"
-                and clean_comparisons >= shadow_min
-                and tool.failures == 0
-            ),
-        },
-        "audit": audit,
-    }
-
-
-class ToolShadowComparisonRequest(BaseModel):
-    capture_id: str
-    captured_input: Dict[str, Any]
-    incumbent_output: Any = None
-    capture_source: str = "captured"
-
-
-class ToolGraduationAuthorityRequest(BaseModel):
-    authority_id: str
-    decision_id: str
-    expected_candidate_digest: str
-    expected_artifact_digest: str
-    issued_at: str
-    expires_at: str
-    max_uses: int = 1
-
-
-def _toolsmith_scoped_authority(
-    request: Request,
-    *,
-    scope: str,
-    owner_required: bool = False,
-) -> tuple[Any, str]:
-    authority = request_authority(request)
-    if not authority.authenticated or authority.anonymous:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "toolsmith_scope_required",
-                "message": "the API key is required",
-            },
-        )
-    owner_person_id = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    if owner_required and (
-        "owner" not in authority.audiences
-        or owner_person_id not in authority.person_ids
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "toolsmith_owner_authority_required",
-                "message": "graduation requires an owner-bound scoped principal",
-            },
-        )
-    return authority, owner_person_id
-
-
-@router.post("/self/tools/{tool_id}/shadow-compare")
-async def compare_shadow_tool(
-    tool_id: str,
-    body: ToolShadowComparisonRequest,
-    request: Request,
-) -> dict:
-    """Record a digest-only same-input incumbent/candidate comparison."""
-
-    if _toolsmith is None:
-        return {"available": False}
-    authority, _ = _toolsmith_scoped_authority(
-        request, scope="toolsmith:evaluate")
-    tool = _toolsmith.registry.get(tool_id)
-    if tool is None:
-        raise HTTPException(status_code=404, detail="tool not found")
-    try:
-        passed, evidence = await _toolsmith.verify_shadow_run(
-            tool,
-            captured_input=body.captured_input,
-            incumbent_output=body.incumbent_output,
-            capture_id=body.capture_id,
-            capture_source=body.capture_source,
-            principal_id=authority.principal_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "shadow_comparison_conflict", "message": str(exc)},
-        ) from exc
-    return {"available": True, "passed": passed, "evidence": evidence}
-
-
-@router.post("/self/tools/{tool_id}/graduate")
-async def graduate_tool(
-    tool_id: str,
-    body: ToolGraduationAuthorityRequest,
-    request: Request,
-) -> dict:
-    """Publish one exact artifact with one owner-scoped bounded authority."""
-
-    if _toolsmith is None:
-        return {"available": False}
-    authority, owner_person_id = _toolsmith_scoped_authority(
-        request, scope="toolsmith:graduate", owner_required=True)
-    try:
-        from protagine.toolsmith.authority import (
-            GraduationAuthorityError,
-            GraduationAuthorityV1,
-        )
-        payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
-        grant = GraduationAuthorityV1.from_request(
-            payload,
-            tool_id=tool_id,
-            principal_id=authority.principal_id,
-            owner_person_id=owner_person_id,
-        )
-        result = _toolsmith.graduate(tool_id, authority=grant)
-    except GraduationAuthorityError as exc:
-        status_code = 404 if exc.code == "tool_not_found" else 409
-        if exc.code in {"owner_authority_required"}:
-            status_code = 403
-        raise HTTPException(
-            status_code=status_code,
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "graduation_conflict", "message": str(exc)},
-        ) from exc
-    return {"available": True, **result}
-
-
-@router.post("/self/tools/{tool_id}/retire")
-async def retire_tool(tool_id: str, reason: str = "owner retired") -> dict:
-    if _toolsmith is None:
-        return {"available": False}
-    ok = _toolsmith.retire(tool_id, reason=reason)
-    if not ok:
-        raise HTTPException(status_code=404, detail="tool not found")
-    return {"available": True, "retired": tool_id}
-
-
-@router.get("/self/experiments")
-async def list_experiments(limit: int = 30) -> dict:
-    """Self-experiments: running and recently decided controlled changes."""
-    if _experiments is None:
-        return {"available": False}
-    try:
-        return {"available": True,
-                **_experiments.snapshot(limit=max(1, min(200, limit)))}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-class ExperimentRequest(BaseModel):
-    hypothesis: str
-    ref: str
-    variant: float
-    metric: str
-    metric_version: str = ""
-    assignment_mode: str = ""
-    control_ratio: float = 0.5
-    min_control_samples: int = 20
-    min_variant_samples: int = 20
-    min_total_samples: int = 40
-    min_power: float = 0.8
-    min_effect: float = 0.0
-    owner_negative_limit: int = 1
-    max_regression: float = 0.05
-    window_days: int = 7
-    # Deprecated compatibility field.  The handler always derives source from
-    # the authenticated credential and never treats this body label as
-    # authority.
-    source: str = "api"
-
-
-def _experiment_approval_response(
-    exc,
-    response: Response,
-) -> dict:
-    """Project a durable approval request without calling it pending falsely."""
-
-    exp = exc.experiment
-    request_id = exp.get("approval_request_id")
-    approval_status = "unknown"
-    authority_store = getattr(_experiments, "_approval_authority", None)
-    if authority_store is not None and request_id:
-        request_row = authority_store.get_request(request_id)
-        if request_row is not None:
-            approval_status = request_row.get("status") or "unknown"
-    if approval_status == "pending":
-        response.status_code = status.HTTP_202_ACCEPTED
-        projected_status = "approval_required"
-    else:
-        # Rejected/expired/superseded authority must never be advertised as a
-        # pending approval that could still authorize this immutable action.
-        response.status_code = status.HTTP_409_CONFLICT
-        projected_status = f"approval_{approval_status}"
-    return {
-        "available": True,
-        "status": projected_status,
-        "approval_status": approval_status,
-        "experiment": exp,
-        "approval_request_id": request_id,
-    }
-
-
-@router.post("/self/experiments")
-async def post_experiment(
-    body: ExperimentRequest,
-    request: Request,
-    response: Response,
-) -> dict:
-    """Propose and start a bounded self-experiment (adaptive-param variant,
-    judged against a benchmark metric with auto-revert on regression)."""
-    if _experiments is None:
-        return {"available": False}
-    from protagine.self_model.experiments import (
-        ExperimentApprovalRequired,
-    )
-
-    try:
-        exp = _experiments.propose_and_start(
-            hypothesis=body.hypothesis, ref=body.ref, variant=body.variant,
-            metric=body.metric, max_regression=body.max_regression,
-            window_days=body.window_days,
-            metric_version=body.metric_version,
-            assignment_mode=body.assignment_mode,
-            control_ratio=body.control_ratio,
-            min_control_samples=body.min_control_samples,
-            min_variant_samples=body.min_variant_samples,
-            min_total_samples=body.min_total_samples,
-            min_power=body.min_power,
-            min_effect=body.min_effect,
-            owner_negative_limit=body.owner_negative_limit,
-            source=request_authority(request).principal_id)
-        return {"available": True, "experiment": exp}
-    except ExperimentApprovalRequired as exc:
-        return _experiment_approval_response(exc, response)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.post("/self/experiments/{exp_id}/start")
-async def start_experiment(exp_id: str, response: Response) -> dict:
-    """Start an already-approved or pregranted durable proposal."""
-    if _experiments is None:
-        return {"available": False}
-    existing = _experiments.store.get(exp_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="experiment was not found")
-    if existing.get("status") == "running":
-        return {"available": True, "experiment": existing,
-                "idempotent_replay": True}
-    if existing.get("status") != "proposed":
-        raise HTTPException(
-            status_code=409,
-            detail=f"experiment cannot start from {existing.get('status')}",
-        )
-    from protagine.self_model.experiments import (
-        ExperimentApprovalRequired,
-    )
-
-    try:
-        exp = _experiments.start(exp_id)
-        return {"available": True, "experiment": exp}
-    except ExperimentApprovalRequired as exc:
-        return _experiment_approval_response(exc, response)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-class ExperimentExposureRequest(BaseModel):
-    unit_id: str
-    source_ref: str
-    receipt_ref: str = ""
-    exposed_at: Optional[float] = None
-
-
-@router.post("/self/experiments/{exp_id}/exposures")
-async def assign_experiment_exposure(
-    exp_id: str,
-    body: ExperimentExposureRequest,
-    request: Request,
-) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    try:
-        exposure = _experiments.assign_exposure(
-            exp_id,
-            unit_id=body.unit_id,
-            sample_principal=request_authority(request).principal_id,
-            source_ref=body.source_ref,
-            receipt_ref=body.receipt_ref,
-            exposed_at=body.exposed_at,
-        )
-        return {"available": True, "exposure": exposure}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-class ExperimentOutcomeRequest(BaseModel):
-    exposure_id: str
-    value: float
-    source_ref: str
-    receipt_ref: str
-    owner_reaction: str = ""
-    outcome_id: str = ""
-    recorded_at: Optional[float] = None
-
-
-@router.post("/self/experiments/{exp_id}/outcomes")
-async def record_experiment_outcome(
-    exp_id: str,
-    body: ExperimentOutcomeRequest,
-    request: Request,
-) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    try:
-        outcome = _experiments.record_outcome(
-            exp_id,
-            exposure_id=body.exposure_id,
-            value=body.value,
-            sample_principal=request_authority(request).principal_id,
-            source_ref=body.source_ref,
-            receipt_ref=body.receipt_ref,
-            owner_reaction=body.owner_reaction,
-            outcome_id=body.outcome_id,
-            recorded_at=body.recorded_at,
-        )
-        return {"available": True, "outcome": outcome}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/self/experiments/{exp_id}/evidence")
-async def get_experiment_evidence(exp_id: str) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    evidence = _experiments.evidence(exp_id)
-    if evidence.get("experiment") is None:
-        raise HTTPException(status_code=404, detail="experiment was not found")
-    return {"available": True, **evidence}
-
-
-@router.post("/self/experiments/{exp_id}/abort")
-async def abort_experiment(exp_id: str, reason: str = "manual abort") -> dict:
-    if _experiments is None:
-        return {"available": False}
-    ok = _experiments.abort(exp_id, reason=reason)
-    if not ok:
-        raise HTTPException(status_code=404,
-                            detail="no running experiment with that id")
-    return {"available": True, "aborted": exp_id}
-
-
 @router.post("/self/benchmark/compute")
 async def compute_benchmark(week: str = "") -> dict:
     """Compute (or recompute) a week's rollups on demand. Default: the
@@ -5194,18 +4715,6 @@ async def get_self_model(request: Request = None) -> dict:
         return {"available": True, "error": str(exc)}
 
 
-@router.get("/self/params")
-async def get_adaptive_params() -> dict:
-    """Adaptive parameters: the meta-learning knobs consumers read back,
-    with their bounds, current values, and last adjustment attribution."""
-    if _adaptive_params is None:
-        return {"available": False}
-    try:
-        return {"available": True, "params": _adaptive_params.snapshot()}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
 @router.get("/autonomy/posture")
 async def get_autonomy_posture(request: Request) -> dict:
     """Effective autonomy posture: the resolved value of every mode switch as
@@ -5215,10 +4724,7 @@ async def get_autonomy_posture(request: Request) -> dict:
         posture = {}
         for name, valid, fallback in (
             ("PROTAGINE_INTROSPECT_ENABLED", ("true", "false"), "false"),
-            ("PROTAGINE_SKILLS_DISTILL", ("off", "shadow", "live"), "shadow"),
-            ("PROTAGINE_ESCALATION_MINING", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off"),
-            ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
             ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "on"),
         ):
             if valid == ("true", "false"):
@@ -5246,61 +4752,6 @@ async def get_action_journal(limit: int = 50, domain: str = "",
         return {"available": True, "count": len(entries), "entries": entries}
     except Exception as exc:
         return {"available": True, "error": str(exc), "entries": []}
-
-
-@router.get("/skills-memory")
-async def get_skills_memory() -> dict:
-    """Procedure-memory skills (item 3) observability."""
-    if _skill_store is None:
-        return {"available": False}
-    try:
-        return {"available": True, **_skill_store.snapshot()}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.get("/sandbox/status")
-async def get_sandbox_status() -> dict:
-    """Exploration sandbox (item 6): mode, backend, containment limits."""
-    if _sandbox is None:
-        return {"available": False}
-    try:
-        return {"available": True, **_sandbox.status()}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.post("/sandbox/run")
-async def run_sandbox(
-    request: Request,
-    body: dict = Body(default={}),
-) -> dict:
-    """Owner surface: run a script in the sandbox. Owner-directed runs auto-run
-    within default limits; still boundary-checked and journaled. The caller
-    cannot widen containment (limits are server-side)."""
-    if _sandbox is None:
-        return {"ran": False, "reason": "sandbox_not_wired"}
-    b = body or {}
-    authority = request_authority(request)
-    owner_person_id = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    # Owner direction is derived from authenticated transport authority;
-    # request JSON cannot assert either owner direction or approval.
-    owner_directed = bool(
-        authority.authenticated
-        and not authority.anonymous
-        and "owner" in authority.audiences
-        and owner_person_id in authority.person_ids
-    )
-    return _sandbox.run(
-        b.get("script", ""),
-        lang=b.get("lang", "python"),
-        purpose=b.get("purpose", ""),
-        owner_directed=owner_directed,
-        approved=owner_directed)
 
 
 @router.get("/connectors/status")
@@ -5444,170 +4895,6 @@ _pattern_store = None
 def set_pattern_store(store):
     global _pattern_store
     _pattern_store = store
-
-
-_skill_executor = None
-
-def set_skills_registry(registry) -> None:
-    global _skills_registry
-    _skills_registry = registry
-
-
-def set_skill_executor(executor) -> None:
-    global _skill_executor
-    _skill_executor = executor
-
-
-@router.get("/skills/registry", response_model=SkillsListResponse)
-async def list_skills() -> SkillsListResponse:
-    if _skills_registry is None:
-        return SkillsListResponse(skills=[])
-    try:
-        skills = await _skills_registry.list_all()
-        result = []
-        for s in skills:
-            d = _to_dict(s)
-            d.setdefault("id", d.pop("skill_id", ""))
-            for skip in ("created_at", "updated_at", "author_protagine_id", "status", "input_schema", "tags", "trigger_patterns"):
-                d.pop(skip, None)
-            result.append(SkillSummary(**{k: v for k, v in d.items() if k in SkillSummary.model_fields}))
-        return SkillsListResponse(skills=result)
-    except Exception as exc:
-        logger.warning("list_all failed: %s", exc)
-        return SkillsListResponse(skills=[])
-
-
-@router.get("/skills/drafts")
-async def list_skill_drafts() -> dict:
-    """List skills in DRAFT status awaiting approval."""
-    if _skills_registry is None:
-        return {"drafts": []}
-    try:
-        from protagine.skills.models import SkillStatus
-        drafts = await _skills_registry.list_all(status=SkillStatus.DRAFT)
-        return {
-            "drafts": [
-                {
-                    "id": getattr(d, "skill_id", ""),
-                    "name": getattr(d, "name", ""),
-                    "description": getattr(d, "description", ""),
-                    "created_at": (
-                        getattr(d, "created_at").isoformat()
-                        if getattr(d, "created_at", None) else None
-                    ),
-                }
-                for d in drafts
-            ]
-        }
-    except Exception as exc:
-        logger.warning("list_skill_drafts failed: %s", exc)
-        return {"drafts": []}
-
-
-@router.post("/skills/{skill_id}/approve")
-async def approve_skill(skill_id: str) -> dict:
-    """Move a DRAFT skill to ACTIVE."""
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=503, detail="skills_registry_not_initialized")
-    try:
-        existing = await _skills_registry.get(skill_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        await _skills_registry.activate(skill_id)
-        try:
-            from protagine.events.broadcaster import emit as _emit
-            _emit("skill_draft_approved", {
-                "skill_id": skill_id,
-                "name": getattr(existing, "name", ""),
-            })
-        except Exception:
-            pass
-        # v0.18.0 Hermes bridge: best-effort render of the approved skill
-        # as an instructional Hermes SKILL.md. Gated inside the exporter
-        # by PROTAGINE_EMIT_HERMES_SKILLS (off by default) and a procedural
-        # heuristic; a failure here must never block activation.
-        try:
-            from protagine.skills.hermes_export import export_approved_skill
-            exported = export_approved_skill(existing)
-            if exported is not None:
-                logger.info("Hermes SKILL.md exported for %s → %s", skill_id, exported)
-        except Exception as exc:
-            logger.warning("Hermes export failed for %s (non-fatal): %s", skill_id, exc)
-        return {"ok": True, "skill_id": skill_id, "status": "active"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("approve_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/skills/{skill_id}/execute", response_model=SkillExecuteResponse)
-async def execute_skill(
-    skill_id: str, body: SkillExecuteRequest,
-) -> SkillExecuteResponse:
-    """Invoke an ACTIVE skill in the sandboxed SkillExecutor."""
-    _validate_skill_id(skill_id)
-    if _skill_executor is None:
-        raise HTTPException(
-            status_code=503, detail="skill_executor_not_initialized",
-        )
-    try:
-        result = await _skill_executor.invoke(skill_id, body.arguments)
-        return SkillExecuteResponse(
-            status=result.status,
-            output=result.output,
-            error=result.error,
-            execution_id=result.execution_id,
-            duration_ms=result.duration_ms,
-        )
-    except Exception as exc:
-        logger.warning("execute_skill('%s') failed: %s", skill_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/skills/{skill_id}/reject")
-async def reject_skill(skill_id: str) -> dict:
-    """Reject a DRAFT skill by archiving it."""
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=503, detail="skills_registry_not_initialized")
-    try:
-        existing = await _skills_registry.get(skill_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        await _skills_registry.archive(skill_id)
-        return {"ok": True, "skill_id": skill_id, "status": "archived"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("reject_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/skills/registry/{skill_id}", response_model=SkillDetailResponse)
-async def get_skill(skill_id: str) -> SkillDetailResponse:
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=404, detail="Skills not available")
-    try:
-        skill = await _skills_registry.get(skill_id)
-        if skill is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        return SkillDetailResponse(
-            id=_to_dict(skill).get("skill_id", _to_dict(skill).get("id", skill_id)),
-            name=_to_dict(skill).get("name", ""),
-            description=skill.get("description"),
-            version=skill.get("version"),
-            triggers=skill.get("triggers", []),
-            input_schema=skill.get("input_schema"),
-            permissions=skill.get("permissions"),
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("get_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

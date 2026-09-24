@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -105,44 +104,3 @@ def test_goal_save_broadcasts_goal_update(collector, tmp_path):
     assert payload["goal_id"] == "g1"
     assert payload["status"] == "active"
     assert payload["progress_pct"] == 0.5
-
-
-@pytest.mark.asyncio
-async def test_skill_approve_broadcasts_skill_draft_approved(collector):
-    from fastapi import FastAPI
-    from httpx import ASGITransport, AsyncClient
-    from protagine.api.routers import host as host_mod
-
-    class _FakeRegistry:
-        def __init__(self):
-            self._skills = {
-                "s1": SimpleNamespace(skill_id="s1", name="MySkill"),
-            }
-
-        async def get(self, sid):
-            return self._skills.get(sid)
-
-        async def activate(self, _sid):
-            return None
-
-    prev = host_mod._skills_registry
-    host_mod._skills_registry = _FakeRegistry()
-    app = FastAPI()
-    app.include_router(host_mod.router)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as client:
-            resp = await client.post("/v1/host/skills/s1/approve")
-        assert resp.status_code == 200
-    finally:
-        host_mod._skills_registry = prev
-
-    types = [e["type"] for e in collector.events]
-    assert "skill_draft_approved" in types
-    payload = next(
-        e for e in collector.events if e["type"] == "skill_draft_approved"
-    )["payload"]
-    assert payload["skill_id"] == "s1"
-    assert payload["name"] == "MySkill"

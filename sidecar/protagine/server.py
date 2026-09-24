@@ -31,8 +31,6 @@ from protagine.api.routers.host import (
     set_research_pipeline,
     set_search_orchestrator,
     set_insight_store,
-    set_skills_registry,
-    set_skill_executor,
     set_secrets_manager,
     set_session_store,
     set_commitment_store,
@@ -110,45 +108,22 @@ def _attach_situation_spine(*, state_dir: Path):
     }
 
 
-def _initialize_controlled_learning(
-    *,
-    state_dir: Path,
-    adaptive_params,
-    journal=None,
-) -> dict:
-    """Build the one P4 evidence/experiment graph for this process.
+def _initialize_learning_feedback(state_dir: Path) -> dict:
+    """The owner's corrections ledger (``/v1/host/learning/correction``) and the selfhood benchmark that
+    reads it (deleted in M10). Setters are cleared before construction so a second lifespan in the same
+    interpreter cannot keep a stale store."""
 
-    The migration flags retain their historical meanings: P4 mode defaults to
-    ``off`` (legacy weekly evaluation), while the independent benchmark and
-    experiment feature flags control whether their databases are opened at
-    all.  Setters are cleared before construction so a second lifespan in the
-    same interpreter cannot retain stale authority or a stale writer.
-    """
-
-    from protagine.api.routers.host import (
-        set_benchmark,
-        set_experiments,
-        set_learning_feedback_store,
-    )
-    from protagine.intelligence.learning.feedback_store import (
-        FeedbackStore,
-    )
+    from protagine.api.routers.host import set_benchmark, set_learning_feedback_store
+    from protagine.intelligence.learning.feedback_store import FeedbackStore
     from protagine.self_model.benchmark import (
         BenchmarkStore,
         SelfhoodBenchmark,
         benchmark_enabled,
         canonical_probe_recall,
     )
-    from protagine.self_model.experiments import (
-        ExperimentEngine,
-        ExperimentStore,
-        experiment_pregrants_from_env,
-        experiments_enabled,
-    )
 
     set_learning_feedback_store(None)
     set_benchmark(None)
-    set_experiments(None)
 
     correction_store = FeedbackStore(
         db_path=str(state_dir / "protagine-learning-feedback.db"))
@@ -161,40 +136,9 @@ def _initialize_controlled_learning(
             recall=canonical_probe_recall(state_dir),
         )
 
-    experiments = None
-    approval_authority = None
-    if experiments_enabled():
-        if adaptive_params is None:
-            raise RuntimeError(
-                "P4 experiments require the adaptive parameter store")
-        if benchmark is None:
-            raise RuntimeError(
-                "P4 experiments require the canonical SelfhoodBenchmark")
-        # There is no approval ledger any more: live mutations outside a
-        # pregranted range have no approval path and never start.
-        approval_authority = None
-        experiments = ExperimentEngine(
-            ExperimentStore(
-                db_path=str(state_dir / "protagine-experiments.db")),
-            params=adaptive_params,
-            benchmark=benchmark,
-            journal=journal,
-            approval_authority=approval_authority,
-            pregranted_ranges=experiment_pregrants_from_env(),
-        )
-
-    # Publish only after the complete configured graph constructed.  A bad
-    # pregrant or missing dependency must not expose a partially wired P4.
     set_learning_feedback_store(correction_store)
     set_benchmark(benchmark)
-    set_experiments(experiments)
-
-    return {
-        "corrections": correction_store,
-        "benchmark": benchmark,
-        "experiments": experiments,
-        "approval_authority": approval_authority,
-    }
+    return {"corrections": correction_store, "benchmark": benchmark}
 
 
 async def _initialize_contacts_store():
@@ -227,24 +171,6 @@ async def lifespan(app: FastAPI):
     from protagine.resources import raise_open_file_limit
     raise_open_file_limit()
     state_dir = _state_dir()
-
-    # --- 0. Adaptive parameters (the experiment engine's one writer) ---
-    # Created first; the ActionJournal is attached in the self-model section
-    # once it exists.
-    _adaptive_params = None
-    try:
-        from protagine.self_model.params import AdaptiveParamStore
-        _adaptive_params = AdaptiveParamStore(
-            db_path=str(state_dir / "protagine-params.db"))
-        try:
-            from protagine.api.routers.host import set_adaptive_params
-            set_adaptive_params(_adaptive_params)
-        except ImportError:
-            pass
-        logger.info("AdaptiveParamStore initialized (db=%s)",
-                    state_dir / "protagine-params.db")
-    except Exception as exc:
-        logger.warning("AdaptiveParamStore init failed: %s", exc)
 
     # --- 1. LLM Router ---
     llm_router = None
@@ -609,55 +535,34 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("TypeFeedbackStore init failed: %s", exc)
 
-    # --- Self-model / trust engine + action journal (item 4, Amendment 1) ---
-    # Wired before directed action so approval tiering can consult trust.
+    # --- Self-model (competence) + action journal (item 4, Amendment 1) ---
     _sm_for_directed = None
     try:
         from protagine.self_model import (
-            ActionJournal, CompetenceStore, SelfModel, TrustEngine,
-            self_model_enabled,
+            ActionJournal, CompetenceStore, SelfModel, self_model_enabled,
         )
-        from protagine.api.routers.host import (
-            set_self_model, _feedback_store as _fb_for_trust,
-        )
+        from protagine.api.routers.host import set_self_model
         if self_model_enabled():
             _competence = CompetenceStore(
                 db_path=str(state_dir / "protagine-self-model.db"))
             _journal = ActionJournal(
                 db_path=str(state_dir / "protagine-action-journal.db"))
-            _trust = TrustEngine(
-                _competence, db_path=str(state_dir / "protagine-self-model.db"),
-                feedback_store=_fb_for_trust, journal=_journal)
-            _sm_for_directed = SelfModel(_competence, trust=_trust, journal=_journal)
+            _sm_for_directed = SelfModel(_competence, journal=_journal)
             _sm_for_directed.perspective = getattr(locals().get('preference_learner'), 'perspective', None)
             set_self_model(_sm_for_directed)
-            if _adaptive_params is not None:
-                _adaptive_params.set_journal(_journal)
             logger.info(
-                "SelfModel/TrustEngine initialized (db=%s, journal=%s, "
-                "autograduate=%s)",
+                "SelfModel initialized (db=%s, journal=%s)",
                 state_dir / "protagine-self-model.db",
-                state_dir / "protagine-action-journal.db",
-                os.environ.get("PROTAGINE_TRUST_AUTOGRADUATE", "true"))
+                state_dir / "protagine-action-journal.db")
         else:
             logger.info("SelfModel disabled (PROTAGINE_SELF_MODEL_ENABLED=false)")
     except Exception as exc:
         logger.warning("SelfModel init failed: %s", exc)
 
-    # --- P4 controlled learning: one evidence and authority graph ---
-    _controlled_learning = {
-        "corrections": None,
-        "benchmark": None,
-        "experiments": None,
-        "approval_authority": None,
-    }
+    # --- The owner's corrections ledger and the selfhood benchmark ---
     try:
-        _controlled_learning = _initialize_controlled_learning(
-            state_dir=state_dir,
-            adaptive_params=_adaptive_params,
-            journal=locals().get("_journal"),
-        )
-        if _controlled_learning["benchmark"] is not None:
+        _learning = _initialize_learning_feedback(state_dir)
+        if _learning["benchmark"] is not None:
             logger.info(
                 "Selfhood benchmark ready (db=%s, corrections=%s)",
                 state_dir / "protagine-benchmark.db",
@@ -666,37 +571,8 @@ async def lifespan(app: FastAPI):
         else:
             logger.info(
                 "Selfhood benchmark disabled (PROTAGINE_BENCHMARK_ENABLED=false)")
-        if _controlled_learning["experiments"] is not None:
-            logger.info(
-                "Controlled experiment framework ready (db=%s)",
-                state_dir / "protagine-experiments.db",
-            )
-        else:
-            logger.info(
-                "Experiment framework disabled "
-                "(PROTAGINE_EXPERIMENTS_ENABLED=false)")
     except Exception as exc:
-        logger.error("Controlled learning init failed closed: %s", exc)
-
-    # --- Toolsmith (Mind M1): self-built, sandbox-verified tools ---
-    try:
-        from protagine.toolsmith import (
-            Toolsmith, ToolRegistry, toolsmith_enabled,
-        )
-        from protagine.api.routers.host import set_toolsmith
-        if toolsmith_enabled():
-            _tool_registry = ToolRegistry(
-                db_path=str(state_dir / "protagine-toolsmith.db"),
-                library_root=str(state_dir / "toolsmith_library"))
-            _toolsmith = Toolsmith(_tool_registry)
-            set_toolsmith(_toolsmith)
-            logger.info("Toolsmith ready (mode=%s, db=%s)",
-                        os.environ.get("PROTAGINE_TOOLSMITH", "off"),
-                        state_dir / "protagine-toolsmith.db")
-        else:
-            logger.info("Toolsmith disabled (PROTAGINE_TOOLSMITH=off)")
-    except Exception as exc:
-        logger.warning("Toolsmith init failed: %s", exc)
+        logger.error("Learning feedback init failed closed: %s", exc)
 
     # --- Expectation engine (Mind M3a): predictions + surprise + calibration ---
     try:
@@ -725,49 +601,6 @@ async def lifespan(app: FastAPI):
             logger.info("Expectation engine disabled (PROTAGINE_EXPECTATIONS=off)")
     except Exception as exc:
         logger.warning("Expectation engine init failed: %s", exc)
-
-    # --- Skills memory (procedure memory, item 3) ---
-    _skills_mem_store = None
-    try:
-        from protagine.skills_memory import SkillStore, skills_distill_mode
-        from protagine.api.routers.host import set_skill_store
-        _skills_mem_store = SkillStore(
-            db_path=str(state_dir / "protagine-skills.db"))
-        set_skill_store(_skills_mem_store)
-        logger.info("SkillStore initialized (db=%s, %d skill(s), distill=%s)",
-                    state_dir / "protagine-skills.db",
-                    _skills_mem_store.count(), skills_distill_mode())
-    except Exception as exc:
-        logger.warning("SkillStore init failed: %s", exc)
-
-    # --- Mining: escalation miner + verbatim turn capture (corpus source) ---
-    try:
-        from protagine.mining import EscalationMiner, MiningStore, mining_mode
-        from protagine.api.routers.mining import set_mining
-
-        if mining_mode() != "off":
-            _mining_store_obj = MiningStore(
-                db_path=str(state_dir / "protagine-mining.db"))
-
-            def _mining_router_getter():
-                try:
-                    from protagine.api.routers.host import _llm_router
-                    return _llm_router
-                except Exception:
-                    return None
-
-            _mining_engine_obj = EscalationMiner(
-                _mining_store_obj,
-                skill_store=_skills_mem_store,
-                router_getter=_mining_router_getter,
-            )
-            set_mining(_mining_store_obj, _mining_engine_obj, state_dir)
-            logger.info("EscalationMiner initialized (db=%s, mode=%s)",
-                        state_dir / "protagine-mining.db", mining_mode())
-        else:
-            logger.info("Mining disabled (PROTAGINE_ESCALATION_MINING=off)")
-    except Exception as exc:
-        logger.warning("Mining init failed: %s", exc)
 
     # --- Read-only repo mirrors ---
     try:
@@ -943,30 +776,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("InsightStore init failed: %s", exc)
 
-    # --- 16. Skills registry + executor ---
-    skills_registry = None
-    try:
-        from protagine.skills.registry import SkillRegistry
-        skills_registry = SkillRegistry()
-        set_skills_registry(skills_registry)
-        logger.info("SkillRegistry initialized (%d skills)", len(skills_registry.list_skills()))
-
-        try:
-            from protagine.skills.executor import SkillExecutor
-            from protagine.skills.security.guards import CapabilityGuard
-            from protagine.skills.security.scanner import ASTScanner
-            skill_executor = SkillExecutor(
-                registry=skills_registry,
-                guard=CapabilityGuard(),
-                scanner=ASTScanner(),
-            )
-            set_skill_executor(skill_executor)
-            logger.info("SkillExecutor initialized")
-        except Exception as sexc:
-            logger.warning("SkillExecutor init failed: %s", sexc)
-    except Exception as exc:
-        logger.warning("SkillRegistry init failed: %s", exc)
-
     # --- 18. Secrets ---
     try:
         from protagine.secrets.manager import SecretsManager
@@ -1093,17 +902,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Situation spine attachment failed closed: %s", exc)
 
-    # --- 22d. Exploration sandbox (gated isolated execution, item 6) ---
-    try:
-        from protagine.sandbox import SandboxManager, sandbox_mode
-        from protagine.api.routers.host import set_sandbox
-        _sandbox_mgr = SandboxManager(self_model=_sm_for_directed)
-        set_sandbox(_sandbox_mgr)
-        logger.info("SandboxManager initialized (mode=%s, backend=%s)",
-                    sandbox_mode(), _sandbox_mgr.backend_name())
-    except Exception as exc:
-        logger.warning("SandboxManager init failed: %s", exc)
-
     # --- 22e. Connector framework (read-only pull senses, item 2) ---
     try:
         from protagine.connectors import (
@@ -1163,11 +961,6 @@ async def lifespan(app: FastAPI):
         _set_mind(None)
     except Exception:
         logger.warning("Mind shutdown failed")
-    if skills_registry is not None:
-        try:
-            skills_registry.close()
-        except Exception:
-            logger.debug("SkillRegistry close failed", exc_info=True)
     set_llm_router(None)
     set_embedder(None)
     set_goals_store(None)
@@ -1180,21 +973,14 @@ async def lifespan(app: FastAPI):
     set_briefings_engine(None)
     try:
         from protagine.api.routers.host import (
-            set_adaptive_params as _set_adaptive_params,
             set_benchmark as _set_benchmark,
-            set_experiments as _set_experiments,
             set_learning_feedback_store as _set_learning_feedback_store,
         )
-        _set_experiments(None)
         _set_benchmark(None)
         _set_learning_feedback_store(None)
-        _set_adaptive_params(None)
-        if _adaptive_params is not None:
-            _adaptive_params.close()
     except Exception:
-        logger.debug("controlled learning shutdown failed", exc_info=True)
+        logger.debug("learning feedback shutdown failed", exc_info=True)
     set_research_pipeline(None)
-    set_skills_registry(None)
     set_commitment_store(None)
     set_affect_store(None)
     set_facts_store(None)
@@ -1291,8 +1077,6 @@ def create_app() -> FastAPI:
     # Observations router (v0.16.0) — agent-as-sensor ingestion
     from protagine.api.routers import observations as observations_router
     app.include_router(observations_router.router)
-    from protagine.api.routers import mining as mining_router
-    app.include_router(mining_router.router)
 
     # MCP streamable HTTP endpoint
     try:

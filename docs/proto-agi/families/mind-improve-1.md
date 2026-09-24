@@ -33,23 +33,29 @@ campaigns of unseen instances, and does not lose the old-family probe.
 | Environment note | `environment_note: messaging` on every turn and cron run | `comparison.environment_note` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn | case inputs |
 | Toolsets | common: `file`, `memory`, `session_search`, `todo`; the plugin arms add the adapter's memory tools and `protagine_self`; the curator arm adds nothing | worker |
+| Skill tools | `skill_tools: read`: `skills_list` and `skill_view` for every arm's agent turns, kanban workers and heartbeat; `skill_manage` in no arm; a plugin arm lists the mind's skills directory in `skills.external_dirs` as `protagine init` does; every arm records `body.skills_present` (amendment of 2026-09-24, evals section 11) | `comparison.skill_tools`, worker capability `paired-skills-1` |
 | Ticks | one body tick at the end of every day (15 per campaign): the arm's step (the mind's tick in plugin arms, the curator pass in `base-curator`), Hermes cron, kanban dispatch | scenario |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm | `recipe.container.image_id` |
 
-What the campaign mode of the harness (build plan M9, about 0.2k lines) has to provide before
-this family runs; none of it changes the dataset:
+The campaign mode of the harness (build plan M9) that this family runs on, as built; none of it
+changes the dataset (the dev split hash is pinned):
 
-1. **Deadline.** `paired_cases.cases` gives a generated episode 600 s; a campaign is 15 days of
-   turns and ticks (about 15 × 4.5 min). The deadline is set from the day count.
-2. **Nightly work at the end-of-day tick.** The benchmark's disposable `protagine.yaml` turns
-   quiet hours off; the mind's nightly batch (lesson extraction, consolidation) must be due at
-   the tick that follows a one-day clock advance, and `base-curator` already runs its pass at
-   every tick.
-3. **Probe-level report.** Units are the artifact checks whose spec carries
-   `probe.kind` in `{warranted, control}`, clustered by scenario id (the campaign);
-   `old_family` checks feed the non-inferiority row; `training` checks are descriptive.
-   `paired_statistics.contrast` and `cluster_bootstrap` already take clusters.
+1. **Deadline** (built). A scenario whose every artifact carries `probe` metadata is a campaign
+   (`paired_cases.validate_probes`); its case gets 600 s plus 720 s per day, one tick ending each
+   day (15 days: 11,400 s; at most 4 h), and an 8 MiB output bound (`paired_cases.cases`,
+   `records.MAX_CAMPAIGN_SECONDS`, `MAX_CAMPAIGN_OUTPUT_BYTES`).
+2. **Nightly work at the end-of-day tick** (built, nothing new needed). The benchmark's
+   disposable `protagine.yaml` turns quiet hours off, so the 03:00 boundary falls inside every
+   one-day clock advance and the forced end-of-day tick waits for the night (lesson extraction,
+   consolidation); `base-curator` runs its pass at every tick. A test pins it for the campaign shape
+   (`test_every_end_of_day_tick_of_a_campaign_starts_a_night`).
+3. **Probe-level report** (built). A campaign plan freezes `comparison.campaign` and a rule whose
+   unit is the probe and whose cluster is the campaign. Units are the artifact checks whose spec
+   carries `probe.kind` in `{warranted, control}`, repetitions averaged per probe; the bootstrap
+   resamples whole campaigns (`paired_statistics.contrast(..., clusters=)`); a campaign either arm
+   left unattributable or ended early is unavailable. `old_family` checks feed the non-inferiority
+   row and `training` checks are descriptive (`paired_report._probe_units`, `_campaign`).
 4. **Faculty switches in the built-in arms** (section 4).
 
 ## 4. Arms
@@ -68,9 +74,13 @@ Arm order rotates by campaign; each arm runs the whole campaign in its own fresh
 **Flag note.** `mind.faculties.lessons` and `mind.faculties.skills` are the documented flags
 (`protagine.yaml`, `protagine.config.DEFAULTS`). The benchmark worker's `mind_section` writes
 them into the disposable `protagine.yaml` from the arm's switches, and a plan refuses an image
-whose worker cannot apply the switches (`arm_profiles`). Nothing reads either flag until the M9
-faculty lands, so the three mind arms run as one today; the pilot's instrument check (section
-6) requires the `full-lessons` attempt records to show no lesson admitted.
+whose worker cannot apply the switches (`arm_profiles`). As built (M9), both flags are read:
+`lessons` gates the night's lesson stage, lesson lines in task bodies and deliberation, the
+owner-turn lesson section, the use log and the reflector; `skills` gates the promotion of proven
+lessons to `SKILL.md` in the arm's skills directory. Each arm's lesson record is read at episode
+end (`body.lessons`), so the pilot's instrument check (section 6) reads directly that the
+`full-lessons` attempts admitted no lesson and that `full` admitted only from `owner` or `check`
+sources.
 
 ## 5. Primary metric and rule
 
@@ -132,6 +142,11 @@ even 80 gives under 50% power the family runs at 64 and a failure is reported as
 | `<pilot>` | | | | | | `<pilot>` | |
 
 ## 7. Known limitations recorded with the plan
+
+- The correction split (knowledge versus retrieval) searches the owner's own earlier messages,
+  never the workspace: a value that lives only in a seeded file (the `retrieval` designs'
+  `rates.json` and `stock.json`) counts as `knowledge`. The workspace is the task's material,
+  not the agent's memory; the split's diagnostic reads the designs accordingly.
 
 - The dev designs' verified signals are owner corrections and verdicts. Hermes-reported
   failures (`verified: hermes_failure`) are not scripted: the generated grammar has no fault

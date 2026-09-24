@@ -43,7 +43,9 @@ def test_adapter_line_count_is_reported():
     milestone: the constitution render the adapter cannot import from the sidecar, the narrative fetch,
     the completed ``protagine_self`` and the guard's protected-file rule (2,449 before, 2,606 after). It
     moved to 2,850 with the review fixes: the owner's ``/mind`` gate at ``pre_gateway_dispatch`` and the
-    guest's refused contact listing (2,786 before, 2,812 after)."""
+    guest's refused contact listing (2,786 before, 2,812 after). It moved to 2,900 with the
+    self-improvement milestone: forwarding loads of Protagine's skills (``on_skill_lifecycle``) and
+    clearing Hermes' skills prompt cache when the sidecar's skills change (2,812 before, about 2,865 after)."""
     total = sum(len((ROOT / f"plugins/hermes-plugin/{m}.py").read_text().splitlines()) for m in ADAPTER_MODULES)
     print(f"plugin lines: {total}")
-    assert total < 2850
+    assert total < 2900

@@ -27,7 +27,7 @@ INTERNAL_SAFE_TOOLSETS = frozenset({"web", "file", "session_search", "memory", "
 
 # The floor (architecture 7.3): four classes, matched conservatively on
 # intention text, message text and, in mind-originated runs, tool arguments.
-# Moved from ``P/self_model/trust.py``; the plugin guard carries the same set.
+# The one floor since M2 (the trust ladder that also held it is gone); the plugin guard carries the same set.
 FLOOR_PATTERNS: Dict[str, re.Pattern[str]] = {
     "money_movement": re.compile(
         r"\b(?:wire|transfer|send|move)\s+(?:\$|money|funds|payment)|"

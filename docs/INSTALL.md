@@ -141,6 +141,19 @@ again. Only a file SQLite reports as damaged is recovered: it is kept as
 `initiatives.db.corrupt-<stamp>` beside the store, never deleted, and the
 store's own backup (`initiatives.db.backup`) is restored when there is one.
 
+Stores of subsystems a release removed are moved into
+`<instance>/backups/<stamp>/retired/`, and their tables in surviving stores are
+dropped after the backup copied them. For this release: the toolsmith
+(`protagine-toolsmith.db`, `toolsmith_library/`), the P4 experiments and their
+parameter store (`protagine-experiments.db`, `protagine-params.db`), skills
+memory (`protagine-skills.db`), the escalation miner (`protagine-mining.db`)
+and the trust ladder's `trust_stage` and `trust_notices` tables in
+`protagine-self-model.db` (its competence tables stay). Corpus exports under
+`<instance>/exports/` and `SKILL.md` files an earlier release exported under
+Hermes' own skills directory (`<hermes_home>/skills/protagine/`) are left
+where they are; Protagine no longer manages them. A second upgrade finds
+nothing to move.
+
 To roll back, install the previous version and copy the files in
 `<instance>/backups/<stamp>/` back into the instance directory.
 

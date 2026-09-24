@@ -13,7 +13,7 @@ projection, capture and context assembly run under each arm's own ``mind`` secti
 (``native_memory_worker.mind_section``).
 
 What it shows: in ``full`` the night's tick runs the consolidation in every scenario and in
-``full-consolidation`` in none; the probe's view differs where a night has something to
+``full-consolidation`` in none (its night runs only the lesson stage); the probe's view differs where a night has something to
 consolidate (an own action to narrate, a long session to summarise, a contradiction to ask
 about) and nowhere else, so which types can separate the arms is known before any pilot.
 """
@@ -278,10 +278,12 @@ async def test_consolidation_runs_inside_every_memory_episode_and_changes_what_i
     assert len(scenarios) == 24
     for ident in scenarios:
         full, ablated = views[(ident, "full")], views[(ident, "full-consolidation")]
-        # The night's tick, right before the probe, ran it inline and to the end, once; never in the ablation.
+        # The night's tick, right before the probe, ran it inline and to the end, once; never in the ablation,
+        # whose night runs only the lesson stage (faculties.lessons stays on in full-consolidation, M9).
         assert full["nights"] == [(len(full["episodes"]) - 2, "done")], (ident, full["nights"])
         assert len(full["notes"]) == 1 and full["notes"][0].status == "done", ident
-        assert ablated["notes"] == [] and ablated["nights"] == [], ident
+        assert "episodes" in full["notes"][0].context["done"], ident
+        assert [note.context["done"] for note in ablated["notes"]] == [["lessons"]], ident
     # What the night changes for the probe: the summary of a long owner session, recalled in the probe
     # session, and the question the mind put to the owner about two conflicting statements, which its recall
     # then carries. The other types give a night nothing to consolidate (sessions of one or two turns).
@@ -309,7 +311,7 @@ async def test_the_nightly_narrative_changes_what_the_self_probe_sees(harness):
         full = views[(ident, "full")]
         assert full["nights"] == [(len(full["episodes"]) - 2, "done")] and len(full["notes"]) == 1, ident
         assert len(views[(ident, "full-self_narrative")]["notes"]) == 1, ident   # the night runs, the delta does not
-        assert views[(ident, "full-consolidation")]["notes"] == [], ident
+        assert [note.context["done"] for note in views[(ident, "full-consolidation")]["notes"]] == [["lessons"]], ident
         assert views[(ident, "full-self_narrative")]["narrative"] == "", ident
     # The narrative moves with the agent's own actions: self-report-after-action is the type whose episode
     # has one (the overdue-promise reminder formed in its ticks). No other type gives the night anything to

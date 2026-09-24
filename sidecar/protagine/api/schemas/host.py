@@ -351,20 +351,6 @@ class MultimodalSearchResponse(BaseModel):
     model: str = ""
 
 
-class SkillExecuteRequest(BaseModel):
-    identity: HostIdentity
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-    context: Optional[HostTurnContext] = None
-
-
-class SkillExecuteResponse(BaseModel):
-    status: Literal["success", "failed", "timeout", "violated"]
-    output: Optional[Any] = None
-    error: Optional[str] = None
-    execution_id: Optional[str] = None
-    duration_ms: Optional[int] = None
-
-
 # --- Sender identity ---------------------------------------------------------
 
 class HostSender(BaseModel):
@@ -496,6 +482,8 @@ class TurnSyncRequest(BaseModel):
     # Model that produced the assistant side of this turn (optional, additive).
     # Lets the mining layer detect provider escalations / cloud failovers from
     # real per-turn metadata instead of guessing from text.
+    # Sent by the adapter; nothing reads it since the escalation miner went (M9). Kept so an older
+    # adapter against this sidecar never gets a 422.
     model: Optional[str] = None
     # Evidence-only checkpoints never trigger ordinary turn/relationship effects.
     checkpoint_messages: Optional[List[CheckpointMessage]] = Field(
@@ -752,21 +740,6 @@ class BriefingListResponse(BaseModel):
 
 # --- Cognition --------------------------------------------------------------
 
-class CognitivePerformanceIndex(BaseModel):
-    overall: float = 0.0
-    memory: float = 0.0
-    reasoning: float = 0.0
-    social: float = 0.0
-    autonomy: float = 0.0
-    domains: Optional[Dict[str, float]] = None
-
-
-class CognitionGap(BaseModel):
-    gap_id: str
-    domain: str
-    severity: float
-    description: Optional[str] = None
-
 
 # --- Research ---------------------------------------------------------------
 
@@ -839,27 +812,6 @@ class LearningCorrectionRequest(BaseModel):
 
 
 # --- Skills -----------------------------------------------------------------
-
-class SkillSummary(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    version: Optional[str] = None
-    triggers: List[str] = []
-
-
-class SkillDetailResponse(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    version: Optional[str] = None
-    triggers: List[str] = []
-    input_schema: Optional[Dict[str, Any]] = None
-    permissions: Optional[Dict[str, Any]] = None
-
-
-class SkillsListResponse(BaseModel):
-    skills: List[SkillSummary] = []
 
 
 # --- Insights ---------------------------------------------------------------

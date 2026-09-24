@@ -32,7 +32,6 @@ async def client(app):
 # ---------------------------------------------------------------------------
 
 SUBSYSTEMS = [
-    ("protagine.intelligence.cognition.metalearner", "MetaLearner"),
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
     ("protagine.goals.store", "GoalStore"),
     ("protagine.briefings.engine", "BriefingEngine"),
@@ -40,7 +39,6 @@ SUBSYSTEMS = [
     ("protagine.research.pipeline", "ResearchPipeline"),
     ("protagine.contacts.store", "ContactStore"),
     ("protagine.vector.embedder", "EmbeddingPipeline"),
-    ("protagine.skills.registry", "SkillRegistry"),
 ]
 
 
@@ -308,23 +306,6 @@ async def test_submit_correction_without_a_feedback_store(client):
     })
     assert resp.status_code == 200
     assert resp.json()["accepted"] is False
-
-
-# ---------------------------------------------------------------------------
-# Skills
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_list_skills_empty(client):
-    resp = await client.get("/v1/host/skills/registry")
-    assert resp.status_code == 200
-    assert resp.json()["skills"] == []
-
-
-@pytest.mark.asyncio
-async def test_get_skill_not_found(client):
-    resp = await client.get("/v1/host/skills/registry/nonexistent")
-    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

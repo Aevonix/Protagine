@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Turns without a sender on these platforms belong to the owner's own terminal.
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
+# The skills the sidecar writes into its own skills.external_dirs entry (P/mind/skills.py).
+SKILL_PREFIX = "protagine-"
 
 
 def session_env() -> tuple[str, str, str, str]:
@@ -370,6 +372,23 @@ class Capture:
                 logger.debug("body wake failed (%s)", type(error).__name__)
         return None
 
+    def skill_loaded(self, *, action: str = "", skill_name: str = "", session_id: str = "", task_id: str = "",
+                     **_: Any) -> None:
+        """``on_skill_lifecycle``: a load of one of Protagine's own skills (``protagine-*``) is queued for
+        ``POST /v1/mind/skills/used``; every other skill and action is Hermes' business. Enqueue only."""
+        name = str(skill_name or "")
+        if action != "loaded" or not name.startswith(SKILL_PREFIX):
+            return None
+        payload = {"kind": "skill_use", "skill": name, "session_id": str(session_id or ""),
+                   "task_id": str(task_id or "")}
+        try:  # a load is never disturbed by its bookkeeping
+            self.outbox.enqueue(f"skill:{uuid.uuid4().hex}", payload)
+            if self.on_enqueue is not None:
+                self.on_enqueue()
+        except Exception as error:
+            logger.debug("skill load not queued (%s)", type(error).__name__)
+        return None
+
     def _capture(self, *, session_id: str = "", task_id: str = "", turn_id: str = "",
                  user_message: Any = None, assistant_response: Any = None, model: str = "",
                  platform: str = "", **_: Any) -> dict[str, Any] | None:
@@ -413,7 +432,15 @@ def checkpoint(messages: list[dict[str, Any]], *, session_id: str, contact_id: s
 
 def deliver(client: ProtagineClient, sessions: SessionMap, settings: Settings,
             payload: Mapping[str, Any]) -> bool:
-    """POST one outbox row to ``/v1/host/turns/sync``; True when accepted."""
+    """POST one outbox row to ``/v1/host/turns/sync`` (a skill load to ``/v1/mind/skills/used``); True when
+    accepted."""
+    if payload.get("kind") == "skill_use":
+        response = client.post("/v1/mind/skills/used", timeout=5, json={
+            "skill": payload.get("skill"), "session_id": payload.get("session_id") or None,
+            "task_id": payload.get("task_id") or None})
+        if response.status_code in {400, 404, 409, 413, 422}:
+            raise Undeliverable(f"HTTP {response.status_code}")
+        return response.is_success
     contact = str(payload.get("contact_id") or "")
     platform, sender = str(payload.get("platform") or ""), str(payload.get("sender_id") or "")
     if not contact:

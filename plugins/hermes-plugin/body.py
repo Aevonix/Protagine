@@ -17,6 +17,11 @@ the kanban dispatch tick (every 60 s) also wakes it. When the sidecar serves
 4. posts board observations (stale owner tasks, blocked tasks, goal tasks,
    the mind's own tasks and a body heartbeat) to ``POST /v1/mind/observations``
 
+Every mind tick also reads the skills generation from ``/v1/mind/state``: when
+the sidecar reports a change to its skills (written into Protagine's own
+``skills.external_dirs`` entry), Hermes' skills prompt cache is cleared, so the
+next session lists them without a restart.
+
 With the mind off (``GET /v1/mind/state`` says ``enabled: false``, or
 ``protagine.yaml`` does) steps 1 and 2 are skipped and unstarted ``mind:*``
 tasks are archived; nothing here needs a model endpoint. While Hermes is
@@ -312,6 +317,8 @@ class Body:
         self._last_observation: tuple[float, str] | None = None
         self._intentions: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._dispatcher = False  # set once this process's dispatcher ticked: it holds the singleton lock
+        self._skills_generation: int | None = None
+        self._skills_cache_warned = False
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -366,7 +373,8 @@ class Body:
         ``mind`` forces the decision (``tick()`` passes True: the caller drives
         the dispatcher itself); by default the mind part runs only after the
         dispatcher tick has been observed here, so a CLI session or a gateway
-        without the dispatcher lock never becomes a second writer.
+        without the dispatcher lock never becomes a second writer. Such a
+        process only reads the mind state, to clear its own skills cache.
         """
         self._ticks += 1
         self._last_tick_at = time.time()
@@ -380,7 +388,10 @@ class Body:
         if os.environ.get("HERMES_KANBAN_TASK"):
             return result  # workers never dispatch; one writer per gateway
         if not (self._dispatcher if mind is None else mind):
-            return result  # not the dispatcher owner: capture only
+            # Not the dispatcher owner: capture only, never the board. Hermes caches the skills index per
+            # process, so this process still follows the sidecar's skills generation.
+            self.skills_changed(self.client.mind_state() or {})
+            return result
         if self.client.has_mind_routes():
             result["mind"] = True
             result.update(self.mind_tick())
@@ -390,6 +401,7 @@ class Body:
         """Dispatch, outbox, reconciliation and observations, each step on its own."""
         self._mind_ticks += 1
         state = self.client.mind_state() or {}
+        self.skills_changed(state)
         enabled = state.get("enabled") is not False and self.settings.mind().get("enabled") is not False
         held = paused()
         result: dict[str, Any] = {"enabled": enabled, "paused": held, "dispatched": 0, "sent": 0,
@@ -418,6 +430,26 @@ class Body:
                 result[name] = value
         self._last_mind_tick_at = time.time()
         return result
+
+    def skills_changed(self, state: Mapping[str, Any]) -> bool:
+        """Clear Hermes' skills prompt cache when the sidecar's skills generation moved. The first value a
+        process sees is only recorded; without the stock function a new skill appears after a restart."""
+        skills = state.get("skills") if isinstance(state, Mapping) else None
+        generation = skills.get("generation") if isinstance(skills, Mapping) else None
+        if isinstance(generation, bool) or not isinstance(generation, int):
+            return False
+        last, self._skills_generation = self._skills_generation, generation
+        if last is None or last == generation:
+            return False
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+        except ImportError:
+            if not self._skills_cache_warned:
+                logger.info("Hermes has no skills prompt cache to clear; new skills appear after a restart")
+                self._skills_cache_warned = True
+            return False
+        clear_skills_system_prompt_cache()
+        return True
 
     # -- dispatch ------------------------------------------------------------------
 

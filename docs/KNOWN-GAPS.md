@@ -31,6 +31,19 @@ general self-improvement simply by recording a successful review.
   consolidation arm differs by the narrative, contradictions and episode
   summaries alone. The `semantic_recall` arm differs from `full` only in a plan
   given an embedding endpoint (`paired plan --embedding-config`).
+- **Lessons (M9)**: which lesson reaches a task body or an owner turn is lexical
+  relevance (shared terms of the lesson's title and when-to-use with the work,
+  plurals folded, a hand-set threshold), so a request worded differently from
+  the lesson misses it; the campaign report's lesson diagnostics show the miss
+  rate. A `result_field` check passes on the worker's own summary, so it
+  verifies no lesson (the other faculties still read it as `check`). Lesson
+  uses are joins over intention rows and use notes, so the tally covers the
+  90-day audit retention and no more. An owner verdict in conversation counts
+  only when the night's model quotes the owner's exact words; a verdict it
+  does not recognise scores and teaches nothing.
+- **Skills (M9)**: off by default. Loads are counted only for Protagine's own
+  `protagine-*` skills, and a process whose Hermes lacks
+  `clear_skills_system_prompt_cache` lists a new skill only after a restart.
 - **Recall reference numbers**: `benchmarks/source_recall/reference-results.json`
   still holds the three-arm run made before the harness moved from the graph
   shim to `collect_sources`/`select_memory`; re-freezing it needs one measured
@@ -61,10 +74,11 @@ general self-improvement simply by recording a successful review.
   data-age check, the relationship scorer's and cognition components' type
   hints); the research pipeline's graph stage (`GraphGatherer`, its source type
   and its web-versus-graph contradiction rule) is deleted. Those that cannot
-  work without a Neo4j driver (`CognitionPipeline`, whose MetaLearner and CPI
-  M9 deletes, `SignalCollector`, which M6 deletes with `mind_model`, and
-  `ConnectionDiscoverer` with the synthesis and insight routes) are no longer
-  constructed by the server; their routes report the subsystem as not wired.
+  work without a Neo4j driver (`SignalCollector`, which M6 deleted with
+  `mind_model`, and `ConnectionDiscoverer` with the synthesis and insight
+  routes) are no longer constructed by the server; their routes report the
+  subsystem as not wired. The cognition pipeline (the MetaLearner, the CPI and
+  the strategy adjuster) was deleted in M9.
   The briefing `RelationshipAggregator` (Cypher only), `GraphBaselineStore`,
   the session `SessionContextLoader`, the node-certificate signer and the
   `extraction` extra had no other use and are deleted.
@@ -81,7 +95,7 @@ unbuilt HERE by design:
   the dead EmailHandler was removed in v0.30.0. `JobType.DESKTOP`/`BROWSER`
   remain enum values with no handler.
 - **ScheduleAdapter**: removed in v0.30.0. Its contracts were
-  unimplementable (the real MetaLearner has no pattern API; the
+  unimplementable (the MetaLearner, deleted in M9, had no pattern API; the
   AutonomyScheduler is interval-based, not a cron store) and mutating host
   cron jobs would cross into the host framework's domain.
 - **Initiative execution requires Hermes**: registered evidence reviews and

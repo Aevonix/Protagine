@@ -842,8 +842,10 @@ def run_store_migrations(home: Path) -> list[str]:
 # presence census (its readers went with P8) and the identity bootstrap report,
 # and (since the memory milestone) the belief engine, the chain's identity files,
 # keys and manifests and the world model; the Neo4j graph and the continuous
-# learner kept nothing local. An upgrade moves them into the backup instead of
-# leaving orphans behind. A directory entry names a whole tree.
+# learner kept nothing local; and (since the self-improvement milestone) the
+# toolsmith's registry and library, the P4 experiments and their parameter store,
+# skills memory and the escalation miner. An upgrade moves them into the backup
+# instead of leaving orphans behind. A directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
@@ -884,19 +886,27 @@ RETIRED_STATE = (
     "protagine_world_model.db",
     "protagine-keys",
     "node-keys",
+    "protagine-toolsmith.db",
+    "toolsmith_library",
+    "protagine-experiments.db",
+    "protagine-params.db",
+    "protagine-skills.db",
+    "protagine-mining.db",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG
 # tables (agent goals are intention rows) and the legacy perspective tables (the
 # automatic opinion revisions and the attention snapshot), and (since the people
 # milestone) the contact store's owner-provisioning receipts and its old merge-proposal,
-# merge-audit and confirmed-distinct tables (merges are identity-link receipts now). The
-# backup taken before the migrations keeps their rows; the upgrade drops them from the
-# live store.
+# merge-audit and confirmed-distinct tables (merges are identity-link receipts now), and (since
+# the self-improvement milestone) the trust ladder's stages and notices in the self-model
+# store, whose competence tables stay. The backup taken before the migrations keeps their
+# rows; the upgrade drops them from the live store.
 RETIRED_TABLES: dict[str, tuple[str, ...]] = {
     "protagine-goals.db": ("subtasks", "goal_dag_versions"),
     "turn-idempotency.db": ("self_opinion_revisions", "self_attention", "self_judgment_runs"),
     "protagine-contacts.db": ("contact_provision_operations", "contact_merge_proposals", "contact_merge_audit",
                               "contact_confirmed_distinct"),
+    "protagine-self-model.db": ("trust_stage", "trust_notices"),
 }
 INITIATIVES_DB = "initiatives.db"
 COMMS_DB = "protagine-comms.db"

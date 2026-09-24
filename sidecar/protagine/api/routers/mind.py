@@ -32,6 +32,10 @@ text in docs/HERMES-ADAPTER.md):
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
+  GET  /lessons?status&uses&viewer the lessons with their verified tallies (and every use); a guest gets none
+  POST /lessons/{id}/retire       {reason, by?} -> the retired lesson (404 unknown, 409 already closed)
+  POST /skills/used               {skill, session_id?, task_id?} -> {ok, counted, loads}: a load of a
+                                   protagine-* skill (the plugin's on_skill_lifecycle); others are not counted
 """
 
 from __future__ import annotations
@@ -99,7 +103,9 @@ class OutcomeBody(BaseModel):
     ``status`` is the kanban status; ``outcome`` (done, blocked, failed,
     cancelled, uncertain) and ``final`` are the body's reading of it. A report
     with ``final: false`` (a failed run that was requeued) is progress, not a
-    settlement.
+    settlement. ``verified`` may claim only ``hermes_failure``, and only for a
+    failure with a reason (``error`` or ``summary``); a claimed ``owner`` or
+    ``check`` is ignored and the mind computes the verifier (architecture 4.8).
     """
     model_config = ConfigDict(extra="ignore")
     id: str = Field(min_length=1, max_length=64)
@@ -176,6 +182,20 @@ class RateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
     verdict: str = Field(min_length=1, max_length=32)
+
+
+class RetireBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=400)
+    by: str = Field(default="owner", max_length=64)
+
+
+class SkillUsedBody(BaseModel):
+    """The plugin's report of Hermes' ``on_skill_lifecycle(action='loaded')`` for a Protagine skill."""
+    model_config = ConfigDict(extra="ignore")
+    skill: str = Field(min_length=1, max_length=128)
+    session_id: Optional[str] = Field(default=None, max_length=256)
+    task_id: Optional[str] = Field(default=None, max_length=256)
 
 
 class LevelBody(BaseModel):
@@ -382,6 +402,64 @@ async def consolidate() -> Dict[str, Any]:
         raise HTTPException(status_code=501, detail={"code": "consolidation_not_available",
                                                      "message": "this sidecar has no consolidation"})
     return await run(force=True)
+
+
+# -- lessons (architecture 4.8) ------------------------------------------------------------
+
+def _lesson_line(row: Dict[str, Any]) -> str:
+    tally = row.get("tally") or {}
+    uses = f"{tally.get('wins', 0)} wins in {tally.get('uses', 0)} verified uses"
+    return (f"{row['id']} [{row['status']}, {row['kind']}, {row['verified']}] {row['title']}: "
+            f"when {row['when_to_use']} ({uses})")
+
+
+@router.get("/lessons")
+async def lessons(status: Optional[str] = None, uses: bool = False, viewer: Optional[str] = None) -> Dict[str, Any]:
+    """What the mind learned, each lesson with its verified tally, and with ``uses`` every use in the
+    tally window. ``status`` filters (comma-separated); a guest viewer gets nothing."""
+    mind = _require()
+    store = getattr(mind, "lessons", None)
+    empty = {"enabled": bool(getattr(store, "enabled", False)), "lessons": [], "uses": []}
+    if store is None or _guest(mind, viewer):
+        return {**empty, "text": "(no lessons)"}
+    wanted = {item for item in (status or "").split(",") if item}
+    tallies = store.tally()
+    rows = [{**lesson.as_dict(), "tally": tallies.get(lesson.id, {"uses": 0, "wins": 0, "losses": 0, "applied": 0})}
+            for lesson in store.all(include_closed=True) if not wanted or lesson.status in wanted]
+    value = {**empty, "lessons": rows, "uses": store.uses() if uses else []}
+    lines = [_lesson_line(row) for row in rows]
+    skills = getattr(mind, "skills", None)
+    if skills is not None:
+        value["skills"] = {**skills.state(), "loads": skills.loads()}
+        lines += _skill_lines(value["skills"])
+    return {**value, "text": "\n".join(lines) or "(no lessons)"}
+
+
+def _skill_lines(skills: Dict[str, Any]) -> List[str]:
+    """The promoted lessons Protagine keeps as skills, with how often Hermes loaded each."""
+    loads = skills.get("loads") or {}
+    return [f"skill {name}: {int(loads.get(name, 0))} loads" for name in skills.get("owned") or []]
+
+
+@router.post("/lessons/{lesson_id}/retire")
+async def retire_lesson(lesson_id: str, body: RetireBody) -> Dict[str, Any]:
+    """The owner retires a lesson (the CLI, or the key holder); it stays listed as retired."""
+    store = getattr(_require(), "lessons", None)
+    lesson = store.get(lesson_id) if store is not None else None
+    if lesson is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_lesson", "message": f"no lesson {lesson_id}"})
+    if lesson.status not in {"active", "candidate"}:
+        raise HTTPException(status_code=409, detail={"code": "lesson_closed", "message": f"{lesson_id} is {lesson.status}"})
+    return store.retire(lesson_id, reason=body.reason, by=body.by).as_dict()
+
+
+@router.post("/skills/used")
+async def skill_used(body: SkillUsedBody) -> Dict[str, Any]:
+    """One load of a skill; only Protagine's own (``protagine-*``) are counted."""
+    skills = getattr(_require(), "skills", None)
+    loads = skills.record_use(skill=body.skill, session_id=body.session_id, task_id=body.task_id) \
+        if skills is not None else None
+    return {"ok": True, "skill": body.skill, "counted": loads is not None, "loads": loads or 0}
 
 
 # -- the audit log (7.8) -----------------------------------------------------------------

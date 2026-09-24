@@ -519,11 +519,15 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             logger.debug("Protagine prefetch skipped: circuit breaker open")
             return ""
         guest = bound_contact != self._contact_id
+        # A kanban worker prefetches on the owner's lane with its task body as the message: task work, not
+        # the owner's turn, so it names its task (the sidecar then adds no turn lesson and logs no use).
+        task = os.environ.get("HERMES_KANBAN_TASK") or ""
         try:
             with httpx.Client(timeout=10) as client:
                 resp = client.post(f"{self.sidecar_url}/v1/host/context/assemble", headers=self._headers(), json={
                     "identity": {"host_id": "hermes"},
-                    "context": {"session_id": session_id or self._session_id, "contact_id": bound_contact},
+                    "context": {"session_id": session_id or self._session_id, "contact_id": bound_contact,
+                                **({"metadata": {"kanban_task": task}} if task else {})},
                     "incoming_message": {"role": "user", "content": query},
                     "include_initiatives": not guest,
                     **({"audience": "viewer"} if guest else {}),

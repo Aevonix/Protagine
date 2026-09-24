@@ -1,8 +1,8 @@
-"""One statistics method for every paired contrast: scenario-level sign test,
+"""One statistics method for every paired contrast: unit-level sign test,
 cluster bootstrap interval, power and minimum detectable effect.
 
-Units are scenarios (or campaigns, later). Repetitions of one scenario are
-averaged into one unit before anything is tested. Every function is exact or
+Units are scenarios, or the probes of campaigns clustered by campaign.
+Repetitions of one unit are averaged into one value before anything is tested. Every function is exact or
 seeded, so a report is reproducible from its results directory alone.
 """
 import math
@@ -149,16 +149,29 @@ def cluster_bootstrap(clusters, *, seed, samples=BOOTSTRAP_SAMPLES, level=CI_LEV
             'clusters': count, 'seed': seed, 'method': 'percentile_cluster_bootstrap'}
 
 
-def contrast(units, *, seed, alpha=ALPHA, min_wins=MIN_WINS, non_inferior_pp=-10):
-    """Test one treatment against one comparator over scenario-level pass values.
+def contrast(units, *, seed, clusters=None, alpha=ALPHA, min_wins=MIN_WINS, non_inferior_pp=-10):
+    """Test one treatment against one comparator over unit-level pass values.
 
-    units: {scenario: (treatment_pass, comparator_pass)} with each value the
-    mean pass over that scenario's repetitions. Returns the pre-registered
-    verdict with its evidence; a demonstrated verdict needs all three rules.
+    units: {unit: (treatment_pass, comparator_pass)} with each value the mean
+    pass over that unit's repetitions (a scenario, or a campaign's probe).
+    clusters: {unit: cluster} when units are correlated within a cluster (the
+    probes of one campaign); the interval then resamples whole clusters of
+    unit deltas. The sign test, the point estimate and the MDE stay over units
+    (the MDE ignores clustering). Returns the pre-registered verdict with its
+    evidence; a demonstrated verdict needs all three rules.
     """
     if not units:
         raise ValueError('A contrast needs at least one unit')
     deltas = {key: treatment - comparator for key, (treatment, comparator) in units.items()}
+    if clusters is None:
+        groups = [[delta] for delta in deltas.values()]
+    else:
+        if not isinstance(clusters, dict) or set(clusters) != set(deltas):
+            raise ValueError('Every unit belongs to exactly one declared cluster')
+        grouped = {}
+        for key, delta in deltas.items():
+            grouped.setdefault(clusters[key], []).append(delta)
+        groups = list(grouped.values())
     wins = sum(delta > 0 for delta in deltas.values())
     losses = sum(delta < 0 for delta in deltas.values())
     ties = len(deltas) - wins - losses
@@ -167,13 +180,13 @@ def contrast(units, *, seed, alpha=ALPHA, min_wins=MIN_WINS, non_inferior_pp=-10
     comparator_rate = sum(value[1] for value in units.values()) / count
     delta_pp = 100 * (treatment_rate - comparator_rate)
     test = sign_test(wins, losses)
-    interval = cluster_bootstrap([[delta] for delta in deltas.values()], seed=seed)
+    interval = cluster_bootstrap(groups, seed=seed)
     interval_pp = {**interval, 'lower': 100 * interval['lower'], 'upper': 100 * interval['upper']}
     disagreement = (wins + losses) / count
     # The pre-registered rejection is in the treatment's favour: a two-sided
     # rejection with more losses than wins is evidence for the comparator.
     demonstrated = significant(wins, losses, alpha=alpha, min_wins=min_wins) and interval_pp['lower'] > 0
-    return {'units': count, 'wins': wins, 'losses': losses, 'ties': ties,
+    return {'units': count, 'clusters': len(groups), 'wins': wins, 'losses': losses, 'ties': ties,
             'treatment_pass_rate': treatment_rate, 'comparator_pass_rate': comparator_rate,
             'delta_pp': delta_pp, 'sign_test': test, 'ci_pp': interval_pp,
             'disagreement_rate': disagreement,

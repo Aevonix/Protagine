@@ -2,20 +2,25 @@
 
 Once per night crossed (the local boundary, the start of the quiet window or
 03:00, fell since the last run), the mind consolidates what the time since then
-left in its stores, cheapest and most valuable first:
+left in its stores, cheapest and most valuable first. The night runs when
+``faculties.consolidation`` or ``faculties.lessons`` is on, and each stage checks
+its own flag, so each ablation turns off one faculty:
 
 1. the self-narrative delta: one call that edits only ``self.recent``; every
    line must cite ids from the evidence it was shown (the agent's own actions,
    ``audit.is_action``), and those ids must exist
-2. contradictions (no model): two live scalar claims about the same subject
+2. lessons (``faculties.lessons``, ``P/mind/lessons.py``): one call over the
+   owner's own sessions and the verified results since the last review, whose
+   operations are validated before anything is admitted
+3. contradictions (no model): two live scalar claims about the same subject
    and predicate with different values become one question concern carrying a
    typed message candidate to the owner, which the tick's ``_act`` forms like
    any other concern; at most one new question a night
-3. per-contact digests, written into the contact's own record through the contact
+4. per-contact digests, written into the contact's own record through the contact
    store (``set_digest``, the ``digest`` / ``digest_sources`` columns of the people
    milestone): at most six a night, the contacts talked with in the last seven
    days, never the owner, skipped while the stored sources are the live claims
-4. episode summaries: at most eight a night, written under the episode's contact
+5. episode summaries: at most eight a night, written under the episode's contact
 
 Every input query excludes the mind's own rows (``SELF_TURN_SQL``): the
 autobiography and the episode summaries are the agent's record, not the
@@ -49,7 +54,7 @@ from .concerns import SETTLED_FOR
 
 logger = logging.getLogger(__name__)
 
-NIGHT_TASKS = ("narrative", "contradictions", "digests", "episodes")   # run order, cheapest first
+NIGHT_TASKS = ("narrative", "lessons", "contradictions", "digests", "episodes")   # run order, cheapest first
 TASK_NARRATIVE = "mind_consolidate_narrative"
 TASK_DIGEST = "mind_consolidate_digest"
 TASK_EPISODE = "mind_consolidate_episode"
@@ -78,8 +83,11 @@ DEFAULT_DEADLINE = 60.0
 FINDING_EVENTS = frozenset({"finding", "outcome_done", "goal_adopted"})
 QUESTION_KEY = "reach_out:contradiction:"           # a contradiction's concern and owner question share this key
 QUESTIONS_PER_NIGHT = 1
-STAGES = {"narrative": "narrative_delta", "contradictions": "contradictions", "digests": "digests",
-          "episodes": "episodes"}
+STAGES = {"narrative": "narrative_delta", "lessons": "lessons_stage", "contradictions": "contradictions",
+          "digests": "digests", "episodes": "episodes"}
+# The faculty flag each stage belongs to: a night with one of them off runs only the other's stages.
+STAGE_FACULTY = {"narrative": "consolidation", "lessons": "lessons", "contradictions": "consolidation",
+                 "digests": "consolidation", "episodes": "consolidation"}
 
 NARRATIVE_SYSTEM = (
     "You maintain one section of an agent's self-narrative, 'recent: the last 7 days'. You are given the "
@@ -228,8 +236,11 @@ class Consolidation:
     def __init__(self, *, store: Any, ledger: Any, concerns: Any, mind_state: Any, contacts: Any, router: Any,
                  autobiography: Any, owner_id: str | None, budgets: Any, tokens_allowed: Callable[[], bool],
                  faculties: Mapping[str, bool], clock=None, stances: Callable[[], List[Dict[str, Any]]] | None = None,
-                 tz: Any = None, quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None) -> None:
+                 tz: Any = None, quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None,
+                 lessons: Any = None, skills: Any = None) -> None:
         self.store = store
+        self.lessons = lessons          # P/mind/lessons.py: the night's lesson stage
+        self.skills = skills            # P/mind/skills.py: synced after it
         self.ledger = ledger
         self.concerns = concerns
         self.mind_state = mind_state
@@ -286,9 +297,13 @@ class Consolidation:
         """The nightly boundary fell since the last run."""
         return boundary_crossed(self.last_run(now), now, tz=self.tz, minute=self.boundary_minute())
 
+    def enabled(self) -> bool:
+        """The night has work: consolidation or lessons is on (each stage checks its own flag)."""
+        return bool(self.faculties.get("consolidation", True) or self.faculties.get("lessons", True))
+
     def due(self, now: datetime) -> bool:
-        """A night crossed since the last run, with the faculty on, a router and day budget left."""
-        if not self.faculties.get("consolidation", True) or not self.available:
+        """A night crossed since the last run, with a night faculty on, a router and day budget left."""
+        if not self.enabled() or not self.available:
             return False
         return self.crossed(now) and bool(self.tokens_allowed())
 
@@ -339,6 +354,8 @@ class Consolidation:
     async def _stages(self, night: Night, now: datetime) -> None:
         await self._settle_claims(night)
         for name in NIGHT_TASKS:
+            if not self.faculties.get(STAGE_FACULTY[name], True):
+                continue
             stage = getattr(self, STAGES[name])
             try:
                 result = stage(night, now)
@@ -690,7 +707,7 @@ class Consolidation:
         return not recipient or recipient == self.owner_id
 
     async def narrative_delta(self, night: Night, now: datetime) -> None:
-        if not self.faculties.get("self_narrative", True):
+        if not self.faculties.get("consolidation", True) or not self.faculties.get("self_narrative", True):
             return
         for name, lines in self.computed_sections(now).items():
             self._store_section(f"self.{name}", lines, now)
@@ -733,7 +750,20 @@ class Consolidation:
         self._store_section("self.recent", accepted, now)
         night.counts["narrative"] = len(accepted)
 
-    # -- stage 2: contradictions ---------------------------------------------------------------
+    # -- stage 2: lessons ------------------------------------------------------------------------
+
+    async def lessons_stage(self, night: Night, now: datetime) -> None:
+        """What verified results taught (``Lessons.night``), in the night's budget and on its audit row."""
+        if not self.faculties.get("lessons", True) or self.lessons is None:
+            return
+        await self.lessons.night(night, now, call=self._call)
+        if self.skills is not None:
+            changed = self.skills.sync(self.lessons.all(), self.lessons.tally(now), now)
+            for key in ("written", "removed"):
+                if changed.get(key):
+                    night.count(f"skills_{key}", len(changed[key]))
+
+    # -- stage 3: contradictions ---------------------------------------------------------------
 
     def _conflicts(self, claims: Iterable[Mapping[str, Any]]) -> Dict[Tuple[str, str], Tuple[Dict[str, Any], Dict[str, Any], List[str]]]:
         """Per ``(subject_key, predicate)``: two live scalar claims with different values and overlapping validity."""
@@ -759,6 +789,8 @@ class Consolidation:
         """Each contradiction becomes one typed question concern the ranker forms into one owner question,
         at most ``QUESTIONS_PER_NIGHT`` new ones a night (the newest conflicting pair first), so the
         owner's message budget is left to duty work; the rest are raised on later nights."""
+        if not self.faculties.get("consolidation", True):
+            return
         found: Dict[str, Dict[str, Any]] = {}
         with self._conn() as conn:
             for cid in self._contacts_with_claims(conn):
@@ -885,7 +917,7 @@ class Consolidation:
     async def digests(self, night: Night, now: datetime) -> None:
         """What each person has told the agent, in their own record: one writer, the contact store."""
         writer = getattr(self.contacts, "set_digest", None) if self.contacts is not None else None
-        if not self.faculties.get("people", True) or not callable(writer):
+        if not self.faculties.get("consolidation", True) or not self.faculties.get("people", True) or not callable(writer):
             return
         written = 0
         for record in await self._digest_candidates(now):
@@ -974,6 +1006,8 @@ class Consolidation:
         return "\n".join(parts)[-EPISODE_CHARS:], turn_ids
 
     async def episodes(self, night: Night, now: datetime) -> None:
+        if not self.faculties.get("consolidation", True):
+            return
         written = 0
         for session in self._sessions(now, night.local_date, _utc(night.since)):
             cid, session_id = str(session["contact_id"]), str(session["session_id"])

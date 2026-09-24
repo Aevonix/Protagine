@@ -3,9 +3,7 @@
 Covers the behaviours introduced by the April 2026 cleanup:
 - IMAPProvider missing → email_reply condition returns cleanly.
 - ApiKeyMiddleware refuses /v1/host/configure in dev mode.
-- Skill route params reject invalid ids.
 - Neo4j update_person rejects unknown property names.
-- Skill AST scanner flags dunder-chain and dynamic-getattr escapes.
 - Contact importer hashes PII and counts handle conflicts.
 """
 
@@ -16,7 +14,6 @@ import hashlib
 import pytest
 
 from protagine.contacts.importer import _pii_hash
-from protagine.skills.security.scanner import ASTScanner
 
 
 # ── A1: missing IMAPProvider is handled gracefully ────────────────────────────
@@ -82,72 +79,6 @@ async def test_middleware_accepts_valid_bearer():
             headers={"Authorization": "Bearer s3cret"},
         )
         assert authed.status_code == 200
-
-
-# ── B3: skill_id validation ───────────────────────────────────────────────────
-
-
-def test_skill_id_validator_accepts_safe_ids():
-    from protagine.api.routers import host as host_mod
-
-    for ok in ("skill_a", "skill-1", "alpha.beta", "S1"):
-        host_mod._validate_skill_id(ok)  # should not raise
-
-
-def test_skill_id_validator_rejects_unsafe_ids():
-    from fastapi import HTTPException
-
-    from protagine.api.routers import host as host_mod
-
-    bad = ["../etc/passwd", "skill id", "a" * 100, "", "skill/evil", ".hidden"]
-    for value in bad:
-        with pytest.raises(HTTPException) as exc:
-            host_mod._validate_skill_id(value)
-        assert exc.value.status_code == 400
-
-
-# ── C1: AST scanner catches escape patterns ───────────────────────────────────
-
-
-def test_scanner_flags_dunder_attribute_chain():
-    src = (
-        "def run():\n"
-        "    return ().__class__.__bases__[0].__subclasses__()\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC001" for f in result.findings)
-
-
-def test_scanner_flags_getattr_with_dunder_string():
-    src = (
-        "def run():\n"
-        "    fn = getattr(__builtins__, '__import__')\n"
-        "    return fn('os')\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC002" for f in result.findings)
-
-
-def test_scanner_flags_dynamic_getattr():
-    src = (
-        "def run(name):\n"
-        "    return getattr(__builtins__, name)\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC002" for f in result.findings)
-
-
-def test_scanner_passes_plain_code():
-    src = (
-        "def run():\n"
-        "    values = [1, 2, 3]\n"
-        "    return sum(values)\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "clean"
 
 
 # ── B4: PII hash is stable and short ──────────────────────────────────────────

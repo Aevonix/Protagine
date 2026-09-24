@@ -27,6 +27,7 @@ from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
 from protagine.mind.consolidate import (CITE, LAST_KEY, SELF_TURN_SQL, TASK_DIGEST, TASK_EPISODE, TASK_NARRATIVE,
                                         Consolidation)
+from protagine.mind.lessons import LESSON_TASK
 from protagine.mind.outcomes import Autobiography
 from protagine.mind.tick import DEFAULT_FACULTIES
 from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
@@ -63,6 +64,7 @@ class NightRouter:
     def __init__(self, answers=None, *, tokens=100):
         self.answers = {TASK_NARRATIVE: cite_uuids, TASK_DIGEST: cite_claims,
                         TASK_EPISODE: {"summary": "They asked for the slides; the assistant promised them by Friday."},
+                        LESSON_TASK: {"verdicts": [], "ops": []},
                         **(answers or {})}
         self.tokens, self.calls = tokens, []
         # Claim extraction the night settles before it reads claims: a test_source_claim_projection.Model
@@ -149,7 +151,11 @@ class Fixture:
         self.expectations = ExpectationEngine(ExpectationStore(str(tmp_path / "protagine-expectations.db")))
         self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
         self.contacts = FakeContacts([OWNER, CONTACT, "p-03"]) if contacts is True else (contacts or None)
-        self.config = {"autonomy": autonomy, **(config or {})}
+        # The lesson stage has its own suite (test_mind_lessons_night.py); these tests are about the other
+        # stages, so it is off unless a test turns it on.
+        config = dict(config or {})
+        self.config = {"autonomy": autonomy, **config,
+                       "faculties": {"lessons": False, **(config.get("faculties") or {})}}
         self.router = NightRouter() if router is None else router
         self.timezone_name = timezone_name
         self.mind = self.build()
@@ -949,7 +955,8 @@ def test_the_plugin_and_cli_ticks_wait_longer_than_a_forced_tick_waits_for_its_n
 async def test_consolidation_is_never_due_with_a_switch_off_even_after_a_night(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     noon = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
-    off = Fixture(tmp_path / "off", config={"quiet_hours": "", "faculties": {"consolidation": False}}, at=noon)
+    off = Fixture(tmp_path / "off", config={"quiet_hours": "", "faculties": {"consolidation": False, "lessons": False}},
+                  at=noon)
     switched = Fixture(tmp_path / "switched", config={"quiet_hours": ""}, at=noon)
     routerless = Fixture(tmp_path / "routerless", config={"quiet_hours": ""}, at=noon)
     spent = Fixture(tmp_path / "spent", config={"quiet_hours": "", "budgets": {"llm_tokens_per_day": 1000}}, at=noon)
@@ -1056,7 +1063,7 @@ async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both
     fx.store.close()
     flagged = Fixture(tmp_path / "flag", config={"faculties": {"consolidation": False}})
     settled_task(flagged)
-    assert (await flagged.mind.consolidate())["skipped"] == "consolidation off" and flagged.router.calls == []
+    assert (await flagged.mind.consolidate())["skipped"] == "consolidation and lessons off" and flagged.router.calls == []
     assert flagged.store.intentions(kind=["note"], limit=10) == []
     flagged.store.close()
 

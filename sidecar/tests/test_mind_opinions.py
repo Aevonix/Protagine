@@ -114,13 +114,13 @@ async def test_a_verified_success_turns_it_into_prefer_and_an_unverified_one_doe
 async def test_a_done_report_whose_check_failed_is_not_a_success(fx):
     """``verified`` names the verifier that ran, so a failed check is ``check`` too: only a check
     that passed (or the owner) verifies a success. A body's bare claim of a check that never ran
-    verifies nothing."""
+    verifies nothing, and is not even recorded: only the mind grants ``check``."""
     await three_failures(fx)
     avoid = approach(fx)
     done = await attempt(fx, 4, "done", check=FINDING_CHECK, summary="nothing was found, the mirror was empty.")
     assert done.verified == "check" and done.result_metadata["check"]["passed"] is False
     claimed = await attempt(fx, 5, "done", summary="all good", verified="check")
-    assert claimed.verified == "check" and "check" not in (claimed.result_metadata or {})
+    assert claimed.verified == "none" and "check" not in (claimed.result_metadata or {})
     head = approach(fx)
     assert head["id"] == avoid["id"] and head["stance_class"] == "avoid"
     body = (await fx.mind._form(candidate(6), 0.9, fx.now)).context["body"]

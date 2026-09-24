@@ -45,6 +45,8 @@ from .consolidate import Consolidation
 from .deliberate import Deliberation, refresh_context
 from .drives import CHECK_IN_TYPES, DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
+from .lessons import Lessons
+from .skills import Skills
 from .opinions import Opinions
 from .outbox import Outbox
 from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
@@ -70,7 +72,7 @@ THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
 DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
                      "people": True, "semantic_recall": True, "consolidation": True, "self_narrative": True,
-                     "affect": True, "affect_rules": False}
+                     "affect": True, "affect_rules": False, "lessons": True, "skills": False}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
@@ -234,12 +236,18 @@ class Mind:
                                  enabled=self.faculties["people"])
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
-        # Nightly consolidation (architecture 3.1, 4.1, 4.2): once per night crossed since the last run.
+        # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
+        self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
+                               clock=self.clock, enabled=self.faculties["lessons"], mind_state=self.mind_state)
+        # Skills (4.8 item 4, off by default): proven lessons as SKILL.md in Protagine's own external dir.
+        self.skills = Skills(self.state_dir / "skills", mind_state=self.mind_state, clock=self.clock,
+                             enabled=self.faculties["skills"] and self.faculties["lessons"])
+        # Nightly consolidation (architecture 3.1, 4.1, 4.2) and the lesson stage (4.8): once per night crossed.
         self.consolidation = Consolidation(
             store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
             router=router, autobiography=self.autobiography, owner_id=self.owner_id, budgets=self.policy.budgets,
             tokens_allowed=self.authority.tokens_allowed, faculties=self.faculties, clock=self.clock, tz=self.tz,
-            quiet=self.quiet, cancel=self._cancel_stale)
+            quiet=self.quiet, cancel=self._cancel_stale, lessons=self.lessons, skills=self.skills)
         self._consolidation_task: Optional[asyncio.Task] = None
         if expectations is not None and hasattr(expectations, "register_resolver"):
             expectations.register_resolver("intention:", self._resolve_intention_expectation)
@@ -250,6 +258,7 @@ class Mind:
         self.started_at = self.clock()
         self.consolidation.last_run(self.started_at)       # a fresh store is watched from its first start
         self._vector_night = self.started_at              # the nightly vector compaction's last night
+        self.sync_skills(self.started_at)                  # a flag turned off at restart takes its skills
         self.last_pull_at: Optional[datetime] = None
         self.last_tick_at: Optional[datetime] = None
         self.ticks = 0
@@ -741,15 +750,16 @@ class Mind:
     async def consolidate(self, *, force: bool = True) -> Dict[str, Any]:
         """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness).
 
-        Forcing runs it whether or not a night was crossed, never past a switch: with the mind off or
-        ``faculties.consolidation`` false nothing runs.
+        Forcing runs it whether or not a night was crossed, never past a switch: with the mind off, or
+        with both ``faculties.consolidation`` and ``faculties.lessons`` false, nothing runs; with one of
+        them off its stages are skipped.
         """
         now = self.clock()
         local_date = self.consolidation.local_date(now, self.tz)
         if not self.enabled:
             return {"skipped": "off", "local_date": local_date}
-        if not self.faculties.get("consolidation", True):
-            return {"skipped": "consolidation off", "local_date": local_date}
+        if not self.consolidation.enabled():
+            return {"skipped": "consolidation and lessons off", "local_date": local_date}
         return await self.consolidation.run(now, force=force)
 
     def narrative(self) -> Dict[str, Any]:
@@ -1130,10 +1140,13 @@ class Mind:
                     continue
                 steps_done = self.goals.summaries(goal)
             failing = self.feelings.failing(candidate.topic or concern.summary)
+            pitfalls = list(failing.pitfalls) if failing else []
+            lesson_lines, lesson_ids = self._lessons_for(candidate) if candidate.kind == "task" else ([], [])
+            candidate.lesson_ids = lesson_ids
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
                                                   may_adopt_goal=may_adopt, steps_done=steps_done,
-                                                  lessons=failing.pitfalls if failing else (), failing=failing,
-                                                  tried=view.tried if view is not None else ())
+                                                  lessons=[*lesson_lines, *[p for p in pitfalls if p not in lesson_lines]][:2],
+                                                  failing=failing, tried=view.tried if view is not None else ())
             if shaped.open_ended and not shaped.text:
                 continue  # the tick's one call is spent; the concern waits for the next tick
             if shaped.kind == "goal":
@@ -1142,6 +1155,11 @@ class Mind:
                     shaped.kind, shaped.goal = "task", None  # the budget is full or the topic has its goal: one task
                 else:
                     shaped = goal_candidate
+            # A failure-class investigation asks for lesson operations (the reflector); a goal keeps M4's path.
+            try:
+                self.lessons.reflector(shaped)
+            except Exception as error:
+                logger.warning("reflector request not added (%s)", type(error).__name__)
             row = await self._form(shaped, score, now)
             if row is None:
                 # A thought was spent and formed nothing: charge it (anti-rumination bounds the retries)
@@ -1304,6 +1322,21 @@ class Mind:
                 if lines:
                     context["body"] = f"{context['body']}\n\n{lines}".strip()
                     context["opinion_ids"] = ids
+            if candidate.kind == "task":
+                lesson_lines, lesson_ids = self._task_lessons(candidate)
+                if lesson_ids:
+                    context["body"] = (f"{context['body']}\n\nLessons from verified results:\n"
+                                       + "\n".join(lesson_lines)).strip()
+                    # A reflector investigates its class's lessons and does not apply them: its outcome
+                    # (a timed-out investigation, say) is no evidence for or against them, so no use.
+                    if not candidate.reflector:
+                        context["lesson_ids"] = lesson_ids
+            if candidate.reflector:
+                reflector = dict(candidate.reflector)
+                request = str(reflector.pop("request", "") or "")
+                if request:
+                    context["body"] = f"{context['body']}\n\n{request}".strip()
+                context["reflector"] = reflector
             context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
             context["max_retries"] = self.policy.budgets.task_max_retries
             if candidate.parent_goal_id:
@@ -1322,6 +1355,8 @@ class Mind:
         if created != "created":
             return None
         extra: Dict[str, Any] = {}
+        if context.get("lesson_ids"):
+            extra["lesson_ids"] = list(context["lesson_ids"])
         if candidate.parent_goal_id:
             extra["parent_goal_id"] = candidate.parent_goal_id
         if candidate.dedup_base:
@@ -1334,6 +1369,29 @@ class Mind:
         if candidate.grant == "owner" and stored == "never" and verdict.decision == "drop":
             await self._refuse_grant(candidate)
         return updated
+
+    def _lessons_for(self, candidate: Candidate) -> tuple[List[str], List[str]]:
+        """``lessons.for_task``; lessons are guidance, so a store that cannot be read gives none."""
+        try:
+            return self.lessons.for_task(candidate)
+        except Exception as error:
+            logger.warning("lessons unavailable for a task (%s)", type(error).__name__)
+            return [], []
+
+    def _task_lessons(self, candidate: Candidate) -> tuple[List[str], List[str]]:
+        """The lessons a task body carries: the ones deliberation was given (``candidate.lesson_ids``),
+        or the lessons for the task when it did not pass through ``_act``; nothing with lessons off."""
+        if not self.lessons.enabled:
+            return [], []
+        if not candidate.lesson_ids:
+            return self._lessons_for(candidate)
+        try:
+            chosen = [lesson for lesson in (self.lessons.get(ident) for ident in candidate.lesson_ids)
+                      if lesson is not None and lesson.status in {"active", "candidate"}]
+        except Exception as error:
+            logger.warning("lessons unavailable for a task body (%s)", type(error).__name__)
+            return [], []
+        return [lesson.line() for lesson in chosen], [lesson.id for lesson in chosen]
 
     @staticmethod
     def _purpose(purpose: str | None) -> str:
@@ -1431,6 +1489,12 @@ class Mind:
                 logger.warning("approach opinion not updated for %s (%s)", row.id, type(error).__name__)
         concern = self.concerns.by_intention(row.id)
         now = self.clock()
+        if outcome == "done" and isinstance(row.context, dict) and row.context.get("reflector"):
+            try:
+                self.lessons.apply_reflection(row, summary=row.result or "",
+                                              result=(row.result_metadata or {}).get("result"), now=now)
+            except Exception as error:
+                logger.warning("reflector report not applied for %s (%s)", row.id, type(error).__name__)
         if outcome == "done":
             self._close_commitment(row)
             if concern is not None:
@@ -2160,8 +2224,9 @@ class Mind:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
         Affect's notes and its calm tone line come first but take only the room the rest leaves
-        (at most 360 characters), so they never cut the open asks; stances and lessons join it
-        with their milestones.
+        (at most 360 characters), so they never cut the open asks. Stances and the turn's lesson
+        ride their own sections (``protagine-stances``, ``protagine-lessons``), built from the
+        turn's text.
         """
         if not self.enabled:
             return ""
@@ -2224,7 +2289,23 @@ class Mind:
             "running": self._running,
             "consolidation": self._consolidation_state(),
             "affect": self.feelings.state(),
+            "lessons": self._lessons_state(),
+            "skills": self.skills.state(),
         }
+
+    def sync_skills(self, now: datetime | None = None) -> Optional[Dict[str, Any]]:
+        """Protagine's skills follow its lessons (``Skills.sync``); a failure is logged, never raised."""
+        now = now or self.clock()
+        try:
+            return self.skills.sync(self.lessons.all(), self.lessons.tally(now), now)
+        except Exception as error:
+            logger.warning("skills not synced (%s)", type(error).__name__)
+            return None
+
+    def _lessons_state(self) -> Dict[str, Any]:
+        current = self.lessons.all()
+        return {"enabled": self.lessons.enabled, "active": sum(item.status == "active" for item in current),
+                "candidate": sum(item.status == "candidate" for item in current)}
 
     def _consolidation_state(self) -> Dict[str, Any]:
         task = self._consolidation_task
@@ -2233,7 +2314,14 @@ class Mind:
                 "last_tokens": int(row.cost_tokens or 0) if row is not None else 0}
 
     def stats(self) -> Dict[str, Any]:
-        return audit.stats(self.store, now=self.clock())
+        now = self.clock()
+        value = audit.stats(self.store, now=now)
+        lessons = self.lessons.stats(now)
+        value["lessons"] = lessons
+        value["lesson_use_rate"] = lessons.get("use_rate")      # wins over verified uses (evals section 8)
+        value["skills"] = {"enabled": self.skills.enabled, "owned": len(self.skills.owned()),
+                           "loads": self.skills.loads()}
+        return value
 
 
 __all__ = ["APPRAISAL_FORCED_S", "APPRAISAL_TIMER_S", "DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",

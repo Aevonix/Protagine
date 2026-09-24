@@ -41,13 +41,18 @@ RETIRED_ROUTES = ("/v1/host/learning/weights", "/v1/host/learning/engagement")
 ALLOWED_LITERAL = re.compile(r"""["'](?:world_model|protagine_world_model\.db)["']""")
 
 
+def absent(module: str) -> bool:
+    """A module is absent when nothing resolves it, including when its parent package is gone (find_spec
+    then raises instead of returning None)."""
+    try:
+        return find_spec(module) is None
+    except ModuleNotFoundError:
+        return True
+
+
 @pytest.mark.parametrize("module", RETIRED_MODULES)
 def test_retired_modules_do_not_exist(module):
-    try:
-        spec = find_spec(module)
-    except ModuleNotFoundError:  # a retired parent package: the module cannot exist either
-        spec = None
-    assert spec is None, f"{module} still exists"
+    assert absent(module), f"{module} still exists"
 
 
 def test_research_gathers_from_no_graph():
@@ -64,7 +69,9 @@ def test_research_gathers_from_no_graph():
 def test_the_consolidate_help_names_the_stages_that_run():
     from protagine.mind.consolidate import NIGHT_TASKS
     source = (PACKAGE / "mind" / "cli.py").read_text()
-    assert "dedupe" not in source and set(NIGHT_TASKS) == {"narrative", "contradictions", "digests", "episodes"}
+    assert "dedupe" not in source and set(NIGHT_TASKS) == {"narrative", "lessons", "contradictions", "digests",
+                                                           "episodes"}
+    assert "lessons" in source.split('"consolidate", help=', 1)[1].split(")", 1)[0]
 
 def test_no_retired_route_is_served():
     from protagine.server import create_app
