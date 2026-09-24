@@ -61,9 +61,10 @@ general self-improvement simply by recording a successful review.
   `GraphGatherer`, the insight validator's data-age check, the relationship
   scorer's and cognition components' type hints). Those that cannot work
   without a Neo4j driver (`CognitionPipeline`, `SignalCollector` with
-  `GraphBaselineStore`, `ConnectionDiscoverer`, the briefing
-  `RelationshipAggregator`) are no longer constructed by the server; their
-  routes report the subsystem as not wired.
+  `GraphBaselineStore`, `ConnectionDiscoverer`) are no longer constructed by
+  the server; their routes report the subsystem as not wired. The briefing
+  `RelationshipAggregator` (Cypher only), the node-certificate signer and the
+  `extraction` extra had no other use and are deleted.
 
 ## Deliberate no-builds (division of responsibility with the host agent)
 

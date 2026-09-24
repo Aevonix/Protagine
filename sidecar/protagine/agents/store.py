@@ -25,10 +25,6 @@ from .models import Agent, AgentMetadata, AgentStatus
 
 logger = logging.getLogger(__name__)
 
-# Type alias for Protagine key manager (avoid circular import)
-LocalKeyManager = Any
-
-
 def get_state_dir() -> Path:
     """Get Protagine state directory."""
     state_dir = os.environ.get("PROTAGINE_STATE_DIR")
@@ -59,16 +55,11 @@ def hash_setup_code(code: str) -> str:
 class AgentStore:
     """Manages agent registry with SQLite persistence and CRL support."""
 
-    def __init__(
-        self,
-        state_dir: Optional[Path] = None,
-        protagine_key_manager: Optional[LocalKeyManager] = None,
-    ):
+    def __init__(self, state_dir: Optional[Path] = None):
         self._state_dir = Path(state_dir) if state_dir else get_state_dir()
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._state_dir / "agents.db"
         self._backup_path = self._state_dir / "agents.db.backup"
-        self._protagine_km = protagine_key_manager
 
         # In-memory CRL for fast lookup
         self._revoked_node_ids: set = set()
@@ -523,42 +514,6 @@ class AgentStore:
 
         cursor = self._db.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
-
-    # ------------------------------------------------------------------
-    # Certificate Signing
-    # ------------------------------------------------------------------
-
-    async def sign_node_certificate(
-        self,
-        node_id: str,
-        node_public_key: str,
-        expires_days: int = 365,
-    ) -> Dict[str, Any]:
-        """Sign a node certificate for remote agent."""
-        if not self._protagine_km:
-            raise ValueError("signing key not available")
-        from protagine.instance import instance_id
-
-        protagine_id = instance_id(self._state_dir)
-
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=expires_days)
-
-        cert = {
-            "protagine_id": protagine_id,
-            "node_id": node_id,
-            "node_public_key_ed25519": node_public_key,
-            "issued_at": now.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        }
-
-        # Sign with Protagine private key
-        # The LocalKeyManager should have a sign() method
-        payload = json.dumps(cert, sort_keys=True).encode()
-        signature = self._protagine_km.sign(payload)
-        cert["signature"] = signature.hex()
-
-        return cert
 
     # ------------------------------------------------------------------
     # Backup/Recovery

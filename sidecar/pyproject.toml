@@ -37,7 +37,6 @@ dependencies = [
 vectors = ["sentence-transformers>=3.0"]
 hermes = ["protagine-hermes>=1.8.4,<2"]
 mcp = ["mcp[cli]>=1.0,<2"]
-extraction = ["PyMuPDF>=1.24", "beautifulsoup4>=4.12"]
 video = ["av==18.1.0"]
 dev = [
     "av==18.1.0",

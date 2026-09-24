@@ -213,3 +213,19 @@ def test_retire_state_moves_every_retired_file_and_keeps_the_instance_id(tmp_pat
     # A clean state directory is left alone: no backup directory, no notes.
     assert retire_state(home, tmp_path / "second") == []
     assert not (tmp_path / "second").exists()
+
+
+def test_the_graph_only_leftovers_are_gone():
+    """What only the graph, the world model's extraction or the chain's signing ever used: the `extraction`
+    extra, the Neo4j relationship aggregator of the briefings and the node-certificate signer."""
+    import inspect
+
+    from protagine.agents.store import AgentStore
+    from protagine.briefings import aggregators
+
+    optional = (ROOT / "pyproject.toml").read_text().split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+    assert not re.search(r"^extraction\s*=", optional, re.M)
+    assert not hasattr(aggregators, "RelationshipAggregator")
+    assert "MATCH (" not in inspect.getsource(aggregators)
+    assert not hasattr(AgentStore, "sign_node_certificate")
+    assert "protagine_key_manager" not in inspect.signature(AgentStore).parameters
