@@ -180,7 +180,7 @@ mind:
 false` keeps it off with the endpoint still recorded. Releases before this
 switch was live wrote `semantic_recall: false` whenever init found no
 endpoint; `protagine init --embed-url ...` sets it back to true, and `protagine upgrade` and
-`protagine doctor` warns while an endpoint is recorded with the switch off. `router.embed_dims` is the model's
+`protagine doctor` warn while an endpoint is recorded with the switch off. `router.embed_dims` is the model's
 vector width; left at 0, the sidecar learns it from the endpoint's first
 embedding, and a declared width is validated against every vector (a mismatch
 is a startup failure named after the setting, never a silent switch to
