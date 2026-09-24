@@ -52,6 +52,31 @@ stance with `faculties.opinions` off and never a view about a person (X15,
 X7). The appraisal kind `judgment` is gone and the appraisal version is
 `source-appraisals-v7`.
 
+The code-side items of the Aeva cutover runbook. `POST /v1/host/memory/search`
+requires a non-blank `person_id` again: the owner default for a body that
+names nobody is gone, so a missing or blank person is a 422 and never the
+owner's search; the limit clamp and the optional `session_id` stay
+(security-6). The initiatives store recovers only a damaged file
+(SQLITE_CORRUPT, SQLITE_NOTADB) and renames it to
+`initiatives.db.corrupt-<stamp>` instead of deleting it; a locked or
+unreadable store fails the open, and `protagine upgrade` re-checks the
+intention columns and the row count after opening and fails with the reason
+rather than printing 'migration applied' over an emptied store; `close()`
+backs up through SQLite, WAL commits included (data-5). `protagine init`
+refuses a seeded `owner.contact_id` that does not resolve to a live contact,
+before writing anything, instead of creating a second owner contact (data-6).
+The service unit sends launchd's (systemd's) raw output to
+`service/launchd.log` (`service/systemd.log`), apart from the rotating
+`service/sidecar.log`, and restarts a crashed sidecar after 30 s instead of 5
+(operability-8). A forget removes the vectors from the served view and
+answers; the compaction that purges the text from the data files runs after
+the response (`vector_purge: scheduled`), one pass at a time
+(operability-11). `protagine doctor` has a `service` check: installed,
+running, and written by this release (operability-3). The owner-only
+refusals for `protagine_self` state, log and why and for listing people, and
+the `/mind` gate for non-owner senders (security-3), are in this line. See
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ## Unreleased - opinions
 
 The agent now holds opinions that change only on evidence (build plan M7,
