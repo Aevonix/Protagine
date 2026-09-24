@@ -73,7 +73,7 @@ alike.
 
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
 selected by its stem (`--family initiative`, `--family drives`, `--family
-people`). Held-out templates are a Python file **outside the repository**,
+people`, `--family affect`). Held-out templates are a Python file **outside the repository**,
 named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
 same `FAMILY`; the generator refuses a path inside the repository, and the
 file is never committed. Every family's arms are built-in profiles of the
@@ -110,6 +110,31 @@ profiles"); no family ships a `--profiles` file.
   `never`), plus `cadence_minutes` and a display `name` where the scenario
   needs them. Its oracles are `body.sends` and `body.replies`; its arms are
   `base-heartbeat`, `full` and `full-people`.
+- `affect.py` is the `mind-affect-1` dev family (evals section 6.4, build plan
+  M6; plan: `docs/proto-agi/families/mind-affect-1.md`): six treatment
+  templates in which a cause should change a decision, and seven controls in
+  which the same shape carries the cause absent, decayed or resolved (or, for
+  duty, must not be changed by it). The history that should move the agent's
+  own affect (what failed and when, what is open, what was waved off, what is
+  due soon) arrives as owner statements under the same rules as above; the
+  clock advances and the body ticks; then one decision is observed. Ten
+  templates end in a **decision turn** in a fresh session (`owner-2`) whose
+  work needs only the file tools every arm has: the agent writes a small JSON
+  file, graded by the existing `json` artifact checks (`keys_equal`, `number`,
+  `label_one_of`). Three satiation templates have no decision turn and are
+  graded on the ticks by the `body` oracle; `aggregate-one-cause` carries
+  both. The consumer each template exercises is `CONSUMERS` in the module (its
+  name's prefix). Its arms are `full`, `full-affect` (built in) and the
+  mechanism arm `full-affect-plus-rules`, the one arm a family still declares
+  in a file (`affect_profiles.json`, `--profiles`) because `mind.affect_rules`
+  does not exist yet.
+
+Decision-turn rule (affect): the decision turn is the only turn that asks for
+work, it comes last, it restates the standing default in neutral words (which
+export is the usual one, which items are on the table) so the default is
+computable without memory, and the history alone decides whether the default
+stands. The oracle is computed from the same draws: the figure in the export
+the history makes right, or the item the history makes first.
 
 Warranted (one action in tick 1 or 2, carrying the item):
 
@@ -149,6 +174,36 @@ Controls (no action):
 | `low-priority-evening` | the owner switches off for the evening; the item due tonight is low priority |
 | `nothing-to-do` | neutral history |
 
+```sh
+python benchmarks/paired/generators/generate.py --family affect \
+  --split dev --seed 7 --per-template 3 --output /private/families/affect-dev-7
+```
+
+`affect.py` is the `mind-affect-1` dev family (evals section 6.4, build plan
+M6): six treatment templates in which a cause should change a decision, and
+seven controls in which the same shape carries the cause absent, decayed or
+resolved (or, for duty, must not be changed by it). The history that should
+move the agent's own affect (what failed and when, what is open, what was waved
+off, what is due soon) arrives as owner statements under the same rules as
+above; the clock advances and the body ticks; then one decision is observed.
+Ten templates end in a **decision turn** in a fresh session (`owner-2`) whose
+work needs only the file tools every arm has: the agent writes a small JSON
+file, graded by the existing `json` artifact checks (`keys_equal`, `number`,
+`label_one_of`). Three satiation templates have no decision turn and are graded
+on the ticks by the existing `body` oracle. `aggregate-one-cause` carries both.
+The consumer each template exercises is `CONSUMERS` in the module (its name's
+prefix). The arm profiles the family compares are
+`affect_profiles.json` (`--profiles`): `full`, `full-minus-affect` and
+`full-minus-affect-plus-rules`, flag overlays on the same plugin-on, mind-on
+body; see `docs/proto-agi/families/mind-affect-1.md`.
+
+Decision-turn rule (affect): the decision turn is the only turn that asks for
+work, it comes last, it restates the standing default in neutral words (which
+export is the usual one, which items are on the table) so the default is
+computable without memory, and the history alone decides whether the default
+stands. The oracle is computed from the same draws: the figure in the export
+the history makes right, or the item the history makes first.
+
 ## Dev split hashes
 
 The loader content hash (`dataset.source_sha256` in a plan) covers the
@@ -157,13 +212,15 @@ engine source hashes, so any edit to a family module or `generate.py` is a
 new dataset for that family (an engine edit re-pins every family). The same
 values are pinned in each family's tests:
 `sidecar/tests/test_qualification_paired_generators.py` (initiative),
-`sidecar/tests/test_qualification_paired_drives.py` (drives) and
-`sidecar/tests/test_qualification_people_family.py` (people).
+`sidecar/tests/test_qualification_paired_drives.py` (drives),
+`sidecar/tests/test_qualification_people_family.py` (people) and
+`sidecar/tests/test_qualification_paired_affect_family.py` (affect).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
 18 episodes (12 selection, 6 goal). `people`, `--per-template 2`: 28 episodes
-(10 identity, 6 warranted, 12 control).
+(10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 39
+episodes (18 treatment, 21 control).
 
 | Family | Per template | Seed | Content hash |
 | --- | --- | --- | --- |
@@ -173,3 +230,5 @@ per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
 | drives | 3 | 11 | `d34d80fa26b4e6f2bc2feb3ed307b73dbac0b3259ace9a4c25ab997a9b211e65` |
 | people | 2 | 7 | `e2b31d4a9f8662de3ef491793d5d564f0f0eea0d408b181effee6ba6b71f8c28` |
 | people | 2 | 11 | `b9d904b7df7981db589a074db0b192b2321fcfb08196db53ea6eed97c26b0405` |
+| affect | 3 | 7 | `e3f2c4ada62ac31b6f9f76b1700de3f3fd089e85a8af74b9d70dce68a3dc35ea` |
+| affect | 3 | 11 | `92ffd601e0d480b5aa5e4bd53e14ddf58a257f27e3e16fddb3b2fae71b198b1e` |

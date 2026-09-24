@@ -93,10 +93,11 @@ satiates and no goal is adopted), `full-broadcast` (`faculties.broadcast` off)
 and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
 `full-upkeep` and `full-social` (that drive's weight set to 0), and one
 ablation per later faculty, `full` with that faculty's `mind.faculties` flag
-off: `full-people` (the people family, `mind-people-1`). The flag is served
-whether or not the faculty's code has landed, so such an arm is a no-op
-contrast until its milestone. Every mind arm is served in the worker next to
-the host routes and ticked by the body tick.
+off: `full-people` (the people family, `mind-people-1`) and `full-affect`
+(the feelings family, `mind-affect-1`). The flag is served whether or not the
+faculty's code has landed, so such an arm is a no-op contrast until its
+milestone. Every mind arm is served in the worker next to the host routes and
+ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
 which measures the noise floor. `--reference-arm` names the comparator; it
@@ -296,7 +297,10 @@ field groups scenarios (`warranted`, `control`) in reports. The dev family
 per type of the evals taxonomy (section 6.2 of `docs/proto-agi/PROTO-AGI-EVALS.md`;
 the generator README lists them); every episode is history turns, a clock
 advance (past the deadline that counts, or short of one that does not) and body
-ticks with no user turn. Held-out templates are a Python file outside the
+ticks with no user turn. The dev family `mind-affect-1` (`affect.py`) adds
+decision-turn episodes: the history, a clock advance and one tick, then a turn
+in a fresh session that writes a small JSON file graded by the existing
+artifact checks, next to tick-graded satiation scenarios. Held-out templates are a Python file outside the
 repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the

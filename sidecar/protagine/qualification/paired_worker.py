@@ -35,7 +35,7 @@ ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
 # ``minus_<faculty>`` switch turns that faculty's flag off and each ``minus_<drive>`` switch
 # sets that drive's weight to 0 (evals section 3, the full-X arms). A faculty whose code has
 # not landed yet still has its flag written, so its ablation is a no-op contrast until then.
-MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people')
+MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect')
 MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
 MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS)
