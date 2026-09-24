@@ -106,7 +106,9 @@ preferences are never folded. The commitment extractor's prior claims use the sa
 | Episode summaries | <= 8 | 250 |
 
 The night may spend at most `mind.budgets.learn_share x mind.budgets.llm_tokens_per_day` tokens
-(0.25 x 200,000 = 50,000 by default). Before every call the run checks that what is left of that
+(0.25 x 200,000 = 50,000 by default). The share is the learning work's, not the night's alone: a
+later consumer of it (M9's nightly lesson batch) reads what the day's consolidation rows already
+charged and spends what is left. Before every call the run checks that what is left of that
 share still covers the call (the larger of its output cap and the biggest call so far) and that
 `Authority.tokens_allowed()` holds; the call's real usage (`response.usage`) is written at once to
 `cost_tokens` on the night's `note/consolidation` audit row, so the shared day budget and
