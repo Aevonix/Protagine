@@ -31,19 +31,15 @@ AUTOMATED_PLATFORMS = frozenset({"cron"})
 # the tool and fill its arguments; the handlers validate and explain the rest.
 SELF_SCHEMA = {
     "name": "protagine_self",
-    "description": "Your own mind and record: the only source for claims about what you did or decided. state "
-                   "(level, budgets, open asks with codes, what you are working on, your narrative), log (your "
-                   "intentions, newest first; filter by since_hours, kind or recipient; cite the ids you find; an "
-                   "action that is not in the log did not happen), why <id>, rate <id> with a verdict, or answer "
-                   "an ask yes/no by its code. rate, yes and no are owner only, and the code must appear in the "
-                   "owner's own message.",
+    "description": "Your mind and record, the only source for what you did or decided: state (level, asks with "
+                   "codes, working_on, narrative), log (newest first; since_hours, kind, recipient; cite ids; not in "
+                   "the log means it did not happen), why <id>, rate <id> <verdict>, yes|no <code> (owner only, "
+                   "code typed by the owner).",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
         "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
-        "code": {"type": "string"}, "limit": {"type": "integer"},
-        "since_hours": {"type": "number", "description": "log: only intentions formed in the last N hours"},
-        "kind": {"type": "string", "description": "log: task, message, goal or note"},
-        "recipient": {"type": "string", "description": "log: only messages to this contact id"}},
+        "code": {"type": "string"}, "limit": {"type": "integer"}, "since_hours": {"type": "number"},
+        "kind": {"type": "string"}, "recipient": {"type": "string"}},
         "required": ["operation"]},
 }
 PEOPLE_SCHEMA = {
