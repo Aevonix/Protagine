@@ -125,6 +125,11 @@ forwarders out of `<hermes_home>/plugins/` into the backup (stock Hermes would
 load them ahead of the installed adapter), and starts the mind at
 `autonomy: suggest`; edit `mind.autonomy` to choose `standard` or `trusted`.
 Reminders scheduled by 1.9.0 keep firing: their launchers run the new adapter.
+Durable transport intake rows (`transport_ingress` receipts and coverage) that
+1.9.0 stamped with one of its client principals are re-scoped to the single
+instance producer, so a messaging transport that journaled those receipts can
+still read, hand off and settle them with the one key; the backup keeps the
+rows as they were.
 
 If the instance used a prepared (patched) Hermes runtime, the upgrade prints
 the one command that binds it to stock Hermes instead:

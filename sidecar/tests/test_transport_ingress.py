@@ -5,7 +5,8 @@ from threading import Barrier
 
 import pytest
 
-from protagine.contacts.transport_ingress import TransportIngress, ensure_schema
+from protagine.contacts.transport_ingress import (TransportIngress, adopt_retired_producers, ensure_schema,
+                                                  retired_producer_rows)
 
 
 def opened(path):
@@ -90,4 +91,67 @@ def test_coverage_requires_connection_watermark_freshness_and_no_activity(tmp_pa
     assert not store.coverage(producer='bridge',account_id='account',contact_id='other',since=120,now=141)['observed']
     with pytest.raises(ValueError,match='invalid_ingress_coverage'):
         store.observe_coverage(**(observation | {'sequence_floor':1}))
+    conn.close()
+
+
+def coverage(store, producer, account_id='account', observed_at=201, watermark=3):
+    store.observe_coverage(producer=producer, account_id=account_id, epoch='epoch', connected_since=50,
+                           observed_at=observed_at, watermark=watermark, connected=True, unavailable=0, now=observed_at)
+
+
+def test_retired_producers_rows_are_adopted_by_the_instance_producer(tmp_path):
+    """Rows stamped by principals that no longer exist move to the one producer the
+    transport now presents: it reads, hands off and settles by the ids it journaled, a
+    re-admit finds the adopted receipt, and the adopted coverage window is gap-free
+    because every state moved. A second pass finds nothing."""
+    conn, store = opened(tmp_path/'comms.db'); ensure_schema(conn)
+    first, second, third = (admit(store, producer='retired-a', sequence=n) for n in (1, 2, 3))
+    other = admit(store, producer='retired-b', account_id='other-account')
+    store.handoff(producer='retired-a', receipt_ids=[second['receipt_id']], batch_id='old')
+    native = {'session_id': 'session', 'task_id': 'task', 'turn_id': 'source-3'}
+    store.handoff(producer='retired-a', receipt_ids=[third['receipt_id']], batch_id='old-3')
+    store.handoff(producer='retired-a', receipt_ids=[third['receipt_id']], batch_id='old-3', native_turn=native)
+    store.complete(native_turn=native, source_versions={'source-3': 'v1'}, outcome='captured', now=202)
+    coverage(store, 'retired-a'); coverage(store, 'retired-b', account_id='other-account', watermark=1)
+    ids = [first['receipt_id'], second['receipt_id'], third['receipt_id']]
+    with pytest.raises(ValueError, match='scope_mismatch'):
+        store.receipts(producer='api-key', receipt_ids=ids)
+    with pytest.raises(ValueError, match='scope_mismatch'):
+        store.handoff(producer='api-key', receipt_ids=[first['receipt_id']], batch_id='new')
+    assert retired_producer_rows(conn, 'api-key') == {'receipts': 4, 'coverage': 2, 'producers': ['retired-a', 'retired-b']}
+
+    assert adopt_retired_producers(conn, 'api-key') == {'receipts': 4, 'coverage': 2, 'kept': 0,
+                                                         'producers': ['retired-a', 'retired-b']}
+    assert [row['state'] for row in store.receipts(producer='api-key', receipt_ids=ids)] == ['admitted', 'handed_off', 'completed']
+    assert store.handoff(producer='api-key', receipt_ids=[first['receipt_id']], batch_id='new')['may_dispatch'] is True
+    assert store.receipts(producer='api-key', receipt_ids=[other['receipt_id']])[0]['state'] == 'admitted'
+    checked = store.coverage(producer='api-key', account_id='account', contact_id='nobody', since=150, now=203)
+    assert checked['observed'] and checked['watermark'] == 3
+    assert admit(store, producer='api-key', sequence=1) == store.receipts(producer='api-key', receipt_ids=[first['receipt_id']])[0]
+    assert conn.execute("SELECT COUNT(*) FROM transport_ingress").fetchone()[0] == 4
+    assert retired_producer_rows(conn, 'api-key') == {'receipts': 0, 'coverage': 0, 'producers': []}
+    assert adopt_retired_producers(conn, 'api-key') == {'receipts': 0, 'coverage': 0, 'kept': 0, 'producers': []}
+    conn.close()
+
+
+def test_adoption_keeps_what_the_instance_producer_already_holds(tmp_path):
+    """An event the instance re-admitted before the upgrade keeps that receipt; the retired
+    duplicate stays as it is and is not reported as pending. Coverage merges to the newest
+    observation per account."""
+    conn, store = opened(tmp_path/'comms.db'); ensure_schema(conn)
+    old = admit(store, producer='retired')
+    new = admit(store, producer='api-key')
+    assert old['receipt_id'] != new['receipt_id']
+    coverage(store, 'retired', observed_at=150, watermark=1)
+    coverage(store, 'api-key', observed_at=160, watermark=1)
+    coverage(store, 'retired', account_id='second', observed_at=170, watermark=1)
+    coverage(store, 'api-key', account_id='second', observed_at=140, watermark=0)
+    assert retired_producer_rows(conn, 'api-key') == {'receipts': 0, 'coverage': 2, 'producers': ['retired']}
+
+    assert adopt_retired_producers(conn, 'api-key') == {'receipts': 0, 'coverage': 2, 'kept': 1, 'producers': ['retired']}
+    assert store.get(old['receipt_id'])['producer'] == 'retired'
+    assert admit(store, producer='api-key') == new
+    rows = conn.execute('SELECT producer, account_id, observed_at FROM transport_ingress_coverage ORDER BY account_id').fetchall()
+    assert [tuple(row) for row in rows] == [('api-key', 'account', 160.0), ('api-key', 'second', 170.0)]
+    assert retired_producer_rows(conn, 'api-key') == {'receipts': 0, 'coverage': 0, 'producers': []}
     conn.close()

@@ -794,6 +794,7 @@ RETIRED_TABLES: dict[str, tuple[str, ...]] = {
     "turn-idempotency.db": ("self_opinion_revisions", "self_attention"),
 }
 INITIATIVES_DB = "initiatives.db"
+COMMS_DB = "protagine-comms.db"
 
 
 def retired_state_present(home: Path) -> list[str]:
@@ -843,6 +844,52 @@ def retire_tables(home: Path) -> list[str]:
             rows = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
             connection.execute(f"DROP TABLE IF EXISTS {table}")  # noqa: S608
         notes.append(f"retired table {table} in {name} ({rows} rows kept in the backup)")
+    return notes
+
+
+def pending_ingress_adoption(home: Path) -> list[str]:
+    """Transport ingress receipts and coverage rows still stamped by a retired producer.
+
+    Earlier lines issued several client principals and stamped durable intake
+    rows with the principal's name; this line authenticates one key and stamps
+    every caller with its single producer. Rows left under another name can
+    never be read back or handed off by the transport that journaled them.
+    """
+    path = home / COMMS_DB
+    if not path.is_file():
+        return []
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import retired_producer_rows
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.row_factory = sqlite3.Row
+            found = retired_producer_rows(connection, KEY_PRINCIPAL)
+    except sqlite3.DatabaseError:
+        return []
+    pending: list[str] = []
+    if found["receipts"]:
+        pending.append(f"{COMMS_DB}:transport_ingress ({found['receipts']} receipts from "
+                       f"{len(found['producers'])} retired producers)")
+    if found["coverage"]:
+        pending.append(f"{COMMS_DB}:transport_ingress_coverage ({found['coverage']} rows)")
+    return pending
+
+
+def adopt_ingress_producers(home: Path) -> list[str]:
+    """Re-scope the retired producers' ingress rows to the instance key (idempotent)."""
+    if not pending_ingress_adoption(home):
+        return []
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import adopt_retired_producers
+    with sqlite3.connect(home / COMMS_DB) as connection:
+        connection.row_factory = sqlite3.Row
+        result = adopt_retired_producers(connection, KEY_PRINCIPAL)
+    notes = [f"migration applied: {COMMS_DB}: {result['receipts']} transport ingress receipts and "
+             f"{result['coverage']} coverage rows re-scoped from retired producers "
+             f"({', '.join(result['producers'])}) to the instance key"]
+    if result["kept"]:
+        notes.append(f"{result['kept']} transport ingress receipts kept on their retired producer: "
+                     "the same event already exists under the instance key")
     return notes
 
 
@@ -1235,7 +1282,8 @@ def run_upgrade(args) -> int:
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
-                              + retired_state_present(home) + retired_tables_present(home))
+                              + retired_state_present(home) + retired_tables_present(home)
+                              + pending_ingress_adoption(home))
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
@@ -1247,6 +1295,7 @@ def run_upgrade(args) -> int:
         notes.extend(migrate_initiatives(home))
         notes.extend(retire_state(home, backup))
         notes.extend(retire_tables(home))
+        notes.extend(adopt_ingress_producers(home))
         if binding_changed:
             cfg.data["hermes"]["python"] = str(python)
             cfg.data["hermes"]["home"] = str(hermes_home)

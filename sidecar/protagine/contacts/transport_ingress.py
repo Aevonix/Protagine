@@ -59,6 +59,11 @@ class TransportIngress:
                                 (receipt_id,)).fetchone()
         return dict(row) if row else None
 
+    def for_event(self, *, producer, account_id, epoch, sequence):
+        row = self.conn.execute('SELECT * FROM transport_ingress WHERE producer=? AND account_id=? '
+                                'AND epoch=? AND sequence=?', (producer, account_id, epoch, sequence)).fetchone()
+        return dict(row) if row else None
+
     def admit(self, *, producer, account_id, epoch, sequence, event_id, contact_id,
               occurred_at, journal_ref, payload_digest, media_available, metadata=None,
               now=None):
@@ -83,8 +88,12 @@ class TransportIngress:
                       journal_ref=journal_ref, payload_digest=payload_digest,
                       media_available=int(media_available), metadata_json=_json(metadata))
         with self.conn:
-            old = self.get(receipt_id)
+            # The event itself is the identity, not the digest of its tuple: a
+            # receipt adopted from a retired producer keeps the id the transport
+            # already journaled, and a re-admit must find it.
+            old = self.for_event(producer=producer, account_id=account_id, epoch=epoch, sequence=sequence)
             if old:
+                receipt_id = old['receipt_id']
                 if old['state'] == 'erased':
                     if any(old[key] != fields[key] for key in ('event_id', 'journal_ref', 'payload_digest')):
                         raise ValueError('ingress_event_conflict')
@@ -250,3 +259,77 @@ class TransportIngress:
         return {'observed': not reasons, 'reasons': reasons, 'observed_through': row['observed_at'] if row else None,
                 'watermark': row['watermark'] if row else None, 'activity_receipts': [r['receipt_id'] for r in activity],
                 'effect_authorized': False}
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def retired_producer_rows(conn: sqlite3.Connection, producer: str) -> dict:
+    """What ``adopt_retired_producers`` would change: receipts and coverage rows
+    stamped by any producer other than *producer*, minus the receipts whose event
+    already exists under *producer* (those are kept as they are)."""
+    result = {'receipts': 0, 'coverage': 0, 'producers': []}
+    if not _has_table(conn, 'transport_ingress'):
+        return result
+    adoptable = conn.execute(
+        'SELECT producer FROM transport_ingress AS r WHERE r.producer!=? AND NOT EXISTS ('
+        'SELECT 1 FROM transport_ingress AS t WHERE t.producer=? AND t.account_id=r.account_id '
+        'AND t.epoch=r.epoch AND t.sequence=r.sequence)', (producer, producer)).fetchall()
+    result['receipts'] = len(adoptable)
+    producers = {row[0] for row in adoptable}
+    if _has_table(conn, 'transport_ingress_coverage'):
+        result['coverage'] = conn.execute('SELECT COUNT(*) FROM transport_ingress_coverage WHERE producer!=?',
+                                          (producer,)).fetchone()[0]
+        producers.update(row[0] for row in conn.execute(
+            'SELECT DISTINCT producer FROM transport_ingress_coverage WHERE producer!=?', (producer,)))
+    result['producers'] = sorted(producers)
+    return result
+
+
+def adopt_retired_producers(conn: sqlite3.Connection, producer: str) -> dict:
+    """Re-scope every receipt and coverage row of a retired producer to *producer*.
+
+    The instance authenticates one credential, so every row stamped by another
+    producer was written by a principal that can no longer present itself; the
+    transport that journaled those receipts now presents the instance key and
+    must still read, hand off and settle them. Receipt ids are kept (the
+    transport holds them). Rows of every state move together, because a coverage
+    observation counts the receipts of its epoch window whatever their state.
+    A receipt whose event already exists under *producer* is kept as it is.
+    Coverage is one row per (producer, account): the newest observation wins.
+    Idempotent: a second call finds nothing to adopt.
+    """
+    result = {'receipts': 0, 'coverage': 0, 'kept': 0, 'producers': []}
+    if not _has_table(conn, 'transport_ingress'):
+        return result
+    producers = set()
+    with conn:
+        rows = conn.execute('SELECT receipt_id, producer, account_id, epoch, sequence FROM transport_ingress '
+                            'WHERE producer!=? ORDER BY created_at, receipt_id', (producer,)).fetchall()
+        for row in rows:
+            producers.add(row['producer'])
+            taken = conn.execute('SELECT 1 FROM transport_ingress WHERE producer=? AND account_id=? AND epoch=? '
+                                 'AND sequence=?', (producer, row['account_id'], row['epoch'], row['sequence'])).fetchone()
+            if taken:
+                result['kept'] += 1
+                continue
+            conn.execute('UPDATE transport_ingress SET producer=? WHERE receipt_id=?', (producer, row['receipt_id']))
+            result['receipts'] += 1
+        if _has_table(conn, 'transport_ingress_coverage'):
+            accounts = [row[0] for row in conn.execute(
+                'SELECT DISTINCT account_id FROM transport_ingress_coverage WHERE producer!=?', (producer,))]
+            for account_id in accounts:
+                candidates = conn.execute(
+                    'SELECT * FROM transport_ingress_coverage WHERE account_id=? '
+                    'ORDER BY observed_at DESC, watermark DESC, (producer=?) DESC', (account_id, producer)).fetchall()
+                producers.update(row['producer'] for row in candidates if row['producer'] != producer)
+                winner = candidates[0]
+                conn.execute('DELETE FROM transport_ingress_coverage WHERE account_id=? AND producer!=?',
+                             (account_id, winner['producer']))
+                if winner['producer'] != producer:
+                    conn.execute('UPDATE transport_ingress_coverage SET producer=? WHERE account_id=? AND producer=?',
+                                 (producer, account_id, winner['producer']))
+                result['coverage'] += 1
+    result['producers'] = sorted(producers)
+    return result
