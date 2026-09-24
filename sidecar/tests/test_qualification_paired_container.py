@@ -491,3 +491,23 @@ def test_pinned_temperature_travels_with_the_payload_only_when_set(tmp_path, sel
     recipe = {'binding': 'candidate', 'container': {}}
     assert paired_container.context({}, {**recipe, 'paired_temperature': 0.5}).temperature == 0.5
     assert paired_container.context({}, recipe).temperature is None
+
+
+def test_runtime_prune_keeps_every_sibling_the_kept_modules_import():
+    # The image keeps only the worker's modules; a sibling one of them imports and the keep set
+    # misses is pruned, and every plan's inspect run then fails inside the container.
+    import ast
+    root = Path(__file__).resolve().parents[2]
+    keep = ast.literal_eval(next(
+        node.value for node in ast.parse((root / 'benchmarks/paired/runtime_prune.py').read_text()).body
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', None) == 'keep'))
+    qualification = root / 'sidecar/protagine/qualification'
+    needed = set()
+    for name in keep:
+        for node in ast.walk(ast.parse((qualification / name).read_text())):
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                if node.module:
+                    needed.add(node.module.split('.')[0] + '.py')
+                else:
+                    needed.update(alias.name + '.py' for alias in node.names)
+    assert needed <= keep, sorted(needed - keep)
