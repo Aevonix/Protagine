@@ -48,8 +48,6 @@ class ExecutionRegistry:
     def observe(self, value: dict, *, principal_id: str, contact_id: str) -> dict:
         from protagine.self_model.execution_forecasts import safe_reconcile
         safe_reconcile(self, contact_id)
-        from protagine.self_model.execution_outcomes import reconcile
-        reconcile(self, contact_id)
         now = self.clock()
         immutable = (principal_id, contact_id, value["session_id"], value["turn_id"], value["parent_execution_id"], value["platform"])
         observation_hash = hashlib.sha256(json.dumps(value, sort_keys=True,
@@ -124,8 +122,6 @@ class ExecutionRegistry:
             conn.execute('DELETE FROM execution_runtime_observations WHERE execution_id NOT IN (SELECT execution_id FROM execution_observations)')
         from protagine.self_model.execution_forecasts import safe_observe
         forecast = safe_observe(self, value['execution_id'], contact_id)
-        from protagine.self_model.execution_outcomes import safe_observe as observe_outcome
-        observe_outcome(self, value['execution_id'], contact_id)
         return {"accepted": True, "lease_seconds": 120, **({'forecast': forecast} if forecast else {})}
 
     def view(self, *, contact_id: str, owner: bool = False, session_id: str = "", limit: int = 20,
@@ -133,8 +129,6 @@ class ExecutionRegistry:
         if owner:
             from protagine.self_model.execution_forecasts import safe_reconcile
             safe_reconcile(self, contact_id)
-            from protagine.self_model.execution_outcomes import reconcile
-            reconcile(self, contact_id)
         now = self.clock()
         clauses = ["state='observed'", "last_observed_at >= ?"]
         args: list = [now - 7 * 86400]
