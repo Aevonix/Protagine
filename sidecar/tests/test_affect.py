@@ -239,3 +239,20 @@ class TestRecencyAndReattribution:
         store.create_event(contact_id="p-04", valence=-0.9, source="explicit")
         one = store.trend("p-04")
         assert one["declining"] is False and one["trend"] == "stable" and one["valence"] == -0.9
+
+
+def test_affect_stamps_and_decays_on_the_clock_the_mind_reads(tmp_path, monkeypatch):
+    """Audit B1 residual: the mind and the contact stamps read ``time.time`` (the body clock the
+    benchmark shifts); an affect store stamping and decaying on ``datetime.now`` split the two."""
+    import time as time_mod
+    store = AffectStore(str(tmp_path / "affect.db"))
+    shifted = time_mod.time() + 3 * 86400
+    monkeypatch.setattr(time_mod, "time", lambda: shifted)
+    event = store.create_event(contact_id="p-02", valence=-0.8)
+    assert abs(datetime.fromisoformat(event["timestamp"]).timestamp() - shifted) < 5
+    state = store._conn.execute("SELECT last_updated FROM affect_state WHERE contact_id='p-02'").fetchone()
+    assert abs(datetime.fromisoformat(state["last_updated"]).timestamp() - shifted) < 5
+    monkeypatch.setattr(time_mod, "time", lambda: shifted + 10 * 3600)
+    store._apply_decay("p-02")
+    decayed = store._conn.execute("SELECT current_valence FROM affect_state WHERE contact_id='p-02'").fetchone()
+    assert decayed["current_valence"] == pytest.approx(-0.8 * 0.95 ** 10, abs=1e-3)

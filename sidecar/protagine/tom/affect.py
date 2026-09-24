@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,12 @@ _DECAY_ONLY_SOURCES = frozenset({"decay"})
 
 
 from .source_lineage import SourceLinkedStore
+
+
+def _now() -> datetime:
+    """UTC now from ``time.time``: the clock the mind and the contact stamps share (a body that
+    shifts ``time.time`` moves them together; ``datetime.now`` would not follow)."""
+    return datetime.fromtimestamp(time.time(), timezone.utc)
 
 
 class AffectStore(SourceLinkedStore):
@@ -117,7 +124,7 @@ class AffectStore(SourceLinkedStore):
         arousal = max(0.0, min(1.0, arousal))
 
         event_id = str(uuid.uuid4())
-        ts = timestamp or datetime.now(timezone.utc).isoformat()
+        ts = timestamp or _now().isoformat()
 
         with self._conn:
             self._conn.execute(
@@ -329,7 +336,7 @@ class AffectStore(SourceLinkedStore):
             return
 
         last_updated = datetime.fromisoformat(row["last_updated"])
-        now = datetime.now(timezone.utc)
+        now = _now()
         hours_elapsed = (now - last_updated).total_seconds() / 3600.0
 
         if hours_elapsed <= 0:
@@ -390,7 +397,7 @@ class AffectStore(SourceLinkedStore):
         trend = self._event_trend(observed)
 
         last_event = rows[-1]
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now().isoformat()
 
         self._conn.execute(
             """INSERT INTO affect_state (contact_id, current_valence, current_arousal, trend, last_event_id, last_updated, event_count)
