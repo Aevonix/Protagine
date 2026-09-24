@@ -45,7 +45,7 @@ class FakeContacts:
 
     def __init__(self, records):
         self.records = {record["contact_id"]: dict(record) for record in records}
-        self.digests, self.links, self.proposals, self.interactions = {}, [], [], []
+        self.digests, self.links, self.proposals, self.interactions, self.cadences = {}, [], [], [], []
 
     def _obj(self, record):
         return SimpleNamespace(**record, to_dict=lambda record=record: dict(record))
@@ -86,6 +86,11 @@ class FakeContacts:
 
     async def set_digest(self, contact_id, text, sources):
         self.digests[contact_id] = (text, list(sources))
+
+    async def set_cadence(self, contact_id, minutes, *, by):
+        self.records[contact_id]["cadence_minutes"] = minutes
+        self.cadences.append((contact_id, minutes, by))
+        return self._obj(self.records[contact_id])
 
     async def list(self, **_):
         return [self._obj(record) for record in self.records.values()]

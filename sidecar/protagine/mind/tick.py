@@ -668,6 +668,7 @@ class Mind:
         inputs.commitments = self._open_commitments()
         await self._resolve_recipients(inputs.commitments)
         if inputs.people_on:
+            await self._apply_cadences(inputs.commitments)
             inputs.contacts = await self._social_rows(now, commitments=inputs.commitments)
             inputs.link_proposals = await self._link_proposals()
         inputs.heads_up_grace = self.heads_up_grace
@@ -1255,6 +1256,34 @@ class Mind:
             except Exception as error:
                 logger.warning("recipient of commitment %s not recorded (%s)", row.get("id"), type(error).__name__)
 
+    async def _apply_cadences(self, commitments: List[Dict[str, Any]]) -> None:
+        """A cadence the owner set in conversation becomes the contact's own, once per row (oldest
+        row first, so the newest word wins): the row is marked applied, and a cadence the owner
+        later sets by hand is not set back. The row stays open, so the check-ins keep its topic
+        (``_thread_topic``); it never grants permission, which stays the contact's ``may_contact``."""
+        setter = getattr(self.contacts, "set_cadence", None)
+        if not callable(setter):
+            return
+        for row in sorted(commitments, key=lambda item: str(item.get("created_at") or "")):
+            cadence = drive_functions.owner_cadence(row, owner_id=self.owner_id)
+            if cadence is None or (row.get("metadata") or {}).get("cadence_applied"):
+                continue
+            contact_id, minutes, _ = cadence
+            record = await self._contact_record(contact_id)
+            if record is None:
+                continue
+            try:
+                if record.get("cadence_minutes") != minutes:
+                    await setter(contact_id, minutes, by=f"owner-turn:commitment:{row['id']}")
+            except Exception as error:
+                logger.warning("cadence of commitment %s not applied (%s)", row.get("id"), type(error).__name__)
+                continue
+            row["metadata"] = {**(row.get("metadata") or {}), "cadence_applied": True}
+            try:
+                self.commitments.update(row["id"], metadata={"cadence_applied": True})
+            except Exception as error:
+                logger.warning("cadence of commitment %s not marked (%s)", row.get("id"), type(error).__name__)
+
     async def _link_proposals(self) -> List[Dict[str, Any]]:
         lister = getattr(self.contacts, "list_handle_proposals", None)
         if not callable(lister):
@@ -1305,8 +1334,13 @@ class Mind:
     def _thread_topic(contact_id: str, commitments: List[Dict[str, Any]], sent: List[StoredInitiative],
                       owner_id: str | None) -> str:
         """The open thread a check-in is about, from what is already this contact's to hear: the
-        matter of a check-in the owner granted for them, else the topic the last message to them
-        raised, else their own open item (their words). Never an owner concern or its evidence."""
+        matter of the cadence the owner set for them, else of a check-in the owner granted for them,
+        else the topic the last message to them raised, else their own open item (their words).
+        Never an owner concern or its evidence."""
+        for row in commitments:
+            cadence = drive_functions.owner_cadence(row, owner_id=owner_id)
+            if cadence is not None and cadence[0] == contact_id and cadence[2]:
+                return cadence[2]
         own = ""
         for row in commitments:
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}

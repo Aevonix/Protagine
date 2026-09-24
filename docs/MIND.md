@@ -69,6 +69,12 @@ audit log, the outbox, outcomes and the off switch. The design is in
    `grant: owner`. Only the owner's own turn keeps the grant; the same shape
    from a contact is an ordinary item. A message the owner wants sent now is
    the reply's job and records nothing.
+   A recurring check-in the owner sets for a contact ("check on Kim every
+   week about the kitchen quote") is one undated item, obligor `assistant`,
+   with `metadata.kind` `cadence`, the `recipient` as named, a `topic` under
+   the same six-word rule and `cadence_minutes`. Only the owner's own turn
+   records one, and it never carries a grant: permission stays the contact's
+   `may_contact`.
 2. **Tick.** Every 60 s the sidecar runs the timers (ask expiry, deferred
    intentions, expectation resolution, retention, the nightly backup), then
    **drains the capture jobs still pending** (`CommitmentExtractor.drain`
@@ -146,6 +152,10 @@ audit log, the outbox, outcomes and the off switch. The design is in
    as `may_contact: auto` for that recipient only, never over `never` (the
    owner hears `grant_refused`); a name the contact store cannot resolve
    becomes a `recipient_unknown` ask; a sent one settles its commitment.
+   An owner's `cadence` item sets that contact's cadence once (audited as
+   `cadence_set` by `owner-turn:commitment:<id>`; a cadence the owner later
+   sets by hand stands), and while it stays open every check-in to that
+   contact carries its topic.
    Daily, each contact talked with in the last 24 h gets a template digest
    (`P/contacts/digest.py`). With the faculty off the social weight is 0,
    nothing is composed or digested, and a message meant for a contact goes

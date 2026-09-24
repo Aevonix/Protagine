@@ -52,6 +52,8 @@ SOCIAL_TIERS = frozenset({"regular", "trusted", "inner_circle"})
 CHECK_IN_TYPES = frozenset({"check_in", "commitment_check_in"})
 # Capture metadata kinds of an owner-granted message to a third party (the notice path).
 GRANTED_KINDS = frozenset({"notice", "check_in"})
+# Capture metadata kind of a recurring check-in the owner set for a contact (undated, no grant).
+CADENCE_KIND = "cadence"
 
 
 def task_body(*, description: str, drive: str, concern: str, evidence: Iterable[str], context: str = "") -> str:
@@ -192,10 +194,26 @@ def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tu
     return (kind, recipient) if recipient else None
 
 
-def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Optional[str]:
-    """The name the owner gave for a granted message the tick could not resolve to a contact."""
+def owner_cadence(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tuple[str, int, str]]:
+    """``(recipient_id, cadence_minutes, topic)`` of a recurring check-in the owner set for a
+    contact (capture's ``metadata.kind`` ``cadence`` on the owner's own row), once the tick
+    resolved the recipient; None otherwise. It sets a rhythm and a matter, never a permission."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    if (str(metadata.get("kind") or "") not in GRANTED_KINDS or metadata.get("grant") != "owner"
+    if str(metadata.get("kind") or "") != CADENCE_KIND or not owner_id or str(row.get("person_id") or "") != owner_id:
+        return None
+    recipient = str(metadata.get("recipient_id") or "").strip()
+    minutes = metadata.get("cadence_minutes")
+    if not recipient or isinstance(minutes, bool) or not isinstance(minutes, int) or minutes <= 0:
+        return None
+    return recipient, minutes, str(metadata.get("topic") or "").strip()
+
+
+def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Optional[str]:
+    """The name the owner gave for a granted message, or for a cadence, that the tick has not
+    resolved to a contact yet."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    kind = str(metadata.get("kind") or "")
+    if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"))
             or not owner_id or str(row.get("person_id") or "") != owner_id
             or str(metadata.get("recipient_id") or "").strip()):
         return None

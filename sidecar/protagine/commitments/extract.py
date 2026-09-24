@@ -100,7 +100,14 @@ SYSTEM = (
     '{"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, at most 6 words>","grant":"owner"} '
     "when the person asks you to check on, chase or ask them about something. The topic names the matter only: "
     "never figures, amounts, codes or reasons. A message the person wants sent NOW to a third party is the "
-    "reply's own job: record nothing for it.\n\n"
+    "reply's own job: record nothing for it. A check-in that repeats (every N minutes, hours or days) is case 4, "
+    "never case 3.\n"
+    "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: the person says a named contact is to be checked in "
+    "with (or on) every N minutes, hours or days, usually about a matter. Record it with due_at null, obligor "
+    "\"assistant\", counterpart = that contact, and metadata "
+    '{"kind":"cadence","recipient":"<contact as named>","topic":"<the matter, at most 6 words>",'
+    '"cadence_minutes":<N in minutes>}. It records the rhythm and the matter only and never grants permission to '
+    "message them, whatever the turn says about permission: it has no grant.\n\n"
     "Record an UPDATE to a numbered open item (action \"reschedule\", \"complete\" or \"cancel\", target = its "
     "number, description = its listed wording EXACTLY as shown, listed_due = the due time shown next to it, or null "
     "when it showed \"no due\") when the turn changes it. An update whose wording or listed_due does not match the "
@@ -138,10 +145,10 @@ SYSTEM = (
     '"description": string, "due_at": ISO-8601-UTC string or null, "priority": integer 0-100, '
     '"source_type": "cognition" | "introspection", "metadata": null or '
     '{"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":"sms"|"dm"|"email"} or '
-    '{"heads_up_at": ISO-8601-UTC string} or the notice or check_in object of case 3, '
+    '{"heads_up_at": ISO-8601-UTC string} or the notice or check_in object of case 3 or the cadence object of case 4, '
     '"listed_due": ISO-8601-UTC string or null, "counterpart": string or null, "obligor": string or null}\n'
     "Use \"introspection\" + the deliverable metadata (due_at about two minutes from now) for case 2; "
-    "\"cognition\" + the notice or check_in metadata for case 3; "
+    "\"cognition\" + the notice or check_in metadata for case 3; \"cognition\" + the cadence metadata for case 4; "
     "\"cognition\" + metadata null (or the heads-up metadata when one was asked for) for case 1, and "
     "metadata null for every update, unless the turn states a NEW heads-up time for a rescheduled item (then the "
     "heads-up metadata; an unchanged heads-up moves with the deadline by itself).\n\n"
@@ -175,6 +182,12 @@ SYSTEM = (
     '[{"action":"create","target":null,"description":"Chase p-05 for the site photos",'
     '"due_at":"2026-06-26T16:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"check_in",'
     '"recipient":"p-05","topic":"the site photos","grant":"owner"},"listed_due":null,"counterpart":"p-05",'
+    '"obligor":"assistant"}]\n'
+    "They said: Check on p-09 every week about the kitchen quote; they are happy to hear from you. | "
+    "Assistant replied: Will do.\n"
+    '[{"action":"create","target":null,"description":"Check in with p-09 weekly about the kitchen quote",'
+    '"due_at":null,"priority":60,"source_type":"cognition","metadata":{"kind":"cadence","recipient":"p-09",'
+    '"topic":"the kitchen quote","cadence_minutes":10080},"listed_due":null,"counterpart":"p-09",'
     '"obligor":"assistant"}]\n'
     "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
     "[]   (a message to send now is the reply's own job)\n"
@@ -401,19 +414,48 @@ def _target_row(listed: List[Dict[str, Any]], target: Any, description: str,
 # given; ``check_in``: composed later around a topic). Its fields are the model's; the recipient's
 # contact id is the tick's to resolve, and only the owner's own turn carries the grant.
 MESSAGE_KINDS = ("notice", "check_in")
-MESSAGE_FIELDS = ("kind", "recipient", "content", "topic", "grant", "recipient_id")
+# Case 4: the owner's recurring check-in with a contact, undated; the tick sets the contact's
+# cadence from it once and the social drive's check-ins carry its topic. Never a grant.
+CADENCE_KIND = "cadence"
+MESSAGE_FIELDS = ("kind", "recipient", "content", "topic", "grant", "recipient_id", "cadence_minutes")
 TOPIC_WORDS = 6
+MAX_CADENCE_MINUTES = 60 * 24 * 366
 
 
-def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Dict[str, Any]:
-    """Case 3 metadata as stored: a notice needs its words and a check-in its recipient; the topic
-    keeps at most six words and none with a digit in it (no figures, amounts or codes); the grant
-    survives only on the owner's own turn. Anything else is an ordinary commitment."""
+def _topic(value: Any) -> str:
+    """The matter in at most six words, none with a digit in it (no figures, amounts or codes)."""
+    words = [word for word in str(value or "").split() if not any(ch.isdigit() for ch in word)]
+    return " ".join(words[:TOPIC_WORDS])
+
+
+def _minutes(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return None
+    return minutes if 0 < minutes <= MAX_CADENCE_MINUTES else None
+
+
+def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Optional[Dict[str, Any]]:
+    """Case 3 and case 4 metadata as stored: a notice needs its words and a check-in its recipient;
+    the topic keeps at most six words and none with a digit in it; the grant survives only on the
+    owner's own turn. A cadence (case 4) is the owner's alone and never carries a grant: from anyone
+    else's turn, or without a recipient or a whole number of minutes, it is None (nothing is
+    recorded). Anything else is an ordinary commitment."""
     kind = metadata.get("kind")
-    if kind not in MESSAGE_KINDS:
+    if kind not in (*MESSAGE_KINDS, CADENCE_KIND):
         return metadata
     cleaned = {key: value for key, value in metadata.items() if key not in MESSAGE_FIELDS}
     recipient = " ".join(str(metadata.get("recipient") or "").split())[:120]
+    if kind == CADENCE_KIND:
+        minutes = _minutes(metadata.get("cadence_minutes"))
+        if not owner_turn or not recipient or minutes is None:
+            return None
+        cleaned.update(kind=CADENCE_KIND, recipient=recipient, topic=_topic(metadata.get("topic")),
+                       cadence_minutes=minutes)
+        return cleaned
     if not recipient:
         return cleaned
     if kind == "notice":
@@ -422,8 +464,7 @@ def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Dict[str,
             return cleaned
         cleaned.update(kind="notice", recipient=recipient, content=content[:1000])
     else:
-        words = [word for word in str(metadata.get("topic") or "").split() if not any(ch.isdigit() for ch in word)]
-        cleaned.update(kind="check_in", recipient=recipient, topic=" ".join(words[:TOPIC_WORDS]))
+        cleaned.update(kind="check_in", recipient=recipient, topic=_topic(metadata.get("topic")))
     if owner_turn and metadata.get("grant") == "owner":
         cleaned["grant"] = "owner"
     return cleaned
@@ -447,7 +488,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     (``expect``); a row that changed since is a ``conflict``, counted for the
     caller to rerun the extraction, and left as the newer writer left it.
     A message to a third party (case 3) is stored through ``message_metadata``:
-    the owner's grant only when ``person_id`` is ``owner_id``.
+    the owner's grant only when ``person_id`` is ``owner_id``; an owner's cadence (case 4)
+    only then, and never from anyone else's turn.
     """
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
     listed = list(existing[:OPEN_ITEMS_LISTED])
@@ -505,6 +547,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             skipped += 1
             continue
         metadata = message_metadata(dict(stated or {}), owner_turn=bool(owner_id) and person_id == owner_id)
+        if metadata is None:
+            ignored += 1       # a cadence only the owner sets, with whole minutes
+            continue
         for field in ("counterpart", "obligor"):
             value = str(item.get(field) or "").strip()[:120]
             if value:
@@ -875,7 +920,7 @@ def contact_aliases(contacts_provider):
     return lookup
 
 
-__all__ = ["ACTIONS", "BACKOFF_SECONDS", "CommitmentExtractor", "HOLD_RETRY_SECONDS", "ITEM_SCHEMA", "MAX_ATTEMPTS",
+__all__ = ["ACTIONS", "BACKOFF_SECONDS", "CADENCE_KIND", "CommitmentExtractor", "HOLD_RETRY_SECONDS", "ITEM_SCHEMA", "MAX_ATTEMPTS",
            "MESSAGE_KINDS", "OPEN_ITEMS_LISTED", "OUTPUT_BUDGET_TOKENS", "RESPONSE_SCHEMA", "SYSTEM", "TASK",
            "build_prompt", "contact_aliases", "enqueue", "erase_removed", "initialize", "message_metadata",
            "parse_items", "record_items"]
