@@ -1,9 +1,0 @@
-{
- "_comment": "The mechanism arm of mind-affect-1: full with the affect faculty off and the frozen stateless rule table on. mind.affect_rules does not exist yet (build plan M6), so the overlay reaches nothing and this arm runs as full-affect until it lands; full and full-affect are built-in profiles.",
- "full-affect-plus-rules": {
-  "plugin": true,
-  "full": true,
-  "minus_affect": true,
-  "overlay": {"PROTAGINE_MIND_AFFECT_RULES": "on"}
- }
-}
