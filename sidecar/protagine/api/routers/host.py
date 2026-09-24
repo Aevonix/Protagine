@@ -319,23 +319,6 @@ def _mind_section() -> str:
         return ""
 
 
-def _mind_person_section(contact_id: str) -> str:
-    """The mind's digest of this contact (nightly consolidation), or nothing.
-
-    Rendered in that contact's own turn only; the digest is built from the
-    contact's own person-scoped claims, so it carries nothing owner-only.
-    """
-    mind = _mind()
-    section = getattr(mind, "person_section", None)
-    if mind is None or not callable(section) or not getattr(mind, "enabled", False):
-        return ""
-    try:
-        return str(section(contact_id) or "")
-    except Exception:
-        logger.debug("mind person section unavailable", exc_info=True)
-        return ""
-
-
 def _mind_recall_query(query_text: str) -> str:
     """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
     mind = _mind()
@@ -2020,13 +2003,6 @@ async def context_assemble(
                     priority=90, citations=packet.source_refs or None))
         except Exception as exc:
             logger.warning("combined memory selection failed (%s)", type(exc).__name__)
-
-    # --- About this person: the mind's digest of this contact (M8), <= 600 chars ---
-    if _canonical_person_allowed and body.context and body.context.contact_id:
-        person_text = _mind_person_section(body.context.contact_id)
-        if person_text:
-            sections.append(ContextSection(
-                id="protagine-person", title="About this person", body=person_text[:600], priority=88))
 
     # --- Active Goals ---
     if _legacy_global_allowed and _goals_store is not None:

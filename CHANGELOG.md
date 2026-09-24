@@ -23,10 +23,12 @@ and the ask codes apply); when one side is corrected the concern resolves and
 a question not yet sent is withdrawn. Identical live claims fold into the
 earliest through one new nullable column, `source_claims.duplicate_of`, which
 the projection adds in place; erasing the canonical source brings the others
-back until the next night. A digest of what each recently active person has
-told the agent (at most six a night, 600 characters, citing only claims it
-was shown) reaches that person's own turns as the `protagine-person` context
-section and nobody else's, and each longer session gets an episode summary in
+back until the next night. A digest of what each recently active person
+other than the owner has told the agent (at most six a night, 600
+characters, citing only claims it was shown) is written into that contact's
+own record through the contact store's `set_digest` (the people milestone's
+`digest` / `digest_sources` columns; a store without them gets none, and no
+digest is kept anywhere else), and each longer session gets an episode summary in
 the ledger under its own contact, as the agent's row and never a claim. The
 mind's own rows (`session_id` `mind`, turn ids `mind:...`) are no longer read
 as the person's conversation, neither by the commitment extractor's "Recent

@@ -65,19 +65,22 @@ next night.
    surfacing as a second witness. Erasing the canonical claim's source un-marks its witnesses
    until the next night. Preferences, corrections with `value_parts`, derived claims, retracted
    and superseded rows are never touched. The column is added idempotently when the store opens.
-4. **Per-contact digests** (at most 6 calls). Contacts with a person-scoped turn in the last 7 days,
-   the owner first, read through `ContactStore.list()`; a contact whose live claim set is
-   unchanged (hash in `mind_state["digest.hash:<cid>"]`) is skipped. The model sees that person's
-   own live claims (at most 40, with their ids) and the previous digest and returns at most 600
-   characters plus the claim ids it rests on; unknown ids are dropped and a digest with no valid
-   source is rejected. The digest is written through a sink callable: by default
-   `mind_state["digest:<cid>"]` with the claim ids as its causes (the M5 contact model passes its
-   own writer and reader through the same seam, `digest_sink` and `digest_source`; the writer may
-   be async, the reader must be synchronous because the context path is).
-   `Mind.person_section(contact_id)` renders it, and only it, into that person's own turn context
-   as `About <contact id> (digest, <date>): <digest>`, at most 600 characters.
-5. **Episode summaries** (at most 8 calls). Sessions with at least 3 person-scoped turns in the last
-   24 hours, newest first, each summarised in at most 120 words and written by
+4. **Per-contact digests** (`mind.faculties.people`; at most 6 calls). A digest has one home, the
+   contact's own record (`digest`, `digest_sources`, the people milestone's columns), and one
+   writer path, the contact store's `set_digest(contact_id, text, sources)` (awaited when it is a
+   coroutine). A contact store without `set_digest` (the one before the people milestone) gets no
+   digest, and nothing is stored anywhere else. Candidates come from the store's public
+   `list()`: the contacts whose `last_interaction_at` (the host bumps it on every turn) is in the
+   last 7 days, newest first, never the owner (a digest serves the other people the agent talks
+   with). A contact whose stored `digest_sources` are exactly its live claim ids is skipped; a
+   template digest (`digest_sources: ["template"]`) is replaced. The model sees that person's own
+   live claims (at most 40, with their ids) and the previous digest and returns at most 600
+   characters of what the person has told the agent, plus the claim ids it rests on; unknown ids
+   are dropped and a digest with no valid source is rejected (and tried again the next night).
+   The mind renders no section of its own: the people milestone's `protagine-person` section
+   renders the contact's digest in that contact's turns.
+5. **Episode summaries** (at most 8 calls). Sessions with at least 3 person-scoped turns since the
+   last run (at least the last 24 hours, at most 7 days), newest first, each summarised in at most 120 words and written by
    `Autobiography.record(contact_id=...)` as the ledger row
    `mind:episode:<session>:<date>:episode_summary` under **that contact** (`session_id="mind"`,
    `scope="person"`, `derive_claims=False`): the person's later sessions recall it, and it never
@@ -110,7 +113,8 @@ in the row's `context.errors` and the next stage still runs. Calls are labelled 
 
 | Store | Key or row |
 |---|---|
-| `mind.db` `mind_state` | `consolidation.last` (text = local date); `digest:<cid>` (text, causes = claim ids), `digest.hash:<cid>`; `self.interests`, `self.strengths`, `self.recent`, `self.stances` (text = the section, causes = up to 5 cited ids) |
+| `mind.db` `mind_state` | `consolidation.last` (`updated_at` = the moment of the last run, text = its local date); `self.interests`, `self.strengths`, `self.recent`, `self.stances` (text = the section, causes = up to 5 cited ids) |
+| contact store | `digest`, `digest_sources` of each digested contact, through `set_digest` (only a store that has it) |
 | `mind.db` `concerns` | kind `question`, `dedup_key contradiction:*`, no task template |
 | `initiatives` (the audit log) | one `note/consolidation` row per night (`cost_tokens`, `context` = the night's record: counts, calls, tokens, rejected lines, errors); one `message` row per contradiction (`reach_out:contradiction`) |
 | ledger `turn_sources` | `mind:episode:<session>:<date>:episode_summary` under the episode's contact |

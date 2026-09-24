@@ -10,7 +10,10 @@ left in its stores, cheapest and most valuable first:
    and predicate with different values become one ``question`` concern
    (broadcast only, never a task) and exactly one question to the owner
 3. dedupe (no model): identical live scalar claims fold into the earliest
-4. per-contact digests: at most six a night, skipped while the claims are unchanged
+4. per-contact digests, written into the contact's own record through the contact
+   store (``set_digest``, the ``digest`` / ``digest_sources`` columns of the people
+   milestone): at most six a night, the contacts talked with in the last seven
+   days, never the owner, skipped while the stored sources are the live claims
 5. episode summaries: at most eight a night, written under the episode's contact
 
 Every input query excludes the mind's own rows (``SELF_TURN_SQL``): the
@@ -214,9 +217,7 @@ class Consolidation:
     def __init__(self, *, store: Any, ledger: Any, concerns: Any, mind_state: Any, contacts: Any, router: Any,
                  outbox: Any, autobiography: Any, request_message: Callable[..., Any], owner_id: str | None,
                  budgets: Any, tokens_allowed: Callable[[], bool], faculties: Mapping[str, bool], clock=None,
-                 expectations: Any = None, digest_sink: Callable[[str, str, List[str]], Any] | None = None,
-                 digest_source: Callable[[str], Optional[Mapping[str, Any]]] | None = None,
-                 stances: Callable[[], List[Dict[str, Any]]] | None = None, tz: Any = None,
+                 expectations: Any = None, stances: Callable[[], List[Dict[str, Any]]] | None = None, tz: Any = None,
                  quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None) -> None:
         self.store = store
         self.ledger = ledger
@@ -233,8 +234,6 @@ class Consolidation:
         self.faculties = faculties
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.expectations = expectations
-        self.digest_sink = digest_sink or self._default_digest_sink       # a contact store may pass its own writer
-        self.digest_source = digest_source or self._default_digest_source
         self.stances = stances or self._default_stances                    # an opinion store may pass its own reader
         self.cancel = cancel            # (row, reason): the mind's check-cancellation of a moot intention
         self.tz = tz or timezone.utc
@@ -790,70 +789,50 @@ class Consolidation:
 
     # -- stage 4: per-contact digests --------------------------------------------------------------
 
-    def _default_digest_sink(self, contact_id: str, text: str, sources: List[str]) -> None:
-        key = f"digest:{contact_id}"
-        self.mind_state.delete(key)
-        self.mind_state.set(key, text=text, causes=list(sources)[:20])
+    @staticmethod
+    def _field(record: Any, name: str) -> Any:
+        """A contact record's field, whether the store returns objects or mappings."""
+        if isinstance(record, Mapping):
+            return record.get(name)
+        return getattr(record, name, None)
 
-    def _default_digest_source(self, contact_id: str) -> Optional[Mapping[str, Any]]:
-        return self.mind_state.get(f"digest:{contact_id}")
-
-    async def _known_contacts(self) -> Optional[set[str]]:
+    async def _digest_candidates(self, now: datetime) -> List[Any]:
+        """The contacts talked with inside the window (the store's ``last_interaction_at``), newest first,
+        never the owner (a digest is rendered for the other people the agent talks with)."""
         lister = getattr(self.contacts, "list", None) if self.contacts is not None else None
         if not callable(lister):
-            return None
-        try:
-            rows = lister(limit=500)
-            if inspect.isawaitable(rows):
-                rows = await rows
-        except Exception as error:
-            logger.debug("contacts unavailable (%s)", type(error).__name__)
-            return None
-        ids = set()
-        for row in rows or []:
-            record = row.to_dict() if hasattr(row, "to_dict") else row
-            ident = getattr(row, "contact_id", None) or (record.get("contact_id") if isinstance(record, dict) else None)
-            if ident:
-                ids.add(str(ident))
-        return ids
-
-    async def _digest_candidates(self, now: datetime) -> List[str]:
-        since = (now - DIGEST_WINDOW).astimezone(timezone.utc).isoformat()
-        with self._conn() as conn:
-            rows = conn.execute(
-                f"SELECT s.contact_id, max(coalesce(s.occurred_at, s.ingested_at)) AS last_at FROM turn_sources s "
-                f"WHERE s.scope='person' AND {SELF_TURN_SQL} AND coalesce(s.occurred_at, s.ingested_at) >= ? "
-                f"GROUP BY s.contact_id ORDER BY last_at DESC", (since,)).fetchall()
-        recent = [str(row[0]) for row in rows if row[0]]
-        known = await self._known_contacts()
-        if known is not None:
-            recent = [cid for cid in recent if cid in known or cid == self.owner_id]
-        if self.owner_id in recent:
-            recent.remove(self.owner_id)
-            recent.insert(0, self.owner_id)
-        return recent[:DIGEST_CONTACTS_PER_NIGHT]
+            return []
+        rows = lister(limit=500)
+        if inspect.isawaitable(rows):
+            rows = await rows
+        since = now - DIGEST_WINDOW
+        recent = []
+        for record in rows or []:
+            cid = self._field(record, "contact_id")
+            last = _utc(self._field(record, "last_interaction_at"))
+            if cid and str(cid) != self.owner_id and last is not None and since <= last <= now:
+                recent.append((last, str(cid), record))
+        recent.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [record for _, _, record in recent[:DIGEST_CONTACTS_PER_NIGHT]]
 
     async def digests(self, night: Night, now: datetime) -> None:
+        """What each person has told the agent, in their own record: one writer, the contact store."""
+        writer = getattr(self.contacts, "set_digest", None) if self.contacts is not None else None
+        if not self.faculties.get("people", True) or not callable(writer):
+            return
         written = 0
-        for cid in await self._digest_candidates(now):
+        for record in await self._digest_candidates(now):
+            cid = str(self._field(record, "contact_id"))
             with self._conn() as conn:
                 claims = self._live_claims(conn, cid, now)[:DIGEST_CLAIMS]
             if not claims:
                 continue
             ids = sorted(str(c["id"]) for c in claims)
-            digest_hash = hashlib.sha256("\n".join(ids).encode()).hexdigest()
-            if ((self.mind_state.get(f"digest.hash:{cid}") or {}).get("text") or "") == digest_hash:
+            if sorted(str(ref) for ref in (self._field(record, "digest_sources") or [])) == ids:
                 night.count("digests_unchanged")
                 continue
-            previous = ""
-            try:
-                entry = self.digest_source(cid)
-                if inspect.isawaitable(entry):
-                    entry = await entry
-                previous = str((entry or {}).get("text") or "")
-            except Exception as error:
-                logger.debug("previous digest unavailable for %s (%s)", cid, type(error).__name__)
-            lines = [f"Person: {cid}" + (" (the owner)" if cid == self.owner_id else ""),
+            previous = _clean(self._field(record, "digest"), DIGEST_CHARS)
+            lines = [f"Person: {cid}",
                      "Their recorded statements (claim id | subject predicate: value | quote | observed):"]
             for claim in claims:
                 lines.append(f"{claim['id']} | {_clean(claim.get('subject'), 60)} {_clean(claim.get('predicate'), 60)}: "
@@ -873,10 +852,9 @@ class Consolidation:
             if not text or not sources:
                 night.count("digests_rejected")
                 continue
-            written_to = self.digest_sink(cid, text, sources)
-            if inspect.isawaitable(written_to):
-                await written_to
-            self.mind_state.set(f"digest.hash:{cid}", text=digest_hash, now=now)
+            result = writer(cid, text, sources)
+            if inspect.isawaitable(result):
+                await result
             written += 1
         night.counts["digests"] = written
 
@@ -978,29 +956,6 @@ class Consolidation:
         stamps = [stamp for stamp in stamps if stamp]
         return {"enabled": True, "text": text, "sections": sections, "cites": cites,
                 "updated_at": max(stamps) if stamps else None}
-
-    def person_section(self, contact_id: str) -> str:
-        """The person's digest for their own turn's context, at most ``DIGEST_CHARS`` characters."""
-        if not contact_id:
-            return ""
-        try:
-            entry = self.digest_source(str(contact_id))
-            if inspect.isawaitable(entry):
-                # The context path is synchronous; a reader for it must be too.
-                if hasattr(entry, "close"):
-                    entry.close()
-                logger.debug("digest source for %s is async; person section skipped", contact_id)
-                return ""
-            entry = entry or {}
-        except Exception as error:
-            logger.debug("digest unavailable for %s (%s)", contact_id, type(error).__name__)
-            return ""
-        text = _clean(entry.get("text"), DIGEST_CHARS)
-        if not text:
-            return ""
-        when = _utc(entry.get("updated_at"))
-        prefix = f"About {contact_id} (digest, {when.date().isoformat()}): " if when else f"About {contact_id}: "
-        return (prefix + text)[:DIGEST_CHARS]
 
 
 __all__ = ["CITE", "DIGEST_CHARS", "DIGEST_CONTACTS_PER_NIGHT", "EPISODES_PER_NIGHT", "EPISODE_MIN_TURNS", "LAST_KEY",

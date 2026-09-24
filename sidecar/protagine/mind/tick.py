@@ -661,12 +661,6 @@ class Mind:
         """The self-narrative the plugin renders once per session."""
         return self.consolidation.narrative(enabled=bool(self.enabled and self.faculties.get("self_narrative", True)))
 
-    def person_section(self, contact_id: str) -> str:
-        """The person's digest for their own turn's context, ``""`` when there is none."""
-        if not self.enabled or not self.faculties.get("consolidation", True):
-            return ""
-        return self.consolidation.person_section(contact_id)
-
     async def _reconsider(self, now: datetime) -> int:
         """Deferred intentions are re-decided every tick; a budget frees up, they proceed."""
         count = 0

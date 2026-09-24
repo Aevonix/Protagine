@@ -23,15 +23,14 @@ general self-improvement simply by recording a successful review.
   the measurement doctrine. Wire only when a real health/wearable source
   feeds the mind model.
 
-- **Memory consolidation in the benchmark**: the nightly consolidation runs once
-  per local date after 03:00 (or in the quiet window), and the memory family's
-  templates neither advance the clock nor tick before the probe, so its
-  `full-consolidation` arm cannot differ from `full` yet. Making it a real
-  contrast is a dated family amendment (an `advance_clock` past 03:00 and a
-  tick before the probe of each recall type); until then the consolidation
-  flag rule is not read from a memory run. The `semantic_recall` arm differs
-  from `full` only in a plan given an embedding endpoint
-  (`paired plan --embedding-config`).
+- **Memory consolidation in the benchmark**: the memory and self families cross
+  one night before the probe (amended 2026-09-24), so `full-consolidation` and
+  `full-self_narrative` can differ from `full`; no pilot has measured it yet. The
+  per-contact digest stage writes only into a contact store with the people
+  milestone's digest columns (`set_digest`), so on a store without them the
+  consolidation arm differs by the narrative, contradictions and episode
+  summaries alone. The `semantic_recall` arm differs from `full` only in a plan
+  given an embedding endpoint (`paired plan --embedding-config`).
 - **Recall reference numbers**: `benchmarks/source_recall/reference-results.json`
   still holds the three-arm run made before the harness moved from the graph
   shim to `collect_sources`/`select_memory`; re-freezing it needs one measured

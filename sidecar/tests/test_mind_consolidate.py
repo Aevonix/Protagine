@@ -82,19 +82,43 @@ class NightRouter:
         return SimpleNamespace(content=json.dumps(payload), usage={"total_tokens": self.tokens})
 
 
-class FakeContacts:
+class BaseContacts:
+    """The contact store's public surface as it is before M5: records with ``last_interaction_at``, which
+    the host bumps on every turn, and no digest columns."""
+
     def __init__(self, ids):
         self.ids = list(ids)
+        self.records = {cid: SimpleNamespace(contact_id=cid, last_interaction_at=None) for cid in self.ids}
+
+    def touch(self, contact_id, at):
+        if contact_id in self.records:
+            self.records[contact_id].last_interaction_at = at.isoformat()
 
     async def get(self, contact_id):
         return SimpleNamespace(contact_id=contact_id, to_dict=lambda: {"contact_id": contact_id, "interaction_allowed": True}) \
             if contact_id in self.ids else None
 
     async def list(self, limit=100, **_):
-        return [SimpleNamespace(contact_id=cid) for cid in self.ids[:limit]]
+        return [self.records[cid] for cid in self.ids[:limit]]
 
     async def get_handles(self, contact_id):
         return [SimpleNamespace(gateway="telegram", address=f"{contact_id}-handle", is_primary=True, verified=True)]
+
+
+class FakeContacts(BaseContacts):
+    """With M5's digest columns: ``set_digest`` (a coroutine, as M5's store has it) writes ``digest`` and
+    ``digest_sources`` on the contact's own record."""
+
+    def __init__(self, ids):
+        super().__init__(ids)
+        for record in self.records.values():
+            record.digest, record.digest_sources = None, []
+        self.writes = []
+
+    async def set_digest(self, contact_id, text, sources):
+        self.writes.append((contact_id, text, list(sources)))
+        record = self.records[contact_id]
+        record.digest, record.digest_sources = text, list(sources)
 
 
 class Fixture:
@@ -108,7 +132,7 @@ class Fixture:
         self.feedback = TypeFeedbackStore(str(tmp_path / "protagine-feedback.db"))
         self.expectations = ExpectationEngine(ExpectationStore(str(tmp_path / "protagine-expectations.db")))
         self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
-        self.contacts = FakeContacts([OWNER, CONTACT, "p-03"]) if contacts else None
+        self.contacts = FakeContacts([OWNER, CONTACT, "p-03"]) if contacts is True else (contacts or None)
         self.config = {"autonomy": autonomy, **(config or {})}
         self.router = NightRouter() if router is None else router
         self.timezone_name = timezone_name
@@ -130,6 +154,7 @@ class Fixture:
         self.now += timedelta(**delta)
 
     def turn(self, turn_id, contact_id, session_id, user, assistant="Noted.", *, at=None) -> None:
+        self.interaction(contact_id, at)
         self.ledger.record_source(turn_id, contact_id=contact_id, session_id=session_id, messages=[
             {"role": "user", "content": user}, {"role": "assistant", "content": assistant}],
             occurred_at=(at or self.now).isoformat())
@@ -137,6 +162,7 @@ class Fixture:
     async def fact(self, turn_id, contact_id, session_id, text, value, *, predicate="office_location",
                    subject="I", memory_kind="personal_context", at=None, dated=True, **extra) -> str:
         """One turn whose user message asserts one claim, through the real projection."""
+        self.interaction(contact_id, at)
         self.ledger.record_source(turn_id, contact_id=contact_id, session_id=session_id, messages=[
             {"role": "user", "content": text}, {"role": "assistant", "content": "Noted."}],
             occurred_at=(at or self.now).isoformat() if dated else None)
@@ -145,6 +171,11 @@ class Fixture:
             text, value, subject=subject, predicate=predicate, memory_kind=memory_kind, **extra)}))
         with closing(self.ledger._connect()) as conn:
             return conn.execute("SELECT id FROM source_claims WHERE turn_id=?", (turn_id,)).fetchone()[0]
+
+    def interaction(self, contact_id, at=None) -> None:
+        """What the host's turn path does: the contact's ``last_interaction_at`` follows every turn."""
+        if hasattr(self.contacts, "touch"):
+            self.contacts.touch(contact_id, at or self.now)
 
     def claims(self):
         with closing(self.ledger._connect()) as conn:
@@ -174,78 +205,79 @@ def fx(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 1. A fact from one session and channel serves another; the digest cites it
+# 1. A fact from one session and channel serves another; the contact's digest cites it
 # ---------------------------------------------------------------------------
 
-async def test_a_fact_crosses_sessions_and_the_owner_digest_cites_its_claim(fx):
-    claim_id = await fx.fact("turn-a", OWNER, "telegram-1", "My office is room 4.", "room 4")
-    shown = fx.assertions("office", session_id="discord-2")
+async def test_a_fact_crosses_sessions_and_the_contacts_digest_cites_its_claim(fx):
+    claim_id = await fx.fact("turn-a", CONTACT, "telegram-1", "My office is room 4.", "room 4")
+    shown = fx.assertions("office", session_id="discord-2", contact_id=CONTACT)
     assert any(bundle["status"] == "source_assertion" and any(a["value"] == "room 4" for a in bundle["assertions"])
                for bundle in shown)
 
     night = await fx.mind.consolidate()
     assert night["counts"]["digests"] == 1 and night["calls"] >= 1 and night["errors"] == []
-    digest = fx.mind.mind_state.get(f"digest:{OWNER}")
-    assert claim_id in digest["causes"] and "room 4" in digest["text"] and len(digest["text"]) <= 600
-    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}")["text"]
-    section = fx.mind.person_section(OWNER)
-    assert section.startswith(f"About {OWNER} (digest, {fx.now.date().isoformat()}): ")
-    assert "room 4" in section and len(section) <= 600
-    assert fx.mind.person_section(CONTACT) == ""                       # nothing recorded about p-02
-    # The same claims the next night: no second digest call.
+    record = fx.contacts.records[CONTACT]
+    assert fx.contacts.writes == [(CONTACT, record.digest, [claim_id])]         # through the store, awaited
+    assert "room 4" in record.digest and len(record.digest) <= 600 and record.digest_sources == [claim_id]
+    assert fx.mind.mind_state.items("digest") == []                             # one home: the contact record
+    assert not hasattr(fx.mind, "person_section")                               # M5's section renders it
+    # The same claims the next night: the stored sources match, no second digest call.
     again = await fx.mind.consolidate()
     assert again["counts"].get("digests_unchanged") == 1 and fx.router.tasks().count(TASK_DIGEST) == 1
 
 
-async def test_digests_are_written_through_the_sink_and_read_back_for_the_person(fx):
-    """A contact store (M5's contact model) passes its own writer; consolidation itself only calls the sink."""
-    written = []
-    fx.mind.consolidation.digest_sink = lambda cid, text, sources: written.append((cid, text, list(sources)))
-    claim_id = await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
-    await fx.mind.consolidate()
-    assert written == [(OWNER, written[0][1], [claim_id])] and "room 4" in written[0][1]
-    assert fx.mind.mind_state.get(f"digest:{OWNER}") is None            # the default store was not used
-    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}")["text"]      # the skip marker still is
-
-
-async def test_an_async_digest_sink_and_source_are_awaited(fx):
-    """A contact store may be async; its writer and reader are awaited, never left as coroutines."""
-    stored = {}
-
-    async def sink(cid, text, sources):
-        stored[cid] = {"text": text, "causes": list(sources), "updated_at": fx.now.isoformat()}
-
-    async def source(cid):
-        return stored.get(cid)
-
-    fx.mind.consolidation.digest_sink, fx.mind.consolidation.digest_source = sink, source
-    claim_id = await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
+async def test_digests_go_to_recent_contacts_newest_first_at_most_six_and_never_the_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    people = [f"p-{number}" for number in range(10, 19)]
+    fx = Fixture(tmp_path, contacts=FakeContacts([OWNER, *people]))
+    await fx.fact("turn-owner", OWNER, "s-owner", "My office is room 1.", "room 1")
+    for hours, cid in enumerate(people):
+        await fx.fact(f"turn-{cid}", cid, f"s-{cid}", f"My office is room {hours}.", f"room {hours}",
+                      at=fx.now - timedelta(hours=hours))
+    fx.contacts.records["p-11"].last_interaction_at = (fx.now - timedelta(days=8)).isoformat()   # out of the window
     night = await fx.mind.consolidate()
-    assert night["counts"]["digests"] == 1 and stored[OWNER]["causes"] == [claim_id]
-    await fx.fact("turn-b", OWNER, "s-2", "My desk is by the window.", "by the window", predicate="desk_location")
+    assert [cid for cid, _, _ in fx.contacts.writes] == ["p-10", "p-12", "p-13", "p-14", "p-15", "p-16"]
+    assert night["counts"]["digests"] == 6 and fx.contacts.records[OWNER].digest is None
+    fx.store.close()
+
+
+async def test_no_digest_is_written_without_a_contact_store_that_keeps_one(tmp_path, monkeypatch):
+    """The contact store before M5 has no digest columns: the stage writes nothing, anywhere."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, contacts=BaseContacts([OWNER, CONTACT]))
+    await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
+    night = await fx.mind.consolidate()
+    assert TASK_DIGEST not in fx.router.tasks() and night["counts"].get("digests", 0) == 0
+    assert fx.mind.mind_state.items("digest") == [] and night["errors"] == []
+    fx.store.close()
+
+
+async def test_the_people_flag_off_skips_the_digest_stage(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"faculties": {"people": False}})
+    await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
+    night = await fx.mind.consolidate()
+    assert TASK_DIGEST not in fx.router.tasks() and fx.contacts.writes == [] and "digests" in night["done"]
+    fx.store.close()
+
+
+async def test_the_previous_digest_is_read_from_the_contact_and_a_template_one_is_replaced(fx):
+    record = fx.contacts.records[CONTACT]
+    record.digest, record.digest_sources = "p-02: a colleague, last talked on Monday.", ["template"]
+    claim_id = await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
     await fx.mind.consolidate()
     prompt = [m for m, c in fx.router.calls if c["task"] == TASK_DIGEST][-1][-1]["content"]
-    assert "They told me about their office: room 4." in prompt           # the previous digest, read back
+    assert "p-02: a colleague, last talked on Monday." in prompt              # the previous digest, read back
+    assert record.digest_sources == [claim_id] and "room 4" in record.digest
 
 
 async def test_a_digest_with_unknown_or_no_sources_is_rejected(fx):
-    await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
+    await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
     fx.router.answers[TASK_DIGEST] = {"digest": "Made up.", "sources": ["claim:" + "0" * 64]}
     night = await fx.mind.consolidate()
-    assert night["counts"].get("digests_rejected") == 1 and fx.mind.mind_state.get(f"digest:{OWNER}") is None
-    assert fx.mind.mind_state.get(f"digest.hash:{OWNER}") is None      # so the next night tries again
-
-
-async def test_person_section_is_empty_when_consolidation_is_off_or_the_mind_is_off(tmp_path, monkeypatch):
-    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fx = Fixture(tmp_path)
-    fx.mind.mind_state.set(f"digest:{OWNER}", text="They like short answers.", causes=["claim:" + "a" * 64])
-    assert "short answers" in fx.mind.person_section(OWNER)
-    fx.mind.off()
-    assert fx.mind.person_section(OWNER) == ""
-    off = Fixture(tmp_path / "off", config={"faculties": {"consolidation": False}})
-    off.mind.mind_state.set(f"digest:{OWNER}", text="They like short answers.", causes=[])
-    assert off.mind.person_section(OWNER) == ""
+    assert night["counts"].get("digests_rejected") == 1 and fx.contacts.writes == []
+    await fx.mind.consolidate()                                                 # nothing stored: tried again
+    assert fx.router.tasks().count(TASK_DIGEST) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +834,7 @@ async def test_the_night_stops_at_its_share_of_the_day_budget_and_charges_real_u
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     fx = Fixture(tmp_path, config={"budgets": {"learn_share": 0.01}}, router=NightRouter(tokens=1500))
     settled_task(fx)                                                        # one narrative call
-    await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")   # one digest call wanted
+    await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")  # one digest call wanted
     for index in range(4):                                                  # one episode call wanted
         fx.turn(f"e-{index}", CONTACT, "sms-1", f"Question {index} about the slides", "Answer.")
     night = await fx.mind.consolidate()
