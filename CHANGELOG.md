@@ -1,5 +1,86 @@
 # Changelog
 
+## Unreleased - people
+
+The mind now knows who people are and reaches out to them itself (build plan
+M5, architecture 4.7). Every sender becomes a contact the first time they
+write: the resolver ladder tries the exact transport handle, then the one
+phone identity an E.164 address has on any gateway (C1: `sms:+1555...`,
+`whatsapp:+1555...` and a custom phone app are one person; a bare digit
+string such as a numeric user id matches only on its own gateway), then
+makes a shadow contact at `may_contact: ask`, and a sender whose name only
+suggests a known person is linked when the owner says so, through an ask.
+`contacts.may_contact` (`never | ask | auto`, migration 006, one transaction)
+replaces `interaction_allowed` and the tier defaults: the owner raises it
+through `protagine_people set_permission` or `protagine people permit`, and
+a contact's opt-out only lowers it, from a phrase match on their own words (a
+bare STOP, also behind a gateway's timestamp or sender header, "don't text
+me", "stop the check-ins" and close variants, anchored so "don't text me the
+file, email it" is not one) or the appraisal call's `opt_out` flag; the
+owner's daily digest lists the opt-outs. `store.merge` (C2) folds one record
+into another with its history: handles and ledger sources move through
+identity receipts, the comms log, contact affect and the dropped record's
+commitments (and every owner's message addressed to it) follow, group
+memberships move, recency and counts fold once even when two merges race, and
+a stopped merge can run again. Conversations are counted with a 30-minute
+gap (C3), which is what a tier-only contact's estimated cadence is made of.
+
+The social drive checks in with a contact that has an owner-set cadence or a
+tier of `regular` or above, due one cadence after the last conversation or
+send. Silence backs it off (the cooldown doubles per ignored check-in, up to
+four cadences), a reply resets it, and a declining mood in the contact's own
+turns holds it; replies and silence only order check-ins and never switch a
+contact off. An owner can set a cadence and its matter in conversation ("check
+on p-09 every week about the kitchen quote"): capture records it, the tick
+sets the cadence once and every check-in to that contact carries the matter,
+and permission stays the contact's own. The message is composed in one
+tool-less call (`P/mind/compose.py`) from an enumerated purpose, the
+contact's name, the topic and that contact's own context packet, never the
+concern, its evidence or an owner turn, and only when the budgets would let
+it go now; the text then passes the floor and the deny list. A message the
+owner wants a named contact to receive ("if p-05 has not confirmed by 5,
+tell them the booking lapses", or "tell p-05 the meeting moved" for now) is
+a notice with the owner's own words or a check-in around the matter; the
+owner's grant counts as `auto` for that recipient only, never over `never`,
+and only when the owner identified them exactly, while a name the store
+matched becomes an owner ask. Each contact talked with in the last day gets
+a template digest, shown to that person as "About this person" (at most 600
+characters) and read by the composer; it never carries what the owner set
+for them. The owner's surface is the `protagine_people` tool (who, inspect
+and link proposals for everyone; permission, cadence and merge for the owner)
+and `protagine people`, over `/v1/mind/people`. With
+`mind.faculties.people: false` all of this goes and nothing older:
+`may_contact`, opt-outs and shadow contacts stay.
+
+A guest's context is contact-scoped by construction and fails closed: only
+the owner, identified by the key, gets anything else. The digest and the
+recipient packet read only claims from the contact's own sources, so an owner
+turn about a contact reaches neither.
+
+Deleted, with their tests, routes, switches and docs: ToM2 and P8
+(visibility, arcs, the recipient audit and simulator, exposure, eligibility,
+levels), the ToM extractor, engagement and the environment-risk scorer, the
+`intelligence/relationships/` package with its second tier vocabulary,
+`delivery/` whole (its rate limiter had no caller; the back-off is the
+social drive's), `identity_bootstrap/`, the conversation presence census,
+owner-verified provisioning and the contact-policy routes, the unused
+`IdentityResolver`, the legacy `/contacts/merge` and `/contacts/{id}/handles`
+routes, the group auto-promotion switch nothing consumed, and the memory
+provider's `protagine_record_affect` tool. `protagine upgrade` backs up and
+retires their databases and the contact store's unread tables. The sidecar
+goes from 137,540 to 125,728 lines of Python; the milestone deletes 24,157
+lines and adds about 9,000, over half of them tests.
+
+The paired benchmark's people family runs on the same code: the plugin arm
+seeds its contact store from `contacts.json` and stamps it on the body clock,
+an inbound session carries its sender, every arm gets one `send_message`
+path to contacts (`paired-outbound-1`), and the served Mind has the people
+routes and reads. A no-model walk of the family's dev split through the
+arm's code passes every scenario with the right behaviour, and fails exactly
+the four templates the faculty carries in `full-people`. See
+[docs/RELATIONSHIPS.md](docs/RELATIONSHIPS.md) and
+[docs/MIND.md](docs/MIND.md).
+
 ## Unreleased - evaluation families for the M4 to M9 gates
 
 The pre-registered evaluation families of the proto-AGI plan land as seeded
