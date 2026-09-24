@@ -1111,10 +1111,13 @@ class Mind:
                     continue
                 steps_done = self.goals.summaries(goal)
             failing = self.feelings.failing(candidate.topic or concern.summary)
+            pitfalls = list(failing.pitfalls) if failing else []
+            lesson_lines, lesson_ids = self.lessons.for_task(candidate) if candidate.kind == "task" else ([], [])
+            candidate.lesson_ids = lesson_ids
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
                                                   may_adopt_goal=may_adopt, steps_done=steps_done,
-                                                  lessons=failing.pitfalls if failing else (), failing=failing,
-                                                  tried=view.tried if view is not None else ())
+                                                  lessons=[*lesson_lines, *[p for p in pitfalls if p not in lesson_lines]][:2],
+                                                  failing=failing, tried=view.tried if view is not None else ())
             if shaped.open_ended and not shaped.text:
                 continue  # the tick's one call is spent; the concern waits for the next tick
             if shaped.kind == "goal":
@@ -1285,6 +1288,12 @@ class Mind:
                 if lines:
                     context["body"] = f"{context['body']}\n\n{lines}".strip()
                     context["opinion_ids"] = ids
+            if candidate.kind == "task":
+                lesson_lines, lesson_ids = self._task_lessons(candidate)
+                if lesson_ids:
+                    context["body"] = (f"{context['body']}\n\nLessons from verified results:\n"
+                                       + "\n".join(lesson_lines)).strip()
+                    context["lesson_ids"] = lesson_ids
             context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
             context["max_retries"] = self.policy.budgets.task_max_retries
             if candidate.parent_goal_id:
@@ -1303,6 +1312,8 @@ class Mind:
         if created != "created":
             return None
         extra: Dict[str, Any] = {}
+        if context.get("lesson_ids"):
+            extra["lesson_ids"] = list(context["lesson_ids"])
         if candidate.parent_goal_id:
             extra["parent_goal_id"] = candidate.parent_goal_id
         if candidate.dedup_base:
@@ -1315,6 +1326,17 @@ class Mind:
         if candidate.grant == "owner" and stored == "never" and verdict.decision == "drop":
             await self._refuse_grant(candidate)
         return updated
+
+    def _task_lessons(self, candidate: Candidate) -> tuple[List[str], List[str]]:
+        """The lessons a task body carries: the ones deliberation was given (``candidate.lesson_ids``),
+        or the lessons for the task when it did not pass through ``_act``; nothing with lessons off."""
+        if not self.lessons.enabled:
+            return [], []
+        if candidate.lesson_ids:
+            chosen = [lesson for lesson in (self.lessons.get(ident) for ident in candidate.lesson_ids)
+                      if lesson is not None and lesson.status in {"active", "candidate"}]
+            return [lesson.line() for lesson in chosen], [lesson.id for lesson in chosen]
+        return self.lessons.for_task(candidate)
 
     @staticmethod
     def _purpose(purpose: str | None) -> str:

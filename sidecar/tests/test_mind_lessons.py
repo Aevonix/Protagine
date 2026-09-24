@@ -21,7 +21,7 @@ from protagine.mind.lessons import Lesson
 from test_mind_loop import OWNER, Fixture
 
 ROOMY = {"breaker": {"failures": 50}, "budgets": {"tasks_per_hour": 50, "concurrent_tasks": 50}}
-FIELDS = {"signature": "topic:order-codes", "kind": "strategy", "title": "Order codes follow the channel rule",
+FIELDS = {"signature": "topic:order-codes", "kind": "strategy", "title": "Order codes by channel",
           "when_to_use": "an order code is asked for", "content": "Start with the channel letter, then the digits."}
 
 
@@ -202,3 +202,184 @@ def test_lesson_stats_count_by_status_source_and_use(fx):
     assert stats["admitted_by_source"] == {"owner": 1, "none": 1}
     assert stats["uses"] == 1 and stats["wins"] == 1 and stats["losses"] == 0 and stats["use_rate"] == 1.0
     assert lessons_module.TALLY_WINDOW == timedelta(days=90)
+
+
+# -- use: task bodies, deliberation and the owner's turn ------------------------------------------
+
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+
+from protagine.api.middleware import ApiKeyMiddleware  # noqa: E402
+from protagine.mind.drives import slug  # noqa: E402
+from protagine.mind.rank import Candidate  # noqa: E402
+from onekey import AUTH, KEY  # noqa: E402
+from test_turn_source_evidence import source_app  # noqa: E402,F401  (pytest fixture)
+
+TOPIC = "order codes"
+SIGNATURE = f"research:{slug(TOPIC)}"
+GUEST = "p-02"
+
+
+def candidate(n, topic=TOPIC, **extra):
+    return Candidate(type="research", drive="curiosity", kind="task", title=f"Research {topic}",
+                     dedup_key=f"research:{slug(topic)}:{n}", salience=0.9, cost=0.1,
+                     text=f"Work out the {topic} for the new batch.", topic=topic, concern=f"research {topic}",
+                     evidence=[f"interest:{slug(topic)}"], **extra)
+
+
+def fields(signature=SIGNATURE, **extra):
+    return {**FIELDS, "signature": signature, **extra}
+
+
+async def test_a_task_body_carries_at_most_two_lessons_and_logs_lesson_ids(fx):
+    first = admit(fx, fields=fields(), lineage=())
+    pitfall = admit(fx, fields=fields(kind="pitfall", content="Never use Z as the channel letter."), lineage=())
+    related = admit(fx, fields=fields(signature="topic:crate-labels", title="Crate labels list the batch",
+                                      when_to_use="crate labels are printed for a batch",
+                                      content="Put the batch number first on every crate label."), lineage=())
+    row = await fx.mind._form(candidate(1), 0.9, fx.now)
+    ids = json.loads(row.lesson_ids)
+    assert len(ids) == 2 and set(ids) == {first.id, pitfall.id}         # its own class first, at most two
+    assert row.context["lesson_ids"] == ids
+    body = row.context["body"]
+    assert body.startswith("Work out the order codes for the new batch.")
+    assert f"[lesson {first.id}, strategy]" in body and f"[lesson {pitfall.id}, pitfall]" in body
+    assert f"[lesson {related.id}" not in body
+    assert row.context["plan_body"] == "Work out the order codes for the new batch."   # the plan hash is unchanged
+    [sent] = [item for item in fx.mind.dispatch() if item["id"] == row.id]
+    assert f"[lesson {first.id}, strategy]" in sent["body"]
+    # Work of another class gets only an active lesson whose title and use match it.
+    other = await fx.mind._form(candidate(2, topic="batch crate labels"), 0.9, fx.now)
+    assert json.loads(other.lesson_ids) == [related.id]
+    unrelated = await fx.mind._form(candidate(3, topic="tide tables"), 0.9, fx.now)
+    assert unrelated.lesson_ids is None and "[lesson" not in unrelated.context["body"]
+
+
+async def test_deliberation_is_given_the_lessons_of_the_concern(fx):
+    lesson = admit(fx, fields=fields(), lineage=())
+    seen = []
+
+    async def form(concern, shaped, **kwargs):
+        seen.append(list(kwargs.get("lessons") or []))
+        return shaped
+    fx.mind.deliberation.form = form
+    fx.mind.concerns.bump(drive="curiosity", kind="interest", summary=f"research {TOPIC}",
+                          dedup_key=candidate(1).dedup_key, salience=0.95, sources=[], detail=candidate(1).as_detail())
+    formed, _ = await fx.mind._act(fx.now)
+    assert seen and seen[0] == [lesson.line()]
+    [row] = [fx.store.get(item["id"]) for item in formed]
+    assert json.loads(row.lesson_ids) == [lesson.id]
+
+
+async def test_candidate_lessons_reach_only_task_bodies_of_their_own_class(fx):
+    trial = admit(fx, fields=fields(), status="candidate", verified="none", origin="reflector", lineage=())
+    own = await fx.mind._form(candidate(1), 0.9, fx.now)
+    assert json.loads(own.lesson_ids) == [trial.id]
+    # Not by relevance to other work, and never in a turn.
+    other = await fx.mind._form(candidate(2, topic="batch order codes"), 0.9, fx.now)
+    assert other.lesson_ids is None
+    assert fx.mind.lessons.for_turn("what is the order code for this order", session_id="day-04") == ("", [])
+
+
+def test_a_lesson_used_in_a_session_is_logged_once(fx):
+    lesson = admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
+    query = "Order 4411 came in by chat; I need its order code."
+    text, ids = fx.mind.lessons.for_turn(query, session_id="day-04")
+    assert ids == [lesson.id] and text.startswith(f"[lesson {lesson.id}, from the owner's verdicts] When ")
+    assert text.endswith("Apply it only when the request matches; the owner's word in this conversation comes first.")
+    assert len(text) <= 420
+    fx.mind.lessons.for_turn(query + " Quickly please.", session_id="day-04")
+    fx.mind.lessons.for_turn(query, session_id="day-05")
+    fx.mind.lessons.for_turn(query, session_id="mind:p-02")            # a recipient packet is never a use
+    fx.mind.lessons.for_turn(query, session_id="day-06", record=False)
+    notes = [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
+    assert sorted(row.source_id for row in notes) == ["day-04", "day-05"]
+    assert all(json.loads(row.lesson_ids) == [lesson.id] and row.outcome is None and row.status == "done"
+               for row in notes)
+    # A use note is not an action and not a done outcome in the audit stats.
+    stats = fx.mind.stats()
+    assert stats["acted"] == 0 and stats["verified_share"] is None
+
+
+def test_an_unrelated_turn_gets_no_lesson(fx):
+    admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
+    assert fx.mind.lessons.for_turn("What time is the ferry on Friday?", session_id="day-04") == ("", [])
+    assert fx.mind.lessons.for_turn("Tell me about codes.", session_id="day-04") == ("", [])   # one shared term
+    assert not [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
+
+
+def test_lessons_off_hides_every_lesson_output_and_keeps_the_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fixture = Fixture(tmp_path, config={**ROOMY, "faculties": {"lessons": False}})
+    try:
+        lesson = admit(fixture, fields=fields(), lineage=())
+        assert fixture.mind.lessons.enabled is False and fixture.mind.lessons.all() == [lesson]
+        assert fixture.mind.lessons.for_task(candidate(1)) == ([], [])
+        assert fixture.mind.lessons.for_turn("I need the order code for order 4411.", session_id="day-04") == ("", [])
+        import asyncio
+        row = asyncio.run(fixture.mind._form(candidate(1), 0.9, fixture.now))
+        assert row.lesson_ids is None and "[lesson" not in row.context["body"]
+        assert not [item for item in fixture.store.intentions(kind=["note"], limit=50) if item.type == "lesson_use"]
+        # Turned back on, the stored lesson is there again.
+        fixture.config["faculties"]["lessons"] = True
+        mind = fixture.restart()
+        assert mind.lessons.for_task(candidate(2))[1] == [lesson.id]
+    finally:
+        fixture.store.close()
+
+
+@pytest.fixture
+def served(source_app, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fixture = Fixture(tmp_path, config=ROOMY)
+    source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
+    mind_router.set_mind(fixture.mind)
+    try:
+        yield source_app, fixture
+    finally:
+        mind_router.set_mind(None)
+        fixture.store.close()
+
+
+async def sections(app, contact, query, session=None):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/v1/host/context/assemble", headers=AUTH, json={
+            "identity": {"host_id": "fixture"},
+            "context": {"contact_id": contact, "session_id": session or f"later-{contact}"},
+            "incoming_message": {"role": "user", "content": query}})
+    assert response.status_code == 200, response.text
+    return {section["id"]: section for section in response.json()["sections"]}
+
+
+async def test_the_owner_turn_gets_one_relevant_active_lesson_and_a_guest_none(served):
+    app, fx = served
+    lesson = admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
+    admit(fx, fields=fields(signature="topic:order-codes-2", title="Order codes use the contact digits",
+                            content="End with the two digits of the contact id."), lineage=())
+    query = "Order 4411 came in from p-07 by chat. I need its order code."
+    owner = await sections(app, OWNER, query, session="day-04")
+    section = owner["protagine-lessons"]
+    assert section["title"] == "What you learned" and section["priority"] == 86
+    assert section["body"].count("[lesson ") == 1 and len(section["body"]) <= 420
+    assert f"[lesson {lesson.id}," in section["body"]
+    guest = await sections(app, GUEST, query, session="day-04")
+    assert "protagine-lessons" not in guest
+    assert all("[lesson " not in item["body"] for item in guest.values())
+    notes = [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
+    assert [row.source_id for row in notes] == ["day-04"]
+    # The mind off, or the faculty off: no section.
+    fx.mind.off(reason="test")
+    assert "protagine-lessons" not in await sections(app, OWNER, query, session="day-05")
+    fx.mind.on()
+    fx.mind.lessons.enabled = False
+    assert "protagine-lessons" not in await sections(app, OWNER, query, session="day-05")
+
+
+async def test_a_recipient_packet_never_carries_a_lesson(served):
+    from protagine.api.routers import host
+    app, fx = served
+    admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
+    packet = await host.assemble_packet(OWNER, query="I need the order code for order 4411.", limit_chars=20000)
+    assert "[lesson " not in packet
+    packet = await host.assemble_packet(GUEST, query="I need the order code for order 4411.", limit_chars=20000)
+    assert "[lesson " not in packet
+    assert not [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]

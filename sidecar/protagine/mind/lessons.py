@@ -89,6 +89,39 @@ def lesson_ids_of(row: Any) -> List[str]:
     return [str(item) for item in value if str(item)] if isinstance(value, list) else []
 
 
+def terms(text: Any) -> set:
+    """The words relevance compares: recall's tokens (stop words and words of two letters out) with a
+    trailing plural ``s`` folded, so "codes" meets "code"."""
+    from protagine.self_model.judgments import _terms
+    return {word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+            for word in _terms(text)}
+
+
+def relevance(lesson: "Lesson", text: Any) -> Tuple[int, float]:
+    """(shared terms, the share of the lesson's title and when-to-use terms the text holds)."""
+    mine = terms(f"{lesson.title} {lesson.when_to_use}")
+    if not mine:
+        return 0, 0.0
+    shared = len(mine & terms(text))
+    return shared, shared / len(mine)
+
+
+def relevant(lesson: "Lesson", text: Any) -> bool:
+    shared, share = relevance(lesson, text)
+    return shared >= MIN_SHARED and share >= RELEVANCE
+
+
+def task_signature(candidate: Any) -> str:
+    """The failure class of a candidate task, as ``drives.failure_signature`` names a failed row of it;
+    a mastery investigation names the class it investigates (``source_type='failure_signature'``)."""
+    from .drives import failure_signature
+    if getattr(candidate, "source_type", None) == "failure_signature" and getattr(candidate, "source_id", None):
+        return str(candidate.source_id)
+    return failure_signature({"type": getattr(candidate, "type", None), "description": getattr(candidate, "title", ""),
+                              "context": {"topic": getattr(candidate, "topic", ""),
+                                          "concern": getattr(candidate, "concern", "")}})
+
+
 def check_kind(row: Any) -> str:
     check = _json(getattr(row, "success_check", None), None)
     return str(check.get("kind") or "") if isinstance(check, dict) else ""
@@ -265,6 +298,58 @@ class Lessons:
                                   scope="session", lesson_id=ident, reason=_clean(reason, 200), by=by)
         return self.get(ident)
 
+    # -- use ----------------------------------------------------------------------------------
+
+    def for_task(self, candidate: Any) -> Tuple[List[str], List[str]]:
+        """At most ``TASK_LESSONS`` lessons for a task body and its deliberation: the lessons of its own
+        class first (active, then candidate: a candidate is tried only in its class), then active
+        lessons whose title and use match the work. ``(lines, ids)``; nothing with the faculty off."""
+        if not self.enabled or not self.available:
+            return [], []
+        signature = task_signature(candidate)
+        lessons = self.all()
+        own = sorted((lesson for lesson in lessons if lesson.signature == signature),
+                     key=lambda lesson: lesson.status != "active")
+        text = " ".join(str(getattr(candidate, name, "") or "") for name in ("title", "topic", "concern"))
+        scored = [(relevance(lesson, text), lesson) for lesson in lessons
+                  if lesson.status == "active" and lesson.signature != signature and relevant(lesson, text)]
+        related = [lesson for _, lesson in sorted(scored, key=lambda item: (-item[0][1], -item[0][0]))]
+        chosen = [*own, *related][:TASK_LESSONS]
+        return [lesson.line() for lesson in chosen], [lesson.id for lesson in chosen]
+
+    def for_turn(self, query: Any, *, session_id: str, record: bool = True,
+                 now: datetime | None = None) -> Tuple[str, List[str]]:
+        """The one active lesson most relevant to an owner turn, rendered for its context, and the use
+        logged for the session (never for a recipient packet, whose session is ``mind:<contact>``)."""
+        if not self.enabled or not self.available or not str(query or "").strip():
+            return "", []
+        scored = [(relevance(lesson, query), lesson) for lesson in self.all()
+                  if lesson.status == "active" and relevant(lesson, query)]
+        if not scored:
+            return "", []
+        _, best = max(scored, key=lambda item: (item[0][1], item[0][0], item[1].admitted_at or ""))
+        session_id = str(session_id or "")
+        if record and session_id and not session_id.startswith("mind:"):
+            self.record_use(session_id=session_id, lesson_ids=[best.id], now=now)
+        return best.section(), [best.id]
+
+    def record_use(self, *, session_id: str, lesson_ids: Iterable[str], now: datetime | None = None) -> None:
+        """One ``lesson_use`` note per session and lesson: done, with no outcome (it is not an action),
+        scored later from the owner's verdict in that session."""
+        now = now or self.clock()
+        for ident in dict.fromkeys(str(item) for item in lesson_ids if str(item)):
+            try:
+                row, created = self.store.create_intention(
+                    kind="note", type=USE_TYPE, title=f"lesson {ident} in session {session_id}"[:160],
+                    drive="mastery", cls="internal", decision="act",
+                    decision_reason="a lesson in the owner's turn context", status="done",
+                    dedup_key=f"{USE_TYPE}:{session_id}:{ident}", hermes_kind="none", source_type="session",
+                    source_id=session_id, context={"lesson_id": ident, "session_id": session_id}, created_at=now)
+                if created == "created":
+                    self.store.update(row.id, lesson_ids=[ident])
+            except Exception as error:
+                logger.warning("lesson use not logged (%s)", type(error).__name__)
+
     # -- verification and uses -----------------------------------------------------------------
 
     def verified_source(self, row: Any) -> str:
@@ -377,4 +462,5 @@ class Lessons:
 
 __all__ = ["CURRENT", "EXTERNAL_CHECKS", "KINDS", "LINE_CHARS", "Lesson", "Lessons", "MIN_SHARED", "RELEVANCE",
            "RETIRE_RATE", "RETIRE_USES", "SECTION_CHARS", "STATUSES", "TALLY_WINDOW", "TASK_LESSONS",
-           "TURN_LESSONS", "VERIFYING_SOURCES", "lesson_id", "lesson_ids_of"]
+           "TURN_LESSONS", "VERIFYING_SOURCES", "lesson_id", "lesson_ids_of", "relevance", "relevant",
+           "task_signature", "terms"]
