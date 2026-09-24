@@ -45,9 +45,13 @@ next night.
    explains. Actions addressed to anyone but the owner and contradiction questions (they quote
    what people said) are left out; the plugin renders the narrative only in the owner's own
    sessions. Every line must cite ids from that evidence that also exist; a line that cites
-   anything else is dropped and counted in `rejected_lines`. A line whose cited row is later
-   pruned by retention disappears at the next render: the narrative moves only when the evidence
-   does. Lines end with their citations in square brackets. A citation is one of five kinds: a
+   anything else is dropped and counted in `rejected_lines`. A stored line lasts only while every
+   action it cites was formed in the last 7 days: an older one disappears at the next render, with
+   or without a night, so `recent` never presents stale activity. When the narrative is rendered,
+   each `recent` line is followed by where its cited actions stand now (their outcome, or `queued`,
+   `in progress`, `awaiting the owner`, `deferred` while they have none), so a line that claims more
+   than happened is read beside the log's own word. Lines end with their citations in square
+   brackets. A citation is one of five kinds: a
    plain intention id (the agent's own action), or a record reference `interest:<slug>`,
    `judgment:<revision id>`, `turn:<turn_id>` or `claim:<id>`; nothing else resolves.
 2. **Contradictions** (no model). The rule recall already applies: two live scalar claims about the

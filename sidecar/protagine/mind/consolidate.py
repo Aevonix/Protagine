@@ -535,15 +535,45 @@ class Consolidation:
             logger.debug("judgments unavailable (%s)", type(error).__name__)
             return []
 
-    def _validated_recent(self) -> List[Tuple[str, List[str]]]:
-        """The stored ``recent`` lines whose every citation still exists; the rest fall away."""
+    def _validated_recent(self, now: datetime) -> List[Tuple[str, List[str]]]:
+        """The stored ``recent`` lines whose every citation is still one of the agent's own actions of the
+        last ``RECENT_DAYS`` days; the rest fall away, at the next render, whether or not a night ran."""
         entry = self.mind_state.get("self.recent") or {}
+        since = now - timedelta(days=RECENT_DAYS)
         lines = []
         for raw in str(entry.get("text") or "").splitlines():
             text, cites = parse_line(raw)
-            if text and cites and all(self._ref_exists(ref) for ref in cites):
+            if text and cites and all(self._recent_action(ref, since) for ref in cites):
                 lines.append((text, cites))
         return lines[:SECTION_LINES["recent"]]
+
+    def _recent_action(self, ref: str, since: datetime) -> Any:
+        """The cited row when it is a narratable action created since ``since``, else None."""
+        if ":" in ref:
+            return None
+        row = self.store.get(ref)
+        created = row.created_at if row is not None and row.kind else None
+        if created is None:
+            return None
+        created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        return row if created >= since and self._narratable(audit.entry(row)) else None
+
+    STATES = {"approved": "queued", "dispatched": "in progress", "asked": "awaiting the owner",
+              "proposed": "deferred"}
+
+    def _stated(self, lines: List[Tuple[str, List[str]]]) -> List[Tuple[str, List[str]]]:
+        """Each ``recent`` line with where its cited actions stand now (their outcome, or their status while
+        they have none), so a line that claims more than happened is read beside the log's own word."""
+        stated = []
+        for text, cites in lines:
+            states = []
+            for ref in cites:
+                row = self.store.get(ref)
+                state = (row.outcome or self.STATES.get(row.status, row.status)) if row is not None else None
+                if state and state not in states:
+                    states.append(str(state))
+            stated.append((f"{text} ({', '.join(states)})" if states else text, cites))
+        return stated
 
     def _store_section(self, key: str, lines: List[Tuple[str, List[str]]], now: datetime) -> str:
         text = render_section(lines)
@@ -607,7 +637,7 @@ class Consolidation:
             return
         for name, lines in self.computed_sections(now).items():
             self._store_section(f"self.{name}", lines, now)
-        current = self._validated_recent()
+        current = self._validated_recent(now)
         evidence = self._evidence(now)
         if not evidence:
             self._store_section("self.recent", current, now)
@@ -913,7 +943,7 @@ class Consolidation:
         computed = self.computed_sections(now)
         sections = {"interests": render_section(computed["interests"]),
                     "strengths": render_section(computed["strengths"]),
-                    "recent": render_section(self._validated_recent()),
+                    "recent": render_section(self._stated(self._validated_recent(now))),
                     "stances": render_section(computed["stances"])}
         lines: List[str] = []
         for name in ("interests", "strengths", "recent", "stances"):

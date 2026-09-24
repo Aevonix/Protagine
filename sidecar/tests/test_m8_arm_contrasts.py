@@ -316,6 +316,7 @@ async def test_the_nightly_narrative_changes_what_the_self_probe_sees(harness):
             continue
         (kind, type_, reminder, decision, status), = full["actions"]
         assert (kind, type_, decision, status) == ("message", "commitment_reminder", "act", "approved"), ident
-        assert full["narrative"] == f"recent: I sent the owner the reminder they asked for [{reminder}]", ident
+        # The fake model claims "sent"; the render says where the row stands: queued for the body.
+        assert full["narrative"] == f"recent: I sent the owner the reminder they asked for (queued) [{reminder}]", ident
         ablated = views[(ident, "full-consolidation")]
         assert ablated["narrative"] == "" and [row[1] for row in ablated["actions"]] == ["commitment_reminder"], ident

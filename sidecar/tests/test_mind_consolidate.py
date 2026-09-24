@@ -582,6 +582,38 @@ async def test_only_the_agents_own_actions_are_evidence_for_recent(fx):
     assert night["rejected_lines"] == 2 and fx.mind.narrative()["sections"]["recent"].endswith(f"[{row.id}]")
 
 
+async def test_recent_holds_only_the_last_seven_days_of_actions(fx):
+    """A stored line lasts while every action it cites is inside the section's window, not for as long as
+    the row is retained: quiet nights carry it for a week, then it goes."""
+    row = settled_task(fx)
+    await fx.mind.consolidate()
+    assert row.id in fx.mind.narrative()["sections"]["recent"]
+    for _ in range(6):
+        fx.shift(days=1)
+        await fx.mind.consolidate()
+    assert row.id in fx.mind.narrative()["sections"]["recent"]                  # day 6: still recent
+    fx.shift(days=2)
+    assert row.id not in fx.mind.narrative()["sections"]["recent"]              # day 8: rendered away at once
+    await fx.mind.consolidate()
+    narrative = fx.mind.narrative()
+    assert "recent:" not in narrative["text"] and row.id not in (fx.mind.mind_state.get("self.recent") or {}).get("text", "")
+    assert fx.store.get(row.id) is not None                                     # the row itself is still retained
+
+
+async def test_a_recent_line_shows_where_its_action_really_stands(fx):
+    """The model writes the line; the render adds each cited action's current state, so a line that claims
+    more than happened ("sent") is read next to what the log says ("queued")."""
+    message, _ = fx.store.create_intention(kind="message", type="reminder", title="remind the owner of the call",
+                                           drive="duty", cls="external", decision="act", decision_reason="due",
+                                           status="approved", dedup_key="remind:call", recipient=OWNER,
+                                           context={"text": "The call is at noon."}, created_at=fx.now)
+    fx.router.answers[TASK_NARRATIVE] = lambda messages, context: {"lines": [
+        {"text": "I sent the owner the reminder", "cites": [message.id]}]}
+    await fx.mind.consolidate()
+    assert fx.mind.narrative()["sections"]["recent"] == f"I sent the owner the reminder (queued) [{message.id}]"
+    fx.mind.outcomes.record(message.id, status="done", hermes_ref="message:9", summary="delivered")
+    assert fx.mind.narrative()["sections"]["recent"] == f"I sent the owner the reminder (done) [{message.id}]"
+
 def test_a_narrative_citation_is_one_of_five_kinds_that_exist(fx):
     """Plain ids are the agent's own actions (protagine_self why explains them); ``interest:``,
     ``judgment:``, ``turn:`` and ``claim:`` are record references. Nothing else resolves."""
