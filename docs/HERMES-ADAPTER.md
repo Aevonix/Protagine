@@ -64,8 +64,11 @@ Turns without a sender on the CLI, cron or API lanes are the owner's own for
 memory; a cron run (`platform: cron`) is a stored prompt rather than the
 owner typing, so it cannot answer an ask, rate, change a permission or
 forget. Any other sender is a guest: `session_search` is blocked for guests,
-delivering cron jobs need a permitted recipient, and every mutation through
-`protagine_self`, `protagine_people` and `protagine_memory_forget` is refused.
+delivering cron jobs need a permitted recipient, `protagine_self` and
+`protagine_people` refuse everything (the mind's state, log and reasons and the
+contact list included), `protagine_memory_forget` is refused, and the plugin
+drops a guest's `/mind` at `pre_gateway_dispatch`, because Hermes hands the
+command itself no sender.
 
 ## Mind-originated runs
 

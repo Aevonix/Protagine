@@ -105,6 +105,21 @@ class SessionMap:
         info.owner = bool(owner_id) and contact == owner_id
         return info.owner
 
+    def sender_is_owner(self, platform: str, sender_id: str) -> bool:
+        """Whether a gateway sender is the owner before any session exists (a slash command)."""
+        sender_id = str(sender_id or "").strip()
+        if not sender_id:
+            return False
+        if sender_id.lower() in self._owner_handles(platform):
+            return True
+        owner_id = self.settings.owner_contact_id()
+        try:
+            contact = self.client.resolve_contact(platform, sender_id)
+        except Exception as error:
+            logger.debug("owner check deferred: %s", type(error).__name__)
+            return False
+        return bool(owner_id and contact and str(contact.get("contact_id")) == owner_id)
+
     def contact_id(self, session_id: str) -> str | None:
         """The sidecar contact for a session's sender; the owner for internal turns."""
         info = self.get(session_id)

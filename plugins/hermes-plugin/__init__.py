@@ -100,6 +100,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_llm_call", capture.post_llm_call)
     ctx.register_hook("pre_tool_call", guard.pre_tool_call)
     ctx.register_hook("on_kanban_dispatch_tick", body.on_dispatch_tick)
+    ctx.register_hook("pre_gateway_dispatch", commands.gate(sessions))
 
     ctx.register_command("mind", commands.handler(client, settings, outbox, body),
                          description="Protagine mind: status, log, why <id>, asks, off",

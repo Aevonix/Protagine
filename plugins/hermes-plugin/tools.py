@@ -1,7 +1,9 @@
 """Model tools: ``protagine_self``, ``protagine_people`` and the memory tools.
 
 Tool handlers receive ``session_id``; the session map turns it into a sender.
-Mutations are accepted only from the owner's own interactive session: never
+Reads of the mind and the contact list are the owner's and the owner's own
+senderless lanes', never a guest's. Mutations are accepted only from the
+owner's own interactive session: never
 from a kanban worker, and never from a cron run, whose prompt is a stored job
 anyone with the tool could have scheduled. ``yes``/``no`` also need the typed
 ask code inside the owner's own message for that turn, so neither a guest, a
@@ -99,6 +101,11 @@ class Tools:
             return False
         return self.sessions.is_owner(session_id) is True
 
+    def _reader(self, session_id: str) -> bool:
+        """The owner or one of the owner's own senderless lanes (the CLI, a cron run, a mind task): the mind's
+        state, log and reasons and the contact list are never read out to a guest."""
+        return self.sessions.is_owner(session_id) is True
+
     def _mind(self, method: str, path: str, **kwargs: Any) -> str:
         if self.client.has_mind_routes() is not True:
             return _error(ROUTES_MISSING)
@@ -117,6 +124,8 @@ class Tools:
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
+        if operation in {"state", "status", "log", "why"} and not self._reader(session_id):
+            return _error("only the owner can read the mind")
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
             mind = self.settings.mind()
@@ -160,6 +169,8 @@ class Tools:
     def people_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
+        if operation in {"list", "show"} and not self._reader(session_id):
+            return _error("only the owner can see contacts")
         try:
             if operation == "list":
                 response = self.client.get("/v1/host/contacts", params={"limit": int(args.get("limit") or 20)})

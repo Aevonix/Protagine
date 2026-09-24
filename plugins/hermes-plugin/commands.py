@@ -1,19 +1,22 @@
-"""``/mind``: read-only in chat, plus ``off``.
+"""``/mind``: the owner's, read-only in chat, plus ``off``.
 
 Hermes hands a plugin command only its argument string, never the sender, so
-every mutation other than the off switch goes through the CLI or the owner-
-checked tools (architecture 7.10). ``status`` works on every sidecar version;
-``log``, ``why`` and ``asks`` need the ``/v1/mind`` routes.
+``gate`` drops anyone else's ``/mind`` at ``pre_gateway_dispatch``, where the
+sender is still known, and every mutation other than the off switch goes
+through the CLI or the owner-checked tools (architecture 7.10). ``status``
+works on every sidecar version; ``log``, ``why`` and ``asks`` need the
+``/v1/mind`` routes.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from . import __version__
 from .body import Body, mind_state
-from .capture import TurnOutbox
+from .capture import SessionMap, TurnOutbox
 from .client import ProtagineClient, Settings, SidecarUnavailable
 
 USAGE = "usage: /mind status | log | why <id> | asks | off (other changes: the protagine CLI)"
@@ -105,6 +108,23 @@ def asks_text(client: ProtagineClient) -> str:
     return f"open asks: {asks}" if asks is not None else "No open asks."
 
 
+MIND_COMMAND = re.compile(r"^\s*/mind(?:@\S+)?(?:\s|$)", re.IGNORECASE)
+
+
+def gate(sessions: SessionMap) -> Callable[..., dict[str, str] | None]:
+    """``pre_gateway_dispatch``: drop a ``/mind`` whose sender is not the owner."""
+    def pre_gateway_dispatch(event: Any = None, **_: Any) -> dict[str, str] | None:
+        if not MIND_COMMAND.match(str(getattr(event, "text", "") or "")):
+            return None
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", "")
+        platform = str(getattr(platform, "value", platform) or "")
+        if sessions.sender_is_owner(platform, str(getattr(source, "user_id", "") or "")):
+            return None
+        return {"action": "skip", "reason": "protagine: /mind is the owner's"}
+    return pre_gateway_dispatch
+
+
 def handler(client: ProtagineClient, settings: Settings, outbox: TurnOutbox,
             body: Body) -> Callable[[str], str]:
     def mind(raw_args: str = "") -> str:
@@ -137,4 +157,4 @@ def handler(client: ProtagineClient, settings: Settings, outbox: TurnOutbox,
     return mind
 
 
-__all__ = ["ROUTES_MISSING", "USAGE", "asks_text", "handler", "render", "status_text"]
+__all__ = ["MIND_COMMAND", "ROUTES_MISSING", "USAGE", "asks_text", "gate", "handler", "render", "status_text"]
