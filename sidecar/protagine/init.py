@@ -434,12 +434,14 @@ def write_hermes_config(path: Path, config: dict[str, Any], *, backup_dir: Path)
 
 def worker_profile_config(main_config: dict[str, Any], cfg: Config, *, sidecar_url: str,
                           key_file: Path) -> dict[str, Any]:
-    """The ``protagine-act`` profile: the main model, the mind toolsets and the deny list."""
+    """The ``protagine-act`` profile: the main model and its providers, the mind toolsets and the deny list."""
     profile: dict[str, Any] = {}
-    model = main_config.get("model")
-    if model:
-        profile["model"] = copy.deepcopy(model)
-    profile["toolsets"] = list(cfg.get("mind.worker_toolsets") or [])
+    # The model and every provider entry it or its fallbacks can name: a profile reads only its own config.
+    for key in ("model", "providers", "custom_providers", "fallback_providers", "fallback_model"):
+        if main_config.get(key):
+            profile[key] = copy.deepcopy(main_config[key])
+    # The dispatcher pins a worker's tools from ``platform_toolsets.cli``; a top-level ``toolsets`` is ignored.
+    profile["platform_toolsets"] = {"cli": list(cfg.get("mind.worker_toolsets") or [])}
     profile["approvals"] = {"deny": list(cfg.get("mind.deny.commands") or [])}
     profile["memory"] = {"provider": MEMORY_PROVIDER}
     profile["plugins"] = {
@@ -449,6 +451,38 @@ def worker_profile_config(main_config: dict[str, Any], cfg: Config, *, sidecar_u
     }
     profile["security"] = {"protected_instruction_extra_patterns": list(PROTECTED_PATTERNS)}
     return profile
+
+
+# Run under the Hermes interpreter: the dispatcher's own toolset pin and provider ladder, with the
+# main home's .env loaded because a dispatched worker inherits the gateway's environment.
+_WORKER_PROBE = """
+import json, sys
+from hermes_cli.env_loader import load_hermes_dotenv
+load_hermes_dotenv(hermes_home=sys.argv[1])
+from hermes_cli.kanban_db_dispatch import _resolve_worker_cli_toolsets
+from hermes_cli.runtime_provider import resolve_runtime_provider
+out = {"toolsets": _resolve_worker_cli_toolsets(sys.argv[2]) or []}
+try:
+    runtime = resolve_runtime_provider()
+    out.update(provider=runtime.get("provider"), base_url=runtime.get("base_url"),
+               api_key=bool(runtime.get("api_key")))
+except Exception as error:
+    out["error"] = f"{type(error).__name__}: {error}"
+print(json.dumps(out))
+"""
+
+
+def resolve_worker_profile(python: Path, hermes_home: Path) -> dict[str, Any]:
+    """What stock Hermes gives a dispatched ``protagine-act`` worker: its pinned toolsets and its model
+    (``provider``, ``base_url``, whether it has a key), or ``error`` when the model does not resolve."""
+    profile_home = profiles_root(hermes_home) / WORKER_PROFILE
+    try:
+        result = subprocess.run([str(python), "-c", _WORKER_PROBE, str(hermes_home), str(profile_home)],
+                                capture_output=True, text=True, timeout=120, check=False,
+                                env={**os.environ, "HERMES_HOME": str(profile_home)})
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        return {"toolsets": [], "error": f"could not ask Hermes ({type(error).__name__})"}
 
 
 def render_worker_profile(profile: dict[str, Any]) -> str:

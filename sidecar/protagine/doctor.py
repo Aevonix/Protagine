@@ -233,14 +233,34 @@ def check_hermes_keys() -> CheckResult:
 
 
 def check_worker_profile() -> CheckResult:
-    from protagine.config import load_config
-    from protagine.init import WORKER_PROFILE, profiles_root
+    """The worker profile matches the main model, and stock Hermes gives a dispatched worker that model
+    and no toolset beyond the mind's."""
+    from protagine.config import KEY_FILE, load_config
+    from protagine.init import (PLUGIN_NAME, WORKER_PROFILE, profiles_root, read_hermes_config,
+                                resolve_worker_profile, worker_profile_config, worker_profile_pending)
     config = load_config()
     path = profiles_root(config.hermes_home) / WORKER_PROFILE / "config.yaml"
     if not path.is_file():
         return CheckResult("worker-profile", FAIL, detail=f"{path} is missing",
                            remedy="run 'protagine upgrade'")
-    return CheckResult("worker-profile", PASS, detail=f"profile {WORKER_PROFILE} present")
+    expected = worker_profile_config(read_hermes_config(config.hermes_home / "config.yaml"), config,
+                                     sidecar_url=config.sidecar_url, key_file=config.home / KEY_FILE)
+    if worker_profile_pending(profiles_root(config.hermes_home), expected):
+        return CheckResult("worker-profile", FAIL, detail=f"profile {WORKER_PROFILE} differs from the main "
+                           "model or the mind settings", remedy="run 'protagine upgrade'")
+    python = _hermes_python()
+    if python is None:
+        return CheckResult("worker-profile", SKIP, detail="no Hermes interpreter found")
+    worker = resolve_worker_profile(python, config.hermes_home)
+    if worker.get("error"):
+        return CheckResult("worker-profile", FAIL, detail=f"a mind task cannot resolve its model: {worker['error']}",
+                           remedy="fix the main model in Hermes, then 'protagine upgrade'")
+    extra = sorted(set(worker["toolsets"]) - set(config.get("mind.worker_toolsets") or []) - {PLUGIN_NAME})
+    if extra:
+        return CheckResult("worker-profile", FAIL, detail=f"a mind task would get {', '.join(extra)}",
+                           remedy="run 'protagine upgrade'")
+    return CheckResult("worker-profile", PASS, detail=f"profile {WORKER_PROFILE}: {worker.get('provider')} "
+                       f"at {worker.get('base_url')}, toolsets {', '.join(worker['toolsets'])}")
 
 
 def check_plugin_loaded() -> CheckResult:

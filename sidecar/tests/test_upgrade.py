@@ -104,7 +104,7 @@ def test_upgrade_reconciles_a_changed_worker_toolset(installed, capsys):
     output = capsys.readouterr().out
     assert f"profiles/{WORKER_PROFILE} written" in output and "nothing to do" not in output
     profile = yaml.safe_load((hermes_home / "profiles" / WORKER_PROFILE / "config.yaml").read_text())
-    assert profile["toolsets"] == ["web", "file"]
+    assert profile["platform_toolsets"] == {"cli": ["web", "file"]}
     assert profile["approvals"] == {"deny": ["shutdown*"]}
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
