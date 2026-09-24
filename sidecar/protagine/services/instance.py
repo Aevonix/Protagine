@@ -20,6 +20,11 @@ class ServiceError(RuntimeError):
     pass
 
 
+#: Seconds between a crashed sidecar and its restart. An error at startup (a bad protagine.yaml,
+#: a native panic) would otherwise re-import the whole sidecar every 5 s, all day.
+RESTART_SECONDS = 30
+
+
 def _private_write(path, content):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.service-', dir=path.parent)
@@ -76,7 +81,11 @@ class InstanceService:
             raise ServiceError('Instance autostart supports Linux systemd user services and macOS launchd')
         self.definition = self.state / 'service' / self.name
         self.backup = self.definition.with_name(self.name + '.previous')
+        # The rotating runtime log is the sidecar's own; the manager appends the process's raw
+        # stdout/stderr (a native panic, a traceback before logging starts) to a file of its own,
+        # so a rotation never leaves the manager writing into a renamed or unlinked file.
         self.log = self.state / 'service' / 'sidecar.log'
+        self.manager_log = self.state / 'service' / ('launchd.log' if self.platform == 'darwin' else 'systemd.log')
         self.runner = runner or subprocess.run
 
     @classmethod
@@ -124,20 +133,22 @@ class InstanceService:
             limits = {'NumberOfFiles': OPEN_FILES}
             return plistlib.dumps({'Label': self.label, 'ProgramArguments': arguments,
                 'WorkingDirectory': str(self.state), 'EnvironmentVariables': environment,
-                'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
+                'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': RESTART_SECONDS,
                 'ExitTimeOut': 20, 'Umask': 0o077,
                 'SoftResourceLimits': limits, 'HardResourceLimits': dict(limits),
-                'StandardOutPath': str(self.log), 'StandardErrorPath': str(self.log)}, sort_keys=True)
+                'StandardOutPath': str(self.manager_log), 'StandardErrorPath': str(self.manager_log)},
+                sort_keys=True)
         quote = _systemd_quote
         return ('[Unit]\nDescription=Protagine private instance ' + self.label + '\n\n[Service]\nType=exec\n'
                 'WorkingDirectory=' + _systemd_path(self.state) + '\n'
                 # ':' disables dollar-variable substitution; %% escapes specifiers.
                 'ExecStart=:' + ' '.join(quote(arg) for arg in arguments) + '\n'
                 'Environment=' + ' '.join(quote(key + '=' + value) for key, value in environment.items()) + '\n'
-                'Restart=always\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n'
+                'Restart=always\nRestartSec=' + str(RESTART_SECONDS) + '\nTimeoutStopSec=20\nUMask=0077\n'
                 'LimitNOFILE=' + str(OPEN_FILES) + '\n'
-                'StandardOutput=append:' + _systemd_path(self.log) + '\n'
-                'StandardError=append:' + _systemd_path(self.log) + '\n\n[Install]\nWantedBy=default.target\n').encode()
+                'StandardOutput=append:' + _systemd_path(self.manager_log) + '\n'
+                'StandardError=append:' + _systemd_path(self.manager_log) + '\n\n'
+                '[Install]\nWantedBy=default.target\n').encode()
 
     def status(self):
         owned = self._owned()
@@ -179,8 +190,9 @@ class InstanceService:
             self.link.parent.mkdir(parents=True, exist_ok=True)
             if not owned:
                 self.link.symlink_to(self.definition)
-            if not self.log.exists():
-                _private_write(self.log, b'')
+            for log in (self.log, self.manager_log):
+                if not log.exists():
+                    _private_write(log, b'')
             if self.platform == 'darwin':
                 self._run('launchctl', 'enable', self.target)
             else:
@@ -261,8 +273,8 @@ class InstanceService:
             if served is not None:
                 return {**result, 'ready': True, 'health': served['status'], 'problems': served['problems']}
             time.sleep(.2)
-        raise ServiceError(f'Service did not become HTTP-ready (no answer from /v1/host/health); inspect {self.log}. '
-                           'It remains installed for recovery.')
+        raise ServiceError(f'Service did not become HTTP-ready (no answer from /v1/host/health); inspect {self.log} '
+                           f'and {self.manager_log}. It remains installed for recovery.')
 
     def stop(self):
         self._require_installed()

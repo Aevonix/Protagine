@@ -96,6 +96,36 @@ def test_exact_instance_install_start_stop_and_uninstall(service_factory, platfo
     assert not any('sudo' in args or 'linger' in ' '.join(args) for args in manager.calls)
 
 
+@pytest.mark.parametrize('platform', ['linux', 'darwin'])
+def test_the_manager_writes_its_own_log_and_restarts_a_crash_slowly(service_factory, platform, monkeypatch):
+    """Cutover operability-8: the rotating runtime log (service/sidecar.log) is the sidecar's alone.
+    launchd and systemd append the process's raw stdout/stderr (a native panic, a traceback before
+    logging starts) to their own file, so a rotation never strands them in a renamed or unlinked
+    inode, and a crash at startup is retried every 30 s rather than every 5."""
+    make, _ = service_factory
+    service = make('one', platform)
+    runtime_log = service.state / 'service' / 'sidecar.log'
+    assert service.log == runtime_log
+    assert service.manager_log.parent == runtime_log.parent and service.manager_log != runtime_log
+    if platform == 'darwin':
+        plist = plistlib.loads(service.render())
+        assert plist['StandardOutPath'] == plist['StandardErrorPath'] == str(service.manager_log)
+        assert service.manager_log.name == 'launchd.log'
+        assert 30 <= plist['ThrottleInterval'] <= 60
+    else:
+        unit = service.render().decode()
+        assert 'StandardOutput=append:' + str(service.manager_log) + '\n' in unit
+        assert 'StandardError=append:' + str(service.manager_log) + '\n' in unit
+        assert str(runtime_log) not in unit
+        assert 'RestartSec=30\n' in unit
+    service.install()
+    assert service.manager_log.stat().st_mode & 0o777 == 0o600
+    monkeypatch.setattr(service, 'health', lambda: None)
+    with pytest.raises(ServiceError) as failure:
+        service.start(timeout=0.3)
+    assert str(runtime_log) in str(failure.value) and str(service.manager_log) in str(failure.value)
+
+
 def test_failed_environment_update_restores_previous_definition(service_factory):
     make, manager = service_factory
     service = make()

@@ -69,7 +69,14 @@ default `standard`). Then it:
    holds a descriptor per data file; macOS starts a user process at 256), and
    the server raises its own soft limit to the same figure at startup where
    the hard limit allows, so `protagine start` from a shell is covered too.
-   `protagine doctor` warns when the running sidecar has less.
+   `protagine doctor` warns when the running sidecar has less. The sidecar
+   writes its rotating log to `<instance>/service/sidecar.log`; launchd and
+   systemd append the process's raw output (a native crash, a traceback from
+   before logging starts) to a file of their own, `service/launchd.log` or
+   `service/systemd.log`, and restart a crashed sidecar after 30 seconds. An
+   install from an earlier release keeps its old unit (one shared log, a
+   restart every 5 seconds) until `protagine service stop`, `protagine service
+   install` and `protagine service start` write the new one.
 
 It writes no Hermes admin lists and never restarts a running gateway. Every
 step is idempotent: run it again to change an answer, or pass the flags
