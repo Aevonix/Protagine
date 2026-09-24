@@ -1858,6 +1858,8 @@ def create_app() -> FastAPI:
     else:
         logger.warning("No API key configured; serving loopback clients only (dev mode)")
 
+    from protagine.api.errors import install_exception_handlers
+    install_exception_handlers(app)
     app.include_router(host_router)
     app.include_router(host_v2_router)
     from protagine.api.routers import mind as mind_router

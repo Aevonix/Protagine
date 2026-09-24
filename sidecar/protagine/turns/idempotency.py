@@ -241,8 +241,10 @@ class TurnIdempotencyLedger:
         The internal runtime_judgment option queues server-observed execution
         evidence without ordinary claim extraction; HTTP writers cannot set it.
         """
-        if not turn_id or not contact_id or not session_id or not messages:
-            raise ValueError("source requires an id, participant, session and messages")
+        missing = [name for name, value in (("turn_id", turn_id), ("contact_id", contact_id),
+                                            ("session_id", session_id), ("messages", messages)) if not value]
+        if missing:
+            raise ValueError("source requires " + ", ".join(missing))
         if scope not in {"person", "session"}:
             raise ValueError("invalid source scope")
         if occurred_at is not None:
