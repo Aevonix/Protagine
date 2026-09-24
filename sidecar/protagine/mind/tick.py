@@ -395,14 +395,21 @@ class Mind:
     # -- timers ----------------------------------------------------------------------------
 
     def _expire_asks(self, now: datetime) -> int:
+        """Silence until expiry is the owner's weak 'ignored' only on an ask the owner was sent; a
+        digest-only suggestion that lapses, and a task the mind's own budget kept waiting past its
+        window, are no verdict. Such a task never reported its obligation, so the key goes back."""
         count = 0
         for row in self.store.intentions(status=["asked"], limit=500):
             if row.expires_at and row.expires_at <= now:
-                self.outcomes.record(row.id, status="expired", summary="no answer before the ask expired", by="mind")
+                noticed = (row.context or {}).get("notice", True) is not False
+                self.outcomes.record(row.id, status="expired", summary="no answer before the ask expired", by="mind",
+                                     implicit_verdict=noticed)
                 count += 1
         for row in self.store.intentions(status=["approved", "proposed"], kind=["task"], limit=500):
             if row.expires_at and row.expires_at <= now:
-                self.outcomes.record(row.id, status="expired", summary="not dispatched inside its window", by="mind")
+                self.outcomes.record(row.id, status="expired", summary="not dispatched inside its window", by="mind",
+                                     implicit_verdict=False)
+                self._free_open_obligation(row)
                 count += 1
         return count
 
@@ -480,7 +487,8 @@ class Mind:
 
     def _free_open_obligation(self, row: StoredInitiative) -> None:
         """An intention about a commitment that is still open and was never reported (a push-out, a
-        hold, a heads-up that came due, a message that expired unsent) gives its key back, so the
+        hold, a heads-up that came due, a message that expired unsent, a task never dispatched inside
+        its window) gives its key back, so the
         obligation competes again at its time. A resolved obligation keeps its key: reported once
         (architecture 3.3)."""
         if row.dedup_key and row.source_type == "commitment" and self._commitment_open(row.source_id):

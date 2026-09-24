@@ -13,7 +13,10 @@ questions, investigations, backlog upkeep): there it lowers the effective
 weight in the score and leaves the threshold alone, so a satisfied drive holds
 new self-work until the satiety decays. An obligation, a notice or the step of
 an adopted goal is owed whatever the drive's satiety; for those satiation only
-orders. Affect arrives with its own milestone; until then ``affect_mod`` is 1.
+orders. The multiplier learns which initiative the owner wants, so it does not
+weigh a commitment someone made (``source_type`` ``commitment``): a reminder
+the owner asked for, or a promise to keep, is owed however earlier ones fared.
+Affect arrives with its own milestone; until then ``affect_mod`` is 1.
 """
 
 from __future__ import annotations
@@ -72,6 +75,8 @@ class Candidate:
         return f"{self.type}:{self.drive}"
 
     def multiplier_keys(self) -> List[str]:
+        if self.source_type == "commitment":
+            return []     # owed, not chosen: learned feedback does not weigh it
         keys = [self.feedback_key()]
         if self.kind == "message" and self.recipient:
             keys.append(f"reach_out:{self.recipient}")

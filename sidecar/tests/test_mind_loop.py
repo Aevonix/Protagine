@@ -385,26 +385,24 @@ async def test_off_switch_stops_effects_without_a_model(fx):
 # ---------------------------------------------------------------------------
 
 async def test_dismissal_lowers_the_type_multiplier_below_the_threshold(fx):
-    fx.commitments.create(person_id=OWNER, description="first overdue item",
-                          due_at=(fx.now + timedelta(minutes=1)).isoformat())
-    fx.shift(minutes=10)
+    """The multiplier learns which initiative the owner wants: an archived research task puts the next
+    topic below the threshold, and an explicit verdict lifts it back. Owed work is not weighed by it
+    (test_what_is_owed_is_not_learned_away)."""
+    fx.mind.add_interest("kilns")
     summary = await fx.mind.tick(force=True)
-    first = summary["formed"][0]
-    assert first["score"] >= fx.mind.act_threshold
-    item = fx.mind.dispatch()[0]
+    assert [item["type"] for item in summary["formed"]] == ["research"]
+    item, = fx.mind.dispatch()
     fx.mind.bound(item["id"], "kanban:t9")
     dismissed = fx.mind.outcomes.record(item["id"], status="archived", summary="the owner archived it")
     assert dismissed.outcome == "cancelled" and dismissed.verdict == "dismissed"
-    assert fx.feedback.multiplier("commitment_overdue:duty") == pytest.approx(0.85)
+    assert fx.feedback.multiplier("research:curiosity") == pytest.approx(0.85)
 
-    fx.commitments.create(person_id=OWNER, description="second overdue item",
-                          due_at=(fx.now + timedelta(minutes=1)).isoformat())
-    fx.shift(minutes=10)
+    fx.mind.add_interest("tides")
     summary = await fx.mind.tick(force=True)
     assert summary["formed"] == [] and summary["below_threshold"] == 1
     assert fx.mind.dispatch() == []
     fx.mind.rate(item["id"], "useful")                                     # an explicit verdict lifts it back
-    assert fx.feedback.multiplier("commitment_overdue:duty") > 0.9
+    assert fx.feedback.multiplier("research:curiosity") > 0.9
 
 
 async def test_an_intention_contributes_once_and_a_corrected_rating_replaces(fx):
@@ -1325,3 +1323,96 @@ async def test_a_contacts_promise_captured_on_their_turn_reminds_the_owner_and_s
     row, = fx.commitments.list(status=["pending", "overdue"])["commitments"]
     assert row["description"] == "p-02 sends the signed form" and row["status"] == "overdue"
 
+
+
+# ---------------------------------------------------------------------------
+# Feedback the owner never gave, and what is owed
+# ---------------------------------------------------------------------------
+
+async def test_a_suggestion_that_lapses_unseen_is_not_the_owners_verdict(tmp_path, monkeypatch):
+    """Silence counts as 'ignored' only on an ask the owner was sent. A digest-only suggestion that
+    lapses says nothing about what the owner wants: three of them leave the type as it was."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, autonomy="suggest")
+    try:
+        for i in range(3):
+            fx.commitments.create(person_id=OWNER, description=f"owner item {i}",
+                                  due_at=(fx.now + timedelta(minutes=1)).isoformat())
+            fx.shift(minutes=10)
+            summary = await fx.mind.tick(force=True)
+            assert [item["decision"] for item in summary["formed"]] == ["ask"], i
+            fx.shift(hours=73)
+            await fx.mind.tick(force=True)
+        rows = fx.store.intentions(kind=["task"], limit=10)
+        assert len(rows) == 3 and {(row.status, row.verdict) for row in rows} == {("expired", None)}
+        assert fx.feedback.multiplier("commitment_overdue:duty") == 1.0
+    finally:
+        fx.store.close()
+
+
+async def test_blocked_tasks_free_their_slots_and_a_task_the_budget_starved_is_no_verdict(tmp_path, monkeypatch):
+    """A blocked task waits on someone in Hermes and runs nothing, so it does not hold a concurrent
+    slot. A task whose window ran out because the mind's own budget kept it waiting is not the owner
+    ignoring the type, and its obligation competes again at the next tick."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"budgets": {"concurrent_tasks": 1}})
+    try:
+        fx.commitments.create(person_id=OWNER, description="first", due_at=(fx.now + timedelta(minutes=1)).isoformat())
+        fx.shift(minutes=10)
+        await fx.mind.tick(force=True)
+        item, = fx.mind.dispatch()
+        fx.mind.bound(item["id"], "t_first")
+        fx.mind.outcomes.record(item["id"], status="blocked", outcome="blocked", final=True, hermes_ref="t_first",
+                                summary="the worker asked for input")
+        second = fx.commitments.create(person_id=OWNER, description="second",
+                                       due_at=(fx.now + timedelta(minutes=1)).isoformat())
+        third = fx.commitments.create(person_id=OWNER, description="third",
+                                      due_at=(fx.now + timedelta(minutes=1)).isoformat())
+        fx.shift(minutes=10)
+        formed = (await fx.mind.tick(force=True))["formed"]
+        assert sorted(item["decision"] for item in formed) == ["act", "defer"]      # the blocked one holds nothing
+        deferred = fx.store.get(next(item["id"] for item in formed if item["decision"] == "defer"))
+        fx.shift(hours=49)
+        summary = await fx.mind.tick(force=True)
+        assert (fx.store.get(deferred.id).status, fx.store.get(deferred.id).verdict) == ("expired", None)
+        assert fx.feedback.multiplier("commitment_overdue:duty") == 1.0
+        assert deferred.source_id in {second["id"], third["id"]}
+        assert deferred.source_id in {fx.store.get(item["id"]).source_id for item in summary["formed"]}
+    finally:
+        fx.store.close()
+
+
+async def test_what_is_owed_is_not_learned_away(fx):
+    """Learned feedback weighs the initiative the mind chooses for itself. A reminder the owner asked
+    for is owed: however earlier reminders and other owner messages fared, the next one forms."""
+    for key in ("commitment_reminder:duty", f"reach_out:{OWNER}"):
+        for n in range(4):
+            fx.feedback.record(key, "dismissed", source=f"earlier-{n}")
+    assert fx.feedback.multiplier("commitment_reminder:duty") * fx.feedback.multiplier(f"reach_out:{OWNER}") < 0.6
+    fx.turn("t-1", OWNER, "Remind me to pick up the kids at 3.", "Will do.")
+    assert await fx.capture(FakeRouter(fx.now + timedelta(minutes=30), description="Pick up the kids",
+                                       obligor="owner"))
+    fx.shift(hours=1)
+    summary = await fx.mind.tick(force=True)
+    assert [(item["type"], item["decision"]) for item in summary["formed"]] == [("commitment_reminder", "act")]
+
+
+async def test_at_suggest_the_owners_reminders_and_the_minds_health_reports_still_go_out(tmp_path, monkeypatch):
+    """suggest keeps the mind's own initiative to the digest. It does not hold back a reminder the
+    owner asked for, or the mind's report that a store is failing: a digest would bring either a day late."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, autonomy="suggest")
+    try:
+        fx.mind._health_probes = lambda: {"ledger": False}
+        formed = []
+        for _ in range(3):
+            formed += (await fx.mind.tick(force=True))["formed"]
+        assert ("health_notice", "act") in [(item["type"], item["decision"]) for item in formed]
+        fx.turn("t-1", OWNER, "Remind me to pick up the kids at 3.", "Will do.")
+        assert await fx.capture(FakeRouter(fx.now + timedelta(minutes=30), description="Pick up the kids",
+                                           obligor="owner"))
+        fx.shift(hours=1)
+        formed = (await fx.mind.tick(force=True))["formed"]
+        assert [(item["type"], item["decision"]) for item in formed] == [("commitment_reminder", "act")]
+    finally:
+        fx.store.close()

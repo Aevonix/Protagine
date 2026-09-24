@@ -199,7 +199,14 @@ which the sidecar accepts only when the sender is the owner contact and the
 code is in the owner's own message. Silence expires an ask after
 `mind.ask_expires_hours` (72 h). Nothing else waits on an ask. At
 `autonomy: suggest` an ordinary ask is digest-only: it gets no 4-hourly
-notice; a floor ask is noticed at once at every level.
+notice; a floor ask is noticed at once at every level. Silence counts as the
+owner's weak `ignored` only on an ask the owner was sent: a digest-only
+suggestion that lapses, and a task the mind's own budget kept waiting past
+its window, are no verdict. `suggest` holds the mind's initiative, not what
+the owner asked to be told: a reminder or heads-up the owner asked for and
+the mind's own health and breaker notices go out at every level but `off`.
+The learned multiplier never weighs a commitment someone made, and a
+blocked task holds no `concurrent_tasks` slot.
 
 ## The off switch
 

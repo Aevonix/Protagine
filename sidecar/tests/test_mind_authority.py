@@ -88,6 +88,18 @@ def test_decision_invariants(level, cls, may_contact, floor, deny, budget, break
         assert decision != "act"                       # suggest: digest only
 
 
+def test_suggest_holds_initiative_not_what_the_owner_asked_to_be_told():
+    """A requested word to the owner (a reminder, a heads-up, the mind's own reports) acts at
+    suggest; everything above the level table still applies to it."""
+    assert decide_table(level="suggest", cls="owner", requested=True) == "act"
+    assert decide_table(level="suggest", cls="contact", requested=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, floor=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, breaker_tripped=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, budget_exhausted=True) == "defer"
+    for blocked in ({"level": "off"}, {"deny": True}, {"enabled": False}):
+        assert decide_table(**{"level": "suggest", "cls": "owner", "requested": True, **blocked}) == "drop"
+
+
 # ---------------------------------------------------------------------------
 # Classes, the floor and codes
 # ---------------------------------------------------------------------------
