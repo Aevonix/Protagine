@@ -113,15 +113,17 @@ The design is in
    |---|---|---|---|
    | duty | overdue and due-soon commitments, due reply waits, stale owner kanban tasks and stalled Hermes goals (both from the body's board observations), duty-domain expectation misses | fulfilled commitments, done tasks | owner reminders and heads-ups (messages), follow-up tasks, owner notices |
 
-   A commitment the owner spoke in conversation (`source_type: cognition`)
-   and owes themselves, or is tracking for a third party (`metadata.obligor`
-   is `owner`, a contact id, or absent), that comes due becomes a
-   `commitment_reminder` **message to the owner** (the description, the due
-   time, how overdue it is), not a board task: the reminder is the effect.
-   The assistant's own promise (`metadata.obligor: assistant`, "I'll send
-   you the report by 3pm"), work the agent itself must do (a row created
-   through the API or by another subsystem) and a commitment owed to a
-   contact keep the task form; an owed deliverable keeps its own message.
+   A commitment from a conversation (`source_type: cognition`) that the
+   owner owes, or that someone else owes and the owner is tracking
+   (`metadata.obligor` is `owner`, a contact id or a name; absent reads as
+   the speaker of the turn), becomes a `commitment_reminder` **message to
+   the owner** when it comes due (the description, the due time, how
+   overdue it is), not a board task, on whichever lane it was captured: the
+   reminder is the effect. The assistant's own promise
+   (`metadata.obligor: assistant`, "I'll send you the report by 3pm"), to
+   the owner or to a contact, and work the agent itself must do (a row
+   created through the API or by another subsystem) keep the task form; an
+   owed deliverable keeps its own message.
    When the row carries a heads-up time and `heads_up_at <= now < due_at`,
    duty raises a `commitment_due_soon` message first; once that went out,
    the overdue reminder for the same row waits `mind.heads_up_grace_minutes`
@@ -235,9 +237,11 @@ The design is in
 7. **Deliberate.** Templates cover commitments, reply waits, stale tasks and
    health. Open-ended concerns get **at most one tool-less router call per
    tick** (`P/mind/deliberate.py`): the model returns a task (title, body, a
-   `result_field` check), a goal proposal, or a note, and on a topic that
-   keeps failing one question for the owner (`ask`, offered in the schema
-   and the prompt only then, so every other call is the same in every arm).
+   `result_field` check) or a goal proposal, and on a topic that keeps
+   failing one question for the owner (`ask`, offered in the schema and the
+   prompt only then, so every other call is the same in every arm). The call
+   has no tools, so an answer from the model's own recollection is never
+   stored as something learned: anything else it returns gets the template.
    Without a router the
    template applies; with the tick's call spent, the concern waits.
 8. **Goals.** Curiosity and mastery may adopt an agent-owned goal
@@ -488,7 +492,15 @@ which the sidecar accepts only when the sender is the owner contact and the
 code is in the owner's own message. Silence expires an ask after
 `mind.ask_expires_hours` (72 h). Nothing else waits on an ask. At
 `autonomy: suggest` an ordinary ask is digest-only: it gets no 4-hourly
-notice; a floor ask is noticed at once at every level. A name-only identity
+notice; a floor ask is noticed at once at every level. Silence counts as the
+owner's weak `ignored` only on an ask the owner was sent: a digest-only
+suggestion that lapses, and a task the mind's own budget kept waiting past
+its window, are no verdict. `suggest` holds the mind's initiative, not what
+the owner asked to be told: a reminder or heads-up the owner asked for, the
+question about a recipient the owner named that the store cannot resolve,
+and the mind's own health and breaker notices go out at every level but
+`off`. The learned multiplier never weighs a commitment someone made, and a
+blocked task holds no `concurrent_tasks` slot. A name-only identity
 link ("Is sam@example.org on email Sam?") is always an ask; the answer links
 or rejects the handle in the contact store, and a `no` is not a verdict on
 asking. A yes folds a shadow that held the handle into the contact, and

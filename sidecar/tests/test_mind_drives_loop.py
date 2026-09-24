@@ -267,26 +267,22 @@ async def test_a_failed_deliberation_call_falls_back_to_the_template(fx):
     assert "Research 'kilns'" in fx.mind.dispatch()[0]["body"]
 
 
-async def test_a_deliberated_note_is_recorded_and_settles_at_once(fx):
-    router = DeliberationRouter({"local history": {
-        "kind": "note", "title": "Already answered", "body": "The mill's founding date is already in memory: 1851."}})
+async def test_a_tool_less_note_is_not_a_finding_and_the_topic_is_still_researched(fx):
+    """The deliberation call has no tools, so a "note" answer is the model's own recollection, not
+    something the agent learned. An open-ended concern becomes a task or nothing: the note falls back
+    to the template research task, nothing is written as a finding, and nothing is satiated."""
+    router = DeliberationRouter({"bees": {
+        "kind": "note", "title": "Known", "body": "Honeybees see ultraviolet light and a colony has 60,000 workers."}})
     fx.mind.router = router
-    fx.mind.add_interest("local history")
+    fx.mind.add_interest("bees")
     first, = await idle(fx)
-    note, = first["formed"]
-    assert note["kind"] == "note" and note["status"] == "done" and first["model_calls"] == 1
-    row = fx.store.get(note["id"])
-    assert row.outcome == "done" and row.verified == "none" and row.result == "The mill's founding date is already in memory: 1851."
-    assert row.expectation_id is None and fx.mind.dispatch() == []
-    concern = fx.mind.concerns.by_intention(row.id)
-    assert concern.status == "resolved" and fx.mind.concerns.count("intended") == 0
-    hits = fx.ledger.search_sources("mill founding 1851", contact_id=OWNER, session_id="later")
-    assert any("What I learned about local history" in hit["content"] for hit in hits)
-    second, third = await idle(fx, 2)
-    assert second["formed"] == [] and third["formed"] == [] and len(router.calls) == 1   # settled
-    fx.shift(days=3)
-    assert (await idle(fx))[0]["formed"] == [] and fx.mind.state()["concerns"] == {
-        "open": 0, "intended": 0, "broadcast": []}
+    task, = first["formed"]
+    assert (task["kind"], task["type"]) == ("task", "research") and first["model_calls"] == 1
+    assert "Research 'bees'" in fx.mind.dispatch()[0]["body"]
+    hits = fx.ledger.search_sources("honeybees ultraviolet colony", contact_id=OWNER, session_id="later")
+    assert not any("What I learned" in hit["content"] or "ultraviolet" in hit["content"] for hit in hits)
+    assert (fx.mind.mind_state.get("satiety.curiosity") or {}).get("level") in (None, 0, 0.0)
+    assert fx.mind.concerns.by_intention(task["id"]).status == "intended"
 
 
 async def test_a_topic_that_already_had_a_goal_gets_one_task_and_one_call(fx):
@@ -642,3 +638,22 @@ async def test_concern_goal_and_interest_routes(fx):
         state = (await client.get("/v1/mind/state", headers=AUTH)).json()
         assert state["faculties"]["drives"] is True and state["interests"] == [{"topic": "local history", "weight": 1.0}]
         assert state["deliberation"]["available"] is False
+
+
+async def test_obligations_that_ended_unresolved_do_not_starve_other_concerns(fx):
+    """An overdue commitment the owner said no to keeps its key (reported once) while it stays
+    overdue, so duty raises it again every tick. Such concerns are passed over before the top three
+    are taken: three of them do not hold every slot and starve the rest of the mind. They sit below
+    the owed-priority line, so affect's overload (three near owed obligations) does not postpone the
+    research on its own account: this is about slots, not load."""
+    fx.mind.set_level("suggest")
+    for i in range(3):
+        fx.commitments.create(description=f"send the draft {i}", person_id=OWNER, priority=40, allow_overdue=True,
+                              due_at=(fx.now - timedelta(hours=2)).isoformat())
+    asked = (await fx.mind.tick(force=True))["formed"]
+    assert [item["decision"] for item in asked] == ["ask"] * 3
+    for item in asked:
+        await fx.mind.answer(fx.store.get(item["id"]).ask_code, yes=False)
+    fx.mind.add_interest("bees")
+    fx.shift(minutes=1)
+    assert [item["type"] for item in (await fx.mind.tick(force=True))["formed"]] == ["research"]

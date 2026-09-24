@@ -266,6 +266,21 @@ def recipient_unknown_candidate(row: Dict[str, Any], *, owner_id: str) -> Candid
         source_type="commitment", source_id=row["id"], concern_kind="obligation")
 
 
+def _obligor(row: Dict[str, Any], metadata: Dict[str, Any], person: str | None, owner_id: str | None) -> str:
+    """Who owes the work: ``owner``, ``assistant`` or the other party, as capture recorded it in
+    ``metadata.obligor``. A row without it is the speaker's own when it came from a conversation (the
+    owner's on the owner's lane, as every row read before the field existed) and the assistant's work
+    otherwise (a row the agent recorded for itself)."""
+    stated = str(metadata.get("obligor") or "").strip()
+    if not stated:
+        if row.get("source_type") != "cognition":
+            return "assistant"
+        stated = person or "owner"
+    if stated.lower() in {"owner", "assistant"}:
+        return stated.lower()
+    return "owner" if owner_id and stated == owner_id else stated
+
+
 def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None,
                          people_on: bool = True) -> Candidate:
     """The duty candidate of a commitment past its time. With the people faculty off an owner's
@@ -312,13 +327,11 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             success_check=check, due_at=due, source_type="commitment", source_id=row["id"],
             priority=priority / 100.0, concern_kind="obligation")
     key = schedule_key(row["id"], "overdue", due)
-    # Who owes the work: capture records ``metadata.obligor`` (``owner``, ``assistant`` or a contact id);
-    # a row without it is the owner's own, as every conversational row read before the field existed.
-    obligor = str(metadata.get("obligor") or "owner").strip().lower()
-    if person and person == owner_id and row.get("source_type") == "cognition" and obligor != "assistant":
-        # A promise the owner spoke, or a third party's promise the owner is tracking, is owed back to
-        # the owner as words, not to a worker as work: the reminder is the effect. The assistant's own
-        # promise ("I'll send you the report by 3pm") is work and keeps the task form below.
+    obligor = _obligor(row, metadata, person, owner_id)
+    if obligor != "assistant":
+        # A promise the owner made, or anyone else's promise the owner is tracking, is owed back to the
+        # owner as words, not to a worker as work: the reminder is the effect, whichever lane the row
+        # was captured on. Only the assistant's own promise ("I'll send you the report by 3pm") is work.
         text = (f"Reminder: {description}. It was due at {due.strftime('%Y-%m-%d %H:%M UTC')}, "
                 f"{span(now - due)} ago.")
         rationale = ("a commitment the owner made is past due" if obligor == "owner"
@@ -326,7 +339,7 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
         return Candidate(
             type="commitment_reminder", drive="duty", kind="message", title=f"Overdue: {description}"[:160],
             dedup_key=key, salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
-            cost=0.05, recipient=person, text=text, rationale=rationale,
+            cost=0.05, recipient=owner_id, text=text, rationale=rationale,
             evidence=evidence, concern=f"overdue commitment: {description}",
             invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
             source_type="commitment", source_id=row["id"], priority=priority / 100.0, concern_kind="obligation")

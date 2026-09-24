@@ -103,11 +103,11 @@ def test_the_candidate_carries_the_affect_question_through_its_detail():
 
 
 def test_ask_is_offered_only_with_the_prior_attempts():
-    """The system prompt and the default schema are the deliberation contract every arm shares (task,
-    goal or note); kind ``ask`` exists only in the schema sent with a failing topic's prompt."""
-    assert '"ask"' not in SYSTEM and 'kind ("task", "goal" or "note")' in SYSTEM
-    assert RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal", "note"]
-    assert ASK_RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal", "note", "ask"]
+    """The system prompt and the default schema are the deliberation contract every arm shares (task
+    or goal); kind ``ask`` exists only in the schema sent with a failing topic's prompt."""
+    assert '"ask"' not in SYSTEM and 'kind ("task" or "goal")' in SYSTEM
+    assert RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal"]
+    assert ASK_RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal", "ask"]
     assert {k: v for k, v in ASK_RESPONSE_SCHEMA["schema"]["properties"].items() if k != "kind"} == {
         k: v for k, v in RESPONSE_SCHEMA["schema"]["properties"].items() if k != "kind"}
     text = json.dumps({"kind": "ask", "title": "Ask", "body": "Which export is current?"})

@@ -486,14 +486,21 @@ class Mind:
     # -- timers ----------------------------------------------------------------------------
 
     def _expire_asks(self, now: datetime) -> int:
+        """Silence until expiry is the owner's weak 'ignored' only on an ask the owner was sent; a
+        digest-only suggestion that lapses, and a task the mind's own budget kept waiting past its
+        window, are no verdict. Such a task never reported its obligation, so the key goes back."""
         count = 0
         for row in self.store.intentions(status=["asked"], limit=500):
             if row.expires_at and row.expires_at <= now:
-                self.outcomes.record(row.id, status="expired", summary="no answer before the ask expired", by="mind")
+                noticed = (row.context or {}).get("notice", True) is not False
+                self.outcomes.record(row.id, status="expired", summary="no answer before the ask expired", by="mind",
+                                     implicit_verdict=noticed)
                 count += 1
         for row in self.store.intentions(status=["approved", "proposed"], kind=["task"], limit=500):
             if row.expires_at and row.expires_at <= now:
-                self.outcomes.record(row.id, status="expired", summary="not dispatched inside its window", by="mind")
+                self.outcomes.record(row.id, status="expired", summary="not dispatched inside its window", by="mind",
+                                     implicit_verdict=False)
+                self._free_open_obligation(row)
                 count += 1
         return count
 
@@ -571,7 +578,8 @@ class Mind:
 
     def _free_open_obligation(self, row: StoredInitiative) -> None:
         """An intention about a commitment that is still open and was never reported (a push-out, a
-        hold, a heads-up that came due, a message that expired unsent) gives its key back, so the
+        hold, a heads-up that came due, a message that expired unsent, a task never dispatched inside
+        its window) gives its key back, so the
         obligation competes again at its time. A resolved obligation keeps its key: reported once
         (architecture 3.3)."""
         if row.dedup_key and row.source_type == "commitment" and self._commitment_open(row.source_id):
@@ -1061,10 +1069,17 @@ class Mind:
     # -- forming intentions ------------------------------------------------------------------
 
     async def _act(self, now: datetime) -> tuple[List[Dict[str, Any]], int]:
-        """The top concerns, ranked on the effective score, become intentions through authority."""
+        """The top concerns, ranked on the effective score, become intentions through authority.
+
+        The top ``BROADCAST`` are taken after passing over what cannot compete: a concern with no
+        template, and one whose key was reported already. An obligation that ended unresolved
+        (a no, a lapsed ask, a failed run) is raised again every tick while its source stays open;
+        it must not hold a slot, or three of them starve every other concern."""
         pairs = []
-        for concern in self.concerns.top(k=BROADCAST):
-            if not concern.detail.get("type"):
+        for concern in self.concerns.open(limit=200):
+            if len(pairs) >= BROADCAST:
+                break
+            if concern.exhausted or not concern.detail.get("type"):
                 continue
             if self.store.get_by_dedup_key(concern.dedup_key) is not None:
                 # The obligation was reported once already (architecture 3.3); it does not compete again.
@@ -1112,11 +1127,7 @@ class Mind:
                 self._charge_unformed(shaped, concern, now)
                 continue
             self.concerns.intended(concern.id, row.id, now=now)
-            if row.kind == "note" and row.status == "approved":
-                # A note has no body to run and nothing to wait for: it is what the mind concluded.
-                self.outcomes.record(row.id, status="done", summary=shaped.text, verified="none", by="mind")
-                row = self.store.get(row.id) or row
-            elif row.kind == "goal":
+            if row.kind == "goal":
                 self.autobiography.record(row.id, "goal_adopted",
                                           f"I adopted a goal: {row.description} ({row.drive} drive), to be met by "
                                           f"{(row.due_at or row.expires_at).date().isoformat() if (row.due_at or row.expires_at) else 'its horizon'}.")

@@ -110,13 +110,15 @@ def classify(*, kind: str, recipient: str | None, owner_id: str | None,
 
 def decide_table(*, level: str, cls: str, may_contact: str = "ask", floor: bool = False,
                  deny: bool = False, budget_exhausted: bool = False,
-                 breaker_tripped: bool = False, enabled: bool = True) -> str:
+                 breaker_tripped: bool = False, enabled: bool = True, requested: bool = False) -> str:
     """The pure decision (architecture 7.2, 7.3, 7.5, 7.6), in precedence order:
 
     1. the off switch or ``off`` level: ``drop``
     2. the deny list: ``drop``
     3. the floor: ``ask``, and nothing raises it
-    4. the level x class table, with ``may_contact`` for the contact class
+    4. the level x class table, with ``may_contact`` for the contact class; at ``suggest`` a
+       ``requested`` word to the owner (``REQUESTED_TYPES``) acts like internal work: the level
+       holds the mind's initiative for the digest, not what the owner asked to be told
     5. a tripped breaker demotes an ``act`` one level, to ``ask``
     6. an exhausted budget defers an ``act``; it is not an error
     """
@@ -127,7 +129,7 @@ def decide_table(*, level: str, cls: str, may_contact: str = "ask", floor: bool 
     if floor or cls == "floor":
         return "ask"
     if level == "suggest":
-        decision = "act" if cls == "internal" else "ask"     # digest only
+        decision = "act" if cls == "internal" or (requested and cls == "owner") else "ask"   # digest only
     elif level == "standard":
         if cls in {"internal", "owner"}:
             decision = "act"
@@ -263,6 +265,10 @@ class Authority:
 
     BUDGET_ACTION = "queued"  # the history action counted by the budgets
     DIGEST_TYPES = ("digest", "ask_notice", "breaker_notice", "health_notice")
+    # Words to the owner that are not the mind's initiative: its own reports, the reminders and
+    # heads-ups the owner asked for, and the question a message the owner asked for raises (who is
+    # the recipient the owner named). ``suggest`` does not hold them for the digest.
+    REQUESTED_TYPES = DIGEST_TYPES + ("commitment_reminder", "commitment_due_soon", "recipient_unknown")
 
     def __init__(self, policy: Policy, store: Any, *, owner_id: str | None, clock=None) -> None:
         self.policy = policy
@@ -347,7 +353,9 @@ class Authority:
                 if open_goals >= budgets.open_goals:
                     return f"budget: {budgets.open_goals} open goals reached"
                 return None
-            running = len(self.store.intentions(status=["approved", "dispatched"], kind=["task"], limit=1000))
+            # A blocked task waits on someone in Hermes and runs nothing: it holds no slot.
+            running = len([row for row in self.store.intentions(status=["approved", "dispatched"], kind=["task"],
+                                                                limit=1000) if row.outcome != "blocked"])
             if running >= budgets.concurrent_tasks:
                 return f"budget: {budgets.concurrent_tasks} concurrent tasks reached"
             return None
@@ -395,7 +403,8 @@ class Authority:
         budget = self.budget_check(kind=kind, recipient=recipient, type=type, now=now, cooldown_hours=cooldown_hours)
         decision = decide_table(level=self.level, cls=cls, may_contact=may_contact, floor=matched is not None,
                                 deny=denied is not None, budget_exhausted=budget is not None,
-                                breaker_tripped=bool(breaker.get("tripped")), enabled=self.enabled)
+                                breaker_tripped=bool(breaker.get("tripped")), enabled=self.enabled,
+                                requested=kind == "message" and type in self.REQUESTED_TYPES)
         if self.level == "off":
             reason = "autonomy level off"
         elif not self.enabled:
@@ -408,7 +417,7 @@ class Authority:
             reason = budget or "budget"
         elif decision == "ask" and breaker.get("tripped"):
             reason = f"breaker: {breaker['failures']} recent {cls} failures; asking until {breaker.get('until')}"
-        elif self.level == "suggest" and cls != "internal":
+        elif self.level == "suggest" and decision == "ask":
             reason = f"{self.level}: {cls} effects are suggested in the digest"
         elif cls == "contact":
             reason = f"{self.level}: contact may_contact={may_contact}"

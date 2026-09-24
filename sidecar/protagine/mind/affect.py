@@ -36,7 +36,7 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Optional
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES
 
 from .audit import NOTICE_TYPES
-from .drives import DUTY_DOMAINS, _utc, slug
+from .drives import DUTY_DOMAINS, _obligor, _utc, slug
 
 logger = logging.getLogger(__name__)
 
@@ -577,7 +577,10 @@ class Affect:
         found = []
         for row in self.commitments.list(status=["pending", "overdue"], limit=500).get("commitments", []):
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            if str(metadata.get("obligor") or "owner").strip().lower() not in {"owner", "assistant"}:
+            # Who owes it, as duty reads it: a contact's own promise (stated, or captured on their turn
+            # without an obligor) is theirs, not the owner's load.
+            if _obligor(row, metadata, str(row.get("person_id") or "") or None, self.owner_id) not in {"owner",
+                                                                                                   "assistant"}:
                 continue
             try:
                 priority = OWED_PRIORITY if row.get("priority") is None else int(row["priority"])

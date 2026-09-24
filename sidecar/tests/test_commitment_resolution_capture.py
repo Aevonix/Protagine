@@ -497,6 +497,64 @@ async def test_drain_does_not_retake_a_job_it_already_failed_in_this_drain(tmp_p
     assert job["status"] == "pending" and job["attempts"] == 1 and summary["pending_left"] == 1
 
 
+async def test_back_to_back_drains_do_not_spend_a_backed_off_jobs_attempts(tmp_path):
+    """Forced ticks come in bursts, and the router refuses a failed endpoint for its cooldown. A drain
+    may try a backed-off job before its retry time, but that try is uncharged like any early retry:
+    only the scheduled attempts spend MAX_ATTEMPTS, so a blip across three ticks never fails a capture."""
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    down = _Router(ConnectionError("refused"))
+    for _ in range(3):
+        await extractor.drain(down, budget_seconds=2)
+    job = _job(ledger, "t-1")
+    assert (job["status"], job["attempts"]) == ("pending", 1) and job["next_attempt"] >= time.time() + 50
+    summary = await extractor.drain(_Router(_reply(_item("Send Sam the recap", due_at=_iso(hours=1)))),
+                                    budget_seconds=2)
+    assert summary["recorded"] == 1 and len(_open(cstore)) == 1
+
+
+async def test_a_drain_retries_an_unusable_answer_within_its_budget(tmp_path):
+    """An unusable answer is retried at once (charged, capped at three) inside the same drain, so the
+    tick decides over the landed row rather than over a store one retry short."""
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    router = _Router(SimpleNamespace(content="Nothing worth recording, I think."),
+                     _reply(_item("Send Sam the recap", due_at=_iso(hours=1))))
+    summary = await extractor.drain(router, budget_seconds=2)
+    assert summary["recorded"] == 1 and len(router.calls) == 2 and _job(ledger, "t-1")["attempts"] == 2
+
+
+async def test_the_prompt_carries_the_speaker_and_the_turns_local_time(tmp_path, monkeypatch):
+    """Who spoke decides obligor and counterpart, and the zone of the turn decides what "3pm" is: the
+    job keeps the zone the turn was recorded with, and the prompt shows both."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", PERSON)
+    cstore = CommitmentStore(db_path=tmp_path / "c.db")
+    ledger = TurnIdempotencyLedger(tmp_path / "ledger.db")
+    extractor = CommitmentExtractor(ledger, lambda: cstore, aliases=lambda contact: ["Sam Iqbal"])
+    for turn_id, person in (("t-1", "p-07"), ("t-2", PERSON)):
+        ledger.record_source(turn_id, contact_id=person, session_id=f"s-{person}", messages=[
+            {"role": "user", "content": "I'll have the signed form to you by 3pm."},
+            {"role": "assistant", "content": "Thanks."}],
+            occurred_at="2026-09-24T09:28:41+00:00", timezone_name="America/New_York")
+    router = _Router(_reply())
+    assert await extractor.process_one(router) and await extractor.process_one(router)
+    contact, owner = router.prompt(0), router.prompt(1)
+    assert "Speaker: contact p-07 (Sam Iqbal), not the owner" in contact
+    assert "Speaker: the owner" in owner and "p-07" not in owner
+    for prompt in (contact, owner):
+        assert "Turn time: 2026-09-24T09:28:41+00:00 (local: Thu 2026-09-24 05:28 EDT, America/New_York)" in prompt
+
+
+def test_the_examples_resolve_every_clock_time_in_one_zone():
+    """The few-shot examples state one zone and keep to it: 9am, 4pm, half three, noon and five all
+    map with the same offset, so the model never learns two conventions for "3pm"."""
+    system = extract.SYSTEM
+    assert "UTC-4" in system
+    for due in ("T13:00:00", "T20:00:00", "T19:30:00", "T16:00:00", "T21:00:00"):
+        assert due in system, due
+    assert "T12:00:00" not in system and "T17:00:00" not in system
+
+
 async def test_drain_without_a_usable_router_only_polls_leased_rows(tmp_path):
     cstore, ledger, extractor = _setup(tmp_path)
     _turn(ledger, "t-1", "I'll send Sam the recap by five.")

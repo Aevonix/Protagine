@@ -53,6 +53,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from protagine.util.model_output import final_text
 
@@ -84,7 +85,8 @@ POLL_SECONDS = 0.1
 SYSTEM = (
     "You audit ONE finished assistant turn and extract any follow-up worth recording, as STRICT JSON.\n"
     "You get what the person SAID and what the assistant REPLIED, the recent conversation before it, and the "
-    "person's already-recorded OPEN items, numbered. Decide only from the literal words.\n\n"
+    "person's already-recorded OPEN items, numbered. The Speaker line says who the person is: the assistant's "
+    "owner, or a contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later "
     "(\"remind me to X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\").\n"
@@ -123,7 +125,8 @@ SYSTEM = (
     "- \"Do not remind me about X for now\" / \"park X, I'll say when it is live again\" is a HOLD: \"reschedule\" "
     "the listed item with due_at null. A hold is never a reminder and never a cancel. Reinstating a held item "
     "(\"remind me about X again, at T\") is \"reschedule\" with the new time, not a new item.\n\n"
-    "due_at: resolve relative times against the turn time given. No clear time means due_at null. Something "
+    "due_at: resolve relative and clock times against the turn time and the local time shown with it (a bare "
+    "\"3pm\" is 3pm in that zone) and write due_at in UTC. No clear time means due_at null. Something "
     "that should happen only if another event happens first (\"only if they write again\") gets due_at null. "
     "Two deliverables or two dates in one turn are two items. When the person asks for a word BEFORE a deadline "
     "(\"give me a heads-up ten minutes before\", \"warn me at half three\"), due_at stays the deadline and metadata is "
@@ -132,11 +135,12 @@ SYSTEM = (
     "counterpart: for a NEW item, the other party, the one it is owed to or who owes it, written exactly as the "
     "conversation identifies them (a contact id such as p-07, a name, or a handle); \"owner\" when the other party is "
     "the assistant's owner and no name is given; null when there is no other party. null for every update.\n"
-    "obligor: for a NEW item, who owes the work: \"owner\" when the person is the assistant's owner and owes it "
-    "themselves (their own promise, a reminder they asked for, a word they want if something does not turn up); "
+    "obligor: for a NEW item, who owes the work: \"owner\" when the assistant's owner owes it themselves (their "
+    "own promise, a reminder they asked for, a word they want if something does not turn up); "
     "\"assistant\" when the assistant took the work on (\"I'll send you X by 3pm\", a deliverable, a chase the "
     "owner handed to the assistant: \"ask them yourself, leave me out of it\"); otherwise the other party who "
-    "promised it, written as counterpart is. null for every update.\n"
+    "promised it, written as counterpart is (a contact who is the Speaker and promises something: their contact "
+    "id). null for every update.\n"
     "Do NOT record small talk, questions, hypotheticals, vague intentions, an obligation between OTHER people "
     "that the person does not own, or anything the reply already fully handled. A dated request that came from "
     "someone else (in the recent conversation or an inbound message) and that the person now takes on IS the "
@@ -156,7 +160,7 @@ SYSTEM = (
     "\"cognition\" + metadata null (or the heads-up metadata when one was asked for) for case 1, and "
     "metadata null for every update, unless the turn states a NEW heads-up time for a rescheduled item (then the "
     "heads-up metadata; an unchanged heads-up moves with the deadline by itself).\n\n"
-    "Examples:\n"
+    "Examples (the person's local zone there is UTC-4: 9am local is 13:00Z):\n"
     "They said: Remind me to call the dentist Friday at 9am. | Assistant replied: Got it.\n"
     '[{"action":"create","target":null,"description":"Remind them to call the dentist Friday 9am",'
     '"due_at":"2026-06-26T13:00:00+00:00","priority":70,"source_type":"cognition","metadata":null,'
@@ -170,9 +174,9 @@ SYSTEM = (
     '[{"action":"create","target":null,"description":"Send Kim the invoice","due_at":"2026-06-26T20:00:00+00:00",'
     '"priority":70,"source_type":"cognition","metadata":{"heads_up_at":"2026-06-26T19:30:00+00:00"},'
     '"listed_due":null,"counterpart":"Kim","obligor":"owner"}]\n'
-    "They said (a message from contact p-07): I'll have the signed form to you by Friday. | "
+    "Speaker: contact p-07, not the owner. They said: I'll have the signed form to you by five on Friday. | "
     "Assistant replied: Thanks, I'll pass that on.\n"
-    '[{"action":"create","target":null,"description":"p-07 sends the signed form","due_at":"2026-06-26T17:00:00+00:00",'
+    '[{"action":"create","target":null,"description":"p-07 sends the signed form","due_at":"2026-06-26T21:00:00+00:00",'
     '"priority":60,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"owner",'
     '"obligor":"p-07"}]\n'
     "They said: If p-05 has not confirmed the venue by 5pm, tell them: The booking lapses tonight, please "
@@ -204,23 +208,23 @@ SYSTEM = (
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
     "[]   (a plain text-me in chat is already satisfied by the reply)\n"
-    "With open item [1] Send Sam the build recap (due 2026-06-26T17:00:00+00:00):\n"
+    "With open item [1] Send Sam the build recap (due 2026-06-26T21:00:00+00:00):\n"
     "They said: Sam needs the recap by noon now, not five. | Assistant replied: Noted.\n"
-    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":"2026-06-26T12:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T17:00:00+00:00",'
+    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":"2026-06-26T16:00:00+00:00",'
+    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00",'
     '"counterpart":null,"obligor":null}]\n'
     "They said: Sam wrote back that the recap arrived, all good. | Assistant replied: Great.\n"
     '[{"action":"complete","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T17:00:00+00:00","counterpart":null,'
+    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
     '"obligor":null}]\n'
     "They said: Sam says forget the recap, the meeting is off. | Assistant replied: Understood.\n"
     '[{"action":"cancel","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T17:00:00+00:00","counterpart":null,'
+    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
     '"obligor":null}]\n'
     "They said: Stop reminding me about the recap for now, I'll tell you when it is back on. | "
     "Assistant replied: OK.\n"
     '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T17:00:00+00:00","counterpart":null,'
+    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
     '"obligor":null}]\n'
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
     "[]   (a stall changes nothing)")
@@ -259,7 +263,8 @@ def initialize(conn) -> None:
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
         lease_token TEXT NOT NULL DEFAULT '', disposition TEXT, error TEXT,
-        hold_until REAL NOT NULL DEFAULT 0, enqueued_at REAL NOT NULL DEFAULT 0)''')
+        hold_until REAL NOT NULL DEFAULT 0, enqueued_at REAL NOT NULL DEFAULT 0,
+        timezone TEXT NOT NULL DEFAULT '')''')
     columns = {row[1] for row in conn.execute("PRAGMA table_info(commitment_runs)").fetchall()}
     # ``hold_until``: while a job backs off, the person's later jobs are held only until this time;
     # after it the worker retries the job early. Rows from before the column count as held out.
@@ -269,16 +274,20 @@ def initialize(conn) -> None:
     # stuck. A table from before the column carries 0, which reads as "unknown".
     if "enqueued_at" not in columns:
         conn.execute("ALTER TABLE commitment_runs ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0")
+    # The zone the turn was recorded in, so "3pm" resolves to the person's 3pm. Rows from before the
+    # column carry '' and read as the configured communication zone.
+    if "timezone" not in columns:
+        conn.execute("ALTER TABLE commitment_runs ADD COLUMN timezone TEXT NOT NULL DEFAULT ''")
     # The claim reads unfinished rows twice per candidate (the row itself, and any earlier one of the
     # same person); finished rows are the bulk of the table and are never among them.
     conn.execute("CREATE INDEX IF NOT EXISTS commitment_runs_status ON commitment_runs(status)")
 
 
-def enqueue(conn, turn_id, contact_id, messages, *, scope) -> None:
+def enqueue(conn, turn_id, contact_id, messages, *, scope, timezone_name=None) -> None:
     """A person-scoped turn with the person's own words is a capture job."""
     if contact_id and scope == "person" and any(m.get("role") == "user" for m in messages):
-        conn.execute("INSERT OR IGNORE INTO commitment_runs(turn_id, enqueued_at) VALUES (?, ?)",
-                     (turn_id, time.time()))
+        conn.execute("INSERT OR IGNORE INTO commitment_runs(turn_id, enqueued_at, timezone) VALUES (?, ?, ?)",
+                     (turn_id, time.time(), timezone_name or ""))
 
 
 def erase_removed(conn, turn_id, session_id, retained) -> None:
@@ -356,11 +365,27 @@ def _output_defect(error: BaseException) -> Optional[str]:
     return None
 
 
+def _local(turn_time: str, timezone_name: str) -> str:
+    """The turn's wall-clock time in the person's zone, or '' when either is unreadable."""
+    when = _utc(turn_time)
+    try:
+        zone = ZoneInfo(timezone_name) if timezone_name else None
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = None
+    if when is None or zone is None:
+        return ""
+    return f"{when.astimezone(zone).strftime('%a %Y-%m-%d %H:%M %Z')}, {timezone_name}"
+
+
 def build_prompt(*, user_message: str, assistant_message: str, conversation_text: str,
-                 existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]], turn_time: str = "") -> str:
+                 existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]], turn_time: str = "",
+                 timezone_name: str = "", speaker: str = "") -> str:
     parts = []
     if turn_time:
-        parts.append(f"Turn time: {turn_time}\n")
+        local = _local(turn_time, timezone_name)
+        parts.append(f"Turn time: {turn_time}" + (f" (local: {local})" if local else "") + "\n")
+    if speaker:
+        parts.append(f"Speaker: {speaker}\n")
     if conversation_text:
         parts.append(f"Recent conversation (earlier turns, oldest first):\n{conversation_text}\n")
     parts.append("This turn, verbatim:\n"
@@ -693,10 +718,11 @@ class CommitmentExtractor:
         The order never becomes a stall. A job backing off after a transport
         failure holds the person's later jobs only until its ``hold_until``;
         past that, with a later job of the same person waiting, it is taken
-        early. Such an attempt is uncharged (``charged`` False): only the
-        scheduled attempts spend the job's ``MAX_ATTEMPTS``, so a dead
-        endpoint still gets its full backoff before the job is failed, while
-        a blip costs the person's captures seconds.
+        early. Such an attempt is uncharged (``charged`` False), and so is a
+        drain's early attempt (``ignore_backoff``): only the scheduled attempts
+        spend the job's ``MAX_ATTEMPTS``, so a dead endpoint still gets its
+        full backoff before the job is failed, while a blip costs the person's
+        captures seconds, however many ticks fall inside it.
         """
         now = self.clock()
         if ignore_backoff:
@@ -707,11 +733,11 @@ class CommitmentExtractor:
                        "WHERE ls.contact_id=s.contact_id AND l.rowid>r.rowid AND l.status IN ('pending','running'))))")
             pending_params = [now, now]
         exclude = f" AND r.turn_id NOT IN ({','.join('?' for _ in skip)})" if skip else ""
-        params = [int(ignore_backoff), now, *pending_params, now, *skip]
+        params = [now, *pending_params, now, *skip]
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT r.*, (? OR r.status='running' OR r.next_attempt<=?) AS charged "
+                "SELECT r.*, (r.status='running' OR r.next_attempt<=?) AS charged "
                 "FROM commitment_runs r LEFT JOIN turn_sources s ON s.turn_id=r.turn_id "
                 f"WHERE ({pending} OR (r.status='running' AND r.lease_until<=?)){exclude} "
                 "AND NOT EXISTS (SELECT 1 FROM commitment_runs e JOIN turn_sources es ON es.turn_id=e.turn_id "
@@ -754,6 +780,11 @@ class CommitmentExtractor:
                              (now + BACKOFF_SECONDS * job["attempts"], now + HOLD_RETRY_SECONDS, error[:200],
                               job["turn_id"], job["lease_token"]))
 
+    def _backing_off(self, turn_id: str) -> bool:
+        with closing(self.ledger._connect()) as conn:
+            row = conn.execute("SELECT status, next_attempt FROM commitment_runs WHERE turn_id=?", (turn_id,)).fetchone()
+        return row is not None and row["status"] == "pending" and row["next_attempt"] > self.clock()
+
     def _release(self, job) -> None:
         """A cancelled attempt (a drain's budget, a shutdown) hands the job straight back, uncharged."""
         with closing(self.ledger._connect()) as conn, conn:
@@ -792,6 +823,22 @@ class CommitmentExtractor:
                 own.append(row)
                 seen.add(row.get("id"))
         return own
+
+    async def _speaker(self, person_id: str) -> str:
+        """Who "They said" is, for the obligor and counterpart rules: the owner, or a named contact."""
+        from protagine.identity import get_owner_contact_id
+        if person_id == (get_owner_contact_id() or ""):
+            return "the owner"
+        names: List[str] = []
+        if self.aliases is not None:
+            try:
+                more = self.aliases(person_id)
+                if inspect.isawaitable(more):
+                    more = await more
+                names = [str(name) for name in (more or ()) if str(name or "").strip() and str(name) != person_id]
+            except Exception as error:
+                logger.debug("contact aliases unavailable for %s (%s)", person_id, type(error).__name__)
+        return f"contact {person_id}" + (f" ({', '.join(names[:2])})" if names else "") + ", not the owner"
 
     def _source(self, turn_id: str) -> Optional[Dict[str, Any]]:
         with closing(self.ledger._connect()) as conn:
@@ -875,9 +922,10 @@ class CommitmentExtractor:
         row is taken before its retry time); a row leased elsewhere, by the
         projection worker on its own loop or thread, is polled until its lease
         clears. ``_claim`` leases under ``BEGIN IMMEDIATE`` on the shared
-        ledger, so neither side processes a job the other holds. A job this
-        drain already attempted is not taken again within the same drain, so a
-        dead endpoint cannot burn a job's attempts in one tick.
+        ledger, so neither side processes a job the other holds. A job left
+        backing off (a transport failure) is not taken again within the same
+        drain, so a dead endpoint is probed once per tick; an unusable answer
+        is retried at once, as the worker retries it.
         """
         started = time.monotonic()
         summary: Dict[str, Any] = {"recorded": 0, "processed": 0, "items": 0, "waited_seconds": 0.0,
@@ -891,11 +939,12 @@ class CommitmentExtractor:
                 break
             job = self._claim(0, ignore_backoff=ignore_backoff, skip=tuple(attempted)) if usable else None
             if job is not None:
-                attempted.append(job["turn_id"])
                 try:
                     result = await asyncio.wait_for(self._run(job, router, commitments), remaining)
                 except asyncio.TimeoutError:
                     break
+                if self._backing_off(job["turn_id"]):
+                    attempted.append(job["turn_id"])
                 summary["processed"] += 1
                 landed = _landed(result)
                 summary["items"] += landed
@@ -923,10 +972,13 @@ class CommitmentExtractor:
             person_id = source["contact_id"]
             existing = await self._existing(commitments, person_id)
             rejections = commitments.recent_rejections(limit=6) or []
+            from protagine.util.temporal import resolve_communication_timezone
             prompt = build_prompt(user_message=user_message, assistant_message=assistant_message,
                                   conversation_text=self._recent_turns(source), existing=existing,
                                   rejections=rejections,
-                                  turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""))
+                                  turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""),
+                                  timezone_name=str(job.get("timezone") or resolve_communication_timezone()),
+                                  speaker=await self._speaker(person_id))
             deadline = router.function_deadline_seconds(context={"task": TASK})
             if (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
                     or not 0 < deadline <= 600):

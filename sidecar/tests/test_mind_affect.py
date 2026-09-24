@@ -620,6 +620,17 @@ def test_started_optional_undated_and_distant_obligations_do_not_worry(world):
     assert world.level("affect.worry") == pytest.approx(0.4), "the deadline rule never lifts worry above 0.3"
 
 
+def test_a_contacts_promise_captured_on_their_turn_is_not_the_owners_load(world):
+    """Affect reads who owes a row as duty does: a promise captured on a contact's turn with no
+    obligor is that contact's, so it neither loads nor worries the agent; the owner's own row is."""
+    world.commitments.add("theirs", hours=2)
+    world.commitments.rows[-1].update(person_id="p-07", source_type="cognition")
+    world.commitments.add("mine", hours=2)
+    world.commitments.rows[-1].update(source_type="cognition")
+    world.update()
+    assert [o.id for o in world.affect.view().obligations] == ["mine"]
+
+
 def test_load_counts_near_owed_obligations_running_work_failures_and_asks(world):
     for ident in ("a", "b", "c"):
         world.commitments.add(ident, hours=30)
