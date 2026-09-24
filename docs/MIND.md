@@ -46,7 +46,11 @@ The design is in
    the work (`metadata.obligor`: `owner` for the owner's own promise or
    reminder, `assistant` when the assistant took it on, or the other party
    who promised it); the duty drive reads that to tell a reminder from a
-   task. One person's capture jobs land in order: a later job waits for an
+   task. An item whose obligor and counterpart are two different named
+   third parties (neither is the owner, by any name the owner goes by, nor
+   the assistant) is an obligation between other people and is not
+   recorded; a deliverable or a message the assistant sends is never one.
+   One person's capture jobs land in order: a later job waits for an
    earlier one still pending, running or backing off. The order never
    becomes a stall: a job backing off after a transport failure holds the
    person's later jobs for at most 15 s at a time, after which the worker
@@ -123,7 +127,11 @@ The design is in
    (`metadata.obligor: assistant`, "I'll send you the report by 3pm"), to
    the owner or to a contact, and work the agent itself must do (a row
    created through the API or by another subsystem) keep the task form; an
-   owed deliverable keeps its own message.
+   owed deliverable keeps its own message. A row whose obligor and
+   counterpart are two different named third parties, neither of them the
+   row's own person, raises nothing: it is someone else's obligation, not
+   one to remind the owner of (capture no longer records such rows; this
+   covers rows stored before it stopped, or by another writer).
    When the row carries a heads-up time and `heads_up_at <= now < due_at`,
    duty raises a `commitment_due_soon` message first; once that went out,
    the overdue reminder for the same row waits `mind.heads_up_grace_minutes`

@@ -52,7 +52,7 @@ import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from protagine.util.model_output import final_text
@@ -134,7 +134,9 @@ SYSTEM = (
     "never a second one.\n"
     "counterpart: for a NEW item, the other party, the one it is owed to or who owes it, written exactly as the "
     "conversation identifies them (a contact id such as p-07, a name, or a handle); \"owner\" when the other party is "
-    "the assistant's owner and no name is given; null when there is no other party. null for every update.\n"
+    "the assistant's owner and no name is given, as for a contact's promise the owner is waiting on or relies on; "
+    "null when there is no other party. An obligation between two other people names the other of the two, never "
+    "\"owner\". null for every update.\n"
     "obligor: for a NEW item, who owes the work: \"owner\" when the assistant's owner owes it themselves (their "
     "own promise, a reminder they asked for, a word they want if something does not turn up); "
     "\"assistant\" when the assistant took the work on (\"I'll send you X by 3pm\", a deliverable, a chase the "
@@ -142,9 +144,10 @@ SYSTEM = (
     "promised it, written as counterpart is (a contact who is the Speaker and promises something: their contact "
     "id). null for every update.\n"
     "Do NOT record small talk, questions, hypotheticals, vague intentions, an obligation between OTHER people "
-    "that the person does not own, or anything the reply already fully handled. A dated request that came from "
-    "someone else (in the recent conversation or an inbound message) and that the person now takes on IS the "
-    "person's commitment with that deadline, whatever the assistant replied. Fewer items beats wrong items.\n\n"
+    "that neither the owner nor the assistant owes or is owed, or anything the reply already fully handled. A "
+    "dated request that came from someone else (in the recent conversation or an inbound message) and that the "
+    "person now takes on IS the person's commitment with that deadline, whatever the assistant replied. Fewer "
+    "items beats wrong items.\n\n"
     "Output ONLY JSON, nothing else (no prose, no markdown, no code fence): an array, or an object "
     '{"items": [...]} when a schema asks for one. Empty array [] when nothing qualifies. Each element:\n'
     '{"action": "create" | "reschedule" | "complete" | "cancel", "target": open item number or null, '
@@ -204,6 +207,8 @@ SYSTEM = (
     "[]   (nothing is sent until the owner says so)\n"
     "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
     "[]   (a message to pass on now is the reply's own job)\n"
+    "They said: p-03 is off, so p-06 now covers the stock report p-03 owed p-02. | Assistant replied: Noted.\n"
+    "[]   (between other people: theirs, not the owner's)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
@@ -547,7 +552,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]],
                  source_context: str = "turn commitment extraction", turn_id: str = "",
                  owner_id: Optional[str] = None, owner_text: Optional[str] = None,
-                 turn_time: Optional[datetime] = None) -> Dict[str, Any]:
+                 turn_time: Optional[datetime] = None, owner_names: Iterable[str] = (),
+                 assistant_names: Iterable[str] = (), speaker_names: Iterable[str] = ()) -> Dict[str, Any]:
     """Apply what the model proposed: create new items, act on listed ones.
 
     Deadlines are resolved against the turn's own time, so a promise captured
@@ -566,8 +572,12 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     only then, and never from anyone else's turn. ``owner_text`` is what the person said in the
     turn: a notice's words must be found in it. ``turn_time`` is when the turn happened: a message
     to a third party due within ``IMMEDIATE_RELAY`` of it is a relay the reply itself passes on,
-    never recorded (it would reach them twice).
+    never recorded (it would reach them twice). A new item whose obligor and counterpart are two
+    different named third parties is an obligation between other people and is never recorded
+    (``parties.between_others``): ``owner_names`` are the names the owner goes by besides ``owner_id``,
+    ``assistant_names`` the assistant's, and ``speaker_names`` the turn's own person's (one person).
     """
+    from protagine.commitments.parties import ASSISTANT_KINDS, between_others
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
     listed = list(existing[:OPEN_ITEMS_LISTED])
     known = [_normalize_desc(c.get("description") or "") for c in existing]
@@ -580,7 +590,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     created: List[str] = []
     updated: List[str] = []
     resolved: List[str] = []
-    skipped = ignored = conflicts = 0
+    skipped = ignored = conflicts = others = 0
+    owners = [name for name in (owner_id, *owner_names) if name]
     for item in items:
         description = str(item.get("description") or "").strip()
         action = str(item.get("action") or "create").strip().lower()
@@ -619,6 +630,12 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             continue
         if not description:
             continue
+        if (str((stated or {}).get("kind") or "") not in ASSISTANT_KINDS
+                and between_others(item.get("obligor"), item.get("counterpart"), owner_names=owners,
+                                   assistant_names=assistant_names, same=speaker_names)):
+            logger.info("commitment candidate dropped for %s: an obligation between two other people", person_id)
+            others += 1
+            continue
         norm = _normalize_desc(description)
         if any(_similar_desc(norm, k) for k in known):
             skipped += 1
@@ -653,7 +670,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             created.append(row.get("id"))
         known.append(norm)
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
-            "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts}
+            "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
+            "between_others": others}
 
 
 def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -798,25 +816,18 @@ class CommitmentExtractor:
             conn.execute("UPDATE commitment_runs SET status='pending',next_attempt=?,error=?,lease_until=0 "
                          "WHERE turn_id=? AND lease_token=?", (self.clock(), reason, job["turn_id"], job["lease_token"]))
 
-    async def _existing(self, commitments, person_id: str) -> List[Dict[str, Any]]:
+    async def _existing(self, commitments, person_id: str, names: List[str]) -> List[Dict[str, Any]]:
         """The open items this turn may act on: the person's own, then those recorded with the person
-        as counterpart (by contact id, by the configured owner's "owner", by any alias the lookup adds)."""
+        as counterpart (by contact id, by the configured owner's "owner", by ``names``, the other names
+        the alias lookup gave the person)."""
         own = list(commitments.get_pending_for_person(person_id) or [])
         related = getattr(commitments, "get_open_for_counterpart", None)
         if related is None:
             return own
-        aliases = {person_id}
+        aliases = {person_id, *names}
         from protagine.identity import get_owner_contact_id
         if person_id == (get_owner_contact_id() or ""):
             aliases.add("owner")
-        if self.aliases is not None:
-            try:
-                more = self.aliases(person_id)
-                if inspect.isawaitable(more):
-                    more = await more
-                aliases.update(str(name) for name in (more or ()) if str(name or "").strip())
-            except Exception as error:
-                logger.debug("contact aliases unavailable for %s (%s)", person_id, type(error).__name__)
         seen = {row.get("id") for row in own}
         for row in related(sorted(aliases)) or []:
             if row.get("id") not in seen and row.get("person_id") != person_id:
@@ -824,20 +835,24 @@ class CommitmentExtractor:
                 seen.add(row.get("id"))
         return own
 
-    async def _speaker(self, person_id: str) -> str:
+    async def _names(self, contact_id: str) -> List[str]:
+        """The other names a contact goes by (display name, handles), or none when the lookup fails."""
+        if not contact_id or self.aliases is None:
+            return []
+        try:
+            more = self.aliases(contact_id)
+            if inspect.isawaitable(more):
+                more = await more
+        except Exception as error:
+            logger.debug("contact aliases unavailable for %s (%s)", contact_id, type(error).__name__)
+            return []
+        return [str(name) for name in (more or ()) if str(name or "").strip() and str(name) != contact_id]
+
+    async def _speaker(self, person_id: str, names: List[str]) -> str:
         """Who "They said" is, for the obligor and counterpart rules: the owner, or a named contact."""
         from protagine.identity import get_owner_contact_id
         if person_id == (get_owner_contact_id() or ""):
             return "the owner"
-        names: List[str] = []
-        if self.aliases is not None:
-            try:
-                more = self.aliases(person_id)
-                if inspect.isawaitable(more):
-                    more = await more
-                names = [str(name) for name in (more or ()) if str(name or "").strip() and str(name) != person_id]
-            except Exception as error:
-                logger.debug("contact aliases unavailable for %s (%s)", person_id, type(error).__name__)
         return f"contact {person_id}" + (f" ({', '.join(names[:2])})" if names else "") + ", not the owner"
 
     def _source(self, turn_id: str) -> Optional[Dict[str, Any]]:
@@ -970,7 +985,8 @@ class CommitmentExtractor:
                 self._finish(job, "no_user_message")
                 return {}
             person_id = source["contact_id"]
-            existing = await self._existing(commitments, person_id)
+            speaker_names = await self._names(person_id)
+            existing = await self._existing(commitments, person_id, speaker_names)
             rejections = commitments.recent_rejections(limit=6) or []
             from protagine.util.temporal import resolve_communication_timezone
             prompt = build_prompt(user_message=user_message, assistant_message=assistant_message,
@@ -978,7 +994,7 @@ class CommitmentExtractor:
                                   rejections=rejections,
                                   turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""),
                                   timezone_name=str(job.get("timezone") or resolve_communication_timezone()),
-                                  speaker=await self._speaker(person_id))
+                                  speaker=await self._speaker(person_id, speaker_names))
             deadline = router.function_deadline_seconds(context={"task": TASK})
             if (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
                     or not 0 < deadline <= 600):
@@ -1002,11 +1018,17 @@ class CommitmentExtractor:
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)
             self._retry(job, defect or type(error).__name__, immediate=defect is not None)
             return {}
-        from protagine.identity import get_owner_contact_id
+        from protagine.identity import get_owner_contact_id, get_owner_name, get_persona_name
+        owner_id = get_owner_contact_id()
+        # The names the owner and the assistant go by, so an item naming either is never read as one
+        # between two other people; the speaker's own names are one person.
+        owner_names = [get_owner_name(""), *(await self._names(owner_id or ""))]
         result = record_items(items, person_id=person_id, commitment_store=commitments, existing=existing,
-                              rejections=rejections, turn_id=job["turn_id"], owner_id=get_owner_contact_id(),
+                              rejections=rejections, turn_id=job["turn_id"], owner_id=owner_id,
                               owner_text=user_message,
-                              turn_time=_utc(str(source.get("occurred_at") or source.get("ingested_at") or "")))
+                              turn_time=_utc(str(source.get("occurred_at") or source.get("ingested_at") or "")),
+                              owner_names=owner_names, assistant_names=[get_persona_name("")],
+                              speaker_names=[person_id, *speaker_names])
         if result.get("conflicts") and job.get("error") != "stale_snapshot":
             # A row moved between the listing and the write (the owner corrected it while the model
             # was thinking): what landed stays, the job runs once more against the fresh state.

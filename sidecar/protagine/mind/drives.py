@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from protagine.commitments.parties import ASSISTANT_KINDS, between_others, party
 from protagine.contacts.comms import evaluate_outreach
 
 from .rank import Candidate
@@ -281,6 +282,23 @@ def _obligor(row: Dict[str, Any], metadata: Dict[str, Any], person: str | None, 
     return "owner" if owner_id and stated == owner_id else stated
 
 
+def owed_between_others(row: Dict[str, Any], *, owner_id: str | None) -> bool:
+    """A row whose obligor and counterpart are two different named third parties: an obligation
+    between other people, which the owner is never reminded of. Capture no longer records one
+    (``commitments.parties``); this refuses those stored before it did, or by any other writer. The
+    mind holds none of a contact's other names, so a row where either party is the row's own person
+    (possibly under another spelling) is kept, as is any row whose kind makes it the assistant's work."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    if str(metadata.get("kind") or "") in ASSISTANT_KINDS:
+        return False
+    obligor, counterpart = metadata.get("obligor"), metadata.get("counterpart")
+    owners = [owner_id] if owner_id else []
+    own = party(row.get("person_id"), owner_names=owners)
+    if own is not None and own in {party(obligor, owner_names=owners), party(counterpart, owner_names=owners)}:
+        return False
+    return between_others(obligor, counterpart, owner_names=owners)
+
+
 def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None,
                          people_on: bool = True) -> Candidate:
     """The duty candidate of a commitment past its time. With the people faculty off an owner's
@@ -421,6 +439,8 @@ def duty(inputs: DriveInputs) -> DriveResult:
     for row in inputs.commitments:
         if str(row.get("status") or "pending") not in {"pending", "overdue"}:
             continue
+        if owed_between_others(row, owner_id=inputs.owner_id):
+            continue   # someone else's obligation: no heads-up, no reminder, no task
         if inputs.people_on and unresolved_recipient(row, owner_id=inputs.owner_id) is not None:
             # The tick could not resolve the third party the owner named (for a message or a
             # cadence, dated or not): the owner is asked who they are now; the row waits.
@@ -741,6 +761,7 @@ __all__ = ["CHECK_IN_TYPES", "DEFAULT_WEIGHTS", "DRIVES", "DRIVE_FUNCTIONS", "DU
            "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "cadence_confirm_candidate", "commitment_candidate", "curiosity",
            "duty", "effective_weights",
            "enabled", "failure_signature", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
-           "link_proposal_candidate", "mastery", "period", "recipient_unknown_candidate", "reply_wait_candidate",
+           "link_proposal_candidate", "mastery", "owed_between_others", "period", "recipient_unknown_candidate",
+           "reply_wait_candidate",
            "research_candidate", "run", "schedule_key", "slug", "social", "span", "stale_task_candidate",
            "stalled_goal_candidate", "task_body", "unresolved_recipient", "upkeep", "weights"]
