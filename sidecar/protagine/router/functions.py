@@ -32,7 +32,7 @@ TASK_ROLES = {
     'tom_intention_extraction': 'extraction',
     'tom_fact_extraction': 'extraction', 'tom_engagement_extraction': 'extraction',
     'workspace_thinking': 'reasoning', 'internal_thinking': 'reasoning',
-    'toolsmith_draft': 'coding', 'skill_distillation': 'judging',
+    'skill_distillation': 'judging',
 }
 
 

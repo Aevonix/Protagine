@@ -676,26 +676,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Controlled learning init failed closed: %s", exc)
 
-    # --- Toolsmith (Mind M1): self-built, sandbox-verified tools ---
-    try:
-        from protagine.toolsmith import (
-            Toolsmith, ToolRegistry, toolsmith_enabled,
-        )
-        from protagine.api.routers.host import set_toolsmith
-        if toolsmith_enabled():
-            _tool_registry = ToolRegistry(
-                db_path=str(state_dir / "protagine-toolsmith.db"),
-                library_root=str(state_dir / "toolsmith_library"))
-            _toolsmith = Toolsmith(_tool_registry)
-            set_toolsmith(_toolsmith)
-            logger.info("Toolsmith ready (mode=%s, db=%s)",
-                        os.environ.get("PROTAGINE_TOOLSMITH", "off"),
-                        state_dir / "protagine-toolsmith.db")
-        else:
-            logger.info("Toolsmith disabled (PROTAGINE_TOOLSMITH=off)")
-    except Exception as exc:
-        logger.warning("Toolsmith init failed: %s", exc)
-
     # --- Expectation engine (Mind M3a): predictions + surprise + calibration ---
     try:
         from protagine.self_model.expectations import (

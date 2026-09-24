@@ -278,8 +278,6 @@ def broadcast_event(event: dict) -> Optional[dict]:
         return frame
 
 
-
-
 #: Why semantic recall is off although it was configured: set by the server when the
 #: embedder or the vector store failed to initialise, cleared when they come up.
 _embed_failure: Optional[str] = None
@@ -4372,8 +4370,6 @@ async def _ensure_channel_id(
     return f"{gateway or 'unknown'}:{contact}"
 
 
-
-
 _comms_log = None
 
 
@@ -4644,14 +4640,6 @@ def set_experiments(e) -> None:
     _experiments = e
 
 
-_toolsmith = None
-
-
-def set_toolsmith(t) -> None:
-    global _toolsmith
-    _toolsmith = t
-
-
 _situation_store = None
 _situation_reducer = None
 
@@ -4744,199 +4732,6 @@ async def get_expectations(limit: int = 50) -> dict:
         return out
     except Exception as exc:
         return {"available": True, "error": str(exc)}
-
-
-@router.get("/self/tools")
-async def list_tools(status: str = "") -> dict:
-    """Self-built tools: the toolsmith registry (draft/verified/shadow/live/
-    retired/rejected), each with usage and verification detail."""
-    if _toolsmith is None:
-        return {"available": False}
-    try:
-        tools = _toolsmith.registry.list(status=status or None)
-        projected = []
-        for tool in tools:
-            item = tool.public()
-            audit = _toolsmith.registry.audit_projection(tool.tool_id)
-            item["clean_comparison_receipts"] = sum(
-                1 for row in audit["shadow_comparisons"] if row.get("success"))
-            item["graduation_receipts"] = len(audit["graduations"])
-            projected.append(item)
-        return {"available": True, "mode": os.environ.get("PROTAGINE_TOOLSMITH", "off"),
-                "trust_stage": _toolsmith.trust_stage(),
-                "tools": projected}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.get("/self/tools/{tool_id}")
-async def get_tool(tool_id: str) -> dict:
-    if _toolsmith is None:
-        return {"available": False}
-    tool = _toolsmith.registry.get(tool_id)
-    if tool is None:
-        raise HTTPException(status_code=404, detail="tool not found")
-    d = tool.public()
-    d["source_code"] = tool.source_code
-    d["test_source"] = tool.test_source
-    audit = _toolsmith.registry.audit_projection(tool_id)
-    clean_comparisons = _toolsmith.registry.clean_comparison_count(tool_id)
-    try:
-        from protagine.toolsmith.engine import _shadow_min
-        shadow_min = _shadow_min()
-    except Exception:
-        shadow_min = 5
-    return {
-        "available": True,
-        "tool": d,
-        "graduation_binding": {
-            "tool_id": tool.tool_id,
-            "candidate_digest": tool.candidate_digest,
-            "artifact_digest": tool.artifact_digest,
-            "clean_comparisons": clean_comparisons,
-            "required_clean_comparisons": shadow_min,
-            "eligible": (
-                tool.status == "shadow"
-                and clean_comparisons >= shadow_min
-                and tool.failures == 0
-            ),
-        },
-        "audit": audit,
-    }
-
-
-class ToolShadowComparisonRequest(BaseModel):
-    capture_id: str
-    captured_input: Dict[str, Any]
-    incumbent_output: Any = None
-    capture_source: str = "captured"
-
-
-class ToolGraduationAuthorityRequest(BaseModel):
-    authority_id: str
-    decision_id: str
-    expected_candidate_digest: str
-    expected_artifact_digest: str
-    issued_at: str
-    expires_at: str
-    max_uses: int = 1
-
-
-def _toolsmith_scoped_authority(
-    request: Request,
-    *,
-    scope: str,
-    owner_required: bool = False,
-) -> tuple[Any, str]:
-    authority = request_authority(request)
-    if not authority.authenticated or authority.anonymous:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "toolsmith_scope_required",
-                "message": "the API key is required",
-            },
-        )
-    owner_person_id = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    if owner_required and (
-        "owner" not in authority.audiences
-        or owner_person_id not in authority.person_ids
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "toolsmith_owner_authority_required",
-                "message": "graduation requires an owner-bound scoped principal",
-            },
-        )
-    return authority, owner_person_id
-
-
-@router.post("/self/tools/{tool_id}/shadow-compare")
-async def compare_shadow_tool(
-    tool_id: str,
-    body: ToolShadowComparisonRequest,
-    request: Request,
-) -> dict:
-    """Record a digest-only same-input incumbent/candidate comparison."""
-
-    if _toolsmith is None:
-        return {"available": False}
-    authority, _ = _toolsmith_scoped_authority(
-        request, scope="toolsmith:evaluate")
-    tool = _toolsmith.registry.get(tool_id)
-    if tool is None:
-        raise HTTPException(status_code=404, detail="tool not found")
-    try:
-        passed, evidence = await _toolsmith.verify_shadow_run(
-            tool,
-            captured_input=body.captured_input,
-            incumbent_output=body.incumbent_output,
-            capture_id=body.capture_id,
-            capture_source=body.capture_source,
-            principal_id=authority.principal_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "shadow_comparison_conflict", "message": str(exc)},
-        ) from exc
-    return {"available": True, "passed": passed, "evidence": evidence}
-
-
-@router.post("/self/tools/{tool_id}/graduate")
-async def graduate_tool(
-    tool_id: str,
-    body: ToolGraduationAuthorityRequest,
-    request: Request,
-) -> dict:
-    """Publish one exact artifact with one owner-scoped bounded authority."""
-
-    if _toolsmith is None:
-        return {"available": False}
-    authority, owner_person_id = _toolsmith_scoped_authority(
-        request, scope="toolsmith:graduate", owner_required=True)
-    try:
-        from protagine.toolsmith.authority import (
-            GraduationAuthorityError,
-            GraduationAuthorityV1,
-        )
-        payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
-        grant = GraduationAuthorityV1.from_request(
-            payload,
-            tool_id=tool_id,
-            principal_id=authority.principal_id,
-            owner_person_id=owner_person_id,
-        )
-        result = _toolsmith.graduate(tool_id, authority=grant)
-    except GraduationAuthorityError as exc:
-        status_code = 404 if exc.code == "tool_not_found" else 409
-        if exc.code in {"owner_authority_required"}:
-            status_code = 403
-        raise HTTPException(
-            status_code=status_code,
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "graduation_conflict", "message": str(exc)},
-        ) from exc
-    return {"available": True, **result}
-
-
-@router.post("/self/tools/{tool_id}/retire")
-async def retire_tool(tool_id: str, reason: str = "owner retired") -> dict:
-    if _toolsmith is None:
-        return {"available": False}
-    ok = _toolsmith.retire(tool_id, reason=reason)
-    if not ok:
-        raise HTTPException(status_code=404, detail="tool not found")
-    return {"available": True, "retired": tool_id}
 
 
 @router.get("/self/experiments")
