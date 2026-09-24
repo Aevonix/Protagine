@@ -84,3 +84,22 @@ def test_full_and_full_people_differ_only_in_the_people_flag_and_the_mind_reads_
     assert minds['on'].composer.enabled is True
     assert minds['off'].faculties['people'] is False and minds['off'].drive_weights['social'] == 0.0
     assert minds['off'].composer.enabled is False
+
+
+async def test_the_plugin_arm_has_a_people_store_on_the_body_clock(tmp_path, monkeypatch):
+    """A real install has a contact store; the benchmark's plugin arm gets one in its state
+    directory for the lifespan, and it stamps times with the shifted body clock the mind ticks
+    on, so a conversation after a clock advance is not read as one from before it."""
+    import time
+    from datetime import datetime, timezone
+    from protagine.api.routers import host
+    before = host._contacts_store
+    shifted = datetime(2031, 3, 4, 12, 0, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(time, 'time', lambda: shifted)
+    async with paired_worker.people_store(tmp_path) as store:
+        assert host._contacts_store is store
+        created = await store.create(display_name='p-02', trust_tier='regular')
+        await store.record_interaction(created.contact_id)
+        seen = await store.get(created.contact_id)
+        assert seen.last_interaction_at.startswith('2031-03-04T12:00') and seen.first_seen_at.startswith('2031-03-04')
+    assert host._contacts_store is before and (tmp_path / 'memory-state' / 'protagine-contacts.db').is_file()
