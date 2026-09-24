@@ -1,10 +1,20 @@
 # Contacts, appraisals and current world state
 
-Protagine keeps one canonical contact identity across verified channel handles.
-Name similarity creates a proposal, never an authoritative merge. The owner can
-correct an exact handle and selected source attribution through `protagine_contacts`.
-The correction preserves its receipt, invalidates dependent projections and
-reconciles surviving sources. A relationship update grants no permission.
+Protagine keeps one canonical contact identity across verified channel handles:
+an E.164 number is one person on every gateway, an email on its lower-cased form.
+Name similarity creates a proposal, never an authoritative merge; the owner
+confirms or rejects it as an ask. Anyone may look people up and propose a link
+through `protagine_people` (`who`, `inspect`, `propose_link`; a guest sees only
+who someone is). Merging two records and setting `may_contact` or a check-in
+cadence are the owner's alone: `protagine_people` `merge`, `set_permission` and
+`set_cadence` in the owner's own session, or `protagine people` on the CLI.
+A merge moves every handle through an identity-correction receipt and the
+dropped record's sources through receipts of their own, so the host's
+reconciliation re-attributes them; recency, cadence and an opt-out survive it.
+The owner can also correct an exact handle and selected source attribution
+(`POST /v1/host/social/contacts/correct-identity`). A correction preserves its
+receipt, invalidates dependent projections and reconciles surviving sources.
+A relationship update grants no permission.
 
 The existing source ledger holds preferences, temporary appraisals and narrow
 person/topic judgments with quotations, contrary evidence, source revisions,
