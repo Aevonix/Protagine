@@ -357,8 +357,11 @@ does not reproduce, and it is what the `affect` family tests.
   extra call.
 - The recency bug is fixed. Rows are read oldest first and the weight decays per row, so today the
   oldest event weighs most (`P/tom/affect.py:335-358`).
-- A negative trend suppresses unsolicited outreach to that person through the existing frustration
-  back-off (`P/delivery/rate_limiter.py:126-135`).
+- A negative trend suppresses unsolicited outreach to that person through the social drive's
+  outreach rule (`evaluate_outreach(affect_declining=...)` in `P/contacts/comms.py`). M5 deleted
+  `P/delivery/` whole, `rate_limiter.py` included (nothing called it): the frustration back-off
+  now holds check-ins only, and an owner-granted message or duty work is never held by a
+  contact's mood.
 
 Flag: `affect`. The faculty claim is `full` vs `full−affect`. The stateless-rules arm decides the
 mechanism: for any consumer where the rules tie the decaying state, that consumer reads the rule
@@ -679,7 +682,11 @@ lesson_ids     json      cost_tokens int      due_at, expires_at
 **`contacts`** gains:
 - `may_contact ∈ {never, ask, auto}`, which replaces `interaction_allowed` and
   `TIER_DEFAULT_INTERACTION`
-- `digest` and `digest_sources`
+- `digest` and `digest_sources` (`["template"]` for the M5 template digest, which never replaces a
+  generated one)
+- `cadence_minutes`: the check-in rhythm the owner set, by `protagine_people set_cadence` or in
+  conversation (a captured `cadence` row); NULL means the social drive estimates it from
+  conversations (C3)
 
 **Judgments** gains `subject_kind`, `audience`, `premises` and `revise_if`. Its lease tables fold
 into the projection worker queue.
@@ -1027,9 +1034,12 @@ inside every run.
 ### 7.6 Budgets and breaker
 
 - **Budgets.** `authority.decide()` enforces the budgets before anything is queued. A budget that
-  is exceeded **defers** the intention; it is not an error. The existing rate limiter adds quiet
-  hours and the per-contact frustration back-off (`P/delivery/rate_limiter.py:110-140`). Hermes
-  enforces runtime limits through kanban `max_runtime_seconds` and `max_retries`.
+  is exceeded **defers** the intention; it is not an error. Quiet hours are the mind's own
+  (`mind.quiet_hours`). The per-contact back-off after ignored check-ins and on a declining mood
+  is the social drive's `evaluate_outreach`, passed to the budget check as the check-in's own
+  cooldown; `P/delivery/rate_limiter.py` was deleted in M5 with nothing calling it, so the
+  back-off covers check-ins only. A message a budget defers is composed when it goes, not before.
+  Hermes enforces runtime limits through kanban `max_runtime_seconds` and `max_retries`.
 - **Breaker.** 3 failures of a class within 24 h demote that class one level, for example act to
   ask. The demotion lasts 72 h or until the owner resets it (`protagine mind reset <class>`),
   whichever comes first. It never promotes above the configured level. About 40 lines are kept

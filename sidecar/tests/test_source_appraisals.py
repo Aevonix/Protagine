@@ -307,41 +307,6 @@ async def test_durable_view_retains_pending_contrary_evidence_until_interval(sta
 
 
 @pytest.mark.asyncio
-async def test_canonical_preference_changes_cached_profiler_and_erasure_removes_it(state, tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock
-    from protagine import identity
-    from protagine.tom.engagement import EngagementStore
-    from protagine.intelligence.relationships.profiler import RelationshipProfiler
-    monkeypatch.setattr(identity, 'get_owner_contact_id', lambda: 'owner')
-    engagement = EngagementStore(tmp_path/'engagement.db', source_ledger=state.ledger)
-    contacts = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(
-        display_name='A contact', trust_tier='regular', interaction_count=5)))
-    profiler = RelationshipProfiler(contacts_store=contacts, engagement_store=engagement,
-        db_path=str(tmp_path/'relationships.db'))
-    try:
-        assert 'concise explanations' not in (await profiler.profile('person')).render()
-        source(state, 'preference', 'I prefer concise explanations.')
-        admitted_preference(state, 'preference')
-        # No new contact interaction or scheduled profile refresh required.
-        assert 'concise explanations' in profiler.cached('person').render()
-        assert engagement.get_profile('person')['dims'] == {}
-        state.ledger.erase_sources(contact_id='person', turn_ids=['preference'])
-        assert 'concise explanations' not in profiler.cached('person').render()
-    finally:
-        engagement._conn.close()
-        profiler._conn.close()
-
-
-@pytest.mark.asyncio
-async def test_retired_numeric_engagement_does_not_call_another_model():
-    from unittest.mock import AsyncMock
-    from protagine.tom.extractor import TomExtractor
-    router = AsyncMock()
-    assert await TomExtractor(router).extract_engagement('I prefer concise explanations.', 'person') is None
-    assert router.mock_calls == []
-
-
-@pytest.mark.asyncio
 async def test_revision_rehydrates_original_quotes_and_erasure_follows_both_sources(state):
     decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
     source(state, 'first', 'The export report claimed completion before output existed.')
@@ -538,3 +503,114 @@ async def test_legacy_preference_is_history_only_and_owner_withdrawal_still_fenc
     state.correct(history[0]['id'], action='withdraw', correction_id='legacy-fix', reason='Incorrect interpretation', actor_id='owner')
     admitted_preference(state, 'preference')
     assert view(state)['records'] == []
+
+
+# ---------------------------------------------------------------------------
+# The contact signal: the speaker's valence and an opt-out, for non-owner speakers only (M5)
+# ---------------------------------------------------------------------------
+
+def with_contact(block):
+    def decide(payload):
+        return {'observations': [], 'incident_decisions': [], 'contact': block}
+    return decide
+
+
+def test_the_contact_block_is_required_by_the_schema_tolerated_when_missing_and_strictly_shaped(state):
+    """A strict binding rejects a schema with an optional property, so the block is required and
+    "no signal" is {their_valence: null, opt_out: false}; a prompt-only binding that leaves it out
+    is still read (integration map X3)."""
+    payload = {'evidence': [], 'previous': [], 'incident_ids': []}
+    assert state._validate(json.dumps({'observations': [], 'incident_decisions': []}), payload) == []
+    quiet = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': None, 'opt_out': False}}
+    assert state._validate(json.dumps(quiet), payload) == []
+    ok = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': -0.4, 'opt_out': False}}
+    assert state._validate(json.dumps(ok), payload) == []
+    assert module.contact_signal(ok) == {'their_valence': -0.4, 'opt_out': False}
+    assert module.contact_signal({'contact': {'their_valence': None, 'opt_out': True}}) == \
+        {'their_valence': None, 'opt_out': True}
+    for bad in ({'their_valence': 2, 'opt_out': False}, {'their_valence': True, 'opt_out': False},
+                {'their_valence': 0.1, 'opt_out': 'yes'}, {'their_valence': 0.1}, 'calm',
+                {'their_valence': 0.1, 'opt_out': False, 'mood': 'calm'}):
+        with pytest.raises(ValueError):
+            state._validate(json.dumps({**ok, 'contact': bad}), payload)
+    with pytest.raises(ValueError):
+        state._validate(json.dumps({**ok, 'stance': {}}), payload)
+    schema = module.RESPONSE_SCHEMA['schema']
+    assert 'contact' in schema['properties'] and 'contact' in schema['required']
+    assert 'their_valence' in module.SYSTEM and 'opt_out' in module.SYSTEM
+    assert '"their_valence": null, "opt_out": false' in module.SYSTEM
+    assert module.VERSION == 'source-appraisals-v5'
+
+
+@pytest.mark.asyncio
+async def test_on_contact_is_awaited_after_the_commit_for_a_non_owner_speaker_only(state):
+    seen = []
+
+    async def on_contact(signal):
+        seen.append(signal)
+    state.on_contact = on_contact
+    source(state, 'from-person', 'Please do not message me again, I have this handled.')
+    await state.process_one(Processor(with_contact({'their_valence': -0.5, 'opt_out': True})))
+    signal, = seen
+    assert signal['contact_id'] == 'person' and signal['their_valence'] == -0.5 and signal['opt_out'] is True
+    assert signal['turn_id'] == 'from-person' and signal['source_version'] and signal['occurred_at']
+    source(state, 'from-owner', 'I am annoyed with the export today.', contact='owner')
+    await state.process_one(Processor(with_contact({'their_valence': -0.8, 'opt_out': True})))
+    source(state, 'neutral', 'The export ran fine.')
+    await state.process_one(Processor(with_contact({'their_valence': None, 'opt_out': False})))
+    source(state, 'no-block', 'The export ran fine again.')
+    await state.process_one(Processor(lambda p: None))
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_writer_records_linked_affect_once_and_an_opt_out_only_lowers(state, tmp_path):
+    from protagine.contacts.affect_writer import OPT_OUT_REASON, contact_signal_writer
+    from protagine.tom.affect import AffectStore
+    affect = AffectStore(str(tmp_path / 'affect.db'), source_ledger=state.ledger)
+
+    class Contacts:
+        def __init__(self):
+            self.lowered = []
+
+        async def lower_may_contact(self, contact_id, *, reason, source_ref):
+            self.lowered.append((contact_id, reason, source_ref))
+
+    contacts = Contacts()
+    write = contact_signal_writer(lambda: affect, lambda: contacts, owner_id_provider=lambda: 'owner')
+    state.on_contact = write
+    source(state, 'upset', 'Stop texting me, this is the third time today.')
+    await state.process_one(Processor(with_contact({'their_valence': -0.7, 'opt_out': True})))
+    event, = affect.list_events(contact_id='person')
+    assert event['source'] == 'appraisal' and event['valence'] == -0.7
+    assert event['source_lineage']['turn_id'] == 'upset' and event['evidence_basis'] == 'canonical_source'
+    assert contacts.lowered == [('person', OPT_OUT_REASON, 'turn:upset')]
+    # The same turn again adds no second event; the owner's signal is never written.
+    await write({'contact_id': 'person', 'their_valence': -0.7, 'opt_out': False, 'turn_id': 'upset',
+                 'source_version': 1, 'occurred_at': None})
+    await write({'contact_id': 'owner', 'their_valence': -0.9, 'opt_out': True, 'turn_id': 'upset',
+                 'source_version': 1, 'occurred_at': None})
+    assert affect.count_events(contact_id='person') == 1 and affect.count_events(contact_id='owner') == 0
+    assert len(contacts.lowered) == 1
+    affect.close()
+
+
+@pytest.mark.asyncio
+async def test_the_writer_reaches_an_affect_store_owned_by_another_thread(state, tmp_path):
+    """The benchmark's host routes own the affect store's connection on their thread; the source
+    worker runs on its own, so the writer uses a connection of its own to the same database."""
+    import threading
+    from protagine.contacts.affect_writer import contact_signal_writer
+    from protagine.tom.affect import AffectStore
+    holder = {}
+    thread = threading.Thread(target=lambda: holder.update(store=AffectStore(str(tmp_path / 'affect.db'),
+                                                                               source_ledger=state.ledger)))
+    thread.start()
+    thread.join()
+    state.on_contact = contact_signal_writer(lambda: holder['store'], lambda: None, owner_id_provider=lambda: 'owner')
+    source(state, 'glad', 'That worked out well, thank you.')
+    await state.process_one(Processor(with_contact({'their_valence': 0.6, 'opt_out': False})))
+    reader = AffectStore(str(tmp_path / 'affect.db'), source_ledger=state.ledger)
+    event, = reader.list_events(contact_id='person')
+    assert event['valence'] == 0.6 and event['source_lineage']['turn_id'] == 'glad'
+    reader.close()

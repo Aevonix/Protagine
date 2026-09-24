@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 import yaml
@@ -26,13 +26,15 @@ API_KEY = "test-key-0123456789abcdef"
 OWNER = "p-01"
 CANARY = "OWNER-ONLY-CANARY-7f3a"
 CONTACTS = {
-    ("telegram", "1001"): {"contact_id": OWNER, "display_name": "Owner", "interaction_allowed": True,
+    ("telegram", "1001"): {"contact_id": OWNER, "display_name": "Owner", "may_contact": "auto",
                            "trust_tier": "GENESIS"},
-    ("telegram", "2002"): {"contact_id": "p-02", "display_name": "Never", "interaction_allowed": False,
+    ("telegram", "2002"): {"contact_id": "p-02", "display_name": "Never", "may_contact": "never",
                            "trust_tier": "unknown"},
-    ("telegram", "2003"): {"contact_id": "p-03", "display_name": "Friend", "interaction_allowed": True,
-                           "trust_tier": "REGULAR"},
+    ("telegram", "2003"): {"contact_id": "p-03", "display_name": "Friend", "may_contact": "ask",
+                           "trust_tier": "REGULAR", "cadence_minutes": None,
+                           "digest": "Friend: known since spring; " + CANARY},
 }
+PUBLIC_PERSON = ("contact_id", "display_name", "trust_tier")
 
 
 class FakeMind:
@@ -156,8 +158,6 @@ class FakeMind:
             return 200, {"ok": True, "enabled": True}
         if head == "tick" and method == "POST":
             return 200, {"ok": True}
-        if head == "people":
-            return 200, {"ok": True, "may_contact": (body or {}).get("may_contact")}
         return 404, {"detail": "not found"}
 
 
@@ -170,6 +170,8 @@ class FakeSidecar:
         self.mind_routes = False
         self.mind = FakeMind()
         self.contacts = {key: dict(value) for key, value in CONTACTS.items()}
+        self.proposals: list[dict] = []
+        self.people_owner = OWNER   # whom the sidecar knows as the owner (its own check)
         self.lock = threading.Lock()
         sidecar = self
 
@@ -248,6 +250,8 @@ class FakeSidecar:
         self.mind.guard_verdict = dict(value)
 
     def dispatch(self, method, path, query, body):
+        if path == "/v1/mind/people" or path.startswith("/v1/mind/people/"):
+            return self._people(method, path, query, body)
         if path.startswith("/v1/mind/"):
             return self._mind(method, path, body)
         if path == "/v1/host/health":
@@ -256,7 +260,7 @@ class FakeSidecar:
             contact = self.contacts.get((query.get("gateway", ""), query.get("address", "")))
             if contact is None and query.get("create") == "true" and query.get("address"):
                 contact = {"contact_id": "p-" + query["address"][-2:], "display_name": query["address"],
-                           "interaction_allowed": False, "trust_tier": "unknown"}
+                           "may_contact": "ask", "trust_tier": "unknown"}
                 self.contacts[(query.get("gateway", ""), query["address"])] = contact
             return (200, contact) if contact else (404, {"detail": "No contact for that handle"})
         if path == "/v1/host/contacts":
@@ -272,7 +276,7 @@ class FakeSidecar:
         if path == "/v1/host/context/assemble":
             audience = body.get("audience") if isinstance(body, dict) else None
             shared = [{"id": "shared", "title": "Shared", "body": "shared facts", "priority": 50}]
-            if audience == "viewer" or body.get("projection_policy"):
+            if audience == "viewer":
                 return 200, {"sections": shared}
             return 200, {"sections": [{"id": "private", "title": "Owner notes", "body": CANARY, "priority": 90},
                                       *shared]}
@@ -299,6 +303,62 @@ class FakeSidecar:
             return 404, {"detail": "not found"}
         with self.lock:
             return self.mind.handle(method, path, body)
+
+    def _people(self, method, path, query, body):
+        """``/v1/mind/people`` as the sidecar serves it: a named non-owner viewer sees only who someone
+        is, and a mutation needs ``contact_id`` == the owner (or ``by: cli``)."""
+        if not self.mind_routes:
+            return 404, {"detail": "not found"}
+        body = body or {}
+        rest = [unquote(part) for part in path[len("/v1/mind/people"):].split("/") if part]
+        with self.lock:
+            people = {c["contact_id"]: c for c in self.contacts.values()}
+            viewer = query.get("contact_id")
+
+            def view(contact):
+                return dict(contact) if viewer is None or viewer == self.people_owner else \
+                    {key: contact[key] for key in PUBLIC_PERSON}
+
+            def find(reference):
+                return people.get(reference) or next(
+                    (c for c in people.values() if c["display_name"].lower() == reference.lower()), None)
+
+            if method == "GET" and not rest:
+                wanted = query.get("q", "").lower()
+                return 200, {"contacts": [view(c) for c in people.values()
+                                          if not wanted or wanted in c["display_name"].lower() or wanted == c["contact_id"]]}
+            if method == "GET" and rest == ["proposals"]:
+                return 200, {"proposals": list(self.proposals)}
+            if method == "POST" and rest == ["link"]:
+                candidate = {"candidate_id": f"identity-candidate:{len(self.proposals) + 1}", "status": "pending",
+                             **{key: body.get(key) for key in ("contact_id", "gateway", "address", "by")}}
+                self.proposals.append(candidate)
+                return 200, {"ok": True, **candidate, "text": "proposed; the owner confirms"}
+            if method == "GET" and len(rest) == 1:
+                contact = find(rest[0])
+                if contact is None:
+                    return 404, {"detail": {"code": "unknown_contact", "message": f"no single contact matches {rest[0]!r}"}}
+                return 200, {"contact": view(contact)}
+            if method != "POST":
+                return 404, {"detail": "not found"}
+            if body.get("by") != "cli" and body.get("contact_id") != self.people_owner:
+                return 403, {"detail": {"code": "not_owner", "message": "only the owner can change this"}}
+            if rest == ["merge"]:
+                keep, drop = find(body.get("keep") or ""), find(body.get("drop") or "")
+                if keep is None or drop is None:
+                    return 404, {"detail": {"code": "unknown_contact", "message": "no single contact matches"}}
+                self.contacts = {k: v for k, v in self.contacts.items() if v["contact_id"] != drop["contact_id"]}
+                return 200, {"ok": True, "dropped": drop["contact_id"], "contact": keep, "text": "merged"}
+            contact = find(rest[0]) if len(rest) == 2 else None
+            if contact is None:
+                return 404, {"detail": {"code": "unknown_contact", "message": "no single contact matches"}}
+            if rest[1] == "permission":
+                contact["may_contact"] = body.get("may_contact")
+                return 200, {"ok": True, "contact_id": contact["contact_id"], "may_contact": contact["may_contact"]}
+            if rest[1] == "cadence":
+                contact["cadence_minutes"] = body.get("minutes")
+                return 200, {"ok": True, "contact_id": contact["contact_id"], "cadence_minutes": body.get("minutes")}
+            return 404, {"detail": "not found"}
 
 
 @pytest.fixture

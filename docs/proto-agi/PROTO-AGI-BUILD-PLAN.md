@@ -438,7 +438,7 @@ permitted and composed privately.
 | Social drive | Uses `evaluate_outreach` (`P/contacts/comms.py:366-427`) as its policy; only contacts with an owner-set cadence or tier `regular` or above; per-contact multipliers `reach_out:<contact>`; the ignored-streak backoff on the cooldown (`:403-411`) |
 | Opt-out | A deterministic phrase match plus the appraisal's `opt_out` flag; lowers `may_contact` only |
 | `P/mind/compose.py` (~120) | Recipient-scoped, tool-less composition from the contact's own `/context/assemble` packet and an enumerated purpose |
-| Contact affect | `their_valence` and `opt_out` in the existing appraisal call; the weighting fix at `P/tom/affect.py:335-358`; back-off through `P/delivery/rate_limiter.py:126-135` |
+| Contact affect | `their_valence` and `opt_out` in the existing appraisal call; the weighting fix at `P/tom/affect.py:335-358`; back-off through the social drive's `evaluate_outreach` (as built: `rate_limiter.py` had no caller and went with `P/delivery/`, so the back-off holds check-ins only) |
 | Link proposals | Exact matches link automatically; name-only matches become an ask |
 | Digest | Per-contact template digest (the LLM digest arrives in M8) |
 | Owner interfaces | The `protagine_people` tool (replacing `protagine_contacts`) and the `protagine people` CLI |
@@ -450,7 +450,7 @@ permitted and composed privately.
 | `P/tom/` except `affect.py` and `facts.py`: ToM2, P8, arcs, recipient simulator, exposure, extractor, engagement/OCEAN | ~6.0k | the appraisal-call writer |
 | `P/identity_bootstrap/` (no importers) | 2,896 | – |
 | `P/intelligence/relationships/scorer.py`, `trust_tiers.py` | ~0.8k | one tier vocabulary; `may_contact` |
-| `P/delivery/` except `rate_limiter.py`: `reachout_policy.py`, `channels.py` and the rest | ~0.8k | outbox |
+| `P/delivery/`: `reachout_policy.py`, `channels.py`, `rate_limiter.py` (no caller) and the rest | ~1.1k | outbox; the social drive's back-off |
 | The legacy `/contacts/merge` and `/contacts/{id}/handles` routes (`P/api/routers/host.py:5864-5882`) | ~0.1k | owner-only merge |
 
 **Acceptance tests:**

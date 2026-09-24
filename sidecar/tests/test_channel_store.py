@@ -67,7 +67,6 @@ class TestRegistration:
             supports_media=True,
             supports_reactions=True,
             max_message_length=4096,
-            phone_identity_unification=True,
             delivery_aliases=["sms", "imessage"],
             home_chat_id="group123@g.us",
         )
@@ -76,7 +75,6 @@ class TestRegistration:
         assert fetched is not None
         assert fetched.manifest.supports_media is True
         assert fetched.manifest.max_message_length == 4096
-        assert fetched.manifest.phone_identity_unification is True
         assert fetched.manifest.delivery_aliases == ["sms", "imessage"]
         assert fetched.manifest.home_chat_id == "group123@g.us"
 
@@ -103,13 +101,6 @@ class TestQueries:
         store.revoke("b")
         all_ch = store.list_all()
         assert len(all_ch) == 2
-
-    def test_get_phone_gateways(self, store):
-        store.register(_manifest("sms", phone_identity_unification=True))
-        store.register(_manifest("whatsapp", phone_identity_unification=True))
-        store.register(_manifest("telegram", phone_identity_unification=False))
-        gateways = store.get_phone_gateways()
-        assert gateways == {"sms", "whatsapp"}
 
 
 # ── Mutations ────────────────────────────────────────────────────────────

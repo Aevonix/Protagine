@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,12 @@ _DECAY_ONLY_SOURCES = frozenset({"decay"})
 
 
 from .source_lineage import SourceLinkedStore
+
+
+def _now() -> datetime:
+    """UTC now from ``time.time``: the clock the mind and the contact stamps share (a body that
+    shifts ``time.time`` moves them together; ``datetime.now`` would not follow)."""
+    return datetime.fromtimestamp(time.time(), timezone.utc)
 
 
 class AffectStore(SourceLinkedStore):
@@ -117,7 +124,7 @@ class AffectStore(SourceLinkedStore):
         arousal = max(0.0, min(1.0, arousal))
 
         event_id = str(uuid.uuid4())
-        ts = timestamp or datetime.now(timezone.utc).isoformat()
+        ts = timestamp or _now().isoformat()
 
         with self._conn:
             self._conn.execute(
@@ -249,6 +256,29 @@ class AffectStore(SourceLinkedStore):
         ).fetchone()
         return row is not None and row["valence"] <= threshold
 
+    def trend(self, contact_id: str) -> Dict[str, Any]:
+        """The one read the social drive uses: current valence, trend, and whether the decline
+        is sustained enough to hold outreach (architecture 4.7 item 5)."""
+        state = self.get_state(contact_id)
+        return {"valence": float(state["current_valence"]), "trend": str(state["trend"]),
+                "declining": self.detect_sustained_decline(contact_id)}
+
+    def reattribute(self, old_id: str, new_id: str) -> int:
+        """Move the events of ``old_id`` to ``new_id`` (a merge) and recompute both states. A sourced
+        event moves once the ledger moved its source (``_movable``): the merge calls this before
+        the source move and the reconciliation again after it."""
+        if not old_id or not new_id or old_id == new_id:
+            return 0
+        rows = self._conn.execute("SELECT id, source_lineage_json FROM affect_events WHERE contact_id=?",
+                                  (old_id,)).fetchall()
+        movable = self._movable(rows, new_id)
+        with self._conn:
+            self._conn.executemany("UPDATE affect_events SET contact_id=? WHERE id=?", [(new_id, key) for key in movable])
+            if movable:
+                self._recompute_state(old_id, commit=False)
+                self._recompute_state(new_id, commit=False)
+        return len(movable)
+
     def detect_sustained_decline(
         self,
         contact_id: str,
@@ -306,7 +336,7 @@ class AffectStore(SourceLinkedStore):
             return
 
         last_updated = datetime.fromisoformat(row["last_updated"])
-        now = datetime.now(timezone.utc)
+        now = _now()
         hours_elapsed = (now - last_updated).total_seconds() / 3600.0
 
         if hours_elapsed <= 0:
@@ -345,13 +375,14 @@ class AffectStore(SourceLinkedStore):
                 self._conn.commit()
             return
 
-        # Weighted average with exponential recency bias.
+        # Weighted average with exponential recency bias: the newest event weighs 1.0 and
+        # each older one 0.9 of the next newer (rows are oldest first, so walk them reversed).
         total_weight = 0.0
         weighted_valence = 0.0
         weighted_arousal = 0.0
         weight = 1.0
 
-        for row in rows:
+        for row in reversed(rows):
             weighted_valence += row["valence"] * weight
             weighted_arousal += row["arousal"] * weight
             total_weight += weight
@@ -366,7 +397,7 @@ class AffectStore(SourceLinkedStore):
         trend = self._event_trend(observed)
 
         last_event = rows[-1]
-        now = datetime.now(timezone.utc).isoformat()
+        now = _now().isoformat()
 
         self._conn.execute(
             """INSERT INTO affect_state (contact_id, current_valence, current_arousal, trend, last_event_id, last_updated, event_count)

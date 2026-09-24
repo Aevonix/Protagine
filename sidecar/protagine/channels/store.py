@@ -155,14 +155,6 @@ class ChannelStore:
         cur = conn.execute("SELECT * FROM channels ORDER BY channel_key")
         return [_row_to_channel(row) for row in cur.fetchall()]
 
-    def get_phone_gateways(self) -> set[str]:
-        """Return channel_keys with phone_identity_unification enabled."""
-        return {
-            ch.channel_key
-            for ch in self.list_active()
-            if ch.manifest.phone_identity_unification
-        }
-
     # ── Mutations ────────────────────────────────────────────────────────
 
     def touch(self, channel_key: str) -> None:

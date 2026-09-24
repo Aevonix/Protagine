@@ -31,8 +31,7 @@ SCHEMA = {
         "operation": {"type": "string", "enum": ["schedule", "inspect", "cancel"]},
         "source_id": {"type": "string"}, "source_version": {"type": "string"}, "claim_id": {"type": "string"},
         "job_id": {"type": "string"}, "lead_seconds": {"type": "integer"}},
-        "required": ["operation"]},
-}
+        "required": ["operation"]}}
 
 
 def _instant(value: str) -> datetime:

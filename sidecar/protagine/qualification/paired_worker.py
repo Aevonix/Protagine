@@ -94,6 +94,116 @@ ENVIRONMENT_NOTES = {'messaging': (
     'address are in contacts.json in the workspace. There is no terminal, clock, timer or '
     'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
     'handled when a later message arrives.')}
+# Hermes registers no agent-callable send_message (tools/send_message_tool.py), so without
+# help only the mind could reach a contact and a contact-targeted scenario would measure whether
+# an arm can send, not whether it decides well. A family that declares ``outbound:
+# send_message`` gives every arm, agent turns, kanban workers and the heartbeat alike, one
+# benchmark toolset holding a stock-shaped send_message(target, message) whose handler is the
+# stock send path: the target resolves on the capture platform and its standalone sender
+# records the message (families/mind-people-1.md 7.1). The plugin's guard applies to it as to
+# any messaging tool. Families that declare nothing keep an arm without a send tool.
+OUTBOUND_PROTOCOL = 'paired-outbound-1'
+OUTBOUND_MODES = ('send_message',)
+OUTBOUND_TOOLSET = 'paired_outbound'
+OUTBOUND_SCHEMA = {
+    'name': 'send_message',
+    'description': 'Send a message to a person or channel on a connected messaging platform.',
+    'parameters': {'type': 'object', 'properties': {
+        'target': {'type': 'string', 'description': "Delivery target: 'platform:chat_id', for example a "
+                                                    "contact's address, or 'platform' alone for its home channel."},
+        'message': {'type': 'string', 'description': 'The message text to send.'}},
+        'required': ['target', 'message']}}
+# The plugin arm's people store holds the records every arm reads from contacts.json (7.2):
+# one contact per record, reachable at its capture address, with the fixture's permission and
+# cadence. Tier ``regular`` is the host API's default for a curated contact; a tier grants nothing.
+# An inbound agent carries its sender (bind_sender). An image without both cannot give a plugin
+# arm the records a comparator arm reads, so a plan that seeds contacts refuses it.
+PEOPLE_INSTRUMENT_PROTOCOL = 'paired-people-instrument-1'
+PEOPLE_FILE = 'contacts.json'
+CAPTURE_GATEWAY = 'capture'
+
+
+def outbound_send(args, **_):
+    """The stock send path for one ``send_message(target, message)`` call."""
+    from tools.send_message_tool import send_message_tool
+    args = args if isinstance(args, dict) else {}
+    return send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
+                              'message': str(args.get('message') or '')})
+
+
+def outbound_mode(mode):
+    """The dataset's declared outbound path, validated; None keeps every arm without a send tool."""
+    if mode is not None and mode not in OUTBOUND_MODES:
+        raise ValueError('Unknown outbound path')
+    return mode
+
+
+def install_outbound(mode):
+    """Register the declared outbound tool once per process; the toolsets every arm adds."""
+    if outbound_mode(mode) is None:
+        return []
+    from tools.registry import registry
+    from toolsets import create_custom_toolset
+    if registry.get_entry('send_message') is None:
+        registry.register(name='send_message', toolset=OUTBOUND_TOOLSET, schema=deepcopy(OUTBOUND_SCHEMA),
+                          handler=outbound_send, description=OUTBOUND_SCHEMA['description'])
+    create_custom_toolset(OUTBOUND_TOOLSET, 'Benchmark outbound path to contacts', tools=['send_message'])
+    return [OUTBOUND_TOOLSET]
+
+
+def people_records(files):
+    """The ``contacts.json`` records a fixture seeds, keyed by contact id; {} when there are none."""
+    try:
+        records = json.loads((files or {}).get(PEOPLE_FILE) or '{}')
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(records, dict):
+        return {}
+    return {str(key): value for key, value in records.items() if isinstance(value, dict)}
+
+
+def seed_people(records, post):
+    """Create each record in the plugin arm's people store through the host API, before the first
+    turn; ``{contact id in the fixture: contact id in the store}``. A record without a capture
+    address is skipped, and a failing sidecar seeds nothing rather than failing the episode."""
+    seeded = {}
+    for contact, record in records.items():
+        gateway, _, address = str(record.get('address') or '').partition(':')
+        if gateway != CAPTURE_GATEWAY or not address:
+            continue
+        body = {'display_name': str(record.get('name') or contact), 'trust_tier': 'regular',
+                'may_contact': str(record.get('may_contact') or 'ask'),
+                'cadence_minutes': record.get('cadence_minutes'), 'notes': 'seeded from contacts.json',
+                'handles': [{'gateway': CAPTURE_GATEWAY, 'address': address, 'is_primary': True, 'verified': True}]}
+        try:
+            created = post('/v1/host/contacts', body)
+        except Exception:
+            return {}
+        seeded[contact] = str((created or {}).get('contact_id') or '')
+    return seeded
+
+
+def sidecar_post(url, key):
+    """A JSON POST to the arm's own sidecar with its one key."""
+    import httpx
+
+    def post(path, body):
+        response = httpx.post(url.rstrip('/') + path, json=body, headers={'Authorization': f'Bearer {key}'}, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    return post
+
+
+def bind_sender(agent, entry):
+    """An inbound message carries its sender the way the gateway sets it (``agent._user_id``), so
+    the plugin's pre_llm_call sees ``sender_id`` and the turn is attributed to that contact."""
+    inbound = entry.get('inbound') if isinstance(entry, dict) else None
+    if not isinstance(inbound, dict) or not inbound.get('contact'):
+        return None
+    agent._user_id = str(inbound['contact'])
+    return agent._user_id
+
+
 # The disposable, single-owner fixture API has one key (protagine init's
 # api.key shape); the adapter's memory tools are the treatment arm's extras.
 PAIRED_FIXTURE_SCOPES = None
@@ -118,6 +228,8 @@ def inspect_payload():
             'tool_loading': TOOL_LOADING_PROTOCOL,
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
+            'outbound': OUTBOUND_PROTOCOL,
+            'people_instrument': PEOPLE_INSTRUMENT_PROTOCOL,
             'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
@@ -240,9 +352,12 @@ def workspace_tools(root, *, workflow_observations=None):
 
 @contextmanager
 def provider_read_services(state):
-    """Own empty provider stores on the API thread; never seed scenario answers."""
+    """Own empty provider stores on the API thread; never seed scenario answers. The comms ledger
+    is one of them, as on a real install: turns and the mind's own sends are logged in it, and the
+    social drive and the contact digests read it."""
     from protagine.api.routers import host
     from protagine.commitments.store import CommitmentStore
+    from protagine.contacts.comms import CommsLog
     from protagine.tom.affect import AffectStore
     from protagine.tom.facts import SharedFactsStore
     from protagine.turns import get_turn_idempotency_ledger
@@ -263,7 +378,33 @@ def provider_read_services(state):
             setter = getattr(host, 'set_' + name + '_store')
             resources.callback(setter, getattr(host, '_' + name + '_store'))
             setter(store)
+        comms = CommsLog(directory / 'protagine-comms.db', source_ledger=ledger)
+        resources.callback(comms._conn.close)
+        resources.callback(host.set_comms_log, host._comms_log)
+        host.set_comms_log(comms)
         yield
+
+
+@asynccontextmanager
+async def people_store(state):
+    """The plugin arm's people store, as a real install has one (``protagine-contacts.db`` in the
+    state directory): contacts.json is seeded into it, inbound senders resolve against it and the
+    mind reads permissions, cadences and handles from it. Its stamps follow ``time.time``, the body
+    clock the mind ticks on, as they do in production."""
+    from protagine.api.routers import host
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+    directory = state / 'memory-state'
+    directory.mkdir(parents=True, exist_ok=True)
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(directory / 'protagine-contacts.db')))
+    previous = host._contacts_store
+    await store.connect()
+    host.set_contacts_store(store)
+    try:
+        yield store
+    finally:
+        host.set_contacts_store(previous)
+        await store.close()
 
 
 def provider_read_lifespan(state):
@@ -272,7 +413,8 @@ def provider_read_lifespan(state):
         # SQLite-backed facts/affect stores require construction and shutdown
         # on the same thread that serves their HTTP handlers.
         with provider_read_services(state):
-            yield
+            async with people_store(state):
+                yield
     return lifespan
 
 
@@ -438,6 +580,7 @@ def main():
     message_timestamps = inputs.get('message_timestamps')
     stamp_message('', message_timestamps)
     note = environment_note(inputs.get('environment_note'))
+    outbound = outbound_mode(inputs.get('outbound'))
     turn_system = SYSTEM if note is None else f'{SYSTEM}\n{note}'
     if profile.get('curator'):
         paired_arms.install_curator(config)
@@ -452,7 +595,7 @@ def main():
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
                                 'tool_loading': tool_loading, 'message_timestamps': message_timestamps,
-                                'environment_note': inputs.get('environment_note')}}
+                                'environment_note': inputs.get('environment_note'), 'outbound': outbound}}
     if phase is not None:
         result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
                                     'start_turn': phase['start_turn']}
@@ -507,7 +650,9 @@ def main():
         # ends, including on failures and at each process restart.
         with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
             observer = None
-            toolsets = list(COMMON_TOOLS)
+            # The declared outbound path, identical in every arm (agent turns, workers, heartbeat).
+            outbound_toolsets = install_outbound(outbound)
+            toolsets = [*COMMON_TOOLS, *outbound_toolsets]
             if plugin:
                 from functools import partial
                 from .native_memory_worker import prepare
@@ -523,6 +668,12 @@ def main():
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
                 toolsets.append('paired_protagine_memory')
+                if not resuming:
+                    records = people_records(inputs['initial_files'])
+                    if records:
+                        sidecar = config['plugins']['protagine']
+                        result['tool_evidence']['people_seeded'] = seed_people(records, sidecar_post(
+                            sidecar['sidecar_url'], Path(sidecar['key_file']).read_text().strip()))
             else:
                 os.environ.update(overlay)
             # Seeded history enters every arm's state.db (and a plugin arm's ledger) once,
@@ -553,7 +704,7 @@ def main():
                 hooks.append(('protagine', protagine_tick))
             if profile.get('heartbeat'):
                 from functools import partial
-                job_id = paired_arms.install_heartbeat(list(COMMON_TOOLS))
+                job_id = paired_arms.install_heartbeat([*COMMON_TOOLS, *outbound_toolsets])
                 hooks.append(('heartbeat', partial(paired_arms.make_due, job_id)))
             if profile.get('curator'):
                 hooks.append(('curator', paired_arms.curator_review))
@@ -626,6 +777,7 @@ def main():
                     if session_id not in agents:
                         agents[session_id] = AIAgent(**{**arguments, 'platform': platform}, session_id=session_id)
                     agent = agents[session_id]
+                    bind_sender(agent, entry)
                     response = agent.run_conversation(message, system_message=turn_system,
                         conversation_history=histories.get(session_id))
                     histories[session_id] = response.get('messages', [])
@@ -688,7 +840,8 @@ def main():
                     'no executed coding tests', 'no attested multi-user boundary',
                     'fixed settling window; background completion not guaranteed',
                     'no gateway: deliveries land in the capture outbox; kanban workers run in-process',
-                    'inbound sender identity reaches the agent as message text, not gateway metadata'])
+                    'inbound sender identity reaches the agent as message text and the session user id, '
+                    'with no channel transport'])
             result['output'] = next((row['final_response'] for row in reversed(rows)
                                      if 'final_response' in row), None)
             result['stage'] = 'returned'

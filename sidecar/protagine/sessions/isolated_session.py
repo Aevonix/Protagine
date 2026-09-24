@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
-from protagine.intelligence.relationships.trust_tiers import TrustTier
 
 
 class SessionState(str, Enum):
@@ -37,7 +36,7 @@ class IsolatedSession:
     session_id: str
     contact_id: str
     gateway: str
-    trust_tier: TrustTier
+    trust_tier: str  # one of contacts.models.TRUST_TIERS
     state: SessionState = SessionState.ACTIVE
     history: list = field(default_factory=list)
     active_topics: set = field(default_factory=set)
@@ -58,7 +57,7 @@ class IsolatedSession:
         cls,
         contact_id: str,
         gateway: str,
-        trust_tier: TrustTier,
+        trust_tier: str,
         ttl_hours: int = _DEFAULT_TTL_HOURS,
     ) -> "IsolatedSession":
         return cls(

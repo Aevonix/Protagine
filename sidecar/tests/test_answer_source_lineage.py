@@ -110,8 +110,8 @@ def test_dependencies_cannot_invent_parent_attribution_or_revisions(tmp_path, va
 @pytest.mark.asyncio
 async def test_source_survivor_is_person_scoped_without_ordinary_effects(source_app, tmp_path, monkeypatch):
     from protagine.api.routers import host
-    presence = SimpleNamespace(record=lambda *a, **k: pytest.fail('ordinary presence effect ran'))
-    monkeypatch.setattr(host, '_presence_store', presence)
+    contacts = SimpleNamespace(record_interaction=lambda *a, **k: pytest.fail('ordinary contact effect ran'))
+    monkeypatch.setattr(host, '_contacts_store', contacts)
     body = {'identity': {'host_id': 'test'}, 'context': {'contact_id': 'person', 'session_id': 'new',
             'channel_id': 'fixture', 'turn_id': 'survivor'}, 'source_only': True,
             'user_message': {'role': 'user', 'content': 'The independent bicycle is orange.'}}

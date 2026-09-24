@@ -60,7 +60,6 @@ def dead_graph(monkeypatch, tmp_path):
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     graph = _DeadBackendGraph()
     monkeypatch.setattr(host, "_graph", graph)
-    monkeypatch.setattr(host, "_presence_store", None)
     monkeypatch.setattr(host, "_contacts_store", None)
     monkeypatch.setattr(host, "_telemetry", None)
     return graph

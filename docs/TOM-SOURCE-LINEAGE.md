@@ -1,18 +1,16 @@
 # Shared facts and source erasure
 
 Contact knowledge lives in the canonical SharedFacts SQLite store. The manual
-fact and ToM extraction APIs write that store and, when enabled, append P8
-visibility envelopes. They do not write graph copies. Fact listing reads the
+fact API writes that store; it does not write graph copies. Fact listing reads the
 same store with source, confidence, expiration and contact filters; its total
 is the full filtered count before pagination.
 
 Automatic recall reads current source-linked contact estimates directly from
-the fact store or its scoped P8 projection. It checks query relevance, exact
-source membership and corrections before the shared memory selector packs the
-context. A model estimate remains labelled as an estimate. See
-[memory quality](MEMORY-QUALITY.md) and [P8 integration](P8-SHARED-INTEGRATION.md).
-Ordinary fact learning uses canonical source assertions; ordinary ingestion
-does not run a second ToM fact extractor.
+the fact store. It checks query relevance, exact source membership and
+corrections before the shared memory selector packs the context. A model
+estimate remains labelled as an estimate. See [memory quality](MEMORY-QUALITY.md).
+Ordinary fact learning uses canonical source assertions; there is no second
+fact extractor. A guest's contact-scoped context never includes the fact store.
 
 A linked fact records its canonical turn, session, exact message hashes,
 observation and ingestion times, and model provenance. Identical wording from
@@ -37,8 +35,7 @@ retrospectively without evidence.
 The separate graph still has other consumers. Existing graph-copy exclusions
 and graph source-erasure cleanup remain until that dependency is removed; this
 change neither creates new graph copies nor deletes existing graph data.
-It does not establish complete retrospective erasure for unlinked affect or
-engagement state.
+It does not establish complete retrospective erasure for unlinked affect state.
 
 `test_tom_source_lineage.py` exercises ordinary API ingestion, the actual SQLite
 store, cross-session context, source erasure, failed physical cleanup, late

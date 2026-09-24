@@ -56,6 +56,12 @@ def get_mind() -> Any:
     return _mind
 
 
+def faculty_on(name: str) -> bool:
+    """Whether the running mind has faculty ``name`` on; without a mind nothing is ablated."""
+    faculties = getattr(_mind, "faculties", None)
+    return True if not isinstance(faculties, dict) else bool(faculties.get(name, True))
+
+
 def _require() -> Any:
     if _mind is None:
         raise HTTPException(status_code=503, detail={"code": "mind_not_wired", "message": "the mind is not running"})
@@ -300,11 +306,12 @@ async def guard(body: GuardBody) -> Dict[str, Any]:
 
 # -- asks (7.7) --------------------------------------------------------------------------
 
-def _answer(code: str, answer: str, *, by: str, contact_id: Optional[str], message: Optional[str]) -> Dict[str, Any]:
+async def _answer(code: str, answer: str, *, by: str, contact_id: Optional[str],
+                  message: Optional[str]) -> Dict[str, Any]:
     if answer not in {"yes", "no"}:
         raise HTTPException(status_code=422, detail={"code": "unknown_answer", "message": "answer is yes or no"})
     try:
-        row = _require().answer(code, yes=answer == "yes", by=by, contact_id=contact_id, message=message)
+        row = await _require().answer(code, yes=answer == "yes", by=by, contact_id=contact_id, message=message)
     except PermissionError as error:
         raise HTTPException(status_code=403, detail={"code": "not_owner", "message": str(error)}) from None
     if row is None:
@@ -315,8 +322,8 @@ def _answer(code: str, answer: str, *, by: str, contact_id: Optional[str], messa
 @router.post("/decide")
 async def decide(body: DecideBody) -> Dict[str, Any]:
     """The plugin's ``protagine_self yes|no <code>``: the sidecar checks the owner and the code again."""
-    return _answer(body.code, body.answer.strip().lower(), by=body.by, contact_id=body.contact_id,
-                   message=body.message)
+    return await _answer(body.code, body.answer.strip().lower(), by=body.by, contact_id=body.contact_id,
+                         message=body.message)
 
 
 # -- the audit log (7.8) -----------------------------------------------------------------
@@ -356,7 +363,7 @@ async def answer(code: str, answer: str, body: AnswerBody | None = None) -> Dict
     if answer not in {"yes", "no"}:
         raise HTTPException(status_code=404, detail={"code": "unknown_answer"})
     body = body or AnswerBody()
-    return _answer(code, answer, by=body.by, contact_id=body.contact_id, message=body.message)
+    return await _answer(code, answer, by=body.by, contact_id=body.contact_id, message=body.message)
 
 
 # -- switches and settings (7.9, 7.10) ----------------------------------------------------
@@ -399,4 +406,4 @@ async def reset(body: ResetBody) -> Dict[str, Any]:
     return _require().reset(body.cls)
 
 
-__all__ = ["get_mind", "router", "set_mind"]
+__all__ = ["faculty_on", "get_mind", "router", "set_mind"]

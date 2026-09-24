@@ -60,6 +60,26 @@ audit log, the outbox, outcomes and the off switch. The design is in
    `metadata.lead_minutes`; the heads-up is part of that item, never a second
    one. A moved deadline moves an absolute heads-up by the same delta (a hold
    drops it); a turn that states a new warning time replaces it.
+   A message to a third party later or on a condition ("if Kim has not sent
+   the draft by 3, ask her for it"; "if the venue is not confirmed by 5, tell
+   them the booking lapses") is one item due at that time, obligor
+   `assistant`, with `metadata.kind` `notice`
+   (the owner's own words, sent verbatim) or `check_in` (a topic of at most
+   six words, never a figure, amount or code, composed at send time), the
+   `recipient` as named and `grant: owner`. Only the owner's own turn keeps
+   the grant; the same shape from a contact is an ordinary item. A message to
+   pass on now ("tell Kim the meeting moved") is the reply's own job: nothing
+   is recorded, and capture drops a third-party message due within three
+   minutes of the turn, so the mind never sends a second copy of what the
+   turn already sent. A deliverable goes only to the turn's own person: one
+   the model records for a named third party is read as a notice to that
+   party, so the words never go back to whoever asked.
+   A recurring check-in the owner sets for a contact ("check on Kim every
+   week about the kitchen quote") is one undated item, obligor `assistant`,
+   with `metadata.kind` `cadence`, the `recipient` as named, a `topic` under
+   the same six-word rule and `cadence_minutes`. Only the owner's own turn
+   records one, and it never carries a grant: permission stays the contact's
+   `may_contact`.
 2. **Tick.** Every 60 s the sidecar runs the timers (ask expiry, deferred
    intentions, expectation resolution, retention, the nightly backup), then
    **drains the capture jobs still pending** (`CommitmentExtractor.drain`
@@ -109,8 +129,72 @@ audit log, the outbox, outcomes and the off switch. The design is in
    and the reminder forms again at the next tick.
    | curiosity | seeded and declared interests (`protagine mind interest`, `identity.yaml` `agent.interests`, the owner's own `interest` appraisals), open questions, knowledge-domain expectation misses | a research task whose finding is stored | research tasks and goals |
    | mastery | the same signature failing twice in 7 days, repeated owner corrections | a later verified success | investigations and goals |
-   | upkeep | failing health checks (3 strikes), backlogs | health OK | notices and upkeep tasks |
-   | social | (the people milestone) | a reply or a conversation | nothing yet |
+   | upkeep | failing health checks (3 strikes), backlogs, pending name-only identity links | health OK | notices, upkeep tasks, one owner ask per link |
+   | social | contacts with an owner-set cadence or tier `regular` or above, overdue against it; `unknown` and group-only contacts weigh 0 | a reply or a conversation | check-ins |
+
+   **People** (`mind.faculties.people`). The social drive asks
+   `evaluate_outreach` (`P/contacts/comms.py`) when a check-in is due: one
+   cadence after the later of the last conversation (or first contact) and
+   the last message sent; a tier-only contact's cadence is the mean gap
+   between conversations (a week before two, never under a day). Silence
+   backs off: after a send the cooldown is `cadence x 2^streak`, capped at
+   four cadences, where the streak counts sent check-ins the contact has not
+   talked since. The sends are read from the comms ledger, where every
+   message the mind sent a contact is logged (`external_ref`
+   `mind:<type>:<intention id>`): they outlive the 90-day intention
+   retention and follow the person through a merge. Declining contact
+   affect holds outreach. The cooldown
+   replaces the flat per-contact cooldown for that message only. A due
+   check-in is owed (satiation does not hold it) and exists only while it is
+   due: one the contact answered first is cancelled. A sent check-in is
+   scored when its window (the cadence, else 24 h) passes: `actioned` if the
+   contact talked after it, `ignored` if not, on `reach_out:<contact>` only
+   (one silent contact never lowers check-ins with everyone); a later reply
+   turns the newest ignored check-in `actioned`, and an ask for a check-in
+   that expired teaches nothing (the owner's silence is not the contact's).
+   The multiplier orders due check-ins and never gates one: eligibility uses
+   the score without feedback, so the backoff above is the only brake.
+   A message to a contact with no text is composed (`P/mind/compose.py`,
+   task `mind_compose`, one tool-less call, no fallback, 300 tokens) when
+   the budgets would let it go now (one they defer is composed when it goes),
+   from
+   an enumerated purpose (`check_in`, `follow_up:<id>`, `reply_wait:<id>`),
+   the contact's name, the topic and
+   that contact's own recipient-scoped packet, never the concern, its
+   evidence or an owner turn; the text then passes the floor and the deny
+   list. The owner's granted message to a third party is a
+   `commitment_notice` or `commitment_check_in` at its time; the grant counts
+   as `may_contact: auto` for that recipient only, never over `never` (the
+   owner hears `grant_refused`), and only for a recipient the owner named
+   exactly (an id, a handle a contact the owner filed holds, a number or an
+   email; a shadow's username is the sender's own choice and never exact):
+   one the store matched by name is an owner ask showing the name given and
+   the contact's name and handle, whatever would otherwise have let it act or
+   wait (the rule is stored on the row and applied again to a deferred one),
+   and a notice whose words are not in the owner's turn is stored as a
+   check-in around its matter. A name the contact store cannot resolve
+   becomes a `recipient_unknown` ask; a sent one settles its commitment. An
+   owner's `cadence` item for an exactly named contact sets its cadence once
+   (audited as `cadence_set` by `owner-turn:commitment:<id>`; a cadence the
+   owner later sets by hand stands), and while it stays open every check-in
+   to that contact carries its topic; one matched by name only is a
+   `cadence_confirm` owner question (a yes sets it, a no withdraws the item),
+   and one naming someone unknown a `recipient_unknown` ask.
+   Permission is read again whenever a message to a contact may leave: at
+   every tick, at every outbox pull and on the owner's `yes`. A contact now
+   `never` (an opt-out or the owner's revocation while the message waited
+   for quiet hours or the body) cancels it; one lowered to `ask` turns a
+   message approved on `auto` into the owner's question.
+   Daily, each contact talked with in the last 24 h gets a template digest
+   (`P/contacts/digest.py`). With the faculty off (the `full-people`
+   ablation) what M5 adds goes and nothing older: the social weight is 0,
+   nothing is composed (a message keeps its template) or digested, no link
+   ask is raised, an owner's message to a third party or cadence takes its
+   pre-M5 form (overdue work for the assistant), the "About this person"
+   section is left out, and `/v1/mind/people` refuses `merge`, `link` and
+   `cadence` with 409 `people_off` while the plugin's `protagine_people`
+   offers only `who`, `inspect` and `set_permission`. `may_contact`,
+   opt-outs and shadow contacts still apply.
 
    Weights come from `mind.drives`; 0 turns a drive off. A `done` outcome
    satiates its drive (a decaying `satiety.<drive>` level halves the
@@ -197,7 +281,12 @@ which the sidecar accepts only when the sender is the owner contact and the
 code is in the owner's own message. Silence expires an ask after
 `mind.ask_expires_hours` (72 h). Nothing else waits on an ask. At
 `autonomy: suggest` an ordinary ask is digest-only: it gets no 4-hourly
-notice; a floor ask is noticed at once at every level.
+notice; a floor ask is noticed at once at every level. A name-only identity
+link ("Is sam@example.org on email Sam?") is always an ask; the answer links
+or rejects the handle in the contact store, and a `no` is not a verdict on
+asking. A yes folds a shadow that held the handle into the contact, and
+never an established contact: that link is refused and the owner merges the
+two explicitly if they are one person.
 
 ## The off switch
 

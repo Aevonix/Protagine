@@ -71,7 +71,7 @@ def _seed_contacts(path):
         store = SQLiteContactStore(ContactsConfig(sqlite_path=str(path)))
         await store.connect()
         try:
-            owner = await store.create(display_name="Ada", trust_tier="inner_circle", interaction_allowed=True,
+            owner = await store.create(display_name="Ada", trust_tier="inner_circle", may_contact="auto",
                                        import_source="wizard")
             await store.create(display_name="Guest", import_source="wizard")
             return owner.contact_id

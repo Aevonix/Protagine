@@ -16,7 +16,11 @@ from protagine.redact import redact_sensitive_text
 from protagine.initiatives.models import StoredInitiative
 
 MAX_TEXT = 400
-NOTICE_TYPES = ("ask_notice", "digest", "breaker_notice", "health_notice")
+# The mind's reporting to the owner: never a drive's work, never a contact message. The last three
+# arrived with the people milestone: a grant the owner gave over a ``never`` contact, a recipient the
+# owner named that the store cannot resolve, and a name-only identity link that needs the owner's word.
+NOTICE_TYPES = ("ask_notice", "digest", "breaker_notice", "health_notice", "grant_refused", "recipient_unknown",
+                "link_proposal", "cadence_confirm")
 
 
 def _clip(text: Any, limit: int = MAX_TEXT) -> str:

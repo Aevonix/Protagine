@@ -162,8 +162,9 @@ def test_upkeep_notices_a_failing_store_after_three_strikes_and_a_backlog():
     assert held == []
 
 
-def test_social_proposes_nothing_until_the_people_milestone():
+def test_social_proposes_nothing_without_contact_rows():
     assert social(inputs(interests=[{"topic": "x"}])) == (0.0, [])
+    assert inputs().contacts == [] and inputs().people_on is True
 
 
 # ---------------------------------------------------------------------------

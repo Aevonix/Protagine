@@ -1,8 +1,7 @@
 """Contact store persistence + env config (v0.17.0).
 
-The production server must not run the contact store in :memory: — the
-IdentityResolver treats it as the source of truth for the owner, so it
-has to survive restarts.
+The production server must not run the contact store in :memory: — it is
+the source of truth for who people are, so it has to survive restarts.
 """
 
 import os

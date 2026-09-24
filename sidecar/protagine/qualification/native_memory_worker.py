@@ -77,6 +77,18 @@ def benchmark_identity(person):
             'agent': {'name': 'Agent'}}
 
 
+def mount_routes(app, *, mind):
+    """The routes the arm serves, as the sidecar mounts them: the host routes, and with the mind
+    its own routes and the people routes (an owner's ``protagine_people`` reaches them)."""
+    from protagine.api.routers import host, people
+    from protagine.api.routers import mind as mind_router
+    app.include_router(host.router)
+    app.include_router(host.v2_router)
+    if mind:
+        app.include_router(mind_router.router)
+        app.include_router(people.router)
+
+
 @contextmanager
 def serve_mind(app, state, person, section):
     """A real Mind over this arm's stores, on ``/v1/mind`` next to the host routes.
@@ -92,6 +104,7 @@ def serve_mind(app, state, person, section):
     from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     from protagine.feedback import TypeFeedbackStore
     from protagine.initiatives.store import InitiativeStore
+    from protagine.initiatives.temporal_followup import TemporalFollowups
     from protagine.mind import Mind
     from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
     from protagine.turns import get_turn_idempotency_ledger
@@ -104,11 +117,16 @@ def serve_mind(app, state, person, section):
         # so a job the worker holds is waited for, never run twice.
         mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
                     commitments=host._commitment_store,
+                    # The reply waits over the same commitment store, as ``server.py`` passes them.
+                    followups=TemporalFollowups(host._commitment_store) if host._commitment_store is not None else None,
                     feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
                     expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
                     contacts=getattr(host, '_contacts_store', None),
                     ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
                     router=getattr(host, '_llm_router', None),
+                    # The people faculty's reads, as the sidecar wires them (served where the host has them).
+                    comms=getattr(host, '_comms_log', None), contact_affect=getattr(host, '_affect_store', None),
+                    packet_for=getattr(host, 'assemble_packet', None), claims_for=getattr(host, 'claims_for', None),
                     capture=CommitmentExtractor(get_turn_idempotency_ledger(directory),
                                                 lambda: host._commitment_store,
                                                 aliases=contact_aliases(lambda: getattr(host, '_contacts_store', None))))
@@ -201,10 +219,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'path': req.url.path, 'status': response.status_code})
         return response
 
-    app.include_router(host.router)
-    app.include_router(host.v2_router)
-    if mind:
-        app.include_router(mind_router.router)
+    mount_routes(app, mind=bool(mind))
     host_resources = ExitStack()
     listener = server = thread = None
     transport_observer = None

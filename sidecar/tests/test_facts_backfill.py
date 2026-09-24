@@ -32,7 +32,6 @@ async def test_fact_crud_filters_and_pagination_use_only_canonical_rows(
     store = SharedFactsStore(str(tmp_path / 'facts.db'))
     graph = GraphProbe()
     monkeypatch.setattr(host, '_facts_store', store)
-    monkeypatch.setattr(host, '_tom2_store', None)
     monkeypatch.setattr(host, '_graph', graph if graph_available else None)
     try:
         async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
@@ -80,36 +79,16 @@ async def test_fact_crud_filters_and_pagination_use_only_canonical_rows(
 
 
 @pytest.mark.asyncio
-async def test_manual_extraction_keeps_model_provenance_without_graph_copy(source_app, tmp_path, monkeypatch):
-    class Extractor:
-        async def extract_facts(self, text, contact_id, **kwargs):
-            return [{'contact_id': contact_id, 'fact': 'The contact may know the hydrofoil desk.',
-                     'source': 'inferred', 'confidence': .7,
-                     'model_provenance': {'model_id': 'fixture-extractor'},
-                     'memory_quality': {'classification': 'contact_knowledge_estimate'}}]
-
-        def _can_extract(self, contact_id):
-            return True
-
+async def test_manual_tom_extraction_is_retired(source_app, tmp_path, monkeypatch):
+    """Contact knowledge comes from canonical source claims; the second extractor is gone."""
     store = SharedFactsStore(str(tmp_path / 'facts.db'))
-    graph = GraphProbe()
     monkeypatch.setattr(host, '_facts_store', store)
-    monkeypatch.setattr(host, '_tom_extractor', Extractor())
-    monkeypatch.setattr(host, '_graph', graph)
     try:
         async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
             response = await client.post('/v1/host/tom/extract', json={
-                'contact_id': 'contact-a', 'conversation_text': 'We discussed the hydrofoil desk.',
-                'extract_affect': False})
-            assert response.status_code == 200, response.text
-            assert len(response.json()['facts']) == 1
-            fact = store.list_facts(contact_id='contact-a')['facts'][0]
-            assert fact['metadata'] == {
-                'model_provenance': {'model_id': 'fixture-extractor'},
-                'memory_quality': {'classification': 'contact_knowledge_estimate'},
-                'automatic_projection': True,
-            }
-            assert store.automatic_view().list_facts(contact_id='contact-a')['total'] == 0
-        assert graph.calls == []
+                'contact_id': 'contact-a', 'conversation_text': 'We discussed the hydrofoil desk.'})
+            assert response.status_code == 404
+        assert store.list_facts(contact_id='contact-a')['total'] == 0
+        assert not hasattr(host, 'set_tom_extractor')
     finally:
         store.close()

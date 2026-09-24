@@ -53,6 +53,7 @@ class Outbox:
         self.store = store
         self.owner_id = owner_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.on_sent = None   # callable(row) set by the tick: a sent message may settle what it was for
 
     # -- the queue --------------------------------------------------------------
 
@@ -117,9 +118,15 @@ class Outbox:
         result = str(result or "uncertain").lower()
         note = summary or error or None
         if result in {"sent", "ok", "done", "delivered"}:
-            return self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
-                                         hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
-                                         result=note, completed_at=now, at=now)
+            updated = self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
+                                            hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
+                                            result=note, completed_at=now, at=now)
+            if callable(self.on_sent) and updated is not None:
+                try:
+                    self.on_sent(updated)
+                except Exception as error:
+                    logger.warning("sent hook failed for %s (%s)", intention_id, type(error).__name__)
+            return updated
         if result in {"failed", "error"}:
             return self.store.transition(intention_id, "failed", action="send_failed", outcome="failed",
                                          verified="hermes_failure", hermes_kind="message",
@@ -196,7 +203,8 @@ class Outbox:
         return self.store.get_by_dedup_key(f"digest:{local_date}") is not None
 
     def build_digest(self, *, since: datetime, level: str, breaker_states: List[Dict[str, Any]] | None = None,
-                     suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None) -> str:
+                     suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None,
+                     opt_outs: List[str] | None = None) -> str:
         rows = self.store.intentions(since=since, limit=500)
         rows = [row for row in rows if row.type not in NOTICE_TYPES]
         acted = [row for row in rows if row.decision == "act" and row.kind in {"task", "message", "goal"}]
@@ -223,6 +231,9 @@ class Outbox:
         if goals:
             lines.append(f"Goals I am pursuing ({len(goals)}):")
             lines += [f"- {_clip(item, 140)}" for item in goals[:4]]
+        if opt_outs:
+            lines.append(f"Opted out ({len(opt_outs)}), no longer messaged:")
+            lines += [f"- {_clip(item, 140)}" for item in opt_outs[:12]]
         if uncertain:
             lines.append(f"Delivery uncertain ({len(uncertain)}), not resent:")
             for row in uncertain[:6]:

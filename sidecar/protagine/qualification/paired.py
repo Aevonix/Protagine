@@ -13,8 +13,10 @@ from . import paired_arms
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
-                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
-                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
+                            OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
+                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, TOOL_LOADING_MODES,
+                            TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -70,6 +72,11 @@ MESSAGE_TIMESTAMPS = {'gateway': {'protocol': MESSAGE_TIMESTAMPS_PROTOCOL, 'mode
 ENVIRONMENT_NOTE = {mode: {'protocol': ENVIRONMENT_NOTE_PROTOCOL, 'mode': mode, 'text': text,
                            'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
                     for mode, text in ENVIRONMENT_NOTES.items()}
+# The outbound path a family declares for every arm: the tool, its toolset and its schema.
+OUTBOUND = {mode: {'protocol': OUTBOUND_PROTOCOL, 'mode': mode, 'toolset': OUTBOUND_TOOLSET,
+                   'tool': OUTBOUND_SCHEMA['name'],
+                   'schema_sha256': hashlib.sha256(json.dumps(OUTBOUND_SCHEMA, sort_keys=True).encode()).hexdigest()}
+            for mode in OUTBOUND_MODES}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
@@ -248,6 +255,14 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     environment_note = declared_mode(by_arm, 'environment_note', tuple(ENVIRONMENT_NOTES), 'environment note')
     if environment_note is not None and payload.get('environment_note') != ENVIRONMENT_NOTE_PROTOCOL:
         raise ValueError('An environment note requires an image whose worker carries it to every arm')
+    outbound = declared_mode(by_arm, 'outbound', OUTBOUND_MODES, 'outbound path')
+    if outbound is not None and payload.get('outbound') != OUTBOUND_PROTOCOL:
+        raise ValueError('A declared outbound path requires an image whose worker registers it in every arm')
+    # A plugin arm reads the contact records every arm is given only from its people store.
+    people_seeded = any(labels[arm].get('plugin') for arm in labels) and any(
+        PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
+    if people_seeded and payload.get('people_instrument') != PEOPLE_INSTRUMENT_PROTOCOL:
+        raise ValueError('Contact records require an image whose worker seeds the plugin arm\'s people store')
     identifiers = [case.id for case in by_arm[first]]
     if not 1 <= len(identifiers) <= 128 or len(set(identifiers)) != len(identifiers):
         raise ValueError('Paired plan requires 1..128 distinct episodes')
@@ -290,6 +305,11 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['message_timestamps'] = deepcopy(MESSAGE_TIMESTAMPS[message_timestamps])
     if environment_note is not None:
         comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
+    if outbound is not None:
+        # The path every arm reaches a contact by (families/mind-people-1.md 7.1).
+        comparison['outbound'] = deepcopy(OUTBOUND[outbound])
+    if people_seeded:
+        comparison['people_instrument'] = PEOPLE_INSTRUMENT_PROTOCOL
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,

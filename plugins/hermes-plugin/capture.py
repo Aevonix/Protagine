@@ -339,7 +339,7 @@ class Capture:
             "platform": str(platform or (info.platform if info else "") or ""),
             "sender_id": info.sender_id if info else "", "user_message": user,
             "assistant_message": assistant, "model": str(model or ""),
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": datetime.fromtimestamp(time.time(), timezone.utc).isoformat(),
         }
         return self.outbox.enqueue(stable, payload)
 

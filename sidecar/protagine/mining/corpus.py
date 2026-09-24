@@ -13,11 +13,10 @@ token shapes via the sidecar's redact machinery. Consumers (fine-tune
 pipelines) read the file from the state dir; nothing is uploaded by this
 code.
 
-Quality gate: system/skill-origin turns are excluded using the same
-sanitize/origin machinery the reachout policy uses (is_system_origin +
-sanitize_text), machine markers (e.g. reply-context [[rc ...]] suffixes)
-are stripped, cron/self sessions are excluded by default, and exact
-duplicate exchanges are deduplicated.
+Quality gate: system/skill-origin turns are excluded (``_system_origin``),
+control and directive markup is stripped (``_sanitize``), machine markers
+(e.g. reply-context [[rc ...]] suffixes) are stripped, cron/self sessions are
+excluded by default, and exact duplicate exchanges are deduplicated.
 """
 from __future__ import annotations
 
@@ -35,6 +34,28 @@ from protagine.mining.store import MiningStore
 logger = logging.getLogger(__name__)
 
 _RC_MARKER = re.compile(r"\s*\[\[rc [^\]]*\]\]")
+# Applied in order: <<...>> control blocks (terminated or not), bracketed
+# system/skill directives (terminated or not), control characters.
+_DIRECTIVE = r"\[\s*(?:IMPORTANT|SYSTEM\s*NOTE|SYSTEM|INTERNAL|CONTEXT|NOTE)\b[^\]]*"
+_MARKUP = (re.compile(r"<<.*?>>", re.DOTALL), re.compile(r"<<[^>]*$", re.DOTALL),
+           re.compile(_DIRECTIVE + r"\]", re.IGNORECASE | re.DOTALL),
+           re.compile(_DIRECTIVE + r"$", re.IGNORECASE | re.DOTALL),
+           re.compile(r"[\x00-\x1f\x7f]"))
+_SYSTEM_ORIGIN = re.compile(
+    r"\binvoked\b.{0,60}?\bskill\b"
+    r"|previous turn was interrupted"
+    r"|\bsystem note\b"
+    r"|\bsystem[- ]?generated\b"
+    r"|conversation (?:was )?(?:interrupted|truncated|reset)"
+    r"|<\s*/?\s*system[\s>]",
+    re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize(text: str) -> str:
+    """Strip control/conversation/skill markup and collapse whitespace."""
+    for pattern in _MARKUP:
+        text = pattern.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _parse_when(value: Optional[str]) -> Optional[float]:
@@ -53,13 +74,7 @@ def _parse_when(value: Optional[str]) -> Optional[float]:
 
 
 def _clean(text: str, redact: bool) -> str:
-    out = _RC_MARKER.sub("", text or "").strip()
-    try:
-        from protagine.delivery.reachout_policy import sanitize_text
-
-        out = sanitize_text(out)
-    except Exception:
-        pass
+    out = _sanitize(_RC_MARKER.sub("", text or ""))
     if redact:
         try:
             from protagine.redact import redact_sensitive_text
@@ -71,12 +86,8 @@ def _clean(text: str, redact: bool) -> str:
 
 
 def _system_origin(text: str) -> bool:
-    try:
-        from protagine.delivery.reachout_policy import is_system_origin
-
-        return is_system_origin(text or "")
-    except Exception:
-        return False
+    """A system/skill/non-conversational turn, not genuine conversation."""
+    return bool(text) and bool(_SYSTEM_ORIGIN.search(text))
 
 
 def export_corpus(

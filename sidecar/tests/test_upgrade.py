@@ -210,6 +210,45 @@ def test_upgrade_retires_the_drives_milestone_stores_and_tables(installed, capsy
     assert "nothing to do" in capsys.readouterr().out
 
 
+def test_upgrade_retires_the_people_milestone_stores(installed, capsys):
+    """The theory-of-mind stores the per-contact digest replaced (second-order inferences,
+    their exposure ledger, the engagement profiles, the relationship briefs and the P8
+    shadow stores), the conversation presence census and the identity bootstrap report
+    move into the backup instead of staying behind as orphans; the contact store's
+    provisioning and merge-proposal tables are dropped after the backup (audit M12)."""
+    import sqlite3
+    home, _ = installed
+    names = ("protagine-tom2.db", "protagine-tom2-exposure.db", "protagine-engagement.db",
+             "protagine-relationships.db", "protagine-p8-visibility.db", "protagine-p8-arcs.db",
+             "protagine-p8-recipient-audit.db", "protagine-presence.db", "bootstrap.db")
+    for name in names:
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x TEXT)")
+            db.execute("INSERT INTO t VALUES ('row')")
+    # The contact store's provisioning receipts and the merge tables no code reads any more.
+    contact_tables = ("contact_provision_operations", "contact_merge_proposals", "contact_merge_audit",
+                      "contact_confirmed_distinct")
+    with sqlite3.connect(home / "protagine-contacts.db") as db:
+        db.execute("CREATE TABLE IF NOT EXISTS contacts (contact_id TEXT PRIMARY KEY)")
+        for table in contact_tables:
+            db.execute(f"CREATE TABLE IF NOT EXISTS {table} (x TEXT)")
+        kept = db.execute("SELECT count(*) FROM contacts").fetchone()[0]
+    assert set(names) <= set(init.retired_state_present(home))
+    assert {f"protagine-contacts.db:{table}" for table in contact_tables} <= set(init.retired_tables_present(home))
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    for name in names:
+        assert f"retired {name}" in out and not (home / name).exists()
+    with sqlite3.connect(next((home / "backups").rglob("retired/protagine-engagement.db"))) as db:
+        assert db.execute("SELECT x FROM t").fetchone()[0] == "row"
+    with sqlite3.connect(home / "protagine-contacts.db") as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "contacts" in tables and not set(contact_tables) & tables
+        assert db.execute("SELECT count(*) FROM contacts").fetchone()[0] == kept
+    assert init.retired_state_present(home) == [] and init.retired_tables_present(home) == []
+
+
 def test_upgrade_adopts_the_ingress_rows_of_retired_producers(installed, capsys):
     """An earlier line stamped durable intake rows with its client principals; this line
     authenticates one key, so the upgrade re-scopes those rows to the instance producer and

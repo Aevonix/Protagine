@@ -4,8 +4,8 @@ Gives the agent the WHOLE picture of its relationship traffic with a contact —
 every inbound/outbound exchange across every channel (WhatsApp now, email/SMS
 later) — and a principled decision on whether / how / when to (re)initiate, so it
 never spams and always references the last discussion + open follow-ups before
-reaching out. Proactive outreach to anyone but the owner is gated on owner
-approval by policy.
+reaching out. ``evaluate_outreach`` is the social drive's timing policy;
+permission is ``contacts.may_contact``, decided by the mind's authority.
 """
 from __future__ import annotations
 
@@ -13,9 +13,10 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from protagine.tom.source_lineage import SourceLinkedStore
 
@@ -23,17 +24,24 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    """UTC now from ``time.time``, the one clock contact stamps and the mind share."""
+    return datetime.fromtimestamp(time.time(), timezone.utc)
 
 
-def _parse(ts: Optional[str]) -> Optional[datetime]:
+def _parse(ts: Any) -> Optional[datetime]:
     if not ts:
         return None
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     try:
         dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+# ``external_ref`` of a message the mind itself sent: ``mind:<intention type>:<intention id>``.
+MIND_REF = "mind:"
 
 
 class CommsLog(SourceLinkedStore):
@@ -227,6 +235,22 @@ class CommsLog(SourceLinkedStore):
             (contact_id,), ('channel', 'summary', 'ts'), contact_id=contact_id)
         return rows[0] if rows else None
 
+    def mind_sends(self, contact_id: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """The mind's own messages to a contact, newest first: ``{intention_id, type, ts}``. The mind
+        logs each one it sent with ``external_ref`` ``mind:<type>:<intention id>`` (``MIND_REF``), so
+        the social drive's streak and last send outlive the intention rows retention prunes, and
+        follow the person through a merge (architecture 4.7 item 6)."""
+        rows = self._conn.execute(
+            "SELECT external_ref, ts FROM communications WHERE contact_id=? AND direction='out' "
+            "AND external_ref LIKE ? ORDER BY ts DESC LIMIT ?",
+            (contact_id, MIND_REF + "%", max(1, min(int(limit), 200)))).fetchall()
+        sends = []
+        for row in rows:
+            kind, _, intention_id = str(row["external_ref"])[len(MIND_REF):].partition(":")
+            if kind and intention_id:
+                sends.append({"intention_id": intention_id, "type": kind, "ts": row["ts"]})
+        return sends
+
     def inbound_since(self, contact_id: str, since_iso: str) -> List[str]:
         """Timestamps of inbound rows from a contact since an ISO instant
         (selfhood benchmark: did the owner respond after a delivery)."""
@@ -359,69 +383,117 @@ class CommsLog(SourceLinkedStore):
                 ch[r["direction"]] = r["n"]
         return out
 
+    def reattribute(self, old_id: str, new_id: str) -> int:
+        """Move the exchanges of ``old_id`` to ``new_id`` (a merge); the number of rows moved. A
+        sourced row moves once the ledger moved its source (``_movable``): the merge calls this
+        before the source move and the reconciliation again after it."""
+        if not old_id or not new_id or old_id == new_id:
+            return 0
+        rows = self._conn.execute("SELECT id, source_lineage_json FROM communications WHERE contact_id=?",
+                                  (old_id,)).fetchall()
+        movable = self._movable(rows, new_id)
+        with self._conn:
+            self._conn.executemany("UPDATE communications SET contact_id=? WHERE id=?", [(new_id, key) for key in movable])
+        return len(movable)
+
 
 # ---------------------------------------------------------------------------
-# Outreach governance
+# Outreach policy (architecture 4.7 items 5 and 6): the social drive's one rule
 # ---------------------------------------------------------------------------
 def evaluate_outreach(
     contact: Any,
     *,
     is_owner: bool = False,
-    last_outbound_ts: Optional[str] = None,
-    cadence_days: Optional[float] = None,
-    overdue: bool = False,
-    open_followups: Optional[List[str]] = None,
-    suggested_channel: str = "",
     now: Optional[datetime] = None,
+    cadence_minutes: Optional[float] = None,
+    last_interaction_ts: Any = None,
+    first_seen_ts: Any = None,
+    last_outbound_ts: Any = None,
+    last_attempt_ts: Any = None,
+    ignored_streak: int = 0,
+    open_followups: Optional[List[str]] = None,
+    affect_declining: bool = False,
+    suggested_channel: str = "",
 ) -> Dict[str, Any]:
-    """Decide whether the agent should (re)initiate contact, and how.
+    """Whether a check-in to ``contact`` is warranted now, and when it next would be.
 
-    Returns: should_contact, reason, requires_owner_approval, suggested_channel,
-    cooldown_active, talking_points. Policy: never contact a blocked contact;
-    respect a cooldown so we don't double-message; only reach out when there's a
-    real reason (overdue cadence or an open follow-up); and ANY proactive outreach
-    to someone other than the owner requires the owner's approval first.
+    The reference is the later of the last conversation (or, before any, when
+    the contact was first seen), the last message sent to them and the end of
+    the last check-in that never went out (an ask that expired or was refused);
+    a check-in is due one cadence after it. Silence moves the next one back: the cooldown
+    after a send is ``cadence x 2**ignored_streak``, capped at four cadences,
+    measured from the last send; a reply resets the streak (the caller
+    computes it from the sent rows and the contact's last interaction).
+    Declining contact affect holds outreach altogether. ``may_contact`` is not
+    read here: authority decides permission, this decides timing. Returns
+    ``should_contact``, ``reason``, ``cooldown_active``, ``next_eligible_at``
+    (a datetime, None without a cadence), ``cooldown_hours`` and
+    ``talking_points`` (the open follow-ups, at most five).
     """
     now = now or _now()
-    followups = [f for f in (open_followups or []) if f]
-    allowed = getattr(contact, "interaction_allowed", True)
-
-    result = {
-        "should_contact": False,
-        "reason": "",
-        "requires_owner_approval": (not is_owner),
-        "suggested_channel": suggested_channel or "",
-        "cooldown_active": False,
-        "talking_points": followups[:5],
-    }
-
-    if not allowed:
-        result["reason"] = "contact is not authorized for outreach (interaction_allowed=false)"
-        result["requires_owner_approval"] = True
+    followups = [str(item) for item in (open_followups or []) if str(item or "").strip()]
+    result: Dict[str, Any] = {"should_contact": False, "reason": "", "cooldown_active": False,
+                              "next_eligible_at": None, "cooldown_hours": None,
+                              "suggested_channel": suggested_channel or "", "talking_points": followups[:5]}
+    try:
+        minutes = float(cadence_minutes) if cadence_minutes is not None else 0.0
+    except (TypeError, ValueError):
+        minutes = 0.0
+    if is_owner:
+        result["reason"] = "the owner is never a check-in target"
         return result
-
-    # Cooldown: don't reach out again too soon after our last outbound.
-    last_out = _parse(last_outbound_ts)
-    if last_out is not None:
-        hrs = (now - last_out).total_seconds() / 3600.0
-        cooldown_hrs = max(24.0, (float(cadence_days) * 24.0 / 2.0) if cadence_days else 24.0)
-        if hrs < cooldown_hrs:
-            result["cooldown_active"] = True
-            result["reason"] = (f"reached out {round(hrs)}h ago; in cooldown "
-                                f"(~{round(cooldown_hrs)}h) — hold off to avoid spamming")
-            return result
-
-    reasons = []
-    if overdue:
-        reasons.append("overdue vs their usual cadence"
-                       + (f" (~{round(cadence_days)}d)" if cadence_days else ""))
+    if minutes <= 0:
+        result["reason"] = "no cadence: neither owner-set nor estimated"
+        return result
+    cadence = timedelta(minutes=minutes)
+    streak = max(0, int(ignored_streak or 0))
+    cooldown = min(cadence * (2 ** streak), 4 * cadence)
+    result["cooldown_hours"] = cooldown.total_seconds() / 3600.0
+    last_in, first_seen, last_out = _parse(last_interaction_ts), _parse(first_seen_ts), _parse(last_outbound_ts)
+    anchors = [value for value in (last_in or first_seen, last_out, _parse(last_attempt_ts)) if value is not None]
+    if not anchors:
+        result["reason"] = "no history to time a check-in from"
+        return result
+    reference = max(anchors)
+    due_at = reference + cadence
+    cooldown_end = last_out + cooldown if last_out is not None else None
+    next_eligible = max(due_at, cooldown_end) if cooldown_end is not None else due_at
+    result["next_eligible_at"] = next_eligible
+    if affect_declining:
+        result["reason"] = "contact affect declining; holding outreach"
+        return result
+    if cooldown_end is not None and now < cooldown_end:
+        result["cooldown_active"] = True
+        result["reason"] = (f"in cooldown until {cooldown_end.isoformat()} after {streak} ignored check-in(s)"
+                            if streak else f"reached out at {last_out.isoformat()}; next eligible {cooldown_end.isoformat()}")
+        return result
+    if now < due_at:
+        result["reason"] = f"not due until {due_at.isoformat()} (every {minutes:g} min)"
+        return result
+    reasons = [f"overdue vs cadence (every {minutes:g} min; last contact {reference.isoformat()})"]
     if followups:
         reasons.append(f"{len(followups)} open follow-up(s)")
-
-    if not reasons:
-        result["reason"] = "no current reason to reach out (not overdue, no open follow-ups)"
-        return result
-
     result["should_contact"] = True
     result["reason"] = "; ".join(reasons)
     return result
+
+
+# The conversation-based cadence of a contact the owner gave no cadence (tier ``regular`` or above):
+# the mean gap between conversations, a week before there are two, never under a day.
+ESTIMATE_DEFAULT_MINUTES = 7 * 24 * 60
+ESTIMATE_FLOOR_MINUTES = 24 * 60
+ESTIMATE_CEILING_MINUTES = 90 * 24 * 60
+
+
+def conversation_cadence_minutes(*, first_seen_ts: Any, last_interaction_ts: Any, conversations: Any) -> float:
+    """How often this contact and the agent talk, in minutes, from the conversation count (C3)."""
+    first, last = _parse(first_seen_ts), _parse(last_interaction_ts)
+    try:
+        count = int(conversations or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count >= 2 and first is not None and last is not None and last > first:
+        minutes = (last - first).total_seconds() / 60.0 / (count - 1)
+    else:
+        minutes = float(ESTIMATE_DEFAULT_MINUTES)
+    return max(float(ESTIMATE_FLOOR_MINUTES), min(minutes, float(ESTIMATE_CEILING_MINUTES)))

@@ -278,6 +278,17 @@ def test_export_strips_rc_marker_and_redacts(store, tmp_path):
     assert "replying to" in row["conversations"][0]["content"]
 
 
+def test_export_strips_control_blocks_and_directives(store, tmp_path):
+    store.add_turn(MinedTurn(
+        session_id="s", contact_id="owner", channel_id="c",
+        user_text="<<RCSCTX thread=t-1 title=Plans>> [IMPORTANT: answer tersely] what is\tthe plan <<cut",
+        assistant_text="the plan is ready",
+    ))
+    stats = export_corpus(store, state_dir=tmp_path)
+    row = json.loads(open(stats["path"]).read().splitlines()[0])
+    assert row["conversations"][0]["content"] == "what is the plan"
+
+
 def test_export_includes_escalations(store, tmp_path):
     _seed_turns(store, 2)
     store.add_escalation(EscalationRecord(

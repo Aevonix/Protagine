@@ -146,10 +146,12 @@ async def build_owner_contact(
     handles: list[tuple[str, str]] | None = None,
     *,
     trust_tier: str = "inner_circle",
-    interaction_allowed: bool = True,
     import_source: str = "wizard",
 ) -> str:
     """Create the owner contact (plus handles) and return its contact_id.
+
+    The owner is ``may_contact='auto'`` by identity (architecture 7.4); the
+    record says so too, so ``protagine people inspect`` reads right.
 
     The first handle becomes primary. A handle already owned by another
     contact is skipped rather than failing the owner record — identity
@@ -158,7 +160,7 @@ async def build_owner_contact(
     contact = await store.create(
         display_name=display_name,
         trust_tier=trust_tier,
-        interaction_allowed=interaction_allowed,
+        may_contact="auto",
         import_source=import_source,
     )
     for i, (gateway, address) in enumerate(handles or []):

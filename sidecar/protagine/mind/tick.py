@@ -24,19 +24,22 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+from protagine.contacts.comms import MIND_REF, conversation_cadence_minutes
+from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
 from .authority import (
-    Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, ask_expiry, in_quiet_hours, may_contact_of, new_ask_code,
-    parse_quiet_hours,
+    Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, Verdict, ask_expiry, in_quiet_hours, may_contact_of,
+    new_ask_code, parse_quiet_hours,
 )
+from .compose import Composer, template as compose_template
 from .concerns import BROADCAST, MIND_DB, RESOLVED_RETENTION, SETTLED_FOR, Concern, Concerns
 from .deliberate import Deliberation, refresh_context
-from .drives import DRIVES, DriveInputs, slug, task_body
+from .drives import CHECK_IN_TYPES, DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
 from .outbox import Outbox
 from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
@@ -60,13 +63,26 @@ MESSAGING_TOOLS = frozenset({"send_message", "react_to_message", "discord", "dis
 # Stock ``send_message`` targets: ``platform:chat_id``, and on these platforms ``platform:chat_id:thread_id``.
 THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
-DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True}
+DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
+                     "people": True}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
 # Intention types formed because a commitment row was due; a deadline that moves back into the
 # future, or away, makes them stale.
-DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable"})
+DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable", "commitment_notice",
+                       "commitment_check_in"})
+# The owner-granted message to a third party is the obligation itself: once it is sent the
+# commitment it was raised for is done.
+FULFILLED_BY_SENDING = frozenset({"commitment_notice", "commitment_check_in"})
+# Questions only the owner answers: always an ask, whatever the level, settled by ``answer``.
+OWNER_QUESTIONS = frozenset({"link_proposal", "cadence_confirm"})
+# How far back the social drive reads its own intention rows (in-flight and unsent check-ins, and the
+# sends retention has not pruned yet). The sends themselves also live in the comms ledger, which
+# nothing prunes: the streak and the last send outlive these rows (architecture 4.7 item 6).
+SOCIAL_HISTORY = timedelta(days=120)
+# A sent check-in is scored once its reply window passed: the contact's cadence, else this.
+CHECK_IN_WINDOW = timedelta(hours=24)
 
 
 def split_target(target: str) -> tuple[str, str]:
@@ -119,7 +135,9 @@ class Mind:
                  persist: Callable[[Dict[str, Any]], None] | None = None, router: Any = None,
                  appraisals: Any = None, interests: Iterable[str] = (), concerns: Concerns | None = None,
                  backlog: Callable[[], Mapping[str, int]] | None = None, capture: Any = None,
-                 heartbeat: Callable[[], Any] | None = None) -> None:
+                 heartbeat: Callable[[], Any] | None = None, comms: Any = None, contact_affect: Any = None,
+                 packet_for: Callable[[str], Awaitable[str]] | None = None,
+                 claims_for: Callable[[str], Awaitable[List[str]]] | None = None) -> None:
         mind = dict(config or {})
         self.config = mind
         self.heartbeat = heartbeat  # called (awaited if it returns an awaitable) at the start of every tick
@@ -139,6 +157,13 @@ class Mind:
         self.feedback = feedback
         self.expectations = expectations
         self.contacts = contacts
+        # The people faculty's reads: the comms ledger, the contacts' affect (``trend``; not the
+        # agent's own feelings), the recipient-scoped packet a message to a contact is composed from,
+        # and the claims a contact digest lists.
+        self.comms = comms
+        self.contact_affect = contact_affect
+        self.packet_for = packet_for
+        self.claims_for = claims_for
         self.ledger = ledger
         self.appraisals = appraisals
         self.backlog_probe = backlog
@@ -148,6 +173,11 @@ class Mind:
         self.persist = persist
         self.faculties = faculties_of(mind)
         self.drive_weights = drive_functions.weights(mind.get("drives"), faculty_on=self.faculties["drives"])
+        if not self.faculties["people"]:
+            # People off (the full-people ablation): what M5 adds goes, and nothing older. No
+            # check-ins, no composition (a message keeps its template), no owner-granted messages to
+            # third parties or cadences, no link asks, no digests; may_contact still governs.
+            self.drive_weights["social"] = 0.0
         self.act_threshold = float(mind.get("act_threshold") or DEFAULT_ACT_THRESHOLD)
         self.digest_hour = int(mind.get("digest_hour", 8) or 0)
         try:
@@ -163,11 +193,14 @@ class Mind:
                                  commitments=commitments, followups=followups, autobiography=self.autobiography,
                                  clock=self.clock)
         self.outcomes.on_settled = self._on_settled
+        self.outbox.on_sent = self._on_sent
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.concerns = concerns if concerns is not None else Concerns(self.state_dir / MIND_DB, clock=self.clock)
         self.mind_state = self.concerns.state
         self.deliberation = Deliberation(router, clock=self.clock, tokens_allowed=self.authority.tokens_allowed,
                                          enabled=self.faculties["deliberation"], budgets=self.policy.budgets)
+        self.composer = Composer(router, clock=self.clock, tokens_allowed=self.authority.tokens_allowed,
+                                 enabled=self.faculties["people"])
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
         if expectations is not None and hasattr(expectations, "register_resolver"):
@@ -222,6 +255,7 @@ class Mind:
     @router.setter
     def router(self, value: Any) -> None:
         self.deliberation.router = value
+        self.composer.router = value
 
     def off(self, *, reason: str = "owner", by: str = "owner") -> Dict[str, Any]:
         """No further effects, at once and without the model endpoint (7.9)."""
@@ -355,26 +389,29 @@ class Mind:
                 summary["expired_asks"] = self._expire_asks(now)
                 return summary
             summary["expired_asks"] = self._expire_asks(now) + self._expire_messages(now)
-            summary["invalidated"] = self._invalidate(now)
+            summary["invalidated"] = self._invalidate(now) + await self._invalidate_messages(now)
             summary["expectations"] = self._resolve_expectations(now)
             summary["retention"] = self._retention(now)
+            summary["digests"] = await self._digests(now)
             summary["backup"] = await self._backup(now)
             if self.body_stale(now) and not force:
                 summary["skipped"] = "body stale"
                 return summary
             self.deliberation.begin_tick()
+            self.composer.begin_tick()
             summary["reconsidered"] = await self._reconsider(now)
             summary["capture_drained"] = await self._drain_capture(force)
             summary["overdue_flipped"] = self._flip_overdue(now)
+            summary["check_ins_scored"] = await self._score_check_ins(now)
             self.mind_state.decay(now)
             summary["decay"] = self.concerns.decay(now)
-            inputs = self._gather(now)
+            inputs = await self._gather(now)
             summary["drives"], events = self._raise_concerns(inputs, now)
             summary["revised"] = self._bdi(now, events)
             summary["goals"] = self._tend_goals(now)
             summary["formed"], summary["below_threshold"] = await self._act(now)
-            summary["model_calls"] = self.deliberation.calls_this_tick
-            summary["digest"] = self._digest(now)
+            summary["model_calls"] = self.deliberation.calls_this_tick + self.composer.calls_this_tick
+            summary["digest"] = await self._digest(now)
             notice = self.outbox.notify_asks(self.store.intentions(status=["asked"], limit=200))
             summary["ask_notice"] = notice.id if notice is not None else None
             return summary
@@ -577,11 +614,22 @@ class Mind:
             if row.decision != "defer":
                 continue
             context = row.context if isinstance(row.context, dict) else {}
-            may_contact = await self._may_contact(row.entity_id)
+            may_contact = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+            if (row.kind == "message" and row.entity_id and not self._is_owner(row.entity_id)
+                    and not context.get("text") and may_contact != "never" and self.enabled
+                    and self.authority.budget_check(kind="message", recipient=row.entity_id, type=row.type, now=now,
+                                                    cooldown_hours=context.get("cooldown_hours")) is None):
+                # Deferred before it was composed: composed now that it may go.
+                text, tokens = await self._composed(row.entity_id, context.get("purpose"), context.get("topic"))
+                context = {**context, "text": text}
+                row = self.store.update(row.id, context=context,
+                                        cost_tokens=int(row.cost_tokens or 0) + int(tokens or 0)) or row
             verdict = self.authority.decide(kind=row.kind or "task", recipient=row.entity_id,
                                             text=f"{row.description}\n{context.get('text') or context.get('body') or ''}",
                                             type=row.type, may_contact=may_contact,
-                                            toolsets=self.policy.worker_toolsets, now=now)
+                                            toolsets=self.policy.worker_toolsets, now=now,
+                                            cooldown_hours=context.get("cooldown_hours"))
+            verdict = self._owner_word(verdict, type=row.type, ask_owner=bool(context.get("ask_owner")))
             if verdict.decision == "defer":
                 continue
             count += 1
@@ -628,15 +676,16 @@ class Mind:
 
     # -- the drives: a snapshot of stored state, then concerns -------------------------------
 
-    def _gather(self, now: datetime) -> DriveInputs:
+    async def _gather(self, now: datetime) -> DriveInputs:
         """Everything the drives read, gathered once; every store is optional."""
-        inputs = DriveInputs(now=now, owner_id=self.owner_id, worker_profile=WORKER_PROFILE)
-        if self.commitments is not None:
-            try:
-                inputs.commitments = list(self.commitments.list(status=["pending", "overdue"], limit=500)
-                                          .get("commitments", []))
-            except Exception as error:
-                logger.warning("commitments unavailable (%s)", type(error).__name__)
+        inputs = DriveInputs(now=now, owner_id=self.owner_id, worker_profile=WORKER_PROFILE,
+                             people_on=self.faculties["people"])
+        inputs.commitments = self._open_commitments()
+        if inputs.people_on:
+            await self._resolve_recipients(inputs.commitments)
+            await self._apply_cadences(inputs.commitments)
+            inputs.contacts = await self._social_rows(now, commitments=inputs.commitments)
+            inputs.link_proposals = await self._link_proposals()
         inputs.heads_up_grace = self.heads_up_grace
         for row in inputs.commitments:
             # A heads-up that went out holds the overdue reminder for the grace (one word at a time).
@@ -678,6 +727,15 @@ class Mind:
         inputs.settled |= {row.dedup_base for row in self.store.intentions(status=list(MIND_ACTIVE_STATUSES), limit=500)
                            if row.dedup_base}
         return inputs
+
+    def _open_commitments(self) -> List[Dict[str, Any]]:
+        if self.commitments is None:
+            return []
+        try:
+            return list(self.commitments.list(status=["pending", "overdue"], limit=500).get("commitments", []))
+        except Exception as error:
+            logger.warning("commitments unavailable (%s)", type(error).__name__)
+            return []
 
     def _expectation_misses(self, now: datetime) -> List[Dict[str, Any]]:
         store = getattr(self.expectations, "store", None)
@@ -771,6 +829,12 @@ class Mind:
         for name in DRIVES:
             if name not in results:
                 self.drive_levels[name] = 0.0
+        # A check-in is owed only while the drive finds it due: one it no longer raises (the contact
+        # talked, a send moved the cooldown, affect turned, people went off) is dropped, never formed late.
+        due = {candidate.dedup_key for candidate in results.get("social", (0.0, []))[1]}
+        for concern in self.concerns.open(limit=1000):
+            if concern.drive == "social" and concern.dedup_key not in due:
+                self.concerns.drop(concern.id, note="no longer due", now=now)
         return {"levels": dict(self.drive_levels), "raised": raised, "weights": self.effective_weights()}, events
 
     def _bdi(self, now: datetime, events: List[str]) -> int:
@@ -894,7 +958,7 @@ class Mind:
                 self._charge_unformed(shaped, concern, now)
                 continue
             self.concerns.intended(concern.id, row.id, now=now)
-            if row.kind == "note":
+            if row.kind == "note" and row.status == "approved":
                 # A note has no body to run and nothing to wait for: it is what the mind concluded.
                 self.outcomes.record(row.id, status="done", summary=shaped.text, verified="none", by="mind")
                 row = self.store.get(row.id) or row
@@ -921,19 +985,74 @@ class Mind:
         self.store.transition(row.id, "done", action="deliberated", outcome="done", verified="none",
                               completed_at=now, at=now)
 
+    def _is_owner(self, recipient: Any) -> bool:
+        return bool(self.owner_id) and recipient == self.owner_id
+
+    async def _contact_record(self, contact_id: str | None) -> Optional[Dict[str, Any]]:
+        """The contact as a dict, or None when there is no store, no such contact or the read failed."""
+        if not contact_id or self.contacts is None:
+            return None
+        try:
+            contact = await self.contacts.get(contact_id)
+        except Exception as error:
+            logger.debug("contact %s unavailable (%s)", contact_id, type(error).__name__)
+            return None
+        if contact is None:
+            return None
+        if hasattr(contact, "to_dict"):
+            return dict(contact.to_dict())
+        return dict(contact) if isinstance(contact, Mapping) else None
+
+    async def _contact_name(self, contact_id: str | None) -> str:
+        record = await self._contact_record(contact_id) or {}
+        return str(record.get("display_name") or record.get("given_name") or contact_id or "them")
+
     async def _may_contact(self, recipient: str | None) -> str:
         if not recipient:
             return "ask"
-        if self.owner_id and recipient == self.owner_id:
+        if self._is_owner(recipient):
             return "auto"
-        contact = None
-        if self.contacts is not None:
-            try:
-                contact = await self.contacts.get(recipient)
-            except Exception as error:
-                logger.debug("contact %s unavailable (%s)", recipient, type(error).__name__)
-        record = contact.to_dict() if hasattr(contact, "to_dict") else contact
+        record = await self._contact_record(recipient)
         return may_contact_of(record if record is not None else recipient, owner_id=self.owner_id)
+
+    def _granted(self, grant: Any, stored: str, recipient: str | None) -> str:
+        """A per-commitment owner grant counts as ``auto`` for that recipient only; a ``never``
+        is never overridden (architecture 7.4: only the owner raises, an opt-out only lowers)."""
+        if grant == "owner" and stored != "never" and recipient and not self._is_owner(recipient):
+            return "auto"
+        return stored
+
+    @staticmethod
+    def _owner_word(verdict: Verdict, *, type: str | None, ask_owner: bool) -> Verdict:
+        """An owner question, or a message to someone the owner named only by a name the store
+        matched, waits for the owner's word whatever would have let it act or merely wait: the rule
+        is applied when the row forms and whenever a deferred row is re-decided."""
+        if verdict.decision in {"act", "defer"} and (type in OWNER_QUESTIONS or ask_owner):
+            return Verdict(decision="ask", reason="only the owner's word settles this", cls=verdict.cls)
+        return verdict
+
+    @staticmethod
+    def _never_reason(recipient: str) -> str:
+        return f"{recipient} may no longer be contacted (may_contact=never)"
+
+    async def _permission_withdrawn(self, row: StoredInitiative, now: datetime) -> bool:
+        """Permission is read again whenever a message to a contact may still leave (architecture
+        7.4: an opt-out or the owner's revocation holds from that moment, however long the message
+        waited for quiet hours or the body). A recipient now ``never`` cancels it; one lowered to
+        ``ask`` turns a message approved on ``auto`` into the owner's question. A message the owner
+        approved by its ask code needs no more than ``ask``. True when the row was withdrawn."""
+        if row.kind != "message" or not row.entity_id or self._is_owner(row.entity_id):
+            return False
+        context = row.context if isinstance(row.context, dict) else {}
+        permission = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+        if permission == "never":
+            self._cancel_stale(row, self._never_reason(row.entity_id))
+            return True
+        if permission == "ask" and row.status == "approved" and not row.ask_code:
+            self._apply_decision(row, Verdict(decision="ask", reason=f"may_contact is now ask for {row.entity_id}",
+                                              cls=row.cls or "contact"), now, reconsidered=True)
+            return True
+        return False
 
     async def _handles(self, recipient: str | None) -> List[Dict[str, Any]]:
         if not recipient or self.contacts is None or not hasattr(self.contacts, "get_handles"):
@@ -950,10 +1069,21 @@ class Mind:
     async def _form(self, candidate: Candidate, score: float, now: datetime) -> Optional[StoredInitiative]:
         if self.store.get_by_dedup_key(candidate.dedup_key) is not None:
             return None
-        may_contact = await self._may_contact(candidate.recipient)
+        to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
+        stored = await self._may_contact(candidate.recipient)
+        may_contact = self._granted(candidate.grant, stored, candidate.recipient)
+        # Composition is a model call: made only for a message the budgets would let go now. One
+        # they defer is composed when it goes (``_reconsider``), from the packet of that day.
+        if (to_contact and not candidate.text and may_contact != "never" and self.enabled
+                and self.authority.budget_check(kind=candidate.kind, recipient=candidate.recipient,
+                                                type=candidate.type, now=now,
+                                                cooldown_hours=candidate.cooldown_hours) is None):
+            await self._compose(candidate)
         verdict = self.authority.decide(kind=candidate.kind, recipient=candidate.recipient,
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
-                                        may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now)
+                                        may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now,
+                                        cooldown_hours=candidate.cooldown_hours)
+        verdict = self._owner_word(verdict, type=candidate.type, ask_owner=candidate.ask_owner)
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         context: Dict[str, Any] = {
             "concern": candidate.concern, "evidence": list(candidate.evidence), "score": round(score, 3),
@@ -961,6 +1091,11 @@ class Mind:
         }
         if candidate.topic:
             context["topic"] = candidate.topic
+        if candidate.ask_owner:
+            context["ask_owner"] = True     # re-decided later (a deferral), it is still the owner's word
+        for key in ("grant", "purpose", "cooldown_hours"):
+            if getattr(candidate, key) is not None:
+                context[key] = getattr(candidate, key)
         if candidate.kind == "message":
             context["text"] = candidate.text
             context["recipient_handles"] = await self._handles(candidate.recipient)
@@ -995,7 +1130,48 @@ class Mind:
             extra["cost_tokens"] = int(candidate.cost_tokens)
         if extra:
             self.store.update(row.id, **extra)
-        return self._apply_decision(row, verdict, now, reconsidered=False, code=code)
+        updated = self._apply_decision(row, verdict, now, reconsidered=False, code=code)
+        if candidate.grant == "owner" and stored == "never" and verdict.decision == "drop":
+            await self._refuse_grant(candidate)
+        return updated
+
+    @staticmethod
+    def _purpose(purpose: str | None) -> str:
+        from .compose import purpose_kind
+        try:
+            purpose_kind(purpose or "")
+            return str(purpose)
+        except ValueError:
+            return "check_in"
+
+    async def _compose(self, candidate: Candidate) -> None:
+        """The text of a message to a contact, from the purpose, the name, the topic and that
+        contact's own packet (architecture 6.3); never the concern, rationale, evidence or an
+        owner turn. Authority then checks the text like any other."""
+        text, tokens = await self._composed(candidate.recipient, candidate.purpose, candidate.topic)
+        candidate.text = text
+        candidate.cost_tokens = int(candidate.cost_tokens or 0) + int(tokens or 0)
+
+    async def _composed(self, recipient: Any, purpose: str | None, topic: str | None) -> tuple[str, int]:
+        name = await self._contact_name(recipient)
+        packet = ""
+        if self.packet_for is not None:
+            try:
+                packet = str(await self.packet_for(str(recipient)) or "")
+            except Exception as error:
+                logger.warning("recipient packet unavailable (%s); composing without it", type(error).__name__)
+        return await self.composer.compose(purpose=self._purpose(purpose), recipient_name=name, packet=packet,
+                                           topic=topic or "")
+
+    async def _refuse_grant(self, candidate: Candidate) -> None:
+        """The owner asked for a message to someone who may never be contacted: nothing went to
+        them, and the owner hears why (the grant does not override ``never``)."""
+        name = await self._contact_name(candidate.recipient)
+        self.outbox.notice(
+            type="grant_refused", title=f"Not sent to {name}"[:160],
+            text=(f"Not sent to {name}: they are set to never be contacted, and your request does not change "
+                  f"that. You asked for: {candidate.title}."),
+            dedup_key=f"grant_refused:{candidate.dedup_key}")
 
     def _apply_decision(self, row: StoredInitiative, verdict: Any, now: datetime, *, reconsidered: bool,
                         code: str | None = None) -> Optional[StoredInitiative]:
@@ -1087,9 +1263,393 @@ class Mind:
         except Exception as error:
             logger.warning("commitment %s not closed for %s (%s)", ident, row.id, type(error).__name__)
 
+    def _on_sent(self, row: StoredInitiative) -> None:
+        """The body reported a message sent: an owner-granted message to a third party was the
+        obligation itself, so its commitment is done; and a message to a contact is an exchange
+        with them, logged in the comms ledger, where the social drive reads its sends."""
+        if row.type in FULFILLED_BY_SENDING:
+            self._close_commitment(row)
+        self._log_sent(row)
+
+    def _log_sent(self, row: StoredInitiative) -> None:
+        if self.comms is None or not hasattr(self.comms, "log") or not row.entity_id or self._is_owner(row.entity_id):
+            return
+        target = next((str((item.details or {}).get("target") or "") for item in self.store.get_history(row.id, limit=50)
+                       if item.action == "sending"), "")
+        context = row.context if isinstance(row.context, dict) else {}
+        try:
+            self.comms.log(row.entity_id, channel=split_target(target)[0] or "mind", direction="out",
+                           summary=str(context.get("text") or row.description or "")[:300],
+                           external_ref=f"{MIND_REF}{row.type}:{row.id}",
+                           ts=(_utc(row.completed_at) or self.clock()).isoformat())
+        except Exception as error:
+            logger.warning("send of %s not logged in the comms ledger (%s)", row.id, type(error).__name__)
+
+    # -- people (architecture 4.7) -------------------------------------------------------------
+
+    async def _resolve_recipients(self, commitments: List[Dict[str, Any]]) -> None:
+        """The contact behind each third party the owner named for a granted message or a cadence,
+        written back to the row (``metadata.recipient_id``) so it is resolved once, with
+        ``recipient_exact``: whether the owner identified them exactly (an id, a handle, a number)
+        or the store matched a name. Only an exact recipient carries the owner's grant; a name
+        match becomes an owner ask showing ``recipient_match`` (the contact's name and a handle).
+        An unknown name stays unresolved and the duty drive asks the owner who it is."""
+        resolver = getattr(self.contacts, "resolve_reference", None)
+        if not callable(resolver):
+            return
+        for row in commitments:
+            name = drive_functions.unresolved_recipient(row, owner_id=self.owner_id)
+            if name is None:
+                continue
+            contact, exact = None, True
+            try:
+                contact = await resolver(name, exact=True)
+                if contact is None:
+                    contact, exact = await resolver(name), False
+            except Exception as error:
+                logger.debug("recipient %r not resolved (%s)", name, type(error).__name__)
+                continue
+            contact_id = getattr(contact, "contact_id", None) if contact is not None else None
+            if not contact_id:
+                continue
+            found = {"recipient_id": str(contact_id), "recipient_exact": exact}
+            if not exact:
+                # What the owner confirms: the person the name matched, by name and a handle.
+                handles = await self._handles(str(contact_id))
+                label = str(getattr(contact, "display_name", None) or contact_id)
+                if handles:
+                    label += f", {handles[0]['gateway']}:{handles[0]['address']}"
+                found["recipient_match"] = label[:160]
+            row["metadata"] = {**(row.get("metadata") or {}), **found}
+            try:
+                self.commitments.update(row["id"], metadata=found)
+            except Exception as error:
+                logger.warning("recipient of commitment %s not recorded (%s)", row.get("id"), type(error).__name__)
+
+    async def _apply_cadences(self, commitments: List[Dict[str, Any]]) -> None:
+        """A cadence the owner set in conversation becomes the contact's own, once per row (oldest
+        row first, so the newest word wins): the row is marked applied, and a cadence the owner
+        later sets by hand is not set back. The row stays open, so the check-ins keep its topic
+        (``_thread_topic``); it never grants permission, which stays the contact's ``may_contact``."""
+        setter = getattr(self.contacts, "set_cadence", None)
+        if not callable(setter):
+            return
+        for row in sorted(commitments, key=lambda item: str(item.get("created_at") or "")):
+            cadence = drive_functions.owner_cadence(row, owner_id=self.owner_id)
+            if cadence is None or (row.get("metadata") or {}).get("cadence_applied"):
+                continue
+            contact_id, minutes, _ = cadence
+            record = await self._contact_record(contact_id)
+            if record is None:
+                continue
+            try:
+                if record.get("cadence_minutes") != minutes:
+                    await setter(contact_id, minutes, by=f"owner-turn:commitment:{row['id']}")
+            except Exception as error:
+                logger.warning("cadence of commitment %s not applied (%s)", row.get("id"), type(error).__name__)
+                continue
+            row["metadata"] = {**(row.get("metadata") or {}), "cadence_applied": True}
+            try:
+                self.commitments.update(row["id"], metadata={"cadence_applied": True})
+            except Exception as error:
+                logger.warning("cadence of commitment %s not marked (%s)", row.get("id"), type(error).__name__)
+
+    async def _link_proposals(self) -> List[Dict[str, Any]]:
+        lister = getattr(self.contacts, "list_handle_proposals", None)
+        if not callable(lister):
+            return []
+        try:
+            rows = await lister(limit=50)
+        except Exception as error:
+            logger.debug("link proposals unavailable (%s)", type(error).__name__)
+            return []
+        return [dict(row) for row in rows or [] if str(row.get("status") or "pending") == "pending"]
+
+    @staticmethod
+    def _sent_at(row: StoredInitiative) -> datetime:
+        return _utc(row.completed_at) or _utc(row.created_at) or datetime.now(timezone.utc)
+
+    def _messages_by_contact(self, now: datetime) -> Dict[str, List[StoredInitiative]]:
+        """The mind's messages to each contact over the social history, newest first."""
+        grouped: Dict[str, List[StoredInitiative]] = {}
+        for row in self.store.intentions(kind=["message"], since=now - SOCIAL_HISTORY, limit=2000):
+            if row.entity_id and not self._is_owner(row.entity_id):
+                grouped.setdefault(row.entity_id, []).append(row)
+        return grouped
+
+    def _open_followups(self, contact_id: str) -> List[str]:
+        if self.followups is None or not hasattr(self.followups, "list_for_context"):
+            return []
+        try:
+            rows = self.followups.list_for_context(contact_id=contact_id, limit=10)
+        except Exception as error:
+            logger.debug("follow-ups of %s unavailable (%s)", contact_id, type(error).__name__)
+            return []
+        return [str(row.get("original_local_text") or row.get("commitment_id") or "")[:160] for row in rows or []
+                if row.get("state") not in {"resolved", "cancelled", "expired"}]
+
+    async def _affect_declining(self, contact_id: str) -> bool:
+        if self.contact_affect is None or not hasattr(self.contact_affect, "trend"):
+            return False
+        try:
+            trend = self.contact_affect.trend(contact_id)
+            if inspect.isawaitable(trend):
+                trend = await trend
+        except Exception as error:
+            logger.debug("affect of %s unavailable (%s)", contact_id, type(error).__name__)
+            return False
+        return bool((trend or {}).get("declining"))
+
+    @staticmethod
+    def _thread_topic(contact_id: str, commitments: List[Dict[str, Any]], sent: List[StoredInitiative],
+                      owner_id: str | None) -> str:
+        """The open thread a check-in is about, from what is already this contact's to hear: the
+        matter of the cadence the owner set for them, else of a check-in the owner granted for them,
+        else the topic the last message to them raised, else their own open item (their words).
+        Never an owner concern or its evidence."""
+        for row in commitments:
+            cadence = drive_functions.owner_cadence(row, owner_id=owner_id)
+            if cadence is not None and cadence[0] == contact_id and cadence[2]:
+                return cadence[2]
+        own = ""
+        for row in commitments:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if (metadata.get("kind") == "check_in" and metadata.get("recipient_id") == contact_id
+                    and drive_functions.granted_message(row, owner_id=owner_id) is not None
+                    and str(metadata.get("topic") or "").strip()):
+                return str(metadata["topic"]).strip()
+            if not own and str(row.get("person_id") or "") == contact_id:
+                own = " ".join(str(row.get("description") or "").split()[:8])
+        for row in sent:
+            topic = str((row.context or {}).get("topic") or "").strip() if isinstance(row.context, dict) else ""
+            if topic:
+                return topic
+        return own
+
+    def _sends(self, contact_id: str, mine: List[StoredInitiative]) -> List[tuple[str, datetime]]:
+        """``(type, sent_at)`` of every message the mind sent this contact, newest first: the comms
+        ledger (``CommsLog.mind_sends``: kept past retention, moved with a merge) together with the
+        intention rows still held (a send the body left ``uncertain`` is counted as sent)."""
+        seen: Dict[str, tuple[str, datetime]] = {}
+        for item in mine:
+            if item.status in {"sent", "uncertain"}:
+                seen[item.id] = (str(item.type or ""), self._sent_at(item))
+        reader = getattr(self.comms, "mind_sends", None)
+        if callable(reader):
+            try:
+                logged = reader(contact_id, limit=20)
+            except Exception as error:
+                logger.warning("sends to %s unavailable from the comms ledger (%s)", contact_id, type(error).__name__)
+                logged = []
+            for entry in logged:
+                at = _utc(entry.get("ts"))
+                if at is not None and entry.get("intention_id") not in seen:
+                    seen[str(entry["intention_id"])] = (str(entry.get("type") or ""), at)
+        return sorted(seen.values(), key=lambda item: item[1], reverse=True)
+
+    async def _social_rows(self, now: datetime, *,
+                           commitments: List[Dict[str, Any]] | None = None) -> List[Dict[str, Any]]:
+        """``contacts.social_candidates()`` enriched for the social drive: the last send, the
+        ignored streak (newest first over sent check-ins, counting while the contact has not
+        talked since), whether a message to them is still under way, open follow-ups, declining
+        affect, the open thread, and the conversation-based cadence of a tier-only contact."""
+        if not self.faculties["people"] or self.contacts is None or not hasattr(self.contacts, "social_candidates"):
+            return []
+        try:
+            candidates = await self.contacts.social_candidates(limit=200)
+        except Exception as error:
+            logger.warning("social candidates unavailable (%s)", type(error).__name__)
+            return []
+        if commitments is None:
+            commitments = self._open_commitments()
+        history = self._messages_by_contact(now)
+        rows: List[Dict[str, Any]] = []
+        for raw in candidates or []:
+            row = dict(raw)
+            contact_id = str(row.get("contact_id") or "")
+            if not contact_id or self._is_owner(contact_id):
+                continue
+            mine = history.get(contact_id, [])
+            sent = self._sends(contact_id, mine)
+            check_ins = [(kind, at) for kind, at in sent if kind in CHECK_IN_TYPES]
+            last_in = _utc(row.get("last_interaction_at"))
+            streak = 0
+            for _, at in check_ins:
+                if last_in is not None and last_in > at:
+                    break
+                streak += 1
+            # A check-in that ended without going out (the owner let the ask expire or said no, the
+            # deny list dropped it) starts the next period, so it is neither lost for good nor re-asked at once.
+            unsent = [_utc(item.cancelled_at) or _utc(item.completed_at) or _utc(item.created_at) for item in mine
+                      if item.type in CHECK_IN_TYPES and item.status in {"expired", "cancelled", "dropped"}]
+            row.update(
+                last_outbound_at=sent[0][1].isoformat() if sent else None,
+                last_attempt_at=max(unsent).isoformat() if unsent else None,
+                last_check_in_at=check_ins[0][1].isoformat() if check_ins else None,
+                ignored_streak=streak,
+                in_flight=any(item.status in MIND_ACTIVE_STATUSES for item in mine),
+                open_followups=self._open_followups(contact_id),
+                affect_declining=await self._affect_declining(contact_id),
+                topic=self._thread_topic(contact_id, commitments,
+                                         sorted((item for item in mine if item.status in {"sent", "uncertain"}),
+                                                key=self._sent_at, reverse=True), self.owner_id))
+            if row.get("cadence_minutes") is None:
+                row["estimated_cadence_minutes"] = conversation_cadence_minutes(
+                    first_seen_ts=row.get("first_seen_at"), last_interaction_ts=row.get("last_interaction_at"),
+                    conversations=row.get("interaction_count"))
+            rows.append(row)
+        return rows
+
+    async def _score_check_ins(self, now: datetime) -> Optional[Dict[str, int]]:
+        """Replies and silence teach the timing (architecture 4.7 item 6): a sent check-in whose
+        window passed (the contact's cadence, else 24 h) is ``actioned`` when the contact talked
+        after it and ``ignored`` otherwise, on its type key and ``reach_out:<contact>``; a reply
+        also satisfies the social drive. A late reply turns the newest ignored check-in to that
+        contact into ``actioned``: a contact who went quiet and came back is not held below the
+        threshold for good by the silence they broke."""
+        if not self.faculties["people"] or self.contacts is None:
+            return None
+        scored = {"actioned": 0, "ignored": 0}
+        newest: Dict[str, StoredInitiative] = {}
+        rows = [row for row in self.store.intentions(status=["sent"], kind=["message"], since=now - SOCIAL_HISTORY,
+                                                     limit=2000)
+                if row.type in CHECK_IN_TYPES and row.entity_id and not self._is_owner(row.entity_id)]
+        for row in sorted(rows, key=self._sent_at):
+            newest[str(row.entity_id)] = row
+        records: Dict[str, Optional[Dict[str, Any]]] = {}
+        for row in rows:
+            contact_id = str(row.entity_id)
+            if row.verdict is not None and (row.verdict != "ignored" or newest.get(contact_id) is not row):
+                continue
+            if contact_id not in records:
+                records[contact_id] = await self._contact_record(contact_id)
+            record = records[contact_id]
+            if record is None:
+                continue
+            sent_at = self._sent_at(row)
+            last = _utc(record.get("last_interaction_at"))
+            replied = last is not None and last > sent_at
+            if row.verdict is None:
+                try:
+                    window = timedelta(minutes=float(record["cadence_minutes"])) if record.get("cadence_minutes") \
+                        else CHECK_IN_WINDOW
+                except (TypeError, ValueError):
+                    window = CHECK_IN_WINDOW
+                if now < sent_at + window:
+                    continue
+                verdict = "actioned" if replied else "ignored"
+            elif row.verdict == "ignored" and replied and newest.get(contact_id) is row:
+                verdict = "actioned"
+            else:
+                continue
+            self.outcomes.rate(row.id, verdict, by="mind")
+            scored[verdict] += 1
+            if verdict == "actioned" and self.faculties["drives"]:
+                self.mind_state.bump("satiety.social", 1.0, half_life_s=SATIETY_HALF_LIFE_S,
+                                     causes=[f"intention:{row.id}"], now=now)
+        return scored
+
+    async def _replied_reason(self, row: StoredInitiative) -> Optional[str]:
+        """``contact:<id>:replied`` holds once the contact talked after the intention formed."""
+        condition = row.invalidates_if
+        if not isinstance(condition, str) or not condition.startswith("contact:") or not condition.endswith(":replied"):
+            return None
+        contact_id = condition[len("contact:"):-len(":replied")]
+        record = await self._contact_record(contact_id)
+        last = _utc((record or {}).get("last_interaction_at"))
+        created = _utc(row.created_at)
+        if last is not None and created is not None and last > created:
+            return f"contact {contact_id} replied at {last.isoformat()}"
+        return None
+
+    async def _cancel_if_replied(self, row: StoredInitiative) -> bool:
+        reason = await self._replied_reason(row)
+        if reason is None:
+            return False
+        self._cancel_stale(row, reason)
+        return True
+
+    async def _invalidate_messages(self, now: datetime) -> int:
+        """Every tick: a waiting message to a contact who replied since is cancelled, and one whose
+        recipient's permission fell is withdrawn (``_permission_withdrawn``)."""
+        count = 0
+        for row in self.store.intentions(status=["proposed", "asked", "approved"], kind=["message"], limit=500):
+            if await self._cancel_if_replied(row) or await self._permission_withdrawn(row, now):
+                count += 1
+        return count
+
+    async def _digests(self, now: datetime) -> Optional[int]:
+        """Once a day, the template digest of every contact the agent talked with in the last 24 h
+        (architecture 4.7 item 4), written to the contact store for the packet and ``inspect``.
+
+        The digest column has one other writer, the memory faculty's generated digest (M8). While
+        that can run (``consolidation`` on and a router), the template fills only an empty digest
+        or its own earlier template (sources ``["template"]``), never the generated one; with
+        consolidation off the template is the only writer (integration map X1)."""
+        if not self.faculties["people"] or self.contacts is None or not hasattr(self.contacts, "set_digest"):
+            return None
+        local_date = now.astimezone(self.tz).date().isoformat()
+        if self._daily.get("people_digests") == local_date:
+            return None
+        self._daily["people_digests"] = local_date
+        generated = bool(self.faculties.get("consolidation")) and self.router is not None
+        since, written, offset, page = now - timedelta(days=1), 0, 0, 200
+        while offset < 10000:
+            try:
+                batch = await self.contacts.list(limit=page, offset=offset)
+            except Exception as error:
+                logger.warning("contacts unavailable for digests (%s)", type(error).__name__)
+                break
+            for contact in batch or []:
+                record = contact.to_dict() if hasattr(contact, "to_dict") else dict(contact)
+                contact_id = str(record.get("contact_id") or "")
+                last = _utc(record.get("last_interaction_at"))
+                if not contact_id or self._is_owner(contact_id) or last is None or last < since:
+                    continue
+                if generated and record.get("digest") and list(record.get("digest_sources") or []) != TEMPLATE_SOURCES:
+                    continue
+                try:
+                    await self._write_digest(record, now)
+                    written += 1
+                except Exception as error:
+                    logger.warning("digest of %s not written (%s)", contact_id, type(error).__name__)
+            if len(batch or []) < page:
+                break
+            offset += page
+        return written
+
+    async def _write_digest(self, record: Dict[str, Any], now: datetime) -> None:
+        contact_id = str(record["contact_id"])
+        claims: List[str] = []
+        if self.claims_for is not None:
+            claims = [str(item) for item in await self.claims_for(contact_id) or []]
+        counts: Dict[str, Any] = {}
+        if self.comms is not None and hasattr(self.comms, "counts"):
+            counts.update(self.comms.counts(contact_id))
+        if self.commitments is not None and hasattr(self.commitments, "get_pending_for_person"):
+            counts["open"] = len(self.commitments.get_pending_for_person(contact_id))
+        record = {**record, "handles": await self._handles(contact_id)}
+        text = render_digest(record, claims=claims, counts=counts, last_interaction_at=record.get("last_interaction_at"),
+                             now=now)
+        await self.contacts.set_digest(contact_id, text, list(TEMPLATE_SOURCES))
+
     # -- digest ----------------------------------------------------------------------------
 
-    def _digest(self, now: datetime) -> Optional[str]:
+    async def _opt_outs_since(self, since: datetime) -> List[str]:
+        """``<name>: <their words>`` for every opt-out since ``since`` (architecture 7.4): an opt-out
+        only lowers, and the owner hears of it in the next digest."""
+        reader = getattr(self.contacts, "audit_since", None)
+        if not callable(reader):
+            return []
+        try:
+            rows = await reader(["opt_out"], since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        except Exception as error:
+            logger.warning("opt-outs unavailable for the digest (%s)", type(error).__name__)
+            return []
+        return [f"{row.get('display_name') or row.get('contact_id')}: {(row.get('detail') or {}).get('reason') or 'opted out'}"
+                for row in rows or []]
+
+    async def _digest(self, now: datetime) -> Optional[str]:
         local = now.astimezone(self.tz)
         local_date = local.date().isoformat()
         if local.hour < self.digest_hour or self._daily.get("digest") == local_date or self.in_quiet_hours(now):
@@ -1101,7 +1661,8 @@ class Mind:
         since = last or (now - timedelta(days=1))
         breakers = [self.authority.breaker_state(cls, now) for cls in CLASSES if cls != "floor"]
         text = self.outbox.build_digest(since=since, level=self.level, breaker_states=breakers,
-                                        goals=goal_lines([self.goals.render(g) for g in self.goals.open()]))
+                                        goals=goal_lines([self.goals.render(g) for g in self.goals.open()]),
+                                        opt_outs=await self._opt_outs_since(since))
         self._daily["digest"] = local_date
         if text.endswith("Nothing to report."):
             return None
@@ -1178,15 +1739,17 @@ class Mind:
         return row
 
     async def outbox_ready(self) -> List[Dict[str, Any]]:
-        """The messages the body may send now, each re-checked against its source, carrying the
-        recipient's handles as they are at this pull rather than as they were when it formed: a
-        handle added after a message waited unroutable lets it go out on the next pull."""
-        self.last_pull_at = self.clock()
-        self._expire_messages(self.last_pull_at)
+        """The messages the body may send now, each re-checked against its source and against the
+        recipient's permission as it is now, carrying the recipient's handles as they are at this
+        pull rather than as they were when it formed: a handle added after a message waited
+        unroutable lets it go out on the next pull."""
+        now = self.last_pull_at = self.clock()
+        self._expire_messages(now)
         ready = []
         for payload in self.outbox.ready(enabled=self.enabled, quiet=self.in_quiet_hours()):
             row = self.store.get(str(payload["id"]))
-            if row is None or self._invalidated(row):
+            if (row is None or self._invalidated(row) or await self._cancel_if_replied(row)
+                    or await self._permission_withdrawn(row, now)):
                 continue
             handles = await self._handles(payload["recipient"])
             if handles != payload["recipient_handles"]:
@@ -1238,8 +1801,8 @@ class Mind:
     def asks(self) -> List[Dict[str, Any]]:
         return audit.log(self.store, status=["asked"], limit=100)
 
-    def answer(self, code: str, *, yes: bool, by: str = "owner", contact_id: str | None = None,
-               message: str | None = None) -> Optional[StoredInitiative]:
+    async def answer(self, code: str, *, yes: bool, by: str = "owner", contact_id: str | None = None,
+                     message: str | None = None) -> Optional[StoredInitiative]:
         """``yes|no <code>``. The sidecar checks what it can: the sender must be the owner
         and, when the owner's message is given, the code must appear in it (7.7)."""
         code = str(code or "").strip().upper()
@@ -1250,10 +1813,15 @@ class Mind:
         row = self.store.get_by_ask_code(code)
         if row is None:
             return None
+        if row.type in OWNER_QUESTIONS:
+            return await self._settle_question(row, yes=yes, by=by)
         now = self.clock()
         if not yes:
             updated = self.outcomes.record(row.id, status="denied", summary=f"the owner said no ({by})", by=by)
             return updated
+        if await self._permission_withdrawn(row, now):
+            # The recipient opted out (or was set to never) while the ask waited: the yes sends nothing.
+            return self.store.get(row.id)
         updated = self.store.transition(row.id, "approved", action="queued", at=now, verdict="actioned",
                                         expires_at=now + TASK_WINDOW, details={"by": by, "code": code})
         if self.feedback is not None:
@@ -1263,6 +1831,63 @@ class Mind:
                 pass
         self.autobiography.record(row.id, "approved", f"The owner approved '{row.description}' (code {code}).")
         return updated
+
+    async def _settle_question(self, row: StoredInitiative, *, yes: bool, by: str) -> Optional[StoredInitiative]:
+        """The owner's word on a name-only identity link: the contact store links or rejects the
+        handle, and the question is done. The answer is not a verdict on asking: a ``no`` teaches
+        the ranker nothing."""
+        if row.type == "cadence_confirm":
+            return await self._settle_cadence(row, yes=yes, by=by)
+        verb = "confirm_link" if yes else "reject_link"
+        method = getattr(self.contacts, verb, None)
+        if not callable(method):
+            return self.outcomes.record(row.id, status="cancelled", summary=f"no contact store to {verb}", by=by,
+                                        implicit_verdict=False)
+        try:
+            await method(str(row.source_id), performed_by=by)
+        except Exception as error:
+            logger.warning("%s failed for %s (%s)", verb, row.source_id, type(error).__name__)
+            why = ("the handle belongs to another established contact; merge the two yourself if they are one person"
+                   if str(error) == "identity_handle_held" else type(error).__name__)
+            return self.outcomes.record(row.id, status="cancelled", by=by, implicit_verdict=False,
+                                        summary=f"the link could not be {'confirmed' if yes else 'rejected'} ({why})")
+        if yes:
+            return self.outcomes.record(row.id, status="done", summary=f"the owner confirmed the link ({by})",
+                                        verified="owner", by=by)
+        return self.outcomes.record(row.id, status="denied", summary=f"the owner rejected the link ({by})", by=by,
+                                    implicit_verdict=False)
+
+    async def _settle_cadence(self, row: StoredInitiative, *, yes: bool, by: str) -> Optional[StoredInitiative]:
+        """The owner's word on a cadence whose contact was matched by name only: a yes makes the
+        match the owner's (the cadence is set now, and the row's topic rides on the check-ins); a no
+        withdraws the row, so the owner restates it naming the person exactly."""
+        ident = str(row.source_id or "")
+        try:
+            record = self.commitments.get(ident) if self.commitments is not None else None
+        except Exception:
+            record = None
+        metadata = record.get("metadata") if isinstance(record, dict) and isinstance(record.get("metadata"), dict) else {}
+        contact_id, minutes = str(metadata.get("recipient_id") or ""), metadata.get("cadence_minutes")
+        if not isinstance(record, dict) or record.get("status") not in {"pending", "overdue"} or not contact_id:
+            return self.outcomes.record(row.id, status="cancelled", summary="the cadence is no longer open", by=by,
+                                        implicit_verdict=False)
+        if not yes:
+            try:
+                self.commitments.resolve(ident, outcome="obsolete", resolved_by="owner",
+                                         note=f"the owner said {metadata.get('recipient')!r} is not {contact_id}")
+            except Exception as error:
+                logger.warning("cadence %s not withdrawn (%s)", ident, type(error).__name__)
+            return self.outcomes.record(row.id, status="denied", summary=f"the owner said the match was wrong ({by})",
+                                        by=by, implicit_verdict=False)
+        try:
+            await self.contacts.set_cadence(contact_id, minutes, by=f"owner-turn:commitment:{ident}")
+            self.commitments.update(ident, metadata={"recipient_exact": True, "cadence_applied": True})
+        except Exception as error:
+            logger.warning("cadence %s not applied (%s)", ident, type(error).__name__)
+            return self.outcomes.record(row.id, status="cancelled", by=by, implicit_verdict=False,
+                                        summary=f"the cadence could not be set ({type(error).__name__})")
+        return self.outcomes.record(row.id, status="done", summary=f"the owner confirmed the contact ({by})",
+                                    verified="owner", by=by)
 
     def rate(self, intention_id: str, verdict: str, *, by: str = "owner") -> Optional[StoredInitiative]:
         return self.outcomes.rate(intention_id, verdict, by=by)
@@ -1379,6 +2004,8 @@ class Mind:
             "deliberation": {"available": self.deliberation.available, "calls_this_tick": self.deliberation.calls_this_tick,
                              "calls_total": self.deliberation.calls_total, "tokens_total": self.deliberation.tokens_total,
                              "last_error": self.deliberation.last_error},
+            "composition": {"available": self.composer.available, "calls_total": self.composer.calls_total,
+                            "tokens_total": self.composer.tokens_total, "last_error": self.composer.last_error},
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "body": self.body_heartbeat or None,
             "running": self._running,

@@ -173,7 +173,7 @@ async def test_build_owner_contact_creates_inner_circle_owner(tmp_path):
         assert contact is not None
         assert contact.display_name == "Sam"
         assert contact.trust_tier == "inner_circle"
-        assert contact.interaction_allowed is True
+        assert contact.may_contact == "auto"      # the owner: auto by identity, and the record says so
         assert contact.import_source == "wizard"
 
         handles = await store.get_handles(cid)

@@ -285,8 +285,5 @@ class ProtagineClient:
             return None
 
 
-__all__ = [
-    "DEFAULT_URL", "MIND_STATE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
-    "SidecarUnavailable", "hermes_config", "hermes_home", "load_settings", "plugin_section",
-    "read_yaml",
-]
+__all__ = ["DEFAULT_URL", "MIND_STATE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
+           "SidecarUnavailable", "hermes_config", "hermes_home", "load_settings", "plugin_section", "read_yaml"]

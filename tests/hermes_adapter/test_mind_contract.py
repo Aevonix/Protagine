@@ -29,8 +29,8 @@ class Contacts:
     """The contact store the Mind asks about recipients and their handles."""
 
     def __init__(self, owner):
-        self.records = {owner: {"contact_id": owner, "interaction_allowed": True},
-                        "p-03": {"contact_id": "p-03", "interaction_allowed": True}}
+        self.records = {owner: {"contact_id": owner, "may_contact": "auto"},
+                        "p-03": {"contact_id": "p-03", "may_contact": "ask"}}
 
     async def get(self, contact_id):
         record = self.records.get(contact_id)
@@ -84,9 +84,9 @@ def real_sidecar(tmp_path, monkeypatch):
     async def resolve(gateway: str = "", address: str = ""):
         from fastapi import HTTPException
         if gateway == "telegram" and address == "1001":
-            return {"contact_id": OWNER, "display_name": "Owner", "interaction_allowed": True}
+            return {"contact_id": OWNER, "display_name": "Owner", "may_contact": "auto"}
         if gateway == "telegram" and address == "2003":
-            return {"contact_id": "p-03", "display_name": "Friend", "interaction_allowed": True}
+            return {"contact_id": "p-03", "display_name": "Friend", "may_contact": "ask"}
         raise HTTPException(status_code=404, detail="No contact for that handle")
 
     mind_router.set_mind(mind)

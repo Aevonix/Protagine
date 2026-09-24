@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import closing
+import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -18,7 +20,8 @@ from datetime import datetime
 from protagine.turns.idempotency import canonical_turn_digest, source_message_hash
 from protagine.util.model_output import final_text
 
-VERSION = 'source-appraisals-v4'
+logger = logging.getLogger(__name__)
+VERSION = 'source-appraisals-v5'
 KINDS = {'appraisal', 'behavior_hypothesis', 'assessment', 'judgment'}
 DIMENSIONS = {
     'appraisal': {'frustration', 'annoyance', 'interest', 'satisfaction'},
@@ -100,6 +103,12 @@ Do not emit a new temporary appraisal on a supplied incident's same normalized
 topic (case, spaces, hyphens and underscores are equivalent). Handle that incident
 only through its decision. Other new observations remain optional. Do not turn
 recency or repetition into corroboration. With no incident_ids, incident_decisions is [].
+Always return contact, about the SPEAKER of the current evidence (never a quoted or
+named third party): contact.their_valence is the speaker's apparent valence in this
+turn from -1 (very negative) to 1 (very positive), null when unclear; contact.opt_out is
+true only when the speaker asks not to be messaged or contacted again, otherwise false.
+With no signal it is {"their_valence": null, "opt_out": false}. It is the speaker's
+state, not yours, and it grants nothing.
 Return the JSON object only, without commentary or Markdown fences.'''
 
 _CITATION_SCHEMA = {'type': 'object', 'additionalProperties': False,
@@ -115,9 +124,16 @@ _APPRAISAL_PROPERTIES = {
     'intensity': {'type': 'string', 'enum': ['low', 'moderate']},
     'hint': {'type': 'string', 'enum': sorted(HINTS)},
 }
+# The contact signal (architecture 4.7 item 9 and the contact-affect row of M5): the speaker's
+# valence and an opt-out, read by ``on_contact`` for a non-owner speaker only. Required, because a
+# strict binding rejects an optional property; "no signal" is a null valence and no opt-out.
+# ``_parse`` still reads an answer without it (a prompt-only binding).
+CONTACT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['their_valence', 'opt_out'],
+                  'properties': {'their_valence': {'type': ['number', 'null'], 'minimum': -1, 'maximum': 1},
+                                 'opt_out': {'type': 'boolean'}}}
 RESPONSE_SCHEMA = {'name': 'source_appraisal', 'schema': {
-    'type': 'object', 'additionalProperties': False, 'required': ['observations', 'incident_decisions'],
-    'properties': {'observations': {'type': 'array', 'maxItems': 4, 'items': {'anyOf': [
+    'type': 'object', 'additionalProperties': False, 'required': ['observations', 'incident_decisions', 'contact'],
+    'properties': {'contact': CONTACT_SCHEMA, 'observations': {'type': 'array', 'maxItems': 4, 'items': {'anyOf': [
         {'type': 'object', 'additionalProperties': False,
          'required': ['kind', 'dimension', *_APPRAISAL_PROPERTIES],
          'properties': {'kind': {'type': 'string', 'const': kind},
@@ -250,9 +266,27 @@ def _text(message):
     return value if isinstance(value, str) else ''
 
 
+def contact_signal(value):
+    """The validated ``contact`` block of an answer, or None when the answer has none."""
+    block = value.get('contact') if isinstance(value, dict) else None
+    if block is None:
+        return None
+    valence = block.get('their_valence') if isinstance(block, dict) else None
+    if (not isinstance(block, dict) or set(block) != {'their_valence', 'opt_out'}
+            or type(block['opt_out']) is not bool
+            or valence is not None and (isinstance(valence, bool) or not isinstance(valence, (int, float))
+                                        or not math.isfinite(valence) or not -1 <= valence <= 1)):
+        raise ValueError('invalid_contact_signal')
+    return {'their_valence': None if valence is None else float(valence), 'opt_out': block['opt_out']}
+
+
 class AppraisalStore:
-    def __init__(self, ledger, *, owner_id, clock=time.time):
+    def __init__(self, ledger, *, owner_id, clock=time.time, on_contact=None):
         self.ledger, self.owner_id, self.clock = ledger, str(owner_id or ''), clock
+        # Called (awaited when it returns an awaitable) with the contact signal of a non-owner
+        # speaker once the source's appraisal committed: {contact_id, their_valence, opt_out,
+        # turn_id, source_version, occurred_at}.
+        self.on_contact = on_contact
         with closing(ledger._connect()) as conn, conn:
             initialize(conn)
 
@@ -514,16 +548,24 @@ class AppraisalStore:
             raise ValueError('appraisal_requires_new_evidence')
         return list({_json(d): d for d in dependencies}.values())
 
-    def _validate(self, raw, payload):
+    @staticmethod
+    def _parse(raw):
         # Accept only a single enclosing fence, never fish JSON out of prose.
         fenced = re.fullmatch(r'```(?:json)?\s*\n(.*?)\n```', raw.strip(), re.DOTALL | re.IGNORECASE)
         if fenced:
             raw = fenced.group(1)
         value = json.loads(raw)
-        if (not isinstance(value, dict) or set(value) != {'observations', 'incident_decisions'}
+        if (not isinstance(value, dict) or set(value) - {'contact'} != {'observations', 'incident_decisions'}
                 or not isinstance(value['observations'], list) or len(value['observations']) > 4
                 or not isinstance(value['incident_decisions'], list) or len(value['incident_decisions']) > 8):
             raise ValueError('invalid_appraisal_output')
+        contact_signal(value)
+        return value
+
+    def _validate(self, raw, payload):
+        return self._records(self._parse(raw), payload)
+
+    def _records(self, value, payload):
         evidence = {r['handle']: r for r in payload['evidence']}
         incidents = {p['id']: p for p in payload['previous'] if p['id'] in payload['incident_ids']}
         decided = set()
@@ -574,16 +616,19 @@ class AppraisalStore:
         conn.execute("UPDATE appraisal_runs SET status='complete',disposition=?,lease_until=0 WHERE turn_id=? AND lease_token=?", (disposition, job['turn_id'], job['lease_token']))
 
     def _commit(self, job, source, items, heads, processor):
+        # True only when this call committed the source's appraisal; False on every early exit
+        # (lease lost, source changed, heads moved). The contact signal is written only after a
+        # True, so a later milestone that reshapes this method must keep that contract.
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute('BEGIN IMMEDIATE')
             if not conn.execute("SELECT 1 FROM appraisal_runs WHERE turn_id=? AND status='running' AND lease_token=?", (job['turn_id'], job['lease_token'])).fetchone():
-                return
+                return False
             current = self._source(conn, source['turn_id'])
             if current is None or current['version'] != source['version'] or current['contact_id'] != source['contact_id']:
-                self._finish(conn, job, 'source_changed'); return
+                self._finish(conn, job, 'source_changed'); return False
             latest = self._current(conn, source['contact_id'])
             if {r['head_key']: (r['id'], r['status']) for r in latest} != heads:
-                conn.execute("UPDATE appraisal_runs SET status='pending',next_attempt=?,lease_until=0,disposition='head_changed' WHERE turn_id=?", (self.clock(), job['turn_id'])); return
+                conn.execute("UPDATE appraisal_runs SET status='pending',next_attempt=?,lease_until=0,disposition='head_changed' WHERE turn_id=?", (self.clock(), job['turn_id'])); return False
             written = 0
             reconsider_at = None
             observed_at = datetime.fromisoformat(source['occurred_at'] or source['ingested_at']).timestamp()
@@ -639,6 +684,25 @@ class AppraisalStore:
                 conn.execute("UPDATE appraisal_runs SET status='pending',attempts=0,next_attempt=?,lease_until=0,disposition='topic_rate_limited' WHERE turn_id=? AND lease_token=?", (reconsider_at, job['turn_id'], job['lease_token']))
             else:
                 self._finish(conn, job, 'recorded' if written else 'abstained')
+            return True
+
+    async def _signal_contact(self, source, signal):
+        """Hand a non-owner speaker's valence and opt-out to ``on_contact``; the owner's own turns
+        never feed contact affect or permission. A failing writer never undoes the appraisal."""
+        if (self.on_contact is None or signal is None or source['contact_id'] == self.owner_id
+                or (signal['their_valence'] is None and not signal['opt_out'])):
+            return
+        try:
+            result = self.on_contact({'contact_id': source['contact_id'], 'their_valence': signal['their_valence'],
+                                      'opt_out': signal['opt_out'], 'turn_id': source['turn_id'],
+                                      'source_version': source['version'],
+                                      'occurred_at': source['occurred_at'] or source['ingested_at']})
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning('contact signal not written (%s)', type(exc).__name__)
 
     async def process_one(self, router):
         if not self.owner_id or getattr(router, 'supports_function_routing', False) is not True:
@@ -679,11 +743,13 @@ class AppraisalStore:
                 {'role': 'user', 'content': _json(prompt_payload)}], context={'task': task,
                 'allow_fallback': True, 'max_output_tokens': 2200,
                 'response_schema': RESPONSE_SCHEMA}), deadline + 5)
-            items = self._validate(final_text(response), payload)
+            value = self._parse(final_text(response))
+            items = self._records(value, payload)
             processor = {k: str(getattr(response, attr, '') or 'unknown') for k, attr in (
                 ('model_id', 'model_id'), ('binding', 'binding'), ('config_revision', 'config_revision'), ('weight_revision', 'model_revision'))}
             processor['task'] = task
-            self._commit(job, source, items, heads, processor)
+            if self._commit(job, source, items, heads, processor):
+                await self._signal_contact(source, contact_signal(value))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

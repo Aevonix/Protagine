@@ -47,12 +47,9 @@ from protagine.api.routers.host import (
     set_commitment_store,
     set_affect_store,
     set_facts_store,
-    set_p8_runtime,
-    set_engagement_store,
     set_comms_log,
     set_preference_learner,
     set_pattern_store,
-    set_tom_extractor,
     # Multi-Agent v0.7.0
     set_agent_store,
     set_invite_store,
@@ -73,93 +70,6 @@ logger = logging.getLogger(__name__)
 def _state_dir() -> Path:
     """Resolve the Protagine state directory (wrapper for get_state_dir)."""
     return get_state_dir()
-
-
-def _attach_p8_runtime(*, state_dir: Path, facts_store, graph=None):
-    """Atomically attach the reviewed P8 stores in explicit shadow mode.
-
-    Unset, off, unknown, and live all stay dark and create no P8 artifacts.
-    Live is intentionally excluded from this integration slice: recipient
-    simulation remains an ignored non-real-time shadow observation.
-    """
-
-    from protagine.tom.integration import P8Runtime, p8_integration_mode
-
-    set_p8_runtime(None)
-    graph_policy = getattr(graph, "set_recall_source_exclusions", None)
-    if callable(graph_policy):
-        # Clear any policy left on a reused graph before resolving this mode.
-        graph_policy(())
-    if p8_integration_mode() != "shadow":
-        return None
-    if facts_store is None:
-        raise RuntimeError("P8 shadow requires the canonical SharedFactsStore")
-
-    visibility = None
-    arcs = None
-    audit = None
-    try:
-        from protagine.tom.arcs import ArcStore
-        from protagine.tom.recipient_audit import (
-            open_recipient_simulation_audit_store,
-        )
-        from protagine.tom.visibility_store import (
-            open_visibility_envelope_store,
-        )
-
-        visibility = open_visibility_envelope_store(
-            state_dir / "protagine-p8-visibility.db", enabled=True)
-        arcs = ArcStore(str(state_dir / "protagine-p8-arcs.db"))
-        audit = open_recipient_simulation_audit_store(
-            state_dir / "protagine-p8-recipient-audit.db", mode="shadow")
-        if visibility is None or audit is None:
-            raise RuntimeError("P8 shadow stores failed to open")
-        runtime = P8Runtime(
-            visibility_store=visibility,
-            arc_store=arcs,
-            audit_store=audit,
-            facts_store=facts_store,
-            mode="shadow",
-        )
-        if graph is not None:
-            if not callable(graph_policy):
-                raise RuntimeError(
-                    "P8 shadow requires graph-wide recall source exclusions")
-            # SharedFacts graph rows are compatibility mirrors, not an
-            # authorized content path. Typed projection is their only reader.
-            graph_policy(
-                ("tom:shared_fact",),
-                legacy_metadata_markers=("shared_fact",),
-            )
-        set_p8_runtime(runtime)
-        return runtime
-    except Exception:
-        if callable(graph_policy):
-            try:
-                graph_policy(())
-            except Exception:
-                pass
-        for store in (audit, arcs, visibility):
-            if store is not None:
-                try:
-                    store.close()
-                except Exception:
-                    pass
-        set_p8_runtime(None)
-        raise
-
-
-def _build_research_pipeline(*, graph, p8_runtime):
-    """Preserve legacy research ownership unless P8 needs the governed graph."""
-
-    from protagine.research.pipeline import ResearchPipeline
-
-    if p8_runtime is None:
-        return ResearchPipeline()
-    return ResearchPipeline(
-        graph=graph,
-        allow_fallback_graph=False,
-    )
 
 
 def _attach_situation_spine(*, state_dir: Path):
@@ -314,12 +224,21 @@ def _wire_controlled_learning_pipeline(
 
 
 async def _initialize_contacts_store():
-    """Open the canonical contact store without graph backfill or pruning."""
+    """Open the canonical contact store without graph backfill or pruning.
+
+    A merge moves the person's ledger sources, comms and affect with their
+    handles whoever starts it: the people router passes these itself; the
+    owner confirming a link (which folds the shadow contact that held the
+    handle) goes through the store's defaults, set here. The comms log and
+    affect store are opened before the contacts.
+    """
+    from protagine.api.routers import people as people_router
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
 
     config = ContactsConfig.from_env()
-    store = SQLiteContactStore(config=config)
+    store = SQLiteContactStore(config=config, sources_of=people_router.person_sources,
+                               reattribute=people_router.reattribute_hooks())
     await store.connect()
     set_contacts_store(store)
     logger.info("ContactsStore initialized (path=%s)", config.sqlite_path)
@@ -334,7 +253,6 @@ async def lifespan(app: FastAPI):
     from protagine.resources import raise_open_file_limit
     raise_open_file_limit()
     state_dir = _state_dir()
-    _p8_wiring = None
 
     # --- 0. Adaptive parameters (meta-learning read-back path) ---
     # Created first so downstream consumers (consolidator, graph recall,
@@ -769,61 +687,6 @@ async def lifespan(app: FastAPI):
         set_facts_store(facts_store)
         logger.info("SharedFactsStore initialized (db=%s)", facts_db)
 
-        try:
-            _p8_wiring = _attach_p8_runtime(
-                state_dir=state_dir, facts_store=facts_store, graph=graph)
-            if _p8_wiring is not None:
-                logger.info(
-                    "P8 visibility/arcs/recipient audit attached (shadow only)")
-        except Exception:
-            # P8 is an advisory shadow integration.  Its persistence must not
-            # take down the canonical SharedFactsStore or the rest of ToM.
-            _p8_wiring = None
-            logger.warning(
-                "P8 shadow attachment failed; continuing with P8 off",
-                exc_info=True,
-            )
-
-        # Second-order theory of mind (tom2): refs-not-content inference
-        # store + daily asymmetry engine. Inert unless PROTAGINE_TOM2 is set
-        # (default off; shadow = counts only).
-        from protagine.tom.tom2 import Tom2Store
-        from protagine.tom.asymmetry import AsymmetryEngine, tom2_mode
-        from protagine.api.routers.host import set_tom2_store, set_tom2_engine
-        tom2_db = state_dir / "protagine-tom2.db"
-        tom2_store = Tom2Store(db_path=str(tom2_db))
-        set_tom2_store(tom2_store)
-        set_tom2_engine(AsymmetryEngine(facts_store, tom2_store))
-        logger.info("Tom2Store + AsymmetryEngine initialized (db=%s, mode=%s)",
-                    tom2_db, tom2_mode())
-
-        # Level-2 exposure ledger (L2.3): refs-only record of any future
-        # level-2 rendering + its budgets. Empty and inert until the leveled
-        # rendering path is wired; the owner endpoint reads it regardless.
-        from protagine.tom.exposure import Tom2ExposureStore
-        from protagine.api.routers.host import set_tom2_exposure_store
-        tom2_exposure_db = state_dir / "protagine-tom2-exposure.db"
-        set_tom2_exposure_store(Tom2ExposureStore(db_path=str(tom2_exposure_db)))
-        logger.info("Tom2ExposureStore initialized (db=%s)", tom2_exposure_db)
-
-        # Conversation presence registry (L1.1): passive census of WHO was
-        # seen in WHICH conversation, fed from the turns/sync attribution
-        # chokepoint. Read by the environment-risk classifier; recording is
-        # gated by PROTAGINE_CONV_PRESENCE (default on).
-        from protagine.channels.presence import ConversationPresenceStore
-        from protagine.api.routers.host import set_presence_store
-        presence_db = state_dir / "protagine-presence.db"
-        presence_store = ConversationPresenceStore(db_path=str(presence_db))
-        set_presence_store(presence_store)
-        logger.info("ConversationPresenceStore initialized (db=%s)", presence_db)
-
-        from protagine.tom.engagement import EngagementStore
-        engagement_db = state_dir / "protagine-engagement.db"
-        engagement_store = EngagementStore(db_path=engagement_db, source_ledger=source_ledger)
-        engagement_store.purge_erased_sources()
-        set_engagement_store(engagement_store)
-        logger.info("EngagementStore initialized (db=%s)", engagement_db)
-
         from protagine.contacts.comms import CommsLog
         comms_log = CommsLog(db_path=state_dir / "protagine-comms.db", source_ledger=source_ledger)
         comms_log.purge_erased_sources()
@@ -832,7 +695,7 @@ async def lifespan(app: FastAPI):
 
         # Owner preference learner — captures the owner's *explicit* directives
         # about how to communicate ("be concise", "use bullets", "no emoji") at
-        # high confidence; complements the inferred per-contact EngagementStore.
+        # high confidence.
         from protagine.intelligence.components.preference_learner import PreferenceLearner
         from protagine.self_model.perspective import SelfPerspective
         from protagine.turns import get_turn_idempotency_ledger
@@ -1074,30 +937,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Pattern init failed: %s", exc)
 
-    # --- ToM LLM Extractor ---
-    try:
-        if llm_router is not None:
-            from protagine.tom.extractor import TomExtractor
-            tom_extractor = TomExtractor(llm_router)
-            set_tom_extractor(tom_extractor)
-            logger.info("ToM LLM Extractor initialized (router=%s)", type(llm_router).__name__)
-        else:
-            logger.info("ToM LLM Extractor skipped — no LLM router")
-    except Exception as exc:
-        logger.warning("ToM Extractor init failed: %s", exc)
-
     # --- 7e. Channel Registration Store ---
     channel_store = None
     try:
         from protagine.channels.store import ChannelStore
         from protagine.channels.router import set_channel_store
-        from protagine.channels.phone_gateways import set_channel_store_ref
 
         channels_db = os.path.join(state_dir, "protagine-channels.db")
         channel_store = ChannelStore(db_path=channels_db)
         channel_store.connect()
         set_channel_store(channel_store)
-        set_channel_store_ref(channel_store)
         from protagine.api.routers.host import set_channel_store as _host_set_channel_store
         _host_set_channel_store(channel_store)   # turn traffic auto-registers + touches channels
         logger.info("ChannelStore initialized (db=%s)", channels_db)
@@ -1110,28 +959,6 @@ async def lifespan(app: FastAPI):
         contacts_store = await _initialize_contacts_store()
     except Exception as exc:
         logger.warning("ContactsStore init failed: %s", exc)
-
-    # --- 8d. Relationship profiler (standing + psyche + approach briefs) ---
-    if contacts_store is not None:
-        try:
-            from protagine.intelligence.relationships.profiler import (
-                RelationshipProfiler,
-            )
-            import protagine.api.routers.host as _host_mod
-            _rel_profiler = RelationshipProfiler(
-                contacts_store=contacts_store,
-                comms_log=_host_mod._comms_log,
-                affect_store=_host_mod._affect_store,
-                facts_store=_host_mod._facts_store,
-                engagement_store=_host_mod._engagement_store,
-                p8_runtime=_p8_wiring,
-                db_path=str(state_dir / "protagine-relationships.db"),
-            )
-            _host_mod.set_relationship_profiler(_rel_profiler)
-            logger.info("RelationshipProfiler initialized (db=%s)",
-                        state_dir / "protagine-relationships.db")
-        except Exception as exc:
-            logger.warning("RelationshipProfiler init failed: %s", exc)
 
     # --- 9. Briefings ---
     try:
@@ -1296,8 +1123,8 @@ async def lifespan(app: FastAPI):
 
         set_search_orchestrator(search_orchestrator)
 
-        research = _build_research_pipeline(
-            graph=graph, p8_runtime=_p8_wiring)
+        from protagine.research.pipeline import ResearchPipeline
+        research = ResearchPipeline()
         set_research_pipeline(research)
         logger.info("ResearchPipeline initialized")
     except Exception as exc:
@@ -1621,6 +1448,8 @@ async def lifespan(app: FastAPI):
             expectations=_host_for_mind._expectations, contacts=contacts_store,
             ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
             interests=_mind_interests, capture=_mind_capture,
+            comms=_host_for_mind._comms_log, contact_affect=_host_for_mind._affect_store,
+            packet_for=_host_for_mind.assemble_packet, claims_for=_host_for_mind.claims_for,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
             persist=_persist_mind_setting, heartbeat=lambda: telemetry.touch("last_tick_at"))
         set_mind(mind)
@@ -1773,25 +1602,8 @@ async def lifespan(app: FastAPI):
     set_skills_registry(None)
     set_commitment_store(None)
     set_affect_store(None)
-    try:
-        if _p8_wiring is not None:
-            _p8_wiring.close()
-    except Exception:
-        logger.debug("P8 runtime shutdown failed", exc_info=True)
-    set_p8_runtime(None)
     set_facts_store(None)
-    try:
-        from protagine.api.routers.host import (
-            set_presence_store as _set_presence_store,
-            _presence_store as _presence_ref,
-        )
-        if _presence_ref is not None:
-            _presence_ref.close()
-        _set_presence_store(None)
-    except Exception:
-        logger.debug("presence store shutdown failed", exc_info=True)
     set_pattern_store(None)
-    set_tom_extractor(None)
     if channel_store is not None:
         try:
             channel_store.close()
@@ -1864,6 +1676,8 @@ def create_app() -> FastAPI:
     app.include_router(host_v2_router)
     from protagine.api.routers import mind as mind_router
     app.include_router(mind_router.router)
+    from protagine.api.routers import people as people_router
+    app.include_router(people_router.router)
     from protagine.api.routers import executions as executions_router
     app.include_router(executions_router.router)
     from protagine.api.routers import commitment_work as commitment_work_router
