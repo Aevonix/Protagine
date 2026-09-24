@@ -1148,8 +1148,14 @@ async def memory_read(body: MemoryReadRequest, request: Request = None) -> Memor
 
 @router.post("/memory/search", response_model=MemorySearchResponse)
 async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySearchResponse:
-    """Search current canonical evidence for an authenticated participant."""
-    person = resolve_request_person(request, claimed_person_id=body.person_id)
+    """Search current canonical evidence for an authenticated participant.
+
+    The body names the person; with the key and no person the search is the
+    key's viewer's, the owner. Development mode never resolves to the owner
+    (``resolve_request_person``) and never passes the P8 viewer check.
+    """
+    person = (resolve_request_person(request, claimed_person_id=body.person_id)
+              or request_authority(request).viewer_person_id)
     viewer = _p8_viewer_for_request(request, person)
     projection = _context_projection_attestation(contact_id=person, viewer=viewer)
     canonical_only = projection.projection_backend == "canonical_sources"
@@ -1164,7 +1170,7 @@ async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySe
         from protagine.util.temporal import resolve_communication_timezone
         ledger = get_turn_idempotency_ledger(get_state_dir())
         collected = await collect_sources(ledger, query=body.query, contact_id=person,
-            session_id=body.session_id, vector_store=get_store(), embedding_pipeline=get_pipeline())
+            session_id=body.session_id or "", vector_store=get_store(), embedding_pipeline=get_pipeline())
         contact_tz = None
         if not canonical_only and _contacts_store is not None:
             try:
