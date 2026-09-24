@@ -77,10 +77,10 @@ lessons (`lesson_ids` on the intention), and the owner's own turn at most one,
 in a `protagine-lessons` section; a task's use is scored by the owner's rating
 or an external check, a turn's by the owner's next message when it is a
 verdict on that reply, and a lesson under a 0.4 win rate after five verified
-uses is retired. A failure-class investigation of the mastery drive is now a reflector:
-its report ends with at most three lesson operations, validated and admitted as
-`candidate` lessons of that class, which a verified win there activates; it
-never changes an active lesson. The night runs when consolidation or lessons is
+uses is retired. A failure-class investigation of the mastery drive is now a
+reflector: its report ends with at most three lesson operations, validated and
+admitted as `candidate` lessons of that class, which a verified win there
+activates; it never changes an active lesson. The night runs when consolidation or lessons is
 on, each stage under its own flag. Skills stay off (`mind.faculties.skills`):
 turned on, an active lesson with three verified wins at a 0.7 win rate becomes
 `<instance>/skills/protagine-<slug>/SKILL.md` in the directory `protagine init`

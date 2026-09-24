@@ -547,12 +547,12 @@ erases it together with its evidence.
 - **Scoring and retirement.** A use counts when a verifier scored it: a task
   that carried the lesson and was verified by the owner (`useful`, `actioned`
   or `wrong`, `not_useful`), by an external check, or failed with Hermes'
-  reason; a turn use when the owner's next message in that session is a
-  verdict on the reply the lesson helped write (a verdict inside the message
-  the lesson answered judges earlier work, and one on another answer judges
-  that answer, so neither scores it). Over 90 days, a lesson under a 0.4 win rate
-  after five verified uses is retired, and a `candidate` becomes active after a
-  verified win in its class; each change is an audit note.
+  reason; a turn use when the owner's next message in that session is a verdict
+  on the reply the lesson helped write (a verdict inside the message the lesson
+  answered judges earlier work, and one on another answer judges that answer,
+  so neither scores it). Over 90 days, a lesson under a 0.4 win rate after five
+  verified uses is retired, and a `candidate` becomes active after a verified
+  win in its class; each change is an audit note.
 - **Corrections.** An operation that carries the value the owner corrected is
   split deterministically: when an earlier owner message (not the correcting
   turn, never the agent's reply or a workspace file) already held the value,

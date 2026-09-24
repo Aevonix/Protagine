@@ -249,20 +249,20 @@ guard treats the tool as read-only.
 `audience: viewer`, and the sidecar returns a guest only that contact's scoped
 sections, never an owner-only one. A kanban worker's prefetch names its task
 (`context.metadata.kanban_task`): its task body already carries its lessons, so
-the sidecar adds no turn lesson and logs no lesson use for it. The scoping fails closed: anyone the
-sidecar cannot show to be the owner, a caller without the key included, gets
-the contact-scoped set. Recall includes this session's own earlier turns:
-Hermes compacts sessions in place, rebuilds agents after an idle eviction or a
-restart and compacts on detached agents, so no provider instance knows whether
-the model still reads them verbatim. The provider's direct tools are offered on the
-owner's own lane only: a guest session or a channel
-with no sender binding gets none of them, and a call that still arrives, like
-`protagine_memory_search` for a turn with no resolved participant, is answered
-once with `{"unavailable": true, "retry": false, "reason": ...}` rather than
-an error the model retries. `sync_turn` is active
-only when the general plugin is not enabled; otherwise the outbox owns
-capture. `on_pre_compress` writes a checkpoint through the same outbox before
-Hermes compresses a session.
+the sidecar adds no turn lesson and logs no lesson use for it. The scoping
+fails closed: anyone the sidecar cannot show to be the owner, a caller without
+the key included, gets the contact-scoped set. Recall includes this session's
+own earlier turns: Hermes compacts sessions in place, rebuilds agents after an
+idle eviction or a restart and compacts on detached agents, so no provider
+instance knows whether the model still reads them verbatim. The provider's
+direct tools are offered on the owner's own lane only: a guest session or a
+channel with no sender binding gets none of them, and a call that still
+arrives, like `protagine_memory_search` for a turn with no resolved
+participant, is answered once with `{"unavailable": true, "retry": false,
+"reason": ...}` rather than an error the model retries. `sync_turn` is active
+only when the general plugin is not enabled; otherwise the outbox owns capture.
+`on_pre_compress` writes a checkpoint through the same outbox before Hermes
+compresses a session.
 
 ## Tests
 

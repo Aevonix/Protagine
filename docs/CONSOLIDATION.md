@@ -76,15 +76,15 @@ next night.
    (`mind_lessons`, at most 1,200 output tokens) returns its verdicts (the owner messages that
    judge the agent's earlier work, right or wrong, quoted) and `add`, `supersede` or `retire`
    operations, each validated before anything is written (docs/MIND.md, Lessons): a verdict only
-   for an owner message that follows an agent reply in its session, citations inside the packet,
-   an owner citation only of a reported verdict and with the owner's exact words quoted, a
-   strategy only from an owner verdict or an external check, a pitfall also from a Hermes failure,
-   a retirement only on a verdict or a verified failure, never from an unverified result or a
+   for an owner message that follows an agent reply in its session, citations inside the packet, an
+   owner citation only of a reported verdict and with the owner's exact words quoted, a strategy
+   only from an owner verdict or an external check, a pitfall also from a Hermes failure, a
+   retirement only on a verdict or a verified failure, never from an unverified result or a
    contact's session. What passes is admitted `active`, with the strongest cited verifier, the
    corrected value split into `retrieval` or `knowledge`; each checked verdict scores the lesson
    use of the owner message just before it in its session; what was read is marked, so the next
-   night starts after it. The stage ends with the lesson review (retire under a 0.4 win rate after five
-   verified uses, activate a candidate after a verified win) and the skills sync. Counts:
+   night starts after it. The stage ends with the lesson review (retire under a 0.4 win rate after
+   five verified uses, activate a candidate after a verified win) and the skills sync. Counts:
    `lessons_admitted`, `lessons_superseded`, `lessons_retired`, `lessons_activated`,
    `lesson_uses_scored`, `lesson_ops_rejected`, `skills_written`, `skills_removed`. Every step is
    idempotent, so a night cut short admits each lesson once when it runs again.
