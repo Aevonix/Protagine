@@ -1034,6 +1034,18 @@ class InitiativeStore:
         params.append(max(1, int(limit)))
         return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
 
+    def lesson_rows(self, since: Optional[datetime] = None, limit: int = 20000) -> List[StoredInitiative]:
+        """Mind rows that carried a lesson (``lesson_ids``), newest first: the joins lessons are scored by."""
+        query = ("SELECT * FROM initiatives WHERE kind IS NOT NULL AND lesson_ids IS NOT NULL "
+                 "AND lesson_ids NOT IN ('', '[]')")
+        params: List[Any] = []
+        if since is not None:
+            query += " AND created_at >= ?"
+            params.append(since.isoformat())
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
+
     def get_by_ask_code(self, code: str) -> Optional[StoredInitiative]:
         row = self._db.execute(
             "SELECT * FROM initiatives WHERE ask_code = ? AND status = 'asked'", [code.upper()]

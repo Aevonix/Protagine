@@ -86,11 +86,12 @@ class Autobiography:
         return row.description
 
     def record(self, intention_id: str, event: str, text: str, *, contact_id: str | None = None,
-               lineage: Sequence[str] = (), **metadata: Any) -> bool:
+               lineage: Sequence[str] = (), scope: str = "person", **metadata: Any) -> bool:
         """One entry under the owner, or under ``contact_id`` (an episode summary lands with its own
         contact, so that person's later sessions recall it); never a claim. ``lineage``: the audience's
         own source turns the text was made from, recorded as the entry's supplied sources, so erasing any
-        of them erases the entry too (the ledger's erasure closure)."""
+        of them erases the entry too (the ledger's erasure closure). ``scope='session'`` keeps an entry
+        out of every other session's recall (a lesson is the mind's working record, not a memory)."""
         audience = contact_id or self.owner_id
         if self.ledger is None or not audience or not text.strip():
             return False
@@ -103,7 +104,7 @@ class Autobiography:
                     list(lineage), contact_id=audience, session_id=self.SESSION)
             return bool(self.ledger.record_source(
                 f"mind:{intention_id}:{event}", contact_id=audience, session_id=self.SESSION,
-                messages=[message], scope="person", occurred_at=now.isoformat(), derive_claims=False))
+                messages=[message], scope=scope, occurred_at=now.isoformat(), derive_claims=False))
         except Exception as error:
             logger.warning("autobiography entry not written (%s)", type(error).__name__)
             return False

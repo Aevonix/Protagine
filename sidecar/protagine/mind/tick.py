@@ -44,6 +44,7 @@ from .consolidate import Consolidation
 from .deliberate import Deliberation, refresh_context
 from .drives import CHECK_IN_TYPES, DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
+from .lessons import Lessons
 from .opinions import Opinions
 from .outbox import Outbox
 from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
@@ -69,7 +70,7 @@ THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
 DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
                      "people": True, "semantic_recall": True, "consolidation": True, "self_narrative": True,
-                     "affect": True, "affect_rules": False}
+                     "affect": True, "affect_rules": False, "lessons": True, "skills": False}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
@@ -208,6 +209,9 @@ class Mind:
 
         self.authority = Authority(self.policy, store, owner_id=self.owner_id, clock=self.clock)
         self.autobiography = Autobiography(ledger, owner_id=self.owner_id, clock=self.clock)
+        # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
+        self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
+                               clock=self.clock, enabled=self.faculties["lessons"])
         self.opinions = None
         if ledger is not None and self.owner_id:
             from protagine.self_model.judgments import SelfJudgments
