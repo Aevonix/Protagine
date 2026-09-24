@@ -297,6 +297,16 @@ async def test_social_candidates_need_a_cadence_or_a_regular_tier_and_never_a_ne
 
 
 @pytest.mark.asyncio
+async def test_the_owner_is_never_a_social_candidate(store, monkeypatch):
+    """Audit m1: the owner is not checked in on, so the owner never takes one of the listed slots."""
+    owner = await store.create(display_name="Owner", trust_tier="inner_circle", may_contact="auto", cadence_minutes=5)
+    friend = await store.create(display_name="Friend", trust_tier="regular")
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", owner.contact_id)
+    assert [row["contact_id"] for row in await store.social_candidates()] == [friend.contact_id]
+    assert [row["contact_id"] for row in await store.social_candidates(limit=1)] == [friend.contact_id]
+
+
+@pytest.mark.asyncio
 async def test_resolve_reference_by_id_handle_email_address_or_unique_name(store):
     sam = await store.create(display_name="Sam Rivera", given_name="Sam")
     await store.add_handle(sam.contact_id, "sms", "+15550001234")

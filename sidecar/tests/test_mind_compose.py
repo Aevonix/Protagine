@@ -160,3 +160,27 @@ async def test_a_never_contact_is_not_composed_for(make):
     fx.shift(C + PAST)
     formed, = (await fx.tick())["formed"]
     assert formed["decision"] == "drop" and router.calls == []
+
+
+async def test_composition_stays_within_the_days_contact_messages_and_a_deferred_one_is_composed_when_it_goes(make):
+    """Audit m2: a message the daily contact budget defers is not composed now (the tokens would
+    buy text that may wait a day, from a packet that will be stale); it is composed when the
+    budget frees up and the message goes."""
+    router = StubRouter(usage={"total_tokens": 10})
+    contacts = ["p-02", "p-03", "p-04"]
+    fx = make([contact(cid, may_contact="auto", cadence=10) for cid in contacts], router=router,
+              config={"budgets": {"contact_messages_per_day": 2}})
+    fx.shift(C + PAST)
+    formed = (await fx.tick())["formed"]
+    assert sorted(item["decision"] for item in formed) == ["act", "act", "defer"]
+    assert len([call for call in router.calls if call["context"]["task"] == TASK]) == 2
+    deferred, = [fx.store.get(item["id"]) for item in formed if item["decision"] == "defer"]
+    assert deferred.context["text"] == "" and deferred.cost_tokens in (None, 0)
+    await fx.send_all()
+    fx.shift(timedelta(days=1, minutes=1))
+    before = len(router.calls)
+    await fx.tick()
+    row = fx.store.get(deferred.id)
+    assert row.status == "approved" and row.context["text"] == router.reply and row.cost_tokens == 10
+    # The new day's budget: the deferred check-in and one more that fell due, two calls at most.
+    assert len([call for call in router.calls[before:] if call["context"]["task"] == TASK]) == 2

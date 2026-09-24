@@ -612,6 +612,15 @@ class Mind:
                 continue
             context = row.context if isinstance(row.context, dict) else {}
             may_contact = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+            if (row.kind == "message" and row.entity_id and not self._is_owner(row.entity_id)
+                    and not context.get("text") and may_contact != "never" and self.enabled
+                    and self.authority.budget_check(kind="message", recipient=row.entity_id, type=row.type, now=now,
+                                                    cooldown_hours=context.get("cooldown_hours")) is None):
+                # Deferred before it was composed: composed now that it may go.
+                text, tokens = await self._composed(row.entity_id, context.get("purpose"), context.get("topic"))
+                context = {**context, "text": text}
+                row = self.store.update(row.id, context=context,
+                                        cost_tokens=int(row.cost_tokens or 0) + int(tokens or 0)) or row
             verdict = self.authority.decide(kind=row.kind or "task", recipient=row.entity_id,
                                             text=f"{row.description}\n{context.get('text') or context.get('body') or ''}",
                                             type=row.type, may_contact=may_contact,
@@ -1027,7 +1036,12 @@ class Mind:
         to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
         stored = await self._may_contact(candidate.recipient)
         may_contact = self._granted(candidate.grant, stored, candidate.recipient)
-        if to_contact and not candidate.text and may_contact != "never" and self.enabled:
+        # Composition is a model call: made only for a message the budgets would let go now. One
+        # they defer is composed when it goes (``_reconsider``), from the packet of that day.
+        if (to_contact and not candidate.text and may_contact != "never" and self.enabled
+                and self.authority.budget_check(kind=candidate.kind, recipient=candidate.recipient,
+                                                type=candidate.type, now=now,
+                                                cooldown_hours=candidate.cooldown_hours) is None):
             await self._compose(candidate)
         verdict = self.authority.decide(kind=candidate.kind, recipient=candidate.recipient,
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
@@ -1085,11 +1099,11 @@ class Mind:
         return updated
 
     @staticmethod
-    def _purpose(candidate: Candidate) -> str:
+    def _purpose(purpose: str | None) -> str:
         from .compose import purpose_kind
         try:
-            purpose_kind(candidate.purpose or "")
-            return str(candidate.purpose)
+            purpose_kind(purpose or "")
+            return str(purpose)
         except ValueError:
             return "check_in"
 
@@ -1097,17 +1111,20 @@ class Mind:
         """The text of a message to a contact, from the purpose, the name, the topic and that
         contact's own packet (architecture 6.3); never the concern, rationale, evidence or an
         owner turn. Authority then checks the text like any other."""
-        name = await self._contact_name(candidate.recipient)
+        text, tokens = await self._composed(candidate.recipient, candidate.purpose, candidate.topic)
+        candidate.text = text
+        candidate.cost_tokens = int(candidate.cost_tokens or 0) + int(tokens or 0)
+
+    async def _composed(self, recipient: Any, purpose: str | None, topic: str | None) -> tuple[str, int]:
+        name = await self._contact_name(recipient)
         packet = ""
         if self.packet_for is not None:
             try:
-                packet = str(await self.packet_for(str(candidate.recipient)) or "")
+                packet = str(await self.packet_for(str(recipient)) or "")
             except Exception as error:
                 logger.warning("recipient packet unavailable (%s); composing without it", type(error).__name__)
-        text, tokens = await self.composer.compose(purpose=self._purpose(candidate), recipient_name=name,
-                                                   packet=packet, topic=candidate.topic)
-        candidate.text = text
-        candidate.cost_tokens = int(candidate.cost_tokens or 0) + int(tokens or 0)
+        return await self.composer.compose(purpose=self._purpose(purpose), recipient_name=name, packet=packet,
+                                           topic=topic or "")
 
     async def _refuse_grant(self, candidate: Candidate) -> None:
         """The owner asked for a message to someone who may never be contacted: nothing went to

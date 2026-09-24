@@ -1035,19 +1035,21 @@ class SQLiteContactStore(ContactStore):
         return True
 
     async def social_candidates(self, *, limit: int = 200) -> List[Dict[str, Any]]:
-        """The contacts the social drive may consider (architecture 4.5, 4.7): permission is not
-        ``never`` and the owner set a cadence or the tier is ``regular`` or above. Shadow and
-        group-only contacts are never listed, so a group chat cannot become check-in asks."""
+        """The contacts the social drive may consider (architecture 4.5, 4.7): not the owner,
+        permission is not ``never`` and the owner set a cadence or the tier is ``regular`` or
+        above. Shadow and group-only contacts are never listed, so a group chat cannot become
+        check-in asks."""
+        from protagine.identity import get_owner_contact_id
         db = self._require_db()
         tiers = [t for t in TRUST_TIERS if regular_or_above(t)]
         placeholders = ",".join("?" for _ in tiers)
         async with db.execute(
             "SELECT contact_id, display_name, trust_tier, may_contact, cadence_minutes, first_seen_at, "
             "last_interaction_at, interaction_count, timezone FROM contacts "
-            "WHERE deleted_at IS NULL AND may_contact != 'never' "
+            "WHERE deleted_at IS NULL AND may_contact != 'never' AND contact_id != ? "
             f"AND (cadence_minutes IS NOT NULL OR trust_tier IN ({placeholders})) "
             "ORDER BY last_interaction_at IS NULL, last_interaction_at, created_at LIMIT ?",
-            (*tiers, max(1, min(int(limit), 1000))),
+            (get_owner_contact_id() or "", *tiers, max(1, min(int(limit), 1000))),
         ) as cur:
             rows = await cur.fetchall()
         out = []
