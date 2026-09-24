@@ -64,6 +64,26 @@ class SourceLinkedStore:
         return (current['session_id'] == lineage['session_id']
                 and current['message_hashes'] == lineage['message_hashes'])
 
+    def _movable(self, rows, new_contact_id):
+        """The ids of the rows a merge may move to ``new_contact_id`` now: an unsourced row, and a
+        sourced one whose source the ledger already holds under the new contact. Any other stays
+        where its lineage is valid, so no read purges it as erased while the merge's source move
+        is pending; the reconciliation moves it after the ledger moved the source."""
+        from contextlib import closing
+        sourced = {row['id']: json.loads(row['source_lineage_json'])['turn_id'] for row in rows
+                   if row['source_lineage_json'] is not None}
+        owners = {}
+        if sourced:
+            ids = list(dict.fromkeys(sourced.values()))
+            with closing(self._ledger()._connect()) as conn:
+                for start in range(0, len(ids), 400):
+                    batch = ids[start:start + 400]
+                    owners.update(conn.execute(
+                        "SELECT turn_id, contact_id FROM turn_sources WHERE scope='person' AND turn_id IN ("
+                        + ','.join('?' for _ in batch) + ")", batch).fetchall())
+        return [row['id'] for row in rows
+                if row['id'] not in sourced or owners.get(sourced[row['id']]) == new_contact_id]
+
     def _invalid_sources(self, rows, turn_ids=None):
         """Read one canonical snapshot, not a new connection per observation."""
         from contextlib import closing

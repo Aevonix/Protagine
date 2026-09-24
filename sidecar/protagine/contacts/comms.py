@@ -384,12 +384,17 @@ class CommsLog(SourceLinkedStore):
         return out
 
     def reattribute(self, old_id: str, new_id: str) -> int:
-        """Move every exchange of ``old_id`` to ``new_id`` (a merge); the number of rows moved."""
+        """Move the exchanges of ``old_id`` to ``new_id`` (a merge); the number of rows moved. A
+        sourced row moves once the ledger moved its source (``_movable``): the merge calls this
+        before the source move and the reconciliation again after it."""
         if not old_id or not new_id or old_id == new_id:
             return 0
+        rows = self._conn.execute("SELECT id, source_lineage_json FROM communications WHERE contact_id=?",
+                                  (old_id,)).fetchall()
+        movable = self._movable(rows, new_id)
         with self._conn:
-            cursor = self._conn.execute("UPDATE communications SET contact_id=? WHERE contact_id=?", (new_id, old_id))
-        return int(cursor.rowcount or 0)
+            self._conn.executemany("UPDATE communications SET contact_id=? WHERE id=?", [(new_id, key) for key in movable])
+        return len(movable)
 
 
 # ---------------------------------------------------------------------------

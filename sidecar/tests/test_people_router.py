@@ -150,7 +150,8 @@ async def test_merge_is_owner_only_and_moves_handles_sources_and_the_other_store
     assert value["sources_moved"] == 2 and value["sources_pending"] == 0
     assert value["contact"]["last_interaction_at"] == "2026-09-20T10:00:00Z"
     assert {h["address"] for h in value["contact"]["handles"]} == {"+15550000005", "+15550000077"}
-    assert moved == [("comms", shadow.contact_id, guest.contact_id)]
+    # At the merge, and again once the ledger moved the sources: a sourced row moves only after its source.
+    assert moved == [("comms", shadow.contact_id, guest.contact_id)] * 2
     with closing(ledger._connect()) as conn:
         owners = dict(conn.execute("SELECT turn_id, contact_id FROM turn_sources").fetchall())
     assert owners == {"t-shadow-1": guest.contact_id, "t-shadow-2": guest.contact_id, "t-guest-1": guest.contact_id}
@@ -208,6 +209,50 @@ async def test_a_merge_keeps_the_dropped_records_sourced_affect_through_the_reco
     assert response.status_code == 200 and response.json()["sources_moved"] == 1, response.text
     rows = affect._conn.execute("SELECT contact_id FROM affect_events").fetchall()
     assert [row["contact_id"] for row in rows] == [guest.contact_id]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_whose_source_move_is_deferred_loses_no_sourced_affect_or_comms(world, monkeypatch, tmp_path):
+    """Review F11: the merge moved the sourced rows before the ledger moved their sources; when the
+    reconciliation was deferred (the ledger busy), the next read of the kept contact purged the
+    moved rows as erased and the retry found nothing to move. A sourced row moves only once its
+    source has: it waits, valid, under the dropped record, and the reconciliation moves it."""
+    from protagine.api.routers import social_state
+    from protagine.contacts.comms import CommsLog
+    from protagine.tom.affect import AffectStore
+    client, store, owner, guest = world
+    shadow = await store.create(display_name="+15550000079", import_source="auto:sender")
+    ledger = get_turn_idempotency_ledger(people_mod._ledger().db_path.parent)
+    ledger.record_source("t-affect", contact_id=shadow.contact_id, session_id="s-affect",
+                         messages=[{"role": "user", "content": "This is taking far too long."}], derive_claims=False)
+    affect = AffectStore(str(tmp_path / "affect.db"), source_ledger=ledger)
+    comms = CommsLog(str(tmp_path / "comms.db"), source_ledger=ledger)
+    monkeypatch.setattr(host_mod, "_affect_store", affect)
+    monkeypatch.setattr(host_mod, "_comms_log", comms)
+    lineage, _ = affect.source_input("t-affect", shadow.contact_id)
+    affect.create_event(contact_id=shadow.contact_id, valence=-0.6, source="appraisal", source_lineage=lineage)
+    comms.log(shadow.contact_id, channel="sms", direction="in", summary="too long", source_lineage=lineage)
+    comms.log(shadow.contact_id, channel="sms", direction="out", summary="a check-in", external_ref="mind:check_in:i-1")
+    real = social_state.reconcile_identity_sources
+
+    async def busy(*args, **kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(social_state, "reconcile_identity_sources", busy)
+    response = await client.post("/v1/mind/people/merge", json={"keep": guest.contact_id, "drop": shadow.contact_id,
+                                                                "by": "cli"})
+    assert response.status_code == 200 and response.json()["sources_pending"] == 1, response.text
+    affect.trend(guest.contact_id)                   # the next tick reads the kept contact first
+    comms.history(guest.contact_id)
+    assert comms.mind_sends(guest.contact_id)[0]["intention_id"] == "i-1"   # an unsourced row moved at once
+    monkeypatch.setattr(social_state, "reconcile_identity_sources", real)
+    for operation in await store.pending_identity_reconciliations(limit=10):
+        await real(store, ledger, operation)
+    assert [row["contact_id"] for row in affect._conn.execute("SELECT contact_id FROM affect_events")] == [
+        guest.contact_id]
+    assert {row["contact_id"] for row in comms._conn.execute("SELECT contact_id FROM communications")} == {
+        guest.contact_id}
+    assert comms.counts(guest.contact_id) == {"inbound": 1, "outbound": 1, "channels": 1}
+    comms._conn.close()
 
 
 @pytest.mark.asyncio
@@ -277,7 +322,7 @@ async def test_a_merge_outside_the_router_moves_comms_affect_and_sources_through
         tmp_path, monkeypatch):
     """The owner confirming a link folds the shadow that held the handle (``confirm_link`` ->
     ``merge``) with no hooks passed: the store's defaults, set by the server, move the comms and
-    affect rows first and the ledger sources right after, before anything reads them."""
+    affect rows, the ledger sources, and then the sourced rows those sources carry."""
     from protagine import server
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("PROTAGINE_CONTACTS_DB", str(tmp_path / "contacts.db"))
@@ -308,8 +353,9 @@ async def test_a_merge_outside_the_router_moves_comms_affect_and_sources_through
         proposal = await store.propose_handle_link(person.contact_id, "sms", "+15550000088")
         confirmed = await store.confirm_link(proposal["candidate_id"], performed_by="owner")
         assert confirmed["merged"] is True
+        # Before the source move (unsourced rows) and after it (the sourced rows, now valid there).
         assert calls == [("comms", shadow.contact_id, person.contact_id),
-                         ("affect", shadow.contact_id, person.contact_id)]
+                         ("affect", shadow.contact_id, person.contact_id)] * 2
         with closing(ledger._connect()) as conn:
             owners = dict(conn.execute("SELECT turn_id, contact_id FROM turn_sources").fetchall())
         assert owners == {"t-shadow": person.contact_id}

@@ -257,16 +257,20 @@ class AffectStore(SourceLinkedStore):
                 "declining": self.detect_sustained_decline(contact_id)}
 
     def reattribute(self, old_id: str, new_id: str) -> int:
-        """Move every event of ``old_id`` to ``new_id`` (a merge) and recompute both states."""
+        """Move the events of ``old_id`` to ``new_id`` (a merge) and recompute both states. A sourced
+        event moves once the ledger moved its source (``_movable``): the merge calls this before
+        the source move and the reconciliation again after it."""
         if not old_id or not new_id or old_id == new_id:
             return 0
+        rows = self._conn.execute("SELECT id, source_lineage_json FROM affect_events WHERE contact_id=?",
+                                  (old_id,)).fetchall()
+        movable = self._movable(rows, new_id)
         with self._conn:
-            cursor = self._conn.execute("UPDATE affect_events SET contact_id=? WHERE contact_id=?", (new_id, old_id))
-            moved = int(cursor.rowcount or 0)
-            if moved:
+            self._conn.executemany("UPDATE affect_events SET contact_id=? WHERE id=?", [(new_id, key) for key in movable])
+            if movable:
                 self._recompute_state(old_id, commit=False)
                 self._recompute_state(new_id, commit=False)
-        return moved
+        return len(movable)
 
     def detect_sustained_decline(
         self,

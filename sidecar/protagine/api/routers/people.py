@@ -112,10 +112,11 @@ async def person_sources(contact_id: str) -> List[str]:
 
 def reattribute_hooks(*, reconcile: bool = True) -> List[Any]:
     """``reattribute(old_id, new_id)`` of the stores that key rows by contact (comms, affect,
-    commitments), then (``reconcile``) the ledger move of the merge's sources. That order matters:
-    a row whose contact and ledger source disagree is purged as erased, so the rows move first and
-    the sources right after, before anything reads them. The router reconciles itself, to report
-    what moved."""
+    commitments), then (``reconcile``) the ledger move of the merge's sources. A row whose contact
+    and ledger source disagree is purged as erased, so comms and affect move a sourced row only
+    once its source moved: here they move what they can, and the reconciliation of the merge's
+    sources (``social_state.reconcile_identity_sources``) moves the rest, now or on the source
+    worker's retry. The router reconciles itself, to report what moved."""
     from protagine.api.routers import host
     hooks = []
     for name in ("_comms_log", "_affect_store", "_commitment_store"):
