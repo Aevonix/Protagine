@@ -52,7 +52,7 @@ Every request to the sidecar carries `Authorization: Bearer <key>`.
 | Durable work | `hermes_cli.kanban_db.create_task(idempotency_key="mind:<id>", assignee="protagine-act", ...)`; an existing non-archived task with the key is returned, never duplicated |
 | Messages | `tools.send_message_tool.send_message_tool({"action": "send", "target", "message"})`, text verbatim |
 | Task outcomes | the `mind:*` task's status plus its latest `task_runs` row (`kanban_db.latest_run`) |
-| Owner commands | `register_command("mind")`: read-only in chat plus `off` |
+| Owner commands | `register_command("mind")`: read-only in chat plus `off`; `pre_gateway_dispatch` drops a `/mind` whose sender is not the owner, since the command handler gets no sender |
 | Tools | `register_tool`; handlers receive `session_id`, which the session map resolves to a sender |
 | Reminders | stock cron: a one-shot job whose id is the only thing the plugin keeps |
 
@@ -64,9 +64,12 @@ Turns without a sender on the CLI, cron or API lanes are the owner's own for
 memory; a cron run (`platform: cron`) is a stored prompt rather than the
 owner typing, so it cannot answer an ask, rate, change a permission or
 forget. Any other sender is a guest: `session_search` is blocked for guests,
-delivering cron jobs need a recipient whose `may_contact` is not `never`, and
+delivering cron jobs need a recipient whose `may_contact` is not `never`,
 every mutation through `protagine_self`, `protagine_people` and
-`protagine_memory_forget` is refused.
+`protagine_memory_forget` is refused, `protagine_people who` without a name is
+refused (a guest may ask who one named person is, never list the contacts), and
+the plugin drops a guest's `/mind` at `pre_gateway_dispatch`, because Hermes
+hands the command itself no sender.
 
 ## Mind-originated runs
 
@@ -200,7 +203,7 @@ log and the asks name what the owner asked about other people.
 
 | Operation | Who | Route |
 |---|---|---|
-| `who {contact_id}` | everyone | `GET /v1/mind/people?q=` (a name, handle or id; empty lists the newest) |
+| `who {contact_id}` | everyone (listing: the owner) | `GET /v1/mind/people?q=` (a name, handle or id; empty lists the newest, for the owner only) |
 | `inspect {contact_id}` | everyone | `GET /v1/mind/people/{who}` |
 | `propose_link {contact_id, handle: gateway:address}` | everyone | `POST /v1/mind/people/link`: a candidate the owner confirms as an ask |
 | `set_permission {contact_id, permission}` | owner | `POST /v1/mind/people/{who}/permission {may_contact: never\|ask\|auto}` |
@@ -209,7 +212,9 @@ log and the asks name what the owner asked about other people.
 
 A guest sees who someone is (`contact_id`, `display_name`, `trust_tier`) and
 nothing else: the plugin names the guest as the viewer (`contact_id`) on its
-reads and the sidecar answers with only those fields. The owner also sees
+reads and the sidecar answers with only those fields, and only for the one
+person the reference names exactly (no listing, no partial matches, no 404
+candidates), so a guest cannot browse the contact list. The owner also sees
 `may_contact`, `cadence_minutes`, `last_interaction_at`, the per-contact
 `digest` and the handles. The three mutations are refused in the plugin
 outside the owner's own interactive session (a guest, a kanban worker, a cron
@@ -234,10 +239,10 @@ guard treats the tool as read-only.
 `audience: viewer`, and the sidecar returns a guest only that contact's scoped
 sections, never an owner-only one. The scoping fails closed: anyone the
 sidecar cannot show to be the owner, a caller without the key included, gets
-the contact-scoped set. The request also says
-whether Hermes still shows this session's earlier turns (`session_history:
-intact`, `compressed` after a checkpoint), so recall never quotes back what the
-model is already reading. The provider's direct tools are offered on the
+the contact-scoped set. Recall includes this session's own earlier turns:
+Hermes compacts sessions in place, rebuilds agents after an idle eviction or a
+restart and compacts on detached agents, so no provider instance knows whether
+the model still reads them verbatim. The provider's direct tools are offered on the
 owner's own lane only: a guest session or a channel
 with no sender binding gets none of them, and a call that still arrives, like
 `protagine_memory_search` for a turn with no resolved participant, is answered

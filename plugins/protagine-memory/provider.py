@@ -238,7 +238,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._last_turn_started_at = 0.0
         self._turn_number = 0
         self._prev_turn_gap_secs = None
-        self._compressed_sessions: set[str] = set()  # recall may repeat these sessions' own turns
         self._platform = "cli"
         self._sync_thread: Optional[threading.Thread] = None
         self._circuit_open_until: Optional[float] = None
@@ -514,8 +513,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                     "identity": {"host_id": "hermes"},
                     "context": {"session_id": session_id or self._session_id, "contact_id": bound_contact},
                     "incoming_message": {"role": "user", "content": query},
-                    "session_history": "compressed" if (session_id or self._session_id) in self._compressed_sessions
-                    else "intact",
                     "include_initiatives": not guest,
                     **({"audience": "viewer"} if guest else {}),
                 })
@@ -744,8 +741,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if reset or kwargs.get("rewound") or (new_session_id != self._session_id and not compression_continuation):
             self._last_turn_started_at = 0.0
             self._prev_turn_gap_secs = None
-        if reset or kwargs.get("rewound"):
-            self._compressed_sessions.discard(new_session_id)
         self._session_id = new_session_id
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -789,10 +784,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             if not messages:
                 self._last_checkpoint = {"state": "empty", "messages": 0}
                 return ""
-            # Hermes is about to fold this session's earlier turns into a summary: from now on recall
-            # may repeat this session's own sources, because the model no longer sees them verbatim.
-            if self._session_id:
-                self._compressed_sessions.add(self._session_id)
             contact_id = self._prefetch_contact()
             if not contact_id:
                 raise ValueError("checkpoint has no exact participant")

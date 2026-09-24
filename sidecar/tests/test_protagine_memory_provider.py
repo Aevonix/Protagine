@@ -780,19 +780,22 @@ def test_the_standalone_recall_skip_rule_agrees_with_the_hermes_it_is_qualified_
     assert provider_mod.is_trivial_prompt("ok") and not provider_mod.is_trivial_prompt("What did we decide?")
 
 
-def test_prefetch_tells_the_sidecar_whether_this_sessions_turns_are_still_visible(provider_mod, monkeypatch):
-    """Hermes replays every earlier turn verbatim until it compresses, so recall must not quote this
-    session back; after ``on_pre_compress`` those sources are recallable again, and a reset session starts
-    over."""
+def test_recall_asks_the_same_for_a_session_whatever_this_provider_instance_has_seen(provider_mod, monkeypatch):
+    """Hermes compacts in place under the same session id, rebuilds the agent (and its provider) after an
+    idle eviction or a restart, and compacts on a detached agent: no one provider instance knows whether a
+    session's earlier turns are still shown verbatim, so recall never leaves them out on that guess."""
     fake = _FakeHttpx(routes={_ASSEMBLE: {"sections": []}, _TEMPORAL: {"title": "Current Time", "body": "now"}})
     provider = _make_provider(provider_mod, fake, monkeypatch)
     provider.initialize("s-1", platform="cli")
     provider.prefetch("first", session_id="s-1")
     provider.on_pre_compress([{"role": "user", "content": "first"}])
     provider.prefetch("second", session_id="s-1")
-    provider.on_session_switch("s-2", reset=True, reason="new_session")
-    provider.prefetch("third", session_id="s-2")
-    assert [call["json"]["session_history"] for call in _assemble_calls(fake)] == ["intact", "compressed", "intact"]
+    rebuilt = _make_provider(provider_mod, fake, monkeypatch)
+    rebuilt.initialize("s-1", platform="cli")
+    rebuilt.prefetch("third", session_id="s-1")
+    bodies = [{key: value for key, value in call["json"].items() if key != "incoming_message"}
+              for call in _assemble_calls(fake)]
+    assert len(bodies) == 3 and bodies[0] == bodies[1] == bodies[2]
 
 
 def test_resolve_commitment_settles_through_the_outcome_path(provider_mod, monkeypatch):

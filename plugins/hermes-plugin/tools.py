@@ -1,7 +1,9 @@
 """Model tools: ``protagine_self``, ``protagine_people`` and the memory tools.
 
 Tool handlers receive ``session_id``; the session map turns it into a sender.
-Mutations are accepted only from the owner's own interactive session: never
+Reads of the mind and the contact list are the owner's and the owner's own
+senderless lanes', never a guest's. Mutations are accepted only from the
+owner's own interactive session: never
 from a kanban worker, and never from a cron run, whose prompt is a stored job
 anyone with the tool could have scheduled. ``yes``/``no`` also need the typed
 ask code inside the owner's own message for that turn, so neither a guest, a
@@ -275,6 +277,9 @@ class Tools:
             return _error("only the owner can change who may be contacted, cadences or merges")
         if operation != "who" and not who:
             return _error("contact_id (a name, handle or id) is required")
+        if operation == "who" and not who and self.sessions.is_owner(session_id) is not True:
+            # Listing everyone is the owner's (and the owner's senderless lanes'); a guest names one person.
+            return _error("only the owner can list contacts; name who you mean")
         path, seen = "/v1/mind/people/" + quote(who, safe=""), {} if owner else {"contact_id": viewer}
         change = {"contact_id": viewer or self.settings.owner_contact_id() or None, "by": "owner"}
         if operation in {"who", "inspect"}:

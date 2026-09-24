@@ -141,7 +141,7 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     assert hermes["model"] == STOCK_CONFIG["model"]
     profile = yaml.safe_load((hermes_home / "profiles" / WORKER_PROFILE / "config.yaml").read_text())
     assert profile["model"] == STOCK_CONFIG["model"]
-    assert profile["toolsets"] == ["web", "file", "session_search", "memory", "todo"]
+    assert profile["platform_toolsets"] == {"cli": ["web", "file", "session_search", "memory", "todo"]}
     assert profile["approvals"] == {"deny": []}
     assert profile["plugins"]["enabled"] == ["protagine"]
     assert profile["memory"]["provider"] == "protagine-memory"
@@ -162,6 +162,28 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     assert _snapshot(home) == before_home
     assert _snapshot(hermes_home) == before_hermes
     assert not any((home / "backups").glob("hermes-config-*")) or len(list((home / "backups").glob("hermes-config-*"))) == 1
+
+
+def test_a_dispatched_worker_gets_the_main_model_and_only_the_mind_toolsets(homes):
+    """Ask stock Hermes what a ``protagine-act`` worker actually runs with: the toolsets the dispatcher
+    pins and the model it resolves, for a main model that names an entry under ``providers:``."""
+    home, hermes_home = homes
+    named = {**STOCK_CONFIG, "model": {"provider": "house", "default": "house-model"},
+             "providers": {"house": {"base_url": "http://127.0.0.1:9/v1", "api_key": "house-secret",
+                                     "default_model": "house-model"}}}
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump(named, sort_keys=False))
+    assert init.run_init(_args(home, hermes_home, model_url="http://127.0.0.1:9/v1", model="house-model",
+                               model_key="house-secret")) == 0
+    worker = init.resolve_worker_profile(Path(HERMES_PYTHON), hermes_home)
+    assert worker.get("error") is None, worker
+    assert worker["toolsets"] == sorted(["web", "file", "session_search", "memory", "todo", "protagine"])
+    assert worker["base_url"] == "http://127.0.0.1:9/v1" and worker["api_key"] is True
+    from protagine import doctor
+    assert doctor.check_worker_profile().status == doctor.PASS
+    # The profile is a snapshot: doctor says so once the main model moves on.
+    named["model"]["default"] = "house-model-2"
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump(named, sort_keys=False))
+    assert doctor.check_worker_profile().status == doctor.FAIL
 
 
 def test_init_keeps_existing_answers_and_lets_flags_change_them(homes):

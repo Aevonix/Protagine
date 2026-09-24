@@ -53,8 +53,12 @@ default `standard`). Then it:
    `kanban.dispatch_in_gateway: true`, `skills.external_dirs += <instance>/skills`,
    `security.protected_instruction_extra_patterns += protagine.yaml, identity.yaml, api.key`,
    and `plugins.protagine.{sidecar_url, key_file}`;
-6. creates the `protagine-act` worker profile with the mind's toolsets and
-   `approvals.deny` from `mind.deny.commands`;
+6. creates the `protagine-act` worker profile: the main `model` with the
+   `providers`, `custom_providers` and fallback entries it can name, the mind's
+   toolsets as `platform_toolsets.cli` (what the dispatcher pins) and
+   `approvals.deny` from `mind.deny.commands`. `protagine doctor` asks stock
+   Hermes what a dispatched worker resolves and fails on a stale profile, an
+   unresolvable model or any toolset beyond the mind's;
 7. installs and starts the sidecar user service (systemd `--user` on Linux,
    launchd on macOS; skipped with a message elsewhere, then start it with
    `protagine start`). The unit asks for 16,384 open files (the vector store

@@ -246,6 +246,44 @@ emit(guest=guest_state, cron=cron_state, owner=owner_state, worker=worker_state)
         assert "quarterly figures" not in json.dumps(result[other]) and "send the figures" not in json.dumps(result[other])
 
 
+def test_a_guest_cannot_read_the_mind_or_the_contact_list(home, sidecar):
+    """The mind's log and reasons and the contact list are the owner's: a guest's turn, whatever the model
+    is talked into, gets the switch state only, refusals for log and why and for a listing of the contacts
+    (a guest may still ask who one named person is), and the sidecar is never asked."""
+    sidecar.mind_routes = True
+    sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "asked", "title": "Private"}
+    result = probe(TOOL_CODE + '''
+g = guest()
+emit(**{op: call("protagine_self", {"operation": op, "id": "i-01"}, g) for op in ("state", "log", "why")},
+     listing=call("protagine_people", {"operation": "who"}, g),
+     blank=call("protagine_people", {"operation": "who", "contact_id": "  "}, g))
+''', home)
+    assert result["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}
+    for name in ("log", "why", "listing", "blank"):
+        assert "owner" in result[name]["error"], (name, result[name])
+    assert "Private" not in json.dumps(result)
+    assert sidecar.calls("/v1/mind/log", "GET") == [] and sidecar.calls("/v1/mind/why/i-01", "GET") == []
+    assert sidecar.calls("/v1/mind/people", "GET") == []
+
+
+def test_mind_command_from_a_guest_never_reaches_the_plugin(home, sidecar):
+    """Hermes hands ``/mind`` no sender, so the plugin drops a guest's ``/mind`` at ``pre_gateway_dispatch``,
+    where the sender is still known; the owner's goes through and so does a guest's plain message."""
+    result = probe(TOOL_CODE + '''
+from types import SimpleNamespace
+def dispatch(text, sender, platform="telegram"):
+    source = SimpleNamespace(platform=SimpleNamespace(value=platform), user_id=sender, chat_id="c")
+    return [r for r in invoke_hook("pre_gateway_dispatch", event=SimpleNamespace(text=text, source=source),
+                                   gateway=None, session_store=None) if r]
+emit(guest_off=dispatch("/mind off", "2002"), guest_log=dispatch("/MIND@bot log", "2003"),
+     unknown=dispatch("/mind", "9999"), owner_off=dispatch("/mind off", "1001"),
+     guest_chat=dispatch("what is on your mind?", "2002"))
+''', home)
+    for name in ("guest_off", "guest_log", "unknown"):
+        assert [r["action"] for r in result[name]] == ["skip"], name
+    assert result["owner_off"] == [] and result["guest_chat"] == []
+
+
 def test_self_tool_approval_needs_the_owner_and_the_typed_code(home, sidecar):
     """Evals test 7: a guest, an owner turn without the code, a worker and a malformed code are refused."""
     sidecar.mind_routes = True

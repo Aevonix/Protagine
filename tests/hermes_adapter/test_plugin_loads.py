@@ -14,7 +14,8 @@ def section():
 CONSTITUTION = "You are Agent. Your values: care. Your boundaries: never send money."
 NARRATIVE_LEAD = "What you know about yourself, from your own record"
 
-STOCK_HOOKS = {"pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick"}
+# pre_gateway_dispatch: the owner-only /mind gate (Hermes hands the command itself no sender).
+STOCK_HOOKS = {"pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick", "pre_gateway_dispatch"}
 TOOLS = {"protagine_self", "protagine_people", "protagine_memory_search", "protagine_memory_forget",
          "protagine_reminder"}
 

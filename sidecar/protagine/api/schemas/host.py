@@ -192,12 +192,10 @@ class ContextAssembleRequest(BaseModel):
     available_tools: Optional[List[str]] = None
     citations_mode: Optional[Literal["off", "inline", "appendix"]] = None
     include_initiatives: Optional[bool] = None  # v0.13.0
-    # A memory provider from before M5 also sends ``projection_policy``; extra fields are ignored,
-    # and a guest's context is contact-scoped by construction, so it changes nothing.
-    # ``intact``: the host still shows this session's earlier turns verbatim, so recall must not
-    # repeat them; ``compressed``: it summarised them, so their sources are recallable again.
-    # Absent: the host said nothing, and recall includes them as before.
-    session_history: Optional[Literal["intact", "compressed"]] = None
+    # A memory provider from before M5 also sends ``projection_policy``, and one from before the
+    # recall fix sends ``session_history``; extra fields are ignored. A guest's context is
+    # contact-scoped by construction, and recall keeps the session's own turns, so neither changes
+    # anything.
 
 
 class ContextSection(BaseModel):

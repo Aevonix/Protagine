@@ -1,7 +1,8 @@
 """``/v1/mind/people``: who people are, and the owner's say over them (architecture 4.7, 7.4, 7.10).
 
 Reads are for everyone; a caller that names a viewer ``contact_id`` other than the owner sees
-only who a person is (id, name, tier), never their handles, digest or permission. Mutations
+only who a person is (id, name, tier), never their handles, digest or permission, and only for
+the one person a reference names: no listing, partial matches or 404 candidates. Mutations
 (``permission``, ``cadence``, ``merge``) need the viewer to be the owner, or ``by: cli`` from the
 local CLI, whose API key is the owner's; anyone may propose a link, which only files a
 candidate the owner confirms. ``may_contact`` is raised nowhere else (an opt-out only lowers it).
@@ -164,14 +165,16 @@ def _require_owner(contact_id: Optional[str], by: str) -> str:
     return owner
 
 
-async def _resolve(reference: str) -> Any:
+async def _resolve(reference: str, *, candidates_shown: bool = True) -> Any:
     """The one contact a reference names; otherwise 404 with the people it could mean (who they
-    are only), so an ambiguous name is answered, never guessed."""
+    are only), so an ambiguous name is answered, never guessed. A caller that is not the owner
+    (``candidates_shown`` False) gets the 404 alone: the contact list is not a guest's to browse."""
     store = _store()
     contact = await store.resolve_reference(reference)
     if contact is None:
         try:
-            candidates = [_row(c, [], full=False) for c in await store.search(reference, limit=5)]
+            candidates = [_row(c, [], full=False) for c in await store.search(reference, limit=5)] \
+                if candidates_shown else []
         except Exception:
             candidates = []
         raise HTTPException(status_code=404, detail={
@@ -223,11 +226,18 @@ def _detail(raw: Any) -> Any:
 @router.get("")
 @router.get("/")
 async def who(q: str = "", contact_id: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
-    """Who is this: by id, handle or name; no query lists the newest contacts."""
+    """Who is this: by id, handle or name; no query lists the newest contacts. A viewer who is not
+    the owner gets only the one person the query names exactly: no listing and no partial matches,
+    so a guest learns who someone is without browsing the contact list."""
     store = _store()
     full = _is_owner_viewer(contact_id)
+    if full:
+        found = await store.search(q, limit=max(1, min(int(limit), 100)))
+    else:
+        exact = await store.resolve_reference(q) if q.strip() else None
+        found = [exact] if exact is not None else []
     rows = []
-    for contact in await store.search(q, limit=max(1, min(int(limit), 100))):
+    for contact in found:
         rows.append(_row(contact, await store.get_handles(contact.contact_id) if full else [], full=full))
     return {"contacts": rows, "text": "\n".join(_line(row) for row in rows) or "(nobody matches)"}
 
@@ -245,7 +255,7 @@ async def proposals(limit: int = 50) -> Dict[str, Any]:
 async def inspect(reference: str, contact_id: Optional[str] = None) -> Dict[str, Any]:
     """One person: the record, digest, handles, open proposals and permission history (owner view)."""
     store = _store()
-    contact = await _resolve(reference)
+    contact = await _resolve(reference, candidates_shown=_is_owner_viewer(contact_id))
     if not _is_owner_viewer(contact_id):
         row = _row(contact, [], full=False)
         return {"contact": row, "text": _line(row)}
@@ -302,7 +312,8 @@ async def link(body: LinkBody) -> Dict[str, Any]:
     """Propose that a handle is this person: a candidate the owner confirms, never attribution."""
     _require_people()
     store = _store()
-    contact = await _resolve(body.contact_id)
+    contact = await _resolve(body.contact_id,
+                             candidates_shown=body.by in {"owner", "cli"} or _is_owner_viewer(body.by))
     holder = await store.resolve_messaging_handle(body.gateway, body.address)
     if holder is not None and holder.contact_id == contact.contact_id:
         return {"ok": True, "status": "already_linked", "contact_id": contact.contact_id,

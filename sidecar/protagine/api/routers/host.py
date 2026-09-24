@@ -1782,7 +1782,7 @@ async def _assemble_sections(
                 contact_facts_allowed=not _canonical_only,
                 timezone_name=resolve_communication_timezone(
                     contact_tz, body.context.timezone or ("UTC" if _canonical_only else None)),
-                current_work_available=current_work_available, session_history=body.session_history)
+                current_work_available=current_work_available)
             if packet.content:
                 sections.append(ContextSection(
                     id="protagine-memory", title="Relevant Memories", body=packet.content,

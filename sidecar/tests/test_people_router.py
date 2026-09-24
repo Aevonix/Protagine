@@ -62,6 +62,24 @@ async def test_who_finds_by_name_handle_and_id_and_a_guest_sees_only_who(world):
 
 
 @pytest.mark.asyncio
+async def test_a_guest_learns_who_one_named_person_is_but_cannot_browse_the_contact_list(world):
+    """A guest viewer gets the one person a reference names exactly; no listing, no partial matches and
+    no 404 candidates, so the contact list is the owner's (review security-3 on the M5 surface)."""
+    client, store, owner, guest = world
+    other = await store.create(display_name="Casey Park", trust_tier="regular")
+    seen = {"contact_id": guest.contact_id}
+    named = (await client.get("/v1/mind/people", params={"q": "Casey Park", **seen})).json()["contacts"]
+    assert named == [{"contact_id": other.contact_id, "display_name": "Casey Park", "trust_tier": "regular"}]
+    for query in ("", "casey", "0000005"):
+        assert (await client.get("/v1/mind/people", params={"q": query, **seen})).json()["contacts"] == [], query
+    missing = await client.get("/v1/mind/people/Casey", params=seen)
+    assert missing.status_code == 404 and missing.json()["detail"]["candidates"] == []
+    assert "Casey Lee" not in missing.text and "Casey Park" not in missing.text
+    owners = await client.get("/v1/mind/people/Casey")
+    assert owners.status_code == 404 and len(owners.json()["detail"]["candidates"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_inspect_shows_the_record_digest_handles_proposals_and_permission_history(world):
     client, store, owner, guest = world
     await store.set_digest(guest.contact_id, "Casey: a supplier, known since August.", ["turn:1"])

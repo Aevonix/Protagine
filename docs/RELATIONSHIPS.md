@@ -177,7 +177,7 @@ column says.
 
 | Router | Tool | CLI | Who |
 |---|---|---|---|
-| `GET /?q=` | `who` | `people who [q]` | everyone (a guest sees id, name and tier) |
+| `GET /?q=` | `who` | `people who [q]` | everyone (a guest sees id, name and tier of the one person the query names exactly; listing is the owner's) |
 | `GET /{who}` | `inspect` | `people inspect <who>` | everyone (record, digest, handles, proposals and permission history for the owner) |
 | `POST /link` | `propose_link` | `people link <who> <gateway> <address>` | everyone: a candidate the owner confirms |
 | `GET /proposals` | | `people proposals` | the open candidates |
