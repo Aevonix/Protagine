@@ -329,6 +329,10 @@ async def _initialize_contacts_store():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
+    # Before any store opens: the vector store needs more open files than a user
+    # process starts with on macOS, whether or not a service unit asked for them.
+    from protagine.resources import raise_open_file_limit
+    raise_open_file_limit()
     state_dir = _state_dir()
     _p8_wiring = None
 
@@ -492,16 +496,27 @@ async def lifespan(app: FastAPI):
             embed_model = embed_model or "sentence-transformers/all-MiniLM-L6-v2"
             embed_dims = embed_dims or "384"
 
+    from protagine.api.routers.host import set_embed_failure
+    set_embed_failure(None)
     try:
         from protagine.vector.embedder import EmbeddingPipeline
         from protagine.vector.config import EmbeddingConfig
+        request_dims = (int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
+                        if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None)
+        if embed_dims:
+            declared_dims = int(embed_dims)
+        elif request_dims:
+            declared_dims = request_dims
+        elif embed_provider == "openai_api":
+            declared_dims = 0   # learned from the endpoint's first embedding
+        else:
+            declared_dims = 384
         embed_config = EmbeddingConfig(
             provider=embed_provider,
             model_id=embed_model,
-            dimensions=int(embed_dims) if embed_dims else 384,
+            dimensions=declared_dims,
             revision=os.environ.get("PROTAGINE_EMBED_REVISION") or None,
-            request_dimensions=(int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
-                if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None),
+            request_dimensions=request_dims,
         )
         from protagine.vector.embedder import make_provider
         provider = make_provider(embed_config)
@@ -560,7 +575,7 @@ async def lifespan(app: FastAPI):
                 vector_db_path = os.path.join(state_dir, "lancedb")
                 vs = VectorStore(data_dir=vector_db_path, identity=pipeline.index_identity,
                     catalog=IndexCatalog(get_turn_idempotency_ledger(state_dir)))
-                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS", pipeline.dimensions or 384))
+                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS") or pipeline.dimensions or 384)
                 await vs.connect(dimensions=embed_dims)
                 await vs.ensure_collections(dimensions=embed_dims)
                 set_store(vs)
@@ -576,6 +591,7 @@ async def lifespan(app: FastAPI):
                     logger.warning("ProtagineGraph partially wired — memory may be degraded")
             except Exception as vexc:
                 logger.warning("Vector store wiring failed (recall will use keyword fallback): %s", vexc)
+                set_embed_failure(f"the vector store did not open: {type(vexc).__name__}: {vexc}")
 
             # Pass LLM config to pipeline for auto-captioning
             llm_config_path = Path(os.environ.get("PROTAGINE_STATE_DIR", ".")) / ".protagine-llm-config.json"
@@ -598,6 +614,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Embedder health check exception: %s", exc)
     except Exception as exc:
         logger.warning("EmbeddingPipeline init failed: %s", exc)
+        # The sidecar still serves, so nothing else would say it: health carries the
+        # reason in words and stays degraded until the embedder comes up.
+        set_embed_failure(f"the embedder (provider={embed_provider}, model={embed_model or 'unset'}) "
+                          f"did not initialise: {type(exc).__name__}: {exc}")
 
     # --- 6b. Reranker pipeline ---
     reranker_provider_name = os.environ.get("PROTAGINE_RERANKER_PROVIDER", "")
@@ -1540,6 +1560,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Multi-Agent System init failed: %s", exc)
 
+    # Temporal telemetry: the mind's tick beats into it, turns/sync and context/assemble
+    # touch it, and /v1/host/health reads it. Built before the mind so the tick can report.
+    from protagine.telemetry import TelemetryStore
+    telemetry = TelemetryStore()
+    telemetry.load()  # restore last_*_at across restart (v0.21.0)
+    telemetry.started_at = datetime.now(timezone.utc)
+    app.state.telemetry = telemetry
+    set_telemetry(telemetry)
+    logger.info("TelemetryStore initialized")
+
     # --- 21. The mind tick (architecture 3.2) ---
     # Replaces the autonomy loop and its scheduler: health_check became the
     # tick's upkeep probes, digest_flush became the outbox digest, and the
@@ -1592,7 +1622,7 @@ async def lifespan(app: FastAPI):
             ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
             interests=_mind_interests, capture=_mind_capture,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
-            persist=_persist_mind_setting)
+            persist=_persist_mind_setting, heartbeat=lambda: telemetry.touch("last_tick_at"))
         set_mind(mind)
         mind.start()
         logger.info("Mind tick started (autonomy=%s, enabled=%s, owner=%s)",
@@ -1653,14 +1683,6 @@ async def lifespan(app: FastAPI):
                     connectors_mode(), n_conn)
     except Exception as exc:
         logger.warning("ConnectorManager init failed: %s", exc)
-
-    from protagine.telemetry import TelemetryStore
-    telemetry = TelemetryStore()
-    telemetry.load()  # restore last_*_at across restart (v0.21.0)
-    telemetry.started_at = datetime.now(timezone.utc)
-    app.state.telemetry = telemetry
-    set_telemetry(telemetry)
-    logger.info("TelemetryStore initialized")
 
     # Session report store (cross-session context bridge)
     from protagine.sessions.reports import SessionReportStore
@@ -1836,6 +1858,8 @@ def create_app() -> FastAPI:
     else:
         logger.warning("No API key configured; serving loopback clients only (dev mode)")
 
+    from protagine.api.errors import install_exception_handlers
+    install_exception_handlers(app)
     app.include_router(host_router)
     app.include_router(host_v2_router)
     from protagine.api.routers import mind as mind_router

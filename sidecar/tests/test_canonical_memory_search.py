@@ -236,3 +236,55 @@ async def test_erasure_during_semantic_await_never_returns_stale_excerpt(memory_
         assert result['content'] == '' and result['source_refs'] == []
 
 
+@pytest.mark.asyncio
+async def test_owner_search_needs_no_person_or_session_and_clamps_the_limit(memory_app, monkeypatch):
+    """With the key, a body naming nobody searches the owner's memory; a limit above the
+    maximum is clamped, not refused; an explicit guest person still scopes to that guest."""
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'person')
+    app, _ = memory_app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
+        response = await client.post('/v1/host/memory/search',
+                                     json={'identity': {'host_id': 'fixture'}, 'query': 'hydrofoil', 'limit': 30})
+        assert response.status_code == 200, response.text
+        packet = response.json()
+        assert 'Friday at nine' in packet['content'] and 'amber' not in packet['content']
+        assert 1 <= packet['count'] <= 20
+        blank = await client.post('/v1/host/memory/search', json=body(person_id='', session_id=''))
+        assert blank.status_code == 200 and 'Friday at nine' in blank.json()['content']
+        guest = await search(client, person_id='other')
+        assert 'amber' in guest['content'] and 'Friday at nine' not in guest['content']
+        for limit in (0, '30'):
+            refused = await client.post('/v1/host/memory/search', json=body(limit=limit))
+            assert refused.status_code == 422, refused.text
+
+
+@pytest.mark.asyncio
+async def test_a_session_admits_its_own_scoped_evidence_and_its_absence_excludes_nothing(memory_app):
+    app, _ = memory_app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
+                           headers={'Authorization': 'Bearer ' + KEY}) as client:
+        inside = await search(client, session_id='original')
+        assert 'cobalt' in inside['content'] and 'Friday at nine' in inside['content']
+        without = await client.post('/v1/host/memory/search', json={'identity': {'host_id': 'fixture'},
+                                                                    'person_id': 'person', 'query': 'hydrofoil'})
+        assert without.status_code == 200, without.text
+        assert 'Friday at nine' in without.json()['content'] and 'cobalt' not in without.json()['content']
+
+
+@pytest.mark.asyncio
+async def test_a_caller_without_the_key_never_searches_the_owner(memory_app, monkeypatch):
+    """Development mode (no key) resolves an unnamed person to its own default and refuses
+    the owner by name, so relaxing the body never opens the owner's memory to a keyless caller."""
+    from fastapi import FastAPI
+    from protagine.api.errors import install_exception_handlers
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'person')
+    dev = FastAPI()
+    install_exception_handlers(dev)
+    dev.add_middleware(ApiKeyMiddleware, api_key=None)
+    dev.include_router(host.router)
+    async with AsyncClient(transport=ASGITransport(app=dev), base_url='http://localhost') as client:
+        unnamed = await client.post('/v1/host/memory/search', json={'identity': {'host_id': 'fixture'}, 'query': 'hydrofoil'})
+        assert unnamed.status_code == 403, unnamed.text
+        named = await client.post('/v1/host/memory/search', json=body())
+        assert named.status_code == 403 and named.json()['detail']['code'] == 'reserved_authority_required'

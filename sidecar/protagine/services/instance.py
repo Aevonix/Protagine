@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from protagine.resources import OPEN_FILES
+
 
 class ServiceError(RuntimeError):
     pass
@@ -117,10 +119,14 @@ class InstanceService:
         environment = {'PROTAGINE_HOME': str(self.state), 'HERMES_HOME': str(self.hermes_home),
                        'PROTAGINE_INSTANCE_SERVICE': self.label, 'PYTHONUNBUFFERED': '1'}
         if self.platform == 'darwin':
+            # The vector store holds a descriptor per data file; macOS starts a user
+            # process at 256. Both limits, so the server's own raise has room.
+            limits = {'NumberOfFiles': OPEN_FILES}
             return plistlib.dumps({'Label': self.label, 'ProgramArguments': arguments,
                 'WorkingDirectory': str(self.state), 'EnvironmentVariables': environment,
                 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
                 'ExitTimeOut': 20, 'Umask': 0o077,
+                'SoftResourceLimits': limits, 'HardResourceLimits': dict(limits),
                 'StandardOutPath': str(self.log), 'StandardErrorPath': str(self.log)}, sort_keys=True)
         quote = _systemd_quote
         return ('[Unit]\nDescription=Protagine private instance ' + self.label + '\n\n[Service]\nType=exec\n'
@@ -129,6 +135,7 @@ class InstanceService:
                 'ExecStart=:' + ' '.join(quote(arg) for arg in arguments) + '\n'
                 'Environment=' + ' '.join(quote(key + '=' + value) for key, value in environment.items()) + '\n'
                 'Restart=always\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n'
+                'LimitNOFILE=' + str(OPEN_FILES) + '\n'
                 'StandardOutput=append:' + _systemd_path(self.log) + '\n'
                 'StandardError=append:' + _systemd_path(self.log) + '\n\n[Install]\nWantedBy=default.target\n').encode()
 
@@ -201,7 +208,14 @@ class InstanceService:
             raise ServiceError('Service is not installed for this instance; run protagine service install')
         self._manager_ready()
 
-    def healthy(self):
+    def health(self):
+        """The served health verdict, ``{'status', 'problems'}``, or None when the sidecar does not answer.
+
+        Readiness is the sidecar answering ``/v1/host/health``; what it answers (``ok``, or
+        ``degraded`` with its reasons in words) is reported as it is, so ``service start``,
+        ``service status`` and ``protagine doctor`` all read the one verdict rather than each
+        deciding for itself what ready means.
+        """
         import httpx
         host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(self.host, self.host)
         if ':' in host:
@@ -210,9 +224,17 @@ class InstanceService:
         try:
             response = httpx.get(f'http://{host}:{self.port}/v1/host/health',
                 headers={'Authorization': 'Bearer ' + key}, timeout=5, trust_env=False, follow_redirects=False)
-            return response.status_code == 200 and response.json().get('status') == 'ok'
+            if response.status_code != 200:
+                return None
+            body = response.json()
         except (httpx.HTTPError, ValueError):
-            return False
+            return None
+        if not isinstance(body, dict) or not body.get('status'):
+            return None
+        return {'status': str(body['status']), 'problems': [str(item) for item in body.get('problems') or []]}
+
+    def healthy(self):
+        return self.health() is not None
 
     def start(self, *, restart=False, timeout=30):
         self._require_installed()
@@ -235,10 +257,12 @@ class InstanceService:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             result = self.status()
-            if result['running'] and self.healthy():
-                return {**result, 'ready': True}
+            served = self.health() if result['running'] else None
+            if served is not None:
+                return {**result, 'ready': True, 'health': served['status'], 'problems': served['problems']}
             time.sleep(.2)
-        raise ServiceError(f'Service did not become HTTP-ready; inspect {self.log}. It remains installed for recovery.')
+        raise ServiceError(f'Service did not become HTTP-ready (no answer from /v1/host/health); inspect {self.log}. '
+                           'It remains installed for recovery.')
 
     def stop(self):
         self._require_installed()
@@ -278,5 +302,8 @@ def manage(action):
     else:
         result = getattr(service, action)()
     if action == 'status':
-        result['ready'] = bool(result['running'] and service.healthy())
+        served = service.health() if result['running'] else None
+        result['ready'] = served is not None
+        result['health'] = served['status'] if served else None
+        result['problems'] = served['problems'] if served else []
     print(json.dumps(result, sort_keys=True))

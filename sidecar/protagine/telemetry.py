@@ -1,4 +1,10 @@
-"""Sidecar telemetry store for temporal health monitoring."""
+"""Sidecar telemetry store for temporal health monitoring.
+
+What the sidecar runs on its own schedule (the mind's tick) is tracked for
+staleness. What inbound traffic drives (``sync`` = ``turns/sync``, ``prefetch``
+= ``context/assemble``) is observed as silence and never flagged: a quiet day
+is not a failure of the sidecar.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +19,18 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# v0.21.0 — persisted so last_*_at survive a restart (previously in-memory only,
-# which reset silence/last-outreach reasoning to null on every restart).
+# Persisted so last_*_at survive a restart. A key an earlier line wrote and this one
+# no longer tracks is ignored on load and dropped on the next write.
 _PERSIST_KEYS = (
-    "started_at", "last_sync_at", "last_tick_at",
-    "last_initiative_at", "last_prefetch_at", "last_agent_outreach_at",
+    "started_at", "last_sync_at", "last_tick_at", "last_prefetch_at", "last_agent_outreach_at",
 )
+
+#: The events silence is reported for, by the short name health uses.
+EVENTS = {
+    "sync": "last_sync_at",
+    "tick": "last_tick_at",
+    "prefetch": "last_prefetch_at",
+}
 
 
 def _telemetry_path() -> Path:
@@ -30,7 +42,6 @@ class TelemetryStore:
     started_at: Optional[datetime] = None
     last_sync_at: Optional[datetime] = None
     last_tick_at: Optional[datetime] = None
-    last_initiative_at: Optional[datetime] = None
     last_prefetch_at: Optional[datetime] = None
     last_agent_outreach_at: Optional[datetime] = None
     #: "ok" normally; "unknown" when persisted state could not be restored
@@ -87,13 +98,7 @@ class TelemetryStore:
 
     async def silence_hours(self, key: str) -> Optional[float]:
         """Return hours since the last event of the given type."""
-        attr_map = {
-            "sync": "last_sync_at",
-            "tick": "last_tick_at",
-            "initiative": "last_initiative_at",
-            "prefetch": "last_prefetch_at",
-        }
-        attr = attr_map.get(key, key)
+        attr = EVENTS.get(key, key)
         async with self._lock:
             ts = getattr(self, attr, None)
             if ts is None:
@@ -122,21 +127,20 @@ class TelemetryStore:
         return flags
 
     async def to_dict(self, thresholds: Dict[str, float]) -> dict:
+        """Silence for every observed event; flags only for the ``thresholds`` given."""
         started = self.started_at.isoformat() if self.started_at else None
         sync_at = self.last_sync_at.isoformat() if self.last_sync_at else None
         tick_at = self.last_tick_at.isoformat() if self.last_tick_at else None
-        init_at = self.last_initiative_at.isoformat() if self.last_initiative_at else None
         prefetch_at = self.last_prefetch_at.isoformat() if self.last_prefetch_at else None
         outreach_at = self.last_agent_outreach_at.isoformat() if self.last_agent_outreach_at else None
         silence = {}
-        for key in thresholds:
+        for key in list(EVENTS) + [key for key in thresholds if key not in EVENTS]:
             silence[key] = await self.silence_hours(key)
         flags = await self.stale_flags(thresholds)
         return {
             "started_at": started,
             "last_sync_at": sync_at,
             "last_tick_at": tick_at,
-            "last_initiative_at": init_at,
             "last_prefetch_at": prefetch_at,
             "last_agent_outreach_at": outreach_at,
             "silence_hours": silence,

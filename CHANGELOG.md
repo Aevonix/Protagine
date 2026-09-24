@@ -150,6 +150,64 @@ handle is refused before it is claimed (`409 no_target`) and goes out once the
 handle resolves, and a message that expires unsent frees its obligation instead
 of losing it. The body grader checks the target of every counted effect.
 
+A rehearsal of the upgrade from 1.9.0 on a copy of a long-running install found
+what the cutover would otherwise have carried by hand in a service environment
+and a few request shapes 1.9.0 callers still send; each item is now the
+package's own business, pinned by a test that failed first. `protagine.yaml`
+carries the recall settings: `router.rerank_url` and `router.rerank_model`
+reach recall the way `router.embed_url` does (an endpoint without its model is
+a configuration error), `router.embed_dims` names the embedding width or, left
+at 0, lets the OpenAI-compatible provider learn it from the endpoint's first
+vector and hold every later one to it (a declared width that differs fails
+naming the setting rather than a built-in default), and a top-level
+`environment` mapping exports any further `PROTAGINE_*` tuning an operator has
+calibrated (a reranker prompt style, a recall floor, an endpoint key), laid
+over the values the keys derive and under the process environment, which still
+wins; a name another key already owns is refused naming that key, values are
+strings or numbers, and the log withholds anything that looks like a
+credential. An embedder or vector store that does not come up is no longer a
+silent fall-back to keywords: `/v1/host/health` gains a `problems` list that
+says in sentences why the status is not `ok`, `/v1/host/embed/health` repeats
+the reason, and `protagine doctor` fails its `semantic-recall` check whenever
+`router.embed_url` is set and the running embedder is not serving. The
+temporal health check tracks what this line runs: the mind beats
+`last_tick_at` on every tick, on or off, a tick older than ten of its intervals
+(floor a quarter hour, `PROTAGINE_STALE_TICK_HOURS`) or a capture job waiting
+longer than an hour (`PROTAGINE_STALE_CAPTURE_HOURS`, from a new `enqueued_at`
+on `commitment_runs`) degrades with its reason, and sync and prefetch silence,
+which only the conversation drives, is reported under `temporal.silence_hours`
+and never flags; `last_initiative_at`, `PROTAGINE_TEMPORAL_HEALTH_POLICY` and
+the sync, initiative and prefetch staleness knobs are gone (an upgraded
+`telemetry.json` drops the key on its next persist), and `protagine service
+start`, `service status`, `init` and `upgrade` treat an answering sidecar as
+ready and repeat the served verdict with its problems in words instead of
+raising against a degraded one. The generated launchd and systemd units ask
+for the 16,384 open files the vector store needs and `protagine start` raises
+its own soft limit to that figure within the hard limit (`doctor` warns below
+it). The base package brings the vector store itself (`lancedb`, `pyarrow`,
+`pandas`; the `lancedb` extra is gone and `vectors` keeps only the in-process
+models), the sidecar's interpreter range is the adapter's (`>=3.11,<3.14`),
+`init`, `upgrade` and `doctor` refuse an environment without the vector store
+with the reinstall command, and the install guide says how to pick the
+interpreter when the default is newer. `protagine upgrade` adopts the durable
+transport intake rows an earlier line stamped with one of several client
+principals: every `transport_ingress` receipt and coverage row whose producer
+is not the instance's is re-scoped to it after the backup (a receipt whose
+event already exists under the instance producer is kept as it is; coverage
+merges to the newest observation per account), so a messaging transport that
+journaled those receipts can still read, hand off and settle them with the one
+key, and `admit` recognises a journaled event by the event itself rather than
+by its digest. Two request shapes are met halfway: `POST
+/v1/host/memory/search` takes `person_id` and `session_id` as optional (with
+the key and no person the search is the owner's, development mode never
+resolves to the owner, blank counts as absent) and clamps `limit` to 20 instead
+of refusing it, and a request the sidecar refuses (a `turns/sync` with an empty
+session, a naive `occurred_at`) is answered `422 invalid_request` with the
+reason by one handler for the package's own `ValueError`s, installed in
+`create_app` and the test applications alike, while a library's error about
+the sidecar's own data stays a server error. See
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ## Unreleased - drives, concerns, deliberation and agent-owned goals
 
 One ranked producer replaces the parallel producers of self-initiated work.

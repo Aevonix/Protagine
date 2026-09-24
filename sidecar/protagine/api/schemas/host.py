@@ -9,7 +9,7 @@ from __future__ import annotations
 import os as _os
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MAX_NAME_LEN = 256
@@ -54,7 +54,6 @@ class TemporalMetrics(BaseModel):
     started_at: Optional[str] = None
     last_sync_at: Optional[str] = None
     last_tick_at: Optional[str] = None
-    last_initiative_at: Optional[str] = None
     last_prefetch_at: Optional[str] = None
     silence_hours: Dict[str, Optional[float]] = Field(default_factory=dict)
     stale_flags: List[str] = Field(default_factory=list)
@@ -68,6 +67,8 @@ class HostHealthResponse(BaseModel):
     capabilities: List[str] = []
     notes: Optional[Dict[str, str]] = None
     temporal: Optional[TemporalMetrics] = None
+    #: Every reason the status is not "ok", as sentences an operator can act on.
+    problems: List[str] = Field(default_factory=list)
 
 
 # --- Memory -----------------------------------------------------------------
@@ -108,19 +109,35 @@ class MemoryReadResponse(BaseModel):
     source: Dict[str, Any]
 
 
+MEMORY_SEARCH_MAX_LIMIT = 20
+
+
 class MemorySearchRequest(BaseModel):
+    """An explicit search of one person's canonical memory.
+
+    The key selects nobody by itself, so a body without ``person_id`` is a
+    search of the owner's memory (the key's viewer); without the key there is
+    no owner search at all. ``session_id`` admits that session's session-scoped
+    evidence; without one only person-scoped evidence is read and nothing is
+    excluded. A ``limit`` above the maximum is clamped, not refused.
+    """
     model_config = ConfigDict(extra="forbid")
     identity: HostIdentity
-    person_id: str = Field(min_length=1, max_length=256)
-    session_id: str = Field(min_length=1, max_length=256)
+    person_id: Optional[str] = Field(default=None, max_length=256)
+    session_id: Optional[str] = Field(default=None, max_length=256)
     query: str = Field(min_length=1, max_length=4096)
-    limit: int = Field(default=5, ge=1, le=20, strict=True)
+    limit: int = Field(default=5, ge=1, strict=True)
     timezone: Optional[str] = Field(default=None, max_length=128)
 
+    @field_validator('limit')
+    @classmethod
+    def clamp_limit(cls, value: int) -> int:
+        return min(value, MEMORY_SEARCH_MAX_LIMIT)
+
     @model_validator(mode='after')
-    def exact_scope(self):
-        if not self.person_id.strip() or not self.session_id.strip():
-            raise ValueError('memory search requires an exact participant and session')
+    def blank_is_absent(self):
+        self.person_id = (self.person_id or '').strip() or None
+        self.session_id = (self.session_id or '').strip() or None
         return self
 
 

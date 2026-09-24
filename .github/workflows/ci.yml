@@ -118,7 +118,7 @@ jobs:
           import subprocess, sys
           adapter, = Path('dist').glob('protagine_hermes-*.whl')
           sidecar, = Path('dist').glob('protagine-*.whl')
-          subprocess.run([sys.executable, '-m', 'pip', 'install', str(adapter) + '[test]', str(sidecar) + '[lancedb]'], check=True)
+          subprocess.run([sys.executable, '-m', 'pip', 'install', str(adapter) + '[test]', str(sidecar)], check=True)
           PY
           python -m pip check
       - name: Qualify the adapter against stock Hermes

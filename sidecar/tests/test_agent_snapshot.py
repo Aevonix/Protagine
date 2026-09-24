@@ -129,21 +129,6 @@ class TestAgentSnapshot:
         assert data["last_tick_age_minutes"] > 30
         assert "stale_autonomy_loop" in data["flags"]
 
-    def test_agent_snapshot_long_initiative_silence(self, client: TestClient):
-        """Flag long_initiative_silence when no initiatives for 4+ hours."""
-        from protagine.api.routers.host import set_telemetry
-        from protagine.telemetry import TelemetryStore
-
-        telemetry = TelemetryStore()
-        telemetry.last_initiative_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
-        set_telemetry(telemetry)
-
-        resp = client.get("/v1/host/agent-snapshot")
-        assert resp.status_code == 200
-        data = resp.json()
-
-        assert "long_initiative_silence" in data["flags"]
-
     # -----------------------------------------------------------------------
     # POST /v1/host/agent-snapshot/record-outreach
     # -----------------------------------------------------------------------

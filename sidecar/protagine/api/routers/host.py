@@ -314,6 +314,16 @@ def set_signal_collector(collector) -> None:
     _signal_collector = collector
 
 
+#: Why semantic recall is off although it was configured: set by the server when the
+#: embedder or the vector store failed to initialise, cleared when they come up.
+_embed_failure: Optional[str] = None
+
+
+def set_embed_failure(reason: Optional[str]) -> None:
+    global _embed_failure
+    _embed_failure = str(reason).strip() if reason else None
+
+
 def set_embedder(embedder) -> None:
     global _embedder
     _embedder = embedder
@@ -591,30 +601,58 @@ async def list_models() -> ModelListResponse:
 # Health
 # ---------------------------------------------------------------------------
 
-_TEMPORAL_HEALTH_POLICIES = frozenset({"enforce", "advisory"})
 _INDEX_HEALTH_TIMEOUT_SECONDS = 5.0
+#: The mind's tick is stale after ten of its intervals, and never sooner than this.
+TICK_STALE_FLOOR_HOURS = 0.25
+#: A capture job still unfinished after this long means capture is not landing.
+CAPTURE_STALE_HOURS = 1.0
 
 
-def _temporal_health_policy() -> str:
-    """Return the fail-closed policy for temporal activity warnings.
+def _tick_stale_hours(mind) -> float:
+    """How long the mind's tick may be silent: ``PROTAGINE_STALE_TICK_HOURS`` when pinned,
+    else ten of the mind's own intervals with a quarter-hour floor."""
+    pinned = os.environ.get("PROTAGINE_STALE_TICK_HOURS", "").strip()
+    if pinned:
+        try:
+            return float(pinned)
+        except ValueError:
+            pass
+    try:
+        interval = float(getattr(mind, "interval", 60.0) or 60.0)
+    except (TypeError, ValueError):
+        interval = 60.0
+    return max(10 * interval / 3600.0, TICK_STALE_FLOOR_HOURS)
 
-    ``stale_flags`` remain observable under both policies.  ``advisory`` only
-    prevents those activity timestamps from changing the host's top-level
-    readiness; it never clears another degradation source.
-    """
 
-    configured = os.environ.get(
-        "PROTAGINE_TEMPORAL_HEALTH_POLICY", "enforce"
-    ).strip().lower()
-    if configured not in _TEMPORAL_HEALTH_POLICIES:
-        return "enforce"
-    return configured
+def _capture_stale_hours() -> float:
+    pinned = os.environ.get("PROTAGINE_STALE_CAPTURE_HOURS", "").strip()
+    if pinned:
+        try:
+            return float(pinned)
+        except ValueError:
+            pass
+    return CAPTURE_STALE_HOURS
+
+
+def _capture_backlog_hours(mind) -> Optional[float]:
+    """How long the oldest unfinished capture job has waited, or None when nothing waits
+    (or no capture queue is wired)."""
+    probe = getattr(getattr(mind, "capture", None), "oldest_unfinished_seconds", None)
+    if probe is None:
+        return None
+    try:
+        age = probe()
+    except Exception as exc:
+        logger.warning("capture backlog probe failed: %s", type(exc).__name__)
+        return None
+    return None if age is None else float(age) / 3600.0
 
 
 @router.get("/health", response_model=HostHealthResponse)
 async def health() -> HostHealthResponse:
     caps = supported_capabilities()
     notes: dict[str, str] = {}
+    problems: list[str] = []   # every reason the status is not "ok", in words
     embed_model = ""
 
     # the sidecar's own open-file limit (doctor reads this; a low limit makes
@@ -639,6 +677,7 @@ async def health() -> HostHealthResponse:
         memory_backend_down = True
         caps = [c for c in caps if c != 'memory']
         notes['memory'] = 'Canonical source ledger unavailable (' + type(exc).__name__ + ')'
+        problems.append(f"the source ledger is unreadable ({type(exc).__name__}: {exc})")
     if _goals_store is not None:
         notes["goals"] = "Goal records available"
     if _contacts_store is not None:
@@ -652,6 +691,13 @@ async def health() -> HostHealthResponse:
     if _signal_collector is not None:
         notes["signals"] = "SignalCollector wired"
     embed_degraded = False
+    if _embed_failure:
+        # Semantic recall was configured and is not running: say so in words, so the
+        # keyword fallback is never mistaken for the configured recall.
+        embed_degraded = True
+        problems.append("semantic recall is off: " + _embed_failure)
+        if _embedder is None:
+            notes["embed"] = "semantic recall is off: " + _embed_failure
     if _embedder is not None:
         # Get embed model info
         if hasattr(_embedder, "_provider") and hasattr(_embedder._provider, "_config"):
@@ -673,6 +719,7 @@ async def health() -> HostHealthResponse:
         except Exception as exc:
             embed_degraded = True
             embed_note += f" [index-check failed: {type(exc).__name__}: {exc}]"
+            problems.append(f"the semantic index check failed: {type(exc).__name__}: {exc}")
             logger.warning("embedding index health probe failed: %s", type(exc).__name__)
 
         # Check embedder health
@@ -684,9 +731,11 @@ async def health() -> HostHealthResponse:
                 if hc.get("error"):
                     embed_note += f": {hc['error']}"
                 embed_note += "]"
+                problems.append(f"the embedder is not answering correctly: {hc.get('error') or hc.get('status')}")
         except Exception as exc:
             embed_degraded = True
             embed_note += f" [health probe failed: {exc}]"
+            problems.append(f"the embedder health probe failed: {exc}")
             logger.warning("embedder health probe failed: %s", exc)
 
         notes["embed"] = embed_note
@@ -739,29 +788,33 @@ async def health() -> HostHealthResponse:
         and "commitment_resolution_recovery_v1" not in caps
     ):
         health_status = "degraded"
+        problems.append("commitment resolution recovery is unavailable")
 
-    # Build temporal metrics
+    # Temporal metrics. What the sidecar runs on its own is tracked for staleness: the
+    # mind's tick (it beats whether the mind is on or off) and the capture queue (jobs
+    # that sit for hours are not landing). What inbound traffic drives (sync =
+    # turns/sync, prefetch = context/assemble) is reported as silence and never flags:
+    # a quiet day is not a failure, and a fresh install must be able to be ready.
     temporal = None
     try:
         if _telemetry is not None:
-            thresholds = {
-                "sync": float(os.environ.get("PROTAGINE_STALE_SYNC_HOURS", "2.0")),
-                "tick": float(os.environ.get("PROTAGINE_STALE_TICK_HOURS", "24.0")),
-                "initiative": float(os.environ.get("PROTAGINE_STALE_INITIATIVE_HOURS", "48.0")),
-                # prefetch = last /context/assemble, which is driven by INBOUND
-                # conversation turns, not an internal schedule. Multi-hour gaps are
-                # normal idle (overnight, focus time), so a tight threshold would
-                # false-flag the whole system "degraded" during any quiet period AND
-                # mask real degradation. 24h matches the agent-snapshot views and
-                # means "the host hasn't asked for context in a full day" — the point
-                # at which idle becomes a genuine integration-down signal.
-                "prefetch": float(os.environ.get("PROTAGINE_STALE_PREFETCH_HOURS", "24.0")),
-            }
-            temporal_data = await _telemetry.to_dict(thresholds)
-            if (
-                temporal_data.get("stale_flags")
-                and _temporal_health_policy() == "enforce"
-            ):
+            temporal_data = await _telemetry.to_dict({"tick": _tick_stale_hours(mind)})
+            flags = list(temporal_data.get("stale_flags") or [])
+            silence = dict(temporal_data.get("silence_hours") or {})
+            for flag in flags:
+                if flag == "tick:never_ran":
+                    problems.append("the mind's tick has not run since the sidecar started")
+                elif flag == "tick":
+                    problems.append(f"the mind's tick has not run for {silence.get('tick') or 0:.1f} h")
+            backlog = _capture_backlog_hours(mind)
+            if backlog is not None:
+                silence["capture"] = backlog
+                if backlog > _capture_stale_hours():
+                    flags.append("capture")
+                    problems.append("capture jobs are not landing: the oldest unfinished job has waited "
+                                    f"{backlog:.1f} h")
+            temporal_data["stale_flags"], temporal_data["silence_hours"] = flags, silence
+            if flags:
                 health_status = "degraded"
             from protagine.api.schemas.host import TemporalMetrics
             temporal = TemporalMetrics(**temporal_data)
@@ -770,6 +823,7 @@ async def health() -> HostHealthResponse:
         # dead loop is gone — that is degradation, not silent health.
         health_status = "degraded"
         notes["temporal"] = f"staleness computation failed: {exc}"
+        problems.append(f"staleness computation failed: {exc}")
         logger.warning("temporal staleness computation failed: %s", exc)
 
     return HostHealthResponse(
@@ -777,6 +831,7 @@ async def health() -> HostHealthResponse:
         capabilities=caps,
         notes=notes,
         temporal=temporal,
+        problems=problems,
     )
 
 
@@ -1093,8 +1148,14 @@ async def memory_read(body: MemoryReadRequest, request: Request = None) -> Memor
 
 @router.post("/memory/search", response_model=MemorySearchResponse)
 async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySearchResponse:
-    """Search current canonical evidence for an authenticated participant."""
-    person = resolve_request_person(request, claimed_person_id=body.person_id)
+    """Search current canonical evidence for an authenticated participant.
+
+    The body names the person; with the key and no person the search is the
+    key's viewer's, the owner. Development mode never resolves to the owner
+    (``resolve_request_person``) and never passes the P8 viewer check.
+    """
+    person = (resolve_request_person(request, claimed_person_id=body.person_id)
+              or request_authority(request).viewer_person_id)
     viewer = _p8_viewer_for_request(request, person)
     projection = _context_projection_attestation(contact_id=person, viewer=viewer)
     canonical_only = projection.projection_backend == "canonical_sources"
@@ -1109,7 +1170,7 @@ async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySe
         from protagine.util.temporal import resolve_communication_timezone
         ledger = get_turn_idempotency_ledger(get_state_dir())
         collected = await collect_sources(ledger, query=body.query, contact_id=person,
-            session_id=body.session_id, vector_store=get_store(), embedding_pipeline=get_pipeline())
+            session_id=body.session_id or "", vector_store=get_store(), embedding_pipeline=get_pipeline())
         contact_tz = None
         if not canonical_only and _contacts_store is not None:
             try:
@@ -1217,7 +1278,7 @@ async def memory_rerank(body: RerankRequest) -> RerankResponse:
 async def embed_health() -> EmbedHealthResponse:
     """Check embedder health — verify model is loaded and producing valid output."""
     if _embedder is None:
-        return EmbedHealthResponse(status="error", error="embedder not initialized")
+        return EmbedHealthResponse(status="error", error=_embed_failure or "embedder not initialized")
     try:
         result = await _embedder.health_check()
         # Add multimodal status
@@ -9398,12 +9459,6 @@ async def create_initiative(body: InitiativeCreateRequest) -> InitiativeResponse
         context=body.context or None,
     )
 
-    if _telemetry is not None:
-        try:
-            await _telemetry.touch("last_initiative_at")
-        except Exception:
-            pass
-
     try:  # timeline (v0.21.0)
         from protagine.events.journal import append_event
         append_event("initiative.generated", {
@@ -9814,7 +9869,7 @@ async def agent_snapshot() -> AgentSnapshotResponse:
     now = datetime.now(timezone.utc)
 
     # Telemetry
-    thresholds = {"sync": 1.0, "tick": 1.0, "initiative": 4.0, "prefetch": 24.0}
+    thresholds = {"tick": _tick_stale_hours(_mind())}
     telemetry_dict = await _telemetry.to_dict(thresholds) if _telemetry else {}
 
     # Pending initiatives (top 20 by priority)
@@ -9839,8 +9894,6 @@ async def agent_snapshot() -> AgentSnapshotResponse:
 
     # Flags: high-signal items the agent should know about
     flags = []
-    if (telemetry_dict.get("silence_hours", {}).get("initiative") or 0) > 4:
-        flags.append("long_initiative_silence")
     if failed:
         flags.append("failed_initiatives")
     if pending and any(i.priority > 0.8 for i in pending):
@@ -10052,7 +10105,7 @@ async def context_digest(
         pending = _initiative_store.list(status=["pending"], limit=initiative_limit)
 
     # System state (reuse agent-snapshot logic)
-    thresholds = {"sync": 1.0, "tick": 1.0, "initiative": 4.0, "prefetch": 24.0}
+    thresholds = {"tick": _tick_stale_hours(_mind())}
     telemetry_dict = await _telemetry.to_dict(thresholds) if _telemetry else {}
 
     tick_age = None

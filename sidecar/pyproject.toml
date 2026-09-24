@@ -9,7 +9,8 @@ description = "Persistent identity, memory and autonomy for AI agents"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+# The adapter declares the same range; the documented install picks a 3.12 interpreter.
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -23,15 +24,20 @@ dependencies = [
     "cryptography>=42.0",
     "pypdf>=6.18.0,<7",
     "psutil>=7.2.2,<8; sys_platform == 'darwin'",
+    # The vector store is part of every install: a sidecar without it has no semantic
+    # recall, and the documented three commands must produce one that does.
+    # Metadata-only health scans use the async streaming query API validated on 0.30.2.
+    "lancedb>=0.30.2",
+    "pyarrow>=15.0",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
 graph = ["neo4j>=5.18"]
-# Metadata-only health scans use the async streaming query API validated on 0.30.2.
-vectors = ["sentence-transformers>=3.0", "pandas>=2.0", "pyarrow>=15.0", "lancedb>=0.30.2"]
+# In-process embeddings and reranking; a remote OpenAI-compatible endpoint needs none of it.
+vectors = ["sentence-transformers>=3.0"]
 hermes = ["protagine-hermes>=1.8.4,<2"]
 mcp = ["mcp[cli]>=1.0,<2"]
-lancedb = ["lancedb>=0.30.2", "pyarrow>=14.0", "pandas>=2.0"]
 extraction = ["PyMuPDF>=1.24", "beautifulsoup4>=4.12"]
 video = ["av==18.1.0"]
 dev = [

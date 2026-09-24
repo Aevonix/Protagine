@@ -1,6 +1,6 @@
 """``protagine doctor``: install checks.
 
-Six things can be wrong with an install, and each has one remedy:
+Seven things can be wrong with an install, and each has one remedy:
 
 - the Hermes version is outside the supported range
 - ``protagine.yaml``, ``api.key`` or the Hermes keys ``init`` writes are missing
@@ -8,6 +8,8 @@ Six things can be wrong with an install, and each has one remedy:
 - ``pip check`` in Hermes' environment is not clean
 - the sidecar is not reachable with the key
 - the plugin is not loaded (not enabled, or not installed where Hermes runs)
+- semantic recall is configured (``router.embed_url``) but the embedder is not serving
+- the vector store library is missing from the sidecar's own environment
 
 Local checks read files and run Hermes' Python; the sidecar check talks HTTP
 and degrades to a failure with the start command when the sidecar is down.
@@ -88,10 +90,14 @@ def check_config() -> CheckResult:
         return CheckResult("config", FAIL, detail=f"{path} is missing",
                            remedy="run 'protagine init'")
     try:
-        load_config(required=True)
+        config = load_config(required=True)
     except ConfigError as exc:
         return CheckResult("config", FAIL, detail=str(exc), remedy=f"fix {path} and re-run 'protagine doctor'")
-    return CheckResult("config", PASS, detail=f"{path} valid")
+    environment = config.get("environment") or {}
+    detail = f"{path} valid"
+    if environment:
+        detail += f" (environment: {len(environment)} entr{'y' if len(environment) == 1 else 'ies'})"
+    return CheckResult("config", PASS, detail=detail)
 
 
 def check_api_key() -> CheckResult:
@@ -272,8 +278,19 @@ def check_plugin_loaded() -> CheckResult:
     return CheckResult("plugin-loaded", PASS, detail="plugin enabled and its entry points registered")
 
 
+def check_vector_store() -> CheckResult:
+    """The vector store library imports in the sidecar's own interpreter."""
+    import sys
+    from protagine.init import VECTOR_STORE_MODULE, VECTOR_STORE_REMEDY, vector_store_available
+    if not vector_store_available():
+        return CheckResult("vector-store", FAIL, detail=f"{VECTOR_STORE_MODULE} is not importable in {sys.executable}",
+                           remedy=VECTOR_STORE_REMEDY)
+    return CheckResult("vector-store", PASS, detail=f"{VECTOR_STORE_MODULE} importable in {sys.executable}")
+
+
 def run_local_checks() -> List[CheckResult]:
     results: List[CheckResult] = []
+    results += _run("vector-store", check_vector_store)
     results += _run("config", check_config)
     results += _run("api-key", check_api_key)
     results += _run("identity", check_identity)
@@ -300,8 +317,12 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
                             remedy="start it with 'protagine service start' (or 'protagine start')")]
     if status != 200 or not isinstance(body, dict):
         return [CheckResult("sidecar", FAIL, detail=f"/v1/host/health returned HTTP {status}")]
-    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN,
-                           detail=f"sidecar at {base_url} reports status={body.get('status', 'unknown')}")]
+    detail = f"sidecar at {base_url} reports status={body.get('status', 'unknown')}"
+    problems = [str(item) for item in body.get("problems") or []]
+    if problems:
+        detail += ": " + "; ".join(problems)
+    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN, detail=detail)]
+    results.append(_check_open_files((body.get("notes") or {}).get("fd_limit")))
     try:
         status, _ = _http_get(f"{base_url}/v1/mind/state", api_key, timeout)
     except Exception as exc:  # noqa: BLE001
@@ -319,6 +340,56 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
     return results
 
 
+def _check_open_files(reported: Any) -> CheckResult:
+    """The running sidecar's open-file limit, as its health reports it."""
+    from protagine.resources import OPEN_FILES
+    text = str(reported or "").strip()
+    if not text:
+        return CheckResult("open-files", SKIP, detail="the sidecar did not report its open file limit")
+    if text == "unlimited":
+        return CheckResult("open-files", PASS, detail="open file limit unlimited")
+    try:
+        limit = int(text)
+    except ValueError:
+        return CheckResult("open-files", SKIP, detail=f"unreadable open file limit {text!r}")
+    if limit < OPEN_FILES:
+        return CheckResult("open-files", WARN,
+                           detail=f"the sidecar runs with {limit} open files; the vector store wants {OPEN_FILES} "
+                                  "under load",
+                           remedy="raise the hard limit of the session the sidecar starts from (the generated "
+                                  "service unit asks for it; 'protagine service install' then 'protagine "
+                                  "service restart' apply it)")
+    return CheckResult("open-files", PASS, detail=f"open file limit {limit}")
+
+
+def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckResult:
+    """When ``router.embed_url`` is set, the running sidecar's embedder answers.
+
+    A configured embedder that failed to initialise leaves the sidecar serving
+    with keyword recall only; this check makes that a failure with the reason.
+    """
+    from protagine.config import load_config
+    config = load_config()
+    if not config.get("router.embed_url"):
+        return CheckResult("semantic-recall", SKIP, detail="off: no router.embed_url in protagine.yaml")
+    base_url = base_url.rstrip("/")
+    try:
+        status, body = _http_get(f"{base_url}/v1/host/embed/health", api_key, timeout)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("semantic-recall", FAIL, detail=f"embed/health not reachable: {exc}")
+    if status != 200 or not isinstance(body, dict):
+        return CheckResult("semantic-recall", FAIL, detail=f"/v1/host/embed/health returned HTTP {status}")
+    if body.get("status") != "ok":
+        return CheckResult(
+            "semantic-recall", FAIL,
+            detail=f"router.embed_url is set but the embedder is not serving: {body.get('error') or 'unknown'}",
+            remedy="check router.embed_url, router.embed_model and router.embed_dims in protagine.yaml against "
+                   "the endpoint (the sidecar log holds the first failure), then 'protagine service restart'")
+    return CheckResult("semantic-recall", PASS,
+                       detail=f"embedder serving (model={body.get('model') or 'unknown'}, dims={body.get('dims')}, "
+                              f"{body.get('latency_ms', 0)} ms)")
+
+
 # ---------------------------------------------------------------------------
 # Engine entry point + reporting
 # ---------------------------------------------------------------------------
@@ -332,7 +403,10 @@ def run_doctor(
     url = protagine_url or default_protagine_url()
     key = api_key if api_key is not None else default_api_key()
     results = run_local_checks()
-    results += _run("sidecar", check_sidecar, url, key, timeout)
+    sidecar = _run("sidecar", check_sidecar, url, key, timeout)
+    results += sidecar
+    if sidecar and sidecar[0].status != FAIL:
+        results += _run("semantic-recall", check_semantic_recall, url, key, timeout)
     return results
 
 

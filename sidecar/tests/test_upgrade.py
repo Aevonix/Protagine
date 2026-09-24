@@ -208,3 +208,60 @@ def test_upgrade_retires_the_drives_milestone_stores_and_tables(installed, capsy
     assert init.retired_tables_present(home) == [] and init.retired_state_present(home) == []
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_adopts_the_ingress_rows_of_retired_producers(installed, capsys):
+    """An earlier line stamped durable intake rows with its client principals; this line
+    authenticates one key, so the upgrade re-scopes those rows to the instance producer and
+    the transport can read, hand off and settle the receipts it journaled. The backup keeps
+    the rows as they were; a second upgrade finds nothing to do."""
+    import sqlite3
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import TransportIngress, ensure_schema
+    home, _ = installed
+    path = home / "protagine-comms.db"
+
+    def opened():
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        return connection, TransportIngress(connection)
+
+    def admit(store, producer, sequence, **changes):
+        return store.admit(**(dict(producer=producer, account_id="account", epoch="epoch", sequence=sequence,
+            event_id="event-" + str(sequence), contact_id="contact", occurred_at=100, journal_ref="journal:" + str(sequence),
+            payload_digest="a" * 64, media_available=True, metadata={"channel": "whatsapp", "sender_ref": "fixture"},
+            now=200) | changes))
+
+    conn, store = opened()
+    ensure_schema(conn)
+    old = [admit(store, "legacy-outreach", n) for n in (1, 2, 3)]
+    other = admit(store, "legacy-bridge", 1, account_id="second-account")
+    store.handoff(producer="legacy-outreach", receipt_ids=[old[1]["receipt_id"]], batch_id="old-batch")
+    for producer, account, watermark in (("legacy-outreach", "account", 3), ("legacy-bridge", "second-account", 1)):
+        store.observe_coverage(producer=producer, account_id=account, epoch="epoch", connected_since=50,
+                               observed_at=201, watermark=watermark, connected=True, unavailable=0, now=201)
+    conn.close()
+    assert init.pending_ingress_adoption(home) == [
+        "protagine-comms.db:transport_ingress (4 receipts from 2 retired producers)",
+        "protagine-comms.db:transport_ingress_coverage (2 rows)"]
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    assert "backup taken" in out
+    assert ("migration applied: protagine-comms.db: 4 transport ingress receipts and 2 coverage rows re-scoped "
+            "from retired producers (legacy-bridge, legacy-outreach) to the instance key") in out
+    conn, store = opened()
+    assert {row[0] for row in conn.execute("SELECT DISTINCT producer FROM transport_ingress")} == {KEY_PRINCIPAL}
+    assert {row[0] for row in conn.execute("SELECT DISTINCT producer FROM transport_ingress_coverage")} == {KEY_PRINCIPAL}
+    ids = [row["receipt_id"] for row in old]
+    assert [row["state"] for row in store.receipts(producer=KEY_PRINCIPAL, receipt_ids=ids)] == ["admitted", "handed_off", "admitted"]
+    assert store.handoff(producer=KEY_PRINCIPAL, receipt_ids=[ids[0]], batch_id="new-batch")["may_dispatch"] is True
+    assert store.receipts(producer=KEY_PRINCIPAL, receipt_ids=[other["receipt_id"]])[0]["state"] == "admitted"
+    assert store.coverage(producer=KEY_PRINCIPAL, account_id="account", contact_id="nobody", since=150, now=203)["observed"]
+    conn.close()
+    backup = next(p for p in (home / "backups").iterdir() if (p / "protagine-comms.db").exists())
+    with sqlite3.connect(backup / "protagine-comms.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM transport_ingress WHERE producer='legacy-outreach'").fetchone()[0] == 3
+    assert init.pending_ingress_adoption(home) == []
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    assert "nothing to do" in capsys.readouterr().out

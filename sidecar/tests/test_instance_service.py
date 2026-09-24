@@ -83,7 +83,7 @@ def test_exact_instance_install_start_stop_and_uninstall(service_factory, platfo
         assert service.definition.stat().st_mode & 0o777 == 0o600
         assert service.log.stat().st_mode & 0o777 == 0o600
         assert b'PROTAGINE_API_KEY' not in service.definition.read_bytes()
-        monkeypatch.setattr(service, 'healthy', lambda: True)
+        monkeypatch.setattr(service, 'health', lambda: {'status': 'ok', 'problems': []})
         assert service.start()['ready']
     other_bytes = other.definition.read_bytes()
     first.state.joinpath('memory.db').write_bytes(b'private memory')
@@ -132,7 +132,7 @@ def test_unowned_definition_and_live_environment_change_are_preserved(service_fa
     assert not service.definition.exists()
     service.link.unlink()
     service.install()
-    monkeypatch.setattr(service, 'healthy', lambda: True)
+    monkeypatch.setattr(service, 'health', lambda: {'status': 'ok', 'problems': []})
     service.start()
     before = service.definition.read_bytes()
     service.python = '/new/python'
@@ -145,17 +145,38 @@ def test_running_without_http_readiness_is_not_success(service_factory, monkeypa
     make, manager = service_factory
     service = make()
     service.install()
-    monkeypatch.setattr(service, 'healthy', lambda: False)
+    monkeypatch.setattr(service, 'health', lambda: None)
     with pytest.raises(ServiceError, match='HTTP-ready'):
         service.start(timeout=.01)
     assert service.status()['running']
+
+
+def test_start_and_status_report_the_served_health_verdict(service_factory, monkeypatch, capsys):
+    """Ready is the sidecar answering; what it answers travels with the result, in its own words."""
+    make, manager = service_factory
+    service = make()
+    service.install()
+    problems = ['semantic recall is off: the embedder (provider=openai_api, model=m) did not initialise: boom']
+    monkeypatch.setattr(service, 'health', lambda: {'status': 'degraded', 'problems': problems})
+    result = service.start()
+    assert result['ready'] and result['running']
+    assert result['health'] == 'degraded' and result['problems'] == problems
+    from protagine.services import instance as module
+    monkeypatch.setattr(module.InstanceService, 'selected', classmethod(lambda cls: service))
+    module.manage('status')
+    printed = json.loads(capsys.readouterr().out)
+    assert printed['ready'] is True and printed['health'] == 'degraded' and printed['problems'] == problems
+    monkeypatch.setattr(service, 'health', lambda: None)
+    module.manage('status')
+    printed = json.loads(capsys.readouterr().out)
+    assert printed['ready'] is False and printed['health'] is None and printed['problems'] == []
 
 
 def test_launchd_stop_waits_for_native_bootout_completion(service_factory, monkeypatch):
     make, _ = service_factory
     service = make(platform='darwin')
     service.install()
-    monkeypatch.setattr(service, 'healthy', lambda: True)
+    monkeypatch.setattr(service, 'health', lambda: {'status': 'ok', 'problems': []})
     service.start()
     real_status = service.status
     observations = []
@@ -250,3 +271,14 @@ def test_existing_service_keeps_its_identity_during_environment_upgrade(service_
     assert original.link.resolve() == definition
     assert b'protagine' in definition.read_bytes()
     assert old.name == original.name
+
+
+def test_generated_units_ask_for_the_open_files_the_vector_store_needs(service_factory):
+    from protagine.resources import OPEN_FILES
+    make, _ = service_factory
+    payload = plistlib.loads(make('files', 'darwin').render())
+    assert payload['SoftResourceLimits'] == {'NumberOfFiles': OPEN_FILES}
+    assert payload['HardResourceLimits'] == {'NumberOfFiles': OPEN_FILES}
+    assert OPEN_FILES >= 4096
+    unit = make('files', 'linux').render().decode()
+    assert f'\nLimitNOFILE={OPEN_FILES}\n' in unit
