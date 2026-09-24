@@ -302,6 +302,27 @@ def test_contact_facing_dismissals_and_notices_and_notes_are_not_the_agents_feel
         "an ask the owner let lapse is a dismissal"
 
 
+def test_small_talk_is_no_novel_topic_and_novelty_alone_stays_calm(world):
+    """A novel topic is an owner turn about something (three or more content words) memory knew nothing
+    about: acknowledgements are not topics. Novelty alone never lifts curiosity above 0.3, so a chatty
+    owner on a fresh memory leaves the agent at most somewhat curious; other inputs still add."""
+    for text in ("ok", "thanks", "yes K7F", "sounds good", "lol", "morning", "sure, go ahead", "cool", "no worries"):
+        world.affect.note_novel_topic(text, at=world.now)
+        world.shift(minutes=3)
+        world.update()
+    assert world.level("affect.curiosity") == 0.0 and world.affect.view().line == ""
+    for n in range(9):
+        world.affect.note_novel_topic(f"When does the ferry number {n} leave the harbour on Fridays?", at=world.now)
+        world.shift(minutes=3)
+        world.update()
+    assert world.level("affect.curiosity") == pytest.approx(0.3, abs=1e-6)
+    view = world.affect.view()
+    assert view.line == "Mood: somewhat curious." and view.score_factor(candidate(drive="curiosity")) <= 1.3 + 1e-9
+    world.record("interest", "moderate", "ferry timetables")
+    world.update()
+    assert world.level("affect.curiosity") == pytest.approx(0.5, abs=1e-6), "an interest appraisal adds above it"
+
+
 # -- 2-4. cap, same-turn dedupe, age adjustment -------------------------------------------------------
 
 def test_levels_never_exceed_the_cap_and_causes_stay_at_five(world):

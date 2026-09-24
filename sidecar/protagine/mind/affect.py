@@ -68,6 +68,7 @@ HALF_LIVES = {"frustration": 86400.0, "worry": 21600.0, "curiosity": 43200.0, "s
 # stay at the switch threshold for hours instead of dropping under it the first second: M6 plan R1).
 FAILURE, CORRECTION, SUCCESS, MISS, NOVEL, DISMISSAL = 0.3, 0.2, 0.3, 0.2, 0.1, 0.25
 DEADLINE_STEP, DEADLINE_CAP = 0.1, 0.3
+NOVEL_WORDS, NOVEL_CAP = 3, 0.3   # a novel topic has 3+ content words; novelty alone never lifts curiosity above 0.3
 APPRAISAL_INTENSITY = {"low": 0.1, "moderate": 0.2}
 APPRAISAL_TARGET = {"frustration": "frustration", "interest": "curiosity", "satisfaction": "satisfaction"}
 SUCCESS_KINDS = frozenset({"succeeded", "verified", "useful", "resolved"})
@@ -669,8 +670,11 @@ class Affect:
                 if key is None:
                     continue
                 delta = tally(event, key, amount) if event.turn_id else amount
+                delta *= 0.5 ** (age / HALF_LIVES[dimension])
+                if event.kind == "novel":
+                    delta = min(delta, NOVEL_CAP - self._level(key))
                 if delta > 0:
-                    self._add(key, dimension, delta * 0.5 ** (age / HALF_LIVES[dimension]), event.cause(), now,
+                    self._add(key, dimension, delta, event.cause(), now,
                               topic=event.topic if dimension == "frustration" else "")
         # Without the active intentions a started obligation looks unstarted: no deadline worry this tick.
         for item in inputs.due_soon if "active intentions" not in inputs.unread else ():
@@ -770,10 +774,11 @@ class Affect:
             return []
 
     def note_novel_topic(self, text: Any, at: Optional[datetime] = None) -> None:
-        """An owner turn on a topic memory knew nothing about: a little curiosity at the next update."""
+        """An owner turn on a topic memory knew nothing about: a little curiosity at the next update.
+        Small talk ("ok", "thanks", "yes K7F") names no topic: fewer than ``NOVEL_WORDS`` content words."""
         try:
             text = " ".join(str(text or "").split())
-            if not self.state_on or not text:
+            if not self.state_on or len(topic_words(text)) < NOVEL_WORDS:
                 return
             at = _aware(at or self.clock())
             ref = (f"novel:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}@"

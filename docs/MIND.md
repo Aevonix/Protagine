@@ -200,7 +200,7 @@ five causes. Nothing about it calls a model.
 |---|---|---|---|
 | frustration, per topic | `affect.frustration:<topic>` | 24 h | +0.3 for a failed or blocked task on the topic or an owner-reported failure; +0.2 for a correction (verdict `wrong` or `not_useful`, a reported correction, an annoyance appraisal); +0.1 / +0.2 for a low / moderate frustration appraisal; halved by a success on the topic (a check-verified result, a `useful` verdict, a reported success, a repair receipt) |
 | worry | `affect.worry` | 6 h | +0.2 for a duty-domain expectation miss; +0.1 per tick for each owed obligation due within 24 h and not started (this rule never lifts worry above 0.3) |
-| curiosity | `affect.curiosity` | 12 h | +0.2 for a knowledge-domain miss; +0.1 / +0.2 for an interest appraisal; +0.1 for an owner turn on a topic memory knew nothing about |
+| curiosity | `affect.curiosity` | 12 h | +0.2 for a knowledge-domain miss; +0.1 / +0.2 for an interest appraisal; +0.1 for an owner turn about a topic (three or more content words, so small talk is none) memory knew nothing about (this rule never lifts curiosity above 0.3) |
 | satisfaction | `affect.satisfaction` | 12 h | +0.3 for a check-verified success or a `useful` verdict; +0.1 / +0.2 for a satisfaction appraisal |
 
 Recent dismissals (an owner-reported "not now", a `dismissed` or `ignored`
