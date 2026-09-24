@@ -147,7 +147,7 @@ async def mind_call(method: str, path: str, **kwargs):
 
 def claim_rows(fx):
     with closing(fx.ledger._connect()) as conn:
-        return [tuple(row) for row in conn.execute("SELECT id, duplicate_of, retracted_by FROM source_claims")]
+        return [tuple(row) for row in conn.execute("SELECT id, retracted_by FROM source_claims")]
 
 
 async def told(fx, turn_id, contact_id, session, text, value, **extra) -> str:

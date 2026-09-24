@@ -46,7 +46,7 @@ from .concerns import SETTLED_FOR
 
 logger = logging.getLogger(__name__)
 
-NIGHT_TASKS = ("narrative", "contradictions", "dedupe", "digests", "episodes")   # run order, cheapest first
+NIGHT_TASKS = ("narrative", "contradictions", "digests", "episodes")   # run order, cheapest first
 TASK_NARRATIVE = "mind_consolidate_narrative"
 TASK_DIGEST = "mind_consolidate_digest"
 TASK_EPISODE = "mind_consolidate_episode"
@@ -67,8 +67,8 @@ CITE = re.compile(r"\[([^\[\]]+)\]$")                                           
 RUN_DEADLINE_S = 900.0
 DEFAULT_DEADLINE = 60.0
 FINDING_EVENTS = frozenset({"finding", "outcome_done", "goal_adopted"})
-STAGES = {"narrative": "narrative_delta", "contradictions": "contradictions", "dedupe": "dedupe",
-          "digests": "digests", "episodes": "episodes"}
+STAGES = {"narrative": "narrative_delta", "contradictions": "contradictions", "digests": "digests",
+          "episodes": "episodes"}
 
 NARRATIVE_SYSTEM = (
     "You maintain one section of an agent's self-narrative, 'recent: the last 7 days'. You are given the "
@@ -425,9 +425,11 @@ class Consolidation:
         """The person-scoped claims recall would treat as current: not retracted, not superseded, valid now."""
         from protagine.beliefs.source_time import MemoryTimeQuery
         query = MemoryTimeQuery("current", now.astimezone(timezone.utc).isoformat())
+        from protagine.beliefs.source_projection import one_witness_per_value
         rows = self._projection()._rows(conn, contact_id, "", time_query=query, distinct_values=False, limit=200)
-        return [row for row in rows if not row.get("superseded_by") and not row.get("retracted_by")
-                and not str(row.get("turn_id") or "").startswith("mind:")]
+        # Claim dedupe happens here, where the night consumes claims: one witness per value, the newest.
+        return one_witness_per_value(row for row in rows if not row.get("superseded_by") and not row.get("retracted_by")
+                                     and not str(row.get("turn_id") or "").startswith("mind:"))
 
     @staticmethod
     def _scalar(claim: Mapping[str, Any]) -> bool:
@@ -761,31 +763,6 @@ class Consolidation:
             logger.warning("contradiction question not withdrawn (%s)", type(error).__name__)
             return False
         return True
-
-    # -- stage 3: dedupe -------------------------------------------------------------------------
-
-    def dedupe(self, night: Night, now: datetime) -> None:
-        """Identical live scalar claims (same key, value and validity) fold into the earliest."""
-        marked = 0
-        with self._conn() as conn, conn:
-            for cid in self._contacts_with_claims(conn):
-                buckets: Dict[Tuple[str, str, str, str, str], List[Dict[str, Any]]] = {}
-                for claim in self._live_claims(conn, cid, now):
-                    if not self._scalar(claim):
-                        continue
-                    bucket = (str(claim["subject_key"]), str(claim["predicate"]), self._norm(claim["value"]),
-                              claim["valid_from"] or "", claim["valid_to"] or "")
-                    buckets.setdefault(bucket, []).append(dict(claim))
-                for rows in buckets.values():
-                    if len(rows) < 2:
-                        continue
-                    rows.sort(key=lambda c: (c["valid_from"] or "", c["recorded_at"] or "", c["id"]))
-                    keep = rows[0]
-                    for extra in rows[1:]:
-                        cursor = conn.execute("UPDATE source_claims SET duplicate_of=? WHERE id=? AND duplicate_of IS NULL",
-                                              (keep["id"], extra["id"]))
-                        marked += cursor.rowcount
-        night.counts["duplicates"] = marked
 
     # -- stage 4: per-contact digests --------------------------------------------------------------
 

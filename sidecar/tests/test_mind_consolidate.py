@@ -180,7 +180,7 @@ class Fixture:
     def claims(self):
         with closing(self.ledger._connect()) as conn:
             return [dict(row) for row in conn.execute(
-                "SELECT id, turn_id, subject_key, predicate, value_key, duplicate_of, retracted_by, data_json "
+                "SELECT id, turn_id, subject_key, predicate, value_key, retracted_by, data_json "
                 "FROM source_claims ORDER BY rowid")]
 
     def assertions(self, query, *, session_id="fresh-session", contact_id=OWNER):
@@ -392,43 +392,40 @@ async def test_a_contradiction_between_a_contacts_own_claims_names_the_contact(f
 
 
 # ---------------------------------------------------------------------------
-# 4. Dedupe: identical live claims fold into the earliest; erasure revives the witnesses
+# 4. Claim dedupe where claims are consumed: one witness per value, newest; the store is untouched
 # ---------------------------------------------------------------------------
 
-async def test_identical_claims_fold_and_revive_when_the_canonical_source_is_erased(fx):
-    ids = [await fx.fact(turn, OWNER, f"session-{turn}", "My office is room 4.", "room 4", dated=False)
-           for turn in ("turn-1", "turn-2", "turn-3")]
+async def test_a_repeated_claim_reaches_the_digest_once_as_its_newest_witness_and_nothing_is_folded(fx):
+    for turn in ("turn-1", "turn-2", "turn-3"):
+        await fx.fact(turn, CONTACT, f"session-{turn}", "My office is room 4.", "room 4", dated=False)
+        fx.shift(minutes=1)
+    before = fx.claims()
+    newest = before[-1]["id"]
     night = await fx.mind.consolidate()
-    assert night["counts"]["duplicates"] == 2
-    rows = {row["id"]: row for row in fx.claims()}
-    canonical = [row for row in rows.values() if row["duplicate_of"] is None]
-    assert len(canonical) == 1 and all(row["duplicate_of"] == canonical[0]["id"] for row in rows.values()
-                                       if row["id"] != canonical[0]["id"])
-    bundles = [b for b in fx.assertions("office") if b["status"] == "source_assertion"]
-    assert len(bundles) == 1 and len(bundles[0]["assertions"]) == 1        # one witness in recall
-    assert (await fx.mind.consolidate())["counts"]["duplicates"] == 0     # idempotent
-
-    fx.ledger.erase_sources(contact_id=OWNER, turn_ids=[canonical[0]["turn_id"]])
-    survivors = fx.claims()
-    assert len(survivors) == 2 and all(row["duplicate_of"] is None for row in survivors)   # revived
-    assert (await fx.mind.consolidate())["counts"]["duplicates"] == 1     # folded again the next night
-    assert set(ids) > {row["id"] for row in fx.claims()}
+    assert "dedupe" not in night["done"] and "duplicates" not in night["counts"]
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_DIGEST][0][-1]["content"]
+    assert prompt.count(": room 4 |") == 1 and newest in prompt           # recall's distinct_values rule
+    assert fx.contacts.writes[-1][2] == [newest]
+    assert fx.claims() == before                                           # no claim row is rewritten
+    with closing(fx.ledger._connect()) as conn:
+        assert "duplicate_of" not in {row[1] for row in conn.execute("PRAGMA table_info(source_claims)")}
 
 
-async def test_preferences_and_differing_validity_are_never_folded(fx):
+async def test_the_extractors_prior_claims_offer_one_witness_per_value_and_keep_every_preference(fx):
+    for turn in ("turn-1", "turn-2", "turn-3"):
+        await fx.fact(turn, OWNER, f"session-{turn}", "My office is room 4.", "room 4", dated=False)
+        fx.shift(minutes=1)
+    await fx.fact("turn-4", OWNER, "session-turn-4", "My office is room 7.", "room 7", dated=False)
     text = "I prefer green tea after lunch."
     for turn in ("pref-1", "pref-2"):
         await fx.fact(turn, OWNER, f"s-{turn}", text, text, predicate="drink", memory_kind="preference",
                       representation="preference", dated=False)
-    # The same value with two different validity intervals: both stay.
-    await fx.fact("dated-1", OWNER, "s-d1", "My office is room 4.", "room 4")
-    await fx.fact("dated-2", OWNER, "s-d2", "Since 2026-05-03 my office is room 4.", "room 4",
-                  valid_from_text="2026-05-03")
-    night = await fx.mind.consolidate()
-    assert night["counts"]["duplicates"] == 0
-    rows = fx.claims()
-    assert len(rows) == 4 and all(row["duplicate_of"] is None for row in rows)
-    assert {json.loads(r["data_json"]).get("representation") for r in rows if r["predicate"] == "drink"} == {"preference"}
+    rows = SourceClaimProjection(fx.ledger).prior({"contact_id": OWNER, "session_id": "s-new", "turn_id": "t-new"},
+                                                  {"role": "user", "content": "My office is room 9, and green tea after lunch."})
+    offices = [row for row in rows if row["predicate"] == "office location"]
+    assert sorted(row["value"] for row in offices) == ["room 4", "room 7"]
+    assert [row["turn_id"] for row in offices if row["value"] == "room 4"] == ["turn-3"]     # the newest witness
+    assert len([row for row in rows if row["predicate"] == "drink"]) == 2  # quoted preferences are never folded
 
 
 # ---------------------------------------------------------------------------
@@ -933,13 +930,13 @@ async def test_the_whole_night_is_bounded_and_a_failing_stage_does_not_stop_the_
 
     fx.mind.router = NightRouter()
     def boom(night, now):
-        raise RuntimeError("dedupe exploded")
-    fx.mind.consolidation.dedupe = boom
+        raise RuntimeError("contradictions exploded")
+    fx.mind.consolidation.contradictions = boom
     for index in range(3):
         fx.turn(f"c-{index}", CONTACT, "sms-p02", f"Question {index}?", "Answer.")
     night = await fx.mind.consolidate()
-    assert night["errors"] == ["dedupe: RuntimeError"] and night["counts"]["episodes"] == 1
-    assert night["done"] == ["narrative", "contradictions", "digests", "episodes"]
+    assert night["errors"] == ["contradictions: RuntimeError"] and night["counts"]["episodes"] == 1
+    assert night["done"] == ["narrative", "digests", "episodes"]
 
 
 # ---------------------------------------------------------------------------
