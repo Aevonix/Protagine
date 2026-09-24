@@ -8,7 +8,7 @@ from jsonschema import Draft202012Validator, ValidationError
 import pytest
 
 from protagine.beliefs import source_claims
-from protagine.self_model import appraisals, judgments
+from protagine.self_model import appraisals
 from test_memory_formation import PROCEDURE, procedure
 
 
@@ -81,23 +81,6 @@ def test_long_sources_still_select_bounded_spans():
             evidence = branch['properties']['evidence']
             assert evidence['maxLength'] == 500
             assert ('const' in evidence) is (size == 500)
-
-
-def test_judgment_schema_has_exact_abstain_retain_revise_shapes():
-    check = validator(judgments)
-    check.validate({'action': 'abstain'})
-    check.validate({'action': 'retain', 'topic': 'scanner procedure', 'supersedes': 1})
-    revise = {'action': 'revise', 'topic': 'scanner procedure', 'supersedes': None,
-              'stance': 'Try the reported steps under the stated conditions.',
-              'reason': 'The report supplies a conditional procedure for that failure.',
-              'certainty': 'tentative', 'support': ['current-handle'], 'contrary': []}
-    check.validate(revise)
-    for bad in [{'action': 'abstain', 'reason': 'extra'},
-                {**revise, 'certainty': 'certain'}, {**revise, 'support': []},
-                {**revise, 'supersedes': True},
-                {k: v for k, v in revise.items() if k != 'supersedes'}]:
-        with pytest.raises(ValidationError):
-            check.validate(bad)
 
 
 def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims():

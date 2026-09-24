@@ -4,7 +4,9 @@ This is a portable working perspective, not feelings, a worldview or authority.
 Original owner words stay in the canonical source ledger. Explicit owner
 preferences are captured here; the legacy automatic opinion revisions and the
 attention snapshot left with the drives milestone (``protagine upgrade`` drops
-their tables after the backup).
+their tables after the backup). The agent's opinions live in the one opinion
+store (``judgments.SelfJudgments``): ``status`` reports them, and they reach
+conversation through the mind's stance section, not through ``brief``.
 """
 from __future__ import annotations
 
@@ -167,7 +169,6 @@ class SelfPerspective:
     def status(self):
         return {'kind': 'operational_working_perspective', 'preferences': self.preferences(),
                 'corrections': self.preferences(history=True),
-                'judgments_enabled': self.judgments.enabled,
                 'judgments': self.judgments.revisions(), 'judgment_history': self.judgments.revisions(history=True),
                 'judgment_processing': self.judgments.processing(),
                 'appraisals': self.appraisals.view(self.owner_id, viewer_contact_id=self.owner_id,
@@ -183,7 +184,4 @@ class SelfPerspective:
                     source_ids.append(pref['source_turn_id'])
         if lines:
             lines.append('Only explicit owner preferences adjust these priorities. Runtime history establishes neither output quality nor the competence of the current model; it grants no authority.')
-        judgments = self.judgments.brief(query, source_ids=source_ids)
-        if judgments:
-            lines.append(judgments)
         return '\n'.join(lines)

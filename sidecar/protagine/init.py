@@ -791,7 +791,7 @@ RETIRED_STATE = (
 # the migrations keeps their rows; the upgrade drops them from the live store.
 RETIRED_TABLES: dict[str, tuple[str, ...]] = {
     "protagine-goals.db": ("subtasks", "goal_dag_versions"),
-    "turn-idempotency.db": ("self_opinion_revisions", "self_attention"),
+    "turn-idempotency.db": ("self_opinion_revisions", "self_attention", "self_judgment_runs"),
 }
 INITIATIVES_DB = "initiatives.db"
 COMMS_DB = "protagine-comms.db"
