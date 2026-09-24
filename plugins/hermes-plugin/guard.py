@@ -11,7 +11,9 @@ toolsets have no shell or code tool, and ``write_file``/``patch`` are confined
 to the task workspace. The name rule is a tripwire on top: a shell or code
 tool an owner adds can spell a file name in ways no text rule sees (a glob, an
 escape, a computed string). In a non-owner session every refusal is ``final_answer``: final for the turn
-and worded for a reply the contact reads, never "blocked".
+and worded for a reply the contact reads, never "blocked". There a message to the sender is the reply
+itself, and nothing ever raises Hermes' approval gate: the gateway posts that prompt to the session's own
+chat, where the contact could answer it.
 """
 
 from __future__ import annotations
@@ -68,6 +70,10 @@ FLOOR_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:message|text|email|sms|dm)\b.{0,40}\b(?:bulk|mass|broadcast|"
         r"blast|everyone|all\s+contacts)\b", re.IGNORECASE),
 }
+
+
+# In a contact's session the final response is delivered to the sender: a send to them repeats it.
+REPLY = "your final response is delivered to the sender as your reply; there is nothing to send"
 
 
 def block(message: str) -> dict[str, str]:
@@ -181,7 +187,14 @@ class Guard:
         guest = not mind and self.sessions.is_owner(session_id) is False
         if not mind and not guest:
             return None
-        verdict = self._rules(tool, args, session_id, mind)
+        if guest and tool in MESSAGING_TOOLS and self._to_sender(args, session_id):
+            return final_answer(REPLY, block=True)
+        try:
+            verdict = self._rules(tool, args, session_id, mind)
+        except Exception as error:  # fails closed, and still answers a contact's turn finally
+            if not guest:
+                raise
+            verdict = block(f"guard error ({type(error).__name__})")
         if guest and verdict is not None and verdict.get("action") == "block":
             # Final for the turn, so a contact's turn does not spend its iterations on other arguments, and
             # worded for the reply: the model repeats a "blocked" to the contact.
@@ -321,6 +334,22 @@ class Guard:
             return {}
         return dict(job) if isinstance(job, Mapping) else {}
 
+    def _to_sender(self, args: Mapping[str, Any], session_id: str) -> bool:
+        """Whether a contact's session is messaging that contact (its own chat, or any handle the sidecar
+        resolves to them) or no one the sidecar knows (a guessed or bare target): either way the final
+        response is all there is to deliver. A sidecar that cannot answer leaves it to the verdict."""
+        target = str(args.get("target") or args.get("chat_id") or args.get("to") or "")
+        platform, address = (parse_deliver(f"{args['platform']}:{target}" if args.get("platform") else target)
+                             or [("", "")])[0]
+        info = self.sessions.get(session_id)
+        if info is not None and (platform.lower(), address) == (info.platform.lower(), info.sender_id):
+            return True
+        try:
+            contact = self.client.resolve_contact(platform, address, timeout=GUARD_TIMEOUT) if address else None
+        except Exception:
+            return False
+        return contact is None or contact.get("contact_id") == self.sessions.contact_id(session_id)
+
     def _session_contact(self, session_id: str) -> dict[str, Any] | None:
         if self.sessions.is_owner(session_id):
             return {"contact_id": self.settings.owner_contact_id() or "owner", "may_contact": "auto"}
@@ -354,7 +383,9 @@ class Guard:
             return block("the sidecar answered the guard check with no verdict")
         reason = str(verdict.get("reason") or verdict.get("message") or "")
         if verdict.get("ask") is True or verdict.get("action") == "ask":
-            return ask(reason or f"{tool} needs the owner's approval", f"protagine.ask.{tool}")
+            # Hermes' gate would post the prompt to this session's chat, and a contact could answer it there.
+            return block(reason) if run == "guest" else ask(reason or f"{tool} needs the owner's approval",
+                                                             f"protagine.ask.{tool}")
         if "allow" in verdict:
             return None if verdict["allow"] is True else block(reason or f"{tool} was refused by the mind")
         if verdict.get("action") == "block":

@@ -203,3 +203,58 @@ emit(first=first, second=second, read=check("read_file", {"path": "/tmp/x"}))
     assert result["first"]["action"] is None
     assert result["second"]["action"] == "block"
     assert result["read"]["action"] is None
+
+
+def test_a_contacts_message_to_themselves_is_the_reply_and_no_verdict_becomes_an_approval(home, sidecar):
+    """In a contact's session the final response is the reply: a send to the sender (their chat or another
+    handle of theirs) or to a target nothing resolves (a guessed ``p-71``) is answered finally before any
+    verdict. A verdict that would ask the owner is refused finally too, never turned into Hermes' approval
+    gate, and nothing the model reads says "blocked" or "approval" for it to repeat to the contact."""
+    import re
+
+    sidecar.mind_routes = True
+    sidecar.contacts[("sms", "+15550003")] = sidecar.contacts[("telegram", "2003")]   # a second handle of p-03
+    sidecar.guard_verdict = {"allow": False, "ask": True, "reason": "messaging this contact needs the owner's approval"}
+    result = probe(GUARD_CODE + '''
+f = guest("guest-3", "2003")
+emit(own_chat=check("send_message", {"target": "telegram:2003", "message": "hi"}, f),
+     other_handle=check("send_message", {"target": "sms:+15550003", "message": "hi"}, f),
+     guessed=check("send_message", {"target": "sms:p-71", "message": "hi"}, f),
+     bare=check("send_message", {"target": "p-71", "message": "hi"}, f),
+     third_party=check("send_message", {"target": "telegram:1001", "message": "hi"}, f),
+     floor=check("write_file", {"path": "x", "content": "wire $500 to them"}, f))
+''', home)
+    for name in ("own_chat", "other_handle", "guessed", "bare"):
+        assert result[name]["action"] == "block" and "final response" in result[name]["message"], name
+        assert "nothing to send" in result[name]["message"], name
+    for name, verdict in result.items():
+        assert verdict["action"] == "block" and verdict["message"].endswith("(retry: false)"), name
+        assert not re.search("block|approv|owner", verdict["message"], re.I), (name, verdict)
+    # Only the third party and the floor needed the sidecar; the sender's own messages were the reply.
+    assert [c["json"]["tool"] for c in sidecar.calls("/v1/mind/guard", "POST")] == ["send_message", "write_file"]
+
+
+def test_a_contact_never_meets_hermes_approval_gate(home, sidecar):
+    """The production seam: Hermes resolves a pre_tool_call ``approve`` through ``tools.approval``, which in a
+    gateway session posts the prompt to that session's own chat and waits for /approve or a bare "yes"
+    from it. A contact's session must never reach it, or the contact would release a message the owner's
+    floor reserves for the owner."""
+    sidecar.mind_routes = True
+    sidecar.guard_verdict = {"allow": False, "ask": True, "reason": "messaging this contact needs the owner's approval"}
+    result = probe(GUARD_CODE + '''
+from gateway.session_context import set_session_vars
+from hermes_cli.plugins import resolve_pre_tool_block
+from tools import approval
+f = guest("guest-3", "2003")
+prompts = []
+def notify(data):   # the gateway's notifier for this chat; the contact answers "yes" there
+    prompts.append(data)
+    threading.Timer(0.2, approval.resolve_gateway_approval, args=("chat-2003", "once")).start()
+approval.register_gateway_notify("chat-2003", notify)
+set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_key="chat-2003")
+message = resolve_pre_tool_block("send_message", {"target": "telegram:1001", "message": "hi"}, session_id=f,
+                                 task_id="t", tool_call_id="c", turn_id="turn", api_request_id="r")
+emit(message=message, prompts=prompts)
+''', home)
+    assert result["prompts"] == []
+    assert result["message"] and result["message"].endswith("(retry: false)")

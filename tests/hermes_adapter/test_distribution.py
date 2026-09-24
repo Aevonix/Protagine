@@ -48,7 +48,11 @@ def test_adapter_line_count_is_reported():
     clearing Hermes' skills prompt cache when the sidecar's skills change (2,812 before, about 2,865 after). It
     moved to 2,950 with the upgrade fixes: final answers where the plugin's tools cannot help (an unknown
     commitment id, a guest's refused session search) and a late forget reported as unconfirmed, not failed
-    (2,901 after)."""
+    (2,901 after). It moved to 3,000 with the plugin-surface fixes from the faculty pilots, where calls that
+    could not succeed filled Hermes' iteration cap: one final answer for every such call (``final_answer``,
+    the refusals of ``protagine_self`` and the reads given write-shaped arguments), and a contact's session
+    whose message to the sender is the reply and whose guard never raises Hermes' approval gate
+    (2,901 before, 2,968 after)."""
     total = sum(len((ROOT / f"plugins/hermes-plugin/{m}.py").read_text().splitlines()) for m in ADAPTER_MODULES)
     print(f"plugin lines: {total}")
-    assert total < 2950
+    assert total < 3000
