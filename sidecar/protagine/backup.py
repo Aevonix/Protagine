@@ -3,7 +3,8 @@
 Creates a compressed, optionally encrypted archive of all Protagine state:
 - All SQLite databases in PROTAGINE_STATE_DIR (auto-discovered)
 - Original source images referenced by the canonical ledger snapshot
-- The instance identity (instance-id, identity.yaml, protagine.yaml, api.key)
+- The instance identity (instance-id, identity.yaml, protagine.yaml; api.key only in an encrypted
+  archive, and an unencrypted one carries protagine.yaml with its credential settings redacted)
 - Config files (scrubbed of secrets)
 - LanceDB vector store
 
@@ -75,7 +76,7 @@ def create_full_backup(
 
         db_manifest = _snapshot_databases(state_dir, staging / "databases")
         source_images = _snapshot_source_images(state_dir, staging)
-        _snapshot_identity(state_dir, staging / "identity")
+        _snapshot_identity(state_dir, staging / "identity", secrets=passphrase is not None)
         _snapshot_config(state_dir, staging / "config")
 
         if include_vectors:
@@ -191,6 +192,8 @@ def restore_full_backup(
         if identity_dir.is_dir():
             _restore_directory(identity_dir, state_dir, keep=keep)
             summary["identity"] = True
+        # Only an encrypted archive carries the bearer key; without it ``protagine init`` writes a new one.
+        summary["api_key"] = (identity_dir / "api.key").is_file()
         if backup_id and not read_instance_id(state_dir):
             # Archives taken before the instance id existed carry the same UUID
             # under the chain's name in meta; the restored instance keeps it.
@@ -505,15 +508,45 @@ def _snapshot_source_images(state_dir: Path, staging: Path) -> int:
 
 
 IDENTITY_FILES = (INSTANCE_ID_FILE, "identity.yaml", "protagine.yaml", "api.key")
+SECRET_FILES = ("api.key",)
+REDACTED = "<REDACTED>"
 
 
-def _snapshot_identity(state_dir: Path, dest: Path) -> None:
-    """The instance id and the owner-authored identity and configuration."""
+def _snapshot_identity(state_dir: Path, dest: Path, *, secrets: bool) -> None:
+    """The instance id and the owner-authored identity and configuration.
+
+    Secrets travel only in an encrypted archive (``secrets``): otherwise the sidecar's bearer key
+    (``api.key``, which ``protagine init`` writes anew) stays behind, and ``protagine.yaml`` is copied
+    with its credential-named ``environment`` settings redacted, the rule the ``.env`` copy follows."""
     dest.mkdir(parents=True, exist_ok=True)
     for name in IDENTITY_FILES:
         src = state_dir / name
-        if src.is_file():
-            shutil.copy2(src, dest / name)
+        if not src.is_file() or (name in SECRET_FILES and not secrets):
+            continue
+        if name == "protagine.yaml" and not secrets:
+            scrubbed = _scrub_config_file(src)
+            if scrubbed is not None:
+                (dest / name).write_text(scrubbed)
+            continue
+        shutil.copy2(src, dest / name)
+
+
+def _scrub_config_file(path: Path) -> Optional[str]:
+    """``protagine.yaml`` with the values of credential-named ``environment`` keys redacted; None (left
+    out of the archive) when it does not parse, since then nothing can be redacted reliably."""
+    import yaml
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        logger.warning("protagine.yaml not backed up: it does not parse, so it cannot be scrubbed")
+        return None
+    if not isinstance(data, dict):
+        return None
+    environment = data.get("environment")
+    if isinstance(environment, dict):
+        data["environment"] = {key: REDACTED if _SECRET_KEY_PATTERN.search(str(key)) else value
+                               for key, value in environment.items()}
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
 
 # ── Config snapshot (with secret scrubbing) ──────────────────────────────

@@ -22,6 +22,9 @@ def protagine_state(tmp_path):
     (state / "instance-id").write_text("test-instance-abc123\n")
     (state / "identity.yaml").write_text("owner: {name: Owner}\nagent: {name: Agent}\n")
     (state / "api.key").write_text("fixture-key\n")
+    (state / "protagine.yaml").write_text(
+        "owner: {contact_id: p-01}\n"
+        "environment: {PROTAGINE_RERANKER_API_KEY: rerank-secret, PROTAGINE_RECALL_RERANK: 'on'}\n")
 
     conn = sqlite3.connect(str(state / "protagine-contacts.db"))
     conn.execute("CREATE TABLE contacts (id TEXT PRIMARY KEY, name TEXT)")
@@ -118,7 +121,12 @@ class TestDatabaseSnapshot:
         assert "protagine-contacts.db" in summary["databases"]
         assert (restore_dir / "instance-id").read_text().strip() == "test-instance-abc123"
         assert (restore_dir / "identity.yaml").read_text().startswith("owner:")
-        assert (restore_dir / "api.key").read_text().strip() == "fixture-key"
+        # An unencrypted archive carries no secret: the bearer key stays behind (init writes a new one)
+        # and protagine.yaml's credential settings are redacted.
+        assert not (restore_dir / "api.key").exists() and summary["api_key"] is False
+        restored = (restore_dir / "protagine.yaml").read_text()
+        assert "rerank-secret" not in restored and "PROTAGINE_RERANKER_API_KEY: <REDACTED>" in restored
+        assert "PROTAGINE_RECALL_RERANK: 'on'" in restored and "contact_id: p-01" in restored
 
         conn = sqlite3.connect(str(restore_dir / "protagine-contacts.db"))
         cur = conn.execute("SELECT name FROM contacts WHERE id = 'c1'")
@@ -192,7 +200,7 @@ class TestDatabaseSnapshot:
         assert sorted(summary["retired_skipped"]) == ["chain.db", "genesis.json", "node-cert.json",
                                                       "protagine-id", "protagine-keys", "protagine-manifest.json"]
         assert (restore_dir / "instance-id").read_text().strip() == "test-instance-abc123"
-        assert (restore_dir / "identity.yaml").is_file() and (restore_dir / "api.key").is_file()
+        assert (restore_dir / "identity.yaml").is_file() and not (restore_dir / "api.key").exists()
 
     def test_env_file_is_scrubbed_in_backup(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
@@ -241,6 +249,18 @@ class TestEncryption:
         )
         assert summary["instance_id"] == "test-instance-abc123"
         assert "protagine-contacts.db" in summary["databases"]
+        # Encrypted, the archive is complete: the key and the configuration come back verbatim.
+        assert (restore_dir / "api.key").read_text().strip() == "fixture-key" and summary["api_key"] is True
+        assert "rerank-secret" in (restore_dir / "protagine.yaml").read_text()
+
+    def test_an_unencrypted_archive_holds_no_secret(self, protagine_state, output_dir):
+        import tarfile
+        archive = create_full_backup(protagine_state, output_dir, include_vectors=False)
+        with tarfile.open(archive, "r:gz") as tar:
+            names = [member.name for member in tar.getmembers()]
+            assert not [name for name in names if name.endswith("/api.key")]
+            blob = b"".join(tar.extractfile(member).read() for member in tar.getmembers() if member.isfile())
+        assert b"fixture-key" not in blob and b"rerank-secret" not in blob and b"super-secret-key" not in blob
 
     def test_wrong_passphrase_fails(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
