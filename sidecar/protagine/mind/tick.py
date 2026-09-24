@@ -931,7 +931,8 @@ class Mind:
             failing = self.feelings.failing(candidate.topic or concern.summary)
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
                                                   may_adopt_goal=may_adopt, steps_done=steps_done,
-                                                  lessons=failing.pitfalls if failing else (), failing=failing)
+                                                  lessons=failing.pitfalls if failing else (), failing=failing,
+                                                  tried=view.tried if view is not None else ())
             if shaped.open_ended and not shaped.text:
                 continue  # the tick's one call is spent; the concern waits for the next tick
             if shaped.kind == "goal":

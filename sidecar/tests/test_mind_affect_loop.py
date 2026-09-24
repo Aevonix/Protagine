@@ -151,6 +151,16 @@ async def test_form_refuses_to_redispatch_an_identical_failing_plan():
     assert (await deliberation.form(concern(), replace(word), failing=failing())).text == word.text
 
 
+async def test_an_identical_failed_plan_is_refused_without_the_switch_and_no_note_is_added():
+    research = candidate(type="research", drive="curiosity", open_ended=True, topic=TOPIC, text="")
+    first = template(replace(research), concern())
+    record = failing(level=None, body_hashes=frozenset({plan_hash(first.text)}))
+    shaped = await Deliberation(None).form(concern(), replace(research), tried=(record,))
+    assert shaped.affect_ask == f"{TOPIC} failed 2 times with this same plan; run it again anyway?"
+    assert "Prior attempts" not in shaped.text, "no switch, no note: only the refusal"
+    assert (await Deliberation(None).form(concern(), replace(research), tried=(failing(),))).affect_ask == ""
+
+
 # ---------------------------------------------------------------------------
 # The novel-topic input (P/api/routers/host.py)
 # ---------------------------------------------------------------------------
@@ -465,6 +475,35 @@ async def test_a_step_reported_blocked_then_failed_is_one_failure_and_no_switch(
     assert frustration["failures"] == 1 and frustration["level"] < 0.35
     following, = [entry for entry in summary["formed"] if entry["type"] == "goal_step"]
     assert (following["decision"], following["status"]) == ("act", "approved")
+
+
+@pytest.mark.parametrize("faculties,hours,asked", [({}, 7, True), ({}, 30, True),
+                                                    ({"affect": False, "affect_rules": True}, 7, True),
+                                                    ({"affect": False, "affect_rules": True}, 30, False)],
+                         ids=["state-7h", "state-30h", "rules-7h", "rules-30h"])
+async def test_the_refusal_reads_the_failure_record_not_the_decaying_level(tmp_path, monkeypatch, faculties,
+                                                                          hours, asked):
+    """An identical plan that failed twice is asked, not dispatched, after the frustration has decayed
+    below the switch: the state keeps the record for its 7-day window, the rule for its 24 h."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = arm(tmp_path, "a", **faculties)
+    no_mastery(fx)
+    await adopted_goal(fx, GoalRouter())
+    fx.mind.router = None
+    first, second = await failed_step(fx, 1), await failed_step(fx, 2)
+    fx.shift(hours=hours)
+    summary = await fx.mind.tick(force=True)
+    # The state's level decayed below the switch by 7 h; the rule switches for 24 h.
+    assert summary["affect"]["switch"] == ([TOPIC] if faculties and hours < 24 else [])
+    step, = [item for item in summary["formed"] if item["type"] == "goal_step"]
+    row = fx.store.get(step["id"])
+    assert plan_hash(row.context["body"]) == plan_hash(first["body"]) == plan_hash(second["body"])
+    if asked:
+        assert row.status == "asked" and "failed 2 times with this same plan" in row.decision_reason
+        assert fx.mind.dispatch() == []
+    else:
+        assert row.status == "approved" and [item["id"] for item in fx.mind.dispatch()] == [row.id]
+    fx.store.close()
 
 
 async def test_satiation_holds_an_optional_nudge_but_never_a_promise(ax, tmp_path):

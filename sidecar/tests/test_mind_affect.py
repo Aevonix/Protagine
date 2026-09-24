@@ -425,6 +425,29 @@ def test_the_switch_needs_two_failures_since_the_topics_last_success(world, tmp_
     corrected.store.close()
 
 
+def test_the_failure_record_outlasts_the_feeling_until_a_success(world):
+    """What failed is a record, not a feeling: a topic with two failed attempts since its last success
+    keeps its failed plans (``tried``) for the whole window, after its frustration has decayed below
+    the switch, so an identical plan is still refused; a success on the topic clears it."""
+    body = "Fetch the quarterly figures.\n\nReport."
+    for hours in (8, 7.5):
+        world.intention(status="failed", outcome="failed", failed_at=world.now - timedelta(hours=hours),
+                        failed_reason="stale", hours=hours, body=body)
+    world.update()
+    view = world.affect.view()
+    assert view.frustrations == () and world.level(FRUSTRATION_KEY) < SWITCH_AT
+    [record] = view.tried
+    assert record.topic == TOPIC and record.failures == 2 and record.body_hashes == frozenset({plan_hash(body)})
+    rules = affect_rules.view(world.affect.gather(world.now))
+    assert [item.topic for item in rules.tried] == [TOPIC] and rules.tried == rules.frustrations
+    world.shift(days=3)
+    world.update()
+    assert [item.topic for item in world.affect.view().tried] == [TOPIC]
+    world.outcome("succeeded")
+    world.update()
+    assert world.affect.view().tried == ()
+
+
 def test_failures_on_one_topic_and_a_success_on_another_do_not_spread(world):
     world.outcome("failed", hours=3, approach="the archive export")
     world.outcome("failed", hours=2, approach="the archive export")

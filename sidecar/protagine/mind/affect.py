@@ -222,6 +222,7 @@ class AffectView:
     route: Mapping[str, str]
     owner_id: Optional[str] = None
     frustrations: Tuple[Frustration, ...] = ()                                  # strategy_switch
+    tried: Tuple[Frustration, ...] = ()        # the failure record, whatever the level: the identical-plan refusal
     overloaded: bool = False
     load: float = 0.0
     obligations: Tuple[Obligation, ...] = ()                                    # overload
@@ -275,7 +276,7 @@ class AffectView:
         return lines
 
 
-FIELDS = {"strategy_switch": ("frustrations",), "overload": ("overloaded", "load", "obligations"),
+FIELDS = {"strategy_switch": ("frustrations", "tried"), "overload": ("overloaded", "load", "obligations"),
           "priority": ("worry", "curiosity", "due_soon"), "satiation": ("satiated", "boost", "dismissals")}
 
 
@@ -306,6 +307,24 @@ def frustration(topic: str, key: str, level: Optional[float], failures: Sequence
                        approaches=_distinct((e.approach for e in failures), 3),
                        pitfalls=_distinct((e.reason for e in failures), 3),
                        body_hashes=frozenset(e.body_hash for e in failures if e.body_hash), causes=tuple(causes))
+
+
+def failure_record(events: Sequence[AffectEvent], *, since: Optional[datetime] = None,
+                   prefix: str = "record:") -> List[Frustration]:
+    """Every topic with ``SWITCH_FAILURES`` or more failed attempts since its last success (and after
+    ``since``), with the plans that failed: what the identical-plan refusal reads, whatever the level."""
+    topics: List[str] = []
+    for event in events:
+        if event.kind == "failed" and event.topic and (since is None or event.at >= since) \
+                and not any(topic_matches(topic, event.topic) for topic in topics):
+            topics.append(event.topic)
+    record = []
+    for topic in topics:
+        failures = recent_failures(events, topic, since=since)
+        if len(failures) >= SWITCH_FAILURES:
+            record.append(frustration(topic, prefix + slug(topic), None, failures,
+                                      [event.cause() for event in failures][-5:]))
+    return record
 
 
 def failures_last_hour(inputs: AffectInputs) -> int:
@@ -684,6 +703,7 @@ class Affect:
         satiated = levels["dismissed"] >= SATIATED_DISMISSED or levels["satisfaction"] >= SATIATED_SATISFACTION
         return AffectView(
             route={name: "state" for name in CONSUMERS}, owner_id=self.owner_id, frustrations=tuple(frustrations),
+            tried=tuple(failure_record(inputs.events)),
             overloaded=load >= OVERLOAD_AT, load=load, obligations=inputs.obligations,
             worry=round(levels["worry"], 3), curiosity=round(levels["curiosity"], 3),
             due_soon=inputs.due_soon if levels["worry"] >= RENDER_FLOOR else (),
@@ -815,5 +835,5 @@ class Affect:
 
 __all__ = ["Affect", "AffectEvent", "AffectInputs", "AffectView", "CAP", "CONSUMERS", "DISCRETIONARY_PRIORITY",
            "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "SWITCH_FAILURES",
-           "compose", "discretionary", "effects", "frustration", "load_of", "plan_hash", "postponable",
+           "compose", "discretionary", "effects", "failure_record", "frustration", "load_of", "plan_hash", "postponable",
            "recent_failures", "topic_matches"]

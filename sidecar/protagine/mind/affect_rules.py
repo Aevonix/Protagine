@@ -11,13 +11,8 @@ rules carry no tone: the tone line only ever comes from the state.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import List
 
-from .affect import (
-    CONSUMERS, SWITCH_FAILURES, AffectInputs, AffectView, dismissals_of, frustration, load_of, recent_failures,
-    topic_matches,
-)
-from .drives import slug
+from .affect import CONSUMERS, SWITCH_FAILURES, AffectInputs, AffectView, dismissals_of, failure_record, load_of
 
 RULE_CONSUMERS: frozenset = frozenset()   # consumers the gate assigned to their rule; none at M6
 SWITCH_WINDOW = timedelta(hours=24)       # the rule counts SWITCH_FAILURES (shared with the state) in this window
@@ -28,22 +23,13 @@ PRIORITY_WORRY = 0.5                       # owed duty x 1.25 while anything owe
 
 def view(inputs: AffectInputs) -> AffectView:
     """Every consumer's rule over the snapshot; pure (no store, no clock beyond ``inputs.now``)."""
-    since = inputs.now - SWITCH_WINDOW
-    topics: List[str] = []
-    for event in inputs.events:
-        if event.kind == "failed" and event.at >= since and event.topic \
-                and not any(topic_matches(topic, event.topic) for topic in topics):
-            topics.append(event.topic)
-    frustrations = []
-    for topic in topics:
-        failures = recent_failures(inputs.events, topic, since=since)
-        if len(failures) >= SWITCH_FAILURES:
-            frustrations.append(frustration(topic, "rule:" + slug(topic), None, failures,
-                                            [event.cause() for event in failures][-5:]))
+    # The switch and the failure record are the same count in the rule's window.
+    frustrations = tuple(failure_record(inputs.events, since=inputs.now - SWITCH_WINDOW, prefix="rule:"))
     dismissals = dismissals_of(inputs, SATIATION_WINDOW)
     satiated = dismissals >= SATIATION_DISMISSALS
     return AffectView(
-        route={name: "rules" for name in CONSUMERS}, owner_id=inputs.owner_id, frustrations=tuple(frustrations),
+        route={name: "rules" for name in CONSUMERS}, owner_id=inputs.owner_id, frustrations=frustrations,
+        tried=frustrations,
         overloaded=len(inputs.obligations) >= OVERLOAD_OBLIGATIONS or (inputs.cap > 0 and inputs.running >= inputs.cap),
         load=load_of(inputs), obligations=inputs.obligations,
         worry=PRIORITY_WORRY if inputs.due_soon else 0.0, curiosity=0.0, due_soon=inputs.due_soon,

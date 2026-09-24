@@ -13,9 +13,10 @@ When affect reports that the concern's topic keeps failing (``failing``, a
 ``Frustration``), the prompt names the failed attempts, their pitfalls and the
 approaches to avoid, and the model may return kind ``ask``: one question for
 the owner instead of another attempt. Every task formed on such a topic
-carries the note, so the worker reads it too; a plan identical to one that
-already failed is never dispatched again without the owner (``affect_ask``,
-which the tick turns into an ask).
+carries the note, so the worker reads it too; a plan identical to one in
+affect's failure record (``tried``: two failed attempts since the topic's last
+success, whatever the level) is never dispatched again without the owner
+(``affect_ask``, which the tick turns into an ask).
 
 An active intention is reconsidered only when an event matches its
 ``dedup_key`` (the concern it came from was raised again with new
@@ -223,15 +224,18 @@ def apply_proposal(candidate: Candidate, concern: Concern, proposal: Dict[str, A
     return candidate
 
 
-def switch(candidate: Candidate, failing: Any) -> Candidate:
-    """The strategy switch on a shaped task: the note, and the refusal to re-dispatch a plan
-    identical to one that already failed on the topic (the owner decides; the tick asks)."""
-    if failing is None or candidate.kind != "task" or not candidate.text:
+def switch(candidate: Candidate, failing: Any, tried: Iterable[Any] = ()) -> Candidate:
+    """The strategy switch on a shaped task: the note while the topic is failing, and the refusal to
+    re-dispatch a plan identical to one that already failed (``tried``, affect's failure record, read
+    whatever the level; the owner decides, the tick asks)."""
+    if candidate.kind != "task" or not candidate.text:
         return candidate
-    candidate.text = noted(candidate.text, failing)
-    if not candidate.affect_ask and plan_hash(candidate.text) in failing.body_hashes:
-        candidate.affect_ask = (f"{failing.topic} failed {failing.failures} times with this same plan; "
-                                "run it again anyway?")
+    if failing is not None:
+        candidate.text = noted(candidate.text, failing)
+    signature = plan_hash(candidate.text)
+    same = next((item for item in (failing, *tried) if item is not None and signature in item.body_hashes), None)
+    if same is not None and not candidate.affect_ask:
+        candidate.affect_ask = f"{same.topic} failed {same.failures} times with this same plan; run it again anyway?"
     return candidate
 
 
@@ -265,7 +269,7 @@ class Deliberation:
 
     async def form(self, concern: Concern, candidate: Candidate, *, open_goals: int = 0,
                    may_adopt_goal: bool = False, lessons: Iterable[str] = (),
-                   steps_done: Iterable[str] = (), failing: Any = None) -> Candidate:
+                   steps_done: Iterable[str] = (), failing: Any = None, tried: Iterable[Any] = ()) -> Candidate:
         """The intention for one concern: a template, or one tool-less call when the concern is open-ended.
 
         Without a router (or with deliberation off) an open-ended concern gets
@@ -274,13 +278,15 @@ class Deliberation:
         a later tick: the cap is a cap, not a fallback. A call that fails or
         returns nothing usable also gets the template; it is never retried on
         another binding. With ``failing`` (affect: the topic keeps failing) the
-        task carries the note, templates keep their obligations, and a plan
-        identical to one that failed becomes a question for the owner.
+        task carries the note and templates keep their obligations; a plan
+        identical to one in ``tried`` (affect's failure record) or ``failing``
+        becomes a question for the owner.
         """
+        tried = tuple(tried)
         if not candidate.open_ended:
-            return switch(candidate, failing)
+            return switch(candidate, failing, tried)
         if not self.available:
-            return switch(template(candidate, concern, failing), failing)
+            return switch(template(candidate, concern, failing), failing, tried)
         if not self.may_call():
             return candidate
         self.calls_this_tick += 1
@@ -304,7 +310,7 @@ class Deliberation:
         except Exception as error:
             self.last_error = type(error).__name__
             logger.warning("deliberation call failed (%s); template used", type(error).__name__)
-            return switch(template(candidate, concern, failing), failing)
+            return switch(template(candidate, concern, failing), failing, tried)
         usage = getattr(response, "usage", None)
         if isinstance(usage, dict):
             tokens = int(usage.get("total_tokens") or (usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)) or 0)
@@ -313,9 +319,10 @@ class Deliberation:
         proposal = parse_proposal(_text(response))
         if proposal is None:
             self.last_error = "unparsable"
-            return switch(template(candidate, concern, failing), failing)
+            return switch(template(candidate, concern, failing), failing, tried)
         self.last_error = None
-        return switch(apply_proposal(candidate, concern, proposal, budgets=self.budgets, failing=failing), failing)
+        return switch(apply_proposal(candidate, concern, proposal, budgets=self.budgets, failing=failing), failing,
+                      tried)
 
     # -- reconsideration (BDI) -----------------------------------------------------------
 

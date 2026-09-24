@@ -240,9 +240,12 @@ decision is the strategy switch's question, which turns an `act` into an
    the deliberation prompt also names the failures' reasons as pitfalls and
    the approaches to avoid, and the model proposes another approach or
    returns kind `ask` (one question for the owner; the step is asked with a
-   runnable body). A plan identical to one that already failed on the topic
-   is asked, never dispatched again without the owner. A task formed before
-   the failures gets the note when the body pulls it.
+   runnable body). A plan identical to one that already failed on a topic
+   with two failed attempts since its last success is asked, never
+   dispatched again without the owner: that reads the failure record, not
+   the decaying level, so it holds until a success on the topic or the end
+   of the source's window (7 days for the state, 24 h for the rule). A task
+   formed before the failures gets the note when the body pulls it.
 2. **Overload** (load 0.6 or more). Curiosity and social work and optional
    messages wait; replies stay brief.
 3. **Priority.** Owed duty scores x (1 + 0.5 x worry); curiosity work x (1 +
