@@ -230,15 +230,21 @@ def invalidate_source_attribution(conn, source_ids, old_contact_id, contact_id):
 
 
 def chosen_values():
-    """Private setup input, never silently inferred or changed by experience."""
+    """The agent's values from the constitution (``identity.yaml`` ``agent.values``, owner-authored,
+    never inferred or changed by experience). ``PROTAGINE_AGENT_VALUES`` counts only when the file
+    declares none, so an old service unit keeps working."""
+    from protagine.config import constitution_list, load_identity
     try:
-        values = json.loads(os.environ.get('PROTAGINE_AGENT_VALUES', '[]'))
+        values = constitution_list(load_identity().get('agent', {}).get('values'))
+    except Exception:
+        values = []
+    if values:
+        return values
+    try:
+        legacy = json.loads(os.environ.get('PROTAGINE_AGENT_VALUES', '[]'))
     except (ValueError, TypeError):
         return []
-    if not isinstance(values, list):
-        return []
-    return list(dict.fromkeys(v.strip() for v in values[:12]
-                             if isinstance(v, str) and 1 <= len(v.strip()) <= 160))
+    return constitution_list(legacy)
 
 
 def _text(message):
@@ -672,7 +678,9 @@ class AppraisalStore:
             # contact/source/version IDs stay server-side for exact validation;
             # exposing several competing IDs caused otherwise correct output
             # to cite a source ID as if it were a message handle.
-            prompt_payload = {**payload, 'evidence': [
+            # The constitution's values are an input of every appraisal (SYSTEM: they belong to the
+            # agent and are never evidence of a contact's preferences); the schema has no field for them.
+            prompt_payload = {**payload, 'agent_values': chosen_values(), 'evidence': [
                 {k: evidence[k] for k in ('handle', 'text', 'quotes', 'current', 'occurred_at', 'attribution')
                  if k in evidence} for evidence in payload['evidence']]}
             response = await asyncio.wait_for(router.complete(messages=[{'role': 'system', 'content': SYSTEM},

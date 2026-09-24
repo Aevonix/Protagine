@@ -146,7 +146,8 @@ def test_apply_environment_exports_what_the_sidecar_reads(home):
     assert environ["PROTAGINE_OWNER_CONTACT_ID"] == "cid-owner"
     assert environ["PROTAGINE_OWNER_NAME"] == "Ada"
     assert environ["PROTAGINE_PERSONA_NAME"] == "Sol"
-    assert environ["PROTAGINE_AGENT_VALUES"] == '["care"]'
+    # Values reach the appraisal prompt from identity.yaml itself (chosen_values), not through the environment.
+    assert "PROTAGINE_AGENT_VALUES" not in environ
     assert environ["PROTAGINE_AGENT_QUIET_HOURS"] == "22:00-07:00"
     assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
     assert environ["PROTAGINE_EMBED_BASE_URL"] == "http://127.0.0.1:9/v1"
@@ -165,6 +166,24 @@ def test_apply_environment_without_embeddings_skips_the_embedder(home):
     # No reranker configured: nothing rerank-related is exported and recall keeps its default.
     assert not any(name.startswith("PROTAGINE_RERANKER_") for name in environ)
     assert "PROTAGINE_RECALL_RERANK" not in environ
+
+
+def test_apply_environment_honours_the_semantic_recall_flag(home):
+    """``mind.faculties.semantic_recall`` is a real binary switch: off, the embedder stays off even with an
+    endpoint recorded (the ``full-semantic_recall`` arm); the endpoint itself is still exported."""
+    save_config({**config.DEFAULTS,
+                 "router": {**config.DEFAULTS["router"], "embed_url": "http://127.0.0.1:9/v1", "embed_model": "e5"},
+                 "mind": {**config.DEFAULTS["mind"],
+                          "faculties": {**config.DEFAULTS["mind"]["faculties"], "semantic_recall": False}}},
+                home)
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"
+    assert environ["PROTAGINE_EMBED_BASE_URL"] == "http://127.0.0.1:9/v1"
+    # A pinned process environment still wins over the derived value.
+    pinned: dict[str, str] = {"PROTAGINE_EMBED_PROVIDER": "openai_api"}
+    apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
 
 
 def test_apply_environment_exports_a_configured_reranker(home):

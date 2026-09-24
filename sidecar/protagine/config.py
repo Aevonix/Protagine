@@ -29,6 +29,13 @@ LLM_CONFIG_FILE = ".protagine-llm-config.json"
 
 AUTONOMY_LEVELS = ("off", "suggest", "standard", "trusted")
 
+#: The constitution (architecture 4.2): ``identity.yaml`` ``agent.{name, values, boundaries}`` rendered as
+#: one paragraph of at most this many characters. ``protagine init`` refuses a longer one; the plugin
+#: renders it into the session prompt; no other Protagine code path writes the file.
+CONSTITUTION_CHARS = 1500
+CONSTITUTION_ITEMS = 12
+CONSTITUTION_ITEM_CHARS = 160
+
 DEFAULTS: dict[str, Any] = {
     "sidecar": {"host": "127.0.0.1", "port": 7777},
     "hermes": {"home": "~/.hermes", "python": ""},
@@ -472,6 +479,50 @@ def save_identity(data: dict[str, Any], home: str | os.PathLike[str] | None = No
     return path
 
 
+def constitution_list(value: Any) -> list[str]:
+    """``agent.values`` or ``agent.boundaries`` as the constitution reads them: at most 12 distinct
+    one-line strings of 1 to 160 characters, in the owner's order."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        if 1 <= len(text) <= CONSTITUTION_ITEM_CHARS and text not in items:
+            items.append(text)
+        if len(items) >= CONSTITUTION_ITEMS:
+            break
+    return items
+
+
+def render_constitution(identity: Any, *, limit: int | None = CONSTITUTION_CHARS) -> str:
+    """The constitution as one paragraph: ``You are <name>. Your values: a; b. Your boundaries: x; y.``
+
+    Empty lists are omitted. The text is clipped at ``limit`` characters (None: unclipped, which
+    ``constitution_length`` uses so init and doctor can say how far over the limit a file is).
+    """
+    agent = identity.get("agent") if isinstance(identity, dict) else None
+    agent = agent if isinstance(agent, dict) else {}
+    parts: list[str] = []
+    name = " ".join(str(agent.get("name") or "").split())
+    if name:
+        parts.append(f"You are {name}.")
+    values = constitution_list(agent.get("values"))
+    if values:
+        parts.append("Your values: " + "; ".join(values) + ".")
+    boundaries = constitution_list(agent.get("boundaries"))
+    if boundaries:
+        parts.append("Your boundaries: " + "; ".join(boundaries) + ".")
+    text = " ".join(parts)
+    return text if limit is None or len(text) <= limit else text[:limit]
+
+
+def constitution_length(identity: Any) -> int:
+    """The rendered length before clipping."""
+    return len(render_constitution(identity, limit=None))
+
+
 def apply_environment(config: Config, *, environ: dict[str, str] | None = None) -> dict[str, str]:
     """Export the configuration to the environment names the sidecar reads.
 
@@ -493,7 +544,11 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         # 1.9.0 instances hold contacts.db; new ones use the server's default name.
         "PROTAGINE_CONTACTS_DB": str(home / ("contacts.db" if (home / "contacts.db").exists()
                                              else "protagine-contacts.db")),
-        "PROTAGINE_EMBED_PROVIDER": "openai_api" if config.get("router.embed_url") else "skip",
+        # Semantic recall is one binary switch: an embedding endpoint and the faculty flag on (D9);
+        # the ``full-semantic_recall`` arm turns the flag off with the endpoint still recorded.
+        "PROTAGINE_EMBED_PROVIDER": "openai_api" if (config.get("router.embed_url")
+                                                    and config.get("mind.faculties.semantic_recall") is not False)
+        else "skip",
         "PROTAGINE_GRAPH_ENABLED": "false",
     }
     if key:
@@ -504,9 +559,6 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_OWNER_NAME"] = str(owner["name"])
     if agent.get("name"):
         values["PROTAGINE_PERSONA_NAME"] = str(agent["name"])
-    if agent.get("values"):
-        import json
-        values["PROTAGINE_AGENT_VALUES"] = json.dumps(list(agent["values"]), ensure_ascii=True)
     if agent.get("timezone"):
         values["PROTAGINE_AGENT_TIMEZONE"] = str(agent["timezone"])
         values["PROTAGINE_TIMEZONE"] = str(agent["timezone"])

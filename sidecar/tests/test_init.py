@@ -46,7 +46,7 @@ def _args(home, hermes_home, **overrides):
     values = {
         "home": str(home), "non_interactive": True, "uninstall": False, "owner_name": "Ada",
         "owner_handle": ["telegram=1001"], "agent_name": "Sol", "agent_values": "care, candour",
-        "timezone": "UTC", "quiet_hours": "22:00-07:00", "autonomy": None,
+        "agent_boundaries": "never send money", "timezone": "UTC", "quiet_hours": "22:00-07:00", "autonomy": None,
         "hermes_home": str(hermes_home), "hermes_python": HERMES_PYTHON, "host": None, "port": 7901,
         "model_url": None, "model": None, "model_key": None, "embed_url": None, "embed_model": None,
         "adapter_source": ADAPTER_SOURCE, "no_service": True,
@@ -123,6 +123,8 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     assert identity["owner"] == {"name": "Ada", "handles": [{"platform": "telegram", "id": "1001"}]}
     assert identity["agent"]["name"] == "Sol"
     assert identity["agent"]["values"] == ["care", "candour"]
+    assert identity["agent"]["boundaries"] == ["never send money"]
+    assert "You are Sol. Your values: care; candour. Your boundaries: never send money." in output
 
     # Step 3: the router points at the endpoint Hermes uses; no embeddings recorded.
     llm = json.loads((home / ".protagine-llm-config.json").read_text())
@@ -176,12 +178,23 @@ def test_init_keeps_existing_answers_and_lets_flags_change_them(homes):
     assert read_api_key(home, environ={}) == key
     identity = yaml.safe_load((home / "identity.yaml").read_text())
     assert identity["owner"]["name"] == "Ada" and identity["agent"]["name"] == "Sol"
+    assert identity["agent"]["boundaries"] == ["never send money"]
+    # A flag replaces the list; the constitution the plugin renders follows the file.
+    assert init.run_init(_args(home, hermes_home, agent_boundaries="never contact family members")) == 0
+    identity = yaml.safe_load((home / "identity.yaml").read_text())
+    assert identity["agent"]["boundaries"] == ["never contact family members"]
+    from protagine.config import render_constitution
+    assert render_constitution(identity).endswith("Your boundaries: never contact family members.")
 
 
 def test_init_refuses_bad_input_before_writing(homes):
     home, hermes_home = homes
     assert init.run_init(_args(home, hermes_home, owner_handle=["bogus"])) == 1
     assert not (home / "protagine.yaml").exists()
+    # An over-long constitution (rendered name + values + boundaries above 1,500 characters) is refused too.
+    over_long = ", ".join(f"b{i}".ljust(150, "b") for i in range(12))
+    assert init.run_init(_args(home, hermes_home, agent_boundaries=over_long)) == 1
+    assert not (home / "identity.yaml").exists()
     assert init.run_init(_args(home, hermes_home, quiet_hours="late")) == 1
     assert init.run_init(_args(home, hermes_home, hermes_python=str(home / "missing-python"))) == 1
 
@@ -313,3 +326,38 @@ def test_upgrade_refuses_an_environment_without_the_vector_store(homes, monkeypa
     assert "lancedb" in capsys.readouterr().out
     assert _snapshot(home) == before, "nothing was backed up, migrated or rewritten"
     assert not any(path.is_dir() for path in (home / "backups").glob("*")), "no upgrade backup was taken"
+
+
+def test_upgrade_retires_the_m8_state_files_when_the_retired_module_exists(homes, monkeypatch, capsys):
+    """I-4: ``protagine.retired.retire_state`` (the graph, world-model and chain files) runs right after
+    the backup when the module is importable; without it the upgrade is unchanged."""
+    import sys
+    import types
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home)) == 0
+    upgrade = SimpleNamespace(home=str(home), hermes_home=None, hermes_python=HERMES_PYTHON, adapter_source=None)
+    monkeypatch.setitem(sys.modules, "protagine.retired", None)  # ImportError: nothing to call
+    assert init.run_upgrade(upgrade) == 0
+    assert "nothing to do" in capsys.readouterr().out
+    import sqlite3
+    with sqlite3.connect(home / "protagine_world_model.db") as connection:
+        connection.execute("CREATE TABLE entities (id TEXT)")
+    moved = []
+
+    def retire_state(instance, backup_dir):
+        assert instance == home and backup_dir.is_dir() and backup_dir.parent == home / "backups"
+        target = backup_dir / "retired"
+        target.mkdir()
+        (instance / "protagine_world_model.db").rename(target / "protagine_world_model.db")
+        moved.append(str(target))
+        return ["retired protagine_world_model.db"]
+    fake = types.ModuleType("protagine.retired")
+    fake.RETIRED_FILES, fake.RETIRED_DIRS, fake.retire_state = ("protagine_world_model.db",), (), retire_state
+    monkeypatch.setitem(sys.modules, "protagine.retired", fake)
+    assert init.run_upgrade(upgrade) == 0
+    output = capsys.readouterr().out
+    assert "retired protagine_world_model.db" in output and "backup taken" in output
+    assert moved and not (home / "protagine_world_model.db").exists()
+    assert init.run_upgrade(upgrade) == 0
+    assert "nothing to do" in capsys.readouterr().out
+
