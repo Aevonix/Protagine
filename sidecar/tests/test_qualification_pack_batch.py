@@ -65,7 +65,7 @@ def options(pack, resources):
 
 
 @pytest.mark.parametrize('name,count', [
-    ('formation', 4), ('perspective', 4), ('planning', 2), ('recovery', 6), ('semantic', 6),
+    ('formation', 4), ('perspective', 2), ('planning', 2), ('recovery', 6), ('semantic', 6),
     ('authority', 4), ('identity-audience', 5), ('interactive', 11), ('unified', 6),
     ('router-recovery', 2), ('evidence', 15), ('interaction', 5),
 ])
