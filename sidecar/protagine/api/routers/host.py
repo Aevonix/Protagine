@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2894,6 +2895,18 @@ async def turns_sync_v2(
     return result
 
 
+def _occurred_at(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    """When an inbound turn happened: the capture's ``occurred_at``, never later than now (a skewed
+    host cannot date a conversation into the future). None when absent or unreadable: the contact
+    store then stamps its own now. Both follow ``time.time``, the clock the mind ticks on."""
+    from protagine.util.temporal import parse_iso
+    stamp = parse_iso((metadata or {}).get("occurred_at"))
+    if stamp is None:
+        return None
+    now = datetime.fromtimestamp(time.time(), timezone.utc)
+    return min(stamp.astimezone(timezone.utc), now).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _process_turn_sync(
     body: TurnSyncRequest,
     request: Request | None = None,
@@ -3193,7 +3206,8 @@ async def _process_turn_sync(
             logger.warning("opt-out detection failed", exc_info=True)
     try:
         if _contacts_store is not None and body.context.contact_id and not _is_system_turn:
-            await _contacts_store.record_interaction(body.context.contact_id)
+            await _contacts_store.record_interaction(body.context.contact_id,
+                                                     at_iso=_occurred_at(body.context.metadata))
         # Cross-channel communication ledger: record this exchange under the
         # CONVERSATION's channel (group vs DM vs voice provenance), never the
         # contact's primary-handle gateway (which collapsed everything to one

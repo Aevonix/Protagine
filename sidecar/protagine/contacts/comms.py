@@ -13,6 +13,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    """UTC now from ``time.time``, the one clock contact stamps and the mind share."""
+    return datetime.fromtimestamp(time.time(), timezone.utc)
 
 
 def _parse(ts: Any) -> Optional[datetime]:

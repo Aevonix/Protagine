@@ -45,8 +45,10 @@ def _gen_id(prefix: str) -> str:
 
 
 def _now_iso() -> str:
+    """UTC now from ``time.time``: the clock the mind compares contact stamps with. ``datetime.now``
+    reads the system clock directly, so a body that shifts ``time.time`` would split the two."""
     from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(time.time(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _normalize_phone(phone: str) -> str:

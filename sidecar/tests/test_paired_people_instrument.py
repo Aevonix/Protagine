@@ -5,8 +5,11 @@ sender so the adapter resolves the contact, the outbound path is declared in the
 
 from __future__ import annotations
 
+import contextlib
 import json
 from types import SimpleNamespace
+
+import pytest
 
 from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
@@ -103,3 +106,118 @@ async def test_the_plugin_arm_has_a_people_store_on_the_body_clock(tmp_path, mon
         seen = await store.get(created.contact_id)
         assert seen.last_interaction_at.startswith('2031-03-04T12:00') and seen.first_seen_at.startswith('2031-03-04')
     assert host._contacts_store is before and (tmp_path / 'memory-state' / 'protagine-contacts.db').is_file()
+
+
+# -- One clock for every stamp the social drive compares (audit B1) ------------------------------
+
+CADENCE_MIN = 10
+
+
+@contextlib.contextmanager
+def body_clock():
+    """The paired body's shifted wall clock, as every arm runs under it."""
+    from protagine.qualification import paired_body
+    paired_body.install_clock(0)
+    try:
+        yield paired_body
+    finally:
+        paired_body.uninstall_clock()
+
+
+@pytest.fixture
+async def sync_host(tmp_path, monkeypatch):
+    """``POST /v1/host/turns/sync`` over a real contact store, comms log and ledger."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from protagine.api.routers import host
+    from protagine.contacts.comms import CommsLog
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+    from protagine.turns import TurnIdempotencyLedger
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(tmp_path / 'protagine-contacts.db')))
+    await store.connect()
+    ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
+    comms = CommsLog(str(tmp_path / 'comms.db'), source_ledger=ledger)
+    for name, value in (('_contacts_store', store), ('_comms_log', comms), ('_graph', None),
+                        ('_presence_store', None), ('_telemetry', None)):
+        monkeypatch.setattr(host, name, value, raising=False)
+    app = FastAPI()
+    app.include_router(host.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        async def sync(contact_id, turn_id, text, occurred_at=None):
+            body = {'identity': {'host_id': 'hermes'},
+                    'context': {'session_id': 'contact-1', 'contact_id': contact_id, 'turn_id': turn_id,
+                                'channel_id': 'capture:' + contact_id,
+                                'metadata': {'occurred_at': occurred_at} if occurred_at else None},
+                    'user_message': {'role': 'user', 'content': text},
+                    'assistant_message': {'role': 'assistant', 'content': 'Thanks.'}}
+            response = await client.post('/v1/host/turns/sync', json=body)
+            assert response.status_code == 200, response.text
+            return response.json()
+        yield SimpleNamespace(store=store, sync=sync, dir=tmp_path)
+    comms._conn.close()
+    await store.close()
+
+
+def _seconds_apart(stamp, moment):
+    from protagine.util.temporal import parse_iso
+    return abs((parse_iso(stamp) - moment).total_seconds())
+
+
+async def test_an_inbound_turn_after_a_clock_advance_is_recorded_on_the_body_clock(sync_host):
+    with body_clock() as body:
+        contact = await sync_host.store.create(display_name='p-02', trust_tier='regular', may_contact='auto',
+                                               cadence_minutes=CADENCE_MIN)
+        body.advance_clock(600)
+        # The capture stamps the turn when it happened; the host records that time.
+        await sync_host.sync(contact.contact_id, 'turn-1', 'The budget draft is on track.',
+                             occurred_at=worker.mind_clock().isoformat())
+        seen = await sync_host.store.get(contact.contact_id)
+        assert _seconds_apart(seen.last_interaction_at, worker.mind_clock()) <= 5
+        # Without a stamp, the store's own clock is the body clock too.
+        body.advance_clock(3600)
+        await sync_host.sync(contact.contact_id, 'turn-2', 'Still on track.')
+        seen = await sync_host.store.get(contact.contact_id)
+        assert _seconds_apart(seen.last_interaction_at, worker.mind_clock()) <= 5
+        # A stamp from the future (a skewed host) is clamped to now.
+        future = worker.mind_clock().timestamp() + 86400
+        from datetime import datetime, timezone
+        await sync_host.sync(contact.contact_id, 'turn-3', 'Hello again.',
+                             occurred_at=datetime.fromtimestamp(future, timezone.utc).isoformat())
+        seen = await sync_host.store.get(contact.contact_id)
+        assert _seconds_apart(seen.last_interaction_at, worker.mind_clock()) <= 5
+
+
+async def test_a_conversation_after_a_clock_advance_satisfies_the_cadence_end_to_end(sync_host):
+    """The family's cadence-satisfied-by-conversation control on the real store and the body clock:
+    the contact writes 0.7 cadences in, the ticks run at 1.3 cadences, and no check-in forms."""
+    from protagine.commitments.store import CommitmentStore
+    from protagine.feedback import TypeFeedbackStore
+    from protagine.turns import TurnIdempotencyLedger
+    directory = sync_host.dir / 'mind'
+    directory.mkdir()
+    cadence = CADENCE_MIN * 60
+    with body_clock() as body:
+        contact = await sync_host.store.create(display_name='p-02', trust_tier='regular', may_contact='auto',
+                                               cadence_minutes=CADENCE_MIN)
+        await sync_host.store.add_handle(contact.contact_id, 'capture', 'p-02', is_primary=True, verified=True)
+        store = InitiativeStore(state_dir=directory)
+        try:
+            mind = Mind(config={'autonomy': 'standard'}, store=store, state_dir=directory, owner_id='p-01',
+                        commitments=CommitmentStore(directory / 'protagine-commitments.db'),
+                        feedback=TypeFeedbackStore(str(directory / 'protagine-feedback.db')),
+                        contacts=sync_host.store, ledger=TurnIdempotencyLedger(directory / 'ledger.db'),
+                        clock=worker.mind_clock, backups=False)
+            mind.digest_hour = 25
+            body.advance_clock(0.7 * cadence)
+            await sync_host.sync(contact.contact_id, 'turn-1', 'The budget draft is on track from my side.',
+                                 occurred_at=worker.mind_clock().isoformat())
+            body.advance_clock(0.6 * cadence)
+            for _ in range(3):
+                assert (await mind.tick(force=True))['formed'] == []
+            body.advance_clock(0.5 * cadence)       # 1.1 cadences after the conversation: due again
+            assert [item['type'] for item in (await mind.tick(force=True))['formed']] == ['check_in']
+        finally:
+            store.close()

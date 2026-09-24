@@ -331,36 +331,26 @@ def provider_read_services(state):
         yield
 
 
-def body_now_iso():
-    """The contact store's clock in a plugin arm: the body clock the mind ticks on (``time.time``
-    as the paired body shifts it), so a conversation, a first meeting and the mind's now agree."""
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(time.time(), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
-
 @asynccontextmanager
 async def people_store(state):
     """The plugin arm's people store, as a real install has one (``protagine-contacts.db`` in the
     state directory): contacts.json is seeded into it, inbound senders resolve against it and the
-    mind reads permissions, cadences and handles from it."""
-    from unittest.mock import patch
+    mind reads permissions, cadences and handles from it. Its stamps follow ``time.time``, the body
+    clock the mind ticks on, as they do in production."""
     from protagine.api.routers import host
-    from protagine.contacts import store as contacts_module
     from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
     directory = state / 'memory-state'
     directory.mkdir(parents=True, exist_ok=True)
-    store = contacts_module.SQLiteContactStore(ContactsConfig(sqlite_path=str(directory / 'protagine-contacts.db')))
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(directory / 'protagine-contacts.db')))
     previous = host._contacts_store
-    with ExitStack() as clock:
-        if hasattr(contacts_module, '_now_iso'):
-            clock.enter_context(patch.object(contacts_module, '_now_iso', body_now_iso))
-        await store.connect()
-        host.set_contacts_store(store)
-        try:
-            yield store
-        finally:
-            host.set_contacts_store(previous)
-            await store.close()
+    await store.connect()
+    host.set_contacts_store(store)
+    try:
+        yield store
+    finally:
+        host.set_contacts_store(previous)
+        await store.close()
 
 
 def provider_read_lifespan(state):
