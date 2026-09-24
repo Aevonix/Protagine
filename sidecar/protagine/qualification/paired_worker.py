@@ -51,34 +51,6 @@ def mind_switches(profile):
     switches = {name: True for name in MIND_SWITCHES if profile.get(name)}
     return switches or None
 
-
-def plugin_client():
-    """The loaded Protagine plugin's sidecar client (the adapter's body holds it); None in every other arm."""
-    try:
-        from hermes_cli.plugins import get_plugin_manager
-        loaded = get_plugin_manager()._plugins.get('protagine')
-    except Exception:
-        return None
-    if loaded is None or not loaded.enabled:
-        return None
-    return getattr(getattr(loaded.module, '_BODY', None), 'client', None)
-
-
-def mind_audit_ids(client=None, *, limit=500):
-    """The ids of the intentions the mind decided to act on or ask about, from ``GET /v1/mind/log``
-    (rows carry ``id`` and ``decision``; interface I-7), read outside the agent after its last turn.
-    The self family grades a self-report against them (``paired_body_grading.observed_action_ids``).
-    Nothing to read, an unreachable sidecar or a sidecar without the mind routes all record nothing."""
-    client = plugin_client() if client is None else client
-    if client is None:
-        return []
-    try:
-        response = client.get('/v1/mind/log', params={'limit': limit}, timeout=10)
-        entries = response.json().get('entries') if response.is_success else None
-    except Exception:
-        return []
-    return [row['id'] for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
-            and row.get('decision') in ('act', 'ask')]
 # Plans written before arm profiles carried only the arm label.
 LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
@@ -419,6 +391,35 @@ def source_worker(app, state, inputs, config, *, temperature=None):
                 raise RuntimeError('Source worker failed') from task.exception()
         finally:
             resources.close()
+
+
+def plugin_client():
+    """The loaded Protagine plugin's sidecar client (the adapter's body holds it); None in every other arm."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        loaded = get_plugin_manager()._plugins.get('protagine')
+    except Exception:
+        return None
+    if loaded is None or not loaded.enabled:
+        return None
+    return getattr(getattr(loaded.module, '_BODY', None), 'client', None)
+
+
+def mind_audit_ids(client=None, *, limit=500):
+    """The ids of the intentions the mind decided to act on or ask about, from ``GET /v1/mind/log``
+    (rows carry ``id`` and ``decision``; interface I-7), read outside the agent after its last turn.
+    The self family grades a self-report against them (``paired_body_grading.observed_action_ids``).
+    Nothing to read, an unreachable sidecar or a sidecar without the mind routes all record nothing."""
+    client = plugin_client() if client is None else client
+    if client is None:
+        return []
+    try:
+        response = client.get('/v1/mind/log', params={'limit': limit}, timeout=10)
+        entries = response.json().get('entries') if response.is_success else None
+    except Exception:
+        return []
+    return [row['id'] for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
+            and row.get('decision') in ('act', 'ask')]
 
 
 def main():
