@@ -150,3 +150,31 @@ async def test_guest_http_capture_claim_media_commitment_and_digest_recall(
         assert erased.status_code == 200
         assert "protagine-commitments" not in erased.text and "River" not in erased.text
         assert private.calls == [] and contacts.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_configured", [True, False])
+async def test_a_guest_is_contact_scoped_without_the_key_and_without_a_configured_owner(
+    source_app, tmp_path, monkeypatch, owner_configured,
+):
+    """Audit M7: the guest projection fails closed. A development caller without the key is never
+    the owner, so a context it asks for about anyone is the contact-scoped one; and with no owner
+    configured nobody's view is the owner's."""
+    for name in ("PROTAGINE_OWNER_CONTACT_ID", "PROTAGINE_OWNER_PERSON_ID"):
+        monkeypatch.delenv(name, raising=False)
+    if owner_configured:
+        monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
+    private = PrivateProducer()
+    for name in ("_graph", "_facts_store", "_goals_store", "_initiative_store", "_briefings_engine",
+                 "_world_store", "_skills_registry", "_affect_store", "_preference_learner", "_comms_log"):
+        monkeypatch.setattr(host, name, private)
+    monkeypatch.setattr(host, "_commitment_store", None)
+    contacts = GuestContacts()
+    monkeypatch.setattr(host, "_contacts_store", contacts)
+    async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
+        response = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"))
+    assert response.status_code == 200, response.text
+    sections = {row["id"] for row in response.json()["sections"]}
+    assert sections <= {"temporal-context", "protagine-memory", "protagine-commitments", "protagine-person"}
+    assert private.calls == [] and contacts.calls == [] and contacts.reads == ["guest-a"]
+    assert "omitted" in response.json()["notices"][0]

@@ -842,17 +842,20 @@ def _require_person_authority(request: Request | None, person_id: str) -> None:
 
 
 def _viewer_is_guest(request: Request | None, person_id: Optional[str]) -> bool:
-    """An authenticated viewer other than the owner.
+    """A viewer other than the owner, which fails closed.
 
     A guest's context is contact-scoped: their own canonical sources, the
     commitments their sources prove shared, and their digest; never the
-    owner's global or person-store context. Development mode (no key) keeps
-    the unscoped context it always had.
+    owner's global or person-store context. Development mode (no key) is
+    never the owner (``resolve_request_person`` refuses the owner's lane
+    there), so it is a guest for anyone it names and for no one. With the key,
+    no person is the key holder's own unscoped view.
     """
     authority = request_authority(request)
     person = str(person_id or "").strip()
-    return bool(authority.authenticated and not authority.anonymous and person
-                and person != owner_person_id())
+    if authority.anonymous or not authority.authenticated:
+        return True
+    return bool(person and person != owner_person_id())
 
 
 def _canonical_shared_commitments(rows, contact_id):
@@ -1676,7 +1679,10 @@ async def context_assemble(
         audience=body.audience,
     ) or body.context.contact_id
     authority = request_authority(request)
-    viewer = body.context.contact_id if authority.authenticated and not authority.anonymous else None
+    # Only the key's own view with no person named is unscoped; every other caller, including a
+    # development caller without the key (never the owner), sees the person it names as a viewer.
+    viewer = body.context.contact_id if authority.authenticated and not authority.anonymous else (
+        body.context.contact_id or "dev-anonymous")
     # Stamp before reading any producer. A concurrent forget makes the entire
     # packet stale at the native request boundary, including derived sections.
     source_erasure_watermark = None
@@ -1717,9 +1723,11 @@ async def _assemble_sections(
     A viewer other than the owner gets the contact-scoped set: their own
     canonical recall, the commitments their sources prove shared, their
     appraisal perspective and their digest; never an owner-only or global
-    section. ``None`` is an unattested development caller (no key), which
-    keeps the unscoped context it always had. The route and the mind's
-    recipient packet (``assemble_packet``) share this one assembly.
+    section. It fails closed: with no owner configured the owner is the
+    reserved ``owner`` person, so every named viewer is a guest. ``None`` is
+    the key holder asking about no one (the owner's own API), which keeps the
+    unscoped context. The route and the mind's recipient packet
+    (``assemble_packet``) share this one assembly.
     """
     owner_id = owner_person_id()
     _canonical_only = bool(viewer_person_id) and viewer_person_id != owner_id

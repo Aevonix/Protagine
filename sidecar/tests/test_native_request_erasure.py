@@ -33,11 +33,12 @@ async def test_context_stamps_before_a_concurrent_forget(source_app, tmp_path, m
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     ledger.record_source('stamp-source', contact_id='contact-a', session_id='original',
                          messages=[{'role': 'user', 'content': 'Neutral source'}], derive_claims=False)
-    original = host._build_temporal_section
+    # The forget lands while the sections are read (any viewer's assembly, scoped or not).
+    original = host._assemble_sections
     async def racing(*args, **kwargs):
         ledger.erase_sources(contact_id='contact-a', turn_ids=['stamp-source'])
         return await original(*args, **kwargs)
-    monkeypatch.setattr(host, '_build_temporal_section', racing)
+    monkeypatch.setattr(host, '_assemble_sections', racing)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=source_app), base_url='http://fixture') as client:
         response = await client.post('/v1/host/context/assemble', json={
             'identity': {'host_id': 'fixture'}, 'context': {'contact_id': 'contact-a', 'session_id': 'resume'},
