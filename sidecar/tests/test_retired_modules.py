@@ -41,9 +41,18 @@ RETIRED_ROUTES = ("/v1/host/learning/weights", "/v1/host/learning/engagement")
 ALLOWED_LITERAL = re.compile(r"""["'](?:world_model|protagine_world_model\.db)["']""")
 
 
+def absent(module: str) -> bool:
+    """A module is absent when nothing resolves it, including when its parent package is gone (find_spec
+    then raises instead of returning None)."""
+    try:
+        return find_spec(module) is None
+    except ModuleNotFoundError:
+        return True
+
+
 @pytest.mark.parametrize("module", RETIRED_MODULES)
 def test_retired_modules_do_not_exist(module):
-    assert find_spec(module) is None, f"{module} still exists"
+    assert absent(module), f"{module} still exists"
 
 
 def test_research_gathers_from_no_graph():
