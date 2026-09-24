@@ -761,8 +761,11 @@ def run_store_migrations(home: Path) -> list[str]:
 # directed tasks, the response guard's ledgers, the agent bridge poller's
 # seen-lists and (since the drives milestone) the cognitive workspace, the
 # cognition spine, its evidence and drive-governance ledgers, the external
-# event inbox and the surprise store. An upgrade moves them into the backup
-# instead of leaving orphans behind. A directory entry names a whole tree.
+# event inbox and the surprise store, and (since the people milestone) the
+# second-order theory-of-mind stores, the engagement profiles, the relationship
+# briefs the per-contact digest replaced and the P8 shadow stores. An upgrade
+# moves them into the backup instead of leaving orphans behind. A directory
+# entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
@@ -783,6 +786,13 @@ RETIRED_STATE = (
     "protagine-guard-audit.db",
     "protagine-context-provenance.db",
     "protagine-tom2-taint.db",
+    "protagine-tom2.db",
+    "protagine-tom2-exposure.db",
+    "protagine-engagement.db",
+    "protagine-relationships.db",
+    "protagine-p8-visibility.db",
+    "protagine-p8-arcs.db",
+    "protagine-p8-recipient-audit.db",
     "bridge",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG

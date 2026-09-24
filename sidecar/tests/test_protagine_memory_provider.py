@@ -11,8 +11,7 @@ Regression locks:
     breaker skips the sidecar entirely (assemble and temporal);
   * a real-channel resolution miss yields no context and never falls back to
     the provider-wide owner/default contact.
-  * guest context requires a server-attested exact viewer plus a supported scoped
-    projection before any context producer is queried;
+  * a guest's prefetch asks for that guest's own viewer-scoped context only;
   * temporal and reply-thread fallbacks never query owner-global data for a
     guest, and lifecycle write hooks exact-bind or stay dark.
 """
@@ -177,7 +176,6 @@ def test_invalid_saved_profile_does_not_fall_back_to_another_instance(
 
 _ASSEMBLE = ("POST", "/v1/host/context/assemble")
 _TEMPORAL = ("GET", "/v1/host/context/temporal")
-_READINESS = ("GET", "/v1/host/context/projection-readiness")
 _RESOLVE = ("GET", "/v1/host/contacts/resolve")
 _TURN_V2 = ("PUT", "/v2/host/turns/")
 _QUEUE_CLAIM = ("POST", "/v1/host/queue/jobs/claim")
@@ -186,19 +184,6 @@ _QUEUE_START = ("POST", "/v1/host/queue/jobs/job-tool/start")
 
 def _assemble_calls(fake):
     return [r for r in fake.requests if r["url"].endswith(_ASSEMBLE[1])]
-
-
-def _projection(contact_id, *, mode="shadow", owner=False):
-    return {
-        "schema": "ContextProjectionAttestationV1",
-        "version": 1,
-        "viewer_person_id": contact_id,
-        "viewer_attested": True,
-        "viewer_is_owner": owner,
-        "p8_mode": mode,
-        "scoped_projection_ready": mode in {"shadow", "live"},
-        "legacy_global_allowed": bool(owner),
-    }
 
 
 def _install_session_context(monkeypatch):
@@ -410,7 +395,7 @@ def test_prefetch_internal_owner_lane_requires_explicit_attestation(
 
 def test_prefetch_binds_a_guest_turn_to_its_resolved_contact(provider_mod, monkeypatch):
     # The turn's sender, resolved server-side, is the prefetch person; a guest
-    # request carries the viewer audience and the scoped projection policy.
+    # request carries the viewer audience and no retired projection policy.
     set_turn = _install_session_context(monkeypatch)
     set_turn(platform="rcs", sender="alice", chat="thread-a")
     fake = _FakeHttpx(routes={_RESOLVE: {"contact_id": "cid-turn"}, _ASSEMBLE: {"sections": []}})
@@ -419,7 +404,7 @@ def test_prefetch_binds_a_guest_turn_to_its_resolved_contact(provider_mod, monke
     call = _assemble_calls(fake)[0]["json"]
     assert call["context"]["contact_id"] == "cid-turn"
     assert call["audience"] == "viewer"
-    assert call["projection_policy"] == "scoped_viewer_required"
+    assert "projection_policy" not in call
     assert call["include_initiatives"] is False
 
 
@@ -581,19 +566,12 @@ def test_two_concurrent_senders_never_share_context(
     def resolve(request):
         return {"contact_id": f"cid-{request['params']['address']}"}
 
-    def readiness(request):
-        return _projection(request["params"]["contact_id"])
-
     def assemble(request):
         contact = request["json"]["context"]["contact_id"]
-        return {
-            "sections": [{"title": "Bound", "body": f"ctx-{contact}"}],
-            "projection_attestation": _projection(contact),
-        }
+        return {"sections": [{"title": "Bound", "body": f"ctx-{contact}"}]}
 
     fake = _FakeHttpx(routes={
         _RESOLVE: resolve,
-        _READINESS: readiness,
         _ASSEMBLE: assemble,
     })
     provider = _make_provider(provider_mod, fake, monkeypatch)
@@ -626,19 +604,12 @@ def test_queued_prefetch_for_sender_a_never_reaches_sender_b(
     def resolve(request):
         return {"contact_id": f"cid-{request['params']['address']}"}
 
-    def readiness(request):
-        return _projection(request["params"]["contact_id"])
-
     def assemble(request):
         contact = request["json"]["context"]["contact_id"]
-        return {
-            "sections": [{"title": "Bound", "body": f"ctx-{contact}"}],
-            "projection_attestation": _projection(contact),
-        }
+        return {"sections": [{"title": "Bound", "body": f"ctx-{contact}"}]}
 
     fake = _FakeHttpx(routes={
         _RESOLVE: resolve,
-        _READINESS: readiness,
         _ASSEMBLE: assemble,
     })
     provider = _make_provider(provider_mod, fake, monkeypatch)
@@ -670,7 +641,6 @@ def test_guest_write_tools_never_reach_the_sidecar(provider_mod, monkeypatch):
     set_turn(platform="rcs", sender="alice", chat="thread-a")
     fake = _FakeHttpx(routes={
         _RESOLVE: {"contact_id": "cid-alice"},
-        _READINESS: _projection("cid-alice"),
         ("POST", "/v1/host/affect/events"): {"id": "e-1"},
     })
     provider = _make_provider(provider_mod, fake, monkeypatch)
@@ -893,14 +863,9 @@ def test_resolve_commitment_settles_through_the_outcome_path(provider_mod, monke
 def test_reply_marker_never_queries_global_timeline(provider_mod, monkeypatch):
     set_turn = _install_session_context(monkeypatch)
     set_turn(platform="whatsapp", sender="guest", chat="thread-g")
-    projection = _projection("cid-guest")
     fake = _FakeHttpx(routes={
         _RESOLVE: {"contact_id": "cid-guest"},
-        _READINESS: projection,
-        _ASSEMBLE: {
-            "sections": [],
-            "projection_attestation": projection,
-        },
+        _ASSEMBLE: {"sections": []},
         ("GET", "/v1/host/timeline"): {
             "events": [{"data": {"summary": "owner-secret"}}],
         },

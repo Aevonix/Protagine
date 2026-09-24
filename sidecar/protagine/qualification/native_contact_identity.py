@@ -40,7 +40,7 @@ def controls(effects):
         name = function.get('name')
         if name == 'tool_call' and len(args.get('calls', [])) == 1:
             name, args = args['calls'][0].get('name'), args['calls'][0].get('arguments', {})
-        if name == 'protagine_contacts':
+        if name == 'protagine_people':
             calls.append({'arguments': args, 'result': value})
     return calls
 

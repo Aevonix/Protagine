@@ -37,7 +37,6 @@ SUBSYSTEMS = [
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
     ("protagine.intelligence.learning.continuous_learner", "ContinuousLearner"),
     ("protagine.intelligence.mind_model.signal_collector", "SignalCollector"),
-    ("protagine.intelligence.relationships.trust_tiers", "TrustTier"),
     ("protagine.goals.store", "GoalStore"),
     ("protagine.briefings.engine", "BriefingEngine"),
     ("protagine.mind", "Mind"),

@@ -1,5 +1,7 @@
-"""Exact guest recall works without P8 and never queries private legacy producers."""
+"""A guest's context is contact-scoped: exact recall, proven shared commitments and
+their own digest, and no private legacy producer is ever queried."""
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -25,6 +27,18 @@ class PrivateProducer:
         raise AssertionError("private legacy producer was queried")
 
 
+class GuestContacts(PrivateProducer):
+    """The contact store answers one read: the viewer's own record, for their digest."""
+
+    def __init__(self):
+        super().__init__()
+        self.reads = []
+
+    async def get(self, contact_id):
+        self.reads.append(contact_id)
+        return SimpleNamespace(contact_id=contact_id, digest=f"Digest of {contact_id}.")
+
+
 def headers(person):
     return {"Authorization": "Bearer " + KEY}
 
@@ -34,12 +48,11 @@ def context(person, query, session="second-session"):
         "identity": {"host_id": "fixture"},
         "context": {"contact_id": person, "session_id": session},
         "incoming_message": {"role": "user", "content": query},
-        "projection_policy": "scoped_viewer_required",
     }
 
 
 @pytest.mark.asyncio
-async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
+async def test_guest_http_capture_claim_media_commitment_and_digest_recall(
     source_app, tmp_path, monkeypatch,
 ):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
@@ -89,25 +102,21 @@ async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
         commitments.create("guest-b", "other-guest-secret obligation", due_at=due)
         monkeypatch.setattr(host, "_commitment_store", commitments)
         private = PrivateProducer()
-        for name in ("_graph", "_contacts_store", "_facts_store", "_goals_store", "_initiative_store",
+        for name in ("_graph", "_facts_store", "_goals_store", "_initiative_store",
                      "_briefings_engine", "_world_store", "_skills_registry", "_affect_store",
-                     "_relationship_profiler", "_preference_learner", "_tom2_store",
-                     "_engagement_store", "_comms_log"):
+                     "_preference_learner", "_comms_log"):
             monkeypatch.setattr(host, name, private)
+        contacts = GuestContacts()
+        monkeypatch.setattr(host, "_contacts_store", contacts)
 
-        ready = await client.get("/v1/host/context/projection-readiness",
-                                 params={"contact_id": "guest-a"}, headers=headers("guest-a"))
-        assert ready.status_code == 200
-        assert ready.json()["projection_backend"] == "canonical_sources"
-        assert ready.json()["p8_mode"] == "off"
-        assert ready.json()["scoped_projection_ready"] is True
-        assert ready.json()["legacy_global_allowed"] is False
         response = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"), headers=headers("guest-a"))
         assert response.status_code == 200, response.text
         sections = {row["id"]: row["body"] for row in response.json()["sections"]}
         assert "source_assertion" in sections["protagine-memory"] and "River" in sections["protagine-memory"]
         assert own["id"] in sections["protagine-commitments"] and "Prepare the office handout" in sections["protagine-commitments"]
-        assert set(sections) == {"temporal-context", "protagine-memory", "protagine-commitments"}
+        assert sections["protagine-person"] == "Digest of guest-a."
+        assert set(sections) == {"temporal-context", "protagine-memory", "protagine-commitments", "protagine-person"}
+        assert contacts.reads == ["guest-a"]
         assert not any(secret in response.text for secret in ("owner-secret", "other-guest-secret", "mixed-speaker-secret", "owner-private", "invented link"))
         assert "omitted" in response.json()["notices"][0]
 
@@ -115,11 +124,15 @@ async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
         assert image.status_code == 200 and "orchid" in image.text and "derived_unverified" in image.text
         other = await client.post("/v1/host/context/assemble", json=context("guest-b", "orchid"), headers=headers("guest-b"))
         assert other.status_code == 200 and "orchid" not in other.text
-        forged = await client.post("/v1/host/context/assemble", json=context("owner", "office"), headers=headers("guest-a"))
-        assert forged.status_code == 403
+        assert "Digest of guest-b." in other.text and "Digest of guest-a." not in other.text
+        # The retired projection policy is refused before any producer runs.
+        retired = await client.post("/v1/host/context/assemble", headers=headers("guest-a"),
+                                    json={**context("owner", "office"), "projection_policy": "scoped_viewer_required"})
+        assert retired.status_code == 400 and retired.json()["detail"]["code"] == "unsupported_policy"
         missing = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"))
         assert missing.status_code == 401
-        assert private.calls == []
+        assert contacts.reads == ["guest-a", "guest-a", "guest-b"]
+        assert private.calls == [] and contacts.calls == []
 
         monkeypatch.setenv("PROTAGINE_RECALL_CONTEXT_MAX_CHARS", "80")
         small = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"), headers=headers("guest-a"))
@@ -131,4 +144,4 @@ async def test_guest_http_capture_claim_media_and_commitment_recall_without_p8(
         erased = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"), headers=headers("guest-a"))
         assert erased.status_code == 200
         assert "protagine-commitments" not in erased.text and "River" not in erased.text
-        assert private.calls == []
+        assert private.calls == [] and contacts.calls == []

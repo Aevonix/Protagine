@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from protagine.intelligence.relationships.trust_tiers import TrustTier
 from protagine.sessions.isolated_session import IsolatedSession
 
 

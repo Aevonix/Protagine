@@ -5,11 +5,8 @@ first-class, restrictive trust tier (not a silent peripheral fallback).
 import pytest
 
 from protagine.contacts.config import ContactsConfig
+from protagine.contacts.models import TRUST_TIERS
 from protagine.contacts.store import SQLiteContactStore
-from protagine.intelligence.relationships.trust_tiers import (
-    TIER_CAPABILITIES,
-    TrustTier,
-)
 
 
 @pytest.fixture
@@ -45,16 +42,9 @@ async def test_scope_lifecycle_is_audited(store):
 
 # ── group_guest is a real, restrictive tier ──────────────────────────────────
 
-def test_group_guest_capabilities_are_restrictive():
-    caps = TIER_CAPABILITIES[TrustTier.GROUP_GUEST]
-    assert caps["protagine_proactive_reach_out"] is False
-    assert caps["protagine_full_context_sharing"] is False
-    assert caps["contact_can_request_reminders"] is False
-
-
-def test_group_guest_resolves_from_its_stored_name():
-    # readers do TrustTier(contact.trust_tier); group_guest must resolve
-    assert TrustTier("group_guest") is TrustTier.GROUP_GUEST
+def test_group_guest_is_in_the_one_tier_vocabulary():
+    # contacts.models is the only tier vocabulary; a stored group_guest must be valid.
+    assert "group_guest" in TRUST_TIERS
 
 
 # ── P2c: promotion (group_guest -> 1:1) ──────────────────────────────────────

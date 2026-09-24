@@ -44,7 +44,7 @@ emit(context=context)
     call, = sidecar.calls("/v1/host/context/assemble", "POST")
     assert call["json"]["context"]["contact_id"] == "p-03"
     assert call["json"]["audience"] == "viewer"
-    assert call["json"]["projection_policy"] == "scoped_viewer_required"
+    assert "projection_policy" not in call["json"]
 
 
 def test_unresolved_channel_sender_gets_no_context(home, sidecar):

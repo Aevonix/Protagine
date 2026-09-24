@@ -272,7 +272,7 @@ class FakeSidecar:
         if path == "/v1/host/context/assemble":
             audience = body.get("audience") if isinstance(body, dict) else None
             shared = [{"id": "shared", "title": "Shared", "body": "shared facts", "priority": 50}]
-            if audience == "viewer" or body.get("projection_policy"):
+            if audience == "viewer":
                 return 200, {"sections": shared}
             return 200, {"sections": [{"id": "private", "title": "Owner notes", "body": CANARY, "priority": 90},
                                       *shared]}

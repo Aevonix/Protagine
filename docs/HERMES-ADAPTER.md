@@ -193,8 +193,8 @@ owner session cannot approve. `protagine_self rate {id, verdict}` posts
 ## Memory provider
 
 `prefetch` assembles context for the turn's participant. A guest request sets
-`audience: viewer` and `projection_policy: scoped_viewer_required`, so the
-sidecar never returns owner-only sections to a guest. The request also says
+`audience: viewer`, and the sidecar returns a guest only that contact's scoped
+sections, never an owner-only one. The request also says
 whether Hermes still shows this session's earlier turns (`session_history:
 intact`, `compressed` after a checkpoint), so recall never quotes back what the
 model is already reading. The provider's direct tools are offered on the

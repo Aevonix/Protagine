@@ -153,33 +153,8 @@ def test_turn_sync_extraction():
     else:
         log(f"  Surprises query failed: {r.status_code}", "⚠️")
 
-    # ── Step 7: Manual ToM extraction trigger ─────────────────────────────
-    log("\n─ Step 7: Trigger manual ToM extraction ─")
-
-    r = post("/v1/host/tom/extract", {
-        "contact_id": contact,
-        "text": "I'm really frustrated with the quantum stabilizer. But excited about the demo. I prefer dark mode.",
-    })
-    if r.status_code == 200:
-        result = r.json()
-        affect = result.get("affect")
-        facts_count = len(result.get("facts", []))
-        throttled = result.get("throttled", False)
-        log(f"  Affect extracted: {affect is not None} | Facts: {facts_count} | Throttled: {throttled}")
-        if affect:
-            log(f"  Affect: valence={affect.get('valence')}, arousal={affect.get('arousal')}", "✅")
-        if facts_count > 0:
-            for f in result.get("facts", [])[:3]:
-                log(f"  Fact: {f.get('fact', f.get('item', ''))[:60]}", "✅")
-        if not affect and facts_count == 0:
-            log("  No extraction results (LLM router may not be wired)", "⚠️")
-    elif r.status_code == 501:
-        log("  ToM extraction not wired", "⚠️")
-    else:
-        log(f"  ToM extraction: {r.status_code}", "⚠️")
-
-    # ── Step 8: Verify context assembly includes extraction results ───────
-    log("\n─ Step 8: Context assembly includes extraction results ─")
+    # ── Step 7: Verify context assembly includes extraction results ───────
+    log("\n─ Step 7: Context assembly includes extraction results ─")
 
     r = post("/v1/host/context/assemble", {
         "identity": {"host_id": "e2e-test"},

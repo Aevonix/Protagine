@@ -211,35 +211,6 @@ def test_trust_notices_durable_across_instances(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Adaptive delivery cap
-# ---------------------------------------------------------------------------
-
-def test_delivery_cap_earned_and_bounded(monkeypatch):
-    store = CompetenceStore()
-    t = TrustEngine(store, journal=ActionJournal())
-    assert t.delivery_cap(3) == 3          # no track record yet
-    for _ in range(30):
-        store.record("delivery", "success")
-    cap = t.delivery_cap(3)
-    assert cap > 3
-    monkeypatch.setenv("PROTAGINE_TRUST_DELIVERY_CAP_MAX", "4")
-    assert t.delivery_cap(3) == 4          # bounded by the max
-
-
-def test_rate_limiter_uses_cap_provider():
-    from protagine.delivery.rate_limiter import DeliveryRateLimiter
-    rl = DeliveryRateLimiter(max_per_day=1, cooldown_hours=0,
-                             quiet_start_hour=0, quiet_end_hour=0,
-                             cap_provider=lambda base: base + 1)
-    rl.record_delivery("p1")
-    allowed, reason = rl.can_deliver("p1")
-    assert allowed  # base cap of 1 is raised to 2 by the provider
-    rl.record_delivery("p1")
-    allowed, reason = rl.can_deliver("p1")
-    assert not allowed and "daily_limit" in reason
-
-
-# ---------------------------------------------------------------------------
 # Load + status
 # ---------------------------------------------------------------------------
 

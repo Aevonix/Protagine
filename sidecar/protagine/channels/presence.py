@@ -1,31 +1,26 @@
-"""ConversationPresenceStore — who has been seen in which conversation (L1.1).
+"""ConversationPresenceStore — who has been seen in which conversation.
 
-The conversation participant registry the leveled cross-contact tom2 system
-(docs-level: TOM2 levels) is built on. Every attributed turn records
-``(conversation_key, contact_id, resolution method, group_id)``; downstream
-consumers (the environment-risk classifier, subject-presence exclusion) read a
-windowed census of a conversation.
+Every attributed turn records ``(conversation_key, contact_id, resolution
+method, group_id)``; readers take a windowed census of a conversation.
 
 Properties:
 
 * **Passive.** Recording is fed from the turns/sync attribution chokepoint
   (after the ParticipantResolver has decided WHO the turn came from) and
-  changes nothing about turn processing. ``PROTAGINE_CONV_PRESENCE`` (default
-  on) can disable recording entirely.
+  changes nothing about turn processing.
 * **Identity only.** Rows carry contact ids, resolution methods and opaque
   conversation keys — never message content.
 * **System excluded.** The reserved machine sentinel (``system``) is never
   recorded: machine turns must not shape a conversation's human census.
 * **Reads fail closed.** Read methods PROPAGATE storage errors instead of
   returning an empty (i.e. "nobody here") census — an empty answer from a
-  broken store would read as a SAFE signal to the risk classifier. Callers
-  must catch and treat any error as "unknown, assume hostile".
+  broken store would read as a safe signal. Callers must catch and treat any
+  error as "unknown, assume hostile".
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -40,12 +35,6 @@ logger = logging.getLogger(__name__)
 #: id. Scoped-name matches (unverified link proposals), shadow contacts and
 #: client-claimed ids are NOT strong.
 STRONG_METHODS = frozenset({"handle", "contact_id"})
-
-
-def conv_presence_enabled() -> bool:
-    """PROTAGINE_CONV_PRESENCE (default on): passive presence recording."""
-    return os.environ.get("PROTAGINE_CONV_PRESENCE", "on").strip().lower() not in (
-        "off", "0", "false", "no")
 
 
 def _now() -> datetime:
@@ -84,14 +73,11 @@ class ConversationPresenceStore:
 
         Returns True when a row was written/refreshed. The system sentinel
         and empty ids are silently skipped (never an error — the chokepoint
-        must not care); the PROTAGINE_CONV_PRESENCE gate turns the whole write
-        into a no-op. ``method`` stores the LATEST resolution method for the
+        must not care). ``method`` stores the LATEST resolution method for the
         pair: a weak latest sighting correctly downgrades the row, and a row
         can only read as strong when the most recent turn actually resolved
         strongly (by verified handle / canonical contact id).
         """
-        if not conv_presence_enabled():
-            return False
         conversation_key = str(conversation_key or "").strip()
         contact_id = str(contact_id or "").strip()
         if not conversation_key or not contact_id:

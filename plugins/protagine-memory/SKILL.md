@@ -23,11 +23,9 @@ Bind owner CLI context through the general adapter's explicit
 `attested_system_platforms: [cli]` configuration. Every real channel resolves
 its sender independently; a miss yields no Protagine context or write.
 
-Guest context requires a `context:read` scoped channel principal, exact
-server-resolved contact grant, and a ready P8 or canonical-source projection.
-The provider preflights
-`/v1/host/context/projection-readiness`, sends
-`projection_policy=scoped_viewer_required`, and verifies the response viewer.
+Guest context requires a `context:read` scoped channel principal and an exact
+server-resolved contact grant. The provider requests the guest's context with
+`audience: viewer`; the sidecar returns only that contact's scoped sections.
 If any step fails, use no Protagine context. Never substitute owner context.
 
 ## Model tools
