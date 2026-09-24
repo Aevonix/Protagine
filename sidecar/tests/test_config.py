@@ -42,6 +42,19 @@ def test_defaults_without_a_file(home):
     assert cfg.hermes_home.name == ".hermes"
 
 
+def test_the_affect_mechanism_switch_ships_off_is_a_binary_faculty_and_has_no_environment_variable(home):
+    """``mind.faculties.affect_rules`` (build plan M6): the stateless-rules arm of the affect family."""
+    assert config.DEFAULTS["mind"]["faculties"]["affect_rules"] is False
+    assert load_config(home, environ={"PROTAGINE_MIND_AFFECT_RULES": "on"}).get("mind.faculties.affect_rules") is False
+    assert not any("AFFECT" in name for name in config.ENV_OVERRIDES)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"mind": {"faculties": {"affect_rules": "on"}}}))
+    cfg = load_config(home, environ={})
+    assert cfg.get("mind.faculties.affect_rules") is True and cfg.get("mind.faculties.affect") is True
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"mind": {"faculties": {"affect_rules": "maybe"}}}))
+    with pytest.raises(ConfigError, match="mind.faculties.affect_rules"):
+        load_config(home, environ={})
+
+
 def test_required_file_missing_is_an_error(home):
     with pytest.raises(ConfigError):
         load_config(home, required=True)

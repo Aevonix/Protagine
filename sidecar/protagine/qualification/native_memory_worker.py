@@ -11,8 +11,8 @@ import time
 from unittest.mock import patch
 
 
-MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'opinions', 'broadcast',
-                  'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills')
+MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'affect_rules', 'opinions',
+                  'broadcast', 'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills')
 WORKER_PROFILE = 'protagine-act'
 
 
@@ -24,7 +24,8 @@ def mind_section(switches):
     initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
     faculty flag and drive weight to its release-candidate value from the
     shipped defaults; a ``minus_<faculty>`` switch turns that faculty's flag
-    off, a ``plus_<faculty>`` switch turns on one that ships off, and a
+    off, a ``plus_<faculty>`` switch turns on one that ships off
+    (``plus_skills``, ``plus_affect_rules``), and a
     ``minus_<drive>`` switch sets that drive's weight to 0 (evals section 3,
     the ``full-X`` arms). The flag is written whether or not the
     faculty's code has landed, so an ablation of a faculty nothing reads yet
@@ -83,9 +84,11 @@ def serve_mind(app, state, person, section):
 
     The stores the host routes already own (the commitment store, contacts and
     the ledger) are shared; the intention, feedback and expectation stores live
-    in the same ``memory-state`` directory. The Mind's own timer is never
-    started: the body tick calls ``POST /v1/mind/tick`` through the plugin's
-    ``tick()``, so intentions form in lockstep with the episode's clock.
+    in the same ``memory-state`` directory, and the owner's appraisal records
+    and reported outcomes are read from the arm's ledger, as production reads
+    them. The Mind's own timer is never started: the body tick calls
+    ``POST /v1/mind/tick`` through the plugin's ``tick()``, so intentions form
+    in lockstep with the episode's clock.
     """
     from protagine.api.routers import host
     from protagine.api.routers import mind as mind_router
@@ -93,6 +96,7 @@ def serve_mind(app, state, person, section):
     from protagine.feedback import TypeFeedbackStore
     from protagine.initiatives.store import InitiativeStore
     from protagine.mind import Mind
+    from protagine.self_model.appraisals import AppraisalStore
     from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
     from protagine.turns import get_turn_idempotency_ledger
     directory = state / 'memory-state'
@@ -109,6 +113,7 @@ def serve_mind(app, state, person, section):
                     contacts=getattr(host, '_contacts_store', None),
                     ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
                     router=getattr(host, '_llm_router', None),
+                    appraisals=AppraisalStore(get_turn_idempotency_ledger(directory), owner_id=person),
                     capture=CommitmentExtractor(get_turn_idempotency_ledger(directory),
                                                 lambda: host._commitment_store,
                                                 aliases=contact_aliases(lambda: getattr(host, '_contacts_store', None))))

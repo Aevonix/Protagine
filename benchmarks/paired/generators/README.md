@@ -81,10 +81,9 @@ people`, `--family affect`, `--family opinions`, `--family memory`, `--family
 identity`, `--family improve`). Held-out templates are a Python file **outside the repository**,
 named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
 same `FAMILY`; the generator refuses a path inside the repository, and the
-file is never committed. Every family's gate arms are built-in profiles of the
+file is never committed. Every family's arms are built-in profiles of the
 harness (`paired.PROFILES`, `docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and
-profiles"); the one arm still declared in a file is the affect mechanism arm
-(`affect_profiles.json`).
+profiles"); no family declares an arm in a file.
 
 Besides `initial_files`, `episodes` and a `body`, `artifacts` or `self_report`
 oracle, a template may render `workflow` (a process-restart contract in the
@@ -141,10 +140,10 @@ renders its questions this way into an `anchor` split.
   `label_one_of`). Three satiation templates have no decision turn and are
   graded on the ticks by the `body` oracle; `aggregate-one-cause` carries
   both. The consumer each template exercises is `CONSUMERS` in the module (its
-  name's prefix). Its arms are `full`, `full-affect` (built in) and the
-  mechanism arm `full-affect-plus-rules`, the one arm a family still declares
-  in a file (`affect_profiles.json`, `--profiles`) because `mind.affect_rules`
-  does not exist yet.
+  name's prefix). Its arms are built in: `full`, `full-affect` and the
+  mechanism arm `full-affect-plus-rules` (`full-affect` with the
+  `plus_affect_rules` switch, `mind.faculties.affect_rules: true`: every
+  consumer reads the frozen stateless rules of `P/mind/affect_rules.py`).
 - `opinions.py` is the `mind-opinions-1` dev family (evals section 6.5, plan
   in `docs/proto-agi/families/mind-opinions-1.md`): twelve templates in four
   groups. Every episode is one formation turn (two plans, the decision rule in
