@@ -576,8 +576,10 @@ def main():
             # before the first turn; a restarted phase finds it already there.
             history = inputs.get('history')
             if history and not resuming:
+                # With the plan's embedding endpoint in use, the history is embedded before the first turn.
                 result['tool_evidence']['history'] = paired_history.seed(
-                    home, history, session_db=SessionDB, contact_id=inputs['contact_id'], ledger=plugin)
+                    home, history, session_db=SessionDB, contact_id=inputs['contact_id'], ledger=plugin,
+                    vectors=plugin and os.environ.get('PROTAGINE_EMBED_PROVIDER') == 'openai_api')
                 trace.record('history', result['tool_evidence']['history'])
             resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,

@@ -356,6 +356,50 @@ def test_history_is_seeded_into_hermes_and_retained_in_the_ledger(tmp_path):
     assert 'ledger' not in plain and not (base / 'memory-state').exists()
 
 
+def test_with_an_embedding_endpoint_the_seeded_history_is_embedded_before_the_first_turn(tmp_path, monkeypatch):
+    """The source vector worker embeds imported turns in the background. With an embedding endpoint in the plan
+    the worker waits for it (bounded) and records the drain; otherwise a `full` arm's anchor would be lexical
+    only for reasons of timing."""
+    import threading
+    import time
+    home = tmp_path / 'home'
+    home.mkdir()
+    ledger = home / 'memory-state' / 'turn-idempotency.db'
+
+    def worker():
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                with sqlite3.connect(ledger) as conn:
+                    if conn.execute("SELECT count(*) FROM source_vector_jobs WHERE status='pending'").fetchone()[0]:
+                        time.sleep(0.2)
+                        conn.execute("UPDATE source_vector_jobs SET status='complete'")
+                        return
+            except sqlite3.Error:
+                pass
+            time.sleep(0.05)
+
+    embedder = threading.Thread(target=worker)
+    embedder.start()
+    record = paired_history.seed(home, SESSIONS, session_db=FakeSessionDB, contact_id='fixture-owner', ledger=True,
+                                 vectors=True)
+    embedder.join()
+    drain = record['vector_drain']
+    assert drain['jobs'] == 3 and drain['drained'] == 3 and drain['left'] == 0 and drain['seconds'] >= 0.1
+    # Bounded: a worker that never embeds costs the timeout, and what was left is recorded.
+    stuck = tmp_path / 'stuck.db'
+    with sqlite3.connect(stuck) as conn:
+        conn.execute("CREATE TABLE source_vector_jobs (turn_id TEXT, status TEXT)")
+        conn.executemany("INSERT INTO source_vector_jobs VALUES (?, 'pending')", [('a',), ('b',)])
+    assert paired_history.drain_vectors(stuck, timeout=0.3, poll=0.05)['left'] == 2
+    assert paired_history.drain_vectors(tmp_path / 'absent.db', timeout=0.3)['jobs'] == 0
+    # Without an endpoint (or in a base arm) nothing waits and nothing is recorded.
+    (tmp_path / 'other').mkdir()
+    plain = paired_history.seed(tmp_path / 'other', SESSIONS, session_db=FakeSessionDB, contact_id='fixture-owner',
+                                ledger=True)
+    assert 'vector_drain' not in plain
+
+
 def test_history_import_failure_is_an_error(tmp_path):
     class Refusing(FakeSessionDB):
         def import_sessions(self, sessions):
