@@ -787,8 +787,10 @@ class AppraisalStore:
 
     def affect_events(self, *, since, limit=1000):
         """The owner's reported outcomes and the agent's own appraisal records about the owner,
-        oldest first: ``{ref, kind, topic, approach, dimension, intensity, turn_id, occurred_at,
-        created_at}``. A repair receipt is ``resolved``; a withdrawn record is not an event."""
+        oldest first, the newest ``limit``: ``{ref, kind, topic, approach, dimension, intensity,
+        turn_id, occurred_at, created_at}``. A repair receipt is ``resolved``; a withdrawn record is
+        not an event. A record is written after what it observed, so one created before ``since`` is
+        not read; an unreadable one is skipped."""
         if not self.owner_id:
             return []
         with closing(self.ledger._connect()) as conn:
@@ -798,10 +800,13 @@ class AppraisalStore:
                       for r in conn.execute('SELECT * FROM appraisal_outcomes WHERE owner_id=? AND subject_id=? '
                                             'AND occurred_at>=?', (self.owner_id, self.owner_id, float(since)))]
             for row in conn.execute("SELECT id,payload_json,source_id,created_at FROM appraisal_records WHERE owner_id=? "
-                                    "AND subject_id=? AND kind='appraisal' AND status!='withdrawn'",
-                                    (self.owner_id, self.owner_id)):
-                data = json.loads(row['payload_json'])
-                occurred = float(data.get('observed_at') or row['created_at'])
+                                    "AND subject_id=? AND kind='appraisal' AND status!='withdrawn' AND created_at>=?",
+                                    (self.owner_id, self.owner_id, float(since))):
+                try:
+                    data = json.loads(row['payload_json'])
+                    occurred = float(data.get('observed_at') or row['created_at'])
+                except (AttributeError, TypeError, ValueError):
+                    continue
                 if not data or occurred < float(since):
                     continue
                 events.append({'ref': row['id'], 'kind': 'resolved' if data.get('repairs') else 'appraisal',
@@ -809,7 +814,7 @@ class AppraisalStore:
                                'dimension': str(data.get('dimension') or ''), 'intensity': str(data.get('intensity') or ''),
                                'turn_id': row['source_id'], 'occurred_at': occurred, 'created_at': float(row['created_at'])})
         events.sort(key=lambda event: (event['occurred_at'], event['ref']))
-        return events[:max(0, int(limit))]
+        return events[-int(limit):] if int(limit) > 0 else []
 
     def pending_jobs(self, *, contact_id=None):
         """``{pending, running}``: due pending jobs and running jobs, for one contact's turns when given."""

@@ -233,11 +233,32 @@ async def test_affect_events_merge_outcomes_and_records_with_the_agreed_keys(sta
     assert all(e['turn_id'] != 'other' for e in events)                     # owner subject only
     assert state.affect_events(since=state.test_clock.value - 60) == [
         e for e in events if e['occurred_at'] >= state.test_clock.value - 60]
-    assert state.affect_events(since=0, limit=2) == events[:2]
+    assert state.affect_events(since=0, limit=2) == events[-2:], "past the limit the newest are kept"
     # A withdrawn record is not the agent's appraisal any more.
     state.correct(appraisal['ref'], action='withdraw', correction_id='wrong', reason='Not my frustration.',
                   actor_id='owner')
     assert appraisal['ref'] not in {e['ref'] for e in state.affect_events(since=0)}
+
+
+def test_affect_events_keep_the_newest_and_read_only_the_window(state):
+    """Past ``limit`` the oldest events go, never the newest reports; records written before the window
+    are not read at all, and one unreadable record is skipped rather than failing the read."""
+    now = state.test_clock.value
+    with state.ledger._connect() as conn, conn:
+        module.initialize(conn)
+        for i in range(1001):
+            conn.execute('INSERT INTO appraisal_outcomes VALUES (?,?,?,?,?,?,?,?,?,?)', (
+                f'outcome:{i:05d}', 'owner', 'owner', f't{i}', 'h', 'dismissed', 'nudge', '', now - 86400 + i, now))
+        conn.execute('INSERT INTO appraisal_outcomes VALUES (?,?,?,?,?,?,?,?,?,?)', (
+            'outcome:newest', 'owner', 'owner', 'tN', 'h', 'failed', 'quarterly figures', '', now, now))
+        for ident, created, payload in (('appraisal:old', now - 9 * 86400, 'not json'),
+                                        ('appraisal:bad', now - 60, 'not json either')):
+            conn.execute('INSERT INTO appraisal_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (
+                ident, 'owner', 'owner', 'k-' + ident, 'appraisal', payload, '[]', '{}', 's', 'v', created, None,
+                'current', None))
+    events = state.affect_events(since=now - 7 * 86400, limit=1000)
+    assert len(events) == 1000 and events[-1]['ref'] == 'outcome:newest' and events[0]['ref'] == 'outcome:00002'
+    assert [e['occurred_at'] for e in events] == sorted(e['occurred_at'] for e in events)
 
 
 def test_affect_events_without_an_owner_are_empty(tmp_path):
