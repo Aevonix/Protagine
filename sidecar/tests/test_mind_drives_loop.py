@@ -19,7 +19,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from protagine.api.routers import mind as mind_router
-from protagine.mind.deliberate import RESPONSE_SCHEMA, TASK
+from protagine.mind.deliberate import ASK_RESPONSE_SCHEMA, RESPONSE_SCHEMA, TASK
 from protagine.mind.drives import period
 from test_mind_loop import AUTH, OWNER, Fixture
 
@@ -36,10 +36,12 @@ class DeliberationRouter:
         return 20
 
     async def complete(self, messages, *, context=None, **_):
-        assert context["task"] == TASK and context["response_schema"] == RESPONSE_SCHEMA
+        prompt = messages[1]["content"]
+        # Kind "ask" is offered only with a failing topic's prior attempts (affect's strategy switch).
+        schema = ASK_RESPONSE_SCHEMA if "Prior attempts:" in prompt else RESPONSE_SCHEMA
+        assert context["task"] == TASK and context["response_schema"] == schema
         assert "tools" not in context and context["allow_fallback"] is False    # one request per call
         self.calls.append(context)
-        prompt = messages[1]["content"]
         self.prompts.append(prompt)
         if self.fail:
             raise RuntimeError("endpoint down")

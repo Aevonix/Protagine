@@ -25,7 +25,8 @@ from protagine.mind import Mind
 from protagine.mind.affect import AffectView, Frustration, plan_hash
 from protagine.mind.concerns import Concern
 from protagine.mind.deliberate import (
-    RESPONSE_SCHEMA, SYSTEM, TASK, Deliberation, apply_proposal, build_prompt, parse_proposal, template,
+    ASK_RESPONSE_SCHEMA, RESPONSE_SCHEMA, SYSTEM, TASK, Deliberation, apply_proposal, build_prompt, parse_proposal,
+    template,
 )
 from protagine.mind.rank import Candidate, eligible, pick, rank, score, threshold_for
 from protagine.self_model.appraisals import AppraisalStore
@@ -101,11 +102,52 @@ def test_the_candidate_carries_the_affect_question_through_its_detail():
     assert candidate().affect_ask == ""
 
 
-def test_deliberation_contract_offers_ask():
-    assert '"ask"' in SYSTEM and "prior failed attempts" in SYSTEM
-    assert "ask" in RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"]
-    proposal = parse_proposal(json.dumps({"kind": "ask", "title": "Ask", "body": "Which export is current?"}))
-    assert proposal is not None and proposal["kind"] == "ask"
+def test_ask_is_offered_only_with_the_prior_attempts():
+    """The system prompt and the default schema are the deliberation contract every arm shares (task,
+    goal or note); kind ``ask`` exists only in the schema sent with a failing topic's prompt."""
+    assert '"ask"' not in SYSTEM and 'kind ("task", "goal" or "note")' in SYSTEM
+    assert RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal", "note"]
+    assert ASK_RESPONSE_SCHEMA["schema"]["properties"]["kind"]["enum"] == ["task", "goal", "note", "ask"]
+    assert {k: v for k, v in ASK_RESPONSE_SCHEMA["schema"]["properties"].items() if k != "kind"} == {
+        k: v for k, v in RESPONSE_SCHEMA["schema"]["properties"].items() if k != "kind"}
+    text = json.dumps({"kind": "ask", "title": "Ask", "body": "Which export is current?"})
+    assert parse_proposal(text) is None
+    assert parse_proposal(text, ask=True)["kind"] == "ask"
+    research = candidate(type="research", drive="curiosity", open_ended=True, topic=TOPIC, text="")
+    unasked = apply_proposal(replace(research), concern(), json.loads(text))
+    assert unasked.affect_ask == "" and "Research 'quarterly figures'" in unasked.text, "no failing topic, no ask"
+
+
+class AskRouter:
+    """Always answers with one question for the owner; records what it was offered."""
+
+    supports_function_routing = True
+
+    def function_deadline_seconds(self, *, context=None):
+        return 20
+
+    async def complete(self, messages, *, context=None, **_):
+        self.system, self.prompt, self.schema = messages[0]["content"], messages[1]["content"], context["response_schema"]
+        return SimpleNamespace(content=json.dumps({"kind": "ask", "title": "Ask",
+                                                   "body": "Which source should I use for this?"}),
+                               usage={"total_tokens": 10})
+
+
+@pytest.mark.parametrize("faculties", [{}, {"affect": False}], ids=["full", "full-affect"])
+async def test_without_a_failing_topic_no_arm_offers_or_honours_an_ask(tmp_path, monkeypatch, faculties):
+    """The deliberation call is the same in every arm until a topic fails: the same system prompt and
+    schema, and a model that answers ``ask`` anyway gets the template, not an owner ask."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = arm(tmp_path, "arm", **faculties)
+    fx.mind.router = fx.mind.deliberation.router = router = AskRouter()
+    fx.mind.add_interest(TOPIC)
+    summary = await fx.mind.tick(force=True)
+    assert router.system == SYSTEM and router.schema == RESPONSE_SCHEMA and "ask" not in router.prompt
+    research, = [item for item in summary["formed"] if item["type"] == "research"]
+    row = fx.store.get(research["id"])
+    assert (research["decision"], row.status) == ("act", "approved") and "Which source" not in row.decision_reason
+    assert fx.mind.deliberation.last_error == "unparsable"
+    fx.store.close()
 
 
 def test_build_prompt_names_the_failure_its_pitfalls_and_asks_for_another_approach():
@@ -113,7 +155,8 @@ def test_build_prompt_names_the_failure_its_pitfalls_and_asks_for_another_approa
     prompt = build_prompt(concern(), research, open_goals=1, may_adopt_goal=False, failing=failing())
     assert "Prior attempts: " + NOTE in prompt
     assert "Pitfalls: the archive scrape returned stale data" in prompt
-    assert f'Propose an approach other than: {APPROACH}, or return kind "ask".' in prompt
+    assert (f'Propose an approach other than: {APPROACH}, or return kind "ask" with the one question for the owner '
+            'as the body.') in prompt
     plain = build_prompt(concern(), research, open_goals=1, may_adopt_goal=False)
     assert "Prior attempts" not in plain and "Pitfalls" not in plain
 
@@ -343,9 +386,10 @@ class GoalRouter:
         return 20
 
     async def complete(self, messages, *, context=None, **_):
-        assert context["task"] == TASK and context["response_schema"] == RESPONSE_SCHEMA
+        assert context["task"] == TASK
         prompt = messages[1]["content"]
         self.prompts.append(prompt)
+        assert context["response_schema"] == (ASK_RESPONSE_SCHEMA if "Prior attempts:" in prompt else RESPONSE_SCHEMA)
         if "adopted goal" not in prompt:
             proposal = {"kind": "goal", "title": "Get the quarterly figures right", "body": "Pin down the figures.",
                         "goal": {"description": "Report the current quarterly figures.",
@@ -715,6 +759,11 @@ async def test_form_demotes_act_to_ask_and_never_promotes(ax, monkeypatch):
         assert (question in row.decision_reason) is (decision == "act")
         plain = await ax.mind._form(candidate(dedup_key=f"p{n}", text="body"), 0.9, ax.now)
         assert plain.decision == decision and plain.decision_reason == "policy"
+    # With affect off nothing demotes, whatever a candidate carries (a detail stored while it was on).
+    monkeypatch.setattr(ax.mind.authority, "decide", lambda **_: Verdict(decision="act", reason="policy", cls="internal"))
+    monkeypatch.setattr(ax.mind.feelings, "state_on", False)
+    row = await ax.mind._form(candidate(dedup_key="off", affect_ask=question, text="body"), 0.9, ax.now)
+    assert row.decision == "act" and row.decision_reason == "policy"
 
 
 async def test_a_task_formed_before_the_failures_carries_the_note_at_dispatch(ax):

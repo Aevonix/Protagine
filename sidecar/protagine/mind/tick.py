@@ -1009,7 +1009,7 @@ class Mind:
         verdict = self.authority.decide(kind=candidate.kind, recipient=candidate.recipient,
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
                                         may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now)
-        if candidate.affect_ask and verdict.decision == "act":
+        if candidate.affect_ask and verdict.decision == "act" and self.feelings.active:
             # The strategy switch asks the owner instead of acting; it never grants what authority withheld.
             verdict = dataclasses.replace(verdict, decision="ask",
                                           reason=f"{verdict.reason}; {candidate.affect_ask}"[:300])

@@ -152,7 +152,9 @@ The design is in
    health. Open-ended concerns get **at most one tool-less router call per
    tick** (`P/mind/deliberate.py`): the model returns a task (title, body, a
    `result_field` check), a goal proposal, or a note, and on a topic that
-   keeps failing one question for the owner (`ask`). Without a router the
+   keeps failing one question for the owner (`ask`, offered in the schema
+   and the prompt only then, so every other call is the same in every arm).
+   Without a router the
    template applies; with the tick's call spent, the concern waits.
 8. **Goals.** Curiosity and mastery may adopt an agent-owned goal
    (`P/mind/goals.py`): one `kind='goal'` intention row with a description, a
