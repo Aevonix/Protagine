@@ -478,3 +478,64 @@ def test_a_plan_records_one_embedding_endpoint_identically_for_every_arm(fixture
             paired.plan(fixture.output / 'invalid', native_binding='candidate', evidence_mode='controlled', arms=arms,
                         reference_arm='full', embedding=bad, **fixture.resources)
 
+
+
+def test_plugin_arms_mount_the_skills_dir_like_init(tmp_path):
+    """A plugin arm's Hermes config lists the mind's own skills directory in skills.external_dirs, the entry
+    ``protagine init`` writes for an install, so a promoted lesson is a skill Hermes can list (M9)."""
+    from protagine.init import reconcile_hermes_config
+    config = {'skills': {'external_dirs': ['/elsewhere'], 'create_dir': 'x'}}
+    directory = paired_worker.mount_skills(config, tmp_path)
+    assert directory == tmp_path / 'memory-state' / 'skills' and directory.is_dir()
+    assert config['skills'] == {'external_dirs': ['/elsewhere', str(directory)], 'create_dir': 'x'}
+    assert paired_worker.mount_skills(config, tmp_path) == directory       # idempotent
+    assert config['skills']['external_dirs'] == ['/elsewhere', str(directory)]
+    init, _ = reconcile_hermes_config({}, sidecar_url='http://127.0.0.1:1', key_file=tmp_path / 'k',
+                                      skills_dir=directory)
+    assert init['skills']['external_dirs'] == [str(directory)]
+    assert paired_worker.SKILLS_PROTOCOL == 'paired-skills-1'
+    import inspect
+    assert "'skills_dir': SKILLS_PROTOCOL" in inspect.getsource(paired_worker.inspect_payload)
+
+
+def test_mind_audit_records_lessons_and_their_uses():
+    class Response:
+        def __init__(self, body, status=200):
+            self.status_code, self._body, self.is_success = status, body, status == 200
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self, lessons=True):
+            self.calls, self.lessons = [], lessons
+
+        def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            if path == '/v1/mind/lessons':
+                if not self.lessons:
+                    return Response({'detail': 'not found'}, 404)
+                return Response({'enabled': True, 'text': 'x',
+                                 'lessons': [{'id': 'L-1', 'status': 'active', 'verified': 'owner'}],
+                                 'uses': [{'lesson_id': 'L-1', 'session_id': 'day-04', 'result': None}]})
+            return Response({'entries': []})
+
+    client = Client()
+    audit = paired_worker.mind_audit(client)
+    assert audit['lessons'] == {'lessons': [{'id': 'L-1', 'status': 'active', 'verified': 'owner'}],
+                                'uses': [{'lesson_id': 'L-1', 'session_id': 'day-04', 'result': None}]}
+    path, kwargs = client.calls[-1]
+    assert path == '/v1/mind/lessons' and kwargs['params'] == {'uses': 'true'}
+    # A sidecar without the lesson routes records nothing about lessons.
+    assert 'lessons' not in paired_worker.mind_audit(Client(lessons=False))
+
+
+def test_skills_present_lists_every_skill_at_episode_end(tmp_path):
+    """Every arm's worker records which skills exist when the episode ends, Hermes' own (a background review
+    may write one) and Protagine's, so the pilot sees whether any arm had a skill to use."""
+    assert paired_worker.skills_present(tmp_path) == {'hermes': [], 'protagine': []}
+    for folder in (tmp_path / 'skills' / 'notes' / 'order-codes', tmp_path / 'memory-state' / 'skills' / 'protagine-codes'):
+        folder.mkdir(parents=True)
+        (folder / 'SKILL.md').write_text('---\nname: x\n---\n')
+    (tmp_path / 'skills' / 'notes' / 'README.md').write_text('not a skill')
+    assert paired_worker.skills_present(tmp_path) == {'hermes': ['order-codes'], 'protagine': ['protagine-codes']}

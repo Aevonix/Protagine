@@ -128,6 +128,10 @@ GENERATED_ENVIRONMENT_NOTE = 'messaging'
 # path (paired_worker.OUTBOUND_SCHEMA, families/mind-people-1.md 7.1); in every other family
 # no arm has a send tool, as their plans say.
 GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
+# The families whose question involves skills give every arm the same read-only skill tools
+# (paired_worker.SKILL_TOOLS): Hermes lists skills only to an agent with a skill tool, so without them
+# no arm could see one (evals section 11, 2026-09-24). No arm has skill_manage.
+GENERATED_SKILL_TOOLS = {'mind-improve-1': 'read'}
 # Every episode of a generated family starts its body clock at this UTC time of day, in
 # every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
 GENERATED_CLOCK_START = '12:00'
@@ -298,6 +302,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
             if dataset_version in GENERATED_OUTBOUND:
                 inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
+            if dataset_version in GENERATED_SKILL_TOOLS:
+                inputs['skill_tools'] = GENERATED_SKILL_TOOLS[dataset_version]
             inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before

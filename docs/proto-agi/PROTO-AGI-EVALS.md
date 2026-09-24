@@ -101,8 +101,15 @@ The instrument today (base `26490d3d`):
 | 6 | **Seeded scenario templates:** parameterized templates (names, dates, obligation types, paraphrases) with deterministic oracles and seeded, byte-hashed output. Contact IDs are **fixed-width** (`p-01`..`p-99`), so a `forbidden` check on one ID cannot match another. Held-out templates are read from a path outside the repository. | `benchmarks/paired/generators/` |
 | 7 | **`base+heartbeat` and `base+curator` profiles** (section 3) | profiles |
 
-Added later: campaign mode (ordered episodes sharing one arm's `/state`, with held-out probes at
-fixed positions) in M9, and `protagine eval scorecard` in M10.
+Added later: campaign mode in M9, and `protagine eval scorecard` in M10. As built, a campaign is
+one generated scenario whose every artifact spec carries `probe` metadata (`day`, and `kind`
+`training`, `warranted`, `control` or `old_family`): ordered days in one container and one
+`/state`, one tick ending each day (`paired_cases.CAMPAIGN_PROTOCOL`). Its case gets a deadline of
+600 s plus 720 s per day (at most 4 h) and an 8 MiB output bound (`records.MAX_CAMPAIGN_*`). A plan
+over campaigns freezes the probe as the unit and the campaign as the bootstrap cluster
+(`comparison.campaign`), and the report adds the old-family non-inferiority row, cost per success,
+forbidden hits, descriptive rows per class, probe kind and block, and lesson diagnostics
+(`paired_report._campaign`).
 
 ---
 
@@ -662,3 +669,21 @@ this changes when the first turn starts, not what any arm is given. The served h
 recalls through that endpoint (worker capability `paired-embedding-1`, which a plan with an
 endpoint requires), and only `full-semantic_recall` turns it off: the initiative-only arm keeps
 semantic recall on like the plain plugin arm. No self result was measured before this date.
+
+**2026-09-24: every arm of `mind-improve-1` has the read-only skill tools.** Hermes lists the
+skills index only to an agent that has `skills_list`, `skill_view` or `skill_manage`
+(`H/agent/system_prompt.py`), and the benchmark arms ran `file`, `memory`, `session_search` and
+`todo` plus the plugin tools, so no arm could see or load any skill: `full-plus-skills` was `full`
+by construction and `base-curator` could not use what its curator kept. From this date the family
+declares `skill_tools: read` (`paired_cases.GENERATED_SKILL_TOOLS`), recorded as
+`comparison.skill_tools`, and every arm's agent turns, kanban workers and heartbeat get the stock
+`skills_list` and `skill_view` as one toolset; `skill_manage` stays out of every arm, since an agent
+writing its own skills is another treatment. A plan that declares the tools, or has a
+`full-plus-skills` arm, needs an image whose worker gives them and mounts the mind's skills
+directory in a plugin arm's `skills.external_dirs` as `protagine init` does (worker capability
+`paired-skills-1`). Every arm also records which skills exist at episode end
+(`body.skills_present`), so the pilot sees whether Hermes' own background review wrote one in any
+arm before the contrast is read. The same date brings the campaign mode of the harness
+(section 2.2): a deadline of 600 s plus 720 s per day (4 h at most) and an 8 MiB output bound for a
+campaign case, the probe as the unit with the campaign as the bootstrap cluster, the old-family
+row, cost per success and lesson diagnostics. No improve result was measured before this date.

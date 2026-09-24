@@ -387,3 +387,104 @@ def test_lesson_diagnostics_count_admissions_by_source_and_lesson_use_on_probe_d
     assert full['uses'] == 16 and full['scored_uses'] == 8 and full['wins'] == 8
     assert full['probes'] == {'eligible': 64, 'with_lesson': 8, 'with_lesson_passed': 8}
     assert full['lesson_use_rate'] == 8 / 64
+
+
+def test_improve_campaigns_give_every_arm_the_same_read_only_skill_tools(fixture, monkeypatch, rendered, tmp_path):
+    """Hermes shows the skills index only to an agent with a skill tool, so without one no arm could see a
+    skill (evals section 11, the amendment of 2026-09-24): every arm of mind-improve-1 gets skills_list and
+    skill_view, and none gets skill_manage."""
+    from protagine.qualification import paired_container, paired_worker
+    assert paired_cases.GENERATED_SKILL_TOOLS == {'mind-improve-1': 'read'}
+    assert paired_worker.SKILL_TOOLS == {'read': ('skills_list', 'skill_view')}
+    assert all('skill_manage' not in tools for tools in paired_worker.SKILL_TOOLS.values())
+    arms = ('full-lessons', 'full', 'full-plus-skills', 'base-curator')
+    manifest = campaign_plan(fixture, monkeypatch, rendered, tmp_path, arms=arms)
+    assert manifest['comparison']['skill_tools'] == {'protocol': paired_worker.SKILLS_PROTOCOL, 'mode': 'read',
+                                                     'tools': ['skills_list', 'skill_view']}
+    assert all(pair['arms'][arm]['case']['inputs']['skill_tools'] == 'read'
+               for pair in manifest['pairs'] for arm in arms)
+    # Another generated family declares none.
+    other = copy.deepcopy(rendered)
+    for item in other:
+        for spec in item['oracle']['artifacts']:
+            del spec['probe']
+    write_dataset(tmp_path / 'data-other', other, dataset_id='mind-other-1')
+    monkeypatch.setattr(paired_cases, 'cases', CASES)
+    plain = paired.plan(fixture.output / 'other', native_binding='candidate', evidence_mode='controlled',
+                        dataset_dir=tmp_path / 'data-other', arms=['full-lessons', 'full'],
+                        reference_arm='full-lessons', **fixture.resources)
+    assert 'skill_tools' not in plain['comparison']
+    assert all('skill_tools' not in pair['arms']['full']['case']['inputs'] for pair in plain['pairs'])
+    # An image whose worker does not give the tools cannot run the family.
+    original = paired_container.configuration
+
+    def without_skills(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != 'skills_dir'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', without_skills)
+    with pytest.raises(ValueError, match='skill'):
+        campaign_plan(fixture, monkeypatch, rendered, tmp_path, name='old-image')
+
+
+def test_a_plus_skills_arm_needs_an_image_whose_worker_mounts_the_skills_dir(fixture, monkeypatch):
+    from protagine.qualification import paired_container
+    original = paired_container.configuration
+
+    def without_skills(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != 'skills_dir'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', without_skills)
+    fixture.output.mkdir(mode=0o700)
+    with pytest.raises(ValueError, match='skills'):
+        paired.plan(fixture.output / 'skills', native_binding='candidate', evidence_mode='controlled',
+                    arms=['full', 'full-plus-skills'], **fixture.resources)
+    assert paired.plan(fixture.output / 'lessons', native_binding='candidate', evidence_mode='controlled',
+                       arms=['full-lessons', 'full'], **fixture.resources)['declared_attempts'] == 4
+
+
+@pytest.mark.asyncio
+async def test_every_end_of_day_tick_of_a_campaign_starts_a_night(tmp_path, monkeypatch):
+    """Nightly work needs nothing new in a campaign: the mind arms run with quiet hours off, so the 03:00
+    boundary falls inside every one-day clock advance, and the forced end-of-day tick waits for the night."""
+    from types import SimpleNamespace
+    from protagine.initiatives.store import InitiativeStore
+    from protagine.mind import Mind
+    from protagine.qualification import paired_body
+    from protagine.qualification.native_memory_worker import mind_clock, mind_section
+    from protagine.turns.idempotency import TurnIdempotencyLedger
+    # Imported before the shifted clock is installed: a default argument bound to time.time at import would
+    # otherwise keep the shifted function after the clock is uninstalled.
+    import protagine.self_model.appraisals  # noqa: F401
+
+    class Router:
+        supports_function_routing = True
+
+        def function_deadline_seconds(self, **_):
+            return 20
+
+        async def complete(self, messages, *, context=None, **_):
+            return SimpleNamespace(content='{}', usage={'total_tokens': 10})
+
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    for arm in ({'full': True}, {'full': True, 'minus_lessons': True}):
+        root = tmp_path / str(len(arm))
+        root.mkdir()
+        store = InitiativeStore(state_dir=root)
+        paired_body.install_clock(paired_body.start_offset('12:00'))
+        try:
+            mind = Mind(config=mind_section(arm), store=store, state_dir=root, owner_id='p-01',
+                        ledger=TurnIdempotencyLedger(root / 'turn-idempotency.db'), router=Router(),
+                        clock=mind_clock, backups=False)
+            assert mind_clock().hour == 12
+            nights = []
+            for _ in range(3):
+                paired_body.advance_clock(86400)
+                nights.append((await mind.tick(force=True))['consolidation'])
+            assert nights == ['done'] * 3
+            rows = [row for row in store.intentions(kind=['note'], limit=20) if row.type == 'consolidation']
+            assert len(rows) == 3
+        finally:
+            paired_body.uninstall_clock()
+            store.close()

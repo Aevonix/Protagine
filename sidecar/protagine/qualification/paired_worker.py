@@ -127,6 +127,46 @@ OUTBOUND_SCHEMA = {
 PEOPLE_INSTRUMENT_PROTOCOL = 'paired-people-instrument-1'
 PEOPLE_FILE = 'contacts.json'
 CAPTURE_GATEWAY = 'capture'
+# Skills (M9). A plugin arm's Hermes config lists the mind's own skills directory in
+# skills.external_dirs, as ``protagine init`` does for an install, so a lesson the skills faculty
+# promotes is a skill Hermes can list. Hermes shows the skills index only to an agent with a skill
+# tool, and no arm had one, so a family that declares ``skill_tools: read`` gives every arm (agent
+# turns, kanban workers and the heartbeat) the stock read-only skill tools; skill_manage stays out of
+# every arm (an agent writing its own skills is another treatment). At episode end every arm records
+# which skills exist (``body.skills_present``).
+SKILLS_PROTOCOL = 'paired-skills-1'
+SKILL_TOOLS = {'read': ('skills_list', 'skill_view')}
+SKILL_TOOLSET = 'paired_skills'
+MIND_SKILLS_DIR = ('memory-state', 'skills')        # the served mind's state directory, then its skills
+
+
+def mount_skills(config, home):
+    """The mind's skills directory, created and listed in the arm's ``skills.external_dirs``."""
+    directory = Path(home).joinpath(*MIND_SKILLS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    skills = config.get('skills') if isinstance(config.get('skills'), dict) else {}
+    external = [str(item) for item in (skills.get('external_dirs') or []) if str(item) != str(directory)]
+    config['skills'] = {**skills, 'external_dirs': [*external, str(directory)]}
+    return directory
+
+
+def install_skill_tools(mode):
+    """The declared read-only skill tools as one toolset every arm adds; None adds nothing."""
+    if mode is None:
+        return []
+    if mode not in SKILL_TOOLS:
+        raise ValueError('Unknown skill tools mode')
+    from toolsets import create_custom_toolset
+    create_custom_toolset(SKILL_TOOLSET, 'Read-only skill tools', tools=list(SKILL_TOOLS[mode]))
+    return [SKILL_TOOLSET]
+
+
+def skills_present(home):
+    """``{hermes: [...], protagine: [...]}``: the SKILL.md names under the profile's own skills and the
+    mind's skills directory when the episode ends."""
+    def names(root):
+        return sorted({path.parent.name for path in root.rglob('SKILL.md')}) if root.is_dir() else []
+    return {'hermes': names(Path(home) / 'skills'), 'protagine': names(Path(home).joinpath(*MIND_SKILLS_DIR))}
 
 
 def outbound_send(args, **_):
@@ -238,6 +278,7 @@ def inspect_payload():
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
             'outbound': OUTBOUND_PROTOCOL,
             'people_instrument': PEOPLE_INSTRUMENT_PROTOCOL,
+            'skills_dir': SKILLS_PROTOCOL,
             'treatment_tools': PLUGIN_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
@@ -625,7 +666,9 @@ def mind_audit(client=None, *, limit=500):
     about, never a note or a notice) and, for the ones bound to a kanban task, ``{kanban id: intention id}``,
     so the grader counts one action once whichever name a report cites. The self family grades a
     self-report against them (``paired_body_grading.observed_actions``). Nothing to read, an unreachable
-    sidecar or a sidecar without the mind routes all record nothing."""
+    sidecar or a sidecar without the mind routes all record nothing. The lessons the mind admitted and
+    their uses (``GET /v1/mind/lessons?uses=true``, M9) are recorded as ``lessons`` when the route answers,
+    for the campaign report's lesson diagnostics."""
     from protagine.mind.audit import is_action
     empty = {'audit_ids': [], 'audit_refs': {}}
     client = plugin_client() if client is None else client
@@ -638,9 +681,17 @@ def mind_audit(client=None, *, limit=500):
         return empty
     actions = [row for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
                and is_action(row)]
-    return {'audit_ids': [row['id'] for row in actions],
-            'audit_refs': {row['hermes_ref']: row['id'] for row in actions
-                           if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']}}
+    audit = {'audit_ids': [row['id'] for row in actions],
+             'audit_refs': {row['hermes_ref']: row['id'] for row in actions
+                            if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']}}
+    try:
+        response = client.get('/v1/mind/lessons', params={'uses': 'true'}, timeout=10)
+        value = response.json() if response.is_success else None
+    except Exception:
+        value = None
+    if isinstance(value, dict) and isinstance(value.get('lessons'), list):
+        audit['lessons'] = {'lessons': value['lessons'], 'uses': list(value.get('uses') or [])}
+    return audit
 
 
 def main():
@@ -690,9 +741,14 @@ def main():
     stamp_message('', message_timestamps)
     note = environment_note(inputs.get('environment_note'))
     outbound = outbound_mode(inputs.get('outbound'))
+    skill_tools = inputs.get('skill_tools')
+    if skill_tools is not None and skill_tools not in SKILL_TOOLS:
+        raise ValueError('Unknown skill tools mode')
     turn_system = SYSTEM if note is None else f'{SYSTEM}\n{note}'
     if profile.get('curator'):
         paired_arms.install_curator(config)
+    if plugin:
+        mount_skills(config, home)
     (home / 'config.yaml').write_text(json.dumps(config))
     os.chdir(workspace)
     from .paired_workflow_runtime import EVENT_KINDS, episode_kind
@@ -709,7 +765,8 @@ def main():
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
                                 'tool_loading': tool_loading, 'message_timestamps': message_timestamps,
-                                'environment_note': inputs.get('environment_note'), 'outbound': outbound}}
+                                'environment_note': inputs.get('environment_note'), 'outbound': outbound,
+                                'skill_tools': skill_tools}}
     if phase is not None:
         result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
                                     'start_turn': phase['start_turn']}
@@ -766,6 +823,8 @@ def main():
             observer = None
             # The declared outbound path, identical in every arm (agent turns, workers, heartbeat).
             outbound_toolsets = install_outbound(outbound)
+            # The declared read-only skill tools, identical in every arm (agent turns, workers, heartbeat).
+            outbound_toolsets += install_skill_tools(skill_tools)
             toolsets = [*COMMON_TOOLS, *outbound_toolsets]
             if plugin:
                 from functools import partial
@@ -976,9 +1035,10 @@ def main():
                                        arm_profile=profile, temperature=temperature,
             body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
                   'clock_offset_seconds': paired_body.clock_offset(),
-                  'outbox': paired_body.read_outbox(outbox),
+                  'outbox': paired_body.read_outbox(outbox), 'skills_present': skills_present(home),
                   **({'audit_ids': list(audit.get('audit_ids') or []),
-                      'audit_refs': dict(audit.get('audit_refs') or {})} if mind else {})})
+                      'audit_refs': dict(audit.get('audit_refs') or {})} if mind else {}),
+                  **({'lessons': audit['lessons']} if mind and isinstance(audit.get('lessons'), dict) else {})})
         if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
                 home / 'memory-state' / 'turn-idempotency.db')

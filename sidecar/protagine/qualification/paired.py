@@ -16,8 +16,8 @@ from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMEN
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
                             MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
                             OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
-                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL,
-                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL, SKILL_TOOLS,
+                            SKILLS_PROTOCOL, TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -273,6 +273,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
             and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
         raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
+    if any(labels[arm].get('plus_skills') for arm in labels) and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('A skills arm requires an image whose worker mounts the mind\'s skills directory')
     if embedding is not None and payload.get('embedding') != EMBEDDING_PROTOCOL:
         raise ValueError('An embedding endpoint requires an image whose worker serves semantic recall through it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
@@ -310,6 +312,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     outbound = declared_mode(by_arm, 'outbound', OUTBOUND_MODES, 'outbound path')
     if outbound is not None and payload.get('outbound') != OUTBOUND_PROTOCOL:
         raise ValueError('A declared outbound path requires an image whose worker registers it in every arm')
+    skill_tools = declared_mode(by_arm, 'skill_tools', tuple(SKILL_TOOLS), 'skill tools')
+    if skill_tools is not None and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('Declared skill tools require an image whose worker gives them to every arm')
     # A plugin arm reads the contact records every arm is given only from its people store.
     people_seeded = any(labels[arm].get('plugin') for arm in labels) and any(
         PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
@@ -367,6 +372,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if outbound is not None:
         # The path every arm reaches a contact by (families/mind-people-1.md 7.1).
         comparison['outbound'] = deepcopy(OUTBOUND[outbound])
+    if skill_tools is not None:
+        comparison['skill_tools'] = {'protocol': SKILLS_PROTOCOL, 'mode': skill_tools,
+                                     'tools': list(SKILL_TOOLS[skill_tools])}
     if people_seeded:
         comparison['people_instrument'] = PEOPLE_INSTRUMENT_PROTOCOL
     if embedding is not None:

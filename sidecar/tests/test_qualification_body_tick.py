@@ -173,7 +173,7 @@ def test_audit_ids_are_the_agents_own_actions_read_from_the_mind_log():
                               {'id': 'g-01', 'decision': 'act', 'kind': 'goal', 'type': 'goal'},
                               {'id': 7, 'decision': 'act', 'kind': 'task'}, 'junk'])
     assert paired_worker.mind_audit(client) == {'audit_ids': ['i-01', 'i-02', 'g-01'], 'audit_refs': {'t-1': 'i-01'}}
-    (path, kwargs), = client.calls
+    (path, kwargs), *_ = client.calls
     assert path == '/v1/mind/log' and kwargs['params'] == {'limit': 500} and 0 < kwargs['timeout'] <= 30
     assert paired_worker.mind_audit(_Client(status=404)) == {'audit_ids': [], 'audit_refs': {}}
     assert paired_worker.mind_audit(_Client(raise_on_get=True)) == {'audit_ids': [], 'audit_refs': {}}
