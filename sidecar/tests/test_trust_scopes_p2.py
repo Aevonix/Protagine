@@ -57,15 +57,16 @@ def test_group_guest_resolves_from_its_stored_name():
     assert TrustTier("group_guest") is TrustTier.GROUP_GUEST
 
 
-# ── P2c: promotion (group_guest -> 1:1) ──────────────────────────────────────
+# ── P2c: promotion (group member -> regular; a tier, never a permission) ────────
 
 @pytest.mark.asyncio
 async def test_promotion_candidates_and_promote(store):
     guest = await store.create(display_name="Frequent Guest", trust_tier="acquaintance")
     scope = await store.create_scope(platform="rcs", external_id="conv-pc", label="PC")
     await store.add_scope_member(scope.scope_id, guest.contact_id)
-    for _ in range(5):
-        await store.record_interaction(guest.contact_id)
+    for hour in range(5):  # five conversations (C3: turns within 30 minutes are one)
+        await store.record_interaction(guest.contact_id, f"2026-09-01T{10 + hour:02d}:00:00Z")
+        await store.record_interaction(guest.contact_id, f"2026-09-01T{10 + hour:02d}:05:00Z")
 
     cands = await store.group_promotion_candidates(min_interactions=5)
     assert any(c.contact_id == guest.contact_id for c in cands)
@@ -73,15 +74,15 @@ async def test_promotion_candidates_and_promote(store):
     assert not any(c.contact_id == guest.contact_id
                    for c in await store.group_promotion_candidates(min_interactions=6))
 
-    # promote raises to regular + grants 1:1
+    # promote raises the tier to regular; may_contact is the owner's alone and stays 'ask'
     assert await store.promote_scope_member(guest.contact_id) is True
     g = await store.get(guest.contact_id)
-    assert g.trust_tier == "regular" and g.interaction_allowed is True
-    # no longer a candidate (now has 1:1 rights); idempotent re-promote is a no-op
+    assert g.trust_tier == "regular" and g.may_contact == "ask"
+    # no longer a candidate (regular already); idempotent re-promote is a no-op
     assert not any(c.contact_id == guest.contact_id
                    for c in await store.group_promotion_candidates(min_interactions=1))
     assert await store.promote_scope_member(guest.contact_id) is False
-    assert "scope_promoted_to_1on1" in [a["action"] for a in await store.get_audit_log(guest.contact_id)]
+    assert "scope_promoted" in [a["action"] for a in await store.get_audit_log(guest.contact_id)]
 
 
 @pytest.mark.asyncio

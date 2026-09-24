@@ -27,15 +27,9 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from typing import Any, Optional, Set
 
 logger = logging.getLogger(__name__)
-
-_PHONE_RE = re.compile(r"^\+?[\d\s().-]{7,}$")
-
-from protagine.channels.phone_gateways import get_phone_gateways as _get_phone_gateways
-
 
 class OwnerIdentityError(RuntimeError):
     """The owner's identity is missing or cannot be resolved."""
@@ -219,17 +213,12 @@ class IdentityResolver:
         if any_id.startswith("cid-"):
             return await store.get(any_id)
 
-        # Email handle.
+        # A messaging handle: an email, or a phone number on any gateway (C1).
+        from protagine.contacts.store import is_e164
+        if is_e164(any_id):
+            return await store.resolve_messaging_handle("", any_id)
         if "@" in any_id:
             return await store.resolve_handle("email", any_id)
-
-        # Phone-like handle.
-        if _PHONE_RE.match(any_id):
-            for gateway in _get_phone_gateways():
-                contact = await store.resolve_handle(gateway, any_id)
-                if contact is not None:
-                    return contact
-            return None
 
         # Neo4j Person node ID (UUID) — forward link lives on the contact.
         contact = await store.find_by_person_node_id(any_id)

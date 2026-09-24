@@ -80,11 +80,11 @@ async def test_scope_create_authorizes_members_only_in_group(store):
             "platform": "rcs", "external_id": "conv-9", "gateway": "rcs", "address": GUEST})
         assert a2.json()["authorized"] is False
 
-    # The auto-created guest is a shadow: in the group, but NO global 1:1 rights.
+    # The auto-created guest is a shadow: in the group, with no permission to be contacted 1:1.
     guest = await store.resolve_messaging_handle("rcs", GUEST)
     assert guest is not None
     assert guest.trust_tier == "acquaintance"
-    assert guest.interaction_allowed is False
+    assert guest.may_contact == "ask"
 
 
 @pytest.mark.asyncio

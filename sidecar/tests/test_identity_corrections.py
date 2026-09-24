@@ -25,7 +25,7 @@ async def test_name_candidate_has_separate_repeated_identity_then_exact_correcti
     first = await resolver.resolve(platform='whatsapp', user_id='test@lid', display_name='Robin', group_id='group')
     assert first.contact_id != target.contact_id
     assert first.candidate_contact_id == target.contact_id
-    assert not (await store.get(first.contact_id)).interaction_allowed
+    assert (await store.get(first.contact_id)).may_contact == "ask"   # a shadow: remembered, no permission
     assert not await store.get_handles(target.contact_id)
     assert (await resolver.resolve(platform='whatsapp', user_id='test@lid')).contact_id == first.contact_id
     inputs = dict(operation_id='correction-one', performed_by='owner-test', gateway='whatsapp', address='test@lid',
