@@ -1,6 +1,9 @@
 """``protagine doctor``: the sidecar checks read the served health and fail loudly."""
 from __future__ import annotations
 
+import plistlib
+
+import pytest
 import yaml
 
 from protagine import doctor
@@ -119,3 +122,67 @@ def test_vector_store_check_fails_when_the_library_is_missing(monkeypatch):
     result = check_vector_store()
     assert result.status == FAIL and "pipx install --force protagine" in result.remedy
     assert doctor.run_local_checks()[0].name == "vector-store"
+
+
+def _service_instance(tmp_path, monkeypatch, platform):
+    """The doctor's view of this instance's user service, managed by the fake user manager."""
+    import socket
+    from protagine import init
+    from protagine.services.instance import InstanceService
+    from test_instance_service import Manager
+    (tmp_path / "instance").mkdir()
+    _instance(tmp_path / "instance", monkeypatch, {})
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(ConnectionRefusedError()))
+    manager = Manager()
+    service = InstanceService(tmp_path / "instance", tmp_path / "hermes", python=str(tmp_path / "venv/bin/python"),
+                              home=tmp_path / "user", platform=platform, runner=manager)
+    monkeypatch.setattr(init, "_service", lambda cfg: service)
+    monkeypatch.setattr(service, "health", lambda: {"status": "ok", "problems": []})
+    return service
+
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_service_check_says_whether_the_instance_service_keeps_the_sidecar_up(tmp_path, monkeypatch, platform):
+    """Cutover operability-3: a sidecar started by hand ('protagine start --detach') answers every other
+    check, but nothing restarts it after a crash or starts it at login. The service check says whether
+    this instance's user service is installed, running and written by this version."""
+    service = _service_instance(tmp_path, monkeypatch, platform)
+    result = doctor.check_service()
+    assert result.name == "service" and result.status == WARN
+    assert "no user service" in result.detail and "protagine service install" in result.remedy
+
+    service.install()
+    result = doctor.check_service()
+    assert result.status == FAIL and "not running" in result.detail and "protagine service start" in result.remedy
+
+    service.start()
+    result = doctor.check_service()
+    assert result.status == PASS and service.label in result.detail and "321" in result.detail
+
+    # A unit an earlier release wrote: one log shared with the rotating logger, a restart every 5 s.
+    if platform == "darwin":
+        plist = plistlib.loads(service.definition.read_bytes())
+        plist.update(ThrottleInterval=5, StandardOutPath=str(service.log), StandardErrorPath=str(service.log))
+        service.definition.write_bytes(plistlib.dumps(plist, sort_keys=True))
+    else:
+        unit = service.definition.read_text().replace("RestartSec=30", "RestartSec=5")
+        service.definition.write_text(unit.replace(str(service.manager_log), str(service.log)))
+    result = doctor.check_service()
+    assert result.status == WARN and "earlier release" in result.detail
+    assert "protagine service stop" in result.remedy and "protagine service install" in result.remedy
+    assert "service" in [r.name for r in doctor.run_local_checks()]
+
+
+def test_service_check_skips_where_no_user_manager_exists(tmp_path, monkeypatch):
+    from protagine import init
+    from protagine.services.instance import ServiceError
+    _instance(tmp_path, monkeypatch, {})
+
+    def unsupported(cfg):
+        raise ServiceError("Instance autostart supports Linux systemd user services and macOS launchd")
+
+    monkeypatch.setattr(init, "_service", unsupported)
+    result = doctor.check_service()
+    assert result.status == SKIP and "autostart supports" in result.detail

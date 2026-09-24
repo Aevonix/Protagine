@@ -1,12 +1,14 @@
 """``protagine doctor``: install checks.
 
-Seven things can be wrong with an install, and each has one remedy:
+These things can be wrong with an install, and each has one remedy:
 
 - the Hermes version is outside the supported range
 - ``protagine.yaml``, ``api.key`` or the Hermes keys ``init`` writes are missing
 - the adapter version in Hermes' environment does not match the sidecar
 - ``pip check`` in Hermes' environment is not clean
 - the sidecar is not reachable with the key
+- no user service keeps the sidecar up (a sidecar started by hand is not restarted
+  after a crash or started at login), or the service unit is an earlier release's
 - the plugin is not loaded (not enabled, or not installed where Hermes runs)
 - semantic recall is configured (``router.embed_url``) but the embedder is not serving
 - the vector store library is missing from the sidecar's own environment
@@ -318,6 +320,53 @@ def check_vector_store() -> CheckResult:
     return CheckResult("vector-store", PASS, detail=f"{VECTOR_STORE_MODULE} importable in {sys.executable}")
 
 
+def check_service() -> CheckResult:
+    """This instance's user service (launchd, systemd --user) is installed, running and current.
+
+    A sidecar started by hand (``protagine start --detach``) passes every HTTP check while
+    nothing restarts it after a crash or starts it at login; this check says so.
+    """
+    from protagine import init
+    from protagine.config import load_config
+    from protagine.services.instance import ServiceError
+    try:
+        service = init._service(load_config())
+    except ServiceError as exc:
+        return CheckResult("service", SKIP, detail=str(exc))
+    manager = "launchd" if service.platform == "darwin" else "systemd --user"
+    try:
+        installed = service._owned()
+    except ServiceError as exc:
+        return CheckResult("service", FAIL, detail=str(exc),
+                           remedy="remove or move the file named, then 'protagine service install'")
+    if not installed:
+        return CheckResult("service", WARN,
+                           detail=f"no user service is installed for this instance ({manager}): a sidecar started "
+                                  "by hand is not restarted after a crash or started at login",
+                           remedy="'protagine service install', then 'protagine service start' (stop a sidecar "
+                                  "started by hand first)")
+    try:
+        status = service.status()
+    except ServiceError as exc:
+        return CheckResult("service", WARN, detail=f"{service.label} is installed but {manager} did not answer: {exc}")
+    if not status["running"]:
+        state = "loaded" if status["loaded"] else "not loaded"
+        return CheckResult("service", FAIL, detail=f"{manager} {service.label} is installed but not running ({state})",
+                           remedy="'protagine service start' (stop a sidecar started by hand first); "
+                                  f"the logs are {service.log} and {service.manager_log}")
+    stale = service.outdated()
+    if stale:
+        return CheckResult("service", WARN,
+                           detail=f"{service.label} runs from a unit an earlier release wrote: {'; '.join(stale)}",
+                           remedy="'protagine service stop', 'protagine service install', 'protagine service start'")
+    autostart = status.get("enabled", True) is not False
+    detail = f"{manager} {service.label} running (pid {status['pid']})"
+    if not autostart:
+        return CheckResult("service", WARN, detail=detail + ", but not enabled: it does not start at login",
+                           remedy="'protagine service install' enables it")
+    return CheckResult("service", PASS, detail=detail + ", restarted after a crash and started at login")
+
+
 def run_local_checks() -> List[CheckResult]:
     results: List[CheckResult] = []
     results += _run("vector-store", check_vector_store)
@@ -331,6 +380,7 @@ def run_local_checks() -> List[CheckResult]:
     results += _run("hermes-keys", check_hermes_keys)
     results += _run("worker-profile", check_worker_profile)
     results += _run("plugin-loaded", check_plugin_loaded)
+    results += _run("service", check_service)
     return results
 
 

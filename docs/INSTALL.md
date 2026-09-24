@@ -76,7 +76,8 @@ default `standard`). Then it:
    `service/systemd.log`, and restart a crashed sidecar after 30 seconds. An
    install from an earlier release keeps its old unit (one shared log, a
    restart every 5 seconds) until `protagine service stop`, `protagine service
-   install` and `protagine service start` write the new one.
+   install` and `protagine service start` write the new one; `protagine
+   doctor` warns until then.
 
 It writes no Hermes admin lists and never restarts a running gateway. Every
 step is idempotent: run it again to change an answer, or pass the flags
@@ -96,8 +97,13 @@ protagine doctor
 
 It checks the Hermes version, the instance files, the adapter version, `pip
 check`, the Hermes keys, the worker profile, the plugin registration, the
-sidecar and, when an embedding endpoint is configured, that its embedder is
-serving.
+sidecar service, the sidecar and, when an embedding endpoint is configured,
+that its embedder is serving. The `service` check passes when this instance's
+user service is installed, running and written by this version. It warns when
+no service is installed (a sidecar started by hand with `protagine start
+--detach` serves, but nothing restarts it after a crash or starts it at
+login) or when the unit is an earlier release's, fails when the service is
+installed but not running, and is skipped where there is no user manager.
 
 `/v1/host/health` answers `ok` or `degraded`, and a `problems` list says in
 words why it is not `ok`. Degraded means something the sidecar itself runs is

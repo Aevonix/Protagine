@@ -150,6 +150,29 @@ class InstanceService:
                 'StandardError=append:' + _systemd_path(self.manager_log) + '\n\n'
                 '[Install]\nWantedBy=default.target\n').encode()
 
+    def outdated(self):
+        """What the installed definition still does the way an earlier release wrote it: a log shared
+        with the rotating runtime logger, or a restart delay under ``RESTART_SECONDS``."""
+        content = self.definition.read_bytes()
+        stale = []
+        if self.platform == 'darwin':
+            try:
+                plist = plistlib.loads(content)
+            except Exception:
+                return ['an unreadable definition']
+            if str(self.log) in {plist.get('StandardOutPath'), plist.get('StandardErrorPath')}:
+                stale.append('launchd writes into the rotating sidecar.log')
+            if int(plist.get('ThrottleInterval') or 10) < RESTART_SECONDS:
+                stale.append(f"a crash restarts after {plist.get('ThrottleInterval')} s")
+            return stale
+        unit = content.decode(errors='replace')
+        if 'append:' + str(self.log) + '\n' in unit:
+            stale.append('systemd writes into the rotating sidecar.log')
+        delay = re.search(r'^RestartSec=([0-9]+)$', unit, re.MULTILINE)
+        if delay and int(delay[1]) < RESTART_SECONDS:
+            stale.append(f'a crash restarts after {delay[1]} s')
+        return stale
+
     def status(self):
         owned = self._owned()
         self._manager_ready()
