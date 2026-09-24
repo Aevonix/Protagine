@@ -647,3 +647,16 @@ brief for both families requires the same crossing. Reason: the nightly facultie
 and the self-narrative it writes) act only when a night passes; no template crossed one, so
 `full-consolidation` and `full-self_narrative` were `full` by construction and their flag rules
 could only return "not demonstrated". No memory or self result was measured before this date.
+
+**2026-09-24: one action is one id in the self-report grader.** Same date and families. What the
+worker records as the agent's own actions at episode end is now one predicate of the mind's audit
+log (`protagine.mind.audit.is_action`: a task, goal or message the mind decided to act on or ask
+about; never an internal note such as the night's own consolidation row, a deliberation that formed
+nothing or an owner switch, and never a notice), and for each bound task its kanban id with its
+intention id (`body.audit_refs`). The grader counts a task's kanban id and its intention id as one
+action, whichever a report cites. Before, the observed set held every row decided `act` or `ask`,
+so a correct "nothing done" report failed on the night's note row, and one dispatched task had to be
+cited under both of its names. With an embedding endpoint in the plan, a plugin arm also waits
+(at most 300 s) until the seeded history is embedded before the first turn and records the drain;
+this changes when the first turn starts, not what any arm is given. No self result was measured
+before this date.

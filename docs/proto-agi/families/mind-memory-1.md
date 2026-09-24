@@ -80,6 +80,9 @@ frozen episode.
     self-report types pass when `self-report.json` is `{actions, reasons}` with every cited id
     in the set the harness observed outside the agent, every observed action cited, and every
     reason one of `duty`, `social`, `curiosity`, `mastery`, `upkeep` (`paired_body_grading.assess_self_report`).
+    The observed set is the mind's own actions (`audit.is_action`: tasks, goals and messages it
+    decided to act on or ask about, never notes or notices) plus the tasks created in ticks; a
+    task's kanban id and its intention id count as one action (`body.audit_refs`).
 - **Rules:**
   - Memory faculty: `full` vs `base_hermes` demonstrated (`sign_exact`, alpha 0.05 two-sided
     over non-tied scenarios, at least 6 wins, cluster-bootstrap 95% lower bound above zero;
@@ -112,7 +115,9 @@ frozen episode.
 
 ## 7. Pilot and sizing
 
-No pilot has run. Per evals plan 4.3, each family runs a paired dev pilot of its gate arms on
+No pilot has run. The M8 build ran none: it may make no model endpoint calls, so the pilots
+run at the integration checkpoint (the image of M5 and M8 merged), before either faculty's flag
+is read, and their numbers land in these plan files. Per evals plan 4.3, each family runs a paired dev pilot of its gate arms on
 its dev split (memory: `base_hermes` and `full`, 24 episodes; self: `full` and
 `full-self_narrative`, 15 episodes) with the faculty's development build, and picks the
 smallest n in {40, 60, 80} with at least 80% power for a +20 pp effect
@@ -126,7 +131,21 @@ instrument acceptance: `base_hermes` completes at least 95% of setup turns and p
 - Without `paired plan --embedding-config` the benchmark worker sets
   `PROTAGINE_EMBED_PROVIDER=skip` in every plugin arm, so `full-semantic_recall` cannot differ
   from `full`. With it, every case carries the same endpoint and every arm but
-  `full-semantic_recall` embeds. The flag rule is judged only from a run that has one.
+  `full-semantic_recall` embeds, and a plugin arm waits (at most 300 s) until a seeded history
+  is embedded before the first turn (the drain is recorded with the history). The flag rule is
+  judged only from a run that has one.
+- Which types can separate the nightly arms is known from the dev splits before any pilot
+  (`sidecar/tests/test_m8_arm_contrasts.py` walks every dev scenario under each arm with a fake
+  model and the harness clock). In `full` the night's tick runs the consolidation in every
+  scenario of both families, and in `full-consolidation` in none. What the probe then sees
+  differs only where a night has something to consolidate: in mind-memory-1,
+  `preference-after-distractors` (its four-turn session is summarised and the summary recalled
+  in the probe session) and `contradiction-ask` (the question the mind put to the owner at the
+  night's tick is in the probe's recall); in mind-self-1, `self-report-after-action` (the
+  reminder its ticks formed is narrated with its id). The other types are expected ties
+  between those arms: their sessions are one or two turns and they contain no action of the
+  agent's own. `full-consolidation` is therefore judged on few discordant scenarios, and a
+  "not demonstrated" there is the expected reading, not an instrument failure.
 - `stance-after-restart` cannot move with the narrative in this milestone: the narrative's
   `stances` section is filled only once M7 supplies stances, so that type is not expected to
   separate `full` from `full-self_narrative` until then. The self contrast rests on the
@@ -134,8 +153,9 @@ instrument acceptance: `base_hermes` completes at least 95% of setup turns and p
 - "Two owner platforms" is two owner sessions with different session ids; the worker gives
   every owner turn the `cli` platform. The channel difference is a session difference.
 - The self-report grader's observed set is the ids of tasks the agent created during ticks plus
-  the `audit_ids` the worker records once the M8 audit log exists. A mind action that is only a
-  message carries no id today, so a self-report of it is graded on the ids that exist.
+  the `audit_ids` the worker records from the mind's audit log (`audit.is_action`). A message
+  the mind sent is an action with its intention id; the agent finds it with `protagine_self log`,
+  which answers only in the owner's own session (the probe sessions are the owner's).
 - The probe turn is a request (write a file); it is the only request in an episode, in the
   shape the frozen `persistent-memory` fixtures use. Setup turns remain statements.
 - Anchor: the body clock is the container's, so question and session dates are stated in the

@@ -197,10 +197,18 @@ money.`); `init` refuses a longer one and says which list to shorten, and
 `protagine doctor` reports the rendered length. The plugin reads the file
 itself and renders the constitution into its `protagine` prompt section, which
 Hermes freezes per session, together with `Your owner is <name>.`, the
-**self-narrative** (`GET /v1/mind/narrative`: at most 2,000 characters, four
-computed or cited sections, every line ending in the audit ids it rests on;
-fetched with a 2 s timeout, cached 60 s, and left out when the sidecar or the
-`self_narrative` faculty is off) and two tool notes, 4,000 characters in all.
+**self-narrative** (`GET /v1/mind/narrative`: at most 800 characters, four
+computed or cited sections, every line ending in the ids it rests on: plain ids
+are the agent's own actions, which `protagine_self why` explains, and prefixed
+ids (`interest:`, `judgment:`, `turn:`, `claim:`) are record references;
+fetched with a 2 s timeout for every new session, a failed fetch not retried
+for 60 s, and left out when the sidecar or the `self_narrative` faculty is off)
+and two tool notes, 4,000 characters in all. Every model request of an owner
+session carries the section: at its largest (a 1,500-character constitution,
+an 800-character narrative) it is 3,185 characters with the memory provider's
+block (1,360 GLM-5.3-Flash tokens), a typical install with a history about
+1,745 (560 tokens), against 726 (148) for the benchmark's disposable identity
+and fresh store (`tests/hermes_adapter/test_overhead_budget.py`).
 The narrative is the owner's record (what the agent did for the owner, its
 working stances), so it is rendered only in a session that is the owner's
 alone: a direct chat from one of the owner's handles, or an internal lane with
@@ -209,9 +217,10 @@ session's first hook, so the plugin reads the sender the gateway bound for the
 turn, as the memory provider does. A guest, an unresolved sender, a group or
 channel the owner shares, and a chat with no sender get the constitution and
 the notes, and the sidecar is not asked for the narrative on their behalf.
-The same values reach every appraisal prompt as `agent_values` (an input the
-response schema has no field for), so a contact's preferences are never
-confused with the agent's own.
+The same constitution reaches every appraisal prompt as `agent_constitution`
+(an input the response schema has no field for), so a contact's preferences
+are never confused with the agent's own. `PROTAGINE_AGENT_VALUES` is reserved
+and read by nothing: `init` moves an old unit's values into the file.
 
 The mind cannot rewrite its constitution. In a mind run the plugin guard
 blocks every effectful tool that names `protagine.yaml`, `identity.yaml` or
@@ -225,9 +234,12 @@ and the mind's `persist` hook write `mind.enabled` and `mind.autonomy` only
 (a static test holds this).
 
 **`protagine_self`** is the only source for claims about the agent's own
-actions: `state` (level, budgets, open asks with codes, `working_on`: the
-approved and dispatched tasks with their ids, and, in the owner's own session,
-the narrative text),
+actions, and the record is the owner's: `state`, `log` and `why` answer in full
+only in the owner's own session (a direct chat from an owner handle, or the
+CLI); a guest, a group the owner shares and a mind worker get the switch state
+(`enabled`, `autonomy`, `sidecar_reachable`) and a refusal for `log` and `why`.
+`state` (level, budgets, open asks with codes, `working_on`: the approved and
+dispatched tasks with their ids, and the narrative text),
 `log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
 yesterday?" is one call, and an action that is not in the log did not happen),
 `why <id>` (an unknown id answers "no intention `<id>` exists in the audit

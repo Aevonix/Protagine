@@ -198,7 +198,7 @@ keywords.
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in
 [docs/MIND.md](MIND.md), and its nightly consolidation (digests, contradictions,
-dedupe, episode summaries and the self-narrative) in
+episode summaries and the self-narrative) in
 [docs/CONSOLIDATION.md](CONSOLIDATION.md).
 
 The sidecar reads a number of tuning settings from its process environment

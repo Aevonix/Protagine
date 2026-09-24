@@ -5,24 +5,26 @@ Once per night crossed (the local boundary, the start of the quiet window or
 left in its stores, cheapest and most valuable first:
 
 1. the self-narrative delta: one call that edits only ``self.recent``; every
-   line must cite ids from the evidence it was shown, and those ids must exist
+   line must cite ids from the evidence it was shown (the agent's own actions,
+   ``audit.is_action``), and those ids must exist
 2. contradictions (no model): two live scalar claims about the same subject
-   and predicate with different values become one ``question`` concern
-   (broadcast only, never a task) and exactly one question to the owner
-3. dedupe (no model): identical live scalar claims fold into the earliest
-4. per-contact digests, written into the contact's own record through the contact
+   and predicate with different values become one question concern carrying a
+   typed message candidate to the owner, which the tick's ``_act`` forms like
+   any other concern; at most one new question a night
+3. per-contact digests, written into the contact's own record through the contact
    store (``set_digest``, the ``digest`` / ``digest_sources`` columns of the people
    milestone): at most six a night, the contacts talked with in the last seven
    days, never the owner, skipped while the stored sources are the live claims
-5. episode summaries: at most eight a night, written under the episode's contact
+4. episode summaries: at most eight a night, written under the episode's contact
 
 Every input query excludes the mind's own rows (``SELF_TURN_SQL``): the
 autobiography and the episode summaries are the agent's record, not the
-person's conversation. Every call is gated by the shared day budget
-(``Authority.tokens_allowed``) and by ``learn_share x llm_tokens_per_day``,
-and its real usage is charged to the night's ``note/consolidation`` audit row,
-so the day budget sees it. The run is resumable: each stage is idempotent,
-and a night interrupted mid-way is picked up again on the same note row.
+person's conversation. Claims are read one witness per value (the newest), the
+rule recall applies; nothing in the claim store is rewritten. Every call is
+gated by the shared day budget (``Authority.tokens_allowed``) and by
+``learn_share x llm_tokens_per_day``, and its real usage is charged at once to
+the run's ``note/consolidation`` audit row, so the day budget sees it. Every
+stage is idempotent: a run cut short simply runs again at the next due tick.
 """
 
 from __future__ import annotations
@@ -34,7 +36,6 @@ import json
 import logging
 import math
 import re
-import uuid
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
