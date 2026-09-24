@@ -1479,13 +1479,19 @@ class Mind:
 
     async def _digests(self, now: datetime) -> Optional[int]:
         """Once a day, the template digest of every contact the agent talked with in the last 24 h
-        (architecture 4.7 item 4), written to the contact store for the packet and ``inspect``."""
+        (architecture 4.7 item 4), written to the contact store for the packet and ``inspect``.
+
+        The digest column has one other writer, the memory faculty's generated digest (M8). While
+        that can run (``consolidation`` on and a router), the template fills only an empty digest
+        or its own earlier template (sources ``["template"]``), never the generated one; with
+        consolidation off the template is the only writer (integration map X1)."""
         if not self.faculties["people"] or self.contacts is None or not hasattr(self.contacts, "set_digest"):
             return None
         local_date = now.astimezone(self.tz).date().isoformat()
         if self._daily.get("people_digests") == local_date:
             return None
         self._daily["people_digests"] = local_date
+        generated = bool(self.faculties.get("consolidation")) and self.router is not None
         since, written, offset, page = now - timedelta(days=1), 0, 0, 200
         while offset < 10000:
             try:
@@ -1498,6 +1504,8 @@ class Mind:
                 contact_id = str(record.get("contact_id") or "")
                 last = _utc(record.get("last_interaction_at"))
                 if not contact_id or self._is_owner(contact_id) or last is None or last < since:
+                    continue
+                if generated and record.get("digest") and list(record.get("digest_sources") or []) != TEMPLATE_SOURCES:
                     continue
                 try:
                     await self._write_digest(record, now)

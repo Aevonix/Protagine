@@ -55,6 +55,28 @@ async def test_the_daily_writer_digests_contacts_with_a_recent_interaction_once(
     assert (await fx.tick())["digests"] == 1 and set(fx.contacts.digests) == {CONTACT, OTHER}
 
 
+class NoCalls:
+    """A router the digest writer must never call: the template digest is rendered, not generated."""
+    supports_function_routing = True
+
+    async def complete(self, *args, **kwargs):
+        raise AssertionError("the template digest called the router")
+
+
+async def test_the_template_writer_never_replaces_a_digest_the_memory_faculty_wrote(make):
+    """Audit M10 / integration map X1: one digest column, two writers. While the memory faculty
+    can write (consolidation on, a router), the template fills only an empty digest or its own
+    earlier template; with consolidation off it is the only writer and always writes."""
+    recent = dict(tier="unknown", last=T0 - timedelta(hours=2), count=3)
+    written = {**contact(CONTACT, **recent), "digest": "Told me about the lease.", "digest_sources": ["claim:c-1"]}
+    template = {**contact(OTHER, **recent), "digest": "An older template.", "digest_sources": ["template"]}
+    empty = {**contact("p-04", **recent), "digest": None, "digest_sources": []}
+    fx = make([written, template, empty], router=NoCalls(), config={"faculties": {"consolidation": True}})
+    assert (await fx.tick())["digests"] == 2 and set(fx.contacts.digests) == {OTHER, "p-04"}
+    alone = make([written], router=NoCalls(), config={"faculties": {"consolidation": False}})
+    assert (await alone.tick())["digests"] == 1 and alone.contacts.digests[CONTACT][1] == ["template"]
+
+
 async def test_people_off_writes_no_digests(make):
     fx = make([contact(CONTACT, last=T0 - timedelta(hours=2))], config={"faculties": {"people": False}})
     assert (await fx.tick())["digests"] is None and fx.contacts.digests == {}
