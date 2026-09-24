@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased - feelings
+
+The mind keeps its own affect (architecture 4.3, build plan M6) in
+`P/mind/affect.py`: frustration per topic, worry, curiosity and satisfaction
+as decaying `mind_state` levels, each capped at 0.7 and citing up to five
+causes, with recent dismissals as a fifth level (the satiation input, never
+shown as a mood) and a load computed each tick. One snapshot of stored
+records feeds it every tick: the owner's reported outcomes and appraisal
+records of the last week, failed, blocked, verified and rated intentions,
+expectation misses, owner turns on topics memory knew nothing about, and the
+near-term obligations the owner or the assistant owes. Each event is applied
+once, as if at its own time, and evidence that is erased takes its topic with
+it. Four consumers read one view. The strategy switch: a topic at frustration
+0.5 puts "Prior attempts at T failed N times using A; choose a different
+approach or ask one question." into the owner's Mind section, the
+deliberation prompt (with the failures' reasons as pitfalls) and the task
+body; deliberation may answer with one question for the owner (kind `ask`),
+and a plan identical to one that already failed is asked, never dispatched
+again. Overload: curiosity and social work and optional messages wait while
+the load is 0.6 or more. Priority: worry lifts owed duty and curiosity lifts
+research. Satiation: after dismissals or recent success an optional nudge to
+the owner needs a higher score. Affect never holds back an owed obligation
+or raises its bar, and never raises authority; the one change it makes to a
+decision is the strategy switch's question, which turns an `act` into an
+`ask`. A calm tone line ("Mood: somewhat frustrated about the
+quarterly figures; a little uneasy.") joins the Mind section, and
+`protagine_self state`, `GET /v1/mind/state` and `protagine mind status` show
+each level with its cited causes.
+
+The owner's statements reach the feeling through the appraisal call the
+projection worker already makes: its response gains a required `outcomes`
+list (failed, succeeded, dismissed or corrected, with the topic and the
+approach used), stored per owner turn in the new ledger table
+`appraisal_outcomes` and deleted with its source. Outcomes are counted
+occurrences, not votes: "the export failed twice" is two, a restatement adds
+none. A forced tick waits up to 30 s for the owner's pending appraisal jobs
+(a timer tick 2 s), alongside the capture drain, so a statement made just
+before a decision counts in it. The commitment extractor gives an item a
+priority below 50 only when the person calls it optional; that is how affect
+tells a nice-to-have from an owed promise.
+
+Two binary switches: `mind.faculties.affect` (on) keeps the state, and the
+new `mind.faculties.affect_rules` (off) makes every consumer read its frozen
+stateless rule (`P/mind/affect_rules.py`) over the same snapshot instead.
+With both off the mind decides exactly as before. The affect family's
+mechanism arm is the built-in profile `full-affect-plus-rules`
+(`full-affect` plus `plus_affect_rules`), so
+`benchmarks/paired/generators/affect_profiles.json` is gone and the
+arm-profile protocol is `paired-arm-profiles-5`; an older image is refused.
+A served arm's mind now reads the arm owner's appraisal records and outcomes
+as production does, which the drives family's arms see too.
+
+Deleted: the mind model signal collector and graph baseline
+(`P/intelligence/mind_model/`) and `POST /v1/host/signals/ingest` with its
+schemas, contact attribution, `signals` capability and
+`PROTAGINE_SIGNALS_ATTRIBUTION`. No plugin posted that route; an external
+caller now gets 404. The appraisal job lease is a plain claim status (a job a
+dead process left running is reset by the next process's first claim), and
+an erasure or an attribution change deletes the appraisal records, heads,
+corrections and outcomes derived from that source instead of keeping
+tombstones. The ledger removes old tombstones once when it opens; nothing
+else needs `protagine upgrade`. See [docs/MIND.md](docs/MIND.md) (Feelings).
+
 ## Unreleased - evaluation families for the M4 to M9 gates
 
 The pre-registered evaluation families of the proto-AGI plan land as seeded
@@ -16,8 +79,8 @@ landed yet still has its flag served, so its ablation is a no-op contrast
 until its milestone. `mind-drives-1` (M4) adds the `selection` and `goal` body
 oracles, `mind-people-1` (M5) the per-target `sends` and inbound `replies`
 checks, and `mind-affect-1` (M6) decision-turn episodes graded on a JSON file;
-its rules mechanism arm stays a profile file because `mind.affect_rules` does
-not exist yet.
+its rules mechanism arm became the built-in `full-affect-plus-rules` with the
+feelings milestone.
 
 The opinions evaluation family `mind-opinions-1` (evals section 6.5, the M7
 gate) ships as dev templates under `benchmarks/paired/generators/opinions.py`

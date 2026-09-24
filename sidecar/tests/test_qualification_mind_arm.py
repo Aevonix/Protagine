@@ -159,6 +159,33 @@ def test_served_mind_reads_the_arm_owners_appraisals(tmp_path, monkeypatch):
     assert faculties['affect'] is True and faculties['affect_rules'] is False
 
 
+
+@pytest.mark.parametrize('arm, source', [('full', 'state'), ('full-affect', 'off'),
+                                         ('full-affect-plus-rules', 'rules')])
+def test_each_affect_arm_serves_its_switch_to_the_arms_mind(tmp_path, monkeypatch, arm, source):
+    """The affect family's gate arms end to end: the profile's switches become mind.faculties, the
+    served Mind reads the owner's reported outcomes from the arm's own ledger, and two reported
+    failures switch the strategy in full (the state) and in full-affect-plus-rules (the rules) only."""
+    from test_mind_affect_loop import REPORTS, TOPIC
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    section = worker.mind_section(paired_worker.mind_switches(paired.PROFILES[arm]))
+    with worker.serve_mind(FastAPI(), tmp_path / 'state', 'p-01', section) as mind:
+        appraisals = mind.feelings.appraisals
+        for n in range(2):
+            appraisals.ledger.record_source(f'owner-{n}', contact_id='p-01', session_id='session-owner', messages=[
+                {'role': 'user', 'content': 'Ugh, the archive export gave stale quarterly figures.'},
+                {'role': 'assistant', 'content': 'Noted.'}], occurred_at=datetime.now(timezone.utc).isoformat())
+
+        async def run():
+            while await appraisals.process_one(REPORTS):
+                pass
+            return await mind.tick(force=True)
+        summary = asyncio.run(run())
+        report = mind.state()['affect']
+    assert report['source'] == source and report['enabled'] is (source != 'off')
+    assert summary['affect'].get('switch', []) == ([] if source == 'off' else [TOPIC])
+    assert (report['levels'] != {}) is (source == 'state')
+
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):
     directory = worker.install_worker_profile(tmp_path)
     assert directory == tmp_path / 'profiles' / 'protagine-act' and (directory / 'config.yaml').is_file()

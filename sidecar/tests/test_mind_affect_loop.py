@@ -578,3 +578,41 @@ async def test_a_task_formed_before_the_failures_carries_the_note_at_dispatch(ax
     item, = ax.mind.dispatch()
     assert item["id"] == formed["id"] and item["body"].endswith("\n\n" + NOTE)
     assert "Prior attempts" not in ax.store.get(formed["id"]).context["body"]    # the stored plan is unchanged
+
+
+@pytest.mark.parametrize("faculties", [{}, {"affect": False, "affect_rules": True}], ids=["state", "rules"])
+async def test_old_failures_and_a_success_between_failures_force_no_switch(tmp_path, monkeypatch, faculties):
+    """Acceptance, in both sources: two failures that switched the strategy no longer do three days
+    later, and a failure, a success and a failure are one failure since the success, so the owed
+    task on the topic goes out without the note and nothing is asked."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    old = arm(tmp_path, "old", **faculties)
+    await old.say("owner-1", "Ugh, the archive export gave stale quarterly figures.")
+    old.shift(hours=1)
+    await old.say("owner-2", "Checked again: the archive export gave stale quarterly figures.")
+    assert (await old.mind.tick(force=True))["affect"]["switch"] == [TOPIC]
+    old.shift(days=3)
+    later = await old.mind.tick(force=True)
+    assert later["affect"]["switch"] == [] and "Prior attempts" not in old.mind.section()
+    if not faculties:
+        frustration, = old.mind.state()["affect"]["levels"]["frustration"]
+        assert frustration["level"] == pytest.approx(0.6 / 8, abs=0.01) and len(frustration["causes"]) == 2
+    old.store.close()
+
+    mixed = arm(tmp_path, "mixed", **faculties)
+    await mixed.say("owner-1", "Ugh, the archive export gave stale quarterly figures.")
+    mixed.shift(hours=1)
+    await mixed.say("owner-2", "Good news: the ledger figures were right.")
+    mixed.shift(hours=1)
+    await mixed.say("owner-3", "And now the archive export gave stale quarterly figures once more.")
+    assert [event["kind"] for event in mixed.appraisals.affect_events(since=0)] == ["failed", "succeeded", "failed"]
+    mixed.owe("Send the owner the quarterly figures", hours=-1, obligor="assistant")
+    summary = await mixed.mind.tick(force=True)
+    assert summary["affect"]["switch"] == [] and "Prior attempts" not in mixed.mind.section()
+    formed, = summary["formed"]
+    assert formed["type"] == "commitment_overdue" and formed["decision"] == "act"
+    item, = mixed.mind.dispatch()
+    assert "Prior attempts" not in item["body"]
+    if not faculties:
+        assert mixed.mind.state()["affect"]["levels"]["frustration"][0]["level"] < 0.5
+    mixed.store.close()

@@ -68,10 +68,12 @@ The design is in
    a job the worker holds is waited for), bounded to 5 s on the timer and
    30 s on a forced tick (`POST /tick`, the CLI, the benchmark), so a promise
    made seconds ago is a row before the drives look; the tick summary's
-   `capture_drained` records what landed and how long it waited. Then
-   decay, the drives, the concerns they raise, reconsideration, the goals and
-   the one ranked producer below. An intention still waiting (deferred,
-   asked or approved) whose source has resolved in the meantime
+   `capture_drained` records what landed and how long it waited. Alongside
+   the drain it waits for the owner's pending appraisal jobs (`affect_wait`,
+   see Feelings). Then decay, the agent's feelings (`affect`), the drives, the
+   concerns they raise, reconsideration, the goals and the one ranked producer
+   below. An intention still waiting (deferred, asked or approved) whose
+   source has resolved in the meantime
    (`invalidates_if`: the commitment fulfilled or cancelled, the awaited reply
    recorded), whose commitment row was removed, put on hold or moved back
    into the future by a later conversation, whose drive the owner set to
@@ -132,8 +134,9 @@ The design is in
    its `invalidates_if` condition holds (it is cancelled). A dispatched
    intention is a commitment Hermes is running; the outcome speaks.
 6. **Rank.** The top concerns score `salience x drive weight x feedback
-   multiplier x (1 - cost)`. The configured weight orders and is factored out
-   of the threshold, so a low-weight drive still acts when nothing outranks it,
+   multiplier x affect x (1 - cost)` (affect: Feelings, below). The
+   configured weight orders and is factored out of the threshold, so a
+   low-weight drive still acts when nothing outranks it,
    while satiation lowers the effective weight and can hold back the agent's
    self-chosen recurring work (obligations and notices are only ordered); the
    multiplier is the `TypeFeedbackStore` value for `(type, drive)`, so a
@@ -144,7 +147,8 @@ The design is in
 7. **Deliberate.** Templates cover commitments, reply waits, stale tasks and
    health. Open-ended concerns get **at most one tool-less router call per
    tick** (`P/mind/deliberate.py`): the model returns a task (title, body, a
-   `result_field` check), a goal proposal, or a note. Without a router the
+   `result_field` check), a goal proposal, or a note, and on a topic that
+   keeps failing one question for the owner (`ask`). Without a router the
    template applies; with the tick's call spent, the concern waits.
 8. **Goals.** Curiosity and mastery may adopt an agent-owned goal
    (`P/mind/goals.py`): one `kind='goal'` intention row with a description, a
@@ -157,8 +161,9 @@ The design is in
    goals`, the Mind section and the digest.
 9. **Decide.** `authority.decide` returns `act`, `ask`, `drop` or `defer` from
    the level x class table, the floor, the deny list, the budgets and the
-   breaker. The intention is one row of the initiatives table, which is also
-   the audit log.
+   breaker. A strategy-switch question (Feelings) turns an `act` into an
+   `ask` and never turns anything into an `act`. The intention is one row of
+   the initiatives table, which is also the audit log.
 10. **Dispatch.** The body pulls `GET /v1/mind/dispatch`, creates the kanban
     task with `mind:<id>` as its idempotency key (`goal_mode` for a goal step)
     and posts `POST /v1/mind/dispatch/{id}/bound {hermes_ref}`. Messages wait
@@ -207,20 +212,31 @@ day). Each event is applied once (its reference is kept in `affect.applied`)
 as if at its own time and then decayed; an outcome and an appraisal record of
 the same turn on the same topic count once, while every reported occurrence
 counts; evidence that is erased takes its frustration row, topic text
-included, with it. A forced tick waits up to 30 s (a timer tick 2 s) for the
-owner's pending appraisal jobs, so a statement made just before the tick
-counts in it.
+included, with it. The owner's statements arrive through the appraisal call
+the projection worker already makes for every turn: its `outcomes` list
+(failed, succeeded, dismissed or corrected, with the topic and the approach
+used; [SOCIAL-STATE.md](SOCIAL-STATE.md)) is stored per owner turn in the
+ledger's `appraisal_outcomes` table, so "the export failed twice" is two
+failures and a restatement adds none. A forced tick waits up to 30 s (a
+timer tick 2 s) for the owner's pending appraisal jobs, so a statement made
+just before the tick counts in it.
 
 Four consumers read the feeling. Affect only ever holds or lowers
 discretionary work (recurring self-chosen work, curiosity and social outreach,
-anything below priority 0.5); it never holds or demotes an owed obligation and
-never raises authority.
+anything below priority 0.5); it never holds back an owed obligation or
+raises its bar, and never raises authority. The one change it makes to a
+decision is the strategy switch's question, which turns an `act` into an
+`ask` for the owner.
 
 1. **Strategy switch.** A topic at frustration 0.5 or more puts "Prior
    attempts at T failed N times using A; choose a different approach or ask
    one question." into the task body and the owner's Mind section;
-   deliberation proposes another approach or one question, and an identical
-   plan is never dispatched again without the owner.
+   the deliberation prompt also names the failures' reasons as pitfalls and
+   the approaches to avoid, and the model proposes another approach or
+   returns kind `ask` (one question for the owner; the step is asked with a
+   runnable body). A plan identical to one that already failed on the topic
+   is asked, never dispatched again without the owner. A task formed before
+   the failures gets the note when the body pulls it.
 2. **Overload** (load 0.6 or more). Curiosity and social work and optional
    messages wait; replies stay brief.
 3. **Priority.** Owed duty scores x (1 + 0.5 x worry); curiosity work x (1 +
