@@ -143,3 +143,30 @@ def test_missing_routes_explain_themselves(home, monkeypatch, capsys):
     monkeypatch.setattr(httpx, "Client", transport.client)
     assert mind_cli.run(_parse(["mind", "stats"])) == 1
     assert "not_found" in capsys.readouterr().err
+
+
+def test_owner_can_retire_a_lesson_from_the_cli(home, monkeypatch, capsys):
+    lesson = {"id": "L-1a2b3c4d5e", "status": "active", "kind": "strategy", "signature": "topic:order-codes",
+              "title": "Order codes by channel", "when_to_use": "an order code is asked for",
+              "content": "Channel letter first.", "verified": "owner", "origin": "night", "evidence": ["turn:t-1"],
+              "tally": {"uses": 2, "wins": 2, "losses": 0, "applied": 3}}
+    transport = _Transport({
+        ("GET", "/v1/mind/lessons"): {"enabled": True, "lessons": [lesson], "uses": [], "text": "rendered"},
+        ("POST", "/v1/mind/lessons/L-1a2b3c4d5e/retire"): {**lesson, "status": "retired",
+                                                           "closed_reason": "the rule changed"}})
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "lessons"])) == 0
+    listed = capsys.readouterr().out
+    assert "L-1a2b3c4d5e" in listed and "Order codes by channel" in listed and "2 wins in 2 verified uses" in listed
+    method, path, _ = transport.calls[-1]
+    assert (method, path) == ("GET", "/v1/mind/lessons")
+    assert mind_cli.run(_parse(["mind", "lessons", "show", "L-1a2b3c4d5e"])) == 0
+    shown = capsys.readouterr().out
+    assert "Channel letter first." in shown and "turn:t-1" in shown
+    assert mind_cli.run(_parse(["mind", "lessons", "retire", "L-1a2b3c4d5e"])) == 2      # --reason is required
+    assert "needs --reason" in capsys.readouterr().err
+    assert mind_cli.run(_parse(["mind", "lessons", "retire", "L-1a2b3c4d5e", "--reason", "the rule changed"])) == 0
+    method, path, body = transport.calls[-1]
+    assert (method, path) == ("POST", "/v1/mind/lessons/L-1a2b3c4d5e/retire")
+    assert json.loads(body) == {"reason": "the rule changed", "by": "cli"}
+    assert "retired" in capsys.readouterr().out

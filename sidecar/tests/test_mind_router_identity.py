@@ -158,3 +158,40 @@ def test_a_named_guest_reads_only_the_bare_rows_addressed_to_them(stand_in):
     # No owner configured: every named viewer is a guest.
     stand_in.owner_id = None
     assert _call("GET", "/v1/mind/state", params={"viewer": "owner-1"}).json() == {"enabled": True, "autonomy": "standard"}
+
+
+def test_the_lessons_route_shows_nothing_to_a_guest(stand_in, tmp_path):
+    """``/v1/mind/lessons``: the owner's (and the key holder's) view of what the mind learned and where it
+    was used; a guest viewer gets nothing, and only the owner or the key holder retires a lesson."""
+    from protagine.mind.lessons import Lessons
+    from protagine.mind.outcomes import Autobiography
+    from protagine.turns.idempotency import TurnIdempotencyLedger
+    ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+    stand_in.owner_id = "p-01"
+    stand_in.lessons = Lessons(ledger=ledger, store=stand_in.store, owner_id="p-01", clock=lambda: NOW,
+                               autobiography=Autobiography(ledger, owner_id="p-01", clock=lambda: NOW))
+    lesson = stand_in.lessons.admit({"signature": "topic:tides", "kind": "strategy", "title": "Tide tables",
+                                     "when_to_use": "tide tables are asked for", "content": "Use the harbour table."},
+                                    verified="owner", origin="night", status="active", evidence=[], lineage=[], now=NOW)
+    task, _ = stand_in.store.create_intention(kind="task", type="research", title="tides", drive="curiosity",
+                                              cls="internal", decision="act", decision_reason="t", status="done",
+                                              dedup_key=None, created_at=NOW)
+    stand_in.store.update(task.id, lesson_ids=[lesson.id], outcome="done", verified="owner", verdict="useful")
+    owner = _call("GET", "/v1/mind/lessons", params={"uses": "true"}).json()
+    assert [row["id"] for row in owner["lessons"]] == [lesson.id] and owner["enabled"] is True
+    assert owner["lessons"][0]["tally"] == {"uses": 1, "wins": 1, "losses": 0, "applied": 1}
+    assert owner["uses"] == [{"lesson_id": lesson.id, "intention_id": task.id, "kind": "task", "session_id": None,
+                              "at": task.created_at.isoformat(), "result": "win"}]
+    assert _call("GET", "/v1/mind/lessons", params={"viewer": "p-01"}).json()["lessons"]
+    guest = _call("GET", "/v1/mind/lessons", params={"uses": "true", "viewer": "p-02"}).json()
+    assert guest["lessons"] == [] and guest["uses"] == [] and lesson.id not in guest["text"]
+    assert _call("GET", "/v1/mind/lessons", params={"status": "retired"}).json()["lessons"] == []
+    # Retiring: a reason is required, an unknown id is a 404, and a retired lesson stays listed as retired.
+    assert _call("POST", f"/v1/mind/lessons/{lesson.id}/retire", json={}).status_code == 422
+    assert _call("POST", "/v1/mind/lessons/L-0000000000/retire", json={"reason": "x"}).status_code == 404
+    retired = _call("POST", f"/v1/mind/lessons/{lesson.id}/retire", json={"reason": "the rule changed", "by": "cli"})
+    assert retired.status_code == 200 and retired.json()["status"] == "retired"
+    assert retired.json()["closed_reason"] == "the rule changed"
+    assert [row["id"] for row in _call("GET", "/v1/mind/lessons", params={"status": "retired"}).json()["lessons"]] == [
+        lesson.id]
+    assert _call("POST", f"/v1/mind/lessons/{lesson.id}/retire", json={"reason": "again"}).status_code == 409

@@ -478,6 +478,30 @@ class Lessons:
                     entry["wins" if result == "win" else "losses"] += 1
         return tallies
 
+    def uses(self, now: datetime | None = None) -> List[Dict[str, Any]]:
+        """Every use in the window, newest first: the row that carried the lesson and its scored result."""
+        now = now or self.clock()
+        rows = []
+        for row in self._use_rows(now):
+            result = self._row_result(row)
+            for ident in lesson_ids_of(row):
+                rows.append({"lesson_id": ident, "intention_id": row.id,
+                             "kind": "turn" if row.type == USE_TYPE else row.kind,
+                             "session_id": row.source_id if row.type == USE_TYPE else None,
+                             "at": row.created_at.isoformat() if row.created_at else None, "result": result})
+        return rows
+
+    def retire(self, ident: str, *, reason: str, by: str = "owner", now: datetime | None = None) -> Optional[Lesson]:
+        """The owner's retirement (``protagine mind lessons retire``): an entry and an audit note."""
+        now = now or self.clock()
+        lesson = self.get(ident)
+        if lesson is None or lesson.status not in CURRENT:
+            return lesson
+        retired = self.set_status(ident, "retired", reason=reason, by=by, now=now)
+        if retired is not None and retired.status == "retired":
+            self._note("lesson_retired", retired, f"{by}: {reason}", now)
+        return retired
+
     def review(self, now: datetime | None = None, tallies: Mapping[str, Mapping[str, int]] | None = None) -> Dict[str, List[str]]:
         """Retire a lesson under ``RETIRE_RATE`` after ``RETIRE_USES`` verified uses; activate a candidate
         after a verified win in its class. Each change is also an audit note."""

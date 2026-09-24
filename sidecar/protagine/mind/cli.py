@@ -23,8 +23,9 @@ from .outcomes import VERDICTS
 from .tick import CONSOLIDATION_WAIT_S, OFF_MARKER
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
-            "concerns", "goals", "interest", "consolidate", "narrative", "opinions")
+            "concerns", "goals", "interest", "consolidate", "narrative", "opinions", "lessons")
 OPINION_ACTIONS = ("list", "show", "withdraw", "reconsider")
+LESSON_ACTIONS = ("list", "show", "retire")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -71,6 +72,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     opinions.add_argument("--query", default="", help="list: only the opinions relevant to this text")
     opinions.add_argument("--history", action="store_true", help="list: every revision, not only the current views")
     opinions.add_argument("--reason", default="", help="withdraw/reconsider: why (required)")
+    lessons = commands.add_parser("lessons", help="What the mind learned: list, show <id>, retire <id>")
+    lessons.add_argument("action", nargs="?", default="list", choices=LESSON_ACTIONS)
+    lessons.add_argument("id", nargs="?")
+    lessons.add_argument("--all", action="store_true", help="list: also superseded and retired lessons")
+    lessons.add_argument("--reason", default="", help="retire: why (required)")
 
 
 class Sidecar:
@@ -221,6 +227,8 @@ def run(args: argparse.Namespace) -> int:
             _emit(value, as_json=as_json, text=text)
         elif command == "opinions":
             return _opinions(sidecar, args, as_json=as_json)
+        elif command == "lessons":
+            return _lessons(sidecar, args, as_json=as_json)
         else:
             print(f"unknown mind command {command}", file=sys.stderr)
             return 2
@@ -280,6 +288,51 @@ def _opinions(sidecar: Sidecar, args: argparse.Namespace, *, as_json: bool) -> i
                              json_body={"reason": args.reason, "by": "cli"})
         _emit(value, as_json=as_json, text=f"opinion {args.id}: {value.get('status')} "
                                            f"(revision {value.get('revision_id')})")
+    return 0
+
+
+def _lesson_line(row: Dict[str, Any]) -> str:
+    tally = row.get("tally") or {}
+    return (f"{row.get('id')} [{row.get('status')}, {row.get('kind')}, {row.get('verified')}] {row.get('title')}: "
+            f"when {row.get('when_to_use')} ({tally.get('wins', 0)} wins in {tally.get('uses', 0)} verified uses)")
+
+
+def _lessons(sidecar: Sidecar, args: argparse.Namespace, *, as_json: bool) -> int:
+    """``protagine mind lessons``: the owner's view of what the mind learned, and retirement, ``by=cli``."""
+    action = args.action or "list"
+    if action != "list" and not args.id:
+        print(f"usage: protagine mind lessons {action} <id>", file=sys.stderr)
+        return 2
+    if action == "retire":
+        if not args.reason.strip():
+            print("protagine mind lessons retire needs --reason", file=sys.stderr)
+            return 2
+        value = sidecar.call("POST", f"/v1/mind/lessons/{args.id}/retire",
+                             json_body={"reason": args.reason, "by": "cli"})
+        _emit(value, as_json=as_json, text=f"lesson {args.id}: {value.get('status')} ({value.get('closed_reason')})")
+        return 0
+    params = {} if getattr(args, "all", False) or action == "show" else {"status": "active,candidate"}
+    value = sidecar.call("GET", "/v1/mind/lessons", params=params)
+    rows = value.get("lessons") or []
+    if action == "list":
+        text = "\n".join(_lesson_line(row) for row in rows) or (
+            "no lessons" if value.get("enabled") else "lessons: off (the stored lessons are kept)")
+        _emit(value, as_json=as_json, text=text)
+        return 0
+    row = next((item for item in rows if item.get("id") == args.id), None)
+    if row is None:
+        print(f"no lesson {args.id}", file=sys.stderr)
+        return 1
+    lines = [_lesson_line(row), f"  {row.get('content')}", f"  signature: {row.get('signature')}, origin "
+             f"{row.get('origin')}", "  evidence: " + ", ".join(str(item) for item in row.get("evidence") or [])]
+    if row.get("correction"):
+        lines.append(f"  correction: {row['correction']}" + (f" ({row['retrieval_source']})"
+                                                             if row.get("retrieval_source") else ""))
+    if row.get("supersedes"):
+        lines.append(f"  supersedes: {row['supersedes']}")
+    if row.get("closed_reason"):
+        lines.append(f"  {row.get('status')}: {row['closed_reason']}")
+    _emit(row, as_json=as_json, text="\n".join(lines))
     return 0
 
 

@@ -2242,7 +2242,13 @@ class Mind:
             "running": self._running,
             "consolidation": self._consolidation_state(),
             "affect": self.feelings.state(),
+            "lessons": self._lessons_state(),
         }
+
+    def _lessons_state(self) -> Dict[str, Any]:
+        current = self.lessons.all()
+        return {"enabled": self.lessons.enabled, "active": sum(item.status == "active" for item in current),
+                "candidate": sum(item.status == "candidate" for item in current)}
 
     def _consolidation_state(self) -> Dict[str, Any]:
         task = self._consolidation_task
@@ -2251,7 +2257,12 @@ class Mind:
                 "last_tokens": int(row.cost_tokens or 0) if row is not None else 0}
 
     def stats(self) -> Dict[str, Any]:
-        return audit.stats(self.store, now=self.clock())
+        now = self.clock()
+        value = audit.stats(self.store, now=now)
+        lessons = self.lessons.stats(now)
+        value["lessons"] = lessons
+        value["lesson_use_rate"] = lessons.get("use_rate")      # wins over verified uses (evals section 8)
+        return value
 
 
 __all__ = ["APPRAISAL_FORCED_S", "APPRAISAL_TIMER_S", "DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",

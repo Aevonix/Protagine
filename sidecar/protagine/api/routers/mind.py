@@ -32,6 +32,8 @@ text in docs/HERMES-ADAPTER.md):
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
+  GET  /lessons?status&uses&viewer the lessons with their verified tallies (and every use); a guest gets none
+  POST /lessons/{id}/retire       {reason, by?} -> the retired lesson (404 unknown, 409 already closed)
 """
 
 from __future__ import annotations
@@ -178,6 +180,12 @@ class RateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1, max_length=64)
     verdict: str = Field(min_length=1, max_length=32)
+
+
+class RetireBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=400)
+    by: str = Field(default="owner", max_length=64)
 
 
 class LevelBody(BaseModel):
@@ -384,6 +392,44 @@ async def consolidate() -> Dict[str, Any]:
         raise HTTPException(status_code=501, detail={"code": "consolidation_not_available",
                                                      "message": "this sidecar has no consolidation"})
     return await run(force=True)
+
+
+# -- lessons (architecture 4.8) ------------------------------------------------------------
+
+def _lesson_line(row: Dict[str, Any]) -> str:
+    tally = row.get("tally") or {}
+    uses = f"{tally.get('wins', 0)} wins in {tally.get('uses', 0)} verified uses"
+    return (f"{row['id']} [{row['status']}, {row['kind']}, {row['verified']}] {row['title']}: "
+            f"when {row['when_to_use']} ({uses})")
+
+
+@router.get("/lessons")
+async def lessons(status: Optional[str] = None, uses: bool = False, viewer: Optional[str] = None) -> Dict[str, Any]:
+    """What the mind learned, each lesson with its verified tally, and with ``uses`` every use in the
+    tally window. ``status`` filters (comma-separated); a guest viewer gets nothing."""
+    mind = _require()
+    store = getattr(mind, "lessons", None)
+    empty = {"enabled": bool(getattr(store, "enabled", False)), "lessons": [], "uses": []}
+    if store is None or _guest(mind, viewer):
+        return {**empty, "text": "(no lessons)"}
+    wanted = {item for item in (status or "").split(",") if item}
+    tallies = store.tally()
+    rows = [{**lesson.as_dict(), "tally": tallies.get(lesson.id, {"uses": 0, "wins": 0, "losses": 0, "applied": 0})}
+            for lesson in store.all(include_closed=True) if not wanted or lesson.status in wanted]
+    value = {**empty, "lessons": rows, "uses": store.uses() if uses else []}
+    return {**value, "text": "\n".join(_lesson_line(row) for row in rows) or "(no lessons)"}
+
+
+@router.post("/lessons/{lesson_id}/retire")
+async def retire_lesson(lesson_id: str, body: RetireBody) -> Dict[str, Any]:
+    """The owner retires a lesson (the CLI, or the key holder); it stays listed as retired."""
+    store = getattr(_require(), "lessons", None)
+    lesson = store.get(lesson_id) if store is not None else None
+    if lesson is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_lesson", "message": f"no lesson {lesson_id}"})
+    if lesson.status not in {"active", "candidate"}:
+        raise HTTPException(status_code=409, detail={"code": "lesson_closed", "message": f"{lesson_id} is {lesson.status}"})
+    return store.retire(lesson_id, reason=body.reason, by=body.by).as_dict()
 
 
 # -- the audit log (7.8) -----------------------------------------------------------------

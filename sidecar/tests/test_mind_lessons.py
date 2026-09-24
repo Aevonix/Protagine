@@ -383,3 +383,15 @@ async def test_a_recipient_packet_never_carries_a_lesson(served):
     packet = await host.assemble_packet(GUEST, query="I need the order code for order 4411.", limit_chars=20000)
     assert "[lesson " not in packet
     assert not [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
+
+
+def test_the_mind_state_and_stats_show_the_lessons(fx):
+    lesson = admit(fx, lineage=())
+    admit(fx, fields={**FIELDS, "signature": "topic:other"}, status="candidate", verified="none", origin="reflector",
+          lineage=())
+    task(fx, 1, lesson_ids=[lesson.id], outcome="done", verified="owner", verdict="useful")
+    state = fx.mind.state()
+    assert state["lessons"] == {"enabled": True, "active": 1, "candidate": 1}
+    stats = fx.mind.stats()
+    assert stats["lessons"]["active"] == 1 and stats["lessons"]["uses"] == 1
+    assert stats["lesson_use_rate"] == 1.0
