@@ -14,12 +14,14 @@ import json
 
 from protagine_hermes import prompt_section
 from protagine_hermes.client import Settings
+from protagine_hermes.opinions import OPINIONS_SCHEMA
 from protagine_hermes.reminders import SCHEMA as REMINDER_SCHEMA
 from protagine_hermes.tools import FORGET_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, SELF_SCHEMA
 from protagine_memory.provider import _PROTAGINE_TOOL_SCHEMAS, _SYSTEM_PROMPT
 
-PLUGIN_SCHEMAS = (SELF_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, REMINDER_SCHEMA)
-TOOL_BUDGET_CHARS = 3_400       # 7 tools, measured 3,223; the first cut sent 12 tools in 6,700 characters
+PLUGIN_SCHEMAS = (SELF_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, REMINDER_SCHEMA, OPINIONS_SCHEMA)
+TOOL_BUDGET_CHARS = 3_700       # 8 tools, measured 3,664 (M7 added protagine_opinions, 441); the first cut sent
+                                # 12 tools in 6,700 characters
 SYSTEM_BUDGET_CHARS = 800       # provider block + plugin section, measured 725; the first cut sent 1,004
 
 
@@ -31,7 +33,7 @@ def rendered(schema) -> str:
 def test_tool_schemas_stay_within_the_budget():
     schemas = [*PLUGIN_SCHEMAS, *_PROTAGINE_TOOL_SCHEMAS]
     names = [schema["name"] for schema in schemas]
-    assert len(names) == len(set(names)) == 7, names
+    assert len(names) == len(set(names)) == 8, names
     total = sum(len(rendered(schema)) for schema in schemas)
     assert total <= TOOL_BUDGET_CHARS, {schema["name"]: len(rendered(schema)) for schema in schemas}
     for schema in schemas:  # the person scope is bound server-side, never a model argument

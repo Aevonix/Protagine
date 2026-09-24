@@ -1864,6 +1864,8 @@ def create_app() -> FastAPI:
     app.include_router(host_v2_router)
     from protagine.api.routers import mind as mind_router
     app.include_router(mind_router.router)
+    from protagine.api.routers import opinions as opinions_router
+    app.include_router(opinions_router.router)
     from protagine.api.routers import executions as executions_router
     app.include_router(executions_router.router)
     from protagine.api.routers import commitment_work as commitment_work_router
