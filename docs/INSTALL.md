@@ -106,7 +106,8 @@ do that yourself once you are ready.
 ```yaml
 sidecar: {host: 127.0.0.1, port: 7777}
 hermes: {home: ~/.hermes, python: /path/to/hermes/python}
-router: {base_url: http://127.0.0.1:8000/v1, model: my-model, embed_url: "", embed_model: ""}
+router: {base_url: http://127.0.0.1:8000/v1, model: my-model,
+         embed_url: "", embed_model: "", rerank_url: "", rerank_model: ""}
 owner: {contact_id: "<created by init>"}
 mind:
   enabled: true                      # the off switch
@@ -129,6 +130,14 @@ mind:
               semantic_recall: false, consolidation: true, self_narrative: true, lessons: true,
               skills: false}
 ```
+
+`router.embed_url` (an OpenAI-compatible embeddings endpoint, with
+`embed_model`) turns semantic recall on. `router.rerank_url` (an OpenAI/Jina
+style `/v1/rerank` endpoint) with `router.rerank_model` (the model it serves;
+required with the endpoint) makes recall rerank its candidates there. Both are
+exported to the sidecar process when it starts; a value already in that
+process environment wins, so `PROTAGINE_RECALL_RERANK=shadow` can still be
+pinned to measure a reranker before it changes what recall returns.
 
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in

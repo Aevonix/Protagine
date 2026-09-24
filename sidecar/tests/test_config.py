@@ -162,6 +162,50 @@ def test_apply_environment_without_embeddings_skips_the_embedder(home):
     apply_environment(load_config(home, environ={}), environ=environ)
     assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"
     assert "PROTAGINE_API_KEY" not in environ
+    # No reranker configured: nothing rerank-related is exported and recall keeps its default.
+    assert not any(name.startswith("PROTAGINE_RERANKER_") for name in environ)
+    assert "PROTAGINE_RECALL_RERANK" not in environ
+
+
+def test_apply_environment_exports_a_configured_reranker(home):
+    save_config({**config.DEFAULTS,
+                 "router": {**config.DEFAULTS["router"],
+                            "rerank_url": "http://127.0.0.1:8/v1", "rerank_model": "r1"}},
+                home)
+    environ: dict[str, str] = {}
+    applied = apply_environment(load_config(home, environ={}), environ=environ)
+    # The same code path the sidecar takes for the embedding endpoint: a remote
+    # provider, the model it serves, and recall switched to use it.
+    assert environ["PROTAGINE_RERANKER_PROVIDER"] == "openai_api"
+    assert environ["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8/v1"
+    assert environ["PROTAGINE_RERANKER_MODEL"] == "r1"
+    assert environ["PROTAGINE_RECALL_RERANK"] == "on"
+    assert applied["PROTAGINE_RECALL_RERANK"] == "on"
+    # A service unit or shell may still pin the recall mode (shadow measures before flipping).
+    pinned: dict[str, str] = {"PROTAGINE_RECALL_RERANK": "shadow"}
+    applied = apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_RECALL_RERANK"] == "shadow"
+    assert "PROTAGINE_RECALL_RERANK" not in applied
+    assert pinned["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8/v1"
+
+
+def test_reranker_endpoint_needs_the_model_it_serves(home):
+    # The sidecar cannot choose a reranker by itself, so an endpoint alone is a
+    # configuration error rather than a silent no-op.
+    with pytest.raises(ConfigError, match="router.rerank_model"):
+        save_config({**config.DEFAULTS,
+                     "router": {**config.DEFAULTS["router"], "rerank_url": "http://127.0.0.1:8/v1"}},
+                    home)
+    (home / config.CONFIG_FILE).write_text("router: {rerank_url: http://127.0.0.1:8/v1}\n")
+    with pytest.raises(ConfigError, match="router.rerank_model"):
+        load_config(home, environ={})
+    # A model without an endpoint is kept in the file but exports nothing: the
+    # remote path is the one this configuration describes, like embed_model.
+    save_config({**config.DEFAULTS, "router": {**config.DEFAULTS["router"], "rerank_model": "r1"}}, home)
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert "PROTAGINE_RERANKER_MODEL" not in environ
+    assert "PROTAGINE_RECALL_RERANK" not in environ
 
 
 def test_env_switches_are_plain(monkeypatch):

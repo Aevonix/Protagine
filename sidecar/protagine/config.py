@@ -28,7 +28,8 @@ AUTONOMY_LEVELS = ("off", "suggest", "standard", "trusted")
 DEFAULTS: dict[str, Any] = {
     "sidecar": {"host": "127.0.0.1", "port": 7777},
     "hermes": {"home": "~/.hermes", "python": ""},
-    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": ""},
+    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": "",
+               "rerank_url": "", "rerank_model": ""},
     "owner": {"contact_id": ""},
     "mind": {
         "enabled": True,
@@ -159,8 +160,10 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     hermes["home"] = str(hermes.get("home") or "~/.hermes")
     hermes["python"] = str(hermes.get("python") or "")
     router = data["router"]
-    for key in ("base_url", "model", "embed_url", "embed_model"):
+    for key in ("base_url", "model", "embed_url", "embed_model", "rerank_url", "rerank_model"):
         router[key] = str(router.get(key) or "")
+    if router["rerank_url"] and not router["rerank_model"]:
+        raise ConfigError("router.rerank_model is required when router.rerank_url is set")
     data["owner"]["contact_id"] = str(data["owner"].get("contact_id") or "")
     mind = data["mind"]
     mind["enabled"] = _parse_bool(mind.get("enabled", True), field_name="mind.enabled")
@@ -427,6 +430,14 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_EMBED_BASE_URL"] = str(config.get("router.embed_url"))
         if config.get("router.embed_model"):
             values["PROTAGINE_EMBED_MODEL"] = str(config.get("router.embed_model"))
+    if config.get("router.rerank_url"):
+        # A reranker endpoint is configured the way the embedding endpoint is:
+        # the remote provider, the model it serves, and recall told to use it.
+        # The environment still wins, so "shadow" can be pinned to measure first.
+        values["PROTAGINE_RERANKER_PROVIDER"] = "openai_api"
+        values["PROTAGINE_RERANKER_BASE_URL"] = str(config.get("router.rerank_url"))
+        values["PROTAGINE_RERANKER_MODEL"] = str(config.get("router.rerank_model"))
+        values["PROTAGINE_RECALL_RERANK"] = "on"
     applied: dict[str, str] = {}
     for name, value in values.items():
         if name in target and str(target[name]).strip():
