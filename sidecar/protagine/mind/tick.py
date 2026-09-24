@@ -45,6 +45,7 @@ from .deliberate import Deliberation, refresh_context
 from .drives import CHECK_IN_TYPES, DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
 from .lessons import Lessons
+from .skills import Skills
 from .opinions import Opinions
 from .outbox import Outbox
 from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
@@ -237,12 +238,15 @@ class Mind:
         # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
         self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
                                clock=self.clock, enabled=self.faculties["lessons"], mind_state=self.mind_state)
+        # Skills (4.8 item 4, off by default): proven lessons as SKILL.md in Protagine's own external dir.
+        self.skills = Skills(self.state_dir / "skills", mind_state=self.mind_state, clock=self.clock,
+                             enabled=self.faculties["skills"] and self.faculties["lessons"])
         # Nightly consolidation (architecture 3.1, 4.1, 4.2) and the lesson stage (4.8): once per night crossed.
         self.consolidation = Consolidation(
             store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
             router=router, autobiography=self.autobiography, owner_id=self.owner_id, budgets=self.policy.budgets,
             tokens_allowed=self.authority.tokens_allowed, faculties=self.faculties, clock=self.clock, tz=self.tz,
-            quiet=self.quiet, cancel=self._cancel_stale, lessons=self.lessons)
+            quiet=self.quiet, cancel=self._cancel_stale, lessons=self.lessons, skills=self.skills)
         self._consolidation_task: Optional[asyncio.Task] = None
         if expectations is not None and hasattr(expectations, "register_resolver"):
             expectations.register_resolver("intention:", self._resolve_intention_expectation)
@@ -252,6 +256,7 @@ class Mind:
 
         self.started_at = self.clock()
         self.consolidation.last_run(self.started_at)       # a fresh store is watched from its first start
+        self.sync_skills(self.started_at)                  # a flag turned off at restart takes its skills
         self.last_pull_at: Optional[datetime] = None
         self.last_tick_at: Optional[datetime] = None
         self.ticks = 0
@@ -2243,7 +2248,17 @@ class Mind:
             "consolidation": self._consolidation_state(),
             "affect": self.feelings.state(),
             "lessons": self._lessons_state(),
+            "skills": self.skills.state(),
         }
+
+    def sync_skills(self, now: datetime | None = None) -> Optional[Dict[str, Any]]:
+        """Protagine's skills follow its lessons (``Skills.sync``); a failure is logged, never raised."""
+        now = now or self.clock()
+        try:
+            return self.skills.sync(self.lessons.all(), self.lessons.tally(now), now)
+        except Exception as error:
+            logger.warning("skills not synced (%s)", type(error).__name__)
+            return None
 
     def _lessons_state(self) -> Dict[str, Any]:
         current = self.lessons.all()
@@ -2262,6 +2277,8 @@ class Mind:
         lessons = self.lessons.stats(now)
         value["lessons"] = lessons
         value["lesson_use_rate"] = lessons.get("use_rate")      # wins over verified uses (evals section 8)
+        value["skills"] = {"enabled": self.skills.enabled, "owned": len(self.skills.owned()),
+                           "loads": self.skills.loads()}
         return value
 
 

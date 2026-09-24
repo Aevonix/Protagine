@@ -237,9 +237,10 @@ class Consolidation:
                  autobiography: Any, owner_id: str | None, budgets: Any, tokens_allowed: Callable[[], bool],
                  faculties: Mapping[str, bool], clock=None, stances: Callable[[], List[Dict[str, Any]]] | None = None,
                  tz: Any = None, quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None,
-                 lessons: Any = None) -> None:
+                 lessons: Any = None, skills: Any = None) -> None:
         self.store = store
         self.lessons = lessons          # P/mind/lessons.py: the night's lesson stage
+        self.skills = skills            # P/mind/skills.py: synced after it
         self.ledger = ledger
         self.concerns = concerns
         self.mind_state = mind_state
@@ -756,6 +757,11 @@ class Consolidation:
         if not self.faculties.get("lessons", True) or self.lessons is None:
             return
         await self.lessons.night(night, now, call=self._call)
+        if self.skills is not None:
+            changed = self.skills.sync(self.lessons.all(), self.lessons.tally(now), now)
+            for key in ("written", "removed"):
+                if changed.get(key):
+                    night.count(f"skills_{key}", len(changed[key]))
 
     # -- stage 3: contradictions ---------------------------------------------------------------
 

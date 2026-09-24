@@ -34,6 +34,8 @@ text in docs/HERMES-ADAPTER.md):
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
   GET  /lessons?status&uses&viewer the lessons with their verified tallies (and every use); a guest gets none
   POST /lessons/{id}/retire       {reason, by?} -> the retired lesson (404 unknown, 409 already closed)
+  POST /skills/used               {skill, session_id?, task_id?} -> {ok, counted, loads}: a load of a
+                                   protagine-* skill (the plugin's on_skill_lifecycle); others are not counted
 """
 
 from __future__ import annotations
@@ -186,6 +188,14 @@ class RetireBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason: str = Field(min_length=1, max_length=400)
     by: str = Field(default="owner", max_length=64)
+
+
+class SkillUsedBody(BaseModel):
+    """The plugin's report of Hermes' ``on_skill_lifecycle(action='loaded')`` for a Protagine skill."""
+    model_config = ConfigDict(extra="ignore")
+    skill: str = Field(min_length=1, max_length=128)
+    session_id: Optional[str] = Field(default=None, max_length=256)
+    task_id: Optional[str] = Field(default=None, max_length=256)
 
 
 class LevelBody(BaseModel):
@@ -430,6 +440,15 @@ async def retire_lesson(lesson_id: str, body: RetireBody) -> Dict[str, Any]:
     if lesson.status not in {"active", "candidate"}:
         raise HTTPException(status_code=409, detail={"code": "lesson_closed", "message": f"{lesson_id} is {lesson.status}"})
     return store.retire(lesson_id, reason=body.reason, by=body.by).as_dict()
+
+
+@router.post("/skills/used")
+async def skill_used(body: SkillUsedBody) -> Dict[str, Any]:
+    """One load of a skill; only Protagine's own (``protagine-*``) are counted."""
+    skills = getattr(_require(), "skills", None)
+    loads = skills.record_use(skill=body.skill, session_id=body.session_id, task_id=body.task_id) \
+        if skills is not None else None
+    return {"ok": True, "skill": body.skill, "counted": loads is not None, "loads": loads or 0}
 
 
 # -- the audit log (7.8) -----------------------------------------------------------------
