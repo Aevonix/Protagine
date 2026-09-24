@@ -271,3 +271,11 @@ def test_the_body_line_uses_the_same_signature_as_the_row(fx):
            "description": f"Research {TOPIC}"}
     assert failure_signature(row) == SIGNATURE
     assert Opinions(None, None, enabled=False).task_lines(candidate(1)) == ("", [])
+
+
+def test_the_cue_says_recording_is_automatic():
+    """The cue is the only text the faculty adds at formation. "It becomes your recorded view" sent the model to
+    write its stance through ``protagine_self`` (read-only) until Hermes' iteration cap: recording happens after
+    the turn, from the reply, with no tool call, and the cue says so."""
+    assert "with no tool call" in CUE_LINE and "after the turn" in CUE_LINE
+    assert "becomes your recorded view" not in CUE_LINE

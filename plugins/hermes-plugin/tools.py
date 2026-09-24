@@ -52,9 +52,10 @@ SELF_OPERATIONS = ("state", "log", "why", "rate", "yes", "no", "opinions", "with
 SELF_SCHEMA = {
     "name": "protagine_self",
     "description": "Your mind and record, the only source for what you did or decided: state (level, asks with "
-                   "codes, working_on, narrative), log (newest first; since_hours, kind, recipient; cite ids; not in "
-                   "the log means it did not happen), why <id or opinion number>, rate <id> <verdict>, opinions "
-                   "[query]; owner only: yes|no <code> (typed by the owner), withdraw|reconsider <opinion> <reason>.",
+                   "codes, working_on, narrative), log (read-only, newest first; since_hours, kind, recipient; cite "
+                   "ids; an action of yours not in it did not happen), why <id or opinion number>, rate <id> "
+                   "<verdict>, opinions [query]; owner only: yes|no <code> (typed by the owner), withdraw|reconsider "
+                   "<opinion> <reason>. What a turn says is recorded after it, with no tool call.",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": list(SELF_OPERATIONS)},
         "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
