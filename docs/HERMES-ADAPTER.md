@@ -198,12 +198,12 @@ owner session cannot approve. `protagine_self rate {id, verdict}` posts
 
 | Operation | Who | Route |
 |---|---|---|
-| `who {q}` | everyone | `GET /v1/mind/people?q=` (name, handle or id) |
-| `inspect {contact_id or q}` | everyone | `GET /v1/mind/people/{who}` |
-| `propose_link {contact_id, gateway, address}` | everyone | `POST /v1/mind/people/link`: a candidate the owner confirms as an ask |
+| `who {contact_id}` | everyone | `GET /v1/mind/people?q=` (a name, handle or id; empty lists the newest) |
+| `inspect {contact_id}` | everyone | `GET /v1/mind/people/{who}` |
+| `propose_link {contact_id, handle: gateway:address}` | everyone | `POST /v1/mind/people/link`: a candidate the owner confirms as an ask |
 | `set_permission {contact_id, permission}` | owner | `POST /v1/mind/people/{who}/permission {may_contact: never\|ask\|auto}` |
 | `set_cadence {contact_id, minutes}` | owner | `POST /v1/mind/people/{who}/cadence {minutes}` (0 clears) |
-| `merge {keep, drop}` | owner | `POST /v1/mind/people/merge`: handles, sources, comms and affect follow the person |
+| `merge {contact_id, drop}` | owner | `POST /v1/mind/people/merge {keep, drop}`: `drop` folds into `contact_id`; handles, sources, comms and affect follow the person |
 
 A guest sees who someone is (`contact_id`, `display_name`, `trust_tier`) and
 nothing else: the plugin names the guest as the viewer (`contact_id`) on its

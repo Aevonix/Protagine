@@ -178,13 +178,13 @@ def test_people_tool_reads_and_link_proposals_are_for_everyone(home, sidecar):
     sidecar.mind_routes = True
     result = probe(TOOL_CODE + '''
 g, o = guest(), owner()
-emit(guest_who=call("protagine_people", {"operation": "who", "q": "friend"}, g),
+emit(guest_who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, g),
      guest_inspect=call("protagine_people", {"operation": "inspect", "contact_id": "p-03"}, g),
-     owner_who=call("protagine_people", {"operation": "who", "q": "friend"}, o),
-     owner_inspect=call("protagine_people", {"operation": "inspect", "q": "Friend"}, o),
+     owner_who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o),
+     owner_inspect=call("protagine_people", {"operation": "inspect", "contact_id": "Friend"}, o),
      unknown=call("protagine_people", {"operation": "inspect", "contact_id": "nobody"}, o),
-     link=call("protagine_people", {"operation": "propose_link", "contact_id": "p-03", "gateway": "email",
-                                    "address": "friend@example.test"}, g),
+     link=call("protagine_people", {"operation": "propose_link", "contact_id": "p-03",
+                                    "handle": "email:friend@example.test"}, g),
      bare_link=call("protagine_people", {"operation": "propose_link", "contact_id": "p-03"}, g),
      bad=call("protagine_people", {"operation": "list"}, o))
 ''', home)
@@ -197,7 +197,7 @@ emit(guest_who=call("protagine_people", {"operation": "who", "q": "friend"}, g),
                                             "cadence_minutes", "digest"}
     assert "no single contact" in result["unknown"]["error"]
     assert result["link"]["status"] == "pending" and result["link"]["candidate_id"]
-    assert "required" in result["bare_link"]["error"] and "one of" in result["bad"]["error"]
+    assert "gateway:address" in result["bare_link"]["error"] and "one of" in result["bad"]["error"]
     reads = [c for c in sidecar.requests if c["path"].startswith("/v1/mind/people") and c["method"] == "GET"]
     guest_reads = [c for c in reads if c["query"].get("contact_id") == "p-02"]
     assert len(guest_reads) == 2  # the guest's reads name the guest as the viewer; the owner's name nobody
@@ -214,7 +214,7 @@ def test_people_tool_mutations_are_owner_only(home, sidecar):
 g, o = guest(), owner()
 ops = {"permission": {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"},
        "cadence": {"operation": "set_cadence", "contact_id": "p-03", "minutes": 90},
-       "merge": {"operation": "merge", "keep": "p-03", "drop": "p-02"}}
+       "merge": {"operation": "merge", "contact_id": "p-03", "drop": "p-02"}}
 emit(guest={name: call("protagine_people", args, g) for name, args in ops.items()},
      owner={name: call("protagine_people", args, o) for name, args in ops.items()},
      clear=call("protagine_people", {"operation": "set_cadence", "contact_id": "p-03", "minutes": 0}, o),
@@ -251,7 +251,7 @@ def test_people_mutations_are_refused_in_a_worker(home, sidecar):
     result = probe(TOOL_CODE + '''
 o = owner()
 emit(permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o),
-     who=call("protagine_people", {"operation": "who", "q": "friend"}, o))
+     who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o))
 ''', home, env=worker_env(home))
     assert "only the owner" in result["permission"]["error"]
     assert result["who"] == [{"contact_id": "p-03", "display_name": "Friend", "trust_tier": "REGULAR"}]
@@ -312,7 +312,7 @@ emit(yes=call("protagine_self", {"operation": "yes", "code": "K7F"}, c),
      rate=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "useful"}, c),
      permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, c),
      cadence=call("protagine_people", {"operation": "set_cadence", "contact_id": "p-03", "minutes": 60}, c),
-     merge=call("protagine_people", {"operation": "merge", "keep": "p-03", "drop": "p-02"}, c),
+     merge=call("protagine_people", {"operation": "merge", "contact_id": "p-03", "drop": "p-02"}, c),
      forget=call("protagine_memory_forget", {"source_ids": ["src-1"]}, c),
      state=call("protagine_self", {"operation": "state"}, c),
      search=call("protagine_memory_search", {"query": "report"}, c))

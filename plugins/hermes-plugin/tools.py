@@ -48,16 +48,13 @@ SELF_SCHEMA = {
 }
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
-    "description": "People you know. who: find by name, handle or id. inspect: one person. propose_link: suggest "
-                   "that a handle (gateway, address) is a person; the owner confirms. Owner only: set_permission "
-                   "(may you reach out to them: never, ask or auto), set_cadence (check-in minutes, 0 clears) and "
-                   "merge (fold drop into keep, two records of one person).",
+    "description": "contact_id: a name, handle or id. propose_link: handle (gateway:address) is contact_id; owner "
+                   "confirms. Owner only: set_permission, set_cadence (minutes, 0 clears), merge (drop into "
+                   "contact_id).",
     "parameters": {"type": "object", "properties": {
-        "operation": {"type": "string", "enum": list(PEOPLE_OPERATIONS)},
-        "q": {"type": "string"}, "contact_id": {"type": "string"}, "keep": {"type": "string"},
-        "drop": {"type": "string"}, "gateway": {"type": "string"}, "address": {"type": "string"},
-        "permission": {"type": "string", "enum": ["never", "ask", "auto"]}, "minutes": {"type": "integer"},
-        "limit": {"type": "integer"}},
+        "operation": {"type": "string", "enum": list(PEOPLE_OPERATIONS)}, "contact_id": {"type": "string"},
+        "drop": {"type": "string"}, "handle": {"type": "string"},
+        "permission": {"type": "string", "enum": ["never", "ask", "auto"]}, "minutes": {"type": "integer"}},
         "required": ["operation"]},
 }
 SEARCH_SCHEMA = {
@@ -181,33 +178,30 @@ class Tools:
         if operation in OWNER_PEOPLE_OPERATIONS and not owner:
             return _error("only the owner can change who may be contacted, cadences or merges")
         sender = viewer or self.settings.owner_contact_id() or None
-        who = str(args.get("contact_id") or "").strip()
+        who = str(args.get("contact_id") or args.get("q") or "").strip()
         if operation == "who":
-            params = {"q": str(args.get("q") or who)[:256], "limit": max(1, min(int(args.get("limit") or 10), 50))}
+            params = {"q": who[:256], "limit": 10}
             if not owner:
                 params["contact_id"] = viewer
             return self._person_reply(self._people("GET", "/v1/mind/people", params=params), owner)
+        if not who:
+            return _error("contact_id (a name, handle or id) is required")
         if operation == "inspect":
-            reference = who or str(args.get("q") or "").strip()
-            if not reference:
-                return _error("contact_id (or a name or handle in q) is required")
-            return self._person_reply(self._people("GET", f"/v1/mind/people/{quote(reference, safe='')}",
+            return self._person_reply(self._people("GET", f"/v1/mind/people/{quote(who, safe='')}",
                                                    params={} if owner else {"contact_id": viewer}), owner)
         if operation == "propose_link":
-            gateway, address = str(args.get("gateway") or "").strip(), str(args.get("address") or "").strip()
-            if not who or not gateway or not address:
-                return _error("contact_id, gateway and address are required")
+            gateway, _, address = str(args.get("handle") or "").partition(":")
+            if not gateway.strip() or not address.strip():
+                return _error("handle is gateway:address")
             return self._people_text(self._people("POST", "/v1/mind/people/link", json={
-                "contact_id": who, "gateway": gateway, "address": address,
+                "contact_id": who, "gateway": gateway.strip(), "address": address.strip(),
                 "evidence_refs": [f"session:{session_id}"[:256]], "by": viewer or ("owner" if owner else "guest")}))
         if operation == "merge":
-            keep, drop = str(args.get("keep") or "").strip(), str(args.get("drop") or "").strip()
-            if not keep or not drop:
-                return _error("keep and drop are required")
+            drop = str(args.get("drop") or "").strip()
+            if not drop:
+                return _error("drop (the record folded into contact_id) is required")
             return self._people_text(self._people("POST", "/v1/mind/people/merge", timeout=60, json={
-                "keep": keep, "drop": drop, "contact_id": sender, "by": "owner"}))
-        if not who:
-            return _error("contact_id is required")
+                "keep": who, "drop": drop, "contact_id": sender, "by": "owner"}))
         path = f"/v1/mind/people/{quote(who, safe='')}"
         if operation == "set_permission":
             if args.get("permission") not in {"never", "ask", "auto"}:
