@@ -6,7 +6,13 @@ sender so the adapter resolves the contact, the outbound path is declared in the
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import importlib.util
 import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +20,12 @@ import pytest
 from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
 from protagine.qualification import native_memory_worker as worker
-from protagine.qualification import paired, paired_worker
+from protagine.qualification import paired, paired_cases, paired_container, paired_worker
+from protagine.qualification.paired_cases import cases as real_cases
+from test_qualification_body_events import INBOUND, TICK, USER, run_worker, stubbed_hermes  # noqa: F401
 from test_qualification_paired_runner import fixture  # noqa: F401  (pytest fixture)
+
+GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'generators'
 
 CONTACTS = {'p-02': {'channel': 'chat', 'address': 'capture:p-02', 'may_contact': 'auto', 'cadence_minutes': 12},
             'p-03': {'channel': 'sms', 'address': 'capture:p-03', 'may_contact': 'never', 'name': 'Sam'},
@@ -60,12 +70,148 @@ def test_an_inbound_session_carries_its_sender_and_an_owner_session_does_not():
     assert owner._user_id == ''
 
 
-def test_the_plan_declares_the_outbound_path_in_every_arm(fixture):
-    assert paired_worker.OUTBOUND_PROTOCOL == 'capture-send-message-1'
-    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
-                           arms=['base-heartbeat', 'full', 'full-people'], reference_arm='base-heartbeat',
-                           **fixture.resources)
-    assert manifest['comparison']['outbound'] == 'capture-send-message-1'
+def people_family(tmp_path, generator='people.py'):
+    """A rendered dev split of a generated family (seed 7, one per template)."""
+    spec = importlib.util.spec_from_file_location('paired_generate_outbound', GENERATORS / 'generate.py')
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    module = engine.load_templates(GENERATORS / generator)
+    engine.write(tmp_path / generator, module, 7, 'dev', 1, GENERATORS / generator)
+    return tmp_path / generator
+
+
+def image_without(original, key):
+    def older_image(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != key}
+        return supplied, recipe
+    return older_image
+
+
+def test_a_people_plan_gives_every_arm_one_send_message_path_and_refuses_an_image_without_it(
+        fixture, monkeypatch, tmp_path):
+    """Audit B2: the contact-targeted scenarios measure judgment only when every arm can message a
+    contact, so the people family declares the outbound path and a stale image cannot run it."""
+    monkeypatch.setattr(paired_cases, 'cases', real_cases)
+    directory = people_family(tmp_path)
+    arms = ['base-heartbeat', 'full', 'full-people']
+    options = dict(native_binding='candidate', evidence_mode='controlled', arms=arms,
+                   reference_arm='base-heartbeat', dataset_dir=directory, **fixture.resources)
+    manifest = paired.plan(fixture.output, **options)
+    schema = json.dumps(paired_worker.OUTBOUND_SCHEMA, sort_keys=True).encode()
+    assert manifest['comparison']['outbound'] == {
+        'protocol': 'paired-outbound-1', 'mode': 'send_message', 'toolset': 'paired_outbound',
+        'tool': 'send_message', 'schema_sha256': hashlib.sha256(schema).hexdigest()}
+    assert manifest['comparison']['people_instrument'] == 'paired-people-instrument-1'
+    for pair in manifest['pairs']:
+        for arm in arms:
+            assert pair['arms'][arm]['case']['inputs']['outbound'] == 'send_message'
+    original = paired_container.configuration
+    for key, message in (('outbound', 'outbound path'), ('people_instrument', 'people store')):
+        monkeypatch.setattr(paired_container, 'configuration', image_without(original, key))
+        with pytest.raises(ValueError, match=message):
+            paired.plan(tmp_path / ('again-' + key), **options)
+        assert not (tmp_path / ('again-' + key)).exists()
+    # Comparator arms alone read contacts.json from the workspace: no people store to seed.
+    monkeypatch.setattr(paired_container, 'configuration', image_without(original, 'people_instrument'))
+    base_only = paired.plan(tmp_path / 'base-only', **{**options, 'arms': ['base-heartbeat', 'base_hermes']})
+    assert 'people_instrument' not in base_only['comparison'] and base_only['comparison']['outbound']['mode'] == 'send_message'
+    # A family that does not declare it has no send tool in any arm.
+    monkeypatch.setattr(paired_container, 'configuration', original)
+    initiative = paired.plan(tmp_path / 'initiative', **{**options, 'dataset_dir': people_family(tmp_path, 'initiative.py')})
+    assert 'outbound' not in initiative['comparison']
+    assert all('outbound' not in arm['case']['inputs'] for pair in initiative['pairs'] for arm in pair['arms'].values())
+
+
+def test_a_declared_outbound_path_is_one_send_message_tool_for_every_turn_worker_and_heartbeat(
+        stubbed_hermes, monkeypatch, capsys):
+    from protagine.qualification import paired_arms
+    registered, toolsets, agents, installs = [], {}, [], []
+    monkeypatch.setattr(sys.modules['tools.registry'].registry, 'register',
+                        lambda **entry: registered.append(entry), raising=False)
+    monkeypatch.setitem(sys.modules, 'toolsets', SimpleNamespace(
+        create_custom_toolset=lambda name, description, tools=None, includes=None: toolsets.update({name: tools})))
+    native = sys.modules['run_agent'].AIAgent
+
+    class Recorded(native):
+        def __init__(self, **kwargs):
+            agents.append((kwargs['session_id'], list(kwargs['enabled_toolsets'])))
+            super().__init__(**kwargs)
+    monkeypatch.setattr(sys.modules['run_agent'], 'AIAgent', Recorded)
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda names: installs.append(list(names)) or 'job-1')
+    monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: {'job_id': job_id})
+    profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
+    request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
+               'inputs': {'arm': 'base-heartbeat', 'profile': profile, 'initial_files': {}, 'max_iterations': 4,
+                          'max_output_tokens': 64, 'settle_seconds': 0, 'outbound': 'send_message',
+                          'episodes': [USER, INBOUND, TICK]}}
+    code, result = run_worker(monkeypatch, capsys, request)
+    assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
+    expected = [*paired_worker.COMMON_TOOLS, 'paired_outbound']
+    assert [entry['name'] for entry in registered] == ['send_message']
+    assert registered[0]['toolset'] == 'paired_outbound' and registered[0]['schema'] == paired_worker.OUTBOUND_SCHEMA
+    assert registered[0]['handler'] is paired_worker.outbound_send and toolsets == {'paired_outbound': ['send_message']}
+    assert agents == [('owner-1', expected), ('contact-1', expected)] and installs == [expected]
+    assert result['tool_evidence']['outbound'] == 'send_message'
+    # An unknown path stops the worker before any turn runs.
+    request['inputs']['outbound'] = 'email'
+    agents.clear()
+    for name in ('home', 'workspace'):
+        shutil.rmtree(stubbed_hermes.root / name)
+    with pytest.raises(ValueError, match='outbound path'):
+        run_worker(monkeypatch, capsys, request)
+    assert agents == []
+
+
+OUTBOUND_DRIVER = r'''
+import json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+home = root / 'home'
+home.mkdir()
+os.environ.update(HOME=str(root), HERMES_HOME=str(home), HERMES_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
+    HERMES_DISABLE_TELEMETRY='1', HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_ENABLE_PROJECT_PLUGINS='0',
+    HERMES_BUNDLED_PLUGINS=str(home / 'empty-bundled'))
+(home / 'empty-bundled').mkdir()
+from protagine.qualification import paired_body, paired_worker
+config = {'model': {'default': 'test-model', 'provider': 'custom'}, 'plugins': {'enabled': []}}
+outbox = root / 'outbox.json'
+paired_body.install_capture_platform(home, config, outbox)
+paired_worker.install_tool_loading(config, 'eager')  # as every generated family runs
+(home / 'config.yaml').write_text(json.dumps(config))
+from hermes_cli.plugins import get_plugin_manager
+get_plugin_manager().discover_and_load(force=True)
+import model_tools
+def names(toolsets):
+    return sorted(tool['function']['name'] for tool in model_tools.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True))
+before = names([*paired_worker.COMMON_TOOLS])
+added = paired_worker.install_outbound('send_message')
+again = paired_worker.install_outbound('send_message')
+from tools.registry import registry
+sent = registry.dispatch('send_message', {'target': 'capture:p-05', 'message': 'Is the lease signed?'})
+report = {'before': before, 'added': added, 'again': again, 'with': names([*paired_worker.COMMON_TOOLS, *added]),
+          'without': names([*paired_worker.COMMON_TOOLS]), 'schema': registry.get_schema('send_message'),
+          'sent': json.loads(sent) if isinstance(sent, str) else sent, 'outbox': paired_body.read_outbox(outbox)}
+print('RESULT:' + json.dumps(report, default=str))
+'''
+
+
+@pytest.mark.skipif(importlib.util.find_spec('hermes_constants') is None,
+                    reason='Hermes source is not installed in this environment')
+def test_the_outbound_tool_is_the_stock_send_path_to_the_capture_platform(tmp_path):
+    """Against the real Hermes source: the tool is offered only with its toolset, and a call lands
+    in the capture outbox as a platform send to the contact as written."""
+    completed = subprocess.run([sys.executable, '-c', OUTBOUND_DRIVER, str(tmp_path)], capture_output=True,
+                               text=True, timeout=300)
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    report = json.loads(next(line[len('RESULT:'):] for line in completed.stdout.splitlines()
+                             if line.startswith('RESULT:')))
+    assert 'send_message' not in report['before'] and 'send_message' not in report['without']
+    assert report['added'] == report['again'] == ['paired_outbound'] and 'send_message' in report['with']
+    assert report['schema']['parameters']['required'] == ['target', 'message']
+    assert report['sent'].get('success') is True, report['sent']
+    assert [(row['target'], row['text'], row['via']) for row in report['outbox']] == [
+        ('capture:p-05', 'Is the lease signed?', 'platform')]
 
 
 def test_full_and_full_people_differ_only_in_the_people_flag_and_the_mind_reads_it(tmp_path, monkeypatch):

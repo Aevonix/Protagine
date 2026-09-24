@@ -124,6 +124,10 @@ GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
 # Every turn and cron run of a generated family carries the same description of
 # the body (paired_worker.ENVIRONMENT_NOTES); the frozen datasets carry none.
 GENERATED_ENVIRONMENT_NOTE = 'messaging'
+# The families whose scenarios grade messages to contacts give every arm the same outbound
+# path (paired_worker.OUTBOUND_SCHEMA, families/mind-people-1.md 7.1); in every other family
+# no arm has a send tool, as their plans say.
+GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
 # A generated scenario may also declare a process-restart contract (``workflow``, the
@@ -253,6 +257,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['tool_loading'] = GENERATED_TOOL_LOADING
             inputs['message_timestamps'] = GENERATED_MESSAGE_TIMESTAMPS
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
+            if dataset_version in GENERATED_OUTBOUND:
+                inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
                 # the probe and the workflow grader checks the lifecycle and the checkpoints.

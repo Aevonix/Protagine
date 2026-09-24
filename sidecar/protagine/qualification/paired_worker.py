@@ -94,15 +94,61 @@ ENVIRONMENT_NOTES = {'messaging': (
     'address are in contacts.json in the workspace. There is no terminal, clock, timer or '
     'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
     'handled when a later message arrives.')}
-# Every arm reaches a contact through the same outbound path: the capture platform's
-# send_message sender (the stock tool in a plain arm, the plugin's verbatim outbox send in a
-# mind arm), recorded in the plan under comparison.outbound (families/mind-people-1.md 7.1).
-OUTBOUND_PROTOCOL = 'capture-send-message-1'
+# Hermes registers no agent-callable send_message (tools/send_message_tool.py), so without
+# help only the mind could reach a contact and a contact-targeted scenario would measure whether
+# an arm can send, not whether it decides well. A family that declares ``outbound:
+# send_message`` gives every arm, agent turns, kanban workers and the heartbeat alike, one
+# benchmark toolset holding a stock-shaped send_message(target, message) whose handler is the
+# stock send path: the target resolves on the capture platform and its standalone sender
+# records the message (families/mind-people-1.md 7.1). The plugin's guard applies to it as to
+# any messaging tool. Families that declare nothing keep an arm without a send tool.
+OUTBOUND_PROTOCOL = 'paired-outbound-1'
+OUTBOUND_MODES = ('send_message',)
+OUTBOUND_TOOLSET = 'paired_outbound'
+OUTBOUND_SCHEMA = {
+    'name': 'send_message',
+    'description': 'Send a message to a person or channel on a connected messaging platform.',
+    'parameters': {'type': 'object', 'properties': {
+        'target': {'type': 'string', 'description': "Delivery target: 'platform:chat_id', for example a "
+                                                    "contact's address, or 'platform' alone for its home channel."},
+        'message': {'type': 'string', 'description': 'The message text to send.'}},
+        'required': ['target', 'message']}}
 # The plugin arm's people store holds the records every arm reads from contacts.json (7.2):
 # one contact per record, reachable at its capture address, with the fixture's permission and
 # cadence. Tier ``regular`` is the host API's default for a curated contact; a tier grants nothing.
+# An inbound agent carries its sender (bind_sender). An image without both cannot give a plugin
+# arm the records a comparator arm reads, so a plan that seeds contacts refuses it.
+PEOPLE_INSTRUMENT_PROTOCOL = 'paired-people-instrument-1'
 PEOPLE_FILE = 'contacts.json'
 CAPTURE_GATEWAY = 'capture'
+
+
+def outbound_send(args, **_):
+    """The stock send path for one ``send_message(target, message)`` call."""
+    from tools.send_message_tool import send_message_tool
+    args = args if isinstance(args, dict) else {}
+    return send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
+                              'message': str(args.get('message') or '')})
+
+
+def outbound_mode(mode):
+    """The dataset's declared outbound path, validated; None keeps every arm without a send tool."""
+    if mode is not None and mode not in OUTBOUND_MODES:
+        raise ValueError('Unknown outbound path')
+    return mode
+
+
+def install_outbound(mode):
+    """Register the declared outbound tool once per process; the toolsets every arm adds."""
+    if outbound_mode(mode) is None:
+        return []
+    from tools.registry import registry
+    from toolsets import create_custom_toolset
+    if registry.get_entry('send_message') is None:
+        registry.register(name='send_message', toolset=OUTBOUND_TOOLSET, schema=deepcopy(OUTBOUND_SCHEMA),
+                          handler=outbound_send, description=OUTBOUND_SCHEMA['description'])
+    create_custom_toolset(OUTBOUND_TOOLSET, 'Benchmark outbound path to contacts', tools=['send_message'])
+    return [OUTBOUND_TOOLSET]
 
 
 def people_records(files):
@@ -183,6 +229,7 @@ def inspect_payload():
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
             'outbound': OUTBOUND_PROTOCOL,
+            'people_instrument': PEOPLE_INSTRUMENT_PROTOCOL,
             'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
@@ -526,6 +573,7 @@ def main():
     message_timestamps = inputs.get('message_timestamps')
     stamp_message('', message_timestamps)
     note = environment_note(inputs.get('environment_note'))
+    outbound = outbound_mode(inputs.get('outbound'))
     turn_system = SYSTEM if note is None else f'{SYSTEM}\n{note}'
     if profile.get('curator'):
         paired_arms.install_curator(config)
@@ -540,7 +588,7 @@ def main():
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
                                 'tool_loading': tool_loading, 'message_timestamps': message_timestamps,
-                                'environment_note': inputs.get('environment_note')}}
+                                'environment_note': inputs.get('environment_note'), 'outbound': outbound}}
     if phase is not None:
         result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
                                     'start_turn': phase['start_turn']}
@@ -595,7 +643,9 @@ def main():
         # ends, including on failures and at each process restart.
         with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
             observer = None
-            toolsets = list(COMMON_TOOLS)
+            # The declared outbound path, identical in every arm (agent turns, workers, heartbeat).
+            outbound_toolsets = install_outbound(outbound)
+            toolsets = [*COMMON_TOOLS, *outbound_toolsets]
             if plugin:
                 from functools import partial
                 from .native_memory_worker import prepare
@@ -647,7 +697,7 @@ def main():
                 hooks.append(('protagine', protagine_tick))
             if profile.get('heartbeat'):
                 from functools import partial
-                job_id = paired_arms.install_heartbeat(list(COMMON_TOOLS))
+                job_id = paired_arms.install_heartbeat([*COMMON_TOOLS, *outbound_toolsets])
                 hooks.append(('heartbeat', partial(paired_arms.make_due, job_id)))
             if profile.get('curator'):
                 hooks.append(('curator', paired_arms.curator_review))
