@@ -521,6 +521,13 @@ def probe(code: str, home, *, env: dict | None = None, timeout: float = 240, pre
     return json.loads(lines[-1][len("@@RESULT@@"):])
 
 
+def refused(answer: dict) -> str:
+    """What a refused tool call says: the reason of the one final answer (``client.final_answer``), else the
+    error of an argument the model can correct."""
+    final = answer.get("unavailable") is True and answer.get("retry") is False
+    return str(answer.get("reason") if final else answer.get("error") or "")
+
+
 def run_python(*args, cwd, env=None):
     result = subprocess.run([sys.executable, *map(str, args)], cwd=cwd, env=env, text=True,
                             capture_output=True, timeout=600)

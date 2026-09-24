@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from conftest import API_KEY, CANARY, OWNER, probe, worker_env
+from conftest import API_KEY, CANARY, OWNER, probe, refused, worker_env
 
 TOOL_CODE = '''
 from tools.registry import registry
@@ -116,11 +116,12 @@ emit(state=call("protagine_self", {"operation": "state"}, o),
     assert result["status_alias"] == state
     assert result["log"]["entries"][0]["id"] == "i-01"
     assert [e["id"] for e in result["yesterday"]["entries"]] == ["m-01"]
-    assert "since_hours" in result["bad_hours"]["error"]
+    assert "since_hours" in refused(result["bad_hours"])
     assert result["why"]["drive"] == "duty" and result["why"]["hermes_ref"] == "t_1"
-    assert "id is required" in result["missing"]["error"]
+    assert "id is required" in refused(result["missing"])
     # A false premise about the agent's own actions gets the sidecar's refusal sentence, verbatim.
-    assert result["unknown"] == {"error": "no intention nope exists in the audit log"}
+    assert result["unknown"] == {"unavailable": True, "retry": False,
+                                 "reason": "no intention nope exists in the audit log"}
     logs = sidecar.calls("/v1/mind/log", "GET")
     assert {"limit": "5"} in [call["query"] for call in logs]
     assert {"limit": "20", "since_hours": "24.0", "recipient": "p-07", "kind": "message"} in [call["query"] for call in logs]
@@ -156,7 +157,8 @@ emit(answers=answers)
 ''', home)
     for who, answer in result["answers"].items():
         assert answer["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}, who
-        assert answer["log"] == {"error": "the mind's record is the owner's; ask in the owner's own chat"}, who
+        assert answer["log"] == {"unavailable": True, "retry": False,
+                                 "reason": "the mind's record is the owner's and is shown only in the owner's own chat"}, who
         assert answer["why"] == answer["log"], who
         assert "CANARY" not in json.dumps(answer), who
     assert sidecar.calls("/v1/mind/log") == [] and sidecar.calls("/v1/mind/why/i-01") == []
@@ -173,7 +175,7 @@ emit(state=call("protagine_self", {"operation": "state"}, g),
     assert result["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}
     owner_state = result["owner_state"]
     assert owner_state["working_on"] == [] and owner_state["narrative"] == "" and owner_state["mind_routes"] is False
-    assert "mind routes" in result["why"]["error"]
+    assert "mind routes" in refused(result["why"])
     assert sidecar.calls("/v1/mind/narrative") == [] and sidecar.calls("/v1/mind/log") == []
 
 
@@ -193,8 +195,8 @@ emit(state=call("protagine_self", {"operation": "state"}, g),
 ''', home)
     assert set(result["state"]) == {"enabled", "autonomy", "sidecar_reachable"}
     assert result["state"]["enabled"] is True and result["state"]["autonomy"] == "standard"
-    assert "owner" in result["log"]["error"] and "owner" in result["why"]["error"]
-    assert "owner" in result["worker"]["error"]
+    assert "owner" in refused(result["log"]) and "owner" in refused(result["why"])
+    assert "owner" in refused(result["worker"])
     assert "lease" not in json.dumps(result)
     assert sidecar.calls("/v1/mind/log", "GET") == [] and sidecar.calls("/v1/mind/why/i-01", "GET") == []
 
@@ -262,7 +264,7 @@ emit(**{op: call("protagine_self", {"operation": op, "id": "i-01"}, g) for op in
 ''', home)
     assert result["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}
     for name in ("log", "why", "listing", "blank"):
-        assert "owner" in result[name]["error"], (name, result[name])
+        assert "owner" in refused(result[name]), (name, result[name])
     assert "Private" not in json.dumps(result)
     assert sidecar.calls("/v1/mind/log", "GET") == [] and sidecar.calls("/v1/mind/why/i-01", "GET") == []
     assert sidecar.calls("/v1/mind/people", "GET") == []
@@ -311,15 +313,17 @@ emit(guest_yes=call("protagine_self", {"operation": "yes", "code": "K7F"}, g),
      cli_repeat=call("protagine_self", {"operation": "yes", "code": "K7F"}, cli))
 ''', home)
     for name in ("guest_yes", "unknown_session"):
-        assert "owner" in result[name]["error"], name
-    assert "own message" in result["owner_without_code"]["error"]
-    assert "own message" in result["owner_embedded"]["error"]
-    assert "3 to 8" in result["malformed"]["error"] and "required" in result["empty"]["error"]
+        assert "owner" in refused(result[name]), name
+    assert "own message" in refused(result["owner_without_code"])
+    assert "own message" in refused(result["owner_embedded"])
+    # A miscopied code on a message that carries an open ask's code names it; nothing is guessed.
+    assert "answers ask K7F" in refused(result["malformed"]) and "answers ask K7F" in refused(result["empty"])
     assert result["owner_with_code"] == {"ok": True, "id": "i-01", "status": "approved"}
     assert result["owner_no"] == {"ok": True, "id": "i-02", "status": "denied"}
-    assert "not found" in result["cli_repeat"]["error"]  # already answered: the sidecar has no open ask
+    assert "no ask is open" in refused(result["cli_repeat"])  # both answered: nothing is open
     decisions = sidecar.calls("/v1/mind/decide", "POST")
-    assert [d["json"]["code"] for d in decisions] == ["K7F", "Q2ZX", "K7F"]
+    # The repeat never reaches the sidecar: the state shows no ask open.
+    assert [d["json"]["code"] for d in decisions] == ["K7F", "Q2ZX"]
     assert decisions[0]["json"]["answer"] == "yes" and decisions[0]["json"]["contact_id"] == OWNER
     assert decisions[0]["json"]["session_id"] == "owner-3"
     assert all(d["authorization"] == f"Bearer {API_KEY}" for d in decisions)
@@ -335,7 +339,7 @@ emit(worker=call("protagine_self", {"operation": "yes", "code": "K7F"}, w),
      rate=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "useful"}, w),
      state=call("protagine_self", {"operation": "state"}, w))
 ''', home, env=worker_env(home))
-    assert "owner" in result["worker"]["error"] and "owner" in result["rate"]["error"]
+    assert "owner" in refused(result["worker"]) and "owner" in refused(result["rate"])
     assert result["state"]["enabled"] is True
     assert sidecar.calls("/v1/mind/decide", "POST") == [] and sidecar.mind.intentions["i-01"]["status"] == "asked"
 
@@ -348,7 +352,7 @@ emit(guest=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict":
      bad=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "meh"}, o),
      owner=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "dismissed"}, o))
 ''', home)
-    assert "owner" in result["guest"]["error"] and "verdict" in result["bad"]["error"]
+    assert "owner" in refused(result["guest"]) and "verdict" in refused(result["bad"])
     assert result["owner"] == {"ok": True, "id": "i-01", "verdict": "dismissed"}
     assert sidecar.mind.rates == [{"id": "i-01", "verdict": "dismissed"}]
 
@@ -376,9 +380,9 @@ emit(guest_who=call("protagine_people", {"operation": "who", "contact_id": "frie
     assert result["owner_inspect"]["digest"].startswith("Friend: known since spring")
     assert set(result["owner_inspect"]) == {"contact_id", "display_name", "trust_tier", "may_contact",
                                             "cadence_minutes", "digest"}
-    assert "no single contact" in result["unknown"]["error"]
+    assert "no single contact" in refused(result["unknown"])
     assert result["link"]["status"] == "pending" and result["link"]["candidate_id"]
-    assert "gateway:address" in result["bare_link"]["error"] and "one of" in result["bad"]["error"]
+    assert "gateway:address" in refused(result["bare_link"]) and "one of" in refused(result["bad"])
     reads = [c for c in sidecar.requests if c["path"].startswith("/v1/mind/people") and c["method"] == "GET"]
     guest_reads = [c for c in reads if c["query"].get("contact_id") == "p-02"]
     assert len(guest_reads) == 2  # the guest's reads name the guest as the viewer; the owner's name nobody
@@ -402,12 +406,12 @@ emit(guest={name: call("protagine_people", args, g) for name, args in ops.items(
      bad=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "maybe"}, o))
 ''', home)
     for name, reply in result["guest"].items():
-        assert "only the owner" in reply["error"], name
+        assert "only the owner" in refused(reply), name
     assert result["owner"]["permission"] == {"ok": True, "may_contact": "auto"}
     assert result["owner"]["cadence"] == {"ok": True, "cadence_minutes": 90}
     assert result["owner"]["merge"]["ok"] is True and result["owner"]["merge"]["dropped"] == "p-02"
     assert result["clear"] == {"ok": True, "cadence_minutes": None}
-    assert "never, ask or auto" in result["bad"]["error"]
+    assert "never, ask or auto" in refused(result["bad"])
     posts = [c for c in sidecar.requests if c["path"].startswith("/v1/mind/people") and c["method"] == "POST"]
     assert [c["path"] for c in posts] == ["/v1/mind/people/p-03/permission", "/v1/mind/people/p-03/cadence",
                                           "/v1/mind/people/merge", "/v1/mind/people/p-03/cadence"]
@@ -429,7 +433,7 @@ emit(operations=schema["parameters"]["properties"]["operation"]["enum"], descrip
 ''', home)
     assert result["operations"] == ["who", "inspect", "set_permission"]
     assert "merge" not in result["description"] and "cadence" not in result["description"]
-    assert "one of who, inspect, set_permission" in result["merge"]["error"]
+    assert "one of who, inspect, set_permission" in refused(result["merge"])
     assert result["who"][0]["contact_id"] == "p-03"
     assert not sidecar.calls("/v1/mind/people/merge", "POST")
 
@@ -442,7 +446,7 @@ def test_the_sidecar_checks_the_owner_again(home, sidecar):
 o = owner()
 emit(permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o))
 ''', home)
-    assert "only the owner" in result["permission"]["error"]
+    assert "only the owner" in refused(result["permission"])
     assert sidecar.contacts[("telegram", "2003")]["may_contact"] == "ask"
 
 
@@ -453,7 +457,7 @@ o = owner()
 emit(permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o),
      who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o))
 ''', home, env=worker_env(home))
-    assert "only the owner" in result["permission"]["error"]
+    assert "only the owner" in refused(result["permission"])
     assert result["who"] == [{"contact_id": "p-03", "display_name": "Friend", "trust_tier": "REGULAR"}]
     assert not [c for c in sidecar.requests if c["method"] == "POST" and c["path"].startswith("/v1/mind/people")]
 
@@ -468,7 +472,7 @@ emit(guest_search=call("protagine_memory_search", {"query": "plans"}, g),
 ''', home)
     assert result["guest_search"]["content"] == "excerpt for p-02"
     assert result["owner_search"]["content"] == f"excerpt for {OWNER}"
-    assert "owner" in result["guest_forget"]["error"]
+    assert "owner" in refused(result["guest_forget"])
     assert result["owner_forget"]["source_erased"] is True
     forget, = sidecar.calls("/v1/host/memory/sources/forget", "POST")
     assert forget["json"] == {"contact_id": OWNER, "source_ids": ["src-1"]}
@@ -556,6 +560,6 @@ emit(yes=call("protagine_self", {"operation": "yes", "code": "K7F"}, c),
      search=call("protagine_memory_search", {"query": "report"}, c))
 ''', home)
     for name in ("yes", "rate", "permission", "cadence", "merge", "forget"):
-        assert "owner" in result[name]["error"], name
+        assert "owner" in refused(result[name]), name
     assert result["state"]["enabled"] is True and result["search"]["count"] == 1
     assert sidecar.calls("/v1/mind/decide", "POST") == [] and sidecar.mind.intentions["i-01"]["status"] == "asked"

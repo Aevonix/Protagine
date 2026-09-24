@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import API_KEY, MIND_PRELUDE, OWNER, build_home, probe
+from conftest import API_KEY, MIND_PRELUDE, OWNER, build_home, probe, refused
 from test_tools_commands import TOOL_CODE
 
 pytest.importorskip("protagine.mind", reason="the sidecar package is not installed here")
@@ -216,10 +216,10 @@ emit(guest=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, g),
      approved=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, o_with),
      repeat=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, o_with))
 ''' % {"code": code}, real_home, prelude=PRELUDE)
-    assert "owner" in second["guest"]["error"] and "own message" in second["without"]["error"]
+    assert "owner" in refused(second["guest"]) and "own message" in refused(second["without"])
     assert second["approved"]["ok"] is True and second["approved"]["status"] == "approved"
     assert second["approved"]["id"] == asked[0].id
-    assert "not found" in second["repeat"]["error"]
+    assert "no ask is open" in refused(second["repeat"])
     third = probe(TICK + "emit(tick=result, tasks=tasks())", real_home, prelude=PRELUDE)
     assert list(third["tasks"]) == [f"mind:{asked[0].id}"] and third["tick"]["dispatched"] == 1
     assert real.store.get(asked[0].id).status == "dispatched"

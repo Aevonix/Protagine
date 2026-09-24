@@ -10,7 +10,8 @@ the constitution the owner's is the worker's tool surface: its default
 toolsets have no shell or code tool, and ``write_file``/``patch`` are confined
 to the task workspace. The name rule is a tripwire on top: a shell or code
 tool an owner adds can spell a file name in ways no text rule sees (a glob, an
-escape, a computed string).
+escape, a computed string). In a non-owner session every refusal is ``final_answer``: final for the turn
+and worded for a reply the contact reads, never "blocked".
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import time
 from typing import Any, Mapping
 
 from .capture import SessionMap
-from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable
+from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable, final_answer
 
 logger = logging.getLogger(__name__)
 
@@ -180,13 +181,19 @@ class Guard:
         guest = not mind and self.sessions.is_owner(session_id) is False
         if not mind and not guest:
             return None
+        verdict = self._rules(tool, args, session_id, mind)
+        if guest and verdict is not None and verdict.get("action") == "block":
+            # Final for the turn, so a contact's turn does not spend its iterations on other arguments, and
+            # worded for the reply: the model repeats a "blocked" to the contact.
+            return final_answer("session_search is unavailable to non-owner sessions; answer from the message and "
+                                "the recalled context" if tool == "session_search" else
+                                f"{tool} is not available in this conversation; answer in your final response",
+                                block=True)
+        return verdict
+
+    def _rules(self, tool: str, args: Mapping[str, Any], session_id: str, mind: bool) -> dict[str, str] | None:
         if tool in READ_ONLY_TOOLS:
-            if guest and tool == "session_search":
-                # Final for the turn, in the words of the provider's retry: false answers, so a guest
-                # turn does not spend its iterations asking again with other arguments.
-                return block("session_search is unavailable to non-owner sessions (retry: false); answer "
-                             "from the message and the recalled context")
-            return None
+            return block("session_search") if not mind and tool == "session_search" else None
         text = json.dumps(args, ensure_ascii=False, sort_keys=True)
         if mind:
             if not self.mind_enabled():

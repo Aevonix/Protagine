@@ -266,7 +266,7 @@ def test_native_file_edits_never_become_new_owner_evidence(
     for name, args in (("protagine_write_memory", {"content": "edited interpretation"}),
                        ("protagine_search_memory", {"query": "interpretation"})):
         assert not hasattr(provider, "_tool_" + name)
-        assert "error" in json.loads(provider.handle_tool_call(name, args))
+        assert json.loads(provider.handle_tool_call(name, args))["retry"] is False   # refused, finally
     assert fake.requests == []
 
 
@@ -700,7 +700,8 @@ def test_removed_reads_are_unknown_tools_and_the_system_block_carries_the_guidan
     provider = _make_provider(provider_mod, fake, monkeypatch)
     for name in ("protagine_check_commitments", "protagine_get_facts", "protagine_get_affect",
                  "protagine_timeline", "protagine_initiative_feedback", "protagine_record_affect"):
-        assert "Unknown Protagine tool" in json.loads(provider.handle_tool_call(name, {}))["error"], name
+        answer = json.loads(provider.handle_tool_call(name, {}))
+        assert answer["retry"] is False and "unknown Protagine tool" in answer["reason"], name   # final
     assert fake.requests == []
     block = provider.system_prompt_block()
     assert "memory-context" in block and "Current Time" in block and "retry: false" in block

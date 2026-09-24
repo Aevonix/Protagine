@@ -10,7 +10,9 @@ ask code inside the owner's own message for that turn, so neither a guest, a
 worker, a cron job nor an injected page can approve anything (architecture
 7.7, 7.10). The mind's record (what it works on, its log, why it acted, the
 self-narrative) is the owner's too: shown only in the owner's own session,
-never to a guest, a group the owner shares or a worker.
+never to a guest, a group the owner shares or a worker. A call that cannot succeed this turn (a refusal,
+an id or code nobody listed, nothing retained, an unreachable sidecar) gets ``final_answer``, never an
+error the model would try again with other arguments; an argument it can correct names the valid form.
 """
 
 from __future__ import annotations
@@ -23,10 +25,14 @@ from urllib.parse import quote
 
 from .body import mind_state
 from .capture import SessionMap, session_env
-from .client import ProtagineClient, Settings, SidecarUnavailable
+from .client import ProtagineClient, Settings, SidecarUnavailable, final_answer
 from .commands import ROUTES_MISSING
 
-RECORD_IS_OWNERS = "the mind's record is the owner's; ask in the owner's own chat"
+RECORD_IS_OWNERS = "the mind's record is the owner's and is shown only in the owner's own chat"
+# What a read of the record takes. Anything else it is given (content, text, a reason) is an attempt to write
+# through it; the record is written after the turn, from what the turn said, never by a tool call.
+READ_KEYS = frozenset({"operation", "id", "limit", "since_hours", "kind", "recipient", "query"})
+READS_ONLY = "protagine_self only reads the record; what this turn says is recorded after it, with no tool call"
 
 ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
@@ -107,11 +113,6 @@ def _opinion(value: Any) -> int | None:
     return int(text) if text.isdigit() else None
 
 
-def _unavailable(reason: str) -> str:
-    """One final answer: the tool cannot work on this lane and a retry would only repeat it."""
-    return _json({"unavailable": True, "retry": False, "reason": reason})
-
-
 class Tools:
     def __init__(self, client: ProtagineClient, sessions: SessionMap, settings: Settings):
         self.client, self.sessions, self.settings = client, sessions, settings
@@ -142,15 +143,15 @@ class Tools:
 
     def _mind(self, method: str, path: str, **kwargs: Any) -> str:
         if self.client.has_mind_routes() is not True:
-            return _error(ROUTES_MISSING)
+            return final_answer(ROUTES_MISSING)
         try:
             response = self.client.request(method, path, timeout=5, **kwargs)
         except SidecarUnavailable:
-            return _error("the sidecar is unreachable")
+            return final_answer("the sidecar is unreachable")
         if response.status_code == 404:
-            return _error(ROUTES_MISSING if not response.text else f"not found: {response.text[:200]}")
+            return final_answer(ROUTES_MISSING if not response.text else f"not found: {response.text[:200]}")
         if not response.is_success:
-            return _error(f"sidecar HTTP {response.status_code}")
+            return final_answer(f"sidecar HTTP {response.status_code}")
         return response.text
 
     # -- protagine_self ---------------------------------------------------------------
@@ -158,6 +159,11 @@ class Tools:
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
+        if operation not in (*SELF_OPERATIONS, "status"):
+            return final_answer(f"unknown operation (one of {', '.join(SELF_OPERATIONS)}); {READS_ONLY}")
+        if operation in {"state", "status", "log", "why", "opinions"} and any(
+                value not in (None, "", [], {}) for key, value in args.items() if key not in READ_KEYS):
+            return final_answer(READS_ONLY)
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
             mind = self.settings.mind()
@@ -176,7 +182,7 @@ class Tools:
         if operation in {"opinions", "withdraw", "reconsider"} or (operation == "why" and _opinion(args.get("id"))):
             return self._opinions(operation, args, session_id)
         if operation in {"log", "why"} and not self._owners_own(session_id):
-            return _error(RECORD_IS_OWNERS)
+            return final_answer(RECORD_IS_OWNERS)
         if operation == "log":
             params: dict[str, Any] = {"limit": max(1, min(int(args.get("limit") or 20), 100))}
             if args.get("since_hours") is not None and str(args.get("since_hours")).strip():
@@ -194,11 +200,9 @@ class Tools:
             if not args.get("id") or args.get("verdict") not in VERDICTS:
                 return _error(f"id and verdict ({'|'.join(VERDICTS)}) are required")
             if not self._owner(session_id):
-                return _error("only the owner can rate an intention")
+                return final_answer("only the owner can rate an intention")
             return self._mind("POST", "/v1/mind/rate", json={"id": str(args["id"]), "verdict": args["verdict"]})
-        if operation in {"yes", "no"}:
-            return self._answer_ask(operation, str(args.get("code") or ""), session_id)
-        return _error("unknown operation")
+        return self._answer_ask(operation, str(args.get("code") or ""), session_id)
 
     def _opinions(self, operation: str, args: dict[str, Any], session_id: str) -> str:
         """The agent's recorded opinions. Reads pass the session's participant, so the sidecar shows a guest,
@@ -213,7 +217,7 @@ class Tools:
         if number is None:
             return _error("id is required (an opinion number from opinions)")
         if not self._owner(session_id):
-            return _error(f"only the owner can {operation} an opinion")
+            return final_answer(f"only the owner can {operation} an opinion")
         if not str(args.get("reason") or "").strip():
             return _error("reason is required: the owner's own words for why")
         return self._mind("POST", f"/v1/mind/opinions/{number}/{operation}", json={
@@ -237,34 +241,41 @@ class Tools:
         """``GET /v1/mind/why/{id}``; an id the audit log does not hold gets the sidecar's refusal sentence,
         so a false premise about the agent's own actions is answered from the record."""
         if self.client.has_mind_routes() is not True:
-            return _error(ROUTES_MISSING)
+            return final_answer(ROUTES_MISSING)
         try:
             response = self.client.get(f"/v1/mind/why/{quote(intention_id, safe='')}", timeout=5)
         except SidecarUnavailable:
-            return _error("the sidecar is unreachable")
+            return final_answer("the sidecar is unreachable")
         if response.status_code == 404:
             try:
                 detail = response.json().get("detail")
             except ValueError:
                 detail = None
             message = detail.get("message") if isinstance(detail, dict) else None
-            return _error(str(message or f"no intention {intention_id} exists in the audit log"))
+            return final_answer(str(message or f"no intention {intention_id} exists in the audit log"))
         if not response.is_success:
-            return _error(f"sidecar HTTP {response.status_code}")
+            return final_answer(f"sidecar HTTP {response.status_code}")
         return response.text
 
     def _answer_ask(self, answer: str, code: str, session_id: str) -> str:
-        """``POST /v1/mind/decide`` only for the owner's own turn whose message carries the typed code."""
-        code = code.strip().upper()
-        if not code:
-            return _error("code is required")
-        if not ASK_CODE.fullmatch(code):
-            return _error("the ask code is 3 to 8 letters or digits, as shown in the notice")
-        if not self._owner(session_id):
-            return _error("only the owner can answer an ask")
-        info = self.sessions.get(session_id)
-        if info is None or not re.search(rf"(?<![A-Z0-9]){re.escape(code)}(?![A-Z0-9])", info.user_message.upper()):
-            return _error("the ask code must appear in the owner's own message")
+        """``POST /v1/mind/decide`` only for the owner's own turn whose message carries the typed code. A code
+        the owner did not type is never a guess away: the answer names an open ask the message does carry, or
+        is final (no ask open, or none typed)."""
+        code, info = code.strip().upper(), self.sessions.get(session_id)
+        if not self._owner(session_id) or info is None:
+            return final_answer("only the owner answers an ask, in their own message")
+        state, message = mind_state(self.client), info.user_message.upper()
+        open_codes = [str(ask.get("code")).upper() for ask in (state or {}).get("asks") or [] if ask.get("code")]
+        if state is not None and not open_codes:
+            return final_answer("no ask is open; nothing to answer")
+
+        def typed(value: str) -> bool:
+            return bool(re.search(rf"(?<![A-Z0-9]){re.escape(value)}(?![A-Z0-9])", message))
+        if not ASK_CODE.fullmatch(code) or not typed(code):
+            answered = [value for value in open_codes if typed(value)]
+            return _error(f"the owner's message answers ask {' or '.join(answered)}; pass that code") if answered \
+                else final_answer("an ask is answered only with its code as the owner typed it in their own "
+                                  "message, and this one has none")
         return self._mind("POST", "/v1/mind/decide", json={
             "code": code, "answer": answer, "session_id": session_id, "message": info.user_message[:8000],
             "contact_id": self.sessions.contact_id(session_id) or self.settings.owner_contact_id() or None})
@@ -280,7 +291,7 @@ class Tools:
             return _error(f"operation is one of {', '.join(offered)}")
         owner, viewer = self._owner(session_id), self.sessions.contact_id(session_id) or ""
         if operation in OWNER_PEOPLE_OPERATIONS and not owner:
-            return _error("only the owner can change who may be contacted, cadences or merges")
+            return final_answer("only the owner can change who may be contacted, cadences or merges")
         if operation != "who" and not who:
             return _error("contact_id (a name, handle or id) is required")
         if operation == "who" and not who and self.sessions.is_owner(session_id) is not True:
@@ -315,19 +326,20 @@ class Tools:
     def _people(self, method: str, path: str, owner: bool | None, **kwargs: Any) -> str:
         """A read (``owner`` set) as the persons this viewer may see; a change (``owner`` None) as its outcome."""
         if self.client.has_mind_routes() is not True:
-            return _error(ROUTES_MISSING)
+            return final_answer(ROUTES_MISSING)
         try:
             response = self.client.request(method, path, timeout=kwargs.pop("timeout", 5), **kwargs)
         except SidecarUnavailable:
-            return _error("the sidecar is unreachable")
+            return final_answer("the sidecar is unreachable")
         try:
             value = response.json()
         except ValueError:
             value = {}
         if not response.is_success:
             detail = value.get("detail") if isinstance(value, dict) else None
-            return _error(str(detail.get("message") or detail.get("code")) if isinstance(detail, dict) else
-                          ROUTES_MISSING if response.status_code == 404 else f"sidecar HTTP {response.status_code}")
+            return final_answer(str(detail.get("message") or detail.get("code")) if isinstance(detail, dict) else
+                                ROUTES_MISSING if response.status_code == 404 else
+                                f"sidecar HTTP {response.status_code}")
         if owner is None:
             return _json({key: value[key] for key in ("ok", "text", "status", "may_contact", "cadence_minutes",
                                                       "candidate_id", "dropped") if key in value})
@@ -353,16 +365,19 @@ class Tools:
             return _error("query is required")
         contact = self.sessions.contact_id(session_id)
         if not contact:
-            return _unavailable("this turn has no resolved participant; answer from the message")
+            return final_answer("this turn has no resolved participant; answer from the message")
         try:
             response = self.client.post("/v1/host/memory/search", timeout=10, json={
                 "identity": {"host_id": "hermes"}, "person_id": contact, "session_id": session_id,
                 "query": query[:4096], "limit": max(1, min(int(args.get("limit") or 5), 20))})
         except SidecarUnavailable:
-            return _error("memory search is unavailable")
+            return final_answer("memory search is unavailable")
         if not response.is_success:
-            return _error(f"memory search failed (HTTP {response.status_code})")
+            return final_answer(f"memory search failed (HTTP {response.status_code})")
         value = response.json()
+        if not value.get("count"):
+            return final_answer("nothing retained matches; for a participant with no history there is nothing to "
+                                "find, so answer from the message and the recalled context")
         return _json({"content": value.get("content", ""), "count": value.get("count", 0),
                       "source_refs": value.get("source_refs", [])})
 
@@ -372,14 +387,14 @@ class Tools:
         if not ids:
             return _error("source_ids is required")
         if not self._owner(session_id):
-            return _error("only the owner can forget sources")
+            return final_answer("only the owner can forget sources")
         contact = self.sessions.contact_id(session_id)
         try:
             response = self.client.post("/v1/host/memory/sources/forget", timeout=FORGET_TIMEOUT_SECONDS,
                                         json={"contact_id": contact, "source_ids": list(dict.fromkeys(ids))})
         except SidecarUnavailable as error:
             if not error.delivered:
-                return _error("nothing was removed: the sidecar is unreachable; try again later")
+                return final_answer("nothing was removed: the sidecar is unreachable")
             return _json({"source_erased": None, "status": "unconfirmed",
                           "note": f"The removal was sent and may have completed, but its answer did not arrive "
                                   f"within {FORGET_TIMEOUT_SECONDS:g} s. Forgetting the same source_ids again "
@@ -387,7 +402,7 @@ class Tools:
         if response.status_code in {409, 422}:
             return _json({"source_erased": False, "error": "no matching sources; use exact source_id values"})
         if not response.is_success:
-            return _error(f"forget failed (HTTP {response.status_code})")
+            return final_answer(f"forget failed (HTTP {response.status_code})")
         return response.text
 
 

@@ -185,8 +185,9 @@ _LANE_REFUSALS = {
 
 
 def _terminal(reason: str) -> str:
-    """One final answer: the tool cannot work on this lane and a retry would only repeat it."""
-    return json.dumps({"unavailable": True, "retry": False, "reason": reason})
+    """One final answer: the call cannot succeed this turn and a retry would only repeat it. The same answer
+    as the general plugin's ``final_answer``, which this provider, loadable on its own, does not import."""
+    return json.dumps({"unavailable": True, "retry": False, "reason": reason}, ensure_ascii=False)
 
 
 # An id nobody listed (a model guesses one from a contact and a subject, then searches and guesses
@@ -713,12 +714,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 return _terminal(_LANE_REFUSALS[lane])
         handler = getattr(self, f"_tool_{tool_name}", None)
         if handler is None:
-            return json.dumps({"error": f"Unknown Protagine tool: {tool_name}"})
+            return _terminal(f"unknown Protagine tool: {tool_name}")
         try:
             return handler(args)
         except Exception as exc:
             logger.warning("Protagine tool %s failed: %s", tool_name, exc)
-            return json.dumps({"error": f"Tool failed: {exc}"})
+            return _terminal(f"the tool failed ({type(exc).__name__})")
 
     # -- Tool handlers ---------------------------------------------------------
 
@@ -748,7 +749,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 resp.raise_for_status()
                 return json.dumps({"ok": True, "action": action, "commitment": resp.json()})
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return _terminal(f"the settle was not confirmed ({type(exc).__name__})")
 
     # -- Optional hooks --------------------------------------------------------
 
