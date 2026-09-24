@@ -55,6 +55,7 @@ TASK_EPISODE = "mind_consolidate_episode"
 SELF_TURN_SQL = "s.session_id<>'mind' AND s.turn_id NOT LIKE 'mind:%'"
 DIGEST_CHARS, DIGEST_CONTACTS_PER_NIGHT, DIGEST_WINDOW = 600, 6, timedelta(days=7)
 DIGEST_CLAIMS = 40
+DIGEST_PAGE, DIGEST_SCAN = 200, 10000                                           # the contact store, page by page
 EPISODES_PER_NIGHT, EPISODE_MIN_TURNS, EPISODE_CHARS = 8, 3, 6000
 EPISODE_WINDOW, EPISODE_MAX_WINDOW = timedelta(hours=24), timedelta(days=7)    # or back to the last run
 NARRATIVE_KEYS = ("self.interests", "self.strengths", "self.recent", "self.stances")
@@ -840,22 +841,27 @@ class Consolidation:
 
     async def _digest_candidates(self, now: datetime) -> List[Any]:
         """The contacts talked with inside the window (the store's ``last_interaction_at``), newest first,
-        never the owner (a digest is rendered for the other people the agent talks with)."""
+        never the owner (a digest is rendered for the other people the agent talks with). The store's
+        public ``list`` orders by creation, so every page is read (at most ``DIGEST_SCAN`` contacts)."""
         lister = getattr(self.contacts, "list", None) if self.contacts is not None else None
         if not callable(lister):
             return []
-        rows = lister(limit=500)
-        if inspect.isawaitable(rows):
-            rows = await rows
         since = now - DIGEST_WINDOW
-        recent = []
-        for record in rows or []:
-            cid = self._field(record, "contact_id")
-            last = _utc(self._field(record, "last_interaction_at"))
-            if cid and str(cid) != self.owner_id and last is not None and since <= last <= now:
-                recent.append((last, str(cid), record))
-        recent.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return [record for _, _, record in recent[:DIGEST_CONTACTS_PER_NIGHT]]
+        recent: Dict[str, Tuple[datetime, str, Any]] = {}
+        for offset in range(0, DIGEST_SCAN, DIGEST_PAGE):
+            rows = lister(limit=DIGEST_PAGE, offset=offset)
+            if inspect.isawaitable(rows):
+                rows = await rows
+            rows = list(rows or [])
+            for record in rows:
+                cid = self._field(record, "contact_id")
+                last = _utc(self._field(record, "last_interaction_at"))
+                if cid and str(cid) != self.owner_id and last is not None and since <= last <= now:
+                    recent[str(cid)] = (last, str(cid), record)
+            if len(rows) < DIGEST_PAGE:
+                break
+        ranked = sorted(recent.values(), key=lambda item: (item[0], item[1]), reverse=True)
+        return [record for _, _, record in ranked[:DIGEST_CONTACTS_PER_NIGHT]]
 
     async def digests(self, night: Night, now: datetime) -> None:
         """What each person has told the agent, in their own record: one writer, the contact store."""
@@ -889,12 +895,14 @@ class Consolidation:
                 continue
             text = _clean(answer.get("digest"), DIGEST_CHARS)
             allowed = set(ids)
-            sources = [ref for ref in dict.fromkeys(str(x).strip() for x in (answer.get("sources") or []))
-                       if ref in allowed]
-            if not text or not sources:
+            cited = [ref for ref in dict.fromkeys(str(x).strip() for x in (answer.get("sources") or []))
+                     if ref in allowed]
+            if not text or not cited:
                 night.count("digests_rejected")
                 continue
-            result = writer(cid, text, sources)
+            # The stored sources are the live claims the digest was built from, not the subset the model
+            # cited: the skip rule above compares exactly those, so an unchanged contact costs no call.
+            result = writer(cid, text, ids)
             if inspect.isawaitable(result):
                 await result
             written += 1

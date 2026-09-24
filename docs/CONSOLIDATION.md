@@ -87,13 +87,16 @@ next night.
    writer path, the contact store's `set_digest(contact_id, text, sources)` (awaited when it is a
    coroutine). A contact store without `set_digest` (the one before the people milestone) gets no
    digest, and nothing is stored anywhere else. Candidates come from the store's public
-   `list()`: the contacts whose `last_interaction_at` (the host bumps it on every turn) is in the
-   last 7 days, newest first, never the owner (a digest serves the other people the agent talks
-   with). A contact whose stored `digest_sources` are exactly its live claim ids is skipped; a
-   template digest (`digest_sources: ["template"]`) is replaced. The model sees that person's own
-   live claims (at most 40, with their ids) and the previous digest and returns at most 600
-   characters of what the person has told the agent, plus the claim ids it rests on; unknown ids
-   are dropped and a digest with no valid source is rejected (and tried again the next night).
+   `list()`, read page by page (it orders by creation; at most 10,000 contacts): the contacts
+   whose `last_interaction_at` (the host bumps it on every turn) is in the last 7 days, newest
+   first, never the owner (a digest serves the other people the agent talks with). A contact
+   whose stored `digest_sources` are exactly its live claim ids is skipped; a template digest
+   (`digest_sources: ["template"]`) is replaced. The model sees that person's own live claims (at
+   most 40, with their ids) and the previous digest and returns at most 600 characters of what the
+   person has told the agent, plus the claim ids it used; a digest citing none of the claims it
+   was shown is rejected (and tried again the next night). The stored `digest_sources` are the live
+   claims the digest was built from, whichever the model cited, so an unchanged contact costs no
+   call and its digest does not drift.
    The mind renders no section of its own: the people milestone's `protagine-person` section
    renders the contact's digest in that contact's turns.
 4. **Episode summaries** (at most 8 calls). Sessions with at least 3 person-scoped turns since the

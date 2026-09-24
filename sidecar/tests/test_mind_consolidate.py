@@ -281,6 +281,59 @@ async def test_the_previous_digest_is_read_from_the_contact_and_a_template_one_i
     assert record.digest_sources == [claim_id] and "room 4" in record.digest
 
 
+async def test_a_digest_that_cites_some_of_the_claims_is_not_rewritten_while_they_stand(fx):
+    """``digest_sources`` are the live claims the digest was built from, whichever the model cited, so an
+    unchanged contact costs no call the next night and the text does not drift."""
+    def cite_first(messages, context):
+        return {"digest": "They told me their office and their team.",
+                "sources": list(dict.fromkeys(CLAIM.findall(messages[-1]["content"])))[:1]}
+    fx.router.answers[TASK_DIGEST] = cite_first
+    office = await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
+    team = await fx.fact("turn-b", CONTACT, "s-1", "My team is platform.", "platform", predicate="team")
+    for _ in range(3):
+        await fx.mind.consolidate()
+        fx.shift(days=1)
+    assert fx.router.tasks().count(TASK_DIGEST) == 1
+    assert fx.contacts.records[CONTACT].digest_sources == sorted([office, team])
+    fx.contacts.touch(CONTACT, fx.now)
+    await fx.fact("turn-c", CONTACT, "s-2", "My desk is 12.", "12", predicate="desk")    # a new claim: rewritten
+    await fx.mind.consolidate()
+    assert fx.router.tasks().count(TASK_DIGEST) == 2
+
+
+async def test_digest_candidates_are_every_contact_talked_with_not_the_newest_created(tmp_path, monkeypatch):
+    """The real contact store lists the newest-created first; a contact created long ago who talked
+    yesterday is still a candidate however many contacts came after it."""
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(tmp_path / "contacts.db")))
+    await store.connect()
+    db = store._require_db()
+    try:
+        early = await store.create(display_name="Early")
+        async with db.execute("SELECT * FROM contacts WHERE contact_id=?", (early.contact_id,)) as cursor:
+            row = dict(await cursor.fetchone())
+        columns = list(row)
+        later = [dict(row, contact_id=f"cid-later-{index:03d}", display_name=f"later-{index}", last_interaction_at=None,
+                      created_at=f"2099-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00") for index in range(600)]
+        await db.executemany(f"INSERT INTO contacts ({','.join(columns)}) VALUES ({','.join('?' * len(columns))})",
+                             [[item[column] for column in columns] for item in later])
+        await db.commit()
+        writes = []
+
+        async def set_digest(contact_id, text, sources):          # the people milestone's writer
+            writes.append(contact_id)
+        store.set_digest = set_digest
+        fx = Fixture(tmp_path / "mind", contacts=store)
+        assert await store.record_interaction(early.contact_id, fx.now.isoformat())
+        await fx.fact("t-1", early.contact_id, "s-1", "My office is room 4.", "room 4")
+        await fx.mind.consolidate()
+        assert writes == [early.contact_id]
+        fx.store.close()
+    finally:
+        await db.close()
+
 async def test_a_digest_with_unknown_or_no_sources_is_rejected(fx):
     await fx.fact("turn-a", CONTACT, "s-1", "My office is room 4.", "room 4")
     fx.router.answers[TASK_DIGEST] = {"digest": "Made up.", "sources": ["claim:" + "0" * 64]}
