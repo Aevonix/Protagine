@@ -142,6 +142,16 @@ async def test_packet_is_bounded_and_empty_for_nobody(wired):
 
 
 @pytest.mark.asyncio
+async def test_the_people_faculty_off_takes_the_person_section_with_it(wired, monkeypatch):
+    """Audit M9: the ablation removes what the people faculty adds, the digest section included."""
+    from protagine.api.routers import mind as mind_router
+    monkeypatch.setattr(mind_router, "_mind", SimpleNamespace(faculties={"people": False}))
+    assert "About this person" not in await host.assemble_packet(GUEST)
+    monkeypatch.setattr(mind_router, "_mind", SimpleNamespace(faculties={"people": True}))
+    assert DIGEST in await host.assemble_packet(GUEST)
+
+
+@pytest.mark.asyncio
 async def test_digest_section_needs_a_digest(wired):
     wired.rows[GUEST].digest = None
     packet = await host.assemble_packet(GUEST)

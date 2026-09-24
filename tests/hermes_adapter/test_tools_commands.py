@@ -234,6 +234,25 @@ emit(guest={name: call("protagine_people", args, g) for name, args in ops.items(
     assert posts[1]["json"]["minutes"] == 90 and posts[3]["json"]["minutes"] is None
 
 
+def test_with_the_people_faculty_off_the_tool_offers_only_who_inspect_and_permission(home, sidecar):
+    """Audit M9: the full-people ablation lacks what M5 added (merge, link proposals, cadences), in
+    the schema the model sees as well as in the sidecar, and keeps the M4 surface."""
+    sidecar.mind_routes = True
+    home.write_mind(faculties={"people": False})
+    result = probe(TOOL_CODE + '''
+o = owner()
+schema = registry.get_schema("protagine_people")
+emit(operations=schema["parameters"]["properties"]["operation"]["enum"], description=schema["description"],
+     merge=call("protagine_people", {"operation": "merge", "contact_id": "p-03", "drop": "p-02"}, o),
+     who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o))
+''', home)
+    assert result["operations"] == ["who", "inspect", "set_permission"]
+    assert "merge" not in result["description"] and "cadence" not in result["description"]
+    assert "one of who, inspect, set_permission" in result["merge"]["error"]
+    assert result["who"][0]["contact_id"] == "p-03"
+    assert not sidecar.calls("/v1/mind/people/merge", "POST")
+
+
 def test_the_sidecar_checks_the_owner_again(home, sidecar):
     """An owner session whose sender the sidecar does not know as the owner is refused there too."""
     sidecar.mind_routes = True

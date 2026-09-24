@@ -2021,8 +2021,9 @@ async def _assemble_sections(
         except Exception as exc:
             logger.debug("context_assemble relationship failed: %s", exc)
 
-    # --- About this person: their digest, for any viewer but the owner ---
-    if _contacts_store is not None and contact_id and contact_id != owner_id:
+    # --- About this person: their digest, for any viewer but the owner; the people faculty's ---
+    from protagine.api.routers.mind import faculty_on
+    if _contacts_store is not None and contact_id and contact_id != owner_id and faculty_on("people"):
         try:
             _digest = getattr(await _contacts_store.get(contact_id), "digest", None)
             if _digest:

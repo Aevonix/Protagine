@@ -176,15 +176,32 @@ async def test_an_unknown_recipient_asks_the_owner_who_they_are(make):
     assert (await fx.tick())["formed"] == []
 
 
-async def test_people_off_rewrites_a_contact_message_into_an_owner_notice(make):
+async def test_people_off_leaves_the_granted_message_in_its_m4_form(make):
+    """Audit M9: with the faculty off the owner's message to a third party is what it was before
+    M5, the assistant's overdue work for the owner: no notice, no composed check-in, no
+    recipient question, and no rewrite of anything into an owner notice."""
     fx = make([contact(CONTACT, may_contact="auto", name="Sam")], config={"faculties": {"people": False}})
-    _seed(fx, NOTICE)
+    notice = _seed(fx, NOTICE)
+    _seed(fx, {**CHECK_IN, "metadata": {**CHECK_IN["metadata"], "recipient": "Kim"}, "counterpart": "Kim"})
+    fx.shift(C + PAST)
+    formed = (await fx.tick())["formed"]
+    assert sorted(item["type"] for item in formed) == ["commitment_overdue", "commitment_overdue"]
+    assert all(fx.store.get(item["id"]).entity_id == OWNER and item["kind"] == "task" for item in formed)
+    assert fx.messages_to(CONTACT) == [] and fx.messages_to(OWNER) == []
+    assert "recipient_id" not in fx.commitments.get(notice["id"])["metadata"]
+
+
+async def test_people_off_keeps_the_m2_deliverable_to_the_contact_who_asked(make):
+    """A deliverable a contact asked for predates M5: the ablation leaves it going to that contact."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")], config={"faculties": {"people": False}})
+    fx.commitments.create(person_id=CONTACT, description="Email Sam the venue address",
+                          due_at=(fx.now + C).isoformat(), source_type="introspection",
+                          metadata={"kind": "deliverable", "content": "The venue is at 5 Main St."})
     fx.shift(C + PAST)
     formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "commitment_deliverable" and formed["decision"] == "act"
     row = fx.store.get(formed["id"])
-    assert row.entity_id == OWNER and row.type == "commitment_notice"
-    assert row.context["text"] == "Not sent (people off): to Sam: The parcel is running late, sorry."
-    assert fx.messages_to(CONTACT) == []
+    assert row.entity_id == CONTACT and row.context["text"] == "The venue is at 5 Main St."
 
 
 # ---------------------------------------------------------------------------

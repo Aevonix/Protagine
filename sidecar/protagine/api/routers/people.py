@@ -17,7 +17,8 @@ Interface (JSON; the plugin's ``protagine_people`` and ``protagine people`` are 
   POST /merge                             {keep, drop, contact_id?, by?}
   POST /link                              {contact_id, gateway, address, evidence_refs?, by?}
 ``{who}``, ``keep``, ``drop`` and the link's ``contact_id`` are references: a contact id, a
-phone number, an email, ``gateway:address`` or a unique name.
+phone number, an email, ``gateway:address`` or a unique name. With the mind's people faculty
+off, ``merge``, ``link`` and ``cadence`` answer 409 ``people_off``.
 """
 
 from __future__ import annotations
@@ -242,9 +243,19 @@ async def inspect(reference: str, contact_id: Optional[str] = None) -> Dict[str,
 
 # -- owner mutations -----------------------------------------------------------------------
 
+def _require_people() -> None:
+    """Merges, link proposals and cadences are the people faculty's (M5): with it off (the
+    ``full-people`` ablation) they are refused, and who, inspect and permission stay."""
+    from protagine.api.routers.mind import faculty_on
+    if not faculty_on("people"):
+        raise HTTPException(status_code=409, detail={"code": "people_off",
+                                                     "message": "the people faculty is off"})
+
+
 @router.post("/merge")
 async def merge(body: MergeBody) -> Dict[str, Any]:
     """C2: fold ``drop`` into ``keep``; handles, sources, comms and affect follow the person."""
+    _require_people()
     performed_by = _require_owner(body.contact_id, body.by)
     store = _store()
     keep, drop = await _resolve(body.keep), await _resolve(body.drop)
@@ -267,6 +278,7 @@ async def merge(body: MergeBody) -> Dict[str, Any]:
 @router.post("/link")
 async def link(body: LinkBody) -> Dict[str, Any]:
     """Propose that a handle is this person: a candidate the owner confirms, never attribution."""
+    _require_people()
     store = _store()
     contact = await _resolve(body.contact_id)
     holder = await store.resolve_messaging_handle(body.gateway, body.address)
@@ -306,6 +318,7 @@ async def permission(reference: str, body: PermissionBody) -> Dict[str, Any]:
 @router.post("/{reference}/cadence")
 async def cadence(reference: str, body: CadenceBody) -> Dict[str, Any]:
     """The owner's check-in cadence in minutes; null clears it."""
+    _require_people()
     performed_by = _require_owner(body.contact_id, body.by)
     contact = await _resolve(reference)
     try:

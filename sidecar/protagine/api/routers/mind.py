@@ -56,6 +56,12 @@ def get_mind() -> Any:
     return _mind
 
 
+def faculty_on(name: str) -> bool:
+    """Whether the running mind has faculty ``name`` on; without a mind nothing is ablated."""
+    faculties = getattr(_mind, "faculties", None)
+    return True if not isinstance(faculties, dict) else bool(faculties.get(name, True))
+
+
 def _require() -> Any:
     if _mind is None:
         raise HTTPException(status_code=503, detail={"code": "mind_not_wired", "message": "the mind is not running"})
@@ -400,4 +406,4 @@ async def reset(body: ResetBody) -> Dict[str, Any]:
     return _require().reset(body.cls)
 
 
-__all__ = ["get_mind", "router", "set_mind"]
+__all__ = ["faculty_on", "get_mind", "router", "set_mind"]

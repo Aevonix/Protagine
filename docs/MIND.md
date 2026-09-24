@@ -157,9 +157,15 @@ audit log, the outbox, outcomes and the off switch. The design is in
    sets by hand stands), and while it stays open every check-in to that
    contact carries its topic.
    Daily, each contact talked with in the last 24 h gets a template digest
-   (`P/contacts/digest.py`). With the faculty off the social weight is 0,
-   nothing is composed or digested, and a message meant for a contact goes
-   to the owner as "Not sent (people off): to <name>: <text>".
+   (`P/contacts/digest.py`). With the faculty off (the `full-people`
+   ablation) what M5 adds goes and nothing older: the social weight is 0,
+   nothing is composed (a message keeps its template) or digested, no link
+   ask is raised, an owner's message to a third party or cadence takes its
+   pre-M5 form (overdue work for the assistant), the "About this person"
+   section is left out, and `/v1/mind/people` refuses `merge`, `link` and
+   `cadence` with 409 `people_off` while the plugin's `protagine_people`
+   offers only `who`, `inspect` and `set_permission`. `may_contact`,
+   opt-outs and shadow contacts still apply.
 
    Weights come from `mind.drives`; 0 turns a drive off. A `done` outcome
    satiates its drive (a decaying `satiety.<drive>` level halves the

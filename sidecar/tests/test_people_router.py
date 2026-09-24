@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -245,3 +246,31 @@ async def test_a_merge_outside_the_router_moves_comms_affect_and_sources_through
         assert await store.pending_identity_reconciliations() == []
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_with_the_people_faculty_off_merge_link_and_cadence_are_refused_and_the_rest_stays(world, monkeypatch):
+    """Audit M9: ``full-people`` must lack what M5 adds (merge, link proposals, cadences) and keep
+    what came before it (who, inspect, the owner's permission)."""
+    from protagine.api.routers import mind as mind_router
+    client, store, owner, guest = world
+    other = await store.create(display_name="Other Person", trust_tier="regular")
+    monkeypatch.setattr(mind_router, "_mind", SimpleNamespace(faculties={"people": False}))
+    by_owner = {"contact_id": owner.contact_id}
+    refused = [
+        await client.post(f"/v1/mind/people/{guest.contact_id}/cadence", json={"minutes": 30, **by_owner}),
+        await client.post("/v1/mind/people/merge", json={"keep": guest.contact_id, "drop": other.contact_id, **by_owner}),
+        await client.post("/v1/mind/people/link", json={"contact_id": guest.contact_id, "gateway": "email",
+                                                        "address": "casey@example.test"})]
+    for response in refused:
+        assert response.status_code == 409 and response.json()["detail"]["code"] == "people_off", response.text
+    assert (await store.get(guest.contact_id)).cadence_minutes is None and await store.get(other.contact_id)
+    assert await store.list_handle_proposals() == []
+    permitted = await client.post(f"/v1/mind/people/{guest.contact_id}/permission",
+                                  json={"may_contact": "auto", **by_owner})
+    assert permitted.status_code == 200 and (await store.get(guest.contact_id)).may_contact == "auto"
+    assert (await client.get("/v1/mind/people", params={"q": "casey"})).status_code == 200
+    assert (await client.get(f"/v1/mind/people/{guest.contact_id}")).status_code == 200
+    monkeypatch.setattr(mind_router, "_mind", SimpleNamespace(faculties={"people": True}))
+    assert (await client.post(f"/v1/mind/people/{guest.contact_id}/cadence",
+                              json={"minutes": 30, **by_owner})).status_code == 200

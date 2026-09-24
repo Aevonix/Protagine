@@ -43,8 +43,7 @@ SELF_SCHEMA = {
         "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
         "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
         "code": {"type": "string"}, "limit": {"type": "integer"}},
-        "required": ["operation"]},
-}
+        "required": ["operation"]}}
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
     "description": "contact_id: a name, handle or id. propose_link: handle (gateway:address) is contact_id; owner "
@@ -54,23 +53,26 @@ PEOPLE_SCHEMA = {
         "operation": {"type": "string", "enum": list(PEOPLE_OPERATIONS)}, "contact_id": {"type": "string"},
         "drop": {"type": "string"}, "handle": {"type": "string"},
         "permission": {"type": "string", "enum": ["never", "ask", "auto"]}, "minutes": {"type": "integer"}},
-        "required": ["operation"]},
-}
+        "required": ["operation"]}}
+# With mind.faculties.people false (the full-people ablation) the tool keeps its pre-M5 surface.
+M4_PEOPLE_OPERATIONS = ("who", "inspect", "set_permission")
+M4_PEOPLE_SCHEMA = {
+    "name": "protagine_people", "description": "contact_id: a name, handle or id. Owner only: set_permission.",
+    "parameters": {"type": "object", "required": ["operation"], "properties": {
+        "operation": {"type": "string", "enum": list(M4_PEOPLE_OPERATIONS)}, "contact_id": {"type": "string"},
+        "permission": {"type": "string", "enum": ["never", "ask", "auto"]}}}}
 SEARCH_SCHEMA = {
     "name": "protagine_memory_search",
     "description": "Search retained evidence about the current participant beyond this turn's recall; returns "
                    "excerpts with speaker, time and source references.",
     "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
-                   "required": ["query"]},
-}
+                   "required": ["query"]}}
 FORGET_SCHEMA = {
     "name": "protagine_memory_forget",
     "description": "Owner only: forget retained sources by exact source_id when the owner asks to remove "
                    "something from memory.",
-    "parameters": {"type": "object", "properties": {
-        "source_ids": {"type": "array", "items": {"type": "string"}}},
-        "required": ["source_ids"]},
-}
+    "parameters": {"type": "object", "properties": {"source_ids": {"type": "array", "items": {"type": "string"}}},
+                   "required": ["source_ids"]}}
 
 
 def _json(value: Any) -> str:
@@ -89,9 +91,11 @@ def _unavailable(reason: str) -> str:
 class Tools:
     def __init__(self, client: ProtagineClient, sessions: SessionMap, settings: Settings):
         self.client, self.sessions, self.settings = client, sessions, settings
+        faculties = settings.mind().get("faculties")
+        self.people_on = not isinstance(faculties, dict) or faculties.get("people") is not False
 
     def handlers(self) -> list[tuple[dict[str, Any], Callable[..., str]]]:
-        return [(SELF_SCHEMA, self.self_tool), (PEOPLE_SCHEMA, self.people_tool),
+        return [(SELF_SCHEMA, self.self_tool), (PEOPLE_SCHEMA if self.people_on else M4_PEOPLE_SCHEMA, self.people_tool),
                 (SEARCH_SCHEMA, self.memory_search), (FORGET_SCHEMA, self.memory_forget)]
 
     # -- helpers ------------------------------------------------------------------
@@ -169,8 +173,8 @@ class Tools:
         permission, cadence and merge from the owner's session, checked again by the sidecar."""
         args = args if isinstance(args, dict) else {}
         operation, who = str(args.get("operation") or ""), str(args.get("contact_id") or "").strip()
-        if operation not in PEOPLE_OPERATIONS:
-            return _error(f"operation is one of {', '.join(PEOPLE_OPERATIONS)}")
+        if operation not in (offered := PEOPLE_OPERATIONS if self.people_on else M4_PEOPLE_OPERATIONS):
+            return _error(f"operation is one of {', '.join(offered)}")
         owner, viewer = self._owner(session_id), self.sessions.contact_id(session_id) or ""
         if operation in OWNER_PEOPLE_OPERATIONS and not owner:
             return _error("only the owner can change who may be contacted, cadences or merges")

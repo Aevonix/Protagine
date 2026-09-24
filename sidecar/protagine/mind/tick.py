@@ -171,7 +171,9 @@ class Mind:
         self.faculties = faculties_of(mind)
         self.drive_weights = drive_functions.weights(mind.get("drives"), faculty_on=self.faculties["drives"])
         if not self.faculties["people"]:
-            # People off: no check-ins, no composition, no contact-directed messages (see ``_form``).
+            # People off (the full-people ablation): what M5 adds goes, and nothing older. No
+            # check-ins, no composition (a message keeps its template), no owner-granted messages to
+            # third parties or cadences, no link asks, no digests; may_contact still governs.
             self.drive_weights["social"] = 0.0
         self.act_threshold = float(mind.get("act_threshold") or DEFAULT_ACT_THRESHOLD)
         self.digest_hour = int(mind.get("digest_hour", 8) or 0)
@@ -666,8 +668,8 @@ class Mind:
         inputs = DriveInputs(now=now, owner_id=self.owner_id, worker_profile=WORKER_PROFILE,
                              people_on=self.faculties["people"])
         inputs.commitments = self._open_commitments()
-        await self._resolve_recipients(inputs.commitments)
         if inputs.people_on:
+            await self._resolve_recipients(inputs.commitments)
             await self._apply_cadences(inputs.commitments)
             inputs.contacts = await self._social_rows(now, commitments=inputs.commitments)
             inputs.link_proposals = await self._link_proposals()
@@ -1023,10 +1025,6 @@ class Mind:
         if self.store.get_by_dedup_key(candidate.dedup_key) is not None:
             return None
         to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
-        if to_contact and not self.faculties["people"]:
-            if not await self._redirect_to_owner(candidate):
-                return None
-            to_contact = False
         stored = await self._may_contact(candidate.recipient)
         may_contact = self._granted(candidate.grant, stored, candidate.recipient)
         if to_contact and not candidate.text and may_contact != "never" and self.enabled:
@@ -1085,18 +1083,6 @@ class Mind:
         if candidate.grant == "owner" and stored == "never" and verdict.decision == "drop":
             await self._refuse_grant(candidate)
         return updated
-
-    async def _redirect_to_owner(self, candidate: Candidate) -> bool:
-        """People off: a message meant for a contact goes to the owner instead, saying so, and
-        settles nothing (the contact never heard it). False when there is no owner to tell."""
-        if not self.owner_id:
-            return False
-        name = await self._contact_name(candidate.recipient)
-        text = candidate.text or compose_template(self._purpose(candidate), name, candidate.topic)
-        candidate.text = f"Not sent (people off): to {name}: {text}"
-        candidate.recipient = self.owner_id
-        candidate.grant = candidate.purpose = candidate.cooldown_hours = candidate.success_check = None
-        return True
 
     @staticmethod
     def _purpose(candidate: Candidate) -> str:

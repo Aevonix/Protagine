@@ -236,7 +236,10 @@ def recipient_unknown_candidate(row: Dict[str, Any], *, owner_id: str) -> Candid
         source_type="commitment", source_id=row["id"], concern_kind="obligation")
 
 
-def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None) -> Candidate:
+def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None,
+                         people_on: bool = True) -> Candidate:
+    """The duty candidate of a commitment past its time. With the people faculty off an owner's
+    message to a third party is not one: the row takes its pre-M5 form below."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     person = str(row.get("person_id") or "") or None
     description = str(row.get("description") or "").strip()
@@ -244,7 +247,7 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
     evidence = [f"commitment:{row['id']}", f"due {due.isoformat()}", f"overdue by {hours} h"]
     priority = int(row.get("priority") or 50)
     check = {"kind": "commitment_resolved", "commitment_id": row["id"]}
-    granted = granted_message(row, owner_id=owner_id)
+    granted = granted_message(row, owner_id=owner_id) if people_on else None
     if granted is not None:
         kind, recipient = granted
         common = dict(drive="duty", kind="message", recipient=recipient, grant="owner", evidence=evidence,
@@ -369,7 +372,7 @@ def duty(inputs: DriveInputs) -> DriveResult:
         due = _utc(row.get("due_at"))
         if due is None or str(row.get("status") or "pending") not in {"pending", "overdue"}:
             continue
-        if unresolved_recipient(row, owner_id=inputs.owner_id) is not None:
+        if inputs.people_on and unresolved_recipient(row, owner_id=inputs.owner_id) is not None:
             # The tick could not resolve the third party the owner named: the owner is asked who
             # they are now, so the message can go at its time; the row waits.
             candidates.append(recipient_unknown_candidate(row, owner_id=inputs.owner_id))
@@ -382,7 +385,7 @@ def duty(inputs: DriveInputs) -> DriveResult:
         went_out = inputs.heads_ups.get(str(row["id"]))
         if went_out is not None and now - went_out < inputs.heads_up_grace:
             continue   # the heads-up reached the owner minutes ago; one word at a time
-        candidates.append(commitment_candidate(row, due, now, owner_id=inputs.owner_id))
+        candidates.append(commitment_candidate(row, due, now, owner_id=inputs.owner_id, people_on=inputs.people_on))
     for wait in inputs.reply_waits:
         if wait.get("eligibility") not in {None, "due"} or wait.get("native_task_id"):
             continue
