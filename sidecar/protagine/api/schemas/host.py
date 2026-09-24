@@ -111,15 +111,16 @@ MEMORY_SEARCH_MAX_LIMIT = 20
 class MemorySearchRequest(BaseModel):
     """An explicit search of one person's canonical memory.
 
-    The key selects nobody by itself, so a body without ``person_id`` is a
-    search of the owner's memory (the key's viewer); without the key there is
-    no owner search at all. ``session_id`` admits that session's session-scoped
-    evidence; without one only person-scoped evidence is read and nothing is
-    excluded. A ``limit`` above the maximum is clamped, not refused.
+    The key selects nobody by itself, so the body names the person: a missing
+    or blank ``person_id`` is refused, never read as the owner's search, so a
+    caller whose guest resolution failed gets no one's memory (security-6).
+    ``session_id`` admits that session's session-scoped evidence; without one
+    only person-scoped evidence is read and nothing is excluded. A ``limit``
+    above the maximum is clamped, not refused.
     """
     model_config = ConfigDict(extra="forbid")
     identity: HostIdentity
-    person_id: Optional[str] = Field(default=None, max_length=256)
+    person_id: str = Field(min_length=1, max_length=256)
     session_id: Optional[str] = Field(default=None, max_length=256)
     query: str = Field(min_length=1, max_length=4096)
     limit: int = Field(default=5, ge=1, strict=True)
@@ -131,8 +132,10 @@ class MemorySearchRequest(BaseModel):
         return min(value, MEMORY_SEARCH_MAX_LIMIT)
 
     @model_validator(mode='after')
-    def blank_is_absent(self):
-        self.person_id = (self.person_id or '').strip() or None
+    def named_person(self):
+        self.person_id = self.person_id.strip()
+        if not self.person_id:
+            raise ValueError('memory search names the person it searches (person_id)')
         self.session_id = (self.session_id or '').strip() or None
         return self
 

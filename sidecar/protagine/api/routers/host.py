@@ -932,13 +932,12 @@ async def memory_read(body: MemoryReadRequest, request: Request = None) -> Memor
 async def memory_search(body: MemorySearchRequest, request: Request) -> MemorySearchResponse:
     """Search current canonical evidence for an authenticated participant.
 
-    The body names the person; with the key and no person the search is the
-    key's viewer's, the owner. Development mode never resolves to the owner
+    The body names the person (the schema refuses a missing or blank one);
+    there is no owner default. Development mode never resolves to the owner
     (``resolve_request_person``) and never passes the authority check. A guest
     searches their own canonical sources only.
     """
-    person = (resolve_request_person(request, claimed_person_id=body.person_id)
-              or request_authority(request).viewer_person_id)
+    person = resolve_request_person(request, claimed_person_id=body.person_id)
     _require_person_authority(request, person)
     canonical_only = _viewer_is_guest(request, person)
     try:

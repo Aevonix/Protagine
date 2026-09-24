@@ -21,11 +21,11 @@ They are labeled unverified estimates, not canonical source quotations. See
 [memory quality](MEMORY-QUALITY.md) for candidate limits and fallback behavior.
 
 Explicit `POST /v1/host/memory/search` uses the same canonical collector and
-selector as automatic context. Supply a query and, optionally, the participant
-(`person_id`; with the key and no participant the search is the owner's), the
-session (`session_id`; it admits that session's session-scoped evidence and
-excludes nothing when absent) and a result limit from 1 upward (values above
-20 are clamped to 20). The response
+selector as automatic context. Supply a query, the participant (`person_id`,
+required and non-blank: a missing or blank one is refused with 422, never read
+as the owner's search) and, optionally, the session (`session_id`; it admits
+that session's session-scoped evidence and excludes nothing when absent) and a
+result limit from 1 upward (values above 20 are clamped to 20). The response
 contains bounded `content`, `count`, exact `source_refs`, an erasure `watermark`,
 retrieval status and correction-set checks. It returns excerpts rather than a
 claim that a complete source was opened. Existing source-read tools can open
