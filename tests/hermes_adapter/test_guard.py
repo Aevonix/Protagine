@@ -30,6 +30,8 @@ emit(guest=check("session_search", {"query": "x"}, g), owner=check("session_sear
      guest_read=check("read_file", {"path": "/tmp/x"}, g), unknown=check("session_search", {"query": "x"}, "never-seen"))
 ''', home)
     assert result["guest"]["action"] == "block" and "session_search" in result["guest"]["message"]
+    # The refusal is final for the turn, as the provider's retry: false answers are, and says what to use instead.
+    assert "retry: false" in result["guest"]["message"] and "recalled context" in result["guest"]["message"]
     assert result["owner"]["action"] is None
     assert result["guest_read"]["action"] is None
     assert result["unknown"]["action"] is None

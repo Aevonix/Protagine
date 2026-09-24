@@ -185,10 +185,18 @@ def _terminal(reason: str) -> str:
     return json.dumps({"unavailable": True, "retry": False, "reason": reason})
 
 
+# An id nobody listed (a model guesses one from a contact and a subject, then searches and guesses
+# again when a transport error comes back): the answer is final, and says where ids come from. What
+# the turn itself says is captured after it, so there is nothing to record by hand either.
+_UNKNOWN_COMMITMENT = ("no open commitment has that id; only an id= listed under Pending Commitments can be "
+                       "settled, and what this turn says is captured after it")
+
+
 _PROTAGINE_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {"name": "protagine_resolve_commitment",
-     "description": "Settle a commitment listed in context: fulfilled (done), dismissed (stale; give reason) or "
-                    "snoozed (give new_due_at, ISO-8601 UTC).",
+     "description": "Settle an open commitment by its id= under Pending Commitments (none listed: nothing to "
+                    "settle): fulfilled (done), dismissed (stale; give reason) or snoozed (give new_due_at, "
+                    "ISO-8601 UTC).",
      "parameters": {"type": "object", "properties": {
          "commitment_id": {"type": "string"},
          "action": {"type": "string", "enum": ["fulfilled", "dismissed", "snoozed"]},
@@ -727,6 +735,8 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             with httpx.Client(timeout=5) as client:
                 resp = client.patch(f"{self.sidecar_url}/v1/host/commitments/{commitment_id}",
                                     headers=self._headers(), json=body)
+                if resp.status_code == 404:
+                    return _terminal(_UNKNOWN_COMMITMENT)
                 resp.raise_for_status()
                 return json.dumps({"ok": True, "action": action, "commitment": resp.json()})
         except Exception as exc:

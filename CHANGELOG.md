@@ -77,6 +77,20 @@ refusals for `protagine_self` state, log and why and for listing people, and
 the `/mind` gate for non-owner senders (security-3), are in this line. See
 [docs/INSTALL.md](docs/INSTALL.md).
 
+Restraint. Capture no longer records an obligation between other people: a new
+item whose obligor and counterpart are two different named third parties
+(neither the owner, by any name the owner goes by, nor the assistant) is
+dropped where new items are recorded (`protagine.commitments.parties`), and the
+extraction prompt now says that a contact's promise the owner waits on or
+relies on is owed to the owner while an obligation between two other people
+names the other of the two. The duty drive raises no heads-up or reminder for
+such a row stored earlier, unless one of the two is the row's own person. The
+commitment tool says where ids come from (Pending Commitments; none listed,
+nothing to settle) and answers an id nobody listed with one final
+`retry: false` answer instead of a transport error, and the guard's refusal of
+`session_search` in a non-owner session is final in the same words; the
+adapter sends six tools in 3,314 characters.
+
 ## Unreleased - opinions
 
 The agent now holds opinions that change only on evidence (build plan M7,

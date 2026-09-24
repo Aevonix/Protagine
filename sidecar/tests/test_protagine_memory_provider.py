@@ -120,6 +120,8 @@ class _FakeHttpx:
                     if m == method and url.endswith(suffix):
                         if callable(payload):
                             payload = payload(request)
+                        if isinstance(payload, _FakeResponse):
+                            return payload
                         return _FakeResponse(payload=payload)
                 return _FakeResponse(payload={})
 
@@ -814,6 +816,21 @@ def test_resolve_commitment_settles_through_the_outcome_path(provider_mod, monke
     assert bodies[0] == {"outcome": "obsolete", "reason": "the owner handled it in person", "resolved_by": "agent"}
     assert bodies[1] == {"outcome": "done", "reason": "marked done", "resolved_by": "agent"}
     assert bodies[2]["due_at"] == "2030-01-01T00:00:00+00:00" and "outcome" not in bodies[2]
+
+
+def test_an_unknown_commitment_id_is_a_final_answer_that_says_where_ids_come_from(provider_mod, monkeypatch):
+    """A model that settles an id nobody listed (one it made up from a contact and a subject) gets one
+    final answer, not a transport error to retry with the next guess; the schema says where ids come
+    from and that a turn with none listed has nothing to settle."""
+    fake = _FakeHttpx(routes={("PATCH", "/v1/host/commitments/p-31-report"):
+                              _FakeResponse(status_code=404, payload={"detail": "Commitment not found"})})
+    provider = _make_provider(provider_mod, fake, monkeypatch)
+    answer = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {
+        "commitment_id": "p-31-report", "action": "snoozed", "new_due_at": "2030-01-01T00:00:00+00:00"}))
+    assert answer["unavailable"] is True and answer["retry"] is False
+    assert "Pending Commitments" in answer["reason"] and "sidecar.test" not in json.dumps(answer)
+    schema, = provider_mod._PROTAGINE_TOOL_SCHEMAS
+    assert "Pending Commitments" in schema["description"] and "nothing to settle" in schema["description"]
 
 
 def test_reply_marker_never_queries_global_timeline(provider_mod, monkeypatch):

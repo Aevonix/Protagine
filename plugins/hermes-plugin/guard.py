@@ -182,7 +182,10 @@ class Guard:
             return None
         if tool in READ_ONLY_TOOLS:
             if guest and tool == "session_search":
-                return block("session_search is unavailable to non-owner sessions")
+                # Final for the turn, in the words of the provider's retry: false answers, so a guest
+                # turn does not spend its iterations asking again with other arguments.
+                return block("session_search is unavailable to non-owner sessions (retry: false); answer "
+                             "from the message and the recalled context")
             return None
         text = json.dumps(args, ensure_ascii=False, sort_keys=True)
         if mind:
