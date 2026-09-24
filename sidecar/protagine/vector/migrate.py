@@ -224,8 +224,10 @@ async def _migrate_generation(store, pipeline, *, old_model_id, batch_size):
     async def source_rows(collection):
         db = await store._generation_db(source_generation)
         if collection.value in await db.table_names():
-            table = await db.open_table(collection.value)
-            for row in (await table.query().select(['id', 'text', 'metadata']).to_pandas()).to_dict('records'):
+            with store.reads.hold():
+                table = await db.open_table(collection.value)
+                rows = (await table.query().select(['id', 'text', 'metadata']).to_pandas()).to_dict('records')
+            for row in rows:
                 yield row
 
     async def write_batch(collection, rows):
@@ -270,8 +272,9 @@ async def _migrate_generation(store, pipeline, *, old_model_id, batch_size):
 
     try:
         for collection in Collection:
-            table = await store._table(collection, write=True, generation=generation)
-            present = {str(row['id']) for row in await table.query().select(['id']).to_list()}
+            with store.reads.hold():
+                table = await store._table(collection, write=True, generation=generation)
+                present = {str(row['id']) for row in await table.query().select(['id']).to_list()}
             batch = []
             async for row in source_rows(collection):
                 meta = row.get('metadata') or {}

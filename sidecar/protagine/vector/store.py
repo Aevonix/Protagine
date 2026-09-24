@@ -8,6 +8,8 @@ operations degrade gracefully when the store is not initialized.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 import json
 import logging
@@ -95,6 +97,87 @@ def _eval_metadata_filter(meta_str: str, filter_expr: str) -> bool:
     return True
 
 
+# A pass waits at most this long for the reads begun before it, then prunes anyway: a read that
+# long is stuck, and the pass holds every write back while it waits.
+READ_DRAIN_SECONDS = 300.0
+# The first prune of a pass keeps every version committed from this long before the version that
+# was current when the pass began. Lance takes its cutoff after the compaction, so this covers the
+# compaction's own duration (minutes for a first pass over tens of thousands of fragments).
+KEEP_SLACK_SECONDS = 3600.0
+DRAIN_POLL_SECONDS = 0.02
+
+
+class InFlightReads:
+    """The Lance reads under way on a store, each counted in the era it began.
+
+    A read opens a table's latest version and reads that version's files as it goes, so a prune
+    that removes the version deletes the files under it (Lance answers "Not found"). A compaction
+    pass ``drain``s before it prunes: it waits for every read begun before the call, while reads
+    that begin meanwhile go ahead (they open the version the pass keeps).
+    """
+
+    def __init__(self) -> None:
+        self._era = 0
+        self._open: dict[int, int] = {}
+
+    @contextmanager
+    def hold(self):
+        """Count one read, from before it opens its table until it has read the last row it needs."""
+        era = self._era
+        self._open[era] = self._open.get(era, 0) + 1
+        try:
+            yield
+        finally:
+            if self._open[era] == 1:
+                del self._open[era]
+            else:
+                self._open[era] -= 1
+
+    def _begun_before(self, era: int) -> int:
+        return sum(count for began, count in self._open.items() if began < era)
+
+    async def drain(self, timeout: float) -> int:
+        """Wait up to ``timeout`` seconds for every read begun before this call to end; how many still run."""
+        self._era += 1
+        era, deadline = self._era, time.monotonic() + timeout
+        while self._begun_before(era) and time.monotonic() < deadline:
+            await asyncio.sleep(DRAIN_POLL_SECONDS)
+        return self._begun_before(era)
+
+
+@dataclass(frozen=True)
+class PrunedVersions:
+    old_versions_removed: int
+    bytes_removed: int
+
+
+@dataclass(frozen=True)
+class PurgeStats:
+    """A table's pass: its compaction, and what its prunes removed together."""
+    compaction: Any
+    prune: PrunedVersions
+
+
+def _newest_manifest_time(path: Path) -> Optional[float]:
+    """When the newest version manifest of the table at ``path`` was written; None when unreadable."""
+    newest = None
+    try:
+        with os.scandir(path / '_versions') as entries:
+            for entry in entries:
+                if entry.name.endswith('.manifest') and not entry.name.startswith('.'):
+                    written = entry.stat().st_mtime
+                    newest = written if newest is None else max(newest, written)
+    except OSError:
+        return None
+    return newest
+
+
+def _vanished_manifest(error: BaseException) -> bool:
+    """Lance's "Not found" for a version manifest: another cleaner deleted it while a prune read it."""
+    text = str(error)
+    return 'Not found' in text and '_versions' in text and '.manifest' in text
+
+
 def _base_schema(dims: int) -> pa.Schema:
     """Build the Arrow schema shared by all collection tables."""
     return pa.schema([
@@ -125,10 +208,15 @@ class VectorStore:
         if (identity is None) != (catalog is None):
             raise ValueError('Managed indexes require both embedding identity and source-ledger catalog')
         self._generation_dbs = {}
-        # Held around every Lance commit made through or beside this store. A
-        # table rewrite after erasure snapshots and replaces a whole table, and
-        # would drop any row another writer commits in between.
+        # Held around every Lance commit made through or beside this store, and
+        # for a compaction pass: a table rewrite after erasure snapshots and
+        # replaces a whole table, and would drop any row another writer commits
+        # in between; and Lance's own auto-cleanup, which runs inside a commit,
+        # would prune beside the pass.
         self.write_lock = asyncio.Lock()
+        # Every read of a table, so a pass never prunes a version one still reads.
+        self.reads = InFlightReads()
+        self.read_drain_seconds = READ_DRAIN_SECONDS
         # Compaction after an erasure, each night and past a version threshold:
         # one background task, one table at a time (``compaction.py``).
         self.compaction = Compaction(self)
@@ -301,24 +389,25 @@ class VectorStore:
     ) -> list[VectorResult]:
         """ANN search on a collection.  Returns results sorted by score descending."""
         self._validate_vector(query_vector)
-        table = await self._table(collection, semantic=True)
-        query = table.vector_search(query_vector).distance_type("cosine")
+        with self.reads.hold():
+            table = await self._table(collection, semantic=True)
+            query = table.vector_search(query_vector).distance_type("cosine")
 
-        if filter and _METADATA_JSON_FILTER_RE.search(filter):
-            # json_extract(metadata, ...) requires LargeBinary but the column is
-            # Utf8 — the SQL planner rejects it.  Fetch a larger candidate set
-            # without the metadata filter and apply it in Python instead.
-            query = query.limit(max(limit * 20, 200))
-            raw = await query.to_pandas()
-            mask = raw["metadata"].apply(
-                lambda m: _eval_metadata_filter(str(m) if m is not None else "{}", filter)
-            )
-            results = raw[mask].head(limit)
-        else:
-            query = query.limit(limit)
-            if filter:
-                query = query.where(filter)
-            results = await query.to_pandas()
+            if filter and _METADATA_JSON_FILTER_RE.search(filter):
+                # json_extract(metadata, ...) requires LargeBinary but the column is
+                # Utf8 — the SQL planner rejects it.  Fetch a larger candidate set
+                # without the metadata filter and apply it in Python instead.
+                query = query.limit(max(limit * 20, 200))
+                raw = await query.to_pandas()
+                mask = raw["metadata"].apply(
+                    lambda m: _eval_metadata_filter(str(m) if m is not None else "{}", filter)
+                )
+                results = raw[mask].head(limit)
+            else:
+                query = query.limit(limit)
+                if filter:
+                    query = query.where(filter)
+                results = await query.to_pandas()
 
         out: list[VectorResult] = []
         for _, row in results.iterrows():
@@ -391,8 +480,9 @@ class VectorStore:
     async def search_by_image_hash(self, collection: Collection, image_hash: str) -> Optional[VectorResult]:
         """Find an existing vector by image hash (for dedup)."""
         try:
-            table = await self._table(collection, semantic=True)
-            results = await table.query().where('image_hash = ' + self._quoted(image_hash)).limit(1).to_pandas()
+            with self.reads.hold():
+                table = await self._table(collection, semantic=True)
+                results = await table.query().where('image_hash = ' + self._quoted(image_hash)).limit(1).to_pandas()
             if results.empty:
                 return None
             row = results.iloc[0]
@@ -456,8 +546,9 @@ class VectorStore:
 
     async def get(self, collection: Collection, id: str) -> Optional[VectorResult]:
         """Fetch a single entry by ID."""
-        table = await self._table(collection)
-        results = await table.query().where('id = ' + self._quoted(id)).limit(1).to_pandas()
+        with self.reads.hold():
+            table = await self._table(collection)
+            results = await table.query().where('id = ' + self._quoted(id)).limit(1).to_pandas()
         if results.empty:
             return None
         row = results.iloc[0]
@@ -477,8 +568,9 @@ class VectorStore:
 
     async def count(self, collection: Collection) -> int:
         """Return the number of entries in a collection."""
-        table = await self._table(collection)
-        return await table.count_rows()
+        with self.reads.hold():
+            table = await self._table(collection)
+            return await table.count_rows()
 
     async def list_ids(self, collection: Collection) -> list[str]:
         """Return all row ids in a collection via a projected query.
@@ -487,16 +579,18 @@ class VectorStore:
         id-only projection, cheap enough to run against a large store (used
         by the orphan-vector vacuum to diff against graph node ids).
         """
-        table = await self._table(collection)
-        df = await table.query().select(["id"]).to_pandas()
+        with self.reads.hold():
+            table = await self._table(collection)
+            df = await table.query().select(["id"]).to_pandas()
         if df.empty:
             return []
         return [str(x) for x in df["id"].tolist()]
 
     async def scan_all(self, collection: Collection) -> list[dict[str, Any]]:
         """Return all rows from a collection as raw dicts."""
-        table = await self._table(collection)
-        df = await table.to_pandas()
+        with self.reads.hold():
+            table = await self._table(collection)
+            df = await table.to_pandas()
         if df.empty:
             return []
         return df.to_dict(orient="records")
@@ -510,17 +604,18 @@ class VectorStore:
         for col in Collection:
             if col.value not in existing:
                 continue
-            table = await db.open_table(col.value)
-            batches = await table.query().select(["metadata"]).to_batches(max_batch_length=1024)
-            async for batch in batches:
-                for meta_str in batch.column("metadata").to_pylist():
-                    try:
-                        meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
-                    except (json.JSONDecodeError, TypeError):
-                        meta = {}
-                    model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
-                    if isinstance(model_id, str) and model_id:
-                        models.add(model_id)
+            with self.reads.hold():
+                table = await db.open_table(col.value)
+                batches = await table.query().select(["metadata"]).to_batches(max_batch_length=1024)
+                async for batch in batches:
+                    for meta_str in batch.column("metadata").to_pylist():
+                        try:
+                            meta = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
+                        except (json.JSONDecodeError, TypeError):
+                            meta = {}
+                        model_id = meta.get("model_id", "") if isinstance(meta, dict) else ""
+                        if isinstance(model_id, str) and model_id:
+                            models.add(model_id)
         return sorted(models)
 
     async def check_index_health(self, expected_identity) -> None:
@@ -543,12 +638,13 @@ class VectorStore:
         if not collections:
             raise IncompatibleIndex("Active embedding generation has no readable collections")
         for col in collections:
-            table = await db.open_table(col.value)
-            schema = await table.schema()
-            if schema.field("vector").type.list_size != expected_identity.dimensions:
-                raise IncompatibleIndex("Active vector width differs from its embedding identity")
-            # Exercise actual storage without streaming all metadata or vectors.
-            await table.query().select(["id"]).limit(1).to_list()
+            with self.reads.hold():
+                table = await db.open_table(col.value)
+                schema = await table.schema()
+                if schema.field("vector").type.list_size != expected_identity.dimensions:
+                    raise IncompatibleIndex("Active vector width differs from its embedding identity")
+                # Exercise actual storage without streaming all metadata or vectors.
+                await table.query().select(["id"]).limit(1).to_list()
 
     async def close(self) -> None:
         """Release database resources."""
@@ -590,18 +686,25 @@ class VectorStore:
             for collection in Collection:
                 if collection.value not in names:
                     continue
-                table = await db.open_table(collection.value)
-                batches = await table.query().select(['id', 'metadata']).to_batches(max_batch_length=1024)
-                async for batch in batches:
-                    matched = await asyncio.to_thread(erased_ids, batch, collection)
-                    if matched:
-                        # The reader retains its snapshot as each bounded
-                        # deletion commits. Later batches must still be read.
-                        # Under the write lock, so a purge's table rewrite
-                        # (snapshot, then overwrite) never brings the rows back.
-                        async with self.write_lock:
-                            await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
-                        deleted.update((collection.value, value) for value in matched)
+                # The whole table is read first, as one counted read, and only
+                # then deleted from: a compaction pass holds the write lock
+                # while it waits for the reads begun before it, so a read that
+                # waited for the lock between batches would wait for itself.
+                matched = []
+                with self.reads.hold():
+                    table = await db.open_table(collection.value)
+                    batches = await table.query().select(['id', 'metadata']).to_batches(max_batch_length=1024)
+                    async for batch in batches:
+                        matched += await asyncio.to_thread(erased_ids, batch, collection)
+                for start in range(0, len(matched), 1024):
+                    bounded = matched[start:start + 1024]
+                    # Under the write lock, so a purge's table rewrite (snapshot,
+                    # then overwrite) never brings the rows back, on a handle
+                    # opened under it: a pass may have pruned the scan's version.
+                    async with self.write_lock:
+                        await (await db.open_table(collection.value)).delete(
+                            'id IN (' + ','.join(self._quoted(value) for value in bounded) + ')')
+                    deleted.update((collection.value, value) for value in bounded)
         if purge:
             # Every table, unconditionally, so a retry after a failed compaction
             # still finishes the job and earlier soft deletes are purged as well.
@@ -613,22 +716,66 @@ class VectorStore:
 
         ``table.delete`` only writes a deletion vector under a new manifest.
         ``optimize`` merges small fragments, dropping deleted rows on the way,
-        and prunes every older version. Compaction leaves a lone fragment with
-        few deletions untouched, so its surviving rows are rewritten instead.
-        That overwrite lands on whatever version is current when it commits
-        and would drop rows another writer, such as the source vector worker,
-        committed after the snapshot, so it holds the store's write lock.
+        and prunes older versions. Compaction leaves a lone fragment with few
+        deletions untouched, so its surviving rows are rewritten instead.
+
+        The pass holds the store's write lock from start to end, so no commit
+        runs beside it. A rewrite lands on whatever version is current when it
+        commits and would drop rows another writer committed after its
+        snapshot. And tables created by earlier releases carry Lance's own
+        auto-cleanup (``lance.auto_cleanup.interval`` and ``older_than`` in
+        their manifest config, which the lancedb 0.39 Python API can neither
+        read nor unset). It runs inside a commit, and a commit beside a pass
+        set it off to delete the manifests the pass was pruning ("Not found:
+        .../_versions/<n>.manifest").
+
+        Reads are not held back. A read opens the latest version and reads its
+        files as it goes, so nothing a read may still need is pruned: the pass
+        first waits for the reads begun before it (none then holds an older
+        version than the current one), compacts and prunes only what is older
+        than the current version, waits for the reads begun before that commit,
+        and only then prunes everything but the latest version. A version
+        manifest that vanishes under a prune anyway (a cleaner in another
+        process) is retried once.
         """
-        table = await db.open_table(name)
-        if not hasattr(table, 'optimize'):
-            logger.warning('LanceDB cannot compact %s; deleted rows stay on disk until a reindex', name)
-            return None
-        stats = await table.optimize(cleanup_older_than=timedelta(0))
-        pending = Path(db.uri) / (name + '.lance') / '_deletions'
-        if pending.is_dir() and any(pending.iterdir()):
-            logger.info('Rewriting vector table %s to purge deleted rows', name)
-            async with self.write_lock:
+        path = Path(db.uri) / (name + '.lance')
+        async with self.write_lock:
+            table = await db.open_table(name)
+            if not hasattr(table, 'optimize'):
+                logger.warning('LanceDB cannot compact %s; deleted rows stay on disk until a reindex', name)
+                return None
+            await self._settle_reads(name)
+            current = await asyncio.to_thread(_newest_manifest_time, path)
+            keep_since = 0.0 if current is None else current - KEEP_SLACK_SECONDS
+            passes = [await self._optimize(db, name, keep_since=keep_since)]
+            await self._settle_reads(name)
+            passes.append(await self._optimize(db, name))
+            pending = path / '_deletions'
+            if pending.is_dir() and any(pending.iterdir()):
+                logger.info('Rewriting vector table %s to purge deleted rows', name)
                 table = await db.open_table(name)
                 await db.create_table(name, data=await table.to_arrow(), mode='overwrite')
-                stats = await (await db.open_table(name)).optimize(cleanup_older_than=timedelta(0))
-        return stats
+                await self._settle_reads(name)
+                passes.append(await self._optimize(db, name))
+        return PurgeStats(passes[0].compaction, PrunedVersions(
+            sum(stats.prune.old_versions_removed for stats in passes),
+            sum(stats.prune.bytes_removed for stats in passes)))
+
+    async def _settle_reads(self, name):
+        running = await self.reads.drain(self.read_drain_seconds)
+        if running:
+            logger.warning('vector compaction of %s: %d read(s) begun before its prune still running after %.0f s; '
+                           'pruning anyway', name, running, self.read_drain_seconds)
+
+    async def _optimize(self, db, name, *, keep_since=None):
+        """Compact ``name`` and prune its versions committed before ``keep_since`` (epoch seconds;
+        None prunes all but the latest), on a fresh handle, once more if a manifest vanished."""
+        for attempt in (1, 2):
+            older_than = timedelta(0) if keep_since is None else timedelta(seconds=max(0.0, time.time() - keep_since))
+            try:
+                return await (await db.open_table(name)).optimize(cleanup_older_than=older_than)
+            except Exception as error:      # lancedb raises RuntimeError("lance error: ...")
+                if attempt == 2 or not _vanished_manifest(error):
+                    raise
+                logger.warning('vector compaction of %s: a version manifest vanished under the prune (%s); '
+                               'retrying once', name, error)

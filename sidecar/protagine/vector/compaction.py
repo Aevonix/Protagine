@@ -21,10 +21,14 @@ each piece, so the work is bounded by when it runs instead:
   ``defer_limit`` seconds, so a mind that is off cannot leave it growing.
 
 Nothing here runs inside a request. ``optimize`` runs in Lance's own threads
-while the event loop keeps serving, and the store's write lock is held only
-for the rare rewrite of a lone fragment (``VectorStore._purge_deleted``). A
-pause separates tables. Each table's pass is logged at info with its reason,
-its version count and size before and after, and its duration.
+while the event loop keeps serving. A table's pass holds the store's write
+lock throughout, so no commit runs beside it: tables created by earlier
+releases carry Lance's own auto-cleanup, which runs inside a commit and would
+prune under the pass. Writes wait for the pass; reads do not, and the pass
+prunes no version a read begun before it may still be reading
+(``VectorStore._purge_deleted``). A pause separates tables. Each table's pass
+is logged at info with its reason, its version count and size before and
+after, and its duration.
 """
 
 from __future__ import annotations

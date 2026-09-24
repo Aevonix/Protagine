@@ -1082,9 +1082,35 @@ class SourceClaimProjection:
                 bundles + pair_conversation_candidates(quotations, input_pairs, sources))
 
 
+IDENTITY_SECONDS = 30.0     # pending identity reconciliation, at most this often
+BUSY_PAUSE, IDLE_PAUSE = .05, 2.0
+
+
+async def _lane(step, deferred, *, idle=IDLE_PAUSE):
+    """Run ``step`` for as long as the worker runs: again at once after it did work, after ``idle``
+    seconds when it found none or failed. A failure is logged as ``deferred`` and never ends the lane."""
+    while True:
+        try:
+            worked = await step()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(deferred, type(exc).__name__)
+            worked = False
+        await asyncio.sleep(BUSY_PAUSE if worked else idle)
+
+
 async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None,
                                   vectors=True):
-    """One consumer, durable jobs and leases; process loss resumes from SQLite.
+    """One consumer per job family, durable jobs and leases; process loss resumes from SQLite.
+
+    Each family runs on its own lane (``_lane``): identity reconciliation, source-vector indexing,
+    media descriptions, and the judgment, appraisal, claim and commitment (capture) projections.
+    No lane waits for another. A source-vector job commits to a table that can take minutes per
+    commit before its first compaction, with tens of thousands of sources queued after an upgrade;
+    capture and the other model projections go on meanwhile, and a model call that hangs holds no
+    indexing back. Each lane leases its own jobs, so running them side by side changes no job's
+    outcome, only when it lands.
 
     ``vectors=False`` leaves the source-vector jobs to a task on the loop that owns the vector store (the
     paired harness runs this worker on its own thread)."""
@@ -1113,51 +1139,26 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
         media.recover_unowned_files()
     except OSError:
         logger.warning("source media orphan recovery deferred")
-    reflections = {'judgment': judgments, 'appraisal': appraisals, 'claim': projection,
-                   'commitment': commitment_extractor}
-    reflection_tasks = {name: None for name in reflections}
-    next_identity_check = 0.0
+
+    async def reconcile_identities():
+        from protagine.api.routers.social_state import reconcile_pending_identities
+        await reconcile_pending_identities(ledger)
+        return False
+
+    lanes = {'identity': _lane(reconcile_identities, 'identity source reconciliation deferred (%s)',
+                               idle=IDENTITY_SECONDS)}
+    if source_vectors is not None:
+        lanes['semantic'] = _lane(source_vectors.process_one, 'source semantic projection deferred (%s)')
+    if claims_enabled:
+        lanes['media'] = _lane(lambda: media.process_one(router_provider()), 'source claim worker deferred (%s)')
+        for name, reflection in (('judgment', judgments), ('appraisal', appraisals), ('claim', projection),
+                                 ('commitment', commitment_extractor)):
+            lanes[name] = _lane(lambda reflection=reflection: reflection.process_one(router_provider()),
+                                'source ' + name + ' deferred (%s)')
+    tasks = [asyncio.create_task(lane, name='protagine-source-' + name) for name, lane in lanes.items()]
     try:
-        while True:
-            worked = False
-            if time.monotonic() >= next_identity_check:
-                next_identity_check = time.monotonic() + 30
-                try:
-                    from protagine.api.routers.social_state import reconcile_pending_identities
-                    worked = await reconcile_pending_identities(ledger)
-                except Exception as exc:
-                    logger.warning('identity source reconciliation deferred (%s)', type(exc).__name__)
-            # Durable model projections share this worker's lifecycle. Their
-            # requests must not stall source indexing or media processing.
-            if claims_enabled:
-                for name, projection_worker in reflections.items():
-                    task = reflection_tasks[name]
-                    if task is None or task.done():
-                        if task is not None:
-                            try:
-                                worked = task.result() or worked
-                            except Exception as exc:
-                                logger.warning("source %s deferred (%s)", name, type(exc).__name__)
-                        reflection_tasks[name] = asyncio.create_task(
-                            projection_worker.process_one(router_provider()))
-            try:
-                if source_vectors is not None:
-                    worked = await source_vectors.process_one() or worked
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("source semantic projection deferred (%s)", type(exc).__name__)
-            try:
-                if claims_enabled:
-                    media_worked = await media.process_one(router_provider())
-                    worked = worked or media_worked
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("source claim worker deferred (%s)", type(exc).__name__)
-            await asyncio.sleep(.05 if worked else 2)
+        await asyncio.gather(*tasks)
     finally:
-        tasks = [task for task in reflection_tasks.values() if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

@@ -185,6 +185,23 @@ checkpoint or an input-linked answer still needs the caller's session. See
 [docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md) and
 [docs/RELATIONSHIPS.md](docs/RELATIONSHIPS.md).
 
+Two more from the final upgrade rehearsal. The projection worker runs each job
+family on its own lane (identity reconciliation, source-vector indexing, media
+descriptions, and the judgment, appraisal, claim and commitment projections),
+so capture no longer waits for indexing: an upgraded store carried 28,169
+sources to index on a table where indexing jobs took minutes, and the owner's
+capture jobs waited 25 minutes behind them. A capture job now lands within
+seconds whatever indexing is doing, and a model call that hangs holds no
+indexing back. A vector compaction pass holds the store's write lock from
+start to end, so no commit runs beside it: tables created by earlier releases
+carry Lance's own auto-cleanup (`lance.auto_cleanup.interval` 20, `older_than`
+14 days), which runs inside a commit, and a commit beside a first pass deleted
+the manifests that pass was pruning, so it failed after 13 minutes. Writes wait
+for a pass and reads do not: every read of the store is counted, and a pass
+prunes nothing a read begun before it may still be reading. A version manifest
+that vanishes under a prune anyway is retried once. See
+[docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md).
+
 ## Unreleased - opinions
 
 The agent now holds opinions that change only on evidence (build plan M7,

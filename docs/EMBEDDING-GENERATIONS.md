@@ -93,6 +93,21 @@ most 30 s). Each table's pass is logged at info with its reason, versions and
 size before and after, and its duration; a failure is logged as a warning and
 the pass goes on.
 
+A table's pass holds the store's write lock from start to end, so writes to the
+store (the source vector worker's, a forget's deletes) wait for it, while reads
+go on. Tables created by earlier releases carry Lance's own auto-cleanup
+(`lance.auto_cleanup.interval` 20 and `older_than` 14 days in the table's
+config; the lancedb 0.39 Python API can neither read nor unset it), which runs
+inside a commit: a commit beside a first pass once deleted the manifests that
+pass was pruning, and the pass failed after 13 minutes. Under the lock no
+commit, and so no auto-cleanup, runs beside a pass. A read opens the latest version and reads
+its files as it goes, so a pass prunes nothing a read may still need: it waits
+for the reads begun before it (at most `READ_DRAIN_SECONDS`, 300 s, then it
+logs how many still run and prunes), compacts, prunes only what is older than
+the version current when it began, waits for the reads begun before its
+compaction, and then prunes all but the latest version. A version manifest that
+vanishes under a prune anyway (a cleaner in another process) is retried once.
+
 Rebuilding image embeddings requires a qualified model that can reproduce that
 image embedding space. The text rebuild refuses retained image-vector rows
 instead of replacing them with caption vectors and claiming compatibility.

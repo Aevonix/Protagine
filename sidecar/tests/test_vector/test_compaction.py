@@ -239,3 +239,262 @@ async def test_a_failed_table_is_logged_and_the_pass_goes_on(tmp_path, monkeypat
         assert failed.levelno == logging.WARNING
     finally:
         await store.close()
+
+
+# --- nothing prunes or commits under a pass, and a pass prunes nothing a read still needs ------------
+
+VANISHED = ('lance error: Not found: /store/generations/0f/conversations.lance/_versions/18446744073709550522.manifest, '
+            '/registry/lance-io-12.0.0/src/object_store.rs:1615:12')
+
+
+ROWS = 200      # one fragment each, more than a Lance scan reads ahead
+
+
+async def ids_of(batches):
+    return [row['id'] for row in batches.to_pylist()]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_holds_every_commit_back_until_it_ends(tmp_path, monkeypatch):
+    """Tables created by earlier releases carry Lance's own auto-cleanup (``lance.auto_cleanup.interval``
+    20, ``older_than`` 14 days), which runs inside a commit. A writer committing beside a pass set it off,
+    and it deleted the manifests the pass was pruning: "Not found: .../_versions/<n>.manifest" after
+    777 s. Every optimize of a pass runs under the store's write lock, so a commit waits for the pass."""
+    from lancedb.table import AsyncTable
+    _, store = await managed_store(tmp_path)
+    await append(store, 8)
+    real, locked, entered, release = AsyncTable.optimize, [], asyncio.Event(), asyncio.Event()
+
+    async def observed(self, **kwargs):
+        locked.append(store.write_lock.locked())
+        entered.set()
+        await release.wait()
+        return await real(self, **kwargs)
+
+    monkeypatch.setattr(AsyncTable, 'optimize', observed)
+    try:
+        compaction = asyncio.create_task(store.compaction.run_pass('nightly'))
+        await asyncio.wait_for(entered.wait(), 10)
+        write = asyncio.create_task(store.add(Collection.CONVERSATIONS, 'late', 'neutral text', [1.0, 9.0],
+                                              {'source_uri': 'turn:late'}))
+        await asyncio.sleep(0.2)
+        assert not write.done()                                     # the commit waits for the pass
+        release.set()
+        done = await asyncio.wait_for(compaction, 30)
+        await asyncio.wait_for(write, 10)
+        assert len(locked) >= 2 and all(locked)                    # each optimize of the pass
+        assert [(item['table'], item['versions_after']) for item in done] == [('conversations', 1)]
+        assert footprint(store).versions == 2                      # the pass's version, then the commit
+        assert 'late' in await row_ids(store)
+    finally:
+        release.set()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_read_begun_before_the_pass_keeps_its_files(tmp_path, monkeypatch):
+    """A read opens the latest version and reads its files as it goes; a prune of every older version
+    deleted them under it (Lance "Not found"). Here a commit lands after the read opened and replaces
+    a fragment the read has yet to reach (the source vector worker re-projects a chunk: one row, one
+    fragment), so the read's version is no longer the current one. Nothing is pruned until the reads
+    begun before the pass have ended."""
+    from lancedb.table import AsyncTable
+    _, store = await managed_store(tmp_path)
+    await append(store, ROWS)
+    real, pruned_while_reading, reading = AsyncTable.optimize, [], [True]
+
+    async def observed(self, **kwargs):
+        pruned_while_reading.append(reading[0])
+        return await real(self, **kwargs)
+
+    monkeypatch.setattr(AsyncTable, 'optimize', observed)
+    try:
+        with store.reads.hold():
+            table = await store._table(Collection.CONVERSATIONS)
+            batches = await table.query().select(['id']).to_batches(max_batch_length=1)
+            seen = await ids_of(await batches.__anext__())
+            await store.update(Collection.CONVERSATIONS, f'row-conversations-{ROWS - 1}', 'neutral text',
+                               [1.0, 0.5], {'source_uri': f'turn:t-{ROWS - 1}'})
+            compaction = asyncio.create_task(store.compaction.run_pass('nightly'))
+            await asyncio.sleep(0.5)
+            assert not compaction.done() and pruned_while_reading == []
+            async for batch in batches:
+                seen += await ids_of(batch)
+            reading[0] = False
+        assert sorted(seen) == sorted(f'row-conversations-{index}' for index in range(ROWS))
+        done = await asyncio.wait_for(compaction, 30)
+        assert [(item['table'], item['versions_after']) for item in done] == [('conversations', 1)]
+        assert pruned_while_reading and not any(pruned_while_reading)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_read_begun_while_the_pass_compacts_keeps_its_version_too(tmp_path, monkeypatch):
+    """A read that opens the table while the pass holds it reads the version the compaction replaces.
+    The pass's first prune keeps that version and prunes the history before it; the rest goes once
+    the read ends."""
+    from lancedb.table import AsyncTable
+    import protagine.vector.store as store_module
+    monkeypatch.setattr(store_module, 'KEEP_SLACK_SECONDS', 0.5)   # the compaction takes far less
+    _, store = await managed_store(tmp_path)
+    await append(store, ROWS)
+    await asyncio.sleep(1.0)
+    await store.add(Collection.CONVERSATIONS, 'current', 'neutral text', [1.0, 0.5], {'source_uri': 'turn:current'})
+    history = footprint(store).versions
+    real, entered, release = AsyncTable.optimize, asyncio.Event(), asyncio.Event()
+
+    async def gated(self, **kwargs):
+        if not release.is_set():
+            entered.set()
+            await release.wait()
+        return await real(self, **kwargs)
+
+    monkeypatch.setattr(AsyncTable, 'optimize', gated)
+    try:
+        compaction = asyncio.create_task(store.compaction.run_pass('nightly'))
+        await asyncio.wait_for(entered.wait(), 10)                 # the pass holds the table; it compacts next
+        with store.reads.hold():
+            table = await store._table(Collection.CONVERSATIONS)
+            batches = await table.query().select(['id']).to_batches(max_batch_length=1)
+            seen = await ids_of(await batches.__anext__())
+            release.set()
+            for _ in range(200):                                    # compacted, the older history pruned
+                if footprint(store).versions < history:
+                    break
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.2)
+            assert footprint(store).versions <= 3                  # this read's version and optimize's commits
+            assert not compaction.done()
+            async for batch in batches:
+                seen += await ids_of(batch)
+        assert sorted(seen) == sorted([f'row-conversations-{index}' for index in range(ROWS)] + ['current'])
+        done = await asyncio.wait_for(compaction, 30)
+        assert [(item['table'], item['versions_after']) for item in done] == [('conversations', 1)]
+    finally:
+        release.set()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_forget_scanning_while_a_pass_runs_finishes_and_so_does_the_pass(tmp_path, monkeypatch):
+    """The forget's scan reads a whole table and deletes what it matched under the write lock, which the
+    pass holds while it waits for reads: the scan reads to the end first, then deletes."""
+    ledger, store = await managed_store(tmp_path)
+    for index in range(ROWS):
+        ledger.record_source(f't-{index}', contact_id='c', session_id='s',
+                             messages=[{'role': 'user', 'content': f'neutral source {index}'}])
+    await append(store, ROWS)
+    ledger.erase_sources(contact_id='c', turn_ids=['t-3', 't-9'])
+    real_to_thread, paused, release = asyncio.to_thread, asyncio.Event(), asyncio.Event()
+
+    async def pausing(func, *args, **kwargs):
+        if getattr(func, '__name__', '') == 'erased_ids' and not paused.is_set():
+            paused.set()
+            await release.wait()
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, 'to_thread', pausing)
+    try:
+        erase = asyncio.create_task(store.erase_source_projections(['t-3', 't-9'], purge=False))
+        await asyncio.wait_for(paused.wait(), 10)                  # the scan holds its first batch
+        compaction = asyncio.create_task(store.compaction.run_pass('nightly'))
+        await asyncio.sleep(0.3)
+        release.set()
+        assert await asyncio.wait_for(erase, 30) == 2
+        await asyncio.wait_for(compaction, 30)
+        assert await row_ids(store) == sorted(f'row-conversations-{index}' for index in range(ROWS)
+                                              if index not in (3, 9))
+    finally:
+        release.set()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_never_ends_holds_the_pass_back_only_so_long(tmp_path, monkeypatch, caplog):
+    _, store = await managed_store(tmp_path)
+    await append(store, 6)
+    monkeypatch.setattr(store, 'read_drain_seconds', 0.3)
+    caplog.set_level(logging.WARNING, logger='protagine.vector.store')
+    try:
+        with store.reads.hold():
+            done = await asyncio.wait_for(store.compaction.run_pass('nightly'), 30)
+        assert [(item['table'], item['versions_after']) for item in done] == [('conversations', 1)]
+        assert any('still running after 0 s' in record.getMessage() for record in caplog.records)
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize('failures, error, retried', [
+    (1, VANISHED, True),                                             # retried once: the pass completes
+    (2, VANISHED, True),                                             # once only
+    (1, 'lance error: Not found: /store/conversations.lance/data/0a.lance', False),   # not a manifest
+])
+@pytest.mark.asyncio
+async def test_a_manifest_that_vanished_under_the_pass_is_retried_once(tmp_path, monkeypatch, caplog,
+                                                                       failures, error, retried):
+    from lancedb.table import AsyncTable
+    _, store = await managed_store(tmp_path)
+    await append(store, 6)
+    real, calls = AsyncTable.optimize, []
+
+    async def vanishing(self, **kwargs):
+        calls.append(kwargs)
+        if len(calls) <= failures:
+            raise RuntimeError(error)
+        return await real(self, **kwargs)
+
+    monkeypatch.setattr(AsyncTable, 'optimize', vanishing)
+    caplog.set_level(logging.INFO)
+    try:
+        done = await store.compaction.run_pass('nightly')
+        retries = [r for r in caplog.records if 'retrying once' in r.getMessage()]
+        assert len(retries) == (1 if retried else 0)
+        if retried and failures == 1:
+            assert done[0]['versions_after'] == 1 and 'error' not in done[0]
+            first, again = calls[0]['cleanup_older_than'], calls[1]['cleanup_older_than']
+            assert timedelta(0) <= again - first < timedelta(seconds=5)  # the same cutoff, measured again
+        else:
+            assert done[0].get('error') is True
+            assert len(calls) == (2 if retried else 1)
+            assert any('vector compaction failed (nightly): conversations' in r.getMessage() for r in caplog.records)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_every_read_of_the_store_is_counted(tmp_path, monkeypatch):
+    """So a pass can wait for it. Writes are not reads: they hold the write lock, which the pass holds."""
+    from contextlib import contextmanager
+    _, store = await managed_store(tmp_path)
+    await append(store, 2)
+    held, real = [], store.reads.hold
+
+    @contextmanager
+    def counted():
+        held.append(1)
+        with real():
+            yield
+
+    monkeypatch.setattr(store.reads, 'hold', counted)
+    try:
+        reads = {
+            'search': lambda: store.search(Collection.CONVERSATIONS, [1.0, 1.0], limit=2),
+            'search_by_image_hash': lambda: store.search_by_image_hash(Collection.CONVERSATIONS, 'none'),
+            'get': lambda: store.get(Collection.CONVERSATIONS, 'row-conversations-0'),
+            'count': lambda: store.count(Collection.CONVERSATIONS),
+            'list_ids': lambda: store.list_ids(Collection.CONVERSATIONS),
+            'scan_all': lambda: store.scan_all(Collection.CONVERSATIONS),
+            'get_stored_models': store.get_stored_models,
+            'check_index_health': lambda: store.check_index_health(store.identity),
+            'erase_source_projections': lambda: store.erase_source_projections(['t-0'], purge=False),
+        }
+        for name, read in reads.items():
+            before = len(held)
+            try:
+                await read()
+            except Exception:
+                pass                                                # a fixture index may be refused; it was read
+            assert len(held) > before, name
+    finally:
+        await store.close()
