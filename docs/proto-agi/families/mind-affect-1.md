@@ -20,12 +20,12 @@ does, that consumer reads the rule.
 | Item | Value |
 |---|---|
 | Dataset id / version | `mind-affect-1` (generator protocol `paired-generator-1`, episode grammar `paired-workflow-runtime-1`, body grading `paired-body-tick-1`, artifact grading `paired_cases.assess`) |
-| Dev templates | `benchmarks/paired/generators/affect.py`: 6 treatment (`switch-recent-failures`, `overload-postpone-curiosity`, `worry-commitment-first`, `satiation-hold-soft-nudge`, `aggregate-mixed-topics`, `aggregate-one-cause`), 7 control (`switch-old-failures`, `switch-recovered`, `switch-no-history`, `overload-light-load`, `worry-nothing-due-soon`, `satiation-soft-nudge-fresh`, `satiation-duty-still-fires`); the consumer of each is `CONSUMERS` (the name's prefix: `strategy_switch`, `overload`, `priority`, `satiation`, `aggregate`) |
-| Dev split for the pilot | seed 7, `--per-template 3`, 39 episodes (18 treatment, 21 control); loader content hash `518b0dedaa8042de85118c609aeb5d7ff586421d0f2dc59008b08895e338dbdc`; rendered dev directories carry it in their manifest |
-| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, covers the six types of evals section 6.4 with paraphrase variants, and pairs every treatment shape with a hard control; rendered with `--split heldout` |
+| Dev templates | `benchmarks/paired/generators/affect.py`: 3 treatment (`overload-postpone-curiosity`, `worry-commitment-first`, `aggregate-one-cause`), 2 control (`overload-light-load`, `worry-nothing-due-soon`); the consumer of each is `CONSUMERS` (the name's prefix: `overload`, `priority`, `aggregate`) |
+| Dev split for the pilot | seed 7, `--per-template 3`, 15 episodes (9 treatment, 6 control); loader content hash `7810d2c0e19b3430bfbcf8032421905a2752af48136de9212f0f74d4a22f0c50`; rendered dev directories carry it in their manifest |
+| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, covers the types of evals section 6.4 whose causes the mind can observe with paraphrase variants, and pairs every treatment shape with a hard control; a cause that is the agent's own failure, a correction of its work or a dismissal of its initiative is produced as an event, never narrated by the owner; rendered with `--split heldout` |
 | Held-out rendering at the gate | a fresh 32-bit seed chosen at plan time, `--per-template` 1 or 2 within the loader's 128-scenario cap, into a fresh private directory whose content hash the plan freezes; never re-rendered over; a failed gate is re-tested only on fresh instances |
-| Episode shapes | **Decision turn** (10 dev templates): owner statements (`owner-1`) seeding the history, one `advance_clock`, `tick: 1`, then one turn in a fresh session (`owner-2`) that asks for a small JSON file; the history is minutes to days old by the stamp. **Tick-graded** (3 dev templates): owner statements, `advance_clock` past the stated horizon (minutes x 60 + 300 s), `tick: 3`, no user turn. `aggregate-one-cause` is both: ticks, then the decision turn |
-| What a decision is | Strategy switch: which of two seeded exports (files whose figures differ) the current figure is taken from, written as `{"figure", "source"}`; the oracle's figure is the one in the export the history makes right. Priority and overload: which item is taken first, written as `{"first"}`; the oracle's labels are the items the history makes first. Satiation: whether a soft nudge goes out on the ticks (`body` oracle: one action to `capture:owner` in ticks 1-2 carrying the item, or none). Tone has no deterministic grader and is a self-report only |
+| Episode shapes | **Decision turn** (every dev template): owner statements (`owner-1`) seeding the state, one `advance_clock`, `tick: 1`, then one turn in a fresh session (`owner-2`) that asks for a small JSON file. `aggregate-one-cause` advances past a soft nudge's stated horizon (minutes x 60 + 300 s) and runs `tick: 3` first, graded on the ticks as well |
+| What a decision is | Priority and overload: which item is taken first, written as `{"first"}`; the oracle's labels are the items the state makes first. Aggregate: the same pick, and the soft nudge held on the ticks under load (`body` oracle: no action). Tone has no deterministic grader and is a self-report only |
 
 ## 3. Instrument settings (identical in every arm)
 
@@ -35,7 +35,7 @@ does, that consumer reads the rule.
 | Body clock | `message_timestamps: gateway`: every owner turn and cron prompt is prefixed `[Wed 2026-09-23 09:19:34 UTC]` in the stock gateway format; a decision turn after a 3-day advance reads three days later | `comparison.message_timestamps`, protocol `paired-message-timestamps-1` |
 | Environment note | `environment_note: messaging` on every turn and cron run | `comparison.environment_note` (text and hash), protocol `paired-environment-note-1` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
-| Ticks | one tick between the history and a decision turn (the mind's decay runs on the tick); three ticks for tick-graded scenarios, action counted in ticks 1-2 | scenario oracle |
+| Ticks | one tick between the history and a decision turn (the mind's decay runs on the tick); three ticks in `aggregate-one-cause`, where no action may go out | scenario oracle |
 | Toolsets | common: `file`, `memory`, `session_search`, `todo`; kanban workers add `kanban`. No turn has a send tool: the decision turn's work is a file write in every arm | worker |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm, built per `benchmarks/paired/README.md`; its ID is frozen in the plan | `recipe.container.image_id` |
@@ -73,11 +73,10 @@ not a result.
 
 - **Primary metric: scenario pass**, every check of the episode true (`paired_cases.assess`,
   no LLM judge). Decision-turn scenarios: `all_native_turns_completed` and the decision file's
-  `artifact:<path>` check (valid JSON with exactly the declared keys, the figure equal to the
-  oracle's number, the label one of the oracle's aliases, case-insensitive). Tick-graded
-  scenarios: the `body:*` checks (observed, action, window, target, forbidden) as in
-  `mind-initiative-1`. `aggregate-one-cause`: both. Task success is inside the pass (the figure
-  is the outcome; the pick is the decision), never a separate non-inferiority check.
+  `artifact:<path>` check (valid JSON with exactly the declared keys, the label one of the
+  oracle's aliases, case-insensitive). `aggregate-one-cause` adds the `body:*` checks (observed,
+  action, forbidden) as in `mind-initiative-1`. The pick is the decision; there is no separate
+  non-inferiority check.
 - **Rule (superiority, `full` vs `full-affect`):** the plan's `RULE`: `sign_exact`,
   alpha 0.05 two-sided over non-tied scenarios, at least 6 winning scenarios, and a
   scenario-level cluster-bootstrap 95% interval whose lower bound is above zero. Unit =
@@ -85,13 +84,11 @@ not a result.
   delta, CI and MDE) or "underpowered".
 - **Mechanism (descriptive, decides wiring, not release):** `paired report` contrasts every
   non-reference arm against `full-affect`; the per-consumer reading comes from the same
-  report's `pairs[].completion`, grouped by the template's consumer prefix. For each consumer,
-  if `full-affect-plus-rules` passes at least as many of that consumer's scenarios as
-  `full`, that consumer reads the rule instead of the decaying state (evals 6.4). The state
-  stays for self-report and tone.
-- **Hard invariants for `full`:** the duty-still-fires scenarios (a hard promise lapses after
-  dismissals) must pass every instance; affect never suppresses duty. Duplicates in tick-graded
-  scenarios must be 0.
+  report's `pairs[].completion`, grouped by the template's consumer prefix (`overload`,
+  `priority`, `aggregate`). For each consumer, if `full-affect-plus-rules` passes at least as
+  many of that consumer's scenarios as `full`, that consumer reads the rule instead of the
+  decaying state (evals 6.4). The state stays for self-report and tone.
+- **Hard invariants for `full`:** duplicates in tick-graded scenarios must be 0.
 - **Secondary (descriptive, never gated):** per-consumer and per-template pass in all three
   arms; paraphrase consistency (pass variance across instances of one template); model calls and
   tokens per arm-episode; background tokens.
@@ -102,7 +99,7 @@ not a result.
 
 Not run: the M6 development build does not exist at the time of writing, and the sizing rule
 (evals 4.3) wants a paired pilot of both gate arms with it. When it lands, the pilot is the dev
-split above (seed 7, 39 episodes) at concurrency 1, arms `full-affect,full,
+split above (seed 7, 15 episodes) at concurrency 1, arms `full-affect,full,
 full-affect-plus-rules`, 1 repetition, one image per branch commit.
 
 | Pilot | Branch commit | Instrument change | comparator setup turns | decision files parse | full wins / losses / ties vs comparator | Accepted |
@@ -124,16 +121,17 @@ within the loader's 128-scenario cap.
 
 - The affect faculty and the rule table landed in M6 (section 4); the three arms differ only in
   `mind.faculties.affect` and `mind.faculties.affect_rules`.
-- Failures, dismissals, open obligations and near deadlines reach the mind as **owner
-  statements** (fairness rule 6), not as the mind's own task outcomes: the seeding path is the
-  appraisal of owner turns (architecture 4.3, "owner correction" and "existing appraisal
-  records"), plus commitments captured from turns. M6's affect must read those; the benchmark
-  cannot make the mind's own tasks fail on cue.
-- The strategy-switch extraction of evals section 5 (no tool call after the switch point
-  matches the failing signature) is realised as the **source choice**: the worker records no
-  tool-call signatures, and no turn has a send tool, so the failing approach is a seeded export
-  file and the decision file names the export used. Reading the stale export is not by itself a
-  failure; reporting its figure is.
+- Architecture 4.3 moves affect with the agent's own failed or blocked tasks, owner corrections
+  of its work, verified outcomes and dismissals of its initiatives. The dev family states none of
+  those in owner prose: an owner describing a failure or a dismissal that never happened to the
+  agent can only be read, every arm shares that memory, and a faculty that won on it would be a
+  prose parser. Open obligations and near deadlines do reach the mind from owner turns (captured
+  commitments), so the overload, priority and aggregate consumers are measured. The
+  `strategy_switch` and `satiation` consumers are measured once the harness produces their
+  causes as events: the mind's own tick-dispatched task failing twice against a seeded file,
+  an owner verdict on its intention through `protagine_self rate` (now in every plugin arm's
+  tools), and a nudge of its own that the owner dismisses. M6 reads those events, never owner
+  descriptions of them.
 - The history lives in a separate session from the decision turn, so cross-session memory is
   a confound shared by every arm (all three are `full`-based). The decision turn restates the
   standing default in neutral words so the default is computable without memory; only the
@@ -153,8 +151,8 @@ arms: [full-affect, full, full-affect-plus-rules]   # all three built in
 reference_arm: full-affect
 primary_metric: scenario_pass
 rule: {superiority: {test: sign_exact, alpha: 0.05, min_wins: 6, ci: cluster_bootstrap_95, unit: scenario}}
-mechanism: {per_consumer: "rules arm ties or beats full -> that consumer reads the rule", consumers: [strategy_switch, overload, priority, satiation, aggregate]}
-invariants: {full: {duty_suppressed: 0, duplicates: 0}}
+mechanism: {per_consumer: "rules arm ties or beats full -> that consumer reads the rule", consumers: [overload, priority, aggregate]}
+invariants: {full: {duplicates: 0}}
 pilot: {n: <pending>, wins: <pending>, losses: <pending>, disagreement: <pending>, power_at_40: <pending>, arms: [full-affect, full, full-affect-plus-rules]}
 secondary: [per_consumer_pass, per_template_pass, paraphrase_consistency, calls_and_tokens_per_arm_episode]
 n: <pending>                         # from the pilot; default 40

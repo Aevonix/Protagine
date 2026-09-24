@@ -10,20 +10,17 @@ from protagine.qualification import paired, paired_cases
 
 GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'generators'
 TEMPLATE = GENERATORS / 'affect.py'
-TREATMENT = {'switch-recent-failures', 'overload-postpone-curiosity', 'worry-commitment-first',
-             'satiation-hold-soft-nudge', 'aggregate-mixed-topics', 'aggregate-one-cause'}
-CONTROLS = {'switch-old-failures', 'switch-recovered', 'switch-no-history', 'overload-light-load',
-            'worry-nothing-due-soon', 'satiation-soft-nudge-fresh', 'satiation-duty-still-fires'}
-TICK_GRADED = {'satiation-hold-soft-nudge', 'satiation-soft-nudge-fresh', 'satiation-duty-still-fires'}
-CONSUMERS = {'strategy_switch', 'overload', 'priority', 'satiation', 'aggregate'}
+TREATMENT = {'overload-postpone-curiosity', 'worry-commitment-first', 'aggregate-one-cause'}
+CONTROLS = {'overload-light-load', 'worry-nothing-due-soon'}
+CONSUMERS = {'overload', 'priority', 'aggregate'}
 # Words that would send the agent to a tool during a setup turn.
 TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|read|file|look up|search|check|fetch)\b',
                         re.IGNORECASE)
 # The dev split, per-template 3, seed 7: the manifest hashes the template and engine sources, so
 # any edit to affect.py or generate.py is a new dataset. Update deliberately, together with
 # benchmarks/paired/generators/README.md and docs/proto-agi/families/mind-affect-1.md.
-PINNED_DEV_SPLIT = {7: '518b0dedaa8042de85118c609aeb5d7ff586421d0f2dc59008b08895e338dbdc',
-                    11: '0f5a9c90fff6ca3965194272913b1f56c805dd3eee451adcf1b440acb26baf5e'}
+PINNED_DEV_SPLIT = {7: '7810d2c0e19b3430bfbcf8032421905a2752af48136de9212f0f74d4a22f0c50',
+                    11: '57834816404761bbbb298c88dddd26b3a7d7dd40037eef03ea17fa8f9b1f8b46'}
 
 
 @pytest.fixture(scope='module')
@@ -53,7 +50,7 @@ def test_family_declares_treatment_and_control_templates_by_consumer(generate):
     assert set(module.TEMPLATES) == TREATMENT | CONTROLS == set(module.CONSUMERS)
     assert set(module.CONSUMERS.values()) == CONSUMERS
     assert {name for name, (group, _) in module.TEMPLATES.items() if group == 'treatment'} == TREATMENT
-    assert len(scenarios) == 13 * 3 and len({item['id'] for item in scenarios}) == len(scenarios)
+    assert len(scenarios) == 5 * 3 and len({item['id'] for item in scenarios}) == len(scenarios)
     for item in scenarios:
         text = json.dumps(item)
         assert not re.search(r'p-\d(?!\d)', text), 'every contact id is fixed width'
@@ -75,15 +72,11 @@ def test_setup_turns_are_statements_and_only_the_decision_turn_asks_for_work(gen
         kinds = [next(k for k in entry if k != 'session_id') if 'session_id' in entry else next(iter(entry))
                  for entry in item['episodes']]
         assert 'advance_clock' in kinds and 'tick' in kinds and kinds.index('advance_clock') < kinds.index('tick')
-        if item['scenario'] in TICK_GRADED:
-            assert not decision and item['episodes'][-1] == {'tick': 3} and 'body' in item['oracle']
-            assert item['oracle']['artifacts'] == []
-        else:
-            [text] = decision
-            assert item['episodes'][-1]['session_id'] == module.DECISION_SESSION, 'the decision turn comes last'
-            [spec] = item['oracle']['artifacts']
-            assert spec['path'] in text and spec['format'] == 'json' and spec['forbidden'] == []
-            assert ('body' in item['oracle']) == (item['scenario'] == 'aggregate-one-cause')
+        [text] = decision
+        assert item['episodes'][-1]['session_id'] == module.DECISION_SESSION, 'the decision turn comes last'
+        [spec] = item['oracle']['artifacts']
+        assert spec['path'] in text and spec['format'] == 'json' and spec['forbidden'] == []
+        assert ('body' in item['oracle']) == (item['scenario'] == 'aggregate-one-cause')
         # Every session named is one of the two; a fresh session holds the decision.
         assert {e['session_id'] for e in item['episodes'] if 'session_id' in e} <= {
             module.SETUP_SESSION, module.DECISION_SESSION}
@@ -99,87 +92,34 @@ def test_background_state_is_seeded_into_the_workspace_rather_than_fetched(gener
         for contact, record in contacts.items():
             assert record == {'channel': record['channel'], 'address': 'capture:' + contact}
             assert record['channel'] in module.CHANNELS
-        exports = {name for name in files if name != 'contacts.json'}
-        if item['scenario'].startswith('switch') or item['scenario'] == 'aggregate-mixed-topics':
-            expected = 4 if item['scenario'] == 'aggregate-mixed-topics' else 2
-            assert len(exports) == expected
-            figures = {}
-            for name in exports:
-                stem, source = name[:-len('.json')].rsplit('-', 1)
-                record = json.loads(files[name])
-                assert source in module.SOURCES and record == {'item': stem.replace('-', ' '), 'figure': record['figure']}
-                assert module.FIGURES[0] <= record['figure'] <= module.FIGURES[1]
-                figures.setdefault(stem, set()).add(record['figure'])
-                assert f'the {source} export' in ' '.join(turns(item, module.SETUP_SESSION)), name
-            assert all(len(values) == 2 for values in figures.values()), 'the two exports never agree'
-        else:
-            assert not exports
+        assert set(files) == {'contacts.json'}, 'no seeded source stands in for the agent\'s own history'
         assert not any('inbound' in entry for entry in item['episodes'])
 
 
 def test_oracles_come_from_the_same_draws_as_the_turns(generate):
     module, scenarios = affect(generate, seed=9)
     for item in scenarios:
-        name, files, oracle = item['scenario'], item['initial_files'], item['oracle']
+        name, oracle = item['scenario'], item['oracle']
         setup, decision = ' '.join(turns(item, module.SETUP_SESSION)), ' '.join(turns(item, module.DECISION_SESSION))
-        if name.startswith('switch'):
-            [spec] = oracle['artifacts']
-            keys, number, label = spec['assertions']
-            assert keys == {'op': 'keys_equal', 'path': [], 'value': ['figure', 'source']}
-            source = label['value'][0]
-            usual = (re.search(r'usual export is the (\w+)', decision)
-                     or re.search(r'comes from the (\w+) export', decision)
-                     or re.search(r'the (\w+) export is the usual one', decision))
-            assert usual, decision
-            expected_source = 'fallback' if name == 'switch-recent-failures' else 'usual'
-            assert (source != usual.group(1)) == (expected_source == 'fallback'), (name, source, usual.group(1))
-            stem = spec['path'][:-len('.json')]
-            assert number['value'] == json.loads(files[f'{stem}-{source}.json'])['figure']
-            assert stem.replace('-', ' ') in setup and stem.replace('-', ' ') in decision
-        elif name == 'aggregate-mixed-topics':
-            [spec] = oracle['artifacts']
-            keys, *rules = spec['assertions']
-            slug1, slug2 = keys['value']
-            for slug, prefix_rules in ((slug1, rules[:3]), (slug2, rules[3:])):
-                _, number, label = prefix_rules
-                source = label['value'][0]
-                assert number['value'] == json.loads(files[f'{slug}-{source}.json'])['figure']
-            assert re.search(rf'usual exports are the {re.escape(rules[2]["value"][0])}', decision) is None, \
-                'the first figure switches away from its usual export'
-            assert re.search(rf'the {re.escape(rules[5]["value"][0])} for the {slug2.replace("-", " ")}', decision) \
-                or re.search(rf'usually the {re.escape(rules[5]["value"][0])} export', decision), \
-                'the second figure keeps its usual export'
-        elif name in TICK_GRADED:
-            body = oracle['body']
-            if name == 'satiation-hold-soft-nudge':
-                assert body == {'action': 'none', 'forbidden': []}
-            else:
-                assert body['action']['target'] == 'capture:owner' and body['action']['window'] == [1, 2]
-                assert body['action']['token'] in module.ITEMS and body['action']['token'] in setup
-            clock = next(entry['advance_clock'] for entry in item['episodes'] if 'advance_clock' in entry)
-            minutes = int(re.search(r'\b(\d+) minutes\b', setup).group(1))
-            assert clock == minutes * 60 + module.PAST_HORIZON_SECONDS
-            assert ('waved' in setup or 'brushed' in setup or 'dismissed' in setup) == (name != 'satiation-soft-nudge-fresh')
+        [spec] = oracle['artifacts']
+        keys, label = spec['assertions']
+        assert keys == {'op': 'keys_equal', 'path': [], 'value': ['first']}
+        options = re.search(r'(?:Of|before I leave:|out of) (.+?)(?:, which|\. Which)', decision).group(1)
+        listed = [part.strip().removeprefix('the ') for part in re.split(r', | and ', options)]
+        winners = {value for value in label['value'] if not value.startswith('the ')}
+        assert winners <= set(listed) or any(w in listed for w in winners), (winners, listed)
+        if name in {'overload-postpone-curiosity', 'aggregate-one-cause'}:
+            assert len(winners) == 3 and winners <= set(module.ITEMS)
+        elif name == 'overload-light-load':
+            assert winners and all(w.endswith(' note') or 'note on ' in w or w in module.TOPICS for w in winners)
+        elif name == 'worry-commitment-first':
+            [winner] = winners
+            assert re.search(rf'{winner}[^.]*\b\d+ minutes', setup) or re.search(rf'\d+ minutes[^.]*{winner}', setup)
         else:
-            [spec] = oracle['artifacts']
-            keys, label = spec['assertions']
-            assert keys == {'op': 'keys_equal', 'path': [], 'value': ['first']}
-            options = re.search(r'(?:Of|before I leave:|out of) (.+?)(?:, which|\. Which)', decision).group(1)
-            listed = [part.strip().removeprefix('the ') for part in re.split(r', | and ', options)]
-            winners = {value for value in label['value'] if not value.startswith('the ')}
-            assert winners <= set(listed) or any(w in listed for w in winners), (winners, listed)
-            if name in {'overload-postpone-curiosity', 'aggregate-one-cause'}:
-                assert len(winners) == 3 and winners <= set(module.ITEMS)
-            elif name == 'overload-light-load':
-                assert winners and all(w.endswith(' note') or 'note on ' in w or w in module.TOPICS for w in winners)
-            elif name == 'worry-commitment-first':
-                [winner] = winners
-                assert re.search(rf'{winner}[^.]*\b\d+ minutes', setup) or re.search(rf'\d+ minutes[^.]*{winner}', setup)
-            else:
-                [winner] = winners
-                assert 'three days' in setup and winner not in re.search(r'[^.]*three days[^.]*', setup).group(0)
-            if name == 'aggregate-one-cause':
-                assert oracle['body'] == {'action': 'none', 'forbidden': []}
+            [winner] = winners
+            assert 'three days' in setup and winner not in re.search(r'[^.]*three days[^.]*', setup).group(0)
+        if name == 'aggregate-one-cause':
+            assert oracle['body'] == {'action': 'none', 'forbidden': []}
 
 
 def _effects(artifacts=None, body=None):
@@ -194,28 +134,8 @@ def _tick(index, outbox, before, after, kanban=()):
             'created_task_ids': [row['id'] for row in kanban]}
 
 
-def test_figure_and_pick_artifacts_pass_only_on_the_fixture_defined_decision(generate):
+def test_pick_artifacts_pass_only_on_the_fixture_defined_decision(generate):
     module, scenarios = affect(generate, seed=4, per_template=1)
-    switch = next(item for item in scenarios if item['scenario'] == 'switch-recent-failures')
-    oracle = {**switch['oracle'], 'declared_turns': 6}
-    [spec] = oracle['artifacts']
-    figure = spec['assertions'][1]['value']
-    source = spec['assertions'][2]['value'][0]
-    stale = next(json.loads(v)['figure'] for k, v in switch['initial_files'].items()
-                 if k.endswith('.json') and k != 'contacts.json' and json.loads(v)['figure'] != figure)
-    good = json.dumps({'figure': figure, 'source': source})
-    checks = paired_cases.assess(_effects({spec['path']: good}), oracle)
-    assert checks == {'all_native_turns_completed': True, 'artifact:' + spec['path']: True}
-    for wrong in (json.dumps({'figure': stale, 'source': source}),          # the usual export's stale number
-                  json.dumps({'figure': str(figure), 'source': source}),    # a string is not a number
-                  json.dumps({'figure': figure}),                           # the decision is missing
-                  json.dumps({'figure': figure, 'source': source, 'note': 'x'}),
-                  json.dumps({'figure': figure, 'source': 'the other one'}),
-                  '{"figure": %d, "source": "%s", "figure": %d}' % (figure, source, stale),
-                  None):
-        assert paired_cases.assess(_effects({spec['path']: wrong}), oracle)['artifact:' + spec['path']] is False, wrong
-    assert paired_cases.assess(_effects({spec['path']: json.dumps({'figure': figure, 'source': source.upper() + ' '})}),
-                               oracle)['artifact:' + spec['path']] is True, 'labels are case-insensitive and stripped'
     pick = next(item for item in scenarios if item['scenario'] == 'worry-commitment-first')
     [spec] = pick['oracle']['artifacts']
     winner = spec['assertions'][1]['value'][0]
@@ -227,22 +147,12 @@ def test_figure_and_pick_artifacts_pass_only_on_the_fixture_defined_decision(gen
     assert not paired_cases.assess(_effects({'next.json': json.dumps({'first': [winner]})}), oracle)['artifact:next.json']
 
 
-def test_tick_graded_scenarios_use_the_body_oracle(generate):
+def test_the_aggregate_scenario_grades_the_ticks_and_the_decision(generate):
     module, scenarios = affect(generate, seed=4, per_template=1)
-    hold = next(item for item in scenarios if item['scenario'] == 'satiation-hold-soft-nudge')
-    fresh = next(item for item in scenarios if item['scenario'] == 'satiation-soft-nudge-fresh')
-    token = fresh['oracle']['body']['action']['token']
     silent = {'protocol': 'paired-body-tick-1', 'outbox': [], 'ticks': [_tick(i, [], 0, 0) for i in (1, 2, 3)]}
     nudged = {'protocol': 'paired-body-tick-1',
-              'outbox': [{'target': 'capture:owner', 'text': f'Reminder: the {token}.', 'at': 't', 'via': 'platform'}],
+              'outbox': [{'target': 'capture:owner', 'text': 'Reminder: a small thing.', 'at': 't', 'via': 'platform'}],
               'ticks': [_tick(1, None, 0, 1), _tick(2, None, 1, 1), _tick(3, None, 1, 1)]}
-    twice = {**nudged, 'outbox': nudged['outbox'] * 2, 'ticks': [_tick(1, None, 0, 1), _tick(2, None, 1, 2), _tick(3, None, 2, 2)]}
-    for oracle, body, passes in ((hold['oracle'], silent, True), (hold['oracle'], nudged, False),
-                                 (fresh['oracle'], nudged, True), (fresh['oracle'], silent, False),
-                                 (fresh['oracle'], twice, False)):
-        checks = paired_cases.assess(_effects(body=body), {**oracle, 'declared_turns': 6})
-        assert checks['body:observed'] is True
-        assert all(value is True for key, value in checks.items() if key.startswith('body:')) is passes, (checks, passes)
     both = next(item for item in scenarios if item['scenario'] == 'aggregate-one-cause')
     [spec] = both['oracle']['artifacts']
     good = json.dumps({'first': spec['assertions'][1]['value'][0]})
@@ -286,7 +196,7 @@ def test_dev_split_content_hash_is_pinned_and_the_loader_builds_cases(generate, 
         assert content == expected, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest, scenarios, verified = paired_cases.load_generated_dataset(tmp_path / str(seed))
         assert verified == content and manifest['dataset_id'] == 'mind-affect-1'
-        assert manifest['families'] == {'treatment': 18, 'control': 21} and len(scenarios) == 39
+        assert manifest['families'] == {'treatment': 9, 'control': 6} and len(scenarios) == 15
     profile = {'name': 'full', **paired.PROFILES['full']}
     cases = paired_cases.cases('full', dataset_dir=tmp_path / '7', profile=profile)
     assert [case.id for case in cases] == [item['id'] for item in scenarios]
@@ -296,4 +206,30 @@ def test_dev_split_content_hash_is_pinned_and_the_loader_builds_cases(generate, 
     assert 'body' in case.oracle and case.oracle['artifacts'] and case.inputs['profile'] == profile
     code = generate.main(['--family', 'affect', '--split', 'dev', '--seed', '7', '--per-template', '1',
                           '--output', str(tmp_path / 'cli')])
-    assert code == 0 and json.loads((tmp_path / 'cli' / 'manifest.json').read_text())['scenario_count'] == 13
+    assert code == 0 and json.loads((tmp_path / 'cli' / 'manifest.json').read_text())['scenario_count'] == 5
+
+
+# -- causes the mind can observe, and arms that change something ---------------------------------
+
+NARRATED = re.compile(r'\bstale\b|\bwaved both off\b|\bbrushed aside\b|\bI dismissed\b|\bheads-ups? from you\b',
+                      re.IGNORECASE)
+
+
+def test_no_template_narrates_the_agents_own_failures_or_dismissals(generate):
+    """Affect updates from the agent's own failed tasks, corrections of its work and dismissals of
+    its initiatives (architecture 4.3); an owner narrating events that never happened to the agent
+    can only be read, so no template states one."""
+    for seed in (7, 11):
+        _, scenarios = affect(generate, seed=seed)
+        for item in scenarios:
+            for entry in item['episodes']:
+                assert not NARRATED.search(entry.get('user', '')), (item['id'], entry['user'])
+
+
+def test_no_declared_arm_sets_an_override_the_config_does_not_read():
+    """A profiles file arm whose overlay reaches nothing runs as another arm; none is declared."""
+    from protagine.config import ENV_OVERRIDES
+    for path in GENERATORS.glob('*.json'):
+        for name, profile in json.loads(path.read_text()).items():
+            if isinstance(profile, dict):
+                assert set(profile.get('overlay', {})) <= set(ENV_OVERRIDES), (path.name, name)

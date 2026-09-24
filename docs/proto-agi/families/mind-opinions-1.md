@@ -41,7 +41,7 @@ candidate on a metric the rule does not use, and the cost cap never binds at for
 | Environment note | `environment_note: messaging` on every turn's system message | `comparison.environment_note` (text and hash), protocol `paired-environment-note-1` |
 | Restart | `workflow.restart_before = [index of the probe]`: a fresh worker process over the same `/state/home` and `/state/workspace`; `snapshot_after = [0]` takes the workspace after the formation turn | case inputs `workflow`, oracle `workflow_contract`; the plan refuses an image without `workflow_protocol` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
-| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the mind arms add the adapter's memory tools | worker |
+| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the mind arms add the adapter's memory tools and `protagine_self` | worker |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm, built per `benchmarks/paired/README.md`; its worker must declare `arm_profiles`, `mind_tick`, `body_protocol` and `workflow_protocol` | `recipe.container.image_id` |
 

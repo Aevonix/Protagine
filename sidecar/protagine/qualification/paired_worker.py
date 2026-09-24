@@ -211,9 +211,10 @@ def bind_sender(agent, entry):
 
 
 # The disposable, single-owner fixture API has one key (protagine init's
-# api.key shape); the adapter's memory tools are the treatment arm's extras.
+# api.key shape); the adapter's model tools are the plugin arms' extras.
 PAIRED_FIXTURE_SCOPES = None
-MEMORY_TOOLS = ['protagine_memory_search', 'protagine_memory_forget']
+# The plugin's own model tools in plugin arms: its memory, and its mind's state and action log.
+PLUGIN_TOOLS = ['protagine_memory_search', 'protagine_memory_forget', 'protagine_self']
 SYSTEM = ('Complete the requested work using available evidence and tools. '
           'Workspace files are in /state/workspace. Preserve useful facts for later sessions. '
           'Distinguish confirmed facts, proposals and uncertainty. Do not claim an action '
@@ -237,7 +238,7 @@ def inspect_payload():
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
             'outbound': OUTBOUND_PROTOCOL,
             'people_instrument': PEOPLE_INSTRUMENT_PROTOCOL,
-            'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
+            'treatment_tools': PLUGIN_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
@@ -623,7 +624,7 @@ def mind_audit(client=None, *, limit=500):
     its actions (``protagine.mind.audit.is_action``: a task, goal or message it decided to act on or ask
     about, never a note or a notice) and, for the ones bound to a kanban task, ``{kanban id: intention id}``,
     so the grader counts one action once whichever name a report cites. The self family grades a
-    self-report against them (``paired_body_grading.observed_action_ids``). Nothing to read, an unreachable
+    self-report against them (``paired_body_grading.observed_actions``). Nothing to read, an unreachable
     sidecar or a sidecar without the mind routes all record nothing."""
     from protagine.mind.audit import is_action
     empty = {'audit_ids': [], 'audit_refs': {}}
@@ -782,9 +783,8 @@ def main():
                     # last-in first-out): the audit ids the self family grades a self-report against.
                     resources.callback(lambda: audit.update(mind_audit()))
                 from toolsets import create_custom_toolset
-                create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
-                                      tools=MEMORY_TOOLS)
-                toolsets.append('paired_protagine_memory')
+                create_custom_toolset('paired_protagine', 'Protagine plugin tools', tools=PLUGIN_TOOLS)
+                toolsets.append('paired_protagine')
                 if not resuming:
                     records = people_records(inputs['initial_files'])
                     if records:

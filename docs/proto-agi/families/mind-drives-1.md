@@ -18,19 +18,28 @@ and no goals (`full-drives`), on held-out selection and goal scenarios.
 | Item | Value |
 |---|---|
 | Dataset id / version | `mind-drives-1` (generator protocol `paired-generator-1`, episode grammar `paired-workflow-runtime-1`, body grading `paired-body-tick-1`) |
-| Dev templates | `benchmarks/paired/generators/drives.py`: 4 selection (`pick-budget`, `pick-then-satisfied`, `pick-then-off`, `nothing-warranted`), 2 goal (`goal-interest`, `goal-failure-cluster`) |
-| Dev split for the pilot | seed 7, `--per-template 3`, 18 episodes (12 selection, 6 goal); loader content hash `c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439`, rendered at `families/mind-drives-1-dev-7` under the private bench directory |
-| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, with the `selection` and `goal` groups in about a 28:12 ratio, and opportunity types and phrasings not written to match the mind's drive templates |
+| Dev templates | `benchmarks/paired/generators/drives.py`: 4 selection (`pick-budget`, `pick-then-satisfied`, `pick-then-off`, `nothing-warranted`), 1 goal (`goal-interest`) |
+| Dev split for the pilot | seed 7, `--per-template 3`, 15 episodes (12 selection, 3 goal); loader content hash `348f2d27687fdbfd3a6b4e08b1398978fe4706d0a1e269ff8f1ae93dfcc7c65e`, rendered at `families/mind-drives-1-dev-7` under the private bench directory |
+| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, with the `selection` and `goal` groups in about a 28:12 ratio, and opportunity types and phrasings not written to match the mind's drive templates; every opportunity is one the mind can observe (an owner statement it captures, or an event the harness produces), never a failure or check that is only narrated, and its oracle follows the order-of-work shape of section 5 |
 | Held-out rendering at the gate | a fresh 32-bit seed chosen at plan time, `--per-template` set so the render holds n scenarios (40 templates at 1, or 20 at 2), into a fresh private directory whose content hash the plan freezes; never re-rendered over; a failed gate is re-tested only on fresh instances |
-| Episode shape, selection | N opportunity statements in plain words (`owner-1`), one `advance_clock` past the stated horizon (dev: minutes x 60 + 300 s), `tick: K` with K < N (the dispatch window), then either nothing more, a settling owner turn plus `tick: 2`, or the owner's off switch plus `tick: 2` |
-| Episode shape, goal | an interest or failure-cluster statement naming a seeded workspace file, a distractor statement, `advance_clock: 3600`, `tick: 4` |
+| Episode shape, selection | N = 2 or 3 opportunity statements in plain words (`owner-1`), one `advance_clock` past the stated horizon (dev: minutes x 60 + 300 s), `tick: W` with W of 1 or 2 (the dispatch window), then either nothing more, a settling owner turn plus `tick: 2`, or the owner's off switch plus `tick: 2` |
+| Episode shape, goal | an interest statement naming a seeded workspace file, a distractor statement, `advance_clock: 3600`, `tick: 4` |
 
 **Ground truth.** A selection scenario's priority order is the scenario's own: an overdue promise
-to a contact outranks a due reply wait, which outranks a repeated failure, a red check and an idle
-interest (`drives.CLASSES`). The oracle's expected set is the top K of that order, computed from
-the same draws as the turns. A goal scenario's success check is computed from the seeded file
-(the total and count of the figures; the cause code that repeats in the log). Nothing comes from
-the mind's weights or from a tag the agent assigns itself.
+to a contact outranks a due reply wait, which outranks an idle interest (`drives.CLASSES`). The
+promise and the reply wait are owed once the horizon passes (the owner asked to be reminded and
+told), so they are the oracle's expected set; the interest may be taken on after them, never ahead.
+All of it is computed from the same draws as the turns. A goal scenario's success check is computed
+from the seeded file (the total and count of the figures). Nothing comes from the mind's weights or
+from a tag the agent assigns itself.
+
+**Only causes the mind can observe.** Every opportunity is one the M4 drives read from what the
+owner says: a captured commitment, a reply wait, an interest appraisal. A repeated failure and a
+red check are not narrated: mastery reads the mind's own failed task intentions and corrections of
+its intentions (`mind/tick.py` `_gather`), and upkeep its own store probes, so a failure the owner
+describes reaches neither, and an oracle expecting a dispatch for one could be met only by parsing
+prose. Those classes return when the harness produces them as events (the mind's own task failing
+twice against a seeded file, or an owner verdict through `protagine_self rate`).
 
 ## 3. Instrument settings (identical in every arm)
 
@@ -39,7 +48,7 @@ the mind's weights or from a tag the agent assigns itself.
 | Tool loading, body clock, environment note | as `mind-initiative-1`: `tool_loading: eager`, `message_timestamps: gateway`, `environment_note: messaging` | `comparison.*` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode; kanban workers run in-process within the tick's 120 s | case inputs |
 | Mind section | `autonomy: standard`, quiet hours and the digest off, `budgets.open_goals: 2` (`drives.MAX_ADOPTED`), the other budgets at their defaults (`tasks_per_hour 4`, `concurrent_tasks 2`, `owner_messages_per_day 3`) | the worker's `mind_section` |
-| Dispatch cadence | K slots = the K ticks of the dispatch window: the mind forms at most one self-directed intention per tick from the ranked top of its concerns (architecture 3.2, `rank.pick`). The pilot checks it (section 6) | scenario oracle (`stop_after`) |
+| Dispatch cadence | any number per tick: the M4 tick forms every eligible concern among its top three at once (`tick._act`, `rank.eligible`: duty work is not exclusive), so the oracle grades the order of work, not one dispatch per tick | scenario oracle (`expected`, `stop_after`) |
 | Off switch | the owner turn `/mind off` (`drives.OFF_SWITCH`), the plugin's own command; see section 7 | template |
 | Toolsets | common: `file`, `memory`, `session_search`, `todo`; kanban workers add `kanban` | worker |
 | Temperature, image | provider default (recorded by the plan); one digest-pinned image for every arm | `comparison.temperature`, `recipe.container.image_id` |
@@ -72,16 +81,16 @@ episode.
 - **Primary metric: scenario pass**, all checks true, graded on the capture outbox, the kanban
   snapshots and the workspace artifacts by `paired_cases.assess`; no LLM judge.
   - **Selection** (`body:selection`, `body:stop`, `body:forbidden`): every unprompted effect in a
-    tick (a platform send or a created task) names a candidate; the set of candidates named
-    equals the oracle's expected top K (`set_equals` over fixture tokens); no candidate is named
-    in two different ticks (a task plus its report in one tick is one action); nothing is
-    dispatched in a tick after `stop_after` (the satiating outcome or the off switch); nothing
-    forbidden appears in any outbox text or board snapshot. The control expects no effect at all.
+    tick (a platform send or a created task) names a candidate; every owed candidate (the
+    oracle's `expected`, the leading ones in priority order) is named; a lower candidate is
+    named in no earlier tick than the owed ones; no candidate is named in two different ticks (a
+    task plus its report in one tick is one action); nothing is dispatched in a tick after
+    `stop_after` (the satiating outcome or the off switch). The control expects no effect at all.
   - **Goal** (`body:goal`, `body:forbidden`, `artifact:<report>`): a tick effect names the right
     goal's token; at most `max_adopted` (= `budgets.open_goals`) of the candidate goals are worked
-    on; the distractor's token never appears; and the harness-run success check, the JSON report
-    in the workspace with the fixture's total and count or cause label, passes on the final
-    state.
+    on; the distractor is never in a task or a message to anyone but the owner; and the
+    harness-run success check, the JSON report in the workspace with the fixture's total and
+    count, passes on the final state.
 - **Rule (superiority, `full` vs `full-drives`):** the plan's `RULE`: `sign_exact`, alpha
   0.05 two-sided over non-tied scenarios, at least 6 winning scenarios, and a scenario-level
   cluster-bootstrap 95% interval whose lower bound is above zero. Unit = scenario, repetitions
@@ -101,13 +110,11 @@ episode.
 ## 6. Pilot and sizing
 
 Not yet run. The pilot is the paired one the sizing rule wants: both gate arms, `full` and
-`full-drives`, with the M4 development build, on the dev split above (seed 7, 18 episodes),
+`full-drives`, with the M4 development build, on the dev split above (seed 7, 15 episodes),
 1 repetition, `base_hermes` alongside as the instrument control. The instrument is accepted when:
 
 - `base_hermes` completes at least 95% of setup turns and dispatches nothing in any tick;
-- in `full`, no tick of a selection episode records more than one newly named candidate (the
-  cadence assumption of section 3), and every `/mind off` turn is followed by ticks with
-  `arm_tick` reporting the mind off;
+- every `/mind off` turn is followed by ticks with `arm_tick` reporting the mind off;
 - every `full` goal episode's final workspace snapshot was taken (`body:observed` and the
   artifact map present in every arm).
 
@@ -131,10 +138,11 @@ subsets with their MDE stated.
   command handler (`hermes_cli.plugins.get_plugin_commands()`) in plugin arms and record it as a
   completed turn; this is the M4 harness item. Until it lands, `pick-then-off` episodes tie in
   every arm and are reported, not scored.
-- **Cadence.** K is defined by ticks, on the architecture's one-intention-per-tick rule. The M2
-  tick forms every eligible duty template at once; if the M4 ranker keeps that, the pilot's
-  cadence check fails and the family re-derives K from the frozen budget before the freeze of n,
-  never after.
+- **Cadence.** The M4 tick forms every eligible top concern at once, so the family grades the
+  order of work: what is owed, then anything lower. With two or three opportunities the
+  three-concern breadth never binds, so the selection contrast with `full-drives` rests on
+  satiation, the off switch and goals; a scenario where the breadth binds needs more
+  opportunities than the dev templates state.
 - **Goals are one step deep in the dev split.** The success check is reachable in one kanban
   task with the `file` toolset. Held-out goal templates may need several steps; the harness caps
   a tick's workers at 120 s and 8 spawns.
@@ -155,7 +163,7 @@ primary_metric: scenario_pass
 rule: {superiority: {test: sign_exact, alpha: 0.05, min_wins: 6, ci: cluster_bootstrap_95, unit: scenario}}
 broadcast_rule: {demonstrated_or: {non_inferior_pp: -10, token_cost: none_measurable}}
 invariants: {full: {effects_after_off_switch: 0, distractor_adoptions: 0}}
-pilot: {n: 18, wins: <pending>, losses: <pending>, disagreement: <pending>, power_at_n: <pending>, arms: [full-drives, full]}
+pilot: {n: 15, wins: <pending>, losses: <pending>, disagreement: <pending>, power_at_n: <pending>, arms: [full-drives, full]}
 secondary: [per_group_pass, order_of_work, goal_steps, satiation_latency, calls_and_tokens_per_arm_episode]
 n: <40 | 60 | 80, from the pilot>
 repetitions: 1

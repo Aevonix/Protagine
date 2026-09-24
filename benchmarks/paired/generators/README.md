@@ -109,13 +109,16 @@ renders its questions this way into an `anchor` split.
   below. Its oracle is `body.action`.
 - `drives.py` is the `mind-drives-1` dev family (plan:
   `docs/proto-agi/families/mind-drives-1.md`). Four `selection` templates seed
-  N opportunities across the drives (an overdue promise, a due reply wait, a
-  repeated failure, a red check, an idle interest) and open K < N ticks; the
-  oracle `body.selection` expects the top K of the scenario's own priority
-  order and nothing after `stop_after` (a settling owner turn, or the owner's
-  `/mind off`); the control resolves every opportunity before the horizon.
-  Two `goal` templates seed an interest or a failure cluster whose answer sits
-  in a workspace file plus a distractor assigned elsewhere; the oracle
+  two or three opportunities the drives read from the owner's words (an
+  overdue promise, a due reply wait, an idle interest) and open a dispatch
+  window of one or two ticks; the oracle `body.selection` lists them in the
+  scenario's priority order, wants every owed one (the promise, the reply
+  wait) dispatched once and the interest never ahead of them, and nothing
+  after `stop_after` (a settling owner turn, or the owner's `/mind off`); the
+  control resolves every opportunity before the horizon. Failures and red
+  checks are not narrated: the mind reads its own. One `goal` template seeds
+  an interest whose answer sits in a workspace file plus a distractor assigned
+  elsewhere; the oracle
   `body.goal` wants the right goal worked on and the distractor never, and the
   success check is a JSON `artifacts` oracle over the report the goal writes.
   Its arms are `full`, `full-drives` (the flat-priority ablation),
@@ -134,23 +137,24 @@ renders its questions this way into an `anchor` split.
   needs them. Its oracles are `body.sends` and `body.replies`; its arms are
   `base-heartbeat`, `full` and `full-people`.
 - `affect.py` is the `mind-affect-1` dev family (evals section 6.4, build plan
-  M6; plan: `docs/proto-agi/families/mind-affect-1.md`): six treatment
-  templates in which a cause should change a decision, and seven controls in
-  which the same shape carries the cause absent, decayed or resolved (or, for
-  duty, must not be changed by it). The history that should move the agent's
-  own affect (what failed and when, what is open, what was waved off, what is
-  due soon) arrives as owner statements under the same rules as above; the
-  clock advances and the body ticks; then one decision is observed. Ten
-  templates end in a **decision turn** in a fresh session (`owner-2`) whose
-  work needs only the file tools every arm has: the agent writes a small JSON
-  file, graded by the existing `json` artifact checks (`keys_equal`, `number`,
-  `label_one_of`). Three satiation templates have no decision turn and are
-  graded on the ticks by the `body` oracle; `aggregate-one-cause` carries
-  both. The consumer each template exercises is `CONSUMERS` in the module (its
-  name's prefix). Its arms are built in: `full`, `full-affect` and the
-  mechanism arm `full-affect-plus-rules` (`full-affect` with the
-  `plus_affect_rules` switch, `mind.faculties.affect_rules: true`: every
-  consumer reads the frozen stateless rules of `P/mind/affect_rules.py`).
+  M6; plan: `docs/proto-agi/families/mind-affect-1.md`): three treatment
+  templates in which a cause should change a decision, and two controls in
+  which the same shape carries the cause absent. The causes are state the mind
+  reads from what the owner says (the obligations open and when they are due,
+  captured as commitments; a nice-to-have nudge; an idle curiosity); the clock
+  advances and the body ticks; then one decision is observed. Every template
+  ends in a **decision turn** in a fresh session (`owner-2`) whose work needs
+  only the file tools every arm has: the agent writes a small JSON file, graded
+  by the existing `json` artifact checks (`keys_equal`, `label_one_of`);
+  `aggregate-one-cause` is also graded on the ticks by the `body` oracle. The
+  agent's own failures and dismissals of its nudges (the `strategy_switch` and
+  `satiation` consumers) are not narrated: they enter when the harness
+  produces them as events. The consumer each template exercises is
+  `CONSUMERS` in the module (its name's prefix). Its arms are built in:
+  `full`, `full-affect` and the mechanism arm `full-affect-plus-rules`
+  (`full-affect` with the `plus_affect_rules` switch,
+  `mind.faculties.affect_rules: true`: every consumer reads the frozen
+  stateless rules of `P/mind/affect_rules.py`).
 - `opinions.py` is the `mind-opinions-1` dev family (evals section 6.5, plan
   in `docs/proto-agi/families/mind-opinions-1.md`): twelve templates in four
   groups. Every episode is one formation turn (two plans, the decision rule in
@@ -222,11 +226,10 @@ renders its questions this way into an `anchor` split.
   `full-plus-skills` and `base-curator`.
 
 Decision-turn rule (affect): the decision turn is the only turn that asks for
-work, it comes last, it restates the standing default in neutral words (which
-export is the usual one, which items are on the table) so the default is
-computable without memory, and the history alone decides whether the default
-stands. The oracle is computed from the same draws: the figure in the export
-the history makes right, or the item the history makes first.
+work, it comes last, it restates the options in neutral words (which items are
+on the table) so the default is computable without memory, and the history
+alone decides whether the default stands. The oracle is computed from the same
+draws: the item the history makes first.
 
 Warranted (one action in tick 1 or 2, carrying the item):
 
@@ -286,9 +289,9 @@ and `sidecar/tests/test_qualification_improve_family.py` (improve).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
-18 episodes (12 selection, 6 goal). `people`, `--per-template 2`: 28 episodes
-(10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 39
-episodes (18 treatment, 21 control). `opinions`, `--per-template 3`: 36
+15 episodes (12 selection, 3 goal). `people`, `--per-template 2`: 28 episodes
+(10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 15
+episodes (9 treatment, 6 control). `opinions`, `--per-template 3`: 36
 episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
 `memory`, `--per-template 3`: 24 episodes (18 recall, 6 abstain). `identity`,
 `--per-template 3`: 15 episodes (9 narrative, 6 premise). `improve`,
@@ -299,12 +302,12 @@ probes).
 | --- | --- | --- | --- | --- |
 | initiative | 3 | 7 | `eff4ffb8d82a001c4ee66af040a255957150c633013c939e6133d46ee18daa93` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
 | initiative | 3 | 11 | `92c04d250399706b84770e51339967942a102b86b70164235e6fdfaf86d60c54` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
-| drives | 3 | 7 | `c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439` | `90413dcff98ecaa3c80c8befe7dd51dfc9b4e1ac5d75bfd91b13831abede69e2` |
-| drives | 3 | 11 | `9095a0bb188a530875540e8a4e3b1f130d767058cb38a86487dafc821f9180d8` | `906e439b2c3d9c89273cafcbe564928a5187f9331ba6a0012d3d7f4a783f78e6` |
+| drives | 3 | 7 | `348f2d27687fdbfd3a6b4e08b1398978fe4706d0a1e269ff8f1ae93dfcc7c65e` | `2849a32685e7e3077460b41c80449e93c43f2cea24bdbb96562c79c68bf38996` |
+| drives | 3 | 11 | `12fdf2f045aaa197b7b56db253bbadb26f469923a229eda847cfe7cf4a6bbaa9` | `a23c87bbef5cc44ed328ec6eaaec4e697a1643da92f58b7d40fa627881cb8629` |
 | people | 2 | 7 | `34fba589d88ab54692264824664d3b93b267c868fba6fd5cf6a05ad28bdbc89a` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
 | people | 2 | 11 | `5a32be07f96e4292ded949756ddc88bba942c2cd20eedd1acc6e793ab0b0c73a` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
-| affect | 3 | 7 | `518b0dedaa8042de85118c609aeb5d7ff586421d0f2dc59008b08895e338dbdc` | `3349702498368fd36ecbd54d5a032c42e1e259a25aa577e39bd907a0f1c18703` |
-| affect | 3 | 11 | `0f5a9c90fff6ca3965194272913b1f56c805dd3eee451adcf1b440acb26baf5e` | `2941da04abf76e885a7a75f5ec4590076898b84007ead932ca3024a14820601c` |
+| affect | 3 | 7 | `7810d2c0e19b3430bfbcf8032421905a2752af48136de9212f0f74d4a22f0c50` | `d0af98cdb5851257f01ddffd3bd08664d017300323339c6e5a91c88d73e7771b` |
+| affect | 3 | 11 | `57834816404761bbbb298c88dddd26b3a7d7dd40037eef03ea17fa8f9b1f8b46` | `2c3f10cf42a66d72edf01f7c9499a46b648fd19d3b690f461600ce9cbab05c04` |
 | opinions | 3 | 7 | `8dca5fd169f109cd98d833f0207d01a0e0230671211c8190ca47cf0dbd8cbdc1` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
 | opinions | 3 | 11 | `adfd8420b3531fe7e919af7bb4c4804e201230768b98749c71d455a2c00f8794` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |
 | memory | 3 | 7 | `30fa34aa6ea0340bd755ae1689954acb59bfb90877f93fb426b4e504f78ce06d` | `d352b2585a7eb15bf879122d201db411cd27aaa27abfc1542cc1ccf955d623a7` |

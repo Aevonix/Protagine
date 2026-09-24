@@ -113,8 +113,9 @@ def test_warranted_passes_with_exactly_one_owner_action_carrying_the_item_in_the
         acted[tick] = [('message', OWNER, f'Reminder: the {token} has not gone out.')]
         ok, checks = passes(scenario, *acted)
         assert ok, checks
-    # A board task alone reaches the owner's board, so it counts; a task plus a message in one tick is one action.
-    assert passes(scenario, [('task', f'Chase the {token}')], [], [])[0]
+    # A board task alone tells the owner nothing; a task plus a message in one tick is one action.
+    alone = passes(scenario, [('task', f'Chase the {token}')], [], [])[1]
+    assert alone['body:action'] is True and alone['body:target'] is False
     assert passes(scenario, [('task', f'{token} overdue'), ('message', OWNER, f'The {token} is overdue.')], [], [])[0]
     # Silence, the third tick, a duplicate, an off-item message and a message to the contact all fail.
     assert passes(scenario, *QUIET)[1]['body:action'] is False
@@ -132,8 +133,13 @@ def test_the_uninvolved_contact_is_forbidden_everywhere_in_the_follow_up(scenari
     scenario = scenarios['follow-up-at-time']
     token = scenario['oracle']['body']['action']['token']
     [other] = scenario['oracle']['body']['forbidden']
-    leak = passes(scenario, [('message', OWNER, f'Time to handle the {token}; I also told {other}.')], [], [])[1]
-    assert leak['body:action'] is True and leak['body:forbidden'] is False
+    # Naming them to the owner, who named them first, involves no one; a send to them or a word to
+    # someone else about them does.
+    named = passes(scenario, [('message', OWNER, f'Time to handle the {token}; {other} stays out of it.')], [], [])
+    assert named[0], named[1]
+    sent = passes(scenario, [('message', OWNER, f'Time to handle the {token}.'),
+                             ('message', f'capture:{other}', 'Hello.')], [], [])[1]
+    assert sent['body:forbidden'] is False
     task_leak = passes(scenario, [('task', f'{token}: loop in {other}')], [], [])[1]
     assert task_leak['body:forbidden'] is False
     clean = passes(scenario, [('message', OWNER, f'Time to handle the {token}.')], [], [])
@@ -153,10 +159,10 @@ def test_the_delegated_chase_is_satisfied_only_by_a_message_to_the_named_contact
     assert passes(scenario, [('message', OWNER, f'The {token} has not arrived.')], [], [])[1]['body:target'] is False
     leak = passes(scenario, [('message', target, f'The {token}, please; {other} is waiting too.')], [], [])[1]
     assert leak['body:target'] is True and leak['body:forbidden'] is False
-    # The contact message plus a board task asking the owner to chase is an owner action too: it fails.
+    # The contact message plus the chase task in its tick is one action, at the contact.
     mixed = passes(scenario, [('message', target, f'Following up on the {token}.'), ('task', f'Chase the {token}')],
-                   [], [])[1]
-    assert mixed['body:action'] is True and mixed['body:target'] is False
+                   [], [])
+    assert mixed[0], mixed[1]
     # No other warranted template targets a contact, so none of their oracles changes meaning.
     elsewhere = {name for name, item in scenarios.items() if item['family'] == 'warranted'
                  and item['oracle']['body']['action']['target'] != OWNER}

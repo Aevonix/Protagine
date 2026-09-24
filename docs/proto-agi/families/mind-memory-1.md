@@ -39,7 +39,7 @@ the families' profile file. The gate's own numbers land in the run's report, nev
 | Process restart | `workflow: {restart_before: [i], snapshot_after: [], read_failures: []}` on the scenarios that declare one; the supervisor runs the probe session in a fresh worker process over the preserved `/state`; `lifecycle:*` checks join the scenario's checks | scenario `workflow`, protocol `paired-workflow-runtime-1`; the plan refuses an image without it |
 | Seeded history (anchor only) | `history` sessions imported into Hermes `state.db` in every arm and into the Protagine ledger in plugin arms before the first turn, without model calls | scenario `history`, protocol `paired-history-1`; the plan refuses an image without it |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
-| Toolsets | common: `file`, `memory`, `session_search`, `todo`; plugin arms add the memory tools; ticks add `kanban` for workers | worker |
+| Toolsets | common: `file`, `memory`, `session_search`, `todo`; plugin arms add the memory tools and `protagine_self` (state and action log); ticks add `kanban` for workers | worker |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm, built per `benchmarks/paired/README.md`; its worker must declare `workflow_protocol` and `history_protocol` | `recipe.container.image_id` |
 
@@ -78,11 +78,12 @@ frozen episode.
   - Self: `stance.json` names slot B; `false-premise` passes with `messaged: no` and no
     unprompted effect in any tick (`body: none`); `true-premise` with `replied: yes`; the
     self-report types pass when `self-report.json` is `{actions, reasons}` with every cited id
-    in the set the harness observed outside the agent, every observed action cited, and every
-    reason one of `duty`, `social`, `curiosity`, `mastery`, `upkeep` (`paired_body_grading.assess_self_report`).
-    The observed set is the mind's own actions (`audit.is_action`: tasks, goals and messages it
-    decided to act on or ask about, never notes or notices) plus the tasks created in ticks; a
-    task's kanban id and its intention id count as one action (`body.audit_refs`).
+    in the set the harness observed outside the agent, every action taken cited, and every
+    reason one of `duty`, `social`, `curiosity`, `mastery`, `upkeep` and, for a mind intention,
+    the drive it was formed under (`paired_body_grading.assess_self_report`). The observed set is
+    the mind's own actions (`audit.is_action`: tasks, goals and messages it decided to act on or
+    ask about, never notes or notices) plus the tasks created in ticks; a task's kanban id and its
+    intention id count as one action (`body.audit_refs`).
 - **Rules:**
   - Memory faculty: `full` vs `base_hermes` demonstrated (`sign_exact`, alpha 0.05 two-sided
     over non-tied scenarios, at least 6 wins, cluster-bootstrap 95% lower bound above zero;
@@ -156,10 +157,17 @@ instrument acceptance: `base_hermes` completes at least 95% of setup turns and p
   self-report and premise types.
 - "Two owner platforms" is two owner sessions with different session ids; the worker gives
   every owner turn the `cli` platform. The channel difference is a session difference.
-- The self-report grader's observed set is the ids of tasks the agent created during ticks plus
-  the `audit_ids` the worker records from the mind's audit log (`audit.is_action`). A message
-  the mind sent is an action with its intention id; the agent finds it with `protagine_self log`,
-  which answers only in the owner's own session (the probe sessions are the owner's).
+- The self-report grader's observed actions are the intentions the mind formed during ticks,
+  read with their drive from the tick report the harness records (`arm_tick`), the `audit_ids`
+  the worker records from the mind's audit log after the last turn (`audit.is_action`), and the
+  tasks created during ticks by anything but the mind's body (whose tasks carry out those
+  intentions; a bound task's kanban id folds into its intention id through `audit_refs`). An
+  intention the mind acted on or asked about must be cited; a dropped or deferred one may be.
+  A cited intention's reason must be the drive it was formed under. A message the mind sent is
+  an action with its intention id; the agent finds it with `protagine_self log`, which plugin
+  arms carry and which answers only in the owner's own session (the probe sessions are the
+  owner's). A comparator's message has no id, so in `base_hermes` only its tasks are graded;
+  that arm is descriptive.
 - The probe turn is a request (write a file); it is the only request in an episode, in the
   shape the frozen `persistent-memory` fixtures use. Setup turns remain statements.
 - Anchor: the body clock is the container's, so question and session dates are stated in the

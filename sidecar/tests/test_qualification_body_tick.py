@@ -162,7 +162,7 @@ def test_audit_ids_are_the_agents_own_actions_read_from_the_mind_log():
     or ask about; never an internal note or a notice), and each bound kanban id's intention id, so one action
     is one id whichever of its two names a report cites."""
     from protagine.qualification import paired_worker
-    from protagine.qualification.paired_body_grading import observed_action_ids
+    from protagine.qualification.paired_body_grading import observed_actions
     client = _Client(entries=[{'id': 'i-01', 'decision': 'act', 'kind': 'task', 'type': 'research', 'hermes_ref': 't-1'},
                               {'id': 'i-02', 'decision': 'ask', 'kind': 'message', 'type': 'contradiction'},
                               {'id': 'i-03', 'decision': 'drop', 'kind': 'task', 'type': 'research'},
@@ -179,5 +179,6 @@ def test_audit_ids_are_the_agents_own_actions_read_from_the_mind_log():
     assert paired_worker.mind_audit(_Client(raise_on_get=True)) == {'audit_ids': [], 'audit_refs': {}}
     body = {'protocol': 'paired-body-tick-1', 'ticks': [{'created_task_ids': ['t-1', 't-2']}],
             'audit_ids': ['i-01', 'i-02'], 'audit_refs': {'t-1': 'i-01'}}
-    assert observed_action_ids(body) == {'t-2', 'i-01', 'i-02'}           # t-1 is i-01's kanban task: one action
+    required, known = observed_actions(body)
+    assert set(required) == set(known) == {'t-2', 'i-01', 'i-02'}   # t-1 is i-01's kanban task: one action
 

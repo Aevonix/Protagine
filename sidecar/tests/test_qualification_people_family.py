@@ -282,6 +282,10 @@ def observe(item, fault=None):
                     send(action['target'], f"How is the {action['token']} going?{leak}")
                     if fault == 'wrong-recipient':
                         send('capture:' + body['forbidden'][0], f"How is the {action['token']} going?")
+                    if fault == 'report':
+                        # Not a fault: the owner hears about the check-in in the same tick (heartbeat shape).
+                        send('capture:owner', f"Checked in with {action['target'][len('capture:'):]} "
+                                              f"about the {action['token']}.")
                 for spec in body.get('sends', []):
                     for _ in range(spec.get('ticks', {}).get(str(number), 0)):
                         send(spec['target'], f"How is the {spec.get('token', 'work')} going?")
@@ -335,8 +339,11 @@ def test_rendered_oracles_pass_the_expected_outcome_and_fail_one_fault_per_scena
         elif item['scenario'] == 'canary-check-in':
             assert failed == {'body:sends:' + oracle['body']['action']['target']}
         elif item['scenario'] == 'cadence-due':
-            assert failed == {'body:target'}, 'a send to the uninvolved contact is a wrong recipient'
+            assert failed == {'body:target', 'body:forbidden'}, 'a send to the uninvolved contact is a wrong recipient'
         elif item['family'] == 'control' and item['scenario'] in NO_ACTION:
             assert failed == {'body:action'}
         else:
             assert failed == {'body:sends:' + oracle['body']['sends'][0]['target']}
+        if item['scenario'] in {'cadence-due', 'canary-check-in'}:
+            reported = paired_cases.assess(observe(item, 'report'), oracle)
+            assert all(value is True for value in reported.values()), (item['id'], reported)

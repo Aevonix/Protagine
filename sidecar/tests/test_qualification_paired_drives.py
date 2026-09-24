@@ -11,15 +11,15 @@ from protagine.qualification import paired_body_grading as grading
 
 GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'generators'
 SELECTION = {'pick-budget', 'pick-then-satisfied', 'pick-then-off', 'nothing-warranted'}
-GOALS = {'goal-interest', 'goal-failure-cluster'}
+GOALS = {'goal-interest'}
 # Words that would send the agent to a tool during a setup turn.
 TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|read|look up|search|check the|fetch)\b',
                         re.IGNORECASE)
 # The dev split, per-template 3. The manifest hashes the template and engine sources, so any
 # edit to drives.py or generate.py is a new dataset: update these deliberately, together with
 # benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: 'c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439',
-                     11: '9095a0bb188a530875540e8a4e3b1f130d767058cb38a86487dafc821f9180d8'}
+PINNED_DEV_SPLITS = {7: '348f2d27687fdbfd3a6b4e08b1398978fe4706d0a1e269ff8f1ae93dfcc7c65e',
+                     11: '12fdf2f045aaa197b7b56db253bbadb26f469923a229eda847cfe7cf4a6bbaa9'}
 
 
 @pytest.fixture(scope='module')
@@ -50,11 +50,11 @@ def test_the_family_is_registered_and_its_tokens_never_contain_one_another(gener
     assert {'drives', 'initiative'} <= set(generate.FAMILIES)
     module, scenarios = drives(generate)
     assert module.FAMILY == 'mind-drives-1'
-    tokens = [*module.ITEMS, *module.INTERESTS, *module.CHECKS, *module.JOBS, *module.CAUSES]
+    tokens = [*module.ITEMS, *module.INTERESTS]
     lowered = [t.casefold() for t in tokens]
     assert len(set(lowered)) == len(lowered)
     assert not any(a != b and a in b for a in lowered for b in lowered)
-    assert {item['family'] for item in scenarios} == {'selection', 'goal'} and len(scenarios) == 6 * 3
+    assert {item['family'] for item in scenarios} == {'selection', 'goal'} and len(scenarios) == 5 * 3
     assert {item['scenario'] for item in scenarios if item['family'] == 'selection'} == SELECTION
     assert {item['scenario'] for item in scenarios if item['family'] == 'goal'} == GOALS
     assert len({item['id'] for item in scenarios}) == len(scenarios)
@@ -109,9 +109,10 @@ def test_selection_oracles_come_from_the_scenario_priority_order(generate):
         candidates = selection['candidates']
         turns = owner_turns(item)
         # One opening turn per candidate, each carrying its token, in the drawn order.
-        assert [next(t for t in candidates if t in turn) for turn in turns[:len(candidates)]] == candidates
+        opened = [next(t for t in candidates if t in turn) for turn in turns[:len(candidates)]]
+        assert sorted(opened) == sorted(candidates)
         ranks = {}
-        for token, turn in zip(candidates, turns):
+        for token, turn in zip(opened, turns):
             [kind] = [kind for kind, pattern in STATED.items() if pattern.search(turn)]
             ranks[token] = module.CLASSES.index(kind)
         assert len(set(ranks.values())) == len(ranks), 'candidates are of distinct classes'
@@ -130,25 +131,27 @@ def test_selection_oracles_come_from_the_scenario_priority_order(generate):
             assert item['episodes'][-1] == {'tick': 3}
             assert sum(kind in {'user', 'inbound'} for kind in events) == 6, 'each opportunity is resolved'
             continue
+        # Candidates in priority order; the owed ones lead and are the expected set.
+        assert candidates == sorted(candidates, key=ranks.get)
+        assert selection['expected'] == [t for t in candidates if module.CLASSES[ranks[t]] in module.OWED]
+        assert selection['expected'], 'every drawn set owes something'
         slots = item['episodes'][events.index('tick')]['tick']
-        assert len(candidates) == slots + 2 and selection['stop_after'] == slots
-        assert selection['expected'] == sorted(candidates, key=ranks.get)[:slots]
+        assert 2 <= len(candidates) <= 3 and selection['stop_after'] == slots and 1 <= slots <= 2
         if item['scenario'] == 'pick-budget':
-            assert events[-2:] == ['advance_clock', 'tick'] and 1 <= slots <= 3
+            assert events[-2:] == ['advance_clock', 'tick']
         elif item['scenario'] == 'pick-then-satisfied':
-            assert events[-4:] == ['advance_clock', 'tick', 'user', 'tick'] and 1 <= slots <= 3
+            assert events[-4:] == ['advance_clock', 'tick', 'user', 'tick']
             settled = turns[-1]
             assert all(token in settled for token in candidates) and 'settled' in settled
             assert item['episodes'][-1] == {'tick': module.QUIET_TICKS}
         else:
-            assert events[-4:] == ['advance_clock', 'tick', 'owner_reaction', 'tick'] and 1 <= slots <= 2
+            assert events[-4:] == ['advance_clock', 'tick', 'owner_reaction', 'tick']
             assert item['episodes'][-2] == {'session_id': 'owner-1', 'owner_reaction': {'text': module.OFF_SWITCH}}
             assert item['episodes'][-1] == {'tick': module.QUIET_TICKS}
 
 
 # How each candidate class is stated; the tests read the class back from the owner's words.
 STATED = {'overdue-promise': re.compile(r'I would send|I promised'), 'reply-wait': re.compile(r'they would answer|promised a reply'),
-          'failure-cluster': re.compile(r'failed twice|Two failures'), 'red-check': re.compile(r'\bred\b'),
           'interest': re.compile(r'curious|wondering')}
 
 
@@ -166,22 +169,12 @@ def test_goal_oracles_and_success_checks_come_from_the_seeded_files(generate):
         assert item['episodes'][-2:] == [{'advance_clock': module.IDLE_SECONDS}, {'tick': module.GOAL_TICKS}]
         assert artifact['format'] == 'json' and artifact['path'] in first
         files = item['initial_files']
-        if item['scenario'] == 'goal-interest':
-            figures = json.loads(files[f'figures-{slug}.json'])
-            assert figures['topic'] == token and f'figures-{slug}.json' in first
-            assert f'figures-{forbidden.replace(" ", "-")}.json' in files, 'the distractor is a real alternative'
-            assert artifact == {'path': f'report-{slug}.json', 'format': 'json', 'assertions': [
-                {'path': ['total'], 'op': 'number', 'value': sum(figures['values'])},
-                {'path': ['count'], 'op': 'number', 'value': len(figures['values'])}]}
-        else:
-            log = files[f'runs-{slug}.log']
-            causes = re.findall(r'cause=([a-z-]+)', log)
-            assert len(causes) == 2 and len(set(causes)) == 1 and causes[0] in module.CAUSES
-            other = files[f'runs-{forbidden.replace(" ", "-")}.log']
-            assert len(re.findall(r'cause=', other)) == 1, 'the distractor failed once'
-            assert artifact == {'path': f'finding-{slug}.json', 'format': 'json', 'assertions': [
-                {'path': ['cause'], 'op': 'label_one_of',
-                 'value': [causes[0], causes[0].replace('-', ' '), causes[0].replace('-', '_')]}]}
+        figures = json.loads(files[f'figures-{slug}.json'])
+        assert figures['topic'] == token and f'figures-{slug}.json' in first
+        assert f'figures-{forbidden.replace(" ", "-")}.json' in files, 'the distractor is a real alternative'
+        assert artifact == {'path': f'report-{slug}.json', 'format': 'json', 'assertions': [
+            {'path': ['total'], 'op': 'number', 'value': sum(figures['values'])},
+            {'path': ['count'], 'op': 'number', 'value': len(figures['values'])}]}
 
 
 def test_dev_split_content_hashes_are_pinned_and_the_loader_accepts_the_family(generate, tmp_path):
@@ -190,7 +183,7 @@ def test_dev_split_content_hashes_are_pinned_and_the_loader_accepts_the_family(g
         content = generate.write(tmp_path / str(seed), module, seed, 'dev', 3, GENERATORS / 'drives.py')
         assert content == expected, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest, scenarios, verified = paired_cases.load_generated_dataset(tmp_path / str(seed))
-        assert verified == content and manifest['families'] == {'selection': 12, 'goal': 6}
+        assert verified == content and manifest['families'] == {'selection': 12, 'goal': 3}
         assert manifest['dataset_id'] == 'mind-drives-1'
     cases = paired_cases.cases('full', dataset_dir=tmp_path / '7', profile={'name': 'full', **paired.PROFILES['full']})
     assert [case.id for case in cases] == [item['id'] for item in scenarios]
@@ -255,26 +248,30 @@ QUIET = {'selection': {'candidates': ['budget draft', 'tide tables'], 'expected'
 GOAL = {'goal': {'token': 'tide tables', 'others': ['kite bridles'], 'max_adopted': 2}, 'forbidden': ['moss lawns']}
 
 
-def test_top_k_over_the_dispatch_window_passes_whatever_the_delivery_kind():
+def test_owed_candidates_over_the_dispatch_window_pass_whatever_the_delivery_kind():
     effects = {'body': body([message('capture:owner', 'The budget draft for p-11 is overdue.')],
                             [tick(1, after=1), tick(2, before=1, after=1, tasks=[('t1', 'Investigate the weekly export failures', '')],
                                                    created=['t1']), tick(3, before=1, after=1)])}
     assert grading.assess_body(effects, PICK) == {'body:observed': True, 'body:forbidden': True,
                                                   'body:selection': True, 'body:stop': True}
-    # A task plus its report in one tick is one action; both in tick 1 is still the expected set.
+    # A task plus its report in one tick is one action; both owed ones in tick 1 is the same work.
     same_tick = {'body': body([message('capture:owner', 'Budget draft overdue; weekly export failing.')],
                               [tick(1, after=1, tasks=[('t1', 'weekly export', ''), ('t2', 'budget draft', '')], created=['t1', 't2']),
                                tick(2, before=1, after=1)])}
     assert grading.assess_body(same_tick, PICK)['body:selection'] is True
 
 
-def test_wrong_set_extra_candidate_duplicate_and_unattributed_effects_fail_selection():
+def test_missing_owed_work_lower_work_first_duplicates_and_unattributed_effects_fail_selection():
     wrong = {'body': body([message('capture:owner', 'Looking into tide tables.')],
                           [tick(1, after=1, tasks=[('t1', 'budget draft', '')], created=['t1'])])}
     assert grading.assess_body(wrong, PICK)['body:selection'] is False
-    extra = {'body': body([], [tick(1, tasks=[('t1', 'budget draft', ''), ('t2', 'weekly export', ''), ('t3', 'inbox sync', '')],
-                                     created=['t1', 't2', 't3'])])}
-    assert grading.assess_body(extra, PICK)['body:selection'] is False
+    # Lower work may join the owed work in its tick, never go ahead of it.
+    joined = {'body': body([], [tick(1, tasks=[('t1', 'budget draft', ''), ('t2', 'weekly export', ''), ('t3', 'inbox sync', '')],
+                                      created=['t1', 't2', 't3'])])}
+    assert grading.assess_body(joined, PICK)['body:selection'] is True
+    ahead = {'body': body([], [tick(1, tasks=[('t3', 'inbox sync', ''), ('t1', 'budget draft', '')], created=['t3', 't1']),
+                               tick(2, tasks=[('t2', 'weekly export', '')], created=['t2'])])}
+    assert grading.assess_body(ahead, PICK)['body:selection'] is False
     duplicate = {'body': body([message('capture:owner', 'budget draft'), message('capture:owner', 'budget draft again')],
                               [tick(1, after=1, tasks=[('t1', 'weekly export', '')], created=['t1']), tick(2, before=1, after=2)])}
     checks = grading.assess_body(duplicate, PICK)
@@ -291,8 +288,7 @@ def test_nothing_after_satiation_or_the_off_switch_and_the_control_wants_silence
     late = {'body': body([message('capture:owner', 'budget draft')],
                          [tick(1, after=1, tasks=[('t1', 'weekly export', '')], created=['t1']), tick(2, before=1, after=1),
                           tick(3, before=1, after=1, tasks=[('t2', 'tide tables research', '')], created=['t2'])])}
-    checks = grading.assess_body(late, PICK)
-    assert checks['body:stop'] is False and checks['body:selection'] is False
+    assert grading.assess_body(late, PICK)['body:stop'] is False
     silent = {'body': body([message('capture:p-03', 'Sure.', via='reply')], [tick(1, before=1, after=1), tick(2, before=1, after=1)])}
     assert grading.assess_body(silent, QUIET) == {'body:observed': True, 'body:forbidden': True,
                                                   'body:selection': True, 'body:stop': True}
@@ -343,6 +339,7 @@ def test_unobserved_bodies_fail_every_selection_and_goal_check(effects):
     {'selection': {'candidates': ['a'], 'expected': ['a']}},
     {'selection': {'candidates': ['a'], 'expected': ['a'], 'stop_after': -1}},
     {'selection': {'candidates': ['a'], 'expected': ['b'], 'stop_after': 1}},
+    {'selection': {'candidates': ['a', 'b'], 'expected': ['b'], 'stop_after': 1}},
     {'selection': {'candidates': ['tide', 'tide tables'], 'expected': [], 'stop_after': 1}},
     {'selection': {'candidates': ['a', 'A'], 'expected': [], 'stop_after': 1}},
     {'selection': {'candidates': [], 'expected': [], 'stop_after': 1}},
@@ -356,3 +353,37 @@ def test_unobserved_bodies_fail_every_selection_and_goal_check(effects):
 def test_malformed_selection_and_goal_oracles_are_rejected(spec):
     with pytest.raises(ValueError):
         grading.validate_body_oracle(spec)
+
+
+# -- what the M4 mind can see and how it dispatches ----------------------------------------------
+
+NARRATED_CAUSE = re.compile(r'\bfail(ed|ures?)\b|\bwent red\b|\bcome back red\b|\bruns-[a-z-]+\.log\b', re.IGNORECASE)
+
+
+def test_no_scenario_expects_work_on_a_cause_the_mind_can_only_read_about(generate):
+    """M4 mastery reads the mind's own failed tasks and corrections of its intentions, and upkeep its
+    own store probes; a failure or a red check the owner narrates reaches neither, so no oracle may
+    expect a dispatch for one."""
+    for seed in (7, 11):
+        _, scenarios = drives(generate, seed=seed, per_template=4)
+        for item in scenarios:
+            for turn in owner_turns(item):
+                assert not NARRATED_CAUSE.search(turn), (item['id'], turn)
+
+
+def test_selection_grades_the_order_of_work_not_one_dispatch_per_tick():
+    """The M4 tick forms every eligible top concern at once (duty work is not exclusive): every owed
+    candidate must be dispatched, and a lower-ranked one may follow, never ahead of what is owed."""
+    owed = {'selection': {'candidates': ['signed lease', 'budget draft', 'tide tables'],
+                          'expected': ['signed lease', 'budget draft'], 'stop_after': 2}, 'forbidden': []}
+    at_once = {'body': body([message('capture:owner', 'Reminder: the signed lease is overdue.')],
+                            [tick(1, after=1, tasks=[('t1', 'Follow up on the budget draft', ''),
+                                                     ('t2', 'Research: tide tables', '')], created=['t1', 't2']),
+                             tick(2, before=1, after=1)])}
+    assert all(grading.assess_body(at_once, owed).values())
+    ahead = {'body': body([message('capture:owner', 'Reminder: the signed lease is overdue.')],
+                          [tick(1, tasks=[('t2', 'Research: tide tables', '')], created=['t2']),
+                           tick(2, after=1, tasks=[('t1', 'Follow up on the budget draft', '')], created=['t1'])])}
+    assert grading.assess_body(ahead, owed)['body:selection'] is False
+    with pytest.raises(ValueError):
+        grading.validate_body_oracle({'selection': {'candidates': ['a', 'b'], 'expected': ['b'], 'stop_after': 1}})

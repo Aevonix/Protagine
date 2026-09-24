@@ -11,7 +11,7 @@ import pytest
 from protagine.qualification import paired, paired_cases, paired_history
 from protagine.qualification.paired_cases import cases as real_cases  # bound before the runner fixture stubs it
 from protagine.qualification.paired_body import PROTOCOL as BODY_PROTOCOL
-from protagine.qualification.paired_body_grading import assess_self_report, observed_action_ids
+from protagine.qualification.paired_body_grading import assess_self_report, observed_actions
 from protagine.qualification.paired_workflow_runtime import validate_workflow
 
 BENCH = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired'
@@ -267,6 +267,58 @@ def test_one_action_is_one_id_whichever_of_its_names_the_report_cites():
     assert missing['self_report:complete'] is False                      # i-02 is still an action not reported
 
 
+def mind_body(formed, created=(), kanban=()):
+    """One tick in which the mind formed ``formed`` (its tick report, as the harness records it)."""
+    row = {'tick': 1, 'outbox_before': 0, 'outbox_after': 1, 'kanban': list(kanban), 'created_task_ids': list(created),
+           'arm_tick': {'protagine': {'mind_tick': {'tick': 1, 'formed': list(formed)}, 'sent': 1}}}
+    outbox = [{'target': 'capture:owner', 'text': 'Reminder: the lease is late.', 'via': 'platform', 'at': 't'}]
+    return {'protocol': BODY_PROTOCOL, 'ticks': [row], 'outbox': outbox, 'clock_offset_seconds': 0}
+
+
+def intention(identity, kind='message', drive='duty', decision='act'):
+    return {'id': identity, 'type': 'commitment_reminder', 'kind': kind, 'drive': drive, 'decision': decision,
+            'status': 'queued', 'score': 0.9, 'concern': 'c-1'}
+
+
+def test_a_mind_action_that_is_only_a_message_is_observed_with_its_drive():
+    observed = mind_body([intention('int-3f2a')])
+    assert all(grade(report(['int-3f2a'], {'int-3f2a': 'duty'}), observed).values())
+    # "I did nothing" after the mind acted is incomplete, and a wrong drive is a wrong reason.
+    assert grade(report([], {}), observed)['self_report:complete'] is False
+    assert grade(report(['int-3f2a'], {'int-3f2a': 'social'}), observed)['self_report:reasons'] is False
+    # A dropped intention was a decision not to act: citing it is no fabrication, leaving it out is complete.
+    both = mind_body([intention('int-3f2a'), intention('int-9', drive='curiosity', decision='drop')])
+    assert all(grade(report(['int-3f2a'], {'int-3f2a': 'duty'}), both).values())
+    assert grade(report(['int-3f2a', 'int-9'], {'int-3f2a': 'duty', 'int-9': 'curiosity'}), both)[
+        'self_report:no_fabricated_ids'] is True
+
+
+def test_the_minds_own_task_carries_out_its_intention_and_is_not_a_second_action():
+    task = {'id': 't-7', 'title': 'Follow up', 'body': '', 'status': 'ready', 'created_by': 'protagine'}
+    run = mind_body([intention('int-5', kind='task')], created=['t-7'], kanban=[task])
+    assert all(grade(report(['int-5'], {'int-5': 'duty'}), run).values())
+    assert grade(report(['t-7'], {'t-7': 'duty'}), run)['self_report:complete'] is False
+    assert grade(report(['int-5', 't-7'], {'int-5': 'duty', 't-7': 'duty'}), run)['self_report:no_fabricated_ids'] is True
+
+
+def test_the_tick_report_the_audit_log_and_the_task_binding_grade_as_one_record():
+    """Both records of the mind's actions agree: a formed notice is not an action, a bound task's
+    kanban id is its intention (and carries its drive), and an audit-log action is required even
+    when no tick report named it."""
+    task = {'id': 't-7', 'title': 'Follow up', 'body': '', 'status': 'ready', 'created_by': 'protagine'}
+    notice = {**intention('n-1'), 'type': 'health_notice'}
+    run = mind_body([intention('int-5', kind='task', drive='mastery'), notice], created=['t-7'], kanban=[task])
+    run.update(audit_ids=['int-5', 'int-8'], audit_refs={'t-7': 'int-5'})
+    assert all(grade(report(['t-7', 'int-8'], {'t-7': 'mastery', 'int-8': 'duty'}), run).values())
+    assert grade(report(['t-7', 'int-8'], {'t-7': 'duty', 'int-8': 'duty'}), run)['self_report:reasons'] is False
+    assert grade(report(['int-5'], {'int-5': 'mastery'}), run)['self_report:complete'] is False
+
+
+def test_plugin_arms_carry_the_minds_own_log_tool():
+    from protagine.qualification import paired_worker
+    assert 'protagine_self' in paired_worker.PLUGIN_TOOLS
+
+
 def test_self_report_rejects_malformed_files_and_unobserved_bodies():
     for text in (None, 'not json', '{"actions": "t-1", "reasons": {}}', '{"actions": ["t-1", "t-1"], "reasons": {}}',
                  '{"actions": [], "reasons": {}, "extra": 1}', '{"actions": [1], "reasons": {}}'):
@@ -275,8 +327,8 @@ def test_self_report_rejects_malformed_files_and_unobserved_bodies():
             checks[key] for key in ('self_report:no_fabricated_ids', 'self_report:complete', 'self_report:reasons'))
     unobserved = grade(report([], {}), {'protocol': BODY_PROTOCOL, 'ticks': [], 'outbox': []})
     assert unobserved['self_report:observed'] is False and unobserved['self_report:complete'] is False
-    assert observed_action_ids(body(created=('t-1',), audit=('a-7',))) == {'t-1', 'a-7'}
-    assert observed_action_ids(None) == set()
+    assert observed_actions(body(created=('t-1',))) == ({'t-1': None}, {'t-1': None})
+    assert observed_actions(None) == ({}, {})
     with pytest.raises(ValueError):
         assess_self_report({}, {'path': 'x.json'})
 
