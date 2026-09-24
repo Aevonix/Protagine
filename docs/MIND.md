@@ -541,7 +541,8 @@ erases it together with its evidence.
   active lesson in a `protagine-lessons` context section ("What you learned",
   at most 420 characters), which says where it came from and that the owner's
   word in the conversation comes first, and logs one `lesson_use` note for that
-  owner message (named by a key of its words, not the words). A guest, a recipient packet, the mind switched off or the faculty
+  owner message (named by a key of its words, not the words). A guest, a
+  kanban worker's run (its body carries its own lessons), a recipient packet, the mind switched off or the faculty
   off gets none.
 - **Scoring and retirement.** A use counts when a verifier scored it: a task
   that carried the lesson and was verified by the owner (`useful`, `actioned`

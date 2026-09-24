@@ -344,11 +344,12 @@ def served(source_app, tmp_path, monkeypatch):  # noqa: F811
         fixture.store.close()
 
 
-async def sections(app, contact, query, session=None):
+async def sections(app, contact, query, session=None, metadata=None):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/v1/host/context/assemble", headers=AUTH, json={
             "identity": {"host_id": "fixture"},
-            "context": {"contact_id": contact, "session_id": session or f"later-{contact}"},
+            "context": {"contact_id": contact, "session_id": session or f"later-{contact}",
+                        **({"metadata": metadata} if metadata else {})},
             "incoming_message": {"role": "user", "content": query}})
     assert response.status_code == 200, response.text
     return {section["id"]: section for section in response.json()["sections"]}
@@ -376,6 +377,20 @@ async def test_the_owner_turn_gets_one_relevant_active_lesson_and_a_guest_none(s
     fx.mind.on()
     fx.mind.lessons.enabled = False
     assert "protagine-lessons" not in await sections(app, OWNER, query, session="day-05")
+
+
+async def test_a_kanban_workers_prefetch_gets_no_turn_lesson_and_logs_no_use(served):
+    """A worker's prefetch is the owner's lane with the task body as the message and a Hermes session no owner
+    verdict reaches. Its body already carries its lessons (the intention's ``lesson_ids``), so the turn section
+    would repeat one and log a use that can never be scored."""
+    app, fx = served
+    lesson = admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
+    body = f"Research order codes for order 6633.\n\nLessons from verified results:\n{lesson.line()}"
+    worker = await sections(app, OWNER, body, session="worker-run-1", metadata={"kanban_task": "t_abc"})
+    assert "protagine-lessons" not in worker and worker          # the rest of its context is unchanged
+    assert "protagine-lessons" in await sections(app, OWNER, body, session="day-04")
+    notes = [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
+    assert [row.source_id for row in notes] == ["day-04"]
 
 
 async def test_a_recipient_packet_never_carries_a_lesson(served):

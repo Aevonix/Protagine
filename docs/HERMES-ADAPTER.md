@@ -245,7 +245,9 @@ guard treats the tool as read-only.
 
 `prefetch` assembles context for the turn's participant. A guest request sets
 `audience: viewer`, and the sidecar returns a guest only that contact's scoped
-sections, never an owner-only one. The scoping fails closed: anyone the
+sections, never an owner-only one. A kanban worker's prefetch names its task
+(`context.metadata.kanban_task`): its task body already carries its lessons, so
+the sidecar adds no turn lesson and logs no lesson use for it. The scoping fails closed: anyone the
 sidecar cannot show to be the owner, a caller without the key included, gets
 the contact-scoped set. Recall includes this session's own earlier turns:
 Hermes compacts sessions in place, rebuilds agents after an idle eviction or a

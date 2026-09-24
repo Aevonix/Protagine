@@ -335,14 +335,16 @@ def _mind_stances(query_text: str, *, viewer_contact_id: str, viewer_is_owner: b
         return ""
 
 
-def _mind_lessons(query_text: str, *, viewer_is_owner: bool, owner_turn: bool, session_id: str) -> str:
+def _mind_lessons(query_text: str, *, viewer_is_owner: bool, owner_turn: bool, session_id: str,
+                  task_run: bool = False) -> str:
     """The one lesson relevant to the owner's own turn (architecture 4.8), or nothing: never for a guest,
-    a recipient packet (session ``mind:<contact>``), with the mind off or with ``faculties.lessons`` off.
-    Rendering it logs the lesson's use in this session, which the owner's verdict later scores."""
+    a recipient packet (session ``mind:<contact>``), a kanban worker's run (``task_run``: its task body
+    carries its own lessons), with the mind off or with ``faculties.lessons`` off. Rendering it logs the
+    lesson's use for this owner message, which the owner's next message later scores."""
     mind = _mind()
     lessons = getattr(mind, "lessons", None) if mind is not None else None
     if (lessons is None or not mind.enabled or not lessons.enabled or not viewer_is_owner or not owner_turn
-            or not session_id or str(session_id).startswith("mind:")):
+            or task_run or not session_id or str(session_id).startswith("mind:")):
         return ""
     try:
         text, _ = lessons.for_turn(query_text, session_id=str(session_id))
@@ -1908,7 +1910,8 @@ async def _assemble_sections(
                                        body=stance_text, priority=87))
     # --- What the mind learned (lessons): the owner's own turn only, at most one (architecture 4.8) ---
     lesson_text = _mind_lessons(query_text, viewer_is_owner=_viewer_is_owner, owner_turn=_owner_turn,
-                                session_id=body.context.session_id)
+                                session_id=body.context.session_id,
+                                task_run=bool((body.context.metadata or {}).get("kanban_task")))
     if lesson_text:
         sections.append(ContextSection(id='protagine-lessons', title='What you learned',
                                        body=lesson_text, priority=86))
