@@ -81,11 +81,11 @@ def test_source_tree_has_no_retired_references():
 
 
 def test_no_client_calls_a_retired_route():
-    """Plugins, scripts, benchmarks and the live-server e2e suites call only served routes."""
+    """Plugins, scripts, benchmarks, the MCP server and the live-server e2e suites call only served routes."""
     repo = ROOT.parent
     route = re.compile(r"/v1/host/(world|world-model|beliefs|identity|chain)\b|/v1/host/learning/(weights|engagement)")
     roots = [repo / "plugins", repo / "scripts", repo / "benchmarks", repo / "tests",
-             ROOT / "scripts", ROOT / "tests" / "e2e"]
+             ROOT / "scripts", ROOT / "tests" / "e2e", PACKAGE / "mcp"]
     hits = []
     for base in roots:
         for path in sorted(base.rglob("*.py")) if base.is_dir() else ():
