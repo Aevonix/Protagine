@@ -19,9 +19,12 @@ Usage (async)::
 
 Migration filenames must match ``NNN_description.sql`` (e.g.
 ``001_initial_schema.sql``).  The numeric prefix determines order.
-Each file is executed as a single ``executescript`` call inside its own
-transaction -- if it fails, the version is NOT recorded and startup
-aborts with a clear error.
+Each file is executed as a single ``executescript`` call -- if it fails,
+the open transaction is rolled back, the version is NOT recorded and
+startup aborts with a clear error. ``executescript`` commits statement by
+statement, so a file that must apply all or nothing wraps itself in
+``BEGIN; ... COMMIT;``. A file that drops a column needs SQLite >= 3.35;
+both runners check that before applying anything.
 """
 
 from __future__ import annotations
@@ -46,6 +49,21 @@ CREATE TABLE IF NOT EXISTS schema_version (
 """
 
 _MIGRATION_RE = re.compile(r"^(\d+)_.+\.sql$")
+
+
+DROP_COLUMN_SQLITE = (3, 35)
+_DROP_COLUMN_RE = re.compile(r"\bDROP\s+COLUMN\b", re.IGNORECASE)
+
+
+def _check_sqlite(pending: list[tuple[str, Path]]) -> None:
+    """Refuse, before any file runs, a migration SQLite cannot apply (ALTER TABLE DROP COLUMN)."""
+    if sqlite3.sqlite_version_info >= DROP_COLUMN_SQLITE:
+        return
+    for version, path in pending:
+        if _DROP_COLUMN_RE.search(path.read_text()):
+            raise RuntimeError(
+                f"migration {version} ({path.name}) needs SQLite >= 3.35 (ALTER TABLE DROP COLUMN); "
+                f"this Python links SQLite {sqlite3.sqlite_version}")
 
 
 def _discover(migrations_dir: Path) -> list[tuple[str, Path]]:
@@ -81,12 +99,11 @@ def run_migrations_sync(
     cur = conn.execute(f"SELECT version FROM {table}")  # noqa: S608
     applied = {row[0] for row in cur.fetchall()}
 
-    available = _discover(migrations_dir)
+    pending = [(version, path) for version, path in _discover(migrations_dir) if version not in applied]
+    _check_sqlite(pending)
     newly_applied: list[str] = []
 
-    for version, path in available:
-        if version in applied:
-            continue
+    for version, path in pending:
         sql = path.read_text()
         logger.info("Applying migration %s (%s)", version, path.name)
         try:
@@ -98,6 +115,7 @@ def run_migrations_sync(
             conn.commit()
         except Exception:
             logger.error("Migration %s failed (%s)", version, path.name)
+            conn.rollback()
             raise
         newly_applied.append(version)
 
@@ -131,12 +149,11 @@ async def run_migrations(
         rows = await cur.fetchall()
     applied = {row[0] for row in rows}
 
-    available = _discover(migrations_dir)
+    pending = [(version, path) for version, path in _discover(migrations_dir) if version not in applied]
+    _check_sqlite(pending)
     newly_applied: list[str] = []
 
-    for version, path in available:
-        if version in applied:
-            continue
+    for version, path in pending:
         sql = path.read_text()
         logger.info("Applying migration %s (%s)", version, path.name)
         try:
@@ -148,6 +165,7 @@ async def run_migrations(
             await db.commit()
         except Exception:
             logger.error("Migration %s failed (%s)", version, path.name)
+            await db.rollback()
             raise
         newly_applied.append(version)
 

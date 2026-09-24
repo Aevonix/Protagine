@@ -64,6 +64,78 @@ async def test_migration_006_backfills_may_contact_and_drops_the_flag(tmp_path):
         await store.close()
 
 
+def _columns(path: Path) -> set:
+    conn = sqlite3.connect(path)
+    try:
+        return {row[1] for row in conn.execute("PRAGMA table_info(contacts)")}
+    finally:
+        conn.close()
+
+
+def _versions(path: Path) -> set:
+    conn = sqlite3.connect(path)
+    try:
+        return {row[0] for row in conn.execute("SELECT version FROM schema_version")}
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_migration_006_that_fails_part_way_leaves_the_store_at_005_and_a_rerun_completes(tmp_path):
+    """Audit M13: ``executescript`` commits statement by statement, so a failure after the first
+    ALTER left ``may_contact`` behind with no version row, and every later start failed on
+    ``duplicate column name``. 006 is one transaction."""
+    path = tmp_path / "legacy.db"
+    _pre_006(path, tmp_path)
+    broken = tmp_path / "broken-migrations"
+    broken.mkdir()
+    sql = (store_mod._MIGRATIONS_DIR / "006_may_contact.sql").read_text()
+    marker = "ALTER TABLE contacts ADD COLUMN cadence_minutes"
+    assert marker in sql
+    (broken / "006_may_contact.sql").write_text(sql.replace(marker, "SELECT * FROM no_such_table;\n" + marker, 1))
+    conn = sqlite3.connect(path)
+    with pytest.raises(sqlite3.OperationalError):
+        run_migrations_sync(conn, broken)
+    conn.close()
+    assert "may_contact" not in _columns(path) and "interaction_allowed" in _columns(path)
+    assert "006" not in _versions(path)
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(path)))
+    await store.connect()
+    try:
+        assert (await store.get("cid-never-1")).may_contact == "never"
+    finally:
+        await store.close()
+    assert "006" in _versions(path) and "interaction_allowed" not in _columns(path)
+
+
+@pytest.mark.asyncio
+async def test_both_runners_refuse_a_drop_column_migration_on_an_old_sqlite_before_touching_anything(
+        tmp_path, monkeypatch):
+    """Audit M13: ``protagine upgrade`` migrates through the sync runner and never calls the store's
+    ``connect``, so the SQLite >= 3.35 check lives in both runners, ahead of any DROP COLUMN file."""
+    import aiosqlite
+    from protagine import migrations
+    for name in ("sync", "async"):
+        (tmp_path / name).mkdir()
+        _pre_006(tmp_path / f"{name}.db", tmp_path / name)
+    monkeypatch.setattr(migrations.sqlite3, "sqlite_version_info", (3, 34, 1))
+    conn = sqlite3.connect(tmp_path / "sync.db")
+    with pytest.raises(RuntimeError, match="3.35"):
+        migrations.run_migrations_sync(conn, store_mod._MIGRATIONS_DIR)
+    conn.close()
+    db = await aiosqlite.connect(tmp_path / "async.db")
+    with pytest.raises(RuntimeError, match="3.35"):
+        await migrations.run_migrations(db, store_mod._MIGRATIONS_DIR)
+    await db.close()
+    for name in ("sync.db", "async.db"):
+        assert "may_contact" not in _columns(tmp_path / name) and "006" not in _versions(tmp_path / name)
+    # A directory with no DROP COLUMN migrates on the same old SQLite.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "001_t.sql").write_text("CREATE TABLE t (x INTEGER);")
+    assert migrations.run_migrations_sync(sqlite3.connect(tmp_path / "plain.db"), plain) == ["001"]
+
+
 @pytest.mark.asyncio
 async def test_tier_implies_no_permission_and_the_default_is_ask(store):
     for tier in ("inner_circle", "trusted", "regular", "unknown", "peripheral", "silenced"):

@@ -308,10 +308,6 @@ class SQLiteContactStore(ContactStore):
         self.reattribute = list(reattribute)
 
     async def connect(self) -> None:
-        if sqlite3.sqlite_version_info < (3, 35):
-            raise RuntimeError(
-                f"the contact store needs SQLite >= 3.35 (ALTER TABLE DROP COLUMN); this Python links "
-                f"{sqlite3.sqlite_version}")
         path = self._config.sqlite_path
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
