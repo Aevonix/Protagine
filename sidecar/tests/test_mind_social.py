@@ -46,6 +46,7 @@ class FakeContacts:
     def __init__(self, records):
         self.records = {record["contact_id"]: dict(record) for record in records}
         self.digests, self.links, self.proposals, self.interactions, self.cadences = {}, [], [], [], []
+        self.audit = []
 
     def _obj(self, record):
         return SimpleNamespace(**record, to_dict=lambda record=record: dict(record))
@@ -94,6 +95,9 @@ class FakeContacts:
 
     async def list(self, **_):
         return [self._obj(record) for record in self.records.values()]
+
+    async def audit_since(self, actions, since):
+        return [row for row in self.audit if row["action"] in actions and row["created_at"] >= since]
 
     def talk(self, contact_id, at):
         """A conversation with the contact happened at ``at`` (what turns/sync records)."""
@@ -555,3 +559,16 @@ async def test_expired_check_in_asks_do_not_hold_another_contacts_check_in(make)
     assert [(item["type"], item["decision"]) for item in summary["formed"] if item.get("recipient", CONTACT) == CONTACT
             and fx.store.get(item["id"]).entity_id == CONTACT] == [("check_in", "act")]
     assert fx.feedback.multiplier(f"reach_out:{askers[0]['contact_id']}") == 1.0
+
+
+async def test_the_owners_daily_digest_lists_the_opt_outs_since_the_last_one(make):
+    """Architecture 7.4: an opt-out lowers the contact to never and the owner hears of it in the
+    next digest, with the contact's own words (audit M14)."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    fx.mind.digest_hour = 0
+    fx.contacts.audit.append({"contact_id": CONTACT, "display_name": "Sam", "action": "opt_out",
+                              "detail": {"reason": "stop the check-ins", "from": "auto", "to": "never"},
+                              "created_at": (fx.now - timedelta(hours=1)).isoformat()})
+    summary = await fx.tick()
+    digest = fx.store.get(summary["digest"])
+    assert "Opted out (1)" in digest.context["text"] and "Sam: stop the check-ins" in digest.context["text"]

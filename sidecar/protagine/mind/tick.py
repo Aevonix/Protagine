@@ -408,7 +408,7 @@ class Mind:
             summary["goals"] = self._tend_goals(now)
             summary["formed"], summary["below_threshold"] = await self._act(now)
             summary["model_calls"] = self.deliberation.calls_this_tick + self.composer.calls_this_tick
-            summary["digest"] = self._digest(now)
+            summary["digest"] = await self._digest(now)
             notice = self.outbox.notify_asks(self.store.intentions(status=["asked"], limit=200))
             summary["ask_notice"] = notice.id if notice is not None else None
             return summary
@@ -1519,7 +1519,21 @@ class Mind:
 
     # -- digest ----------------------------------------------------------------------------
 
-    def _digest(self, now: datetime) -> Optional[str]:
+    async def _opt_outs_since(self, since: datetime) -> List[str]:
+        """``<name>: <their words>`` for every opt-out since ``since`` (architecture 7.4): an opt-out
+        only lowers, and the owner hears of it in the next digest."""
+        reader = getattr(self.contacts, "audit_since", None)
+        if not callable(reader):
+            return []
+        try:
+            rows = await reader(["opt_out"], since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        except Exception as error:
+            logger.warning("opt-outs unavailable for the digest (%s)", type(error).__name__)
+            return []
+        return [f"{row.get('display_name') or row.get('contact_id')}: {(row.get('detail') or {}).get('reason') or 'opted out'}"
+                for row in rows or []]
+
+    async def _digest(self, now: datetime) -> Optional[str]:
         local = now.astimezone(self.tz)
         local_date = local.date().isoformat()
         if local.hour < self.digest_hour or self._daily.get("digest") == local_date or self.in_quiet_hours(now):
@@ -1531,7 +1545,8 @@ class Mind:
         since = last or (now - timedelta(days=1))
         breakers = [self.authority.breaker_state(cls, now) for cls in CLASSES if cls != "floor"]
         text = self.outbox.build_digest(since=since, level=self.level, breaker_states=breakers,
-                                        goals=goal_lines([self.goals.render(g) for g in self.goals.open()]))
+                                        goals=goal_lines([self.goals.render(g) for g in self.goals.open()]),
+                                        opt_outs=await self._opt_outs_since(since))
         self._daily["digest"] = local_date
         if text.endswith("Nothing to report."):
             return None

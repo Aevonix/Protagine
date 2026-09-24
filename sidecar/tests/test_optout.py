@@ -35,6 +35,10 @@ NEAR_MISSES = [
     "I would rather you message me than call",
     "leave me a note on the door",
     "stop the timer when the pasta is done",
+    # A request about how or when to write is not an opt-out (audit M14).
+    "don't text me the file, email it",
+    "do not message me before 9",
+    "please don't dm me the password, call instead",
 ]
 
 
@@ -89,3 +93,17 @@ async def test_opt_out_never_raises_permission(store):
     for text in FAMILY + ["please do message me", "you may contact me any time"]:
         assert await apply_opt_out(store, contact.contact_id, text, source_ref="turn:x", owner_id=None) is None
         assert (await store.get(contact.contact_id)).may_contact == "never"
+
+
+@pytest.mark.asyncio
+async def test_opt_outs_since_a_time_are_listed_for_the_owners_digest(store):
+    """Architecture 7.4: an opt-out is recorded and listed in the digest (audit M14)."""
+    contact = await store.create(display_name="Casey", may_contact="auto")
+    other = await store.create(display_name="Robin", may_contact="ask")
+    await store.set_may_contact(other.contact_id, "never", by="owner")
+    before = "2000-01-01T00:00:00Z"
+    await apply_opt_out(store, contact.contact_id, "STOP", source_ref="turn:9", owner_id=None)
+    rows = await store.audit_since(["opt_out"], before)
+    assert [(row["contact_id"], row["display_name"], row["detail"]["reason"]) for row in rows] == [
+        (contact.contact_id, "Casey", "STOP")]
+    assert await store.audit_since(["opt_out"], "2999-01-01T00:00:00Z") == []

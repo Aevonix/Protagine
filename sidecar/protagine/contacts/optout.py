@@ -16,7 +16,10 @@ _VERBS = r"(?:message|messaging|text|texting|contact|contacting|write to|writing
 OPT_OUT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*stop[.!]*\s*$", re.IGNORECASE),                       # a bare STOP is the whole message
     re.compile(r"\bunsubscribe\b", re.IGNORECASE),
-    re.compile(rf"\b(?:don't|do not|please don't|please do not|stop) {_VERBS} me\b", re.IGNORECASE),
+    # Anchored at the end of the clause: "don't text me the file, email it" and "do not message me
+    # before 9" say how or when to write, not that the person wants no messages at all.
+    re.compile(rf"\b(?:don't|do not|please don't|please do not|stop) {_VERBS} me"
+               r"(?:\s+(?:again|anymore|any more|ever again))?(?=\s*(?:[.!,;]|$))", re.IGNORECASE),
     re.compile(r"\bno more (?:messages|check-ins|check ins|texts|reminders) from you\b", re.IGNORECASE),
     re.compile(r"\bstop the (?:check-ins|check ins|messages|reminders|texts)\b", re.IGNORECASE),
     re.compile(r"\b(?:rather|prefer) (?:you|that you) (?:did not|didn't|do not|don't|not) "

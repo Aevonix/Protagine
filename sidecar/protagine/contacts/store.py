@@ -1367,6 +1367,27 @@ class SQLiteContactStore(ContactStore):
         )
         await db.commit()
 
+    async def audit_since(self, actions: List[str], since: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """Audit rows of ``actions`` recorded at or after ``since`` (ISO), oldest first, each with the
+        contact's display name and its detail parsed: the opt-outs the owner's digest lists."""
+        if not actions:
+            return []
+        db = self._require_db()
+        marks = ",".join("?" for _ in actions)
+        async with db.execute(
+            f"SELECT a.contact_id, a.action, a.detail, a.performed_by, a.created_at, c.display_name "  # noqa: S608
+            f"FROM contact_audit a LEFT JOIN contacts c ON c.contact_id = a.contact_id "
+            f"WHERE a.action IN ({marks}) AND a.created_at >= ? ORDER BY a.created_at LIMIT ?",
+            (*actions, since, limit),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+        for row in rows:
+            try:
+                row["detail"] = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                row["detail"] = {}
+        return rows
+
     async def get_audit_log(self, contact_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         db = self._require_db()
         async with db.execute(
