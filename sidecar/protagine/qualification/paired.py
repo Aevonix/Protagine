@@ -13,8 +13,8 @@ from . import paired_arms
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
-                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
-                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_PROTOCOL,
+                            PROFILE_SWITCHES, TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -290,6 +290,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['message_timestamps'] = deepcopy(MESSAGE_TIMESTAMPS[message_timestamps])
     if environment_note is not None:
         comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
+    if payload.get('outbound') == OUTBOUND_PROTOCOL:
+        # The path every arm reaches a contact by (families/mind-people-1.md 7.1), as the image declares it.
+        comparison['outbound'] = OUTBOUND_PROTOCOL
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,
