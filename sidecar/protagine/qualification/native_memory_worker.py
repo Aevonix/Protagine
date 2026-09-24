@@ -104,6 +104,7 @@ def serve_mind(app, state, person, section):
     from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     from protagine.feedback import TypeFeedbackStore
     from protagine.initiatives.store import InitiativeStore
+    from protagine.initiatives.temporal_followup import TemporalFollowups
     from protagine.mind import Mind
     from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
     from protagine.turns import get_turn_idempotency_ledger
@@ -116,6 +117,8 @@ def serve_mind(app, state, person, section):
         # so a job the worker holds is waited for, never run twice.
         mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
                     commitments=host._commitment_store,
+                    # The reply waits over the same commitment store, as ``server.py`` passes them.
+                    followups=TemporalFollowups(host._commitment_store) if host._commitment_store is not None else None,
                     feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
                     expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
                     contacts=getattr(host, '_contacts_store', None),

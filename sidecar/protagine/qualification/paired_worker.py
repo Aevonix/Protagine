@@ -352,9 +352,12 @@ def workspace_tools(root, *, workflow_observations=None):
 
 @contextmanager
 def provider_read_services(state):
-    """Own empty provider stores on the API thread; never seed scenario answers."""
+    """Own empty provider stores on the API thread; never seed scenario answers. The comms ledger
+    is one of them, as on a real install: turns and the mind's own sends are logged in it, and the
+    social drive and the contact digests read it."""
     from protagine.api.routers import host
     from protagine.commitments.store import CommitmentStore
+    from protagine.contacts.comms import CommsLog
     from protagine.tom.affect import AffectStore
     from protagine.tom.facts import SharedFactsStore
     from protagine.turns import get_turn_idempotency_ledger
@@ -375,6 +378,10 @@ def provider_read_services(state):
             setter = getattr(host, 'set_' + name + '_store')
             resources.callback(setter, getattr(host, '_' + name + '_store'))
             setter(store)
+        comms = CommsLog(directory / 'protagine-comms.db', source_ledger=ledger)
+        resources.callback(comms._conn.close)
+        resources.callback(host.set_comms_log, host._comms_log)
+        host.set_comms_log(comms)
         yield
 
 

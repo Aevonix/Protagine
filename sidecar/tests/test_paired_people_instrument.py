@@ -399,3 +399,26 @@ async def test_the_mind_arm_serves_the_people_routes_and_its_mind_has_the_people
             assert served.contacts is store and served.composer.enabled is True
     finally:
         await store.close()
+
+
+async def test_the_mind_arm_has_the_comms_ledger_and_the_reply_waits_a_real_install_has(tmp_path, monkeypatch):
+    """Review M1: the benchmark host never set a comms ledger and the served Mind had no follow-ups,
+    so the arm's digest had no exchange counts, the mind's sends were nowhere for the social drive
+    to read, and due reply waits never reached duty. The arm's host stores include the comms
+    ledger (``protagine-comms.db`` next to the others) and the Mind gets the server's follow-ups."""
+    from fastapi import FastAPI
+    from protagine.api.routers import host
+    from protagine.contacts.comms import CommsLog
+    from protagine.initiatives.temporal_followup import TemporalFollowups
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path / 'memory-state'))
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    previous = host._comms_log
+    full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))
+    with paired_worker.provider_read_services(tmp_path):
+        assert isinstance(host._comms_log, CommsLog)
+        assert Path(host._comms_log._db_path) == tmp_path / 'memory-state' / 'protagine-comms.db'
+        with worker.serve_mind(FastAPI(), tmp_path, 'p-01', full) as served:
+            assert served.comms is host._comms_log
+            assert isinstance(served.followups, TemporalFollowups)
+            assert served.followups.store is host._commitment_store
+    assert host._comms_log is previous
