@@ -4,7 +4,7 @@ from conftest import probe
 
 STOCK_HOOKS = {"pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick"}
 TOOLS = {"protagine_self", "protagine_people", "protagine_memory_search", "protagine_memory_forget",
-         "protagine_reminder"}
+         "protagine_reminder", "protagine_opinions"}
 
 
 def test_plugin_registers_only_stock_seams(home, sidecar):

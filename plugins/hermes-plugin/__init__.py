@@ -21,6 +21,7 @@ from .capture import Capture, SessionMap, TurnOutbox
 from .client import ProtagineClient, Settings, SidecarUnavailable, load_settings
 from . import commands
 from .guard import Guard
+from .opinions import OPINIONS_SCHEMA, Opinions
 from .reminders import SCHEMA as REMINDER_SCHEMA, Reminders
 from .tools import Tools
 
@@ -105,8 +106,11 @@ def register(ctx: Any) -> None:
                          description="Protagine mind: status, log, why <id>, asks, off",
                          args_hint="[status|log|why <id>|asks|off]")
 
-    for schema, tool_handler in Tools(client, sessions, settings).handlers():
+    tools = Tools(client, sessions, settings)
+    for schema, tool_handler in tools.handlers():
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=tool_handler)
+    ctx.register_tool(name=OPINIONS_SCHEMA["name"], toolset=TOOLSET, schema=OPINIONS_SCHEMA,
+                      handler=Opinions(tools).handle)
     ctx.register_tool(name=REMINDER_SCHEMA["name"], toolset=TOOLSET, schema=REMINDER_SCHEMA,
                       handler=Reminders(client, sessions).handle)
 

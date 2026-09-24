@@ -25,7 +25,7 @@ READ_ONLY_TOOLS = frozenset({
     "read_file", "search_files", "web_search", "web_extract", "x_search", "vision_analyze",
     "session_search", "kanban_get", "kanban_list", "kanban_attachments", "skills_list", "skill_view",
     "todo_list", "tool_search", "tool_describe", "protagine_memory_search", "protagine_self",
-    "protagine_people",
+    "protagine_people", "protagine_opinions",
 })
 MESSAGING_TOOLS = frozenset({
     "send_message", "react_to_message", "discord", "discord_admin", "yb_send_dm", "yb_send_sticker",

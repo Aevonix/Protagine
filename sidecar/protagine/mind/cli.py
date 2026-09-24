@@ -1,4 +1,4 @@
-"""``protagine mind``: status, the audit log, asks, verdicts, the level and the off switch.
+"""``protagine mind``: status, the audit log, asks, verdicts, the level, the off switch and the opinions.
 
 Every mutation the owner makes goes through this CLI or the owner-checked
 ``protagine_self`` tool (architecture 7.10). The CLI talks to the running
@@ -23,7 +23,8 @@ from .outcomes import VERDICTS
 from .tick import OFF_MARKER
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
-            "concerns", "goals", "interest")
+            "concerns", "goals", "interest", "opinions")
+OPINION_ACTIONS = ("list", "show", "withdraw", "reconsider")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -61,6 +62,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     interest = commands.add_parser("interest", help="Seed an interest for the curiosity drive")
     interest.add_argument("topic")
     interest.add_argument("--why", default="")
+    opinions = commands.add_parser("opinions", help="The agent's opinions: list, show <id>, withdraw or reconsider <id>")
+    opinions.add_argument("action", nargs="?", default="list", choices=OPINION_ACTIONS)
+    opinions.add_argument("id", nargs="?", type=int)
+    opinions.add_argument("--query", default="", help="list: only the opinions relevant to this text")
+    opinions.add_argument("--history", action="store_true", help="list: every revision, not only the current views")
+    opinions.add_argument("--reason", default="", help="withdraw/reconsider: why (required)")
 
 
 class Sidecar:
@@ -193,6 +200,8 @@ def run(args: argparse.Namespace) -> int:
         elif command == "interest":
             value = sidecar.call("POST", "/v1/mind/interests", json_body={"topic": args.topic, "why": args.why, "by": "cli"})
             _emit(value, as_json=as_json, text=f"interest: {value.get('topic')} (weight {value.get('weight')})")
+        elif command == "opinions":
+            return _opinions(sidecar, args, as_json=as_json)
         else:
             print(f"unknown mind command {command}", file=sys.stderr)
             return 2
@@ -201,6 +210,46 @@ def run(args: argparse.Namespace) -> int:
             print(exc.code, file=sys.stderr)
             return 1
         raise
+    return 0
+
+
+def _opinion_line(row: Dict[str, Any]) -> str:
+    about = {"person": f" about {row.get('subject')}", "approach": f" (approach to {row.get('subject')})"}.get(
+        row.get("subject_kind") or "topic", "")
+    status = "" if row.get("status") in {None, "current"} else f" [{row.get('status')}]"
+    return (f"[{row.get('id')}] {row.get('topic') or '(erased)'}{about}{status}: {row.get('stance') or ''}"
+            + (f" (audience {row.get('audience')})" if row.get("audience") else ""))
+
+
+def _opinions(sidecar: Sidecar, args: argparse.Namespace, *, as_json: bool) -> int:
+    """``protagine mind opinions``: the owner's reads and controls, ``by=cli``."""
+    action = args.action or "list"
+    if action != "list" and args.id is None:
+        print(f"usage: protagine mind opinions {action} <id>", file=sys.stderr)
+        return 2
+    if action == "list":
+        value = sidecar.call("GET", "/v1/mind/opinions", params={
+            "q": args.query, "history": "true" if args.history else "false", "by": "cli", "limit": 50})
+        rows = value.get("opinions") or []
+        text = ("opinions: off" if not value.get("enabled") else
+                "\n".join(_opinion_line(row) for row in rows) or "no opinions recorded")
+        _emit(value, as_json=as_json, text=text)
+    elif action == "show":
+        value = sidecar.call("GET", f"/v1/mind/opinions/{args.id}", params={"by": "cli"})
+        row = value.get("opinion") or {}
+        premises = [f"  rests on: {p.get('text')} ({p.get('ref')})" for p in row.get("premises") or []]
+        lines = [_opinion_line(row), f"  because: {row.get('reason') or ''}",
+                 f"  would change if: {row.get('revise_if') or '(not stated)'}", *premises,
+                 "  history: " + " <- ".join(str(item.get("id")) for item in value.get("history") or [])]
+        _emit(value, as_json=as_json, text="\n".join(lines))
+    else:
+        if not args.reason.strip():
+            print(f"protagine mind opinions {action} needs --reason", file=sys.stderr)
+            return 2
+        value = sidecar.call("POST", f"/v1/mind/opinions/{args.id}/{action}",
+                             json_body={"reason": args.reason, "by": "cli"})
+        _emit(value, as_json=as_json, text=f"opinion {args.id}: {value.get('status')} "
+                                           f"(revision {value.get('revision_id')})")
     return 0
 
 

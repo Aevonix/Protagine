@@ -352,6 +352,22 @@ def _mind_section() -> str:
         return ""
 
 
+def _mind_stances(query_text: str, *, contact_id: str, session_id: str) -> str:
+    """Recorded views for this turn (architecture 4.4), audience-filtered; nothing when the mind is off."""
+    mind = _mind()
+    opinions = getattr(mind, "opinions", None) if mind is not None else None
+    if opinions is None or not mind.enabled or not contact_id:
+        return ""
+    try:
+        from protagine.identity import get_owner_contact_id
+        return str(opinions.context(query_text, viewer_contact_id=contact_id,
+                                    viewer_is_owner=contact_id == (get_owner_contact_id() or ""),
+                                    session_id=session_id or "") or "")
+    except Exception:
+        logger.debug("stance section unavailable", exc_info=True)
+        return ""
+
+
 def _mind_recall_query(query_text: str) -> str:
     """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
     mind = _mind()
@@ -2215,6 +2231,12 @@ async def context_assemble(
         except Exception:
             logger.debug('appraisal context unavailable', exc_info=True)
 
+    # --- Recorded views (opinions): any viewer, audience-filtered (architecture 4.4) ---
+    stance_text = _mind_stances(query_text, contact_id=contact_id or '', session_id=body.context.session_id)
+    if stance_text:
+        sections.append(ContextSection(id='protagine-stances', title='Your recorded views',
+                                       body=stance_text, priority=87))
+
     if _canonical_person_allowed and contact_id:
         try:
             from protagine.api.routers.executions import authorized_viewer
@@ -2319,7 +2341,7 @@ async def context_assemble(
                         source_ids=working_sources)
                     if working_brief:
                         sections.append(ContextSection(id='protagine-self-perspective',
-                            title='Current working judgments', body=working_brief, priority=87,
+                            title='Owner priority corrections', body=working_brief, priority=87,
                             citations=perspective.ledger.source_references(working_sources,
                                 contact_id=contact_id, session_id=body.context.session_id)))
         except Exception as exc:

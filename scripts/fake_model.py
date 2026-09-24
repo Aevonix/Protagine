@@ -152,8 +152,8 @@ def reply_for(body):
             proposals = []
         return json.dumps({str(p.get("index", i)): {"keep": True, "reason": "The source asks to remember this exact value."}
                            for i, p in enumerate(proposals)})
-    if "Use exactly one of these shapes" in system and '{"action":"abstain"}' in system:
-        return '{"action":"abstain"}'  # the self-model judgment: nothing here is a durable opinion
+    if "You keep the agent's opinions" in system:
+        return '{"action":"none"}'     # the opinion pass: nothing here forms or changes a durable view
     schema = (body.get("response_format") or {}).get("json_schema") or {}
     if schema.get("name") == "session_title":  # Hermes names the session from the opening message
         return json.dumps({"title": " ".join(last_user.split()[:5]).rstrip(".,:;!?") or "New chat"})
