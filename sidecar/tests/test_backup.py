@@ -157,6 +157,43 @@ class TestDatabaseSnapshot:
         assert restore_full_backup(archive, restore_dir)["instance_id"] == meta["instance_id"]
         assert (restore_dir / "instance-id").read_text().strip() == meta["instance_id"]
 
+    def test_restore_leaves_the_retired_state_of_an_old_archive_behind(self, protagine_state, output_dir, tmp_path):
+        """An archive taken before the graph, world model and chain went still carries their files; restoring
+        it must not put them back (``protagine upgrade`` retired them: init.RETIRED_STATE)."""
+        import io
+        import tarfile
+
+        archive = create_full_backup(protagine_state, output_dir, include_vectors=False)
+        old = tmp_path / "old-archive.tar.gz"
+        with tarfile.open(archive, "r:gz") as source, tarfile.open(old, "w:gz") as target:
+            root = next(m for m in source.getmembers() if m.name.endswith("meta.json")).name.rsplit("/", 1)[0]
+            for member in source.getmembers():
+                target.addfile(member, source.extractfile(member) if member.isfile() else None)
+
+            def add(name, data=b"retired"):
+                info = tarfile.TarInfo(f"{root}/{name}")
+                info.size = len(data)
+                target.addfile(info, io.BytesIO(data))
+
+            for name in ("identity/protagine-id", "identity/genesis.json", "identity/protagine-keys/private.pem",
+                         "identity/node-cert.json", "config/protagine-manifest.json"):
+                add(name)
+            chain = tmp_path / "chain.db"
+            with sqlite3.connect(chain) as conn:
+                conn.execute("CREATE TABLE blocks (id INTEGER)")
+            add("databases/chain.db", chain.read_bytes())
+
+        restore_dir = tmp_path / "restored-old"
+        summary = restore_full_backup(old, restore_dir)
+        restored = {path.relative_to(restore_dir).as_posix() for path in restore_dir.rglob("*")}
+        assert not {"protagine-id", "genesis.json", "protagine-keys", "node-cert.json", "protagine-manifest.json",
+                    "chain.db"} & restored
+        assert "chain.db" not in summary["databases"] and "protagine-contacts.db" in summary["databases"]
+        assert sorted(summary["retired_skipped"]) == ["chain.db", "genesis.json", "node-cert.json",
+                                                      "protagine-id", "protagine-keys", "protagine-manifest.json"]
+        assert (restore_dir / "instance-id").read_text().strip() == "test-instance-abc123"
+        assert (restore_dir / "identity.yaml").is_file() and (restore_dir / "api.key").is_file()
+
     def test_env_file_is_scrubbed_in_backup(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,

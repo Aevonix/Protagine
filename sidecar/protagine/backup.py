@@ -173,9 +173,23 @@ def restore_full_backup(
             "serving_admitted": False,
         }
 
+        # An archive taken before a subsystem was retired still carries its state; ``protagine upgrade``
+        # moved that out of the instance, and a restore must not put it back.
+        from protagine.init import RETIRED_STATE
+        retired: set[str] = set()
+        summary["retired_skipped"] = []
+
+        def keep(relative: Path) -> bool:
+            if relative.parts and relative.parts[0] in RETIRED_STATE:
+                if relative.parts[0] not in retired:
+                    retired.add(relative.parts[0])
+                    summary["retired_skipped"].append(relative.parts[0])
+                return False
+            return True
+
         identity_dir = root / "identity"
         if identity_dir.is_dir():
-            _restore_directory(identity_dir, state_dir)
+            _restore_directory(identity_dir, state_dir, keep=keep)
             summary["identity"] = True
         if backup_id and not read_instance_id(state_dir):
             # Archives taken before the instance id existed carry the same UUID
@@ -187,6 +201,8 @@ def restore_full_backup(
         if db_dir.is_dir():
             for db_file in sorted(db_dir.glob("*.db")):
                 relative = db_file.relative_to(db_dir)
+                if not keep(relative):
+                    continue
                 dest = state_dir / relative
                 # A crashed destination can still have committed WAL.
                 # SQLite replaces its logical database consistently;
@@ -210,7 +226,7 @@ def restore_full_backup(
 
         config_dir = root / "config"
         if config_dir.is_dir():
-            _restore_directory(config_dir, state_dir)
+            _restore_directory(config_dir, state_dir, keep=keep)
             summary["config"] = True
 
         vector_dir = root / "vector"
@@ -658,10 +674,12 @@ def _get_protagine_version() -> str:
         return "unknown"
 
 
-def _restore_directory(src: Path, dest: Path) -> None:
+def _restore_directory(src: Path, dest: Path, *, keep=lambda relative: True) -> None:
     for item in src.rglob("*"):
         if item.is_file():
             rel = item.relative_to(src)
+            if not keep(rel):
+                continue
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, target)
