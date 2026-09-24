@@ -42,6 +42,7 @@ def register(ctx):
             provider.resolve_contact(
                 platform=str(kwargs.get("platform", "") or ""),
                 user_id=str(kwargs.get("sender_id", "") or ""),
+                session_id=str(kwargs.get("session_id", "") or ""),
             )
         except Exception:
             pass

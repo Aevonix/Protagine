@@ -248,6 +248,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._handle_cache: dict[str, tuple] = {}  # "platform:sender" -> (monotonic ts, contact_id)
         self._handle_cache_lock = threading.Lock()
         self._handle_negative_cache: dict[str, tuple[float, str, int]] = {}
+        # session_id -> (platform, sender) from pre_llm_call: the binding the general plugin's guard and tools
+        # read, used when a host binds the sender on the agent alone and sets no gateway context.
+        self._turn_senders: dict[str, tuple[str, str]] = {}
         self._last_turn_started_at = 0.0
         self._turn_number = 0
         self._prev_turn_gap_secs = None
@@ -423,8 +426,15 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             result.append(note)
         return result
 
-    def resolve_contact(self, platform: str, user_id: str) -> None:
-        """Warm the sender's contact so per-contact memory engages (pre_llm_call)."""
+    def resolve_contact(self, platform: str, user_id: str, session_id: str = "") -> None:
+        """Keep the turn's sender for its session and warm the sender's contact (pre_llm_call), so per-contact
+        memory engages whichever way the host bound the sender."""
+        if session_id:
+            with self._handle_cache_lock:
+                self._turn_senders.pop(session_id, None)
+                while len(self._turn_senders) >= self._HANDLE_CACHE_MAX:
+                    self._turn_senders.pop(next(iter(self._turn_senders)))
+                self._turn_senders[session_id] = (str(platform or ""), str(user_id or ""))
         if user_id:
             self._resolve_handle(platform, user_id)
 
@@ -451,19 +461,26 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                  f"Runtime reference clock: {self._current_time_line()}. Contact timezone and location unknown.")
         return self._with_turn_gap(block) if include_turn_gap else block
 
-    @staticmethod
-    def _turn_sender_context() -> tuple[str, str, str]:
+    def _turn_sender_context(self, session_id: str = "") -> tuple[str, str, str]:
+        """``(platform, sender, chat)`` of the current turn: the gateway's session context when there is one
+        (it binds each message's own sender), else the sender the turn's ``pre_llm_call`` named for this
+        session, as a host that binds the sender on the agent alone does (the general plugin's session map)."""
         try:
             from gateway.session_context import get_session_env
-            return ((get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower(),
-                    (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip(),
-                    (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip())
+            bound = ((get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower(),
+                     (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip(),
+                     (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip())
         except Exception:
-            return "", "", ""
+            bound = ("", "", "")
+        if any(bound):
+            return bound
+        with self._handle_cache_lock:
+            platform, sender = self._turn_senders.get(session_id or self._session_id, ("", ""))
+        return platform.strip().lower(), sender.strip(), ""
 
     def _prefetch_contact(self, session_id: str = "") -> str:
         """The exact turn participant: a resolved sender, or the owner on internal lanes."""
-        platform, sender, chat = self._turn_sender_context()
+        platform, sender, chat = self._turn_sender_context(session_id)
         effective = platform or str(self._platform or "").strip().lower()
         if sender:
             try:

@@ -148,3 +148,33 @@ emit(owner=owner, guest=guest)
     assembled = sidecar.calls("/v1/host/context/assemble", "POST")
     assert [(c["json"]["context"]["contact_id"], c["json"]["context"]["session_id"]) for c in assembled] == [
         (OWNER, "sg-b"), ("p-03", "guest-c")]
+
+
+def test_a_sender_bound_on_the_agent_alone_reaches_recall(home, sidecar):
+    """A host that binds the sender on the agent only (``AIAgent(user_id=...)``, no gateway session context)
+    reaches the provider through ``pre_llm_call``, the binding the general plugin's guard and tools read, so
+    a contact's turn is recalled as that contact. Where the gateway binds a turn, its own sender wins, and a
+    channel with no sender stays unbound whatever the agent was built with."""
+    result = probe('''
+from hermes_cli.lifecycle import invoke_hook
+def hook(session, sender, platform="telegram"):
+    return invoke_hook("pre_llm_call", session_id=session, task_id="t", turn_id="turn", user_message="what do I owe you?",
+                       conversation_history=[], is_first_turn=True, model="m", platform=platform,
+                       parent_session_id="", sender_id=sender)
+clock = hook("session-1", "2003")
+agent_only = provider.prefetch("what do I owe you?", session_id="session-1")
+hook("session-1", "2003")
+tokens = set_session_vars(platform="telegram", user_id="2002", chat_id="2002", session_id="session-1")
+gateway = provider.prefetch("what do I owe you?", session_id="session-1")
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="telegram", user_id="", chat_id="group-1", session_id="session-1")
+channel = provider.prefetch("what do I owe you?", session_id="session-1")
+clear_session_vars(tokens)
+emit(clock=clock, agent_only=agent_only, gateway=gateway, channel=channel)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert "shared facts" in result["agent_only"] and CANARY not in result["agent_only"]
+    assert not any("Current Time for this turn" in str(item) for item in result["clock"])  # recall carries it
+    assert result["channel"] == ""
+    contacts = [call["json"]["context"]["contact_id"] for call in sidecar.calls("/v1/host/context/assemble", "POST")]
+    assert contacts == ["p-03", "p-02"]
+    assert all(call["json"]["audience"] == "viewer" for call in sidecar.calls("/v1/host/context/assemble", "POST"))
