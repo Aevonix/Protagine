@@ -199,3 +199,49 @@ async def test_may_contact_is_raised_only_by_the_owner_and_an_opt_out_only_lower
     assert await store.lower_may_contact(guest.contact_id, reason="appraisal opt_out", source_ref="turn:t-11") is None
     assert (await store.get(guest.contact_id)).may_contact == "never"
     assert (await client.post(path, json={"may_contact": "ask", "by": "cli"})).json()["may_contact"] == "ask"
+
+
+@pytest.mark.asyncio
+async def test_a_merge_outside_the_router_moves_comms_affect_and_sources_through_the_server_defaults(
+        tmp_path, monkeypatch):
+    """The owner confirming a link folds the shadow that held the handle (``confirm_link`` ->
+    ``merge``) with no hooks passed: the store's defaults, set by the server, move the comms and
+    affect rows first and the ledger sources right after, before anything reads them."""
+    from protagine import server
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("PROTAGINE_CONTACTS_DB", str(tmp_path / "contacts.db"))
+    calls = []
+
+    class Rows:
+        def __init__(self, name):
+            self.name = name
+
+        def reattribute(self, old_id, new_id):
+            calls.append((self.name, old_id, new_id))
+            return 1
+
+        def purge_erased_sources(self, source_ids):
+            return 0
+
+    monkeypatch.setattr(host_mod, "_comms_log", Rows("comms"))
+    monkeypatch.setattr(host_mod, "_affect_store", Rows("affect"))
+    monkeypatch.setattr(host_mod, "_contacts_store", None)
+    store = await server._initialize_contacts_store()
+    try:
+        person = await store.create(display_name="Casey Lee", trust_tier="regular")
+        shadow = await store.create(display_name="+15550000088", import_source="auto:sender")
+        await store.add_handle(shadow.contact_id, "sms", "+15550000088", source="auto:sender")
+        ledger = get_turn_idempotency_ledger(people_mod._ledger().db_path.parent)
+        ledger.record_source("t-shadow", contact_id=shadow.contact_id, session_id="s-shadow",
+                             messages=[{"role": "user", "content": "hello"}], derive_claims=False)
+        proposal = await store.propose_handle_link(person.contact_id, "sms", "+15550000088")
+        confirmed = await store.confirm_link(proposal["candidate_id"], performed_by="owner")
+        assert confirmed["merged"] is True
+        assert calls == [("comms", shadow.contact_id, person.contact_id),
+                         ("affect", shadow.contact_id, person.contact_id)]
+        with closing(ledger._connect()) as conn:
+            owners = dict(conn.execute("SELECT turn_id, contact_id FROM turn_sources").fetchall())
+        assert owners == {"t-shadow": person.contact_id}
+        assert await store.pending_identity_reconciliations() == []
+    finally:
+        await store.close()

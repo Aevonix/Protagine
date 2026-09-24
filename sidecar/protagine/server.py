@@ -224,12 +224,21 @@ def _wire_controlled_learning_pipeline(
 
 
 async def _initialize_contacts_store():
-    """Open the canonical contact store without graph backfill or pruning."""
+    """Open the canonical contact store without graph backfill or pruning.
+
+    A merge moves the person's ledger sources, comms and affect with their
+    handles whoever starts it: the people router passes these itself; the
+    owner confirming a link (which folds the shadow contact that held the
+    handle) goes through the store's defaults, set here. The comms log and
+    affect store are opened before the contacts.
+    """
+    from protagine.api.routers import people as people_router
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
 
     config = ContactsConfig.from_env()
-    store = SQLiteContactStore(config=config)
+    store = SQLiteContactStore(config=config, sources_of=people_router.person_sources,
+                               reattribute=people_router.reattribute_hooks())
     await store.connect()
     set_contacts_store(store)
     logger.info("ContactsStore initialized (path=%s)", config.sqlite_path)

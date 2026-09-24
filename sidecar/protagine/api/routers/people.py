@@ -109,15 +109,27 @@ async def person_sources(contact_id: str) -> List[str]:
     return [str(row[0]) for row in rows]
 
 
-def reattribute_hooks() -> List[Any]:
-    """``reattribute(old_id, new_id)`` of the stores that key rows by contact (comms, affect)."""
+def reattribute_hooks(*, reconcile: bool = True) -> List[Any]:
+    """``reattribute(old_id, new_id)`` of the stores that key rows by contact (comms, affect), then
+    (``reconcile``) the ledger move of the merge's sources. That order matters: a row whose contact
+    and ledger source disagree is purged as erased, so the rows move first and the sources right
+    after, before anything reads them. The router reconciles itself, to report what moved."""
     from protagine.api.routers import host
     hooks = []
     for name in ("_comms_log", "_affect_store"):
         hook = getattr(getattr(host, name, None), "reattribute", None)
         if callable(hook):
             hooks.append(hook)
+    if reconcile:
+        hooks.append(reconcile_merge)
     return hooks
+
+
+async def reconcile_merge(drop_id: str, keep_id: str) -> None:
+    """Move a merge's sources in the ledger now (the source worker retries whatever fails)."""
+    from protagine.api.routers import host
+    if host._contacts_store is not None:
+        await _reconcile(host._contacts_store, prefix=f"merge:{drop_id}:")
 
 
 def _is_owner_viewer(contact_id: Optional[str]) -> bool:
@@ -243,7 +255,7 @@ async def merge(body: MergeBody) -> Dict[str, Any]:
                                                      "message": "merge the other record into the owner instead"})
     try:
         merged = await store.merge(keep.contact_id, drop.contact_id, performed_by=performed_by,
-                                   reattribute=reattribute_hooks(), sources_of=person_sources)
+                                   reattribute=reattribute_hooks(reconcile=False), sources_of=person_sources)
     except ValueError as error:
         raise HTTPException(status_code=409, detail={"code": "merge_refused", "message": str(error)}) from None
     reconciled, pending = await _reconcile(store, prefix=f"merge:{drop.contact_id}:")
@@ -331,4 +343,4 @@ async def _reconcile(store: Any, *, prefix: str) -> tuple[int, int]:
     return moved, sum(len(op["affected_source_ids"]) for op in left)
 
 
-__all__ = ["person_sources", "reattribute_hooks", "router"]
+__all__ = ["person_sources", "reattribute_hooks", "reconcile_merge", "router"]
