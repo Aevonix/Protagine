@@ -1670,11 +1670,6 @@ async def context_assemble(
     body: ContextAssembleRequest,
     request: Request = None,
 ) -> ContextAssembleResponse:
-    if body.projection_policy is not None:
-        raise HTTPException(status_code=400, detail={
-            "code": "unsupported_policy",
-            "message": "projection policies are retired: a guest's context is always contact-scoped",
-        })
     body.context.contact_id = resolve_request_person(
         request,
         context_person_id=body.context.contact_id,

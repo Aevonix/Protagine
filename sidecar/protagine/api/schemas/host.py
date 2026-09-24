@@ -196,9 +196,8 @@ class ContextAssembleRequest(BaseModel):
     available_tools: Optional[List[str]] = None
     citations_mode: Optional[Literal["off", "inline", "appendix"]] = None
     include_initiatives: Optional[bool] = None  # v0.13.0
-    projection_policy: Optional[
-        Literal["scoped_viewer_required"]
-    ] = None
+    # A memory provider from before M5 also sends ``projection_policy``; extra fields are ignored,
+    # and a guest's context is contact-scoped by construction, so it changes nothing.
     # ``intact``: the host still shows this session's earlier turns verbatim, so recall must not
     # repeat them; ``compressed``: it summarised them, so their sources are recallable again.
     # Absent: the host said nothing, and recall includes them as before.

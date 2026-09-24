@@ -172,12 +172,20 @@ async def test_guest_assemble_is_contact_scoped_and_never_refused(wired):
 
 
 @pytest.mark.asyncio
-async def test_retired_projection_policy_is_unsupported(wired):
+async def test_a_stale_providers_projection_policy_changes_nothing(wired):
+    """Audit B4: the memory provider before this release sends ``projection_policy`` on every guest
+    prefetch; refusing it would leave every guest without recall. It is ignored: the guest context
+    is contact-scoped by construction."""
     async with AsyncClient(transport=ASGITransport(app=app_with_key()), base_url="http://test") as client:
-        response = await client.post("/v1/host/context/assemble", headers={"Authorization": "Bearer " + KEY},
+        headers = {"Authorization": "Bearer " + KEY}
+        plain = await client.post("/v1/host/context/assemble", headers=headers, json=assemble_body(GUEST))
+        response = await client.post("/v1/host/context/assemble", headers=headers,
                                      json=assemble_body(GUEST, projection_policy="scoped_viewer_required"))
-        assert response.status_code == 400
-        assert response.json()["detail"]["code"] == "unsupported_policy"
+        assert response.status_code == 200, response.text
+        ids = [row["id"] for row in response.json()["sections"]]
+        assert ids == [row["id"] for row in plain.json()["sections"]] and "protagine-person" in ids
+        assert "protagine-goals" not in ids
+        assert "projection_policy" not in host.ContextAssembleRequest.model_fields
         assert (await client.get("/v1/host/context/projection-readiness", params={"contact_id": GUEST},
                                  headers={"Authorization": "Bearer " + KEY})).status_code == 404
 

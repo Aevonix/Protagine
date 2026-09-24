@@ -125,13 +125,18 @@ async def test_guest_http_capture_claim_media_commitment_and_digest_recall(
         other = await client.post("/v1/host/context/assemble", json=context("guest-b", "orchid"), headers=headers("guest-b"))
         assert other.status_code == 200 and "orchid" not in other.text
         assert "Digest of guest-b." in other.text and "Digest of guest-a." not in other.text
-        # The retired projection policy is refused before any producer runs.
+        # A memory provider from before this release still sends the retired projection policy on
+        # every guest prefetch. A guest's context is contact-scoped by construction, so the field
+        # changes nothing: the guest keeps its own recall (audit B4).
         retired = await client.post("/v1/host/context/assemble", headers=headers("guest-a"),
-                                    json={**context("owner", "office"), "projection_policy": "scoped_viewer_required"})
-        assert retired.status_code == 400 and retired.json()["detail"]["code"] == "unsupported_policy"
+                                    json={**context("guest-a", "office"), "projection_policy": "scoped_viewer_required"})
+        assert retired.status_code == 200, retired.text
+        again = {row["id"]: row["body"] for row in retired.json()["sections"]}
+        assert set(again) == set(sections) and all(again[key] == sections[key] for key in sections
+                                                   if key != "temporal-context")
         missing = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"))
         assert missing.status_code == 401
-        assert contacts.reads == ["guest-a", "guest-a", "guest-b"]
+        assert contacts.reads == ["guest-a", "guest-a", "guest-b", "guest-a"]
         assert private.calls == [] and contacts.calls == []
 
         monkeypatch.setenv("PROTAGINE_RECALL_CONTEXT_MAX_CHARS", "80")
