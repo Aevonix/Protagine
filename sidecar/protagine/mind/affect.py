@@ -56,6 +56,7 @@ WINDOW = timedelta(days=7)
 MISS_WINDOW = timedelta(days=1)
 NOVEL_WINDOW, NOVEL_MAX = timedelta(hours=12), 50
 NEAR, DUE_SOON, UNDATED_RECENT = timedelta(hours=48), timedelta(hours=24), timedelta(hours=24)
+STALE_VIEW = timedelta(minutes=10)   # how long the consumers keep the last full view while a source is unreadable
 
 PREFIX = "affect."
 FRUSTRATION = "affect.frustration:"
@@ -193,6 +194,7 @@ class AffectInputs:
     running: int = 0
     cap: int = 0
     asks: int = 0
+    unread: Tuple[str, ...] = ()               # sources whose read failed this tick (their events are missing)
 
 
 @dataclass(frozen=True)
@@ -396,19 +398,29 @@ class Affect:
     # -- the snapshot -------------------------------------------------------------------------
 
     def gather(self, now: Optional[datetime] = None) -> AffectInputs:
-        """One snapshot of every input; an unavailable store contributes nothing."""
+        """One snapshot of every input; an unavailable store contributes nothing and is named in
+        ``unread`` (a failed read is not an empty one)."""
         now = _aware(now or self.clock())
-        active_rows = self._read("active intentions", lambda: self.store.intentions(
-            status=list(MIND_ACTIVE_STATUSES), limit=500), [])
-        events = [*self._read("appraisal events", lambda: self._owner_events(now), []),
-                  *self._read("intention events", lambda: self._intention_events(now), []),
-                  *self._read("expectation misses", lambda: self._misses(now), []),
+        unread: List[str] = []
+
+        def read(what: str, reader: Callable[[], Any]) -> Any:
+            try:
+                return reader()
+            except Exception as error:
+                logger.warning("affect input %s unavailable (%s)", what, type(error).__name__)
+                unread.append(what)
+                return []
+        active_rows = read("active intentions", lambda: self.store.intentions(
+            status=list(MIND_ACTIVE_STATUSES), limit=500))
+        events = [*read("appraisal events", lambda: self._owner_events(now)),
+                  *read("intention events", lambda: self._intention_events(now)),
+                  *read("expectation misses", lambda: self._misses(now)),
                   *(event for event in self._novel if event.at >= now - NOVEL_WINDOW)]
         unique: Dict[str, AffectEvent] = {}
         for event in sorted(events, key=lambda item: (item.at, item.ref)):
             unique.setdefault(event.ref, event)
         started = {str(row.source_id) for row in active_rows if row.source_type == "commitment" and row.source_id}
-        obligations = self._read("commitments", lambda: self._obligations(now, started), [])
+        obligations = read("commitments", lambda: self._obligations(now, started))
         due_soon = [item for item in obligations
                     if item.due_at is not None and now < item.due_at <= now + DUE_SOON and not item.started]
         try:
@@ -418,15 +430,7 @@ class Affect:
         return AffectInputs(now=now, owner_id=self.owner_id, events=tuple(unique.values()),
                             obligations=tuple(obligations), due_soon=tuple(due_soon),
                             running=sum(1 for row in active_rows if row.status == "dispatched"), cap=max(0, cap),
-                            asks=sum(1 for row in active_rows if row.status == "asked"))
-
-    @staticmethod
-    def _read(what: str, read: Callable[[], Any], default: Any) -> Any:
-        try:
-            return read()
-        except Exception as error:
-            logger.warning("affect input %s unavailable (%s)", what, type(error).__name__)
-            return default
+                            asks=sum(1 for row in active_rows if row.status == "asked"), unread=tuple(unread))
 
     def _owner_events(self, now: datetime) -> List[AffectEvent]:
         reader = getattr(self.appraisals, "affect_events", None)
@@ -572,13 +576,19 @@ class Affect:
             now = _aware(now or self.clock())
             inputs = self.gather(now)
             applied = self._apply(inputs) if self.state_on else 0
-            view = self._compose(inputs)
+            # A failed read is not an empty one: while a source is unreadable the consumers keep the last
+            # full view, for at most STALE_VIEW; then what can be read is better than a stale picture.
+            keep = (inputs.unread and self._view is not None and self._updated_at is not None
+                    and now - self._updated_at <= STALE_VIEW)
+            view = self._view if keep else self._compose(inputs)
         except Exception as error:
             logger.warning("affect update failed (%s)", type(error).__name__)
             return {"source": self.source, "error": type(error).__name__}
-        self._inputs, self._view, self._updated_at = inputs, view, now
-        return {"source": self.source, "applied": applied, "load": view.load, "overloaded": view.overloaded,
-                "satiated": view.satiated, "switch": [item.topic for item in view.frustrations]}
+        if not keep:
+            self._inputs, self._view, self._updated_at = inputs, view, now
+        result = {"source": self.source, "applied": applied, "load": view.load, "overloaded": view.overloaded,
+                  "satiated": view.satiated, "switch": [item.topic for item in view.frustrations]}
+        return {**result, "unread": list(inputs.unread)} if inputs.unread else result
 
     # -- the state ----------------------------------------------------------------------------------
 
@@ -619,14 +629,19 @@ class Affect:
     def _apply(self, inputs: AffectInputs) -> int:
         """Fold every event not applied yet, oldest first, as if at its own time; then the deadline
         rule and the prune. An outcome and an appraisal record of one turn on one key count once
-        (the larger), while every reported occurrence counts."""
+        (the larger), while every reported occurrence counts.
+
+        ``affect.applied`` maps each applied reference to the time it stays applied from; it is
+        dropped only once that is older than the window, never because a read missed it, so a
+        source that fails to read for a tick is not applied again when it reads."""
         now = inputs.now
         self._decay(now)
         entry = self.mind_state.get(APPLIED) or {}
         try:
-            applied = set(json.loads(entry.get("text") or "[]"))
+            applied = json.loads(entry.get("text") or "{}")
         except (TypeError, ValueError):
-            applied = set()
+            applied = {}
+        applied = applied if isinstance(applied, dict) else {}
         window = {event.ref for event in inputs.events}
         # (turn, key) -> [sum of reported occurrences, largest appraisal record]
         tallies: Dict[Tuple[str, str], List[float]] = {}
@@ -642,10 +657,14 @@ class Affect:
             return max(sums) - before
 
         fresh = [event for event in inputs.events if event.ref not in applied]
-        kept = sorted((applied | {event.ref for event in fresh}) & window)
-        if kept != sorted(applied):
+        # A reference is kept as long as a read can still return it: stamped when first applied (or at
+        # its own time, if later), dropped once the stamp is older than the window.
+        horizon = (now - WINDOW).timestamp()
+        kept = {ref: stamp for ref, stamp in applied.items() if isinstance(stamp, (int, float)) and stamp >= horizon}
+        kept.update({event.ref: round(max(now, event.at).timestamp(), 3) for event in fresh})
+        if kept != applied:
             # Recorded first: an update that fails halfway leaves an event applied at most once.
-            self.mind_state.set(APPLIED, text=json.dumps(kept), now=now)
+            self.mind_state.set(APPLIED, text=json.dumps(kept, sort_keys=True), now=now)
         turns = {event.turn_id for event in fresh if event.turn_id}
         for event in inputs.events:
             if event.ref in applied and event.turn_id in turns:
@@ -669,7 +688,8 @@ class Affect:
                 if delta > 0:
                     self._add(key, dimension, delta * 0.5 ** (age / HALF_LIVES[dimension]), event.cause(), now,
                               topic=event.topic if dimension == "frustration" else "")
-        for item in inputs.due_soon:
+        # Without the active intentions a started obligation looks unstarted: no deadline worry this tick.
+        for item in inputs.due_soon if "active intentions" not in inputs.unread else ():
             worry = self._level(LEVEL_KEYS["worry"])
             if worry >= DEADLINE_CAP:
                 break
@@ -678,8 +698,11 @@ class Affect:
         for row in self.mind_state.items(FRUSTRATION):
             evidence = {parts[1] for parts in (str(cause).split(" ") for cause in row.get("causes") or [])
                         if len(parts) >= 2 and parts[0] in FRUSTRATING}
-            if float(row.get("level") or 0.0) < RENDER_FLOOR or not evidence & window:
-                self.mind_state.delete(row["key"])   # erased or aged-out evidence leaves no topic text behind
+            # Erased or aged-out evidence leaves no topic text behind; a source that failed to read is
+            # neither, so a tick with an unread source prunes nothing by evidence.
+            gone = not inputs.unread and not evidence & window
+            if float(row.get("level") or 0.0) < RENDER_FLOOR or gone:
+                self.mind_state.delete(row["key"])
         return len(fresh)
 
     def _state_view(self, inputs: AffectInputs) -> AffectView:

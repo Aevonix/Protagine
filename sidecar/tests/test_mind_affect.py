@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import random
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -223,7 +224,7 @@ def test_each_event_kind_moves_one_level_by_its_table_increment_and_cites_itself
     assert levels == set(expected), f"{name} touched only its own key"
     if FRUSTRATION_KEY in expected:
         assert rows[FRUSTRATION_KEY]["text"] == TOPIC and rows[FRUSTRATION_KEY]["half_life_s"] == 86400
-    assert json.loads(rows["affect.applied"]["text"]) == [ref]
+    assert list(json.loads(rows["affect.applied"]["text"])) == [ref]
 
 
 @pytest.mark.parametrize("success", ["reported", "repair", "verified", "useful"])
@@ -632,7 +633,53 @@ def test_erased_evidence_takes_its_topic_row_with_it(world):
     world.update()
     assert FRUSTRATION_KEY not in world.rows()
     assert TOPIC not in json.dumps([dict(row) for row in world.state.items("affect.")])
-    assert json.loads(world.rows()["affect.applied"]["text"]) == []
+    assert len(json.loads(world.rows()["affect.applied"]["text"])) == 2, "an applied reference is kept by age"
+    world.shift(days=7, hours=1)
+    world.update()
+    assert json.loads(world.rows()["affect.applied"]["text"]) == {}, "and dropped once it leaves the window"
+
+
+def test_an_unreadable_source_never_has_its_events_applied_again(world):
+    """A tick whose read of one source fails (say, a locked ledger) is not an erasure: every event of
+    that source stays applied, its frustration rows keep their evidence, and the next readable tick
+    adds nothing."""
+    world.outcome("dismissed", "the stretch nudge")
+    world.outcome("dismissed", "the stretch nudge")
+    world.outcome("failed", hours=1, approach="the archive export")
+    world.outcome("failed", hours=0.5, approach="the archive export")
+    world.intention(topic="the tide tables", status="done", outcome="done", verdict="useful", completed_at=world.now)
+    world.update()
+    before = {key: round(row["level"], 3) for key, row in world.rows().items() if row["level"]}
+    assert before["affect.dismissed"] == 0.5 and before["affect.satisfaction"] == 0.3
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+    events, intentions = world.appraisals.affect_events, world.store.intentions
+    for broken in ("appraisals", "intentions"):
+        world.shift(minutes=1)
+        if broken == "appraisals":
+            world.appraisals.affect_events = locked
+        else:
+            world.store.intentions = lambda *a, **k: locked() if "since" in k else intentions(*a, **k)
+        result = world.update()
+        assert result["unread"] == ["appraisal events" if broken == "appraisals" else "intention events"]
+        assert FRUSTRATION_KEY in world.rows(), "a failed read is not erased evidence"
+        assert result["switch"] == [TOPIC] and world.affect.note_for(TOPIC), "the consumers keep the last full view"
+        assert world.affect.view().dismissals == 2
+        world.appraisals.affect_events, world.store.intentions = events, intentions
+        world.shift(minutes=1)
+        assert world.update()["applied"] == 0 and "unread" not in world.update()
+    after = {key: round(row["level"], 3) for key, row in world.rows().items() if row["level"]}
+    assert after == pytest.approx(before, abs=0.01)
+    assert world.affect.view().satiated is True and world.level("affect.satisfaction") < 0.5
+    # A source that stays unreadable is not papered over for long: after STALE_VIEW the view is recomposed
+    # from what can be read (here without the owner's reports, so no dismissal is counted).
+    world.appraisals.affect_events = locked
+    for minutes in range(1, 12):
+        world.shift(minutes=1)
+        world.update()
+        assert world.affect.view().dismissals == (2 if minutes <= 10 else 0)
+    assert FRUSTRATION_KEY in world.rows()
 
 
 def test_each_event_applies_once_across_updates_and_restarts(world):
