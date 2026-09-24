@@ -229,3 +229,32 @@ def test_the_graph_only_leftovers_are_gone():
     assert "MATCH (" not in inspect.getsource(aggregators)
     assert not hasattr(AgentStore, "sign_node_certificate")
     assert "protagine_key_manager" not in inspect.signature(AgentStore).parameters
+
+
+RETIRED_WORDS = re.compile(r"neo4j|graph|world.?model|belief engine|beliefs\.engine|chain|genesis"
+                           r"|continuous.?learner|protagine-id|node.?cert", re.I)
+
+
+def test_the_sidecar_starts_on_a_fresh_state_dir_without_a_word_about_a_retired_subsystem(tmp_path, monkeypatch, caplog):
+    """The deleted wiring lived in the lifespan, which the route and import checks never run: the whole
+    startup and shutdown on an empty state directory, with every warning it logs read for a retired name."""
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    from protagine.config import write_api_key
+    from protagine.server import create_app
+
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
+    monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
+    write_api_key("smoke-key", tmp_path)
+    caplog.set_level(logging.WARNING)
+    with TestClient(create_app(), base_url="http://127.0.0.1:7777", client=("127.0.0.1", 50000)) as client:
+        assert client.get("/v1/host/health", headers={"Authorization": "Bearer smoke-key"}).status_code == 200
+        assert client.get("/v1/mind/state", headers={"Authorization": "Bearer smoke-key"}).status_code == 200
+    noisy = [f"{record.name}: {record.getMessage()}" for record in caplog.records
+             if record.levelno >= logging.WARNING and RETIRED_WORDS.search(record.getMessage())]
+    assert noisy == []
+    assert not any((tmp_path / name).exists() for name in ("chain.db", "protagine-beliefs.db", "protagine_world_model.db",
+                                                            "protagine-id", "genesis.json", "protagine-keys"))
