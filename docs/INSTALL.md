@@ -5,9 +5,10 @@ Python environment, one adapter package goes into the Python that runs
 `hermes`, and one directory holds everything the instance owns. No patched
 Hermes, no prepared runtime, no keyring.
 
-Supported Hermes releases: `hermes-agent >=0.21.3,<0.22`. You need Python 3.12,
-a Hermes install whose `hermes` executable is on `PATH` (pipx, uv or a venv all
-work) and one OpenAI-compatible chat endpoint, which Hermes already has.
+Supported Hermes releases: `hermes-agent >=0.21.3,<0.22`. You need Python 3.12
+(the packages accept 3.11 to 3.13), a Hermes install whose `hermes` executable
+is on `PATH` (pipx, uv or a venv all work) and one OpenAI-compatible chat
+endpoint, which Hermes already has.
 
 ## Install
 
@@ -16,6 +17,24 @@ pipx install protagine
 protagine init
 hermes gateway restart
 ```
+
+The base package includes the vector store (LanceDB), so these three commands
+produce a sidecar with semantic recall once an embedding endpoint is
+configured; `protagine init` refuses to run in an environment that lacks it.
+Only in-process embedding and reranking need the `vectors` extra
+(`pipx install 'protagine[vectors]'`, which brings PyTorch); a remote
+OpenAI-compatible embeddings endpoint needs nothing more.
+
+pipx builds the sidecar's environment with its default interpreter. Where that
+interpreter is newer than the supported line (a package manager's `python3`
+moves ahead of it), name the one to use, for pipx's own shared environment
+and for Protagine's:
+
+```bash
+PIPX_DEFAULT_PYTHON=$(command -v python3.12) pipx install --python python3.12 protagine
+```
+
+`pipx upgrade` keeps the interpreter an install chose.
 
 `protagine init` asks for your name and messaging handles, the agent's name and
 values, and the autonomy level (`off`, `suggest`, `standard` or `trusted`;
@@ -69,8 +88,9 @@ serving.
 words why it is not `ok`. Degraded means something the sidecar itself runs is
 not working: the source ledger is unreadable, a configured embedder or its
 vector store did not come up, the mind's tick has not run (ten of its
-intervals, at least a quarter hour), or capture jobs have waited over an hour
-without landing. Quiet is not degradation: how long since the last
+intervals, at least a quarter hour; `PROTAGINE_STALE_TICK_HOURS` pins it), or
+capture jobs have waited over an hour without landing
+(`PROTAGINE_STALE_CAPTURE_HOURS`). Quiet is not degradation: how long since the last
 `turns/sync` or `context/assemble` is reported under `temporal.silence_hours`
 and never changes the status, so a fresh install is `ok` before anyone has
 talked to it. `protagine service start` and `protagine service status` report

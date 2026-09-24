@@ -243,6 +243,26 @@ def pip_check(python: Path) -> tuple[bool, str]:
     return result.returncode == 0, output
 
 
+VECTOR_STORE_MODULE = "lancedb"
+
+
+def vector_store_available() -> bool:
+    """The vector store library imports in this interpreter (the sidecar's own).
+
+    It is a base dependency, so a missing module means a broken install, and
+    a sidecar started without it would serve keyword recall only.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(VECTOR_STORE_MODULE) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+VECTOR_STORE_REMEDY = ("the vector store library (lancedb) is not importable in this interpreter; reinstall the "
+                       "sidecar: pipx install --force protagine (or pip install protagine into its environment)")
+
+
 def protagine_in_hermes_environment(python: Path) -> bool:
     result = _run([python, "-I", "-c",
                    "import importlib.metadata as m; m.version('protagine')"], timeout=60)
@@ -1100,6 +1120,8 @@ def run_init(args) -> int:
         return run_uninstall(args)
     non_interactive = bool(getattr(args, "non_interactive", False))
     try:
+        if not vector_store_available():
+            raise InitError(VECTOR_STORE_REMEDY)
         home = configuration.instance_home(getattr(args, "home", None))
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         if is_legacy_instance(home):
@@ -1191,6 +1213,8 @@ def run_init(args) -> int:
 def run_upgrade(args) -> int:
     """``protagine upgrade``: backup, migrations, adapter, config reconcile, service restart."""
     try:
+        if not vector_store_available():
+            raise InitError(VECTOR_STORE_REMEDY)
         home = configuration.instance_home(getattr(args, "home", None))
         notes: list[str] = []
         if is_legacy_instance(home):

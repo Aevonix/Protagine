@@ -95,3 +95,15 @@ def test_sidecar_check_warns_when_the_running_sidecar_has_few_open_files(monkeyp
     _serve(monkeypatch, {"/v1/host/health": (200, {"status": "ok"}), "/v1/mind/state": (200, {})})
     results = {r.name: r for r in check_sidecar("http://127.0.0.1:7777", "key", 5)}
     assert results["open-files"].status == SKIP
+
+
+def test_vector_store_check_fails_when_the_library_is_missing(monkeypatch):
+    import importlib.util
+    from protagine.doctor import check_vector_store
+    assert check_vector_store().status == PASS
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a, **k: None if name == "lancedb" else real(name, *a, **k))
+    result = check_vector_store()
+    assert result.status == FAIL and "pipx install --force protagine" in result.remedy
+    assert doctor.run_local_checks()[0].name == "vector-store"

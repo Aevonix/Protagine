@@ -110,6 +110,10 @@ protagine init
 hermes gateway restart
 ```
 
+The package includes the vector store; where pipx's default interpreter is
+newer than 3.13, add `--python python3.12` (the
+[install guide](docs/INSTALL.md) has the full line).
+
 `protagine init` asks for your name, the agent's name and the autonomy level,
 then installs the adapter into Hermes' own environment, writes the Hermes keys
 it needs and creates the `protagine-act` worker profile. It never restarts a

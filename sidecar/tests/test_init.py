@@ -291,3 +291,25 @@ def test_init_repeats_a_degraded_health_verdict_in_words(homes, monkeypatch, cap
     output = capsys.readouterr().out
     assert ("and running; health degraded: semantic recall is off: the embedder (provider=openai_api, model=m) "
             "did not initialise: ValueError: dimension 4096 differs from the configured 384") in output
+
+
+def test_init_refuses_an_environment_without_the_vector_store(homes, monkeypatch, capsys):
+    """A sidecar without its vector store would serve keyword recall only; init says so and stops."""
+    home, hermes_home = homes
+    monkeypatch.setattr(init, "vector_store_available", lambda: False)
+    assert init.run_init(_args(home, hermes_home)) == 1
+    assert "lancedb" in capsys.readouterr().out and not (home / "protagine.yaml").exists()
+
+
+def test_upgrade_refuses_an_environment_without_the_vector_store(homes, monkeypatch, capsys):
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home)) == 0
+    capsys.readouterr()
+    before = _snapshot(home)
+    monkeypatch.setattr(init, "vector_store_available", lambda: False)
+    upgrade = SimpleNamespace(home=str(home), hermes_home=str(hermes_home), hermes_python=HERMES_PYTHON,
+                              adapter_source=ADAPTER_SOURCE)
+    assert init.run_upgrade(upgrade) == 1
+    assert "lancedb" in capsys.readouterr().out
+    assert _snapshot(home) == before, "nothing was backed up, migrated or rewritten"
+    assert not any(path.is_dir() for path in (home / "backups").glob("*")), "no upgrade backup was taken"

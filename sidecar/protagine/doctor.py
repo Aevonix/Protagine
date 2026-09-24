@@ -9,6 +9,7 @@ Seven things can be wrong with an install, and each has one remedy:
 - the sidecar is not reachable with the key
 - the plugin is not loaded (not enabled, or not installed where Hermes runs)
 - semantic recall is configured (``router.embed_url``) but the embedder is not serving
+- the vector store library is missing from the sidecar's own environment
 
 Local checks read files and run Hermes' Python; the sidecar check talks HTTP
 and degrades to a failure with the start command when the sidecar is down.
@@ -277,8 +278,19 @@ def check_plugin_loaded() -> CheckResult:
     return CheckResult("plugin-loaded", PASS, detail="plugin enabled and its entry points registered")
 
 
+def check_vector_store() -> CheckResult:
+    """The vector store library imports in the sidecar's own interpreter."""
+    import sys
+    from protagine.init import VECTOR_STORE_MODULE, VECTOR_STORE_REMEDY, vector_store_available
+    if not vector_store_available():
+        return CheckResult("vector-store", FAIL, detail=f"{VECTOR_STORE_MODULE} is not importable in {sys.executable}",
+                           remedy=VECTOR_STORE_REMEDY)
+    return CheckResult("vector-store", PASS, detail=f"{VECTOR_STORE_MODULE} importable in {sys.executable}")
+
+
 def run_local_checks() -> List[CheckResult]:
     results: List[CheckResult] = []
+    results += _run("vector-store", check_vector_store)
     results += _run("config", check_config)
     results += _run("api-key", check_api_key)
     results += _run("identity", check_identity)
