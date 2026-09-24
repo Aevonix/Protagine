@@ -139,9 +139,12 @@ audit log, the outbox, outcomes and the off switch. The design is in
    check-in is owed (satiation does not hold it) and exists only while it is
    due: one the contact answered first is cancelled. A sent check-in is
    scored when its window (the cadence, else 24 h) passes: `actioned` if the
-   contact talked after it, `ignored` if not, on `check_in:social` and
-   `reach_out:<contact>`; a later reply turns the newest ignored check-in
-   `actioned`. A message to a contact with no text is composed
+   contact talked after it, `ignored` if not, on `reach_out:<contact>` only
+   (one silent contact never lowers check-ins with everyone); a later reply
+   turns the newest ignored check-in `actioned`, and an ask for a check-in
+   that expired teaches nothing (the owner's silence is not the contact's).
+   The multiplier orders due check-ins and never gates one: eligibility uses
+   the score without feedback, so the backoff above is the only brake. A message to a contact with no text is composed
    (`P/mind/compose.py`, task `mind_compose`, one tool-less call, no
    fallback, 300 tokens) from an enumerated purpose (`check_in`,
    `follow_up:<id>`, `reply_wait:<id>`), the contact's name, the topic and

@@ -245,6 +245,8 @@ class Outcomes:
         # A cancellation while the mind is off is the switch, and one the world caused (the
         # obligation resolved itself) is not the owner's verdict on the type either.
         enabled = getattr(self.authority, "enabled", True) if self.authority is not None else True
+        # An expired ask for a check-in is the owner's silence, not the contact's: it teaches nothing.
+        implicit_verdict = implicit_verdict and not (outcome == "expired" and row.drive == "social")
         verdict = row.verdict or (IMPLICIT_VERDICT.get(outcome) if enabled and implicit_verdict else None)
         updated = self.store.transition(
             row.id, status, action=f"outcome_{outcome}", at=now,
@@ -300,7 +302,9 @@ class Outcomes:
         if row is None or self.feedback is None:
             return
         outcome = {"useful": "actioned", "not_useful": "dismissed", "wrong": "dismissed"}.get(verdict, verdict)
-        keys = [f"{row.type}:{row.drive}"]
+        # A check-in teaches the timing with that one contact: one silent contact must not lower
+        # check-ins with everyone, so a social outcome feeds only ``reach_out:<contact>``.
+        keys = [] if row.drive == "social" else [f"{row.type}:{row.drive}"]
         if row.kind == "message" and row.entity_id:
             keys.append(f"reach_out:{row.entity_id}")
         for key in keys:

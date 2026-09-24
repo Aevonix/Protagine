@@ -14,6 +14,9 @@ weight in the score and leaves the threshold alone, so a satisfied drive holds
 new self-work until the satiety decays. An obligation, a notice or the step of
 an adopted goal is owed whatever the drive's satiety; for those satiation only
 orders. Affect arrives with its own milestone; until then ``affect_mod`` is 1.
+A social check-in is the exception to the multiplier gating: ``evaluate_outreach``
+already found it due (its backoff is the brake on silence), so its eligibility uses the
+score without feedback and the multiplier only orders it (architecture 4.7 item 6).
 """
 
 from __future__ import annotations
@@ -129,6 +132,14 @@ def rank(candidates: Iterable[Candidate], *, drives: Mapping[str, float] | None 
     return scored
 
 
+def _gated(candidate: Candidate, value: float, *, drives: Mapping[str, float] | None, affect_mod: float) -> float:
+    """What eligibility compares with the threshold: the effective score, or for a social check-in
+    the score without feedback (replies and silence order check-ins; they never switch one off)."""
+    if candidate.drive == "social":
+        return score(candidate, drives=drives, feedback=None, affect_mod=affect_mod)
+    return value
+
+
 def pick(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_THRESHOLD,
          drives: Mapping[str, float] | None = None, base: Mapping[str, float] | None = None,
          feedback: Any = None, affect_mod: float = 1.0) -> Tuple[Optional[Candidate], float]:
@@ -142,7 +153,8 @@ def pick(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_THRE
     if not ranked:
         return None, 0.0
     best, best_score = ranked[0]
-    if weight_of(best, drives) > 0 and best_score >= threshold_for(best, threshold, _floor(best, drives, base)):
+    if (weight_of(best, drives) > 0 and _gated(best, best_score, drives=drives, affect_mod=affect_mod)
+            >= threshold_for(best, threshold, _floor(best, drives, base))):
         return best, best_score
     return None, best_score
 
@@ -154,7 +166,8 @@ def eligible(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_
     return [(candidate, value) for candidate, value in
             rank(candidates, drives=drives, feedback=feedback, affect_mod=affect_mod)
             if weight_of(candidate, drives) > 0
-            and value >= threshold_for(candidate, threshold, _floor(candidate, drives, base))]
+            and _gated(candidate, value, drives=drives, affect_mod=affect_mod)
+            >= threshold_for(candidate, threshold, _floor(candidate, drives, base))]
 
 
 __all__ = ["Candidate", "DEFAULT_ACT_THRESHOLD", "eligible", "feedback_multiplier", "pick", "rank", "satiable",

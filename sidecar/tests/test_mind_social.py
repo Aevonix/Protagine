@@ -336,9 +336,10 @@ async def test_ignored_check_ins_back_off_at_the_familys_ticks(make):
     assert [item["type"] for item in second_tick["formed"]] == ["check_in"]
     second, = await fx.send_all()
     assert second["id"] != first["id"]
-    # The first check-in was scored ignored when its window passed: both feedback keys moved.
+    # The first check-in was scored ignored when its window passed: the contact's key moved, the
+    # type key (every contact's check-ins) did not.
     assert fx.store.get(first["id"]).verdict == "ignored"
-    assert fx.feedback.multiplier("check_in:social") == pytest.approx(0.9)
+    assert fx.feedback.multiplier("check_in:social") == 1.0
     assert fx.feedback.multiplier(f"reach_out:{CONTACT}") == pytest.approx(0.9)
     fx.shift(C + PAST)
     third_tick = await fx.tick()
@@ -346,19 +347,22 @@ async def test_ignored_check_ins_back_off_at_the_familys_ticks(make):
     rows = await fx.mind._social_rows(fx.now)
     assert rows[0]["ignored_streak"] == 2 and fx.store.get(second["id"]).verdict == "ignored"
     assert len(fx.messages_to(CONTACT)) == 2
-    # Past the doubled cooldown (four cadences from the second send) the timing allows the next one,
-    # but two ignored check-ins taught the ranker to hold it: 0.9 x 0.95 x 0.9^4 is under 0.6.
+    # Past the doubled cooldown (four cadences from the second send) the next one goes: the
+    # backoff is the brake on silence, and feedback only orders (0.9^2 on the contact's key).
     fx.shift(3 * C)
-    held = await fx.tick()
-    assert held["formed"] == [] and held["below_threshold"] == 1
-    # They come back: the silence they broke is not held against them for good, and the next
-    # check-in is due one cadence after that conversation.
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
+    third, = await fx.send_all()
+    assert fx.feedback.multiplier(f"reach_out:{CONTACT}") == pytest.approx(0.81)
+    # They come back: the silence they broke is not held against them, and the next check-in is
+    # due one cadence after that conversation.
+    fx.shift(C / 2)
     fx.contacts.talk(CONTACT, fx.now)
+    fx.shift(C / 2 + timedelta(minutes=1))   # the third's window has passed; the next is not due yet
     back = await fx.tick()
     assert back["check_ins_scored"] == {"actioned": 1, "ignored": 0} and back["formed"] == []
-    assert fx.store.get(second["id"]).verdict == "actioned"
+    assert fx.store.get(third["id"]).verdict == "actioned"
     assert (await fx.mind._social_rows(fx.now))[0]["ignored_streak"] == 0
-    fx.shift(C + PAST)
+    fx.shift(C / 2 + PAST)
     assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
 
 
@@ -373,7 +377,7 @@ async def test_a_reply_inside_the_window_scores_actioned_resets_the_streak_and_s
     summary = await fx.tick()
     assert summary["check_ins_scored"] == {"actioned": 1, "ignored": 0}
     assert fx.store.get(sent["id"]).verdict == "actioned"
-    assert fx.feedback.multiplier("check_in:social") > 1.0 and fx.feedback.multiplier(f"reach_out:{CONTACT}") > 1.0
+    assert fx.feedback.multiplier("check_in:social") == 1.0 and fx.feedback.multiplier(f"reach_out:{CONTACT}") > 1.0
     assert float(fx.mind.mind_state.get("satiety.social")["level"]) > 0
     rows = await fx.mind._social_rows(fx.now)
     assert rows[0]["ignored_streak"] == 0
@@ -490,8 +494,9 @@ async def test_a_granted_check_in_due_now_is_the_one_word_and_its_topic_carries_
 
 async def test_a_check_in_that_never_went_out_starts_the_next_period(make):
     """An ask the owner let expire, or refused, is neither lost for good nor asked again at once:
-    the next check-in is due one cadence after it ended, and the owner's silence and refusal
-    teach the ranker (0.9 x 0.85 on both keys holds the third below the threshold)."""
+    the next check-in is due one cadence after it ended. The owner's silence teaches nothing (it
+    is not the contact's); a refusal lowers only that contact's key, which orders check-ins and
+    never switches the cadence off: the owner does that with the cadence or the permission."""
     fx = make([contact(CONTACT, may_contact="ask", cadence=CADENCE)])
     fx.shift(C + PAST)
     first, = (await fx.tick())["formed"]
@@ -501,9 +506,52 @@ async def test_a_check_in_that_never_went_out_starts_the_next_period(make):
     fx.shift(C + PAST)
     second, = (await fx.tick())["formed"]
     assert second["type"] == "check_in" and second["status"] == "asked" and second["id"] != first["id"]
+    assert fx.feedback.multiplier(f"reach_out:{CONTACT}") == 1.0 and fx.feedback.multiplier("check_in:social") == 1.0
     refused = await fx.mind.answer(fx.store.get(second["id"]).ask_code, yes=False)
     assert refused.status == "cancelled"
     assert (await fx.tick())["formed"] == []
+    assert fx.feedback.multiplier(f"reach_out:{CONTACT}") < 1.0 and fx.feedback.multiplier("check_in:social") == 1.0
     fx.shift(C + PAST)
-    held = await fx.tick()
-    assert held["formed"] == [] and held["below_threshold"] == 1
+    third, = (await fx.tick())["formed"]
+    assert third["type"] == "check_in" and third["status"] == "asked"
+
+
+# ---------------------------------------------------------------------------
+# Feedback orders check-ins, it never switches a contact off (audit M2)
+# ---------------------------------------------------------------------------
+
+async def test_ignored_check_ins_back_off_to_four_cadences_and_never_switch_the_contact_off(make):
+    """Two ignored check-ins put 0.9^2 on the feedback keys, which used to hold that contact below
+    the act threshold for good; the backoff (cadence x 2^streak, capped at 4) is the only brake."""
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    sent = []
+    step = C / 2
+    for _ in range(48):                       # 24 cadences, nobody ever answers
+        fx.shift(step)
+        await fx.tick()
+        sent += [(fx.now, payload) for payload in await fx.send_all() if payload["recipient"] == CONTACT]
+    assert len(sent) >= 5, [at for at, _ in sent]
+    gaps = [later - earlier for (earlier, _), (later, _) in zip(sent, sent[1:])]
+    assert all(gap <= 4 * C + step for gap in gaps), gaps
+
+
+async def test_expired_check_in_asks_do_not_hold_another_contacts_check_in(make):
+    """Five check-ins the owner never answered expire; the owner's silence is not the contacts'
+    and says nothing about a sixth contact, whose due check-in still goes out."""
+    askers = [contact(f"p-1{n}", may_contact="ask", cadence=CADENCE) for n in range(5)]
+    late = T0 + timedelta(hours=80)
+    fx = make([*askers, contact(CONTACT, may_contact="auto", cadence=CADENCE, first_seen=late)])
+    fx.shift(C + PAST)
+    for _ in range(5):                        # a tick forms a bounded number of asks
+        await fx.tick()
+        fx.shift(timedelta(minutes=1))
+    asked = [row for row in fx.store.intentions(kind=["message"], limit=100) if row.status == "asked"]
+    assert sorted(row.entity_id for row in asked) == sorted(item["contact_id"] for item in askers)
+    fx.now = late + C + PAST                  # past the 72 h ask expiry
+    summary = await fx.tick()
+    expired = [row for row in fx.store.intentions(kind=["message"], limit=100)
+               if row.status == "expired" and row.type == "check_in"]
+    assert len(expired) == 5
+    assert [(item["type"], item["decision"]) for item in summary["formed"] if item.get("recipient", CONTACT) == CONTACT
+            and fx.store.get(item["id"]).entity_id == CONTACT] == [("check_in", "act")]
+    assert fx.feedback.multiplier(f"reach_out:{askers[0]['contact_id']}") == 1.0
