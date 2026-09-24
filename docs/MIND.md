@@ -214,11 +214,16 @@ outcomes and appraisal records of the last 7 days (the owner subject only:
 contacts' turns never move the agent's affect), intention rows, expectation
 misses of the last day, and commitments owed by the owner or the assistant at
 priority 50 or more that are due within 48 h (or undated and made in the last
-day). Each event is applied once (its reference is kept in `affect.applied`)
-as if at its own time and then decayed; an outcome and an appraisal record of
-the same turn on the same topic count once, while every reported occurrence
-counts; evidence that is erased takes its frustration row, topic text
-included, with it. The owner's statements arrive through the appraisal call
+day). Each event is applied once (its reference is kept in `affect.applied`
+until it leaves the 7-day window, so a source that fails to read for a tick
+is never applied again) as if at its own time and then decayed; a task
+reported blocked and then failed is one failure; an outcome and an appraisal
+record of the same turn on the same topic count once, while every reported
+occurrence counts; evidence that is erased takes its frustration row, topic
+text included, with it. Two topics are the same when their words (in any
+script) overlap by 0.6 of the shorter and by two words unless both are that
+short, so one shared word ("the export") does not spread a frustration to
+other work. The owner's statements arrive through the appraisal call
 the projection worker already makes for every turn: its `outcomes` list
 (failed, succeeded, dismissed or corrected, with the topic and the approach
 used; [SOCIAL-STATE.md](SOCIAL-STATE.md)) is stored per owner turn in the

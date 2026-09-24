@@ -485,7 +485,24 @@ def test_topic_matching_is_word_overlap_of_the_smaller_topic():
     assert topic_matches("Quarterly Figures", "the quarterly figures")
     assert not topic_matches("budget draft", "budget figures")
     assert not topic_matches("", "budget") and not topic_matches("budget", "")
-    assert topic_matches("report", "send the owner the weekly report")
+    assert topic_matches("report", "the weekly report") and topic_matches("reports", "report")
+    assert not topic_matches("report", "send the owner the weekly report"), "one word does not spread"
+
+
+def test_a_one_word_topic_does_not_spread_to_other_work(world):
+    """A one-word topic names the work only when the other side is as short: "the export" failing does
+    not switch strategy on an unrelated owed task that mentions exporting, nor does that task's success
+    calm it."""
+    assert not topic_matches("the export", "Export the family photo album for the printer")
+    assert not topic_matches("email", "Reply to Dana's email about Saturday dinner")
+    world.outcome("failed", "the export", hours=1, approach="the archive tool")
+    world.outcome("failed", "the export", hours=0.5, approach="the archive tool")
+    world.update()
+    assert world.affect.note_for("the export task").startswith("Prior attempts at the export failed 2 times")
+    assert world.affect.note_for("Export the family photo album for the printer") == ""
+    world.outcome("succeeded", "export the photo album")
+    world.update()
+    assert [item.topic for item in world.affect.view().frustrations] == ["the export"]
 
 
 def test_topics_in_any_script_keep_their_own_rows_and_match_by_their_words(world):

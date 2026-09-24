@@ -122,12 +122,14 @@ def topic_key(topic: Any) -> str:
 
 def topic_matches(a: Any, b: Any) -> bool:
     """Whether two topic phrases name the same thing: their word sets (``topic_words``) overlap by at
-    least 0.6 of the smaller one."""
+    least 0.6 of the smaller one, and by two words unless both are that short (one shared word is too
+    little to tie "the export" to "export the photo album")."""
     left, right = topic_words(a), topic_words(b)
     if not left or not right:
         first, second = " ".join(str(a or "").split()).casefold(), " ".join(str(b or "").split()).casefold()
         return bool(first) and first == second
-    return len(left & right) >= 0.6 * min(len(left), len(right))
+    shared = len(left & right)
+    return shared >= 0.6 * min(len(left), len(right)) and (shared >= 2 or max(len(left), len(right)) <= 2)
 
 
 def plan_hash(body: Any) -> str:
