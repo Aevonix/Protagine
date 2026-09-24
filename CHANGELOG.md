@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased - evaluation families for the M4 to M9 gates
+
+The pre-registered evaluation families of the proto-AGI plan land as seeded
+dev generators under `benchmarks/paired/generators/`, each with its frozen
+plan under `docs/proto-agi/families/` and its held-out templates kept outside
+the repository. Their arms are built-in profiles: `full` and one ablation per
+faculty (`full-drives`, `full-broadcast`, `full-people`, `full-affect`,
+`full-opinions`, `full-semantic_recall`, `full-consolidation`,
+`full-self_narrative`, `full-lessons`), each `full` with one `minus_<faculty>`
+switch that the worker's mind section turns into `mind.faculties.<name>:
+false`, and `full-plus-skills`; the arm-profile protocol is
+`paired-arm-profiles-4`. A faculty whose code has not
+landed yet still has its flag served, so its ablation is a no-op contrast
+until its milestone. `mind-drives-1` (M4) adds the `selection` and `goal` body
+oracles, `mind-people-1` (M5) the per-target `sends` and inbound `replies`
+checks, and `mind-affect-1` (M6) decision-turn episodes graded on a JSON file;
+its rules mechanism arm stays a profile file because `mind.affect_rules` does
+not exist yet.
+
+The opinions evaluation family `mind-opinions-1` (evals section 6.5, the M7
+gate) ships as dev templates under `benchmarks/paired/generators/opinions.py`
+with its plan in `docs/proto-agi/families/mind-opinions-1.md`: twelve
+templates in four groups (pushback, pseudo-evidence, evidence, flawed-plan)
+around one shape, a stance formed from seeded records under a stated rule, a
+process restart, and a probe graded by `label_one_of` on the plan and the
+deciding source id, with a checkpoint that proves the stance was formed before
+any pressure. For it, a generated scenario may carry the frozen workflow
+contract (`restart_before`, `snapshot_after`) and oracle `checkpoints`, the
+loader and `cases()` pass them to the restart supervisor and the workflow
+grader, a plan with restarts refuses an image without the workflow protocol,
+and `Draw.source()` yields fixed-width `s-NN` source ids. Engine edits move
+every family's dev split content hash while the scenario bytes stay the same;
+the generators README records both.
+
+The memory and identity families for the M8 gate arrive as dev templates:
+`mind-memory-1` (`--family memory`, six recall types and two abstention
+controls graded on an `answer.json` the probe asks for) and `mind-self-1`
+(`--family identity`, a stance after a restart, a false and a true premise
+about the agent's own actions, and self-reports graded against the action ids
+the harness observed). Generated scenarios may now declare a process restart
+(`workflow`, the frozen workflows' contract) and seeded history (`history`,
+imported into Hermes `state.db` in every arm and into the Protagine ledger in
+plugin arms before the first turn, without model calls); the plan refuses an
+image whose worker lacks either protocol. The `self_report` oracle checks a
+`{actions, reasons}` file for fabricated ids, missing actions and drive
+labels. The LongMemEval_S anchor renderer
+(`benchmarks/paired/anchors/longmemeval_s.py`) selects ten short-answer
+questions per ability from a dataset fetched at run time and renders them with
+their haystack sessions as history into an `anchor` split. The arms are the
+built-in `full-semantic_recall`, `full-consolidation` and
+`full-self_narrative`. The frozen plan is
+`docs/proto-agi/families/mind-memory-1.md`.
+
+The self-improvement family `mind-improve-1` (evals plan 6.8, build plan M9)
+ships as `benchmarks/paired/generators/improve.py`: eight campaign designs
+over invented procedures (procedure, retrieval and tool-misuse classes), each
+a fifteen-day episode in one container with six training days whose verdicts
+carry the right result, eight held-out probe days at fixed positions (six
+warranted, an out-of-scope control and an unverified-rule control) and an
+old-family probe embedded from the frozen guard set. Probes are workspace
+files graded by the existing artifact checks, and each artifact spec carries
+`probe` metadata so a campaign report can take the probe as its unit and the
+campaign as its cluster. Its arms are the built-in `full-lessons` (the
+comparator) and `full-plus-skills` (`full` with the one faculty that ships
+off turned on, through the new `plus_skills` switch), beside `full` and
+`base-curator`; the plan is `docs/proto-agi/families/mind-improve-1.md`.
+
 ## Unreleased - initiative quality: capture that lands before the mind decides
 
 The self-initiative gate (`docs/proto-agi/PROTO-AGI-EVALS.md` 6.2) came out

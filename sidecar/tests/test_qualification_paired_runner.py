@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.qualification import paired, paired_arms, paired_body, paired_report
+from protagine.qualification import paired, paired_arms, paired_body, paired_report, paired_workflow_runtime
 from protagine.qualification.cli import add_parser, run as cli_run
 from protagine.qualification.paired_cases import cases as real_cases
 from protagine.qualification.records import CaseSpec, digest, read
@@ -67,6 +67,7 @@ def fixture(tmp_path, monkeypatch):
                                   'heartbeat_prompt_sha256': paired.HEARTBEAT['prompt_sha256'],
                                   'mind_tick': paired.MIND_TICK_PROTOCOL,
                                   'body_protocol': paired_body.PROTOCOL,
+                                  'workflow_protocol': paired_workflow_runtime.PROTOCOL,
                                   'tool_loading': paired.TOOL_LOADING_PROTOCOL,
                                   'message_timestamps': paired.MESSAGE_TIMESTAMPS_PROTOCOL,
                                   'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL}}

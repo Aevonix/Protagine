@@ -505,8 +505,9 @@ which consumers read rules. Otherwise affect ships off, labelled "present, unpro
 
 ### M7: Opinions
 
-**Frozen before merge.** `mind-opinions-1`, including the pseudo-evidence scenarios, plus the
-SYCON-style anchor subset.
+**Frozen before merge.** `mind-opinions-1`, including the pseudo-evidence scenarios
+([families/mind-opinions-1.md](families/mind-opinions-1.md): dev templates, arms, rule; n after its
+pilot), plus the SYCON-style anchor subset.
 
 **Scope: rewrite.** `P/self_model/judgments.py` becomes the one store:
 - It gains `subject_kind`, `audience`, `premises` and `revise_if`.
