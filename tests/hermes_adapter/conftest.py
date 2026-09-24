@@ -181,6 +181,7 @@ class FakeSidecar:
         self.mind_routes = False
         self.mind = FakeMind()
         self.contacts = {key: dict(value) for key, value in CONTACTS.items()}
+        self.told: dict[str, list[str]] = {}   # what each contact said in synced turns, recalled by contact
         self.lock = threading.Lock()
         sidecar = self
 
@@ -279,10 +280,15 @@ class FakeSidecar:
         if path == "/v1/host/turns/sync":
             if not isinstance(body, dict) or not body.get("context", {}).get("contact_id"):
                 return 422, {"detail": "contact_id required"}
+            self.told.setdefault(body["context"]["contact_id"], []).append(
+                str((body.get("user_message") or {}).get("content") or ""))
             return 200, {"accepted": True, "continuity_updated": True, "source_recorded": True}
         if path == "/v1/host/context/assemble":
             audience = body.get("audience") if isinstance(body, dict) else None
             shared = [{"id": "shared", "title": "Shared", "body": "shared facts", "priority": 50}]
+            told = self.told.get(str((body.get("context") or {}).get("contact_id") or ""), [])
+            if told:   # recall by contact, whatever session or channel the words arrived on
+                shared.append({"id": "protagine-memory", "title": "Recalled", "body": "\n".join(told), "priority": 90})
             if audience == "viewer" or body.get("projection_policy"):
                 return 200, {"sections": shared}
             return 200, {"sections": [{"id": "private", "title": "Owner notes", "body": CANARY, "priority": 90},

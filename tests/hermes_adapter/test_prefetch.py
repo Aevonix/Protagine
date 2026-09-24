@@ -106,3 +106,31 @@ emit(tools=[s["name"] for s in unbound.get_tool_schemas()],
     assert result["call"]["unavailable"] is True and result["call"]["retry"] is False
     assert "protagine_resolve_commitment" in result["cli_tools"]
     assert "protagine_list_goals" not in result["cli_tools"] and "protagine_get_patterns" not in result["cli_tools"]
+
+
+def test_a_fact_told_on_one_channel_reaches_the_owners_prefetch_on_another(home, sidecar):
+    """Build plan M8 acceptance 1 through the adapter: the owner's senders on two platforms resolve to one
+    contact, so what they said in session A on one channel is recalled in session B on the other (the real
+    recall behind it is test_memory_identity_acceptance); a guest's prefetch never gets it."""
+    sidecar.contacts[("signal", "+15550001")] = {"contact_id": OWNER, "display_name": "Owner",
+                                                "interaction_allowed": True, "trust_tier": "GENESIS"}
+    home.write_config(**{**home.config, "plugins": {**home.config["plugins"], "enabled": []}})
+    result = probe('''
+tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="1001", session_id="tg-a")
+provider.sync_turn("My office is room 4, by the lifts.", "Noted.", session_id="tg-a", turn_id="tg-a-1")
+provider._sync_thread.join(10)
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="signal", user_id="+15550001", chat_id="+15550001", session_id="sg-b")
+owner = provider.prefetch("Which room is my office in?", session_id="sg-b")
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_id="guest-c")
+guest = provider.prefetch("Which room is the office in?", session_id="guest-c")
+clear_session_vars(tokens)
+emit(owner=owner, guest=guest)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert "room 4, by the lifts" in result["owner"] and "room 4" not in result["guest"]
+    synced, = sidecar.calls("/v1/host/turns/sync", "POST")
+    assert synced["json"]["context"]["contact_id"] == OWNER and synced["json"]["context"]["channel_id"] == "telegram:1001"
+    assembled = sidecar.calls("/v1/host/context/assemble", "POST")
+    assert [(c["json"]["context"]["contact_id"], c["json"]["context"]["session_id"]) for c in assembled] == [
+        (OWNER, "sg-b"), ("p-03", "guest-c")]
