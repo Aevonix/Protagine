@@ -359,9 +359,7 @@ async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str]
         since = mind.clock() - timedelta(hours=max(0.0, float(since_hours)))
     entries = audit.log(mind.store, limit=max(1, min(int(limit), 500)), since=since,
                         status=[s for s in (status or "").split(",") if s] or None,
-                        kind=[k for k in (kind or "").split(",") if k] or None)
-    if recipient:
-        entries = [entry for entry in entries if entry.get("recipient") == recipient]
+                        kind=[k for k in (kind or "").split(",") if k] or None, recipient=recipient or None)
     return {"entries": entries, "text": audit.render_log(entries)}
 
 

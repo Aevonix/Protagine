@@ -89,6 +89,16 @@ def test_log_filters_by_since_hours_and_recipient(stand_in):
     assert _call("GET", "/v1/mind/log", params={"since_hours": 24, "kind": "task"}).json()["entries"][0]["id"] == task
 
 
+def test_the_recipient_filter_selects_before_the_limit(stand_in):
+    """"Did I message p-07?" must find the message however many newer rows there are: the tool tells the
+    agent that what is not in the log did not happen."""
+    sent = _row(stand_in.store, "message to p-07", kind="message", recipient="p-07", age=timedelta(hours=3))
+    for index in range(20):
+        _row(stand_in.store, f"note {index}", age=timedelta(minutes=index))
+    answer = _call("GET", "/v1/mind/log", params={"since_hours": 24, "recipient": "p-07"}).json()["entries"]
+    assert [entry["id"] for entry in answer] == [sent]
+    assert [entry["id"] for entry in _call("GET", "/v1/mind/log", params={"recipient": "p-07", "limit": 1}).json()["entries"]] == [sent]
+
 def test_why_names_the_missing_intention(stand_in):
     response = _call("GET", "/v1/mind/why/nope")
     assert response.status_code == 404

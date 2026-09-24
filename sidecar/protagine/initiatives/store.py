@@ -977,10 +977,14 @@ class InitiativeStore:
         kind: Optional[List[str]] = None,
         since: Optional[datetime] = None,
         limit: int = 100,
+        recipient: Optional[str] = None,
     ) -> List[StoredInitiative]:
-        """Mind rows (those with a ``kind``), newest first."""
+        """Mind rows (those with a ``kind``), newest first; ``recipient`` selects before the limit."""
         query = "SELECT * FROM initiatives WHERE kind IS NOT NULL"
         params: List[Any] = []
+        if recipient:
+            query += " AND entity_id = ?"
+            params.append(recipient)
         if status:
             query += f" AND status IN ({','.join('?' * len(status))})"
             params.extend(status)

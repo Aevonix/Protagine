@@ -74,8 +74,11 @@ def is_action(entry: Dict[str, Any]) -> bool:
 
 
 def log(store: Any, *, limit: int = 20, since: Optional[datetime] = None,
-        status: Optional[List[str]] = None, kind: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    return [entry(row) for row in store.intentions(status=status, kind=kind, since=since, limit=limit)]
+        status: Optional[List[str]] = None, kind: Optional[List[str]] = None,
+        recipient: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Newest first; every filter, ``recipient`` included, selects before ``limit`` applies."""
+    extra = {"recipient": recipient} if recipient else {}
+    return [entry(row) for row in store.intentions(status=status, kind=kind, since=since, limit=limit, **extra)]
 
 
 def why(store: Any, intention_id: str) -> Optional[Dict[str, Any]]:
