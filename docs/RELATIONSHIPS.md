@@ -145,6 +145,11 @@ On every synced turn:
 - The comms ledger row carries the real `channel_id` (group, DM or voice).
 - Affect and facts extraction runs against the resolved contact; `system`
   turns skip it entirely.
+- A turn sent without a session (`context.session_id` empty, such as a gateway
+  recording a dispatched task's result) becomes its own session: `derived:` and a
+  digest of the caller's principal and the envelope. A retry lands on the same
+  session and source, so replays and conflicts behave as with any session. A
+  checkpoint or an input-linked answer still needs the caller's session.
 
 ### 4. ToM boundary validation
 

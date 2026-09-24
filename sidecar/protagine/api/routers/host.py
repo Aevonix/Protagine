@@ -2413,6 +2413,30 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             "host_reconciliation_detail": "The erasure feed is available at this watermark; this response does not measure which hosts have applied it."}
 
 
+DERIVED_SESSION_PREFIX = "derived:"
+
+
+def _derive_missing_session(body: TurnSyncRequest, request: Request | None) -> None:
+    """Give a turn sent without a session one derived from its caller and itself.
+
+    A caller that observes work outside any conversation (a voice gateway posting a
+    dispatched task's result) sends ``session_id: ""``; its source was refused. The turn
+    becomes its own session: a digest of the caller's principal and the envelope, so a
+    retry of the same turn lands on the same session, source and reservation (replays
+    stay replays, changed content under a turn ID stays a conflict), and two principals
+    never share one. A checkpoint is a session's own transcript and an input-linked
+    answer resolves its parents in the caller's session: both still need the caller's.
+    """
+    if body.context.session_id.strip() or body.checkpoint_messages is not None or body.assistant_input_refs:
+        return
+    from protagine.api.auth import request_authority
+    from protagine.turns import canonical_turn_digest
+    body.context.session_id = ""
+    basis = canonical_turn_digest({"principal": request_authority(request).principal_id,
+                                   "turn": body.model_dump(mode="json")})
+    body.context.session_id = DERIVED_SESSION_PREFIX + basis[:32]
+
+
 async def _ingest_turn_idempotently(
     body: TurnSyncRequest,
     request: Request | None = None,
@@ -2424,6 +2448,7 @@ async def _ingest_turn_idempotently(
     effects run. This is the server's final defense even when a host retries or
     two host integrations accidentally submit the same envelope.
     """
+    _derive_missing_session(body, request)
     resolved_sender_contact_id = None
     turn_id = (body.context.turn_id or "").strip()
     if not turn_id:

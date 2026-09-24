@@ -24,15 +24,14 @@ def turn(session_id, turn_id="task-observe-1", **context):
 
 
 @pytest.mark.asyncio
-async def test_a_turn_without_a_session_is_refused_with_the_reason(source_app):
+async def test_a_refused_turn_is_answered_with_the_reason(source_app):
+    # A turn without a session is no longer refused: it gets a derived one (test_sessionless_turns.py).
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
-        response = await client.post("/v1/host/turns/sync", json=turn(""))
-        assert response.status_code == 422, response.text
-        detail = response.json()["detail"]
-        assert detail["code"] == INVALID_REQUEST and detail["message"] == "source requires session_id"
         naive = await client.post("/v1/host/turns/sync", json=turn("session-a", "task-observe-2",
                                                                     metadata={"occurred_at": "2026-01-01T00:00:00"}))
-        assert naive.status_code == 422 and "timezone" in naive.json()["detail"]["message"]
+        assert naive.status_code == 422, naive.text
+        detail = naive.json()["detail"]
+        assert detail["code"] == INVALID_REQUEST and "timezone" in detail["message"]
         accepted = await client.post("/v1/host/turns/sync", json=turn("session-a", "task-observe-3"))
         assert accepted.status_code == 200 and accepted.json()["source_recorded"] is True
 
