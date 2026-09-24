@@ -231,12 +231,14 @@ listed.
 ### 9. Per-contact digest
 
 `contacts.digest` (with `digest_sources`) is a short template record of a
-person: who they are, how they are known, the permission, the cadence, when
-you last talked, what is open and their top claims. The mind writes it daily
-for contacts with a conversation in the last day (`store.set_digest`).
-`protagine_people inspect` shows it to the owner and context assembly shows it
-as "About this person" when that person is the viewer. It replaces the old
-relationship briefs.
+person: who they are, how they are reachable, when you last talked, what is
+open and the top claims from their own sources. It never carries what the
+owner set for them (permission, cadence, who introduced them): the digest is
+shown as "About this person" when that person is the viewer and composes the
+messages sent to them, so those stay in the owner's `inspect`, read from the
+columns. The mind writes it daily for contacts with a conversation in the last
+day (`store.set_digest`, sources `["template"]`). With the people faculty off
+there is no digest section. It replaces the old relationship briefs.
 
 ### 10. Remediation of poisoned history (deployment runbook)
 

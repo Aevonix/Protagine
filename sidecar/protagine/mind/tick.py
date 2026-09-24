@@ -28,7 +28,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Opti
 from zoneinfo import ZoneInfo
 
 from protagine.contacts.comms import conversation_cadence_minutes
-from protagine.contacts.digest import render_digest
+from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
@@ -1513,10 +1513,9 @@ class Mind:
         if self.commitments is not None and hasattr(self.commitments, "get_pending_for_person"):
             counts["open"] = len(self.commitments.get_pending_for_person(contact_id))
         record = {**record, "handles": await self._handles(contact_id)}
-        text = render_digest(record, claims=claims, counts=counts, cadence_minutes=record.get("cadence_minutes"),
-                             may_contact=str(record.get("may_contact") or "ask"),
-                             last_interaction_at=record.get("last_interaction_at"), now=now)
-        await self.contacts.set_digest(contact_id, text, [])
+        text = render_digest(record, claims=claims, counts=counts, last_interaction_at=record.get("last_interaction_at"),
+                             now=now)
+        await self.contacts.set_digest(contact_id, text, list(TEMPLATE_SOURCES))
 
     # -- digest ----------------------------------------------------------------------------
 

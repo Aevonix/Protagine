@@ -1,11 +1,14 @@
 """The per-contact template digest (architecture 4.7 item 4).
 
-Who the person is, how they are known, whether and how often they may be
-messaged, when the agent last talked with them, what is open, and the top
-claims about them, in at most ``MAX_CHARS`` characters. The mind writes it
-daily for contacts with a recent interaction (``Mind._digests``); the
-recipient-scoped packet and ``protagine_people inspect`` read the column. The
-LLM digest that consolidates it arrives with the memory milestone.
+Who the person is, how they are reachable, when the agent last talked with
+them, what is open, and what they have said themselves (their own sources'
+claims), in at most ``MAX_CHARS`` characters. The digest is read in the
+contact's own context ("About this person") and composes messages to them, so
+it never carries what the owner set for them: permission, cadence and who
+introduced them stay in the owner's ``protagine_people inspect``, read from the
+columns. The mind writes it daily for contacts with a recent interaction
+(``Mind._digests``), with sources ``["template"]``; the LLM digest that
+consolidates it arrives with the memory milestone.
 """
 
 from __future__ import annotations
@@ -44,8 +47,11 @@ def _field(contact: Any, name: str, default: Any = None) -> Any:
     return getattr(contact, name, default)
 
 
-def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, Any], cadence_minutes: Optional[int],
-                  may_contact: str, last_interaction_at: Any, now: datetime) -> str:
+TEMPLATE_SOURCES = ["template"]
+
+
+def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, Any], last_interaction_at: Any,
+                  now: datetime) -> str:
     """The digest text, at most ``MAX_CHARS`` characters (an ellipsis marks a cut)."""
     contact_id = str(_field(contact, "contact_id", "") or "")
     name = str(_field(contact, "display_name", None) or _field(contact, "given_name", None) or contact_id or "unknown")
@@ -55,9 +61,6 @@ def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, A
     first_seen = _utc(_field(contact, "first_seen_at", None))
     if first_seen is not None:
         known.append(f"known since {first_seen.date().isoformat()}")
-    source = str(_field(contact, "import_source", "") or "")
-    if source:
-        known.append(f"via {source}")
     handles = _field(contact, "handles", None) or []
     rendered = [f"{h.get('gateway')}:{h.get('address')}" for h in handles
                 if isinstance(h, Mapping) and h.get("gateway") and h.get("address")][:3]
@@ -65,8 +68,6 @@ def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, A
         known.append("reachable at " + ", ".join(rendered))
     if known:
         parts.append("Known: " + "; ".join(known) + ".")
-    parts.append(f"May be messaged: {may_contact or 'ask'}; "
-                 + (f"cadence every {int(cadence_minutes)} min." if cadence_minutes else "no cadence set."))
     last = _utc(last_interaction_at)
     conversations = int(_field(contact, "interaction_count", 0) or 0)
     if last is None:
@@ -91,4 +92,4 @@ def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, A
     return text
 
 
-__all__ = ["MAX_CHARS", "MAX_CLAIMS", "render_digest"]
+__all__ = ["MAX_CHARS", "MAX_CLAIMS", "TEMPLATE_SOURCES", "render_digest"]
