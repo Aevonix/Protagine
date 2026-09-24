@@ -67,6 +67,15 @@ class FakeMind:
         self.sent: list[dict] = []
         self.pulls = 0
         self.last_pull_at = None
+        # Protagine's skills (M9): the generation the sidecar bumps on every skill change, read from a JSON
+        # file a probe can rewrite as the sidecar would ({"generation": n}); and the loads reported to it.
+        self.skills_state: Path | None = None
+        self.skill_loads: list[dict] = []
+
+    def skills(self) -> dict | None:
+        if self.skills_state is None or not self.skills_state.exists():
+            return None
+        return {"enabled": True, "owned": [], **json.loads(self.skills_state.read_text())}
 
     def handle(self, method, path, body, query=None):
         import time as _time
@@ -76,9 +85,16 @@ class FakeMind:
         if head == "state" and method == "GET":
             asks = [{"id": i["id"], "code": i.get("ask_code"), "title": i.get("title"), "expires_at": i.get("expires_at")}
                     for i in self.intentions.values() if i.get("status") == "asked"]
-            return 200, {"enabled": self.enabled, "autonomy": self.autonomy, "level": self.autonomy,
-                         "queued": len([i for i in self.intentions.values() if i.get("status") == "approved"]),
-                         "asks": asks, "last_tick_at": None, "body": {"last_pull_at": self.last_pull_at}}
+            state = {"enabled": self.enabled, "autonomy": self.autonomy, "level": self.autonomy,
+                     "queued": len([i for i in self.intentions.values() if i.get("status") == "approved"]),
+                     "asks": asks, "last_tick_at": None, "body": {"last_pull_at": self.last_pull_at}}
+            if self.skills() is not None:
+                state["skills"] = self.skills()
+            return 200, state
+        if head == "skills" and parts[1:] == ["used"] and method == "POST":
+            self.skill_loads.append(dict(body or {}))
+            counted = str((body or {}).get("skill") or "").startswith("protagine-")
+            return 200, {"ok": True, "counted": counted, "loads": len(self.skill_loads)}
         if head == "dispatch" and method == "GET":
             self.pulls += 1
             self.last_pull_at = _time.time()

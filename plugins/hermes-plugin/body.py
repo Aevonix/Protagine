@@ -17,6 +17,11 @@ the kanban dispatch tick (every 60 s) also wakes it. When the sidecar serves
 4. posts board observations (stale owner tasks, blocked tasks, goal tasks,
    the mind's own tasks and a body heartbeat) to ``POST /v1/mind/observations``
 
+Every mind tick also reads the skills generation from ``/v1/mind/state``: when
+the sidecar reports a change to its skills (written into Protagine's own
+``skills.external_dirs`` entry), Hermes' skills prompt cache is cleared, so the
+next session lists them without a restart.
+
 With the mind off (``GET /v1/mind/state`` says ``enabled: false``, or
 ``protagine.yaml`` does) steps 1 and 2 are skipped and unstarted ``mind:*``
 tasks are archived; nothing here needs a model endpoint. While Hermes is
@@ -312,6 +317,8 @@ class Body:
         self._last_observation: tuple[float, str] | None = None
         self._intentions: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._dispatcher = False  # set once this process's dispatcher ticked: it holds the singleton lock
+        self._skills_generation: int | None = None
+        self._skills_cache_warned = False
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -390,6 +397,7 @@ class Body:
         """Dispatch, outbox, reconciliation and observations, each step on its own."""
         self._mind_ticks += 1
         state = self.client.mind_state() or {}
+        self.skills_changed(state)
         enabled = state.get("enabled") is not False and self.settings.mind().get("enabled") is not False
         held = paused()
         result: dict[str, Any] = {"enabled": enabled, "paused": held, "dispatched": 0, "sent": 0,
@@ -418,6 +426,26 @@ class Body:
                 result[name] = value
         self._last_mind_tick_at = time.time()
         return result
+
+    def skills_changed(self, state: Mapping[str, Any]) -> bool:
+        """Clear Hermes' skills prompt cache when the sidecar's skills generation moved. The first value a
+        process sees is only recorded; without the stock function a new skill appears after a restart."""
+        skills = state.get("skills") if isinstance(state, Mapping) else None
+        generation = skills.get("generation") if isinstance(skills, Mapping) else None
+        if isinstance(generation, bool) or not isinstance(generation, int):
+            return False
+        last, self._skills_generation = self._skills_generation, generation
+        if last is None or last == generation:
+            return False
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+        except ImportError:
+            if not self._skills_cache_warned:
+                logger.info("Hermes has no skills prompt cache to clear; new skills appear after a restart")
+                self._skills_cache_warned = True
+            return False
+        clear_skills_system_prompt_cache()
+        return True
 
     # -- dispatch ------------------------------------------------------------------
 

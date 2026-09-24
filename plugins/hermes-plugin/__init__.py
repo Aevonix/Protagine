@@ -1,7 +1,7 @@
 """Protagine adapter for Hermes: stock seams only.
 
-Registration wires four hooks (``pre_llm_call``, ``post_llm_call``,
-``pre_tool_call``, ``on_kanban_dispatch_tick``), one command (``/mind``), the
+Registration wires five hooks (``pre_llm_call``, ``post_llm_call``,
+``pre_tool_call``, ``on_kanban_dispatch_tick``, ``on_skill_lifecycle``), one command (``/mind``), the
 model tools and one system prompt section (the constitution from
 ``identity.yaml``, the owner, the self-narrative the sidecar keeps and two tool
 notes), then starts the body thread, which delivers captured turns and runs the
@@ -28,7 +28,7 @@ from .tools import Tools
 
 logger = logging.getLogger(__name__)
 
-HOOKS = ("pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick")
+HOOKS = ("pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick", "on_skill_lifecycle")
 TOOLSET = "protagine"
 # The one prompt section, frozen per session by Hermes (architecture 4.2, seam 2): the constitution
 # (<= 1,500 characters), the owner, the self-narrative (<= 800, the sidecar's own cap) and the two tool
@@ -137,6 +137,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_llm_call", capture.post_llm_call)
     ctx.register_hook("pre_tool_call", guard.pre_tool_call)
     ctx.register_hook("on_kanban_dispatch_tick", body.on_dispatch_tick)
+    ctx.register_hook("on_skill_lifecycle", capture.skill_loaded)
     ctx.register_hook("pre_gateway_dispatch", commands.gate(sessions))
 
     ctx.register_command("mind", commands.handler(client, settings, outbox, body),
