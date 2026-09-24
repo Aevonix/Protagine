@@ -119,6 +119,9 @@ class Tools:
         operation = str(args.get("operation") or "")
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
+            if not self._owner(session_id):
+                # The agent's feelings quote the owner's obligations and reports: the owner's own session only.
+                detail.pop("affect", None)
             mind = self.settings.mind()
             return _json({"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
                           "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),

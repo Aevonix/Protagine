@@ -126,9 +126,10 @@ AFFECT = {
     "updated_at": "2026-09-24T09:30:00+00:00"}
 
 
-def test_self_tool_state_carries_affect_levels_and_causes(home, sidecar):
+def test_self_tool_state_carries_affect_levels_and_causes_to_the_owner_only(home, sidecar):
     """``protagine_self state`` shows the agent's own feelings with their cited causes, as the sidecar
-    reports them (``Mind.state()['affect']``), unchanged and to anyone who may read the state."""
+    reports them (``Mind.state()['affect']``), unchanged, to the owner's own session. The block quotes the
+    owner's obligations and reports, so a guest, a cron run or a worker gets the state without it."""
     sidecar.mind_routes = True
     handle = sidecar.mind.handle
 
@@ -137,12 +138,20 @@ def test_self_tool_state_carries_affect_levels_and_causes(home, sidecar):
         return (status, {**value, "affect": AFFECT}) if path.endswith("/state") and method == "GET" else (status, value)
     sidecar.mind.handle = with_affect
     result = probe(TOOL_CODE + '''
-emit(guest=call("protagine_self", {"operation": "state"}, guest()),
-     owner=call("protagine_self", {"operation": "status"}, owner()))
+guest_state = call("protagine_self", {"operation": "state"}, guest())
+cron_state = call("protagine_self", {"operation": "state"}, guest("cron-1", "1001", platform="cron"))
+owner_state = call("protagine_self", {"operation": "status"}, owner())
+import os
+os.environ["HERMES_KANBAN_TASK"] = "t_1"
+worker_state = call("protagine_self", {"operation": "state"}, owner("owner-2"))
+emit(guest=guest_state, cron=cron_state, owner=owner_state, worker=worker_state)
 ''', home)
-    assert result["guest"]["affect"] == AFFECT == result["owner"]["affect"]
+    assert result["owner"]["affect"] == AFFECT
     frustration = result["owner"]["affect"]["levels"]["frustration"][0]
     assert frustration["level"] <= 0.7 and all(cause.startswith("failed outcome:") for cause in frustration["causes"])
+    for other in ("guest", "cron", "worker"):
+        assert "affect" not in result[other] and result[other]["enabled"] is True, other
+        assert "quarterly figures" not in json.dumps(result[other]) and "send the figures" not in json.dumps(result[other])
 
 
 def test_self_tool_approval_needs_the_owner_and_the_typed_code(home, sidecar):
