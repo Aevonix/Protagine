@@ -25,18 +25,14 @@ def usable_handle(handle):
 
 
 def normalized_handle(gateway, address):
-    from .store import _normalize_email, _normalize_phone
+    """The stored form of a handle (C1): the transport gateway with the address in the form
+    ``stored_handle`` writes, so an exact correction finds the row ``add_handle`` created."""
+    from .store import stored_handle
     if not isinstance(gateway, str) or not isinstance(address, str):
         raise ValueError('invalid_identity_handle')
-    gateway, address = gateway.strip().lower(), address.strip()
+    gateway, address = stored_handle(gateway, address)
     if not gateway or len(gateway) > 64 or not address or len(address) > 512:
         raise ValueError('invalid_identity_handle')
-    if gateway == 'rcs':
-        gateway = 'sms'
-    if gateway == 'email':
-        address = _normalize_email(address)
-    elif gateway in ('sms', 'imessage', 'signal'):
-        address = _normalize_phone(address)
     return gateway, address
 
 
@@ -141,6 +137,63 @@ async def correct(store, *, operation_id, performed_by, gateway, address,
     from protagine.identity.resolver import reset_identity_resolver
     reset_identity_resolver()
     return result
+
+
+SOURCE_BATCH = 100   # the per-receipt source bound ``_refs`` and the ledger correction enforce
+
+
+async def move_sources(store, *, operation_prefix, performed_by, old_contact_id, contact_id,
+                       evidence_refs, source_ids):
+    """Receipts that move a person's sources to another person without moving a handle (C2).
+
+    A merge moves handles through ``correct``; the dropped contact's sources ride on receipts
+    of their own, ``<operation_prefix><n>``, in batches of ``SOURCE_BATCH``, so no two receipts
+    claim the same source and the host's existing reconciliation (``pending_reconciliations``)
+    moves them. A retry records only the sources no earlier receipt under the prefix covers.
+    Returns every receipt under the prefix.
+    """
+    from .store import _now_iso
+    refs = _refs(evidence_refs)
+    if not refs:
+        raise ValueError('identity_correction_requires_evidence')
+    for value in (operation_prefix, performed_by, old_contact_id, contact_id):
+        if not isinstance(value, str) or not value.strip() or len(value) > 200:
+            raise ValueError('invalid_identity_correction')
+    if old_contact_id == contact_id:
+        raise ValueError('invalid_identity_correction')
+    wanted = sorted({str(s) for s in source_ids if isinstance(s, str) and s.strip()})
+    if any(len(s) > 256 for s in wanted):
+        raise ValueError('invalid_identity_evidence')
+    pattern = operation_prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+    db = await store._open_provision_connection()
+    try:
+        await db.execute('BEGIN IMMEDIATE')
+        async with db.execute("SELECT result_json FROM contact_identity_operations WHERE operation_id LIKE ? "
+                              "ESCAPE '\\' ORDER BY operation_id", (pattern,)) as cur:
+            prior = [json.loads(row['result_json']) for row in await cur.fetchall()]
+        covered = {sid for receipt in prior for sid in receipt['affected_source_ids']}
+        remaining = [s for s in wanted if s not in covered]
+        now, created = _now_iso(), []
+        for index in range(0, len(remaining), SOURCE_BATCH):
+            operation_id = f'{operation_prefix}{len(prior) + len(created)}'
+            batch = remaining[index:index + SOURCE_BATCH]
+            result = {'schema': 'IdentityCorrectionV1', 'operation_id': operation_id,
+                'old_contact_id': old_contact_id, 'contact_id': contact_id, 'handle_id': None,
+                'gateway': None, 'address_sha256': None, 'evidence_refs': refs, 'affected_source_ids': batch,
+                'recorded_at': now, 'performed_by': performed_by, 'authority_granted': False,
+                'source_reconciliation_required': True}
+            request_hash = hashlib.sha256(_json([operation_id, performed_by, old_contact_id, contact_id,
+                                                 refs, batch]).encode()).hexdigest()
+            await db.execute('INSERT INTO contact_identity_operations VALUES (?,?,?,?)',
+                             (operation_id, request_hash, _json(result), now))
+            created.append(result)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+    return prior + created
 
 
 async def evidence(store, contact_id):

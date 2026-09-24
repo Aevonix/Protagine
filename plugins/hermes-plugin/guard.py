@@ -259,7 +259,7 @@ class Guard:
                 contact = self.client.resolve_contact(platform, chat_id, timeout=GUARD_TIMEOUT)
             if not contact:
                 return block("cron delivery to an unknown recipient")
-            if contact.get("interaction_allowed") is False:
+            if contact.get("may_contact") == "never":
                 return block("cron delivery to a contact who may not be contacted")
             if recipients is not None and contact.get("contact_id") and contact["contact_id"] not in recipients:
                 recipients.append(str(contact["contact_id"]))
@@ -279,7 +279,7 @@ class Guard:
 
     def _session_contact(self, session_id: str) -> dict[str, Any] | None:
         if self.sessions.is_owner(session_id):
-            return {"contact_id": self.settings.owner_contact_id() or "owner", "interaction_allowed": True}
+            return {"contact_id": self.settings.owner_contact_id() or "owner", "may_contact": "auto"}
         info = self.sessions.get(session_id)
         if info is None or not info.sender_id:
             return None

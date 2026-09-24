@@ -2,7 +2,7 @@
 
 import json
 
-from conftest import API_KEY, OWNER, probe, worker_env
+from conftest import API_KEY, CANARY, OWNER, probe, worker_env
 
 TOOL_CODE = '''
 from tools.registry import registry
@@ -172,19 +172,90 @@ emit(guest=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict":
     assert sidecar.mind.rates == [{"id": "i-01", "verdict": "dismissed"}]
 
 
-def test_people_tool_mutation_is_owner_only(home, sidecar):
+def test_people_tool_reads_and_link_proposals_are_for_everyone(home, sidecar):
+    """``who``, ``inspect`` and ``propose_link`` work in a guest session, but a guest sees only who
+    someone is: never another person's permission, digest or handles (architecture 4.7 item 10)."""
     sidecar.mind_routes = True
     result = probe(TOOL_CODE + '''
 g, o = guest(), owner()
-emit(listing=call("protagine_people", {"operation": "list"}, g),
-     show=call("protagine_people", {"operation": "show", "contact_id": "p-03"}, g),
-     guest_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, g),
-     owner_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o))
+emit(guest_who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, g),
+     guest_inspect=call("protagine_people", {"operation": "inspect", "contact_id": "p-03"}, g),
+     owner_who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o),
+     owner_inspect=call("protagine_people", {"operation": "inspect", "contact_id": "Friend"}, o),
+     unknown=call("protagine_people", {"operation": "inspect", "contact_id": "nobody"}, o),
+     link=call("protagine_people", {"operation": "propose_link", "contact_id": "p-03",
+                                    "handle": "email:friend@example.test"}, g),
+     bare_link=call("protagine_people", {"operation": "propose_link", "contact_id": "p-03"}, g),
+     bad=call("protagine_people", {"operation": "list"}, o))
 ''', home)
-    assert {item["contact_id"] for item in result["listing"]} >= {OWNER, "p-02", "p-03"}
-    assert result["show"][0]["contact_id"] == "p-03"
-    assert "owner" in result["guest_set"]["error"]
-    assert result["owner_set"] == {"ok": True, "may_contact": "auto"}
+    assert result["guest_who"] == [{"contact_id": "p-03", "display_name": "Friend", "trust_tier": "REGULAR"}]
+    assert result["guest_inspect"] == {"contact_id": "p-03", "display_name": "Friend", "trust_tier": "REGULAR"}
+    assert CANARY not in json.dumps([result["guest_who"], result["guest_inspect"], result["link"]])
+    assert result["owner_who"][0]["may_contact"] == "ask" and "interaction_allowed" not in result["owner_who"][0]
+    assert result["owner_inspect"]["digest"].startswith("Friend: known since spring")
+    assert set(result["owner_inspect"]) == {"contact_id", "display_name", "trust_tier", "may_contact",
+                                            "cadence_minutes", "digest"}
+    assert "no single contact" in result["unknown"]["error"]
+    assert result["link"]["status"] == "pending" and result["link"]["candidate_id"]
+    assert "gateway:address" in result["bare_link"]["error"] and "one of" in result["bad"]["error"]
+    reads = [c for c in sidecar.requests if c["path"].startswith("/v1/mind/people") and c["method"] == "GET"]
+    guest_reads = [c for c in reads if c["query"].get("contact_id") == "p-02"]
+    assert len(guest_reads) == 2  # the guest's reads name the guest as the viewer; the owner's name nobody
+    assert all("contact_id" not in c["query"] for c in reads if c not in guest_reads)
+    link, = sidecar.calls("/v1/mind/people/link", "POST")
+    assert link["json"]["by"] == "p-02" and link["json"]["address"] == "friend@example.test"
+
+
+def test_people_tool_mutations_are_owner_only(home, sidecar):
+    """set_permission, set_cadence and merge: refused in a guest session without a sidecar call;
+    the owner's go out with the owner as ``contact_id`` so the sidecar can check again."""
+    sidecar.mind_routes = True
+    result = probe(TOOL_CODE + '''
+g, o = guest(), owner()
+ops = {"permission": {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"},
+       "cadence": {"operation": "set_cadence", "contact_id": "p-03", "minutes": 90},
+       "merge": {"operation": "merge", "contact_id": "p-03", "drop": "p-02"}}
+emit(guest={name: call("protagine_people", args, g) for name, args in ops.items()},
+     owner={name: call("protagine_people", args, o) for name, args in ops.items()},
+     clear=call("protagine_people", {"operation": "set_cadence", "contact_id": "p-03", "minutes": 0}, o),
+     bad=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "maybe"}, o))
+''', home)
+    for name, reply in result["guest"].items():
+        assert "only the owner" in reply["error"], name
+    assert result["owner"]["permission"] == {"ok": True, "may_contact": "auto"}
+    assert result["owner"]["cadence"] == {"ok": True, "cadence_minutes": 90}
+    assert result["owner"]["merge"]["ok"] is True and result["owner"]["merge"]["dropped"] == "p-02"
+    assert result["clear"] == {"ok": True, "cadence_minutes": None}
+    assert "never, ask or auto" in result["bad"]["error"]
+    posts = [c for c in sidecar.requests if c["path"].startswith("/v1/mind/people") and c["method"] == "POST"]
+    assert [c["path"] for c in posts] == ["/v1/mind/people/p-03/permission", "/v1/mind/people/p-03/cadence",
+                                          "/v1/mind/people/merge", "/v1/mind/people/p-03/cadence"]
+    assert all(c["json"]["contact_id"] == OWNER for c in posts)
+    assert posts[1]["json"]["minutes"] == 90 and posts[3]["json"]["minutes"] is None
+
+
+def test_the_sidecar_checks_the_owner_again(home, sidecar):
+    """An owner session whose sender the sidecar does not know as the owner is refused there too."""
+    sidecar.mind_routes = True
+    sidecar.people_owner = "p-99"
+    result = probe(TOOL_CODE + '''
+o = owner()
+emit(permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o))
+''', home)
+    assert "only the owner" in result["permission"]["error"]
+    assert sidecar.contacts[("telegram", "2003")]["may_contact"] == "ask"
+
+
+def test_people_mutations_are_refused_in_a_worker(home, sidecar):
+    sidecar.mind_routes = True
+    result = probe(TOOL_CODE + '''
+o = owner()
+emit(permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o),
+     who=call("protagine_people", {"operation": "who", "contact_id": "friend"}, o))
+''', home, env=worker_env(home))
+    assert "only the owner" in result["permission"]["error"]
+    assert result["who"] == [{"contact_id": "p-03", "display_name": "Friend", "trust_tier": "REGULAR"}]
+    assert not [c for c in sidecar.requests if c["method"] == "POST" and c["path"].startswith("/v1/mind/people")]
 
 
 def test_memory_tools_bind_to_the_sessions_contact(home, sidecar):
@@ -240,11 +311,13 @@ c = guest("cron-1", sender="", message="yes K7F", platform="cron")
 emit(yes=call("protagine_self", {"operation": "yes", "code": "K7F"}, c),
      rate=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "useful"}, c),
      permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, c),
+     cadence=call("protagine_people", {"operation": "set_cadence", "contact_id": "p-03", "minutes": 60}, c),
+     merge=call("protagine_people", {"operation": "merge", "contact_id": "p-03", "drop": "p-02"}, c),
      forget=call("protagine_memory_forget", {"source_ids": ["src-1"]}, c),
      state=call("protagine_self", {"operation": "state"}, c),
      search=call("protagine_memory_search", {"query": "report"}, c))
 ''', home)
-    for name in ("yes", "rate", "permission", "forget"):
+    for name in ("yes", "rate", "permission", "cadence", "merge", "forget"):
         assert "owner" in result[name]["error"], name
     assert result["state"]["enabled"] is True and result["search"]["count"] == 1
     assert sidecar.calls("/v1/mind/decide", "POST") == [] and sidecar.mind.intentions["i-01"]["status"] == "asked"

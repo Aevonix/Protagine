@@ -64,8 +64,9 @@ Turns without a sender on the CLI, cron or API lanes are the owner's own for
 memory; a cron run (`platform: cron`) is a stored prompt rather than the
 owner typing, so it cannot answer an ask, rate, change a permission or
 forget. Any other sender is a guest: `session_search` is blocked for guests,
-delivering cron jobs need a permitted recipient, and every mutation through
-`protagine_self`, `protagine_people` and `protagine_memory_forget` is refused.
+delivering cron jobs need a recipient whose `may_contact` is not `never`, and
+every mutation through `protagine_self`, `protagine_people` and
+`protagine_memory_forget` is refused.
 
 ## Mind-originated runs
 
@@ -189,6 +190,31 @@ word; the sidecar checks the contact and the message again and answers
 A guest, a worker whose task body quotes the code, or a page injected into an
 owner session cannot approve. `protagine_self rate {id, verdict}` posts
 `POST /v1/mind/rate` for the owner only.
+
+## People
+
+`protagine_people` is the model's view of the people store over `/v1/mind/people`
+(the sidecar side is `sidecar/protagine/api/routers/people.py`):
+
+| Operation | Who | Route |
+|---|---|---|
+| `who {contact_id}` | everyone | `GET /v1/mind/people?q=` (a name, handle or id; empty lists the newest) |
+| `inspect {contact_id}` | everyone | `GET /v1/mind/people/{who}` |
+| `propose_link {contact_id, handle: gateway:address}` | everyone | `POST /v1/mind/people/link`: a candidate the owner confirms as an ask |
+| `set_permission {contact_id, permission}` | owner | `POST /v1/mind/people/{who}/permission {may_contact: never\|ask\|auto}` |
+| `set_cadence {contact_id, minutes}` | owner | `POST /v1/mind/people/{who}/cadence {minutes}` (0 clears) |
+| `merge {contact_id, drop}` | owner | `POST /v1/mind/people/merge {keep, drop}`: `drop` folds into `contact_id`; handles, sources, comms and affect follow the person |
+
+A guest sees who someone is (`contact_id`, `display_name`, `trust_tier`) and
+nothing else: the plugin names the guest as the viewer (`contact_id`) on its
+reads and the sidecar answers with only those fields. The owner also sees
+`may_contact`, `cadence_minutes`, `last_interaction_at`, the per-contact
+`digest` and the handles. The three mutations are refused in the plugin
+outside the owner's own interactive session (a guest, a kanban worker, a cron
+run) and are sent with the owner as `contact_id`, which the sidecar checks
+again (403 `not_owner`). `protagine people who|inspect|permit|cadence|merge|link|proposals`
+is the same interface from the CLI. `may_contact` is raised nowhere else; a
+contact's opt-out ("STOP", "don't text me", ...) only lowers it to `never`.
 
 ## Memory provider
 

@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from protagine.channels.phone_gateways import set_channel_store_ref
 from protagine.contacts.config import ContactsConfig
 from protagine.contacts.store import SQLiteContactStore
 
@@ -60,11 +59,11 @@ async def test_create_is_atomic_inert_verified_audited_and_durably_idempotent(
         assert first["created"] is True
         assert first["handle_created"] is True
         assert first["verified"] is True
-        assert first["interaction_allowed"] is False
+        assert first["may_contact"] == "ask"
         contact = await store.get(first["contact_id"])
         assert contact is not None
         assert contact.display_name == "Approved Contact"
-        assert contact.interaction_allowed is False
+        assert contact.may_contact == "ask"   # provisioning never grants permission
         handles = await store.get_handles(first["contact_id"])
         assert len(handles) == 1
         assert handles[0].address == "12125550199@s.whatsapp.net"
@@ -90,9 +89,7 @@ async def test_map_exact_existing_handle_owner_verifies_without_changing_standin
 ):
     store = await _store(tmp_path)
     try:
-        contact = await store.create(
-            display_name="Existing Contact", interaction_allowed=False
-        )
+        contact = await store.create(display_name="Existing Contact")
         original = await store.add_handle(
             contact.contact_id,
             "whatsapp",
@@ -111,10 +108,10 @@ async def test_map_exact_existing_handle_owner_verifies_without_changing_standin
         assert result["handle_created"] is False
         assert result["handle_id"] == original.handle_id
         assert result["changed"] is True
-        assert result["interaction_allowed"] is False
+        assert result["may_contact"] == "ask"
         assert len(handles) == 1
         assert handles[0].verified is True
-        assert (await store.get(contact.contact_id)).interaction_allowed is False
+        assert (await store.get(contact.contact_id)).may_contact == "ask"
     finally:
         await store.close()
 
@@ -125,8 +122,8 @@ async def test_map_can_attach_exact_handle_but_never_move_one_between_contacts(
 ):
     store = await _store(tmp_path)
     try:
-        first = await store.create(display_name="First", interaction_allowed=False)
-        second = await store.create(display_name="Second", interaction_allowed=False)
+        first = await store.create(display_name="First")
+        second = await store.create(display_name="Second")
         await store.add_handle(
             first.contact_id,
             "whatsapp",
@@ -161,9 +158,7 @@ async def test_create_rejects_phone_equivalent_owner_handle_without_orphans(
 ):
     store = await _store(tmp_path)
     try:
-        owner = await store.create(
-            display_name="Owner", interaction_allowed=True
-        )
+        owner = await store.create(display_name="Owner", may_contact="auto")
         await store.add_handle(
             owner.contact_id,
             gateway,
@@ -190,17 +185,11 @@ async def test_create_rejects_phone_equivalent_owner_handle_without_orphans(
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_configured_phone_gateway_equivalent(tmp_path):
-    class _ConfiguredChannels:
-        def get_phone_gateways(self):
-            return {"custom-phone"}
-
-    set_channel_store_ref(_ConfiguredChannels())
+async def test_create_rejects_phone_equivalent_on_an_unlisted_gateway(tmp_path):
+    """C1: no gateway registration is needed; the E.164 handle on any channel is the identity."""
     store = await _store(tmp_path)
     try:
-        existing = await store.create(
-            display_name="Configured phone contact", interaction_allowed=False
-        )
+        existing = await store.create(display_name="Configured phone contact")
         await store.add_handle(
             existing.contact_id,
             "custom-phone",
@@ -221,19 +210,14 @@ async def test_create_rejects_configured_phone_gateway_equivalent(tmp_path):
         assert await _table_counts(store) == before
     finally:
         await store.close()
-        set_channel_store_ref(None)
 
 
 @pytest.mark.asyncio
 async def test_map_rejects_phone_equivalent_owned_by_another_contact(tmp_path):
     store = await _store(tmp_path)
     try:
-        first = await store.create(
-            display_name="First phone identity", interaction_allowed=False
-        )
-        second = await store.create(
-            display_name="Second contact", interaction_allowed=False
-        )
+        first = await store.create(display_name="First phone identity")
+        second = await store.create(display_name="Second contact")
         await store.add_handle(
             first.contact_id,
             "signal",
@@ -261,9 +245,7 @@ async def test_map_rejects_phone_equivalent_owned_by_another_contact(tmp_path):
 async def test_map_can_add_same_contact_phone_equivalent_and_retry(tmp_path):
     store = await _store(tmp_path)
     try:
-        contact = await store.create(
-            display_name="One phone identity", interaction_allowed=False
-        )
+        contact = await store.create(display_name="One phone identity")
         await store.add_handle(
             contact.contact_id,
             "sms",
@@ -305,9 +287,7 @@ async def test_create_rejects_ambiguous_name_and_handle_without_orphan_contact(
 ):
     store = await _store(tmp_path)
     try:
-        existing = await store.create(
-            display_name="Same Name", interaction_allowed=False
-        )
+        existing = await store.create(display_name="Same Name")
         await store.add_handle(
             existing.contact_id,
             "whatsapp",

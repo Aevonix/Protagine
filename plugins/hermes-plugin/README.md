@@ -11,9 +11,9 @@ needs; nothing else is required.
 | `client.py` | Settings (`plugins.protagine.sidecar_url`, `plugins.protagine.key_file`), bearer key, short timeouts, circuit breaker |
 | `capture.py` | Session map (`session_id -> sender, platform, last message`) and the durable SQLite turn outbox; hooks only enqueue |
 | `body.py` | The body thread: turn delivery, then the mind loop on `/v1/mind` (dispatch to kanban with `mind:<id>` keys, the outbox sent verbatim once, outcome reconciliation, orphan archiving, board observations, off-switch cleanup) with its own ledger in `<hermes_home>/state/protagine-body.sqlite3` |
-| `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5); `POST /v1/mind/guard` → `{allow, reason}` |
+| `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5), including a delivering cron job's recipients (`may_contact: never` blocks); `POST /v1/mind/guard` → `{allow, reason}` |
 | `commands.py` | `/mind status|log|why <id>|asks|off` |
-| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`), `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
+| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`), `protagine_people` (`who|inspect|propose_link`; owner: `set_permission|set_cadence|merge`), `protagine_memory_search`, `protagine_memory_forget` |
 | `reminders.py` | `protagine_reminder` on stock cron; the plugin keeps only the job id |
 
 Hermes config written by `protagine init`:

@@ -112,8 +112,7 @@ async def test_strict_unknown_contact_goes_to_system(wired, monkeypatch):
 @pytest.mark.asyncio
 async def test_strict_unresolvable_sender_goes_to_system(wired, monkeypatch):
     monkeypatch.setenv("PROTAGINE_SIGNALS_ATTRIBUTION", "strict")
-    # Shadow contacts off: an unknown handle stays unresolvable.
-    monkeypatch.setenv("PROTAGINE_IDENTITY_SHADOW_CONTACTS", "false")
+    # The fake store cannot create a shadow contact, so the unknown handle stays unresolvable.
     monkeypatch.setattr(host_mod, "_contacts_store", _FakeContactsStore())
     body = _request(contact_id="ghost-99",
                     sender=HostSender(platform="sms", user_id="+15559999"))
