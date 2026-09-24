@@ -14,7 +14,9 @@ from typing import Any, Optional
 _VERBS = r"(?:message|messaging|text|texting|contact|contacting|write to|writing to|dm|dming)"
 
 OPT_OUT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^\s*stop[.!]*\s*$", re.IGNORECASE),                       # a bare STOP is the whole message
+    # A bare STOP is the whole message, behind any bracketed prefixes a gateway adds (a message
+    # timestamp, a sender header).
+    re.compile(r"^(?:\s*\[[^\[\]\n]{1,120}\])*\s*stop[.!]*\s*$", re.IGNORECASE),
     re.compile(r"\bunsubscribe\b", re.IGNORECASE),
     # Anchored at the end of the clause: "don't text me the file, email it" and "do not message me
     # before 9" say how or when to write, not that the person wants no messages at all.

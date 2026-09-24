@@ -107,3 +107,14 @@ async def test_opt_outs_since_a_time_are_listed_for_the_owners_digest(store):
     assert [(row["contact_id"], row["display_name"], row["detail"]["reason"]) for row in rows] == [
         (contact.contact_id, "Casey", "STOP")]
     assert await store.audit_since(["opt_out"], "2999-01-01T00:00:00Z") == []
+
+
+def test_a_bare_stop_is_still_the_whole_message_behind_a_timestamp_or_a_sender_header():
+    """A gateway with message timestamps on, and the paired body, put bracketed prefixes before
+    the contact's own words; a bare STOP behind them is still the whole message."""
+    for text in ("[Wed 2026-09-23 09:19:34 UTC] STOP", "[Message from contact p-03 on sms]\nSTOP",
+                 "[Wed 2026-09-23 09:19:34 UTC] [Message from contact p-03 on sms]\nStop."):
+        assert detects_opt_out(text) is not None, text
+    for text in ("[Wed 2026-09-23 09:19:34 UTC] stop by the office tomorrow", "[note] STOP the press, it is late",
+                 "Report [draft]\nSTOP", "STOP [again]"):
+        assert detects_opt_out(text) is None, text
