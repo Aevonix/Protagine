@@ -627,6 +627,13 @@ def test_default_faculties_include_the_memory_flags():
     assert DEFAULT_FACULTIES["semantic_recall"] is True
 
 
+def test_the_mind_and_the_config_default_every_faculty_the_same_way():
+    """A bare ``Mind(config={})`` and a fresh protagine.yaml must agree, or an arm's flag means two things."""
+    from protagine.config import DEFAULTS
+    configured = DEFAULTS["mind"]["faculties"]
+    assert {name: configured.get(name) for name in DEFAULT_FACULTIES} == DEFAULT_FACULTIES
+
+
 def test_the_nightly_boundary_is_a_local_time_of_day_crossed_since_the_last_run():
     from zoneinfo import ZoneInfo
     from protagine.mind.authority import boundary_crossed, last_boundary

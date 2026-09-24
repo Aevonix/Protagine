@@ -44,8 +44,8 @@ STOCK_CONFIG = {
 
 def _args(home, hermes_home, **overrides):
     values = {
-        "home": str(home), "non_interactive": True, "uninstall": False, "owner_name": "Ada",
-        "owner_handle": ["telegram=1001"], "agent_name": "Sol", "agent_values": "care, candour",
+        "home": str(home), "non_interactive": True, "uninstall": False, "owner_name": "Owner",
+        "owner_handle": ["telegram=1001"], "agent_name": "Agent", "agent_values": "care, candour",
         "agent_boundaries": "never send money", "timezone": "UTC", "quiet_hours": "22:00-07:00", "autonomy": None,
         "hermes_home": str(hermes_home), "hermes_python": HERMES_PYTHON, "host": None, "port": 7901,
         "model_url": None, "model": None, "model_key": None, "embed_url": None, "embed_model": None,
@@ -120,11 +120,11 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     assert read_api_key(home, environ={})
     assert oct((home / "api.key").stat().st_mode & 0o777) == "0o600"
     identity = yaml.safe_load((home / "identity.yaml").read_text())
-    assert identity["owner"] == {"name": "Ada", "handles": [{"platform": "telegram", "id": "1001"}]}
-    assert identity["agent"]["name"] == "Sol"
+    assert identity["owner"] == {"name": "Owner", "handles": [{"platform": "telegram", "id": "1001"}]}
+    assert identity["agent"]["name"] == "Agent"
     assert identity["agent"]["values"] == ["care", "candour"]
     assert identity["agent"]["boundaries"] == ["never send money"]
-    assert "You are Sol. Your values: care; candour. Your boundaries: never send money." in output
+    assert "You are Agent. Your values: care; candour. Your boundaries: never send money." in output
 
     # Step 3: the router points at the endpoint Hermes uses; no embeddings recorded.
     llm = json.loads((home / ".protagine-llm-config.json").read_text())
@@ -177,7 +177,7 @@ def test_init_keeps_existing_answers_and_lets_flags_change_them(homes):
     assert cfg.get("owner.contact_id") == contact
     assert read_api_key(home, environ={}) == key
     identity = yaml.safe_load((home / "identity.yaml").read_text())
-    assert identity["owner"]["name"] == "Ada" and identity["agent"]["name"] == "Sol"
+    assert identity["owner"]["name"] == "Owner" and identity["agent"]["name"] == "Agent"
     assert identity["agent"]["boundaries"] == ["never send money"]
     # A flag replaces the list; the constitution the plugin renders follows the file.
     assert init.run_init(_args(home, hermes_home, agent_boundaries="never contact family members")) == 0

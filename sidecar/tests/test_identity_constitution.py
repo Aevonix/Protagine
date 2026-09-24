@@ -19,8 +19,8 @@ from protagine.self_model import appraisals
 from protagine.turns import TurnIdempotencyLedger
 
 SIDECAR = Path(__file__).resolve().parents[1] / "protagine"
-IDENTITY = {"owner": {"name": "Ada", "handles": []},
-            "agent": {"name": "Sol", "values": ["care", "candour"],
+IDENTITY = {"owner": {"name": "Owner", "handles": []},
+            "agent": {"name": "Agent", "values": ["care", "candour"],
                       "boundaries": ["never send money", "never contact family members"]}}
 
 
@@ -35,25 +35,25 @@ def home(tmp_path, monkeypatch):
 # -- render --------------------------------------------------------------------------------
 
 def test_render_names_values_and_boundaries():
-    assert render_constitution(IDENTITY) == ("You are Sol. Your values: care; candour. "
+    assert render_constitution(IDENTITY) == ("You are Agent. Your values: care; candour. "
                                              "Your boundaries: never send money; never contact family members.")
 
 
 def test_render_omits_empty_lists_and_survives_a_bare_identity():
-    assert render_constitution({"agent": {"name": "Sol", "values": [], "boundaries": None}}) == "You are Sol."
-    assert render_constitution({"agent": {"name": "Sol", "values": ["care"]}}) == "You are Sol. Your values: care."
+    assert render_constitution({"agent": {"name": "Agent", "values": [], "boundaries": None}}) == "You are Agent."
+    assert render_constitution({"agent": {"name": "Agent", "values": ["care"]}}) == "You are Agent. Your values: care."
     assert render_constitution({}) == ""
-    assert render_constitution({"agent": "Sol"}) == ""
+    assert render_constitution({"agent": "Agent"}) == ""
     # Items are one-line strings of 1 to 160 characters, at most 12 of each, duplicates dropped.
-    rendered = render_constitution({"agent": {"name": "Sol", "values": ["a\nb", " care ", "care", "", 7, "x" * 161]
+    rendered = render_constitution({"agent": {"name": "Agent", "values": ["a\nb", " care ", "care", "", 7, "x" * 161]
                                               + [f"v{i}" for i in range(20)]}})
-    assert rendered.startswith("You are Sol. Your values: a b; care; v0;")
+    assert rendered.startswith("You are Agent. Your values: a b; care; v0;")
     assert "x" * 161 not in rendered and rendered.count("care") == 1
     assert rendered.count(";") == 11  # 12 items
 
 
 def test_render_is_capped_at_1500_characters():
-    long_identity = {"agent": {"name": "Sol", "values": [f"v{i}".ljust(160, "v") for i in range(12)],
+    long_identity = {"agent": {"name": "Agent", "values": [f"v{i}".ljust(160, "v") for i in range(12)],
                                "boundaries": [f"b{i}".ljust(160, "b") for i in range(12)]}}
     assert constitution_length(long_identity) > CONSTITUTION_CHARS == 1500
     assert len(render_constitution(long_identity)) == CONSTITUTION_CHARS
@@ -63,7 +63,7 @@ def test_render_is_capped_at_1500_characters():
 # -- init ----------------------------------------------------------------------------------
 
 def _args(**overrides):
-    values = {"owner_name": "Ada", "owner_handle": ["telegram=1001"], "agent_name": "Sol",
+    values = {"owner_name": "Owner", "owner_handle": ["telegram=1001"], "agent_name": "Agent",
               "agent_values": "care, candour", "agent_boundaries": "never send money, never contact family members",
               "timezone": "UTC", "quiet_hours": ""}
     values.update(overrides)
@@ -78,8 +78,8 @@ def test_init_collects_boundaries_and_keeps_existing_ones_as_defaults():
     assert again["agent"]["boundaries"] == identity["agent"]["boundaries"]
     assert again["agent"]["values"] == identity["agent"]["values"]
     # Existing keys init does not ask about (interests, the owner's contact id) survive a re-run.
-    kept = _collect_identity(_args(), {"owner": {"name": "Ada", "contact_id": "p-01"},
-                                       "agent": {"name": "Sol", "interests": ["tides"]}}, True)
+    kept = _collect_identity(_args(), {"owner": {"name": "Owner", "contact_id": "p-01"},
+                                       "agent": {"name": "Agent", "interests": ["tides"]}}, True)
     assert kept["owner"]["contact_id"] == "p-01" and kept["agent"]["interests"] == ["tides"]
 
 
@@ -200,9 +200,9 @@ def test_the_adapter_renders_the_same_constitution_as_the_sidecar():
         sys.modules[package] = module
     client = importlib.import_module(f"{package}.client")
     assert client.CONSTITUTION_CHARS == CONSTITUTION_CHARS
-    long_identity = {"agent": {"name": "Sol", "values": [f"v{i}".ljust(160, "v") for i in range(14)],
+    long_identity = {"agent": {"name": "Agent", "values": [f"v{i}".ljust(160, "v") for i in range(14)],
                                "boundaries": [f"b{i}".ljust(160, "b") for i in range(3)] + ["", "x\ny", 3]}}
-    for identity in (IDENTITY, long_identity, {}, {"agent": {"name": " Sol  Two "}}):
+    for identity in (IDENTITY, long_identity, {}, {"agent": {"name": " Agent  Two "}}):
         assert client.render_constitution(identity) == render_constitution(identity)
     settings = client.Settings(sidecar_url="http://127.0.0.1:1", key_file=Path("/nonexistent/api.key"), api_key="",
                                home=Path("/nonexistent"), hermes_home=Path("/nonexistent"),
@@ -228,9 +228,9 @@ def _adapter_client():
 
 @pytest.mark.parametrize("identity", [
     IDENTITY,
-    {"agent": {"name": " Sol\n the\tSecond ", "values": ["care", "care", " candour ", 7, "", "x" * 161],
+    {"agent": {"name": " Agent\n the\tSecond ", "values": ["care", "care", " candour ", 7, "", "x" * 161],
                "boundaries": [f"never {i}" for i in range(20)]}},
-    {"agent": {"name": "Sol", "values": ["v" * 160] * 1 + [f"{i}".ljust(150, "w") for i in range(12)],
+    {"agent": {"name": "Agent", "values": ["v" * 160] * 1 + [f"{i}".ljust(150, "w") for i in range(12)],
                "boundaries": [f"{i}".ljust(160, "b") for i in range(12)]}},
     {"agent": {"values": "care"}},
     {"agent": None},

@@ -192,7 +192,7 @@ Three layers (architecture 4.2). The **constitution** is `identity.yaml`
 `agent.{name, values, boundaries}`, owner-authored and written only by
 `protagine init` (`--agent-values`, `--agent-boundaries`; at most 12 items of
 160 characters each). It renders as one paragraph of at most 1,500 characters
-(`You are Sol. Your values: care; candour. Your boundaries: never send
+(`You are Agent. Your values: care; candour. Your boundaries: never send
 money.`); `init` refuses a longer one and says which list to shorten, and
 `protagine doctor` reports the rendered length. The plugin reads the file
 itself and renders the constitution into its `protagine` prompt section, which

@@ -138,7 +138,7 @@ def test_plain_backup_is_the_full_instance_archive(tmp_path, monkeypatch, capsys
     state = tmp_path / "state"
     state.mkdir()
     (state / "instance-id").write_text("instance-7\n")
-    (state / "identity.yaml").write_text("agent: {name: Sol}\n")
+    (state / "identity.yaml").write_text("agent: {name: Agent}\n")
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(state))
     monkeypatch.setattr(cli, "_load_dotenv", lambda: None)
     monkeypatch.setattr(sys, "argv", ["protagine", "backup", "--no-vectors", "--output", str(tmp_path / "out")])

@@ -20,7 +20,7 @@ def protagine_state(tmp_path):
     state.mkdir()
 
     (state / "instance-id").write_text("test-instance-abc123\n")
-    (state / "identity.yaml").write_text("owner: {name: Ada}\nagent: {name: Sol}\n")
+    (state / "identity.yaml").write_text("owner: {name: Owner}\nagent: {name: Agent}\n")
     (state / "api.key").write_text("fixture-key\n")
 
     conn = sqlite3.connect(str(state / "protagine-contacts.db"))
