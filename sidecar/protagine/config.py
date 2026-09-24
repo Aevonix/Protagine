@@ -28,7 +28,7 @@ AUTONOMY_LEVELS = ("off", "suggest", "standard", "trusted")
 DEFAULTS: dict[str, Any] = {
     "sidecar": {"host": "127.0.0.1", "port": 7777},
     "hermes": {"home": "~/.hermes", "python": ""},
-    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": "",
+    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": "", "embed_dims": 0,
                "rerank_url": "", "rerank_model": ""},
     "owner": {"contact_id": ""},
     "mind": {
@@ -164,6 +164,18 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
         router[key] = str(router.get(key) or "")
     if router["rerank_url"] and not router["rerank_model"]:
         raise ConfigError("router.rerank_model is required when router.rerank_url is set")
+    dims = router.get("embed_dims")
+    if dims in (None, ""):
+        dims = 0
+    if isinstance(dims, bool) or not isinstance(dims, int):
+        try:
+            dims = int(str(dims).strip())
+        except (TypeError, ValueError):
+            raise ConfigError("router.embed_dims must be a whole number of dimensions "
+                              "(0 learns it from the endpoint's first embedding)") from None
+    if dims < 0:
+        raise ConfigError("router.embed_dims must not be negative")
+    router["embed_dims"] = dims
     data["owner"]["contact_id"] = str(data["owner"].get("contact_id") or "")
     mind = data["mind"]
     mind["enabled"] = _parse_bool(mind.get("enabled", True), field_name="mind.enabled")
@@ -430,6 +442,10 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_EMBED_BASE_URL"] = str(config.get("router.embed_url"))
         if config.get("router.embed_model"):
             values["PROTAGINE_EMBED_MODEL"] = str(config.get("router.embed_model"))
+        # An explicit width is validated against every vector; without one the
+        # provider learns the width from the endpoint's first embedding.
+        if config.get("router.embed_dims"):
+            values["PROTAGINE_EMBED_DIMS"] = str(int(config.get("router.embed_dims")))
     if config.get("router.rerank_url"):
         # A reranker endpoint is configured the way the embedding endpoint is:
         # the remote provider, the model it serves, and recall told to use it.

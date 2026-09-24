@@ -221,3 +221,39 @@ def test_env_switches_are_plain(monkeypatch):
     assert env_bool("PROTAGINE_TEST_FLAG", True) is False
     monkeypatch.delenv("PROTAGINE_TEST_FLAG")
     assert env_bool("PROTAGINE_TEST_FLAG", True) is True
+
+
+def test_embed_dims_is_exported_only_when_declared(home):
+    """Without a declared width the endpoint's first embedding defines it; a declared one is validated."""
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "an-embedding-model"},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert "PROTAGINE_EMBED_DIMS" not in environ
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
+
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "an-embedding-model", "embed_dims": 4096},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_DIMS"] == "4096"
+
+    pinned = {"PROTAGINE_EMBED_DIMS": "1024"}
+    apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_EMBED_DIMS"] == "1024"
+
+
+@pytest.mark.parametrize("value, message", [
+    ("many", "router.embed_dims"),
+    (-1, "router.embed_dims"),
+    (True, "router.embed_dims"),
+])
+def test_embed_dims_must_be_a_whole_number(home, value, message):
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"router": {"embed_dims": value}}))
+    with pytest.raises(ConfigError) as info:
+        load_config(home, environ={})
+    assert message in str(info.value)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"router": {"embed_dims": "2048"}}))
+    assert load_config(home, environ={}).get("router.embed_dims") == 2048

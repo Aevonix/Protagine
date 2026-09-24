@@ -492,16 +492,27 @@ async def lifespan(app: FastAPI):
             embed_model = embed_model or "sentence-transformers/all-MiniLM-L6-v2"
             embed_dims = embed_dims or "384"
 
+    from protagine.api.routers.host import set_embed_failure
+    set_embed_failure(None)
     try:
         from protagine.vector.embedder import EmbeddingPipeline
         from protagine.vector.config import EmbeddingConfig
+        request_dims = (int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
+                        if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None)
+        if embed_dims:
+            declared_dims = int(embed_dims)
+        elif request_dims:
+            declared_dims = request_dims
+        elif embed_provider == "openai_api":
+            declared_dims = 0   # learned from the endpoint's first embedding
+        else:
+            declared_dims = 384
         embed_config = EmbeddingConfig(
             provider=embed_provider,
             model_id=embed_model,
-            dimensions=int(embed_dims) if embed_dims else 384,
+            dimensions=declared_dims,
             revision=os.environ.get("PROTAGINE_EMBED_REVISION") or None,
-            request_dimensions=(int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
-                if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None),
+            request_dimensions=request_dims,
         )
         from protagine.vector.embedder import make_provider
         provider = make_provider(embed_config)
@@ -560,7 +571,7 @@ async def lifespan(app: FastAPI):
                 vector_db_path = os.path.join(state_dir, "lancedb")
                 vs = VectorStore(data_dir=vector_db_path, identity=pipeline.index_identity,
                     catalog=IndexCatalog(get_turn_idempotency_ledger(state_dir)))
-                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS", pipeline.dimensions or 384))
+                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS") or pipeline.dimensions or 384)
                 await vs.connect(dimensions=embed_dims)
                 await vs.ensure_collections(dimensions=embed_dims)
                 set_store(vs)
@@ -576,6 +587,7 @@ async def lifespan(app: FastAPI):
                     logger.warning("ProtagineGraph partially wired — memory may be degraded")
             except Exception as vexc:
                 logger.warning("Vector store wiring failed (recall will use keyword fallback): %s", vexc)
+                set_embed_failure(f"the vector store did not open: {type(vexc).__name__}: {vexc}")
 
             # Pass LLM config to pipeline for auto-captioning
             llm_config_path = Path(os.environ.get("PROTAGINE_STATE_DIR", ".")) / ".protagine-llm-config.json"
@@ -598,6 +610,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Embedder health check exception: %s", exc)
     except Exception as exc:
         logger.warning("EmbeddingPipeline init failed: %s", exc)
+        # The sidecar still serves, so nothing else would say it: health carries the
+        # reason in words and stays degraded until the embedder comes up.
+        set_embed_failure(f"the embedder (provider={embed_provider}, model={embed_model or 'unset'}) "
+                          f"did not initialise: {type(exc).__name__}: {exc}")
 
     # --- 6b. Reranker pipeline ---
     reranker_provider_name = os.environ.get("PROTAGINE_RERANKER_PROVIDER", "")

@@ -68,6 +68,8 @@ class HostHealthResponse(BaseModel):
     capabilities: List[str] = []
     notes: Optional[Dict[str, str]] = None
     temporal: Optional[TemporalMetrics] = None
+    #: Every reason the status is not "ok", as sentences an operator can act on.
+    problems: List[str] = Field(default_factory=list)
 
 
 # --- Memory -----------------------------------------------------------------

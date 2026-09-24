@@ -314,6 +314,16 @@ def set_signal_collector(collector) -> None:
     _signal_collector = collector
 
 
+#: Why semantic recall is off although it was configured: set by the server when the
+#: embedder or the vector store failed to initialise, cleared when they come up.
+_embed_failure: Optional[str] = None
+
+
+def set_embed_failure(reason: Optional[str]) -> None:
+    global _embed_failure
+    _embed_failure = str(reason).strip() if reason else None
+
+
 def set_embedder(embedder) -> None:
     global _embedder
     _embedder = embedder
@@ -615,6 +625,7 @@ def _temporal_health_policy() -> str:
 async def health() -> HostHealthResponse:
     caps = supported_capabilities()
     notes: dict[str, str] = {}
+    problems: list[str] = []   # every reason the status is not "ok", in words
     embed_model = ""
 
     # the sidecar's own open-file limit (doctor reads this; a low limit makes
@@ -639,6 +650,7 @@ async def health() -> HostHealthResponse:
         memory_backend_down = True
         caps = [c for c in caps if c != 'memory']
         notes['memory'] = 'Canonical source ledger unavailable (' + type(exc).__name__ + ')'
+        problems.append(f"the source ledger is unreadable ({type(exc).__name__}: {exc})")
     if _goals_store is not None:
         notes["goals"] = "Goal records available"
     if _contacts_store is not None:
@@ -652,6 +664,13 @@ async def health() -> HostHealthResponse:
     if _signal_collector is not None:
         notes["signals"] = "SignalCollector wired"
     embed_degraded = False
+    if _embed_failure:
+        # Semantic recall was configured and is not running: say so in words, so the
+        # keyword fallback is never mistaken for the configured recall.
+        embed_degraded = True
+        problems.append("semantic recall is off: " + _embed_failure)
+        if _embedder is None:
+            notes["embed"] = "semantic recall is off: " + _embed_failure
     if _embedder is not None:
         # Get embed model info
         if hasattr(_embedder, "_provider") and hasattr(_embedder._provider, "_config"):
@@ -673,6 +692,7 @@ async def health() -> HostHealthResponse:
         except Exception as exc:
             embed_degraded = True
             embed_note += f" [index-check failed: {type(exc).__name__}: {exc}]"
+            problems.append(f"the semantic index check failed: {type(exc).__name__}: {exc}")
             logger.warning("embedding index health probe failed: %s", type(exc).__name__)
 
         # Check embedder health
@@ -684,9 +704,11 @@ async def health() -> HostHealthResponse:
                 if hc.get("error"):
                     embed_note += f": {hc['error']}"
                 embed_note += "]"
+                problems.append(f"the embedder is not answering correctly: {hc.get('error') or hc.get('status')}")
         except Exception as exc:
             embed_degraded = True
             embed_note += f" [health probe failed: {exc}]"
+            problems.append(f"the embedder health probe failed: {exc}")
             logger.warning("embedder health probe failed: %s", exc)
 
         notes["embed"] = embed_note
@@ -739,6 +761,7 @@ async def health() -> HostHealthResponse:
         and "commitment_resolution_recovery_v1" not in caps
     ):
         health_status = "degraded"
+        problems.append("commitment resolution recovery is unavailable")
 
     # Build temporal metrics
     temporal = None
@@ -763,6 +786,7 @@ async def health() -> HostHealthResponse:
                 and _temporal_health_policy() == "enforce"
             ):
                 health_status = "degraded"
+                problems.append("stale: " + ", ".join(temporal_data["stale_flags"]))
             from protagine.api.schemas.host import TemporalMetrics
             temporal = TemporalMetrics(**temporal_data)
     except Exception as exc:
@@ -770,6 +794,7 @@ async def health() -> HostHealthResponse:
         # dead loop is gone — that is degradation, not silent health.
         health_status = "degraded"
         notes["temporal"] = f"staleness computation failed: {exc}"
+        problems.append(f"staleness computation failed: {exc}")
         logger.warning("temporal staleness computation failed: %s", exc)
 
     return HostHealthResponse(
@@ -777,6 +802,7 @@ async def health() -> HostHealthResponse:
         capabilities=caps,
         notes=notes,
         temporal=temporal,
+        problems=problems,
     )
 
 
@@ -1217,7 +1243,7 @@ async def memory_rerank(body: RerankRequest) -> RerankResponse:
 async def embed_health() -> EmbedHealthResponse:
     """Check embedder health — verify model is loaded and producing valid output."""
     if _embedder is None:
-        return EmbedHealthResponse(status="error", error="embedder not initialized")
+        return EmbedHealthResponse(status="error", error=_embed_failure or "embedder not initialized")
     try:
         result = await _embedder.health_check()
         # Add multimodal status

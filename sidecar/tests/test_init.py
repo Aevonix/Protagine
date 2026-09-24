@@ -260,3 +260,15 @@ def test_init_starts_the_service_it_installs(homes, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert failing.calls == ["install", "start"]
     assert "not running: Instance port is already occupied" in output and "protagine service start" in output
+
+
+def test_init_records_the_embedding_width_when_given(homes):
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home, embed_url="http://127.0.0.1:8092",
+                               embed_model="an-embedding-model", embed_dims=4096)) == 0
+    cfg = load_config(home, environ={})
+    assert cfg.get("router.embed_dims") == 4096
+    assert cfg.get("mind.faculties.semantic_recall") is True
+    # Left out, the width stays as recorded; the endpoint defines it when none was ever given.
+    assert init.run_init(_args(home, hermes_home, embed_url="http://127.0.0.1:8092")) == 0
+    assert load_config(home, environ={}).get("router.embed_dims") == 4096

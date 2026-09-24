@@ -1,6 +1,6 @@
 """``protagine doctor``: install checks.
 
-Six things can be wrong with an install, and each has one remedy:
+Seven things can be wrong with an install, and each has one remedy:
 
 - the Hermes version is outside the supported range
 - ``protagine.yaml``, ``api.key`` or the Hermes keys ``init`` writes are missing
@@ -8,6 +8,7 @@ Six things can be wrong with an install, and each has one remedy:
 - ``pip check`` in Hermes' environment is not clean
 - the sidecar is not reachable with the key
 - the plugin is not loaded (not enabled, or not installed where Hermes runs)
+- semantic recall is configured (``router.embed_url``) but the embedder is not serving
 
 Local checks read files and run Hermes' Python; the sidecar check talks HTTP
 and degrades to a failure with the start command when the sidecar is down.
@@ -300,8 +301,11 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
                             remedy="start it with 'protagine service start' (or 'protagine start')")]
     if status != 200 or not isinstance(body, dict):
         return [CheckResult("sidecar", FAIL, detail=f"/v1/host/health returned HTTP {status}")]
-    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN,
-                           detail=f"sidecar at {base_url} reports status={body.get('status', 'unknown')}")]
+    detail = f"sidecar at {base_url} reports status={body.get('status', 'unknown')}"
+    problems = [str(item) for item in body.get("problems") or []]
+    if problems:
+        detail += ": " + "; ".join(problems)
+    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN, detail=detail)]
     try:
         status, _ = _http_get(f"{base_url}/v1/mind/state", api_key, timeout)
     except Exception as exc:  # noqa: BLE001
@@ -319,6 +323,34 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
     return results
 
 
+def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckResult:
+    """When ``router.embed_url`` is set, the running sidecar's embedder answers.
+
+    A configured embedder that failed to initialise leaves the sidecar serving
+    with keyword recall only; this check makes that a failure with the reason.
+    """
+    from protagine.config import load_config
+    config = load_config()
+    if not config.get("router.embed_url"):
+        return CheckResult("semantic-recall", SKIP, detail="off: no router.embed_url in protagine.yaml")
+    base_url = base_url.rstrip("/")
+    try:
+        status, body = _http_get(f"{base_url}/v1/host/embed/health", api_key, timeout)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("semantic-recall", FAIL, detail=f"embed/health not reachable: {exc}")
+    if status != 200 or not isinstance(body, dict):
+        return CheckResult("semantic-recall", FAIL, detail=f"/v1/host/embed/health returned HTTP {status}")
+    if body.get("status") != "ok":
+        return CheckResult(
+            "semantic-recall", FAIL,
+            detail=f"router.embed_url is set but the embedder is not serving: {body.get('error') or 'unknown'}",
+            remedy="check router.embed_url, router.embed_model and router.embed_dims in protagine.yaml against "
+                   "the endpoint (the sidecar log holds the first failure), then 'protagine service restart'")
+    return CheckResult("semantic-recall", PASS,
+                       detail=f"embedder serving (model={body.get('model') or 'unknown'}, dims={body.get('dims')}, "
+                              f"{body.get('latency_ms', 0)} ms)")
+
+
 # ---------------------------------------------------------------------------
 # Engine entry point + reporting
 # ---------------------------------------------------------------------------
@@ -332,7 +364,10 @@ def run_doctor(
     url = protagine_url or default_protagine_url()
     key = api_key if api_key is not None else default_api_key()
     results = run_local_checks()
-    results += _run("sidecar", check_sidecar, url, key, timeout)
+    sidecar = _run("sidecar", check_sidecar, url, key, timeout)
+    results += sidecar
+    if sidecar and sidecar[0].status != FAIL:
+        results += _run("semantic-recall", check_semantic_recall, url, key, timeout)
     return results
 
 

@@ -1126,6 +1126,8 @@ def run_init(args) -> int:
         data["router"]["embed_url"] = embed_url
         if getattr(args, "embed_model", None):
             data["router"]["embed_model"] = str(args.embed_model)
+        if getattr(args, "embed_dims", None) is not None:
+            data["router"]["embed_dims"] = int(args.embed_dims)
         data["mind"]["faculties"]["semantic_recall"] = bool(embed_url)
 
         # 2. protagine.yaml, identity.yaml and api.key.
@@ -1314,6 +1316,8 @@ def add_parsers(sub) -> None:
     init_p.add_argument("--model-key", help="API key for that endpoint")
     init_p.add_argument("--embed-url", help="OpenAI-compatible embeddings root; turns semantic recall on")
     init_p.add_argument("--embed-model", help="Embedding model at that endpoint")
+    init_p.add_argument("--embed-dims", type=int,
+                        help="Vector width of that model (default: learned from its first embedding)")
     init_p.add_argument("--adapter-source", help="Install the adapter from this wheel, directory or requirement")
     init_p.add_argument("--no-service", action="store_true", help="Do not install the sidecar user service")
 

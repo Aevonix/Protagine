@@ -107,7 +107,7 @@ do that yourself once you are ready.
 sidecar: {host: 127.0.0.1, port: 7777}
 hermes: {home: ~/.hermes, python: /path/to/hermes/python}
 router: {base_url: http://127.0.0.1:8000/v1, model: my-model,
-         embed_url: "", embed_model: "", rerank_url: "", rerank_model: ""}
+         embed_url: "", embed_model: "", embed_dims: 0, rerank_url: "", rerank_model: ""}
 owner: {contact_id: "<created by init>"}
 mind:
   enabled: true                      # the off switch
@@ -132,12 +132,23 @@ mind:
 ```
 
 `router.embed_url` (an OpenAI-compatible embeddings endpoint, with
-`embed_model`) turns semantic recall on. `router.rerank_url` (an OpenAI/Jina
-style `/v1/rerank` endpoint) with `router.rerank_model` (the model it serves;
-required with the endpoint) makes recall rerank its candidates there. Both are
-exported to the sidecar process when it starts; a value already in that
-process environment wins, so `PROTAGINE_RECALL_RERANK=shadow` can still be
-pinned to measure a reranker before it changes what recall returns.
+`embed_model`) turns semantic recall on. `router.embed_dims` is the model's
+vector width; left at 0, the sidecar learns it from the endpoint's first
+embedding, and a declared width is validated against every vector (a mismatch
+is a startup failure named after the setting, never a silent switch to
+keyword recall). `router.rerank_url` (an OpenAI/Jina style `/v1/rerank`
+endpoint) with `router.rerank_model` (the model it serves; required with the
+endpoint) makes recall rerank its candidates there. All are exported to the
+sidecar process when it starts; a value already in that process environment
+wins, so `PROTAGINE_RECALL_RERANK=shadow` can still be pinned to measure a
+reranker before it changes what recall returns.
+
+When an embedding endpoint is configured and the embedder does not come up
+(the endpoint is down, the model name is wrong, the width differs), the
+sidecar still serves, but `/v1/host/health` reports `degraded` with the reason
+in `problems` ("semantic recall is off: ..."), and `protagine doctor` fails its
+`semantic-recall` check with that reason. Recall does not quietly fall back to
+keywords.
 
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in
