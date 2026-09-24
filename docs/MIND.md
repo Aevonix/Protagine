@@ -1,4 +1,4 @@
-# The mind: drives, concerns, deliberation, goals and the closed loop
+# The mind: drives, concerns, feelings, deliberation, goals and the closed loop
 
 Protagine is the mind; Hermes is the body. The mind makes only tool-less
 model calls through its own router (at most one per tick). Every effect on
@@ -7,10 +7,11 @@ key `mind:<id>`) or a message the plugin sends verbatim. There is no second
 executor.
 
 This document describes what ships: the drives, the concerns (the
-workspace), deliberation, agent-owned goals, the tick, authority, asks, the
-audit log, the outbox, outcomes and the off switch. The design is in
+workspace), the agent's own feelings, deliberation, agent-owned goals, the
+tick, authority, asks, the audit log, the outbox, outcomes and the off switch.
+The design is in
 [docs/proto-agi/PROTO-AGI-ARCHITECTURE.md](proto-agi/PROTO-AGI-ARCHITECTURE.md)
-(sections 3, 4.5, 5 and 7).
+(sections 3, 4.3, 4.5, 5 and 7).
 
 ## The loop
 
@@ -178,12 +179,85 @@ audit log, the outbox, outcomes and the off switch. The design is in
     task, investigation or goal step also stores its finding ("What I
     learned about X: ...") the same way, so a later turn uses it.
 
+## Feelings
+
+The mind keeps its own affect (architecture 4.3): four levels in `mind.db`
+(`mind_state`), each capped at 0.7, decaying with a half-life and citing up to
+five causes. Nothing about it calls a model.
+
+| Level | Key | Half-life | Moves with |
+|---|---|---|---|
+| frustration, per topic | `affect.frustration:<topic>` | 24 h | +0.3 for a failed or blocked task on the topic or an owner-reported failure; +0.2 for a correction (verdict `wrong` or `not_useful`, a reported correction, an annoyance appraisal); +0.1 / +0.2 for a low / moderate frustration appraisal; halved by a success on the topic (a check-verified result, a `useful` verdict, a reported success, a repair receipt) |
+| worry | `affect.worry` | 6 h | +0.2 for a duty-domain expectation miss; +0.1 per tick for each owed obligation due within 24 h and not started (this rule never lifts worry above 0.3) |
+| curiosity | `affect.curiosity` | 12 h | +0.2 for a knowledge-domain miss; +0.1 / +0.2 for an interest appraisal; +0.1 for an owner turn on a topic memory knew nothing about |
+| satisfaction | `affect.satisfaction` | 12 h | +0.3 for a check-verified success or a `useful` verdict; +0.1 / +0.2 for a satisfaction appraisal |
+
+Recent dismissals (an owner-reported "not now", a `dismissed` or `ignored`
+verdict on owner-facing work) are a fifth decaying level, `affect.dismissed`
+(+0.25, 24 h): the satiation input, never rendered as a mood. The load is
+computed each tick, not stored: `min(1, 0.3 x running/cap + 0.2 x near owed
+obligations + 0.1 x failures in the last hour + 0.1 x open asks)`.
+
+Every tick the mind reads one snapshot of stored records: the owner's reported
+outcomes and appraisal records of the last 7 days (the owner subject only:
+contacts' turns never move the agent's affect), intention rows, expectation
+misses of the last day, and commitments owed by the owner or the assistant at
+priority 50 or more that are due within 48 h (or undated and made in the last
+day). Each event is applied once (its reference is kept in `affect.applied`)
+as if at its own time and then decayed; an outcome and an appraisal record of
+the same turn on the same topic count once, while every reported occurrence
+counts; evidence that is erased takes its frustration row, topic text
+included, with it. A forced tick waits up to 30 s (a timer tick 2 s) for the
+owner's pending appraisal jobs, so a statement made just before the tick
+counts in it.
+
+Four consumers read the feeling. Affect only ever holds or lowers
+discretionary work (recurring self-chosen work, curiosity and social outreach,
+anything below priority 0.5); it never holds or demotes an owed obligation and
+never raises authority.
+
+1. **Strategy switch.** A topic at frustration 0.5 or more puts "Prior
+   attempts at T failed N times using A; choose a different approach or ask
+   one question." into the task body and the owner's Mind section;
+   deliberation proposes another approach or one question, and an identical
+   plan is never dispatched again without the owner.
+2. **Overload** (load 0.6 or more). Curiosity and social work and optional
+   messages wait; replies stay brief.
+3. **Priority.** Owed duty scores x (1 + 0.5 x worry); curiosity work x (1 +
+   curiosity).
+4. **Satiation.** Satisfaction of 0.5 or dismissals of 0.4 or more raise the
+   act threshold of optional owner-facing messages by x (1 + the level).
+
+The **tone** is one calm line from the state alone, in three bands (under 0.2
+"a little", under 0.45 "somewhat", otherwise "quite"), for example "Mood:
+somewhat frustrated about the quarterly figures; a little uneasy." No stronger
+word is ever used.
+
+**Switches.** `mind.faculties.affect` (on): the state is kept and every
+consumer reads it. `mind.faculties.affect_rules` (off): every consumer reads
+its frozen stateless rule (`P/mind/affect_rules.py`) over the same snapshot
+instead (two failures on a topic within 24 h of its last success; three near
+obligations or a full worker pool; worry 0.5 while anything owed is due soon;
+two dismissals in 7 days hold optional nudges); the state, if on, stays for
+self-report and tone. With both off, affect reads and writes nothing. Which
+consumers read their rule after the affect family's gate is a code constant
+(`affect_rules.RULE_CONSUMERS`), never a setting, and neither switch has an
+environment variable.
+
+**Self-report.** `protagine_self state`, `GET /v1/mind/state` (`affect`) and
+`protagine mind status` show each level with its cited causes (`failed
+outcome:<id> via <approach>`, `due_soon commitment:<id>`, `miss
+expectation:<id>`), the load, which source each consumer reads (`source`:
+`state`, `rules`, `mixed` or `off`), the notes and the tone line.
+
 ## The Mind section
 
 An owner turn's `/context/assemble` carries a `protagine-mind` section of at
-most 600 characters: "On my mind" (the broadcast set), "Working toward" (open
-goals) and "Waiting for your say on" (open asks with their codes). Guests
-never see it. With `faculties.broadcast` off the concerns are neither shown
+most 600 characters: the affect notes (a strategy switch, what is due soon and
+not started, "Stretched", "Holding back optional nudges") and the tone line,
+together at most 360 characters and dropped from the end to fit, then "On my
+mind" (the broadcast set), "Working toward" (open goals) and "Waiting for your
+say on" (open asks with their codes). Guests never see it. With `faculties.broadcast` off the concerns are neither shown
 nor added to the recall query.
 
 ## Asks
@@ -244,6 +318,8 @@ mind:
     drives: true                    # weights, satiation and goal adoption; off = flat priority
     deliberation: true              # the one tool-less call per tick; off = templates only
     goals: true                     # agent-owned goals
+    affect: true                    # the agent's own feelings (Feelings, above)
+    affect_rules: false             # the affect mechanism arm: every consumer reads its stateless rule
     broadcast: true                 # the top-3 concerns in turn context and recall
 ```
 
@@ -255,7 +331,7 @@ intention rows; nothing the mind learns writes `protagine.yaml` or
 ## The CLI
 
 ```
-protagine mind status              enabled, level, queues, breaker, budgets
+protagine mind status              enabled, level, queues, breaker, the affect line
 protagine mind log [--limit N]     the audit log, newest first
 protagine mind why <id>            drive, evidence, decision, Hermes ref, outcome, verification
 protagine mind asks                open asks with their codes
@@ -284,7 +360,7 @@ protagine mind interest <topic>    seed an interest for the curiosity drive
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log`, `GET /why/{id}`, `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests` and `deliberation`), `GET /stats` | | |
+| `GET /log`, `GET /why/{id}`, `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation` and `affect`), `GET /stats` | | |
 | `GET /concerns`, `GET /goals` | | the workspace (open concerns, the broadcast set, drive levels) and the open goals |
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
