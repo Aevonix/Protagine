@@ -25,12 +25,14 @@ RETIRED_MODULES = (
     "protagine.mining",
     "protagine.sandbox",                    # the exploration sandbox; the qualification coding sandbox stays
     "protagine.api.routers.mining",
+    "protagine.self_model.trust",           # the trust ladder; the floor and breaker are the mind's (authority.py)
+    "protagine.self_model.supervised",
 )
 RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools", "/v1/host/skills/", "/v1/host/self/experiments",
                           "/v1/host/self/params", "/v1/host/skills-memory", "/v1/host/sandbox", "/v1/host/mining")
 RETIRED_ENV = ("PROTAGINE_TOOLSMITH", "PROTAGINE_EXPERIMENTS_", "PROTAGINE_EXPERIMENT_PREGRANTS_JSON",
                "PROTAGINE_SKILLS_DISTILL", "PROTAGINE_ESCALATION_MINING", "PROTAGINE_CORPUS_EXPORT_ENABLED",
-               "PROTAGINE_SANDBOX_")
+               "PROTAGINE_SANDBOX_", "PROTAGINE_TRUST_", "PROTAGINE_SUPERVISED_LIVE_DOMAINS")
 RETIRED_CAPABILITIES: tuple = ("skills", "skill_sandbox", "security_scanner", "cognition")
 
 

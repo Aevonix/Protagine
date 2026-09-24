@@ -14,8 +14,6 @@ from protagine.self_model.benchmark import (
 )
 from protagine.self_model.reconcile import main as reconcile_main
 from protagine.self_model.store import CompetenceStore
-from protagine.self_model.store import SelfModel
-from protagine.self_model.trust import TrustEngine
 
 
 WEEK = "2026-W26"
@@ -129,7 +127,7 @@ def test_replacement_can_only_change_via_explicit_supersession(monkeypatch):
     assert len(store.reconciliation_ledger()) == 2
 
 
-def test_evidence_gap_suppresses_trust_until_append_only_resolution(monkeypatch):
+def test_an_evidence_gap_hides_events_until_an_append_only_resolution(monkeypatch):
     store = CompetenceStore()
     _record_at(monkeypatch, store, "worker:agent_action", ["success", "failure"])
     gap_manifest = _manifest(evidence_gaps=[{
@@ -142,7 +140,6 @@ def test_evidence_gap_suppresses_trust_until_append_only_resolution(monkeypatch)
     row = store.get("worker:agent_action")
     assert row["evidence_available"] is False
     assert row["success_rate"] is None and row["excluded_events"] == 2
-    assert TrustEngine(store).confidence("worker:agent_action") == 0.0
 
     resolution = _manifest(
         reason="job ledger correlation now proves every event in the window",
@@ -152,22 +149,7 @@ def test_evidence_gap_suppresses_trust_until_append_only_resolution(monkeypatch)
     store.apply_reconciliation(resolution)
     assert len(store.events("worker:agent_action")) == 2
     assert store.get("worker:agent_action")["success_rate"] == 0.5
-    assert TrustEngine(store).confidence("worker:agent_action") == 0.5
     assert len(store.reconciliation_ledger()) == 2
-
-
-def test_evidence_gap_blocks_graduation_but_not_new_violation_breaker(monkeypatch):
-    store = CompetenceStore()
-    _record_at(monkeypatch, store, "worker:x", ["success"])
-    store.apply_reconciliation(_manifest(evidence_gaps=[{
-        "domain": "worker:x", "since_ts": T0 - 1, "until_ts": T0 + 1,
-    }]))
-    trust = TrustEngine(store)
-    trust.set_stage("worker:x", "act_first", notify=False)
-    model = SelfModel(store, trust=trust)
-    monkeypatch.setattr(store_mod.time, "time", lambda: T0 + 10)
-    model.record("worker:x", "failure", violation=True)
-    assert trust.stage("worker:x") == "ask_first"
 
 
 async def test_benchmark_hides_stale_rollup_then_recomputes_exact_correction(

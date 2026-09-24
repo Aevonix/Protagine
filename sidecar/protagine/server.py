@@ -533,34 +533,25 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("TypeFeedbackStore init failed: %s", exc)
 
-    # --- Self-model / trust engine + action journal (item 4, Amendment 1) ---
-    # Wired before directed action so approval tiering can consult trust.
+    # --- Self-model (competence) + action journal (item 4, Amendment 1) ---
     _sm_for_directed = None
     try:
         from protagine.self_model import (
-            ActionJournal, CompetenceStore, SelfModel, TrustEngine,
-            self_model_enabled,
+            ActionJournal, CompetenceStore, SelfModel, self_model_enabled,
         )
-        from protagine.api.routers.host import (
-            set_self_model, _feedback_store as _fb_for_trust,
-        )
+        from protagine.api.routers.host import set_self_model
         if self_model_enabled():
             _competence = CompetenceStore(
                 db_path=str(state_dir / "protagine-self-model.db"))
             _journal = ActionJournal(
                 db_path=str(state_dir / "protagine-action-journal.db"))
-            _trust = TrustEngine(
-                _competence, db_path=str(state_dir / "protagine-self-model.db"),
-                feedback_store=_fb_for_trust, journal=_journal)
-            _sm_for_directed = SelfModel(_competence, trust=_trust, journal=_journal)
+            _sm_for_directed = SelfModel(_competence, journal=_journal)
             _sm_for_directed.perspective = getattr(locals().get('preference_learner'), 'perspective', None)
             set_self_model(_sm_for_directed)
             logger.info(
-                "SelfModel/TrustEngine initialized (db=%s, journal=%s, "
-                "autograduate=%s)",
+                "SelfModel initialized (db=%s, journal=%s)",
                 state_dir / "protagine-self-model.db",
-                state_dir / "protagine-action-journal.db",
-                os.environ.get("PROTAGINE_TRUST_AUTOGRADUATE", "true"))
+                state_dir / "protagine-action-journal.db")
         else:
             logger.info("SelfModel disabled (PROTAGINE_SELF_MODEL_ENABLED=false)")
     except Exception as exc:
