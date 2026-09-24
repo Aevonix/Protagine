@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -353,7 +353,6 @@ class TestValidationResult:
             reasons=[],
             evidence_count=3,
             confidence=0.8,
-            data_age_hours=12.0,
         )
         assert vr.valid is True
         assert vr.reasons == []
@@ -364,7 +363,6 @@ class TestValidationResult:
             reasons=["Insufficient evidence (1 < 2)", "Low confidence (0.40 < 0.60)"],
             evidence_count=1,
             confidence=0.4,
-            data_age_hours=24.0,
         )
         assert vr.valid is False
         assert len(vr.reasons) == 2
@@ -380,7 +378,6 @@ class TestInsightValidator:
         return InsightValidator(
             min_evidence=5,
             min_confidence=0.9,
-            max_data_age_hours=12.0,
         )
 
     @pytest.mark.asyncio
@@ -435,8 +432,7 @@ class TestInsightValidator:
 
     @pytest.mark.asyncio
     async def test_strict_validator_accepts_strong(self, strict_validator):
-        # Strong insight: 5 evidence (>= min 5), confidence 0.95 (>= 0.9), and no
-        # graph so data age is treated as fresh (0h <= 12h). Passes all gates.
+        # Strong insight: 5 evidence (>= min 5) and confidence 0.95 (>= 0.9).
         insight = FakeInsight(
             confidence=0.95,
             supporting_evidence=["a", "b", "c", "d", "e"],
@@ -444,34 +440,6 @@ class TestInsightValidator:
         result = await strict_validator.validate(insight)
         assert result.valid is True
         assert result.reasons == []
-
-    @pytest.mark.asyncio
-    async def test_data_age_stale(self):
-        """Supporting data older than max_data_age_hours is rejected as stale."""
-        # Graph returns a 24h-old timestamp for each evidence lookup, so the
-        # computed data age (~24h) exceeds the 1h limit.
-        old = datetime.now(timezone.utc) - timedelta(hours=24)
-        graph = FakeGraphClient(recall_results=[{"created_at": old}])
-        validator = InsightValidator(max_data_age_hours=1.0, graph=graph)
-        insight = FakeInsight(
-            confidence=0.9,
-            supporting_evidence=["ev-1", "ev-2"],
-        )
-        result = await validator.validate(insight)
-        assert result.valid is False
-        assert result.data_age_hours > 1.0
-        assert any("Stale data" in r for r in result.reasons)
-
-    @pytest.mark.asyncio
-    async def test_fresh_data_passes_when_graph_present(self):
-        """Recent supporting data is not flagged stale."""
-        recent = datetime.now(timezone.utc) - timedelta(minutes=5)
-        graph = FakeGraphClient(recall_results=[{"created_at": recent}])
-        validator = InsightValidator(max_data_age_hours=12.0, graph=graph)
-        insight = FakeInsight(confidence=0.9, supporting_evidence=["ev-1", "ev-2"])
-        result = await validator.validate(insight)
-        assert result.valid is True
-        assert result.data_age_hours < 1.0
 
     @pytest.mark.asyncio
     async def test_validate_batch(self, validator):
@@ -487,7 +455,6 @@ class TestInsightValidator:
     def test_default_thresholds(self, validator):
         assert validator.min_evidence == 2
         assert validator.min_confidence == 0.6
-        assert validator.max_data_age_hours == 168.0
 
 
 # --- Insight Deliverer tests ---

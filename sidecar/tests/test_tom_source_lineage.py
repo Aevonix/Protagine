@@ -48,7 +48,6 @@ def runtime(source_app, monkeypatch, tmp_path):
     monkeypatch.setattr(host, "_affect_store", SimpleNamespace())
     monkeypatch.setattr(host, "_engagement_store", None)
     monkeypatch.setattr(host, "_tom_extractor", extractor)
-    monkeypatch.setattr(host, "_graph", None)
 
     def spawn(coro):
         if coro.cr_code.co_name == "_run_tom_extraction":

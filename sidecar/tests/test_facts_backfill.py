@@ -1,4 +1,4 @@
-"""Shared-facts CRUD remains canonical after retiring graph backfill."""
+"""Shared-facts CRUD reads and writes only the canonical facts store."""
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -8,32 +8,12 @@ from protagine.tom.facts import SharedFactsStore
 from test_turn_source_evidence import source_app
 
 
-class GraphProbe:
-    def __init__(self):
-        self.calls = []
-
-    async def store_memory(self, **kwargs):
-        self.calls.append(('write', kwargs))
-        return 'graph-copy'
-
-    async def recall(self, **kwargs):
-        self.calls.append(('read', kwargs))
-        return [{
-            'id': 'stale-graph-copy', 'type': 'fact', 'strength': .99,
-            'content': 'The hydrofoil departure is stale.',
-            'created_at': '2026-01-01T00:00:00+00:00',
-        }]
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize('graph_available', [False, True])
 async def test_fact_crud_filters_and_pagination_use_only_canonical_rows(
-        source_app, tmp_path, monkeypatch, graph_available):
+        source_app, tmp_path, monkeypatch):
     store = SharedFactsStore(str(tmp_path / 'facts.db'))
-    graph = GraphProbe()
     monkeypatch.setattr(host, '_facts_store', store)
     monkeypatch.setattr(host, '_tom2_store', None)
-    monkeypatch.setattr(host, '_graph', graph if graph_available else None)
     try:
         async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
             records = []
@@ -74,7 +54,6 @@ async def test_fact_crud_filters_and_pagination_use_only_canonical_rows(
             retired = await client.post('/v1/host/mind/facts/backfill', json={'dry_run': False})
             assert retired.status_code == 405
             assert (await client.get('/v1/host/mind/facts/backfill')).status_code == 404
-        assert graph.calls == []
     finally:
         store.close()
 
@@ -92,10 +71,8 @@ async def test_manual_extraction_keeps_model_provenance_without_graph_copy(sourc
             return True
 
     store = SharedFactsStore(str(tmp_path / 'facts.db'))
-    graph = GraphProbe()
     monkeypatch.setattr(host, '_facts_store', store)
     monkeypatch.setattr(host, '_tom_extractor', Extractor())
-    monkeypatch.setattr(host, '_graph', graph)
     try:
         async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://test') as client:
             response = await client.post('/v1/host/tom/extract', json={
@@ -110,6 +87,5 @@ async def test_manual_extraction_keeps_model_provenance_without_graph_copy(sourc
                 'automatic_projection': True,
             }
             assert store.automatic_view().list_facts(contact_id='contact-a')['total'] == 0
-        assert graph.calls == []
     finally:
         store.close()

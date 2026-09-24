@@ -25,7 +25,7 @@ def test_detached_sidecar_releases_terminal_before_product_stop(tmp_path):
         PROTAGINE_STATE_DIR=str(state), PROTAGINE_INSTALL_PROFILE='local',
         PROTAGINE_SKIP_DOTENV='1', PROTAGINE_API_KEY='isolated-lifecycle-test',
         PROTAGINE_CLIENT_API_KEY='isolated-lifecycle-test',
-        PROTAGINE_GRAPH_ENABLED='false', PROTAGINE_EMBED_PROVIDER='skip',
+        PROTAGINE_EMBED_PROVIDER='skip',
         PROTAGINE_SOURCE_CLAIMS='off', PROTAGINE_AUTONOMY_PRESET='passive',
         LITELLM_LOCAL_MODEL_COST_MAP='True', DO_NOT_TRACK='1',
     )

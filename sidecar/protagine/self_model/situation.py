@@ -1588,3 +1588,30 @@ class AppropriatenessGate:
             operation="project_start",
             required_categories=required_categories,
         ).as_policy_result()
+
+
+def compact_situation(snapshot: Optional[SituationSnapshotV1], *, limit: int = 12) -> Dict[str, Any]:
+    """Scoped present-tense facts for context; stale values never become current."""
+    if snapshot is None:
+        return dict(schema="WorldSituationViewV1", state="unknown", facts=[], stale=[],
+                    authority_granted=False)
+    limit = max(1, min(int(limit), 32))
+
+    def compact(fact: SituationFactV1) -> Dict[str, Any]:
+        public = fact.public()
+        return {key: public[key] for key in (
+            "observation_id", "category", "entity_id", "state", "active", "observed_at",
+            "fresh_until", "freshness", "evidence_refs", "attributes")}
+
+    facts = [compact(f) for f in snapshot.facts if f.freshness == "fresh"]
+    stale = [dict(entity_id=f.entity_id, category=f.category, state="unknown",
+                  last_observed_state=f.state, observed_at=f.observed_at,
+                  fresh_until=f.fresh_until, evidence_refs=list(f.evidence_refs))
+             for f in snapshot.facts if f.freshness != "fresh"]
+    return dict(schema="WorldSituationViewV1", snapshot_id=snapshot.snapshot_id,
+                as_of=snapshot.as_of, subject_person_id=snapshot.subject_person_id,
+                viewer_scope=snapshot.viewer_scope, shareability=snapshot.shareability,
+                state="current" if facts else "stale" if stale else "unknown",
+                facts=facts[:limit], stale=stale[:limit],
+                omitted=max(0, len(facts) - limit) + max(0, len(stale) - limit),
+                authority_granted=False)

@@ -317,7 +317,6 @@ async def test_migration_api_and_forget_cover_retained_files_without_graph(tmp_p
     identity = EmbeddingIdentity('new', 'served-new', 'r2', 2)
     store = await managed(tmp_path, identity, ledger)
     monkeypatch.setattr(vector_module, '_store', store)
-    monkeypatch.setattr(host, '_graph', None)
     monkeypatch.setattr(host, '_embedder', Pipeline(identity))
     monkeypatch.setattr(host.router, '_migrate_running', False, raising=False)
     monkeypatch.setattr(host.router, '_migrate_results', {}, raising=False)

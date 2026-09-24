@@ -1,10 +1,4 @@
-"""Orphan-vector vacuum (U11): projected id listing, graph/vector set diff,
-fail-closed Neo4j handling and the post-prune sweep gate.
-
-Locks: dry_run deletes nothing, Neo4j failure aborts BEFORE any deletion,
-and the post-prune sweep only activates when PROTAGINE_MEMORY_PRUNE_MODE=live
-(default shadow = no sweep, byte-identical to pre-U11 behavior).
-"""
+"""VectorStore.list_ids: the projected id listing the generation catalog reads."""
 
 from __future__ import annotations
 
@@ -12,11 +6,8 @@ import tempfile
 
 import pytest
 
-from protagine.intelligence.graph import client as client_mod
 from protagine.vector.collections import Collection
 
-
-# --- VectorStore.list_ids (real LanceDB) --------------------------------------
 
 @pytest.mark.asyncio
 async def test_list_ids_projected_query():
@@ -31,143 +22,3 @@ async def test_list_ids_projected_query():
         ids = await vs.list_ids(Collection.MEMORIES)
         assert sorted(ids) == ["v0", "v1", "v2"]
         assert await vs.list_ids(Collection.DOCUMENTS) == []
-
-
-# --- vacuum_orphan_vectors ------------------------------------------------------
-
-class _FakeVectorStore:
-    def __init__(self, ids):
-        self.ids = list(ids)
-        self.deleted = []
-
-    async def list_ids(self, collection):
-        return list(self.ids)
-
-    async def delete(self, collection, id):
-        self.deleted.append(id)
-
-
-class _FakeIdResult:
-    def __init__(self, ids):
-        self._ids = ids
-
-    def __aiter__(self):
-        self._it = iter(self._ids)
-        return self
-
-    async def __anext__(self):
-        try:
-            return {"id": next(self._it)}
-        except StopIteration:
-            raise StopAsyncIteration
-
-
-class _FakeSession:
-    def __init__(self, owner):
-        self._owner = owner
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def run(self, cypher, **params):
-        if self._owner.fail:
-            raise RuntimeError("neo4j unavailable")
-        assert "MATCH (m:Memory) RETURN m.id AS id" in cypher
-        return _FakeIdResult(self._owner.graph_ids)
-
-
-class _FakeDriver:
-    def __init__(self, owner):
-        self._owner = owner
-
-    def session(self, database=None):
-        return _FakeSession(self._owner)
-
-
-class _Fixture:
-    def __init__(self, vector_ids, graph_ids, fail=False):
-        self.graph_ids = list(graph_ids)
-        self.fail = fail
-        self.vec = _FakeVectorStore(vector_ids)
-        g = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
-        g.driver = _FakeDriver(self)
-        g.database = "neo4j"
-        g._vector_store = self.vec
-        self.graph = g
-
-
-@pytest.mark.asyncio
-async def test_dry_run_counts_orphans_deletes_nothing():
-    fx = _Fixture(vector_ids=["a", "b", "orphan1", "orphan2"],
-                  graph_ids=["a", "b"])
-    out = await fx.graph.vacuum_orphan_vectors(dry_run=True)
-    assert out["available"] is True
-    assert out["vectors"] == 4
-    assert out["orphans"] == 2
-    assert out["deleted"] == 0
-    assert out["dry_run"] is True
-    assert out["ids"] == ["orphan1", "orphan2"]
-    assert fx.vec.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_live_deletes_only_orphans():
-    fx = _Fixture(vector_ids=["a", "orphan1", "b", "orphan2"],
-                  graph_ids=["a", "b", "c-graph-only"])
-    out = await fx.graph.vacuum_orphan_vectors(dry_run=False,
-                                               batch_sleep_secs=0)
-    assert out["orphans"] == 2 and out["deleted"] == 2
-    assert sorted(fx.vec.deleted) == ["orphan1", "orphan2"]
-
-
-@pytest.mark.asyncio
-async def test_max_delete_bounds_one_run():
-    fx = _Fixture(vector_ids=[f"o{i}" for i in range(10)], graph_ids=[])
-    out = await fx.graph.vacuum_orphan_vectors(dry_run=False, max_delete=3,
-                                               batch_sleep_secs=0)
-    assert out["orphans"] == 10   # full backlog reported
-    assert out["deleted"] == 3    # but only the cap deleted
-    assert len(fx.vec.deleted) == 3
-
-
-@pytest.mark.asyncio
-async def test_neo4j_error_aborts_before_any_deletion():
-    fx = _Fixture(vector_ids=["a", "b"], graph_ids=[], fail=True)
-    with pytest.raises(RuntimeError):
-        await fx.graph.vacuum_orphan_vectors(dry_run=False)
-    assert fx.vec.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_no_vector_store_reports_unavailable():
-    fx = _Fixture(vector_ids=[], graph_ids=[])
-    fx.graph._vector_store = None
-    out = await fx.graph.vacuum_orphan_vectors(dry_run=True)
-    assert out == {"available": False, "vectors": 0, "orphans": 0,
-                   "deleted": 0, "dry_run": True, "ids": []}
-
-
-# --- post-prune sweep gate --------------------------------------------------------
-
-
-class _SweepRecordingGraph:
-    def __init__(self):
-        self.prune_calls = []
-        self.vacuum_calls = []
-
-    async def prune_weak_memories(self, threshold=0.05, *, dry_run=False,
-                                  max_delete=500):
-        self.prune_calls.append({"dry_run": dry_run})
-        return {"matched": 0, "deleted": 0, "dry_run": dry_run, "ids": []}
-
-    async def vacuum_orphan_vectors(self, *, dry_run=False, max_delete=None,
-                                    batch_size=200, batch_sleep_secs=0.05):
-        self.vacuum_calls.append({"dry_run": dry_run,
-                                  "max_delete": max_delete})
-        return {"available": True, "vectors": 0, "orphans": 0, "deleted": 0,
-                "dry_run": dry_run, "ids": []}
-
-

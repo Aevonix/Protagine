@@ -16,12 +16,8 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
 from protagine.self_model.params import (
     AdaptiveParamStore,
-    register_core_params,
 )
-from protagine.server import (
-    _initialize_controlled_learning,
-    _wire_controlled_learning_pipeline,
-)
+from protagine.server import _initialize_controlled_learning
 from onekey import KEY
 
 
@@ -30,7 +26,6 @@ HOST_GLOBALS = (
     "_benchmark",
     "_experiments",
     "_learning_feedback_store",
-    "_learner",
     "_metalearner",
 )
 
@@ -55,7 +50,6 @@ def _configure(monkeypatch, state_dir, *, mode="shadow"):
 def _params(state_dir):
     state_dir.mkdir(parents=True, exist_ok=True)
     params = AdaptiveParamStore(str(state_dir / "protagine-params.db"))
-    register_core_params(params)
     host.set_adaptive_params(params)
     return params
 
@@ -130,7 +124,7 @@ def _proposal(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_correction_is_persisted_before_continuous_learning(
+async def test_correction_is_persisted_durably(
     tmp_path, monkeypatch,
 ):
     state_dir = tmp_path / "state"
@@ -139,15 +133,6 @@ async def test_correction_is_persisted_before_continuous_learning(
     wiring = _initialize_controlled_learning(
         state_dir=state_dir, adaptive_params=params)
 
-    class Learner:
-        def __init__(self):
-            self.corrections = []
-
-        async def ingest_correction(self, correction):
-            self.corrections.append(correction)
-
-    learner = Learner()
-    host.set_learner(learner)
     app = _app(tmp_path)
     payload = {
         "identity": {"host_id": "test"},
@@ -174,6 +159,5 @@ async def test_correction_is_persisted_before_continuous_learning(
         "1970-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00")
     assert stored[0]["context_hash"] == "response:owner:42"
     assert stored[0]["person_id"] == "contact-owner"
-    assert learner.corrections[0].context_hash == "response:owner:42"
 
 

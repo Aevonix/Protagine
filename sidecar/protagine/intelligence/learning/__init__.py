@@ -1,17 +1,14 @@
-"""Protagine intelligence learning sub-package.
+"""Durable owner corrections.
 
-Provides:
-- FeedbackStore   — persist/retrieve user corrections
-- ContinuousLearner — near-real-time signal ingestion and weight updates
+``FeedbackStore`` persists every correction the owner submits through
+``POST /v1/host/learning/correction``; the selfhood benchmark reads them back
+as evidence. The in-memory continuous learner that once consumed them is gone
+(M8): nothing here adapts weights.
 """
 
 from .feedback_store import FeedbackStore, UserCorrection
-from .continuous_learner import ContinuousLearner, BriefingEngagement, GoalOutcome
 
 __all__ = [
     "FeedbackStore",
     "UserCorrection",
-    "ContinuousLearner",
-    "BriefingEngagement",
-    "GoalOutcome",
 ]

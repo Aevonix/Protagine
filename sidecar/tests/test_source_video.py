@@ -168,7 +168,7 @@ async def test_shared_original_backup_restore_and_late_worker_result(tmp_path):
     from protagine import backup
     ledger, selector, data = retained(tmp_path/'state')
     ledger.record_source('other', contact_id='other', session_id='s', messages=[message(data)], derive_claims=False)
-    archive = backup.create_full_backup(tmp_path/'state', tmp_path/'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(tmp_path/'state', tmp_path/'archives', include_vectors=False)
     destination = tmp_path/'restore'; assert backup.restore_full_backup(archive, destination)['source_images'] == 1
     restored = TurnIdempotencyLedger(destination/'turn-idempotency.db'); media = SourceMedia(restored)
     assert media.read(selector['asset_hash'], contact_id='owner', session_id='later')[0] == data

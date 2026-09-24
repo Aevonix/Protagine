@@ -1,6 +1,6 @@
 """P6 regressions: evidence-derived situation, scope, freshness, and policy."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,9 +10,12 @@ import pytest
 from protagine.self_model.situation import (
     AppropriatenessGate,
     JournalSituationAdapter,
+    SituationFactV1,
     SituationObservationV1,
     SituationReducer,
+    SituationSnapshotV1,
     SituationStore,
+    compact_situation,
 )
 
 
@@ -498,3 +501,15 @@ def test_p3_adapter_rejects_scope_mismatch(tmp_path):
     result = live_gate().for_goal_proposal(proposal, concern, snap)
     assert result["allowed"] is False
     assert result["reason"] == "situation_scope_mismatch"
+
+
+def test_compact_situation_never_presents_stale_hardware_as_current():
+    fact = SituationFactV1('probe', 'service', 'service:inference', 'healthy', True, 1000, 1120, 'fresh',
+                          ('receipt:probe',), 'cid-owner', 'owner', 'owner_private')
+    snapshot = SituationSnapshotV1('snapshot', 'digest', 'cid-owner', 'owner', 'owner_private', 1100,
+                                  (fact,), (), (), ('receipt:probe',))
+    assert compact_situation(snapshot)['facts'][0]['state'] == 'healthy'
+    stale = compact_situation(replace(snapshot, facts=(replace(fact, freshness='stale'),), as_of=1200))
+    assert stale['facts'] == [] and stale['stale'][0]['state'] == 'unknown'
+    assert stale['stale'][0]['last_observed_state'] == 'healthy'
+    assert compact_situation(None)['state'] == 'unknown'

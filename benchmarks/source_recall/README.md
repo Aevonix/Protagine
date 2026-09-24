@@ -7,6 +7,17 @@ acceptance result or a claim that one database or embedding method is best.
 
 ## Observed results, 2026-09-06
 
+These results come from the earlier three-arm harness (`lexical_only`,
+`existing_hybrid` over a SQLite stand-in for the graph memory, and
+`source_semantic`), whose arms tied on final scores. M8 removed the graph memory
+and rewired the harness to the production `collect_sources`/`select_memory` path
+with two arms, `lexical_only` and `canonical_hybrid`. `reference-results.json`
+still holds the earlier run: re-freezing it needs a measured run against real
+extraction, embedding and reranker endpoints, which the rewiring change did not
+make. Until that run lands, compare new output with the earlier `source_semantic`
+rows for `canonical_hybrid` and with `lexical_only` for `lexical_only`, and treat
+any difference as unmeasured rather than as a regression or an improvement.
+
 The same 120 neutral sources, captured extraction state, 96 queries and reranker
 cutoff of 0.95 were used before and after the quotation-ranking change. The development set has 72
 queries and the holdout 24. No threshold was adjusted after observing these
@@ -22,8 +33,9 @@ provenance, abstention when requested, and an explicit conflict bundle when
 required. Finding an expected source alone does not satisfy that definition.
 Expected labels are used only by `assessment.py` after selection. In particular,
 fixture `supersedes`, `parents`, `claim` and `value` fields never enter extraction
-or ranking. Explicit `deleted` requests exercise canonical source erasure;
-`indexed=false` models delayed graph projection.
+or ranking. Explicit `deleted` requests exercise canonical source erasure.
+`indexed=false` modelled delayed graph projection in the retired graph arm and
+has no effect on the current arms.
 
 The extractor was a GLM chat model served through an OpenAI-compatible endpoint
 under a local serving alias, not a public model identifier; embedding and served
@@ -55,23 +67,20 @@ a causal speed comparison, production latency estimate or large-index ANN test.
 
 ## What runs
 
-All arms use the actual canonical SQLite source ledger, source-claim projection,
-LanceDB vector store and shared `RecallSelector`, with 5 records and 6,000
-characters as the final budget. OpenAI-compatible extraction and embedding calls
+Both arms run the production recall path, `protagine.memory.search.collect_sources`
+then `select_memory`, over the actual canonical SQLite source ledger, source-claim
+projection, LanceDB vector store and shared `RecallSelector`, with 5 records and
+6,000 characters as the final budget. OpenAI-compatible extraction and embedding calls
 and the Cohere/Jina-style `/v1/rerank` transport use operator-supplied endpoints.
 Model calls run sequentially. Extraction is attempted once per inserted source;
 failures remain reported in the job status rather than silently retried to pass.
 
 | Arm | Candidate inputs |
 | --- | --- |
-| `lexical_only` | Canonical source FTS, up to 10 hits |
-| `existing_hybrid` | Source FTS plus actual graph recall candidate code, up to 25 candidates |
-| `source_semantic` | Those inputs plus canonical source semantic search, up to 15 hits |
+| `lexical_only` | The same collection with semantic recall unavailable: canonical source FTS, up to 10 hits |
+| `canonical_hybrid` | Canonical source FTS plus canonical source semantic search, as production collects them |
 
-Neo4j reads are replaced by an explicit scoped **SQLite graph adapter** with a
-10-hit FTS lookup. The adapter does not implement Neo4j or a truth oracle. Real
-Neo4j query qualification is separate. Corpus records all belong to a synthetic
-owner; the six guest cases test abstention for private information. The fixture's
+Corpus records all belong to a synthetic owner; the six guest cases test abstention for private information. The fixture's
 team/public annotations do not prove shared-authority behavior. Synthetic model
 generation labels are not an actual model-swap test; real generation mismatch
 and erasure races are covered separately by `test_embedding_generations.py` and
@@ -174,8 +183,8 @@ sources need separate relevance assessment before they can be called junk.
 `--source-only` reuses the same source ledger, LanceDB index, embedding provider,
 annotation expansion and `SelectionCapture` for one `canonical_hybrid` arm.
 It merges ten lexical and fifteen semantic hits before the existing twenty-document
-reranker bound and five-record/6,000-character packet. It skips extraction, graph
-rows and caption extras. No production default changes. This boundary tests
+reranker bound and five-record/6,000-character packet. It skips extraction and
+caption extras. No production default changes. This boundary tests
 retrieval of imported evidence, not native memory formation or final answer quality.
 
 In this mode each fixture record may set `role` to `user`, `assistant` or `tool`

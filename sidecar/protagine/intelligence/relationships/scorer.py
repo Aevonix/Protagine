@@ -21,10 +21,7 @@ A score of 80+ means Protagine has observed strong, consistent engagement with t
 over time — not merely that the owner considers them important.
 """
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from protagine.intelligence.graph.client import ProtagineGraph
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 import logging
 import math
@@ -182,7 +179,7 @@ class RelationshipScorer:
         "protagine_style_signal",
     })
 
-    def __init__(self, graph: "ProtagineGraph", weights: Optional[ScoreWeights] = None, metrics=None):
+    def __init__(self, graph: Any, weights: Optional[ScoreWeights] = None, metrics=None):
         self._metrics = metrics  # Optional ProtagineMetricsCollector
         self.graph = graph
         self.weights = weights or ScoreWeights()

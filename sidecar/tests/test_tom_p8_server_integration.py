@@ -8,11 +8,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.requests import Request
 
-from onekey import (
-    RequestAuthority,
-    legacy_authority,
-
-)
+from onekey import RequestAuthority
 from protagine.api.routers import host
 from protagine.api.schemas.host import (
     ContextAssembleRequest,
@@ -21,10 +17,7 @@ from protagine.api.schemas.host import (
     HostTurnContext,
     MultimodalSearchRequest,
 )
-from protagine.server import (
-    _attach_p8_runtime,
-    _build_research_pipeline,
-)
+from protagine.server import _attach_p8_runtime
 from protagine.tom.facts import SharedFactsStore
 from protagine.tom.integration import P8Runtime
 from protagine.turns import TurnIdempotencyLedger
@@ -104,9 +97,9 @@ def _restore_host_globals(monkeypatch, tmp_path):
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PROTAGINE_RECALL_RERANK", "off")
     names = (
-        "_p8_runtime", "_facts_store", "_graph", "_tom2_store",
+        "_p8_runtime", "_facts_store", "_tom2_store",
         "_relationship_profiler", "_embedder", "_goals_store",
-        "_initiative_store", "_briefings_engine", "_world_store",
+        "_initiative_store", "_briefings_engine",
         "_contacts_store",
         "_connection_discoverer", "_metalearner", "_commitment_store",
         "_preference_learner", "_affect_store", "_engagement_store",
@@ -127,7 +120,7 @@ class _LegacyGlobalContextSpies:
     def __init__(self):
         self.calls = {
             name: 0 for name in (
-                "goals", "initiatives", "briefings", "world",
+                "goals", "initiatives", "briefings",
                 "directive_ack", "directive_pending", "directive_brief",
                 "insights", "contacts_list", "cognition",
             )
@@ -221,18 +214,9 @@ class _LegacyGlobalContextSpies:
         host._goals_store = self.goals
         host._initiative_store = self.initiatives
         host._briefings_engine = self.briefings
-        class World:
-            async def property_views(self, *args, **kwargs): return []
-        host._world_store = World()
         host._contacts_store = self.contacts
         host._connection_discoverer = self.insights
         host._metalearner = self.cognition
-
-        async def world_context(_query, limit=5):
-            self.calls["world"] += 1
-            return [SimpleNamespace(id='world-fixture', name='owner-global-world-entity', entity_type='concept')]
-
-        monkeypatch.setattr(host, "_world_context_entities", world_context)
 
 
 class _PersonalContextSpies:
@@ -241,23 +225,13 @@ class _PersonalContextSpies:
     def __init__(self):
         self.calls = {
             name: [] for name in (
-                "graph", "commitment_list", "commitment_overdue",
+                "commitment_list", "commitment_overdue",
                 "commitment_pending", "contact_get", "contact_style",
                 "contact_cadence", "affect", "engagement", "comms",
                 "relationship_profile",
             )
         }
         outer = self
-
-        class Graph:
-            async def recall(self, **kwargs):
-                outer.calls["graph"].append(kwargs)
-                return [{
-                    "content": "PERSONAL OWNER MEMORY",
-                    "relevance": 0.99,
-                    "score": 0.99,
-                    "source_uri": "session:private",
-                }]
 
         class Commitments:
             def list(self, **kwargs):
@@ -349,7 +323,6 @@ class _PersonalContextSpies:
                     (person_id, kwargs))
                 return Brief()
 
-        self.graph = Graph()
         self.commitments = Commitments()
         self.contacts = Contacts()
         self.affect = Affect()
@@ -358,7 +331,6 @@ class _PersonalContextSpies:
         self.profiler = Profiler()
 
     def wire(self):
-        host._graph = self.graph
         host._commitment_store = self.commitments
         host._contacts_store = self.contacts
         host._affect_store = self.affect
@@ -421,12 +393,9 @@ async def test_p8_exact_owner_retains_untyped_global_context(
         assembled_body, request=owner_request)
 
     rendered = repr(assembled)
-    for marker in (
-        "owner-global-goal", "owner-global-initiative",
-        "owner-global-world-entity",
-    ):
+    for marker in ("owner-global-goal", "owner-global-initiative"):
         assert marker in rendered
-    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives", "world"))
+    assert all(spies.calls[name] > 0 for name in ("goals", "initiatives"))
     projection = assembled.projection_attestation
     assert projection is not None
     assert projection.viewer_person_id == "owner"
@@ -546,7 +515,6 @@ async def test_p8_scoped_non_owner_queries_only_exact_person_commitments(
     assembled = await host.context_assemble(
         _context("alice"), request=request)
 
-    assert spies.calls["graph"] == []
     assert spies.calls["commitment_list"]
     assert all(call == {
         "person_id": "alice",
@@ -624,61 +592,6 @@ def test_default_off_and_live_request_create_no_p8_state(tmp_path, monkeypatch):
         assert runtime is None
         assert host._p8_runtime is None
         assert all(not (tmp_path / name).exists() for name in P8_FILES)
-
-
-def test_shadow_installs_graph_wide_mirror_exclusion_and_off_clears_it(
-    tmp_path, monkeypatch,
-):
-    class GraphPolicy:
-        def __init__(self):
-            self.calls = []
-
-        def set_recall_source_exclusions(
-            self, source_uris, *, legacy_metadata_markers=(),
-        ):
-            self.calls.append((
-                tuple(source_uris), tuple(legacy_metadata_markers)))
-
-    graph = GraphPolicy()
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    runtime = _attach_p8_runtime(
-        state_dir=tmp_path, facts_store=facts, graph=graph)
-    assert runtime is not None
-    assert graph.calls == [
-        ((), ()),
-        (("tom:shared_fact",), ("shared_fact",)),
-    ]
-    runtime.close()
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "off")
-    assert _attach_p8_runtime(
-        state_dir=tmp_path, facts_store=facts, graph=graph) is None
-    assert graph.calls[-1] == ((), ())
-
-
-def test_research_wiring_preserves_off_ownership_and_borrows_only_for_p8(
-    monkeypatch,
-):
-    calls = []
-
-    class PipelineSpy:
-        def __init__(self, *args, **kwargs):
-            calls.append((args, kwargs))
-
-    import protagine.research.pipeline as pipeline_module
-    monkeypatch.setattr(
-        pipeline_module, "ResearchPipeline", PipelineSpy)
-    graph = object()
-
-    _build_research_pipeline(graph=graph, p8_runtime=None)
-    assert calls[-1] == ((), {})
-
-    _build_research_pipeline(graph=graph, p8_runtime=object())
-    assert calls[-1] == ((), {
-        "graph": graph,
-        "allow_fallback_graph": False,
-    })
 
 
 def test_shadow_attaches_one_runtime_and_restart_closes_cleanly(
@@ -790,78 +703,6 @@ async def test_context_renders_only_authenticated_enveloped_facts(
 
 
 @pytest.mark.asyncio
-async def test_p8_context_filters_shared_fact_graph_mirrors_before_render(
-    tmp_path, monkeypatch,
-):
-    class GraphRecall:
-        def __init__(self):
-            self.calls = []
-
-        async def recall(self, **kwargs):
-            self.calls.append(kwargs)
-            return [
-                {
-                    "id": "private-mirror",
-                    "content": "P8 subject-private launch secret",
-                    "source_uri": "tom:shared_fact",
-                    "relevance": 0.99,
-                    "score": 0.99,
-                },
-                {
-                    "id": "ordinary-memory",
-                    "content": "ordinary recipient-scoped memory",
-                    "source_uri": "session:one",
-                    "relevance": 0.5,
-                    "score": 0.5,
-                },
-            ]
-
-    monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
-    facts = SharedFactsStore(str(tmp_path / "facts.db"))
-    host.set_facts_store(facts)
-    _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    graph = GraphRecall()
-    host._graph = graph
-    scoped_request = _request(_authority("alice"))
-
-    assembled = await host.context_assemble(
-        _context("alice"), request=scoped_request)
-    assembled_text = "\n".join(
-        section.body for section in assembled.sections)
-    assert "ordinary recipient-scoped memory" not in assembled_text
-    assert "P8 subject-private launch secret" not in assembled_text
-
-    assert graph.calls == []
-
-
-@pytest.mark.asyncio
-async def test_default_off_never_queries_obsolete_graph_recall(monkeypatch):
-    class StrictGraphRecall:
-        async def recall(self, query, limit, person_id):
-            assert query
-            assert limit == 5
-            assert person_id == "alice"
-            return [{
-                "id": "legacy-memory",
-                "content": "strict legacy graph memory",
-                "relevance": 0.7,
-                "score": 0.7,
-            }]
-
-    monkeypatch.delenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", raising=False)
-    host.set_p8_runtime(None)
-    host._graph = StrictGraphRecall()
-    # The legacy migration lane keeps the exact historical recall call.  A
-    # scoped guest uses only canonical sources and must not reach this legacy
-    # producer while P8 is unavailable.
-    request = _request(legacy_authority())
-
-    assembled = await host.context_assemble(
-        _context("alice"), request=request)
-    assert "strict legacy graph memory" not in repr(assembled)
-
-
-@pytest.mark.asyncio
 async def test_canonical_context_never_falls_through_to_raw_legacy_facts(
     tmp_path, monkeypatch,
 ):
@@ -934,7 +775,7 @@ async def test_default_off_relationship_detail_keeps_legacy_selector_behavior():
 
 
 @pytest.mark.asyncio
-async def test_p8_multimodal_memory_search_filters_before_content_response(
+async def test_p8_multimodal_memory_search_releases_no_legacy_rows(
     tmp_path, monkeypatch,
 ):
     class Embedder:
@@ -961,21 +802,11 @@ async def test_p8_multimodal_memory_search_filters_before_content_response(
                  "metadata": {"source_uri": "session:one"}},
             ]
 
-    class Graph:
-        def __init__(self):
-            self.calls = []
-
-        async def filter_memory_vector_results(self, rows):
-            self.calls.append(rows)
-            return [row for row in rows if row["id"] == "ordinary"]
-
     monkeypatch.setenv("PROTAGINE_RECIPIENT_SIMULATOR_MODE", "shadow")
     facts = SharedFactsStore(str(tmp_path / "facts.db"))
     _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
     store = Store()
-    graph = Graph()
     host._embedder = Embedder()
-    host._graph = graph
     import protagine.vector as vector_module
     monkeypatch.setattr(vector_module, "get_store", lambda: store)
 
@@ -984,21 +815,18 @@ async def test_p8_multimodal_memory_search_filters_before_content_response(
             identity=HostIdentity(host_id="test"),
             query="memory", collection="memories", limit=2,
         ))
-    assert [row["id"] for row in response.results] == ["ordinary"]
-    assert len(graph.calls) == 1
+    # Legacy memory rows carry no authoritative scope: under P8 none is released.
+    assert response.results == []
     assert store.limits == [40]
 
-    # Turning P8 off preserves the historical exact search call and does not
-    # invoke the graph policy adapter.
+    # Turning P8 off preserves the historical exact search call.
     host.set_p8_runtime(None)
-    graph.calls.clear()
     response = await host.memory_search_multimodal(
         MultimodalSearchRequest(
             identity=HostIdentity(host_id="test"),
             query="memory", collection="memories", limit=2,
         ))
     assert response.results[0]["id"] == "mirror"
-    assert graph.calls == []
     assert store.limits[-1] == 2
 
 

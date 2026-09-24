@@ -649,7 +649,7 @@ class EmbeddingPipeline:
 
     @property
     def embed_fn(self):
-        """Drop-in callable for ProtagineGraph.set_embed_fn()."""
+        """The embedding callable the source projections and recall share."""
         return self.embed
 
     async def close(self) -> None:

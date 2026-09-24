@@ -160,7 +160,6 @@ class PipelineConfig:
 
     # Delivery
     l7_cancel_window_seconds: float = 30.0
-    persist_to_graph: bool = True
 
     # Stage timeouts (seconds)
     timeout_decompose: float = 30.0
@@ -199,14 +198,9 @@ class ResearchPipeline:
         config: Optional[PipelineConfig] = None,
         *,
         graph: Any = None,
-        allow_fallback_graph: bool = True,
     ) -> None:
         self.config = config or PipelineConfig()
-        self._gatherer = SourceGatherer(
-            self.config.gather,
-            graph=graph,
-            allow_fallback_graph=allow_fallback_graph,
-        )
+        self._gatherer = SourceGatherer(self.config.gather, graph=graph)
         self._synthesizer = ResearchSynthesizer(self.config.synthesis)
         self._renderer = ArtifactRenderer()
 

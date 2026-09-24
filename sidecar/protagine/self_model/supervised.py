@@ -2,10 +2,9 @@
 
 The trust ladder has a structural catch-22: graduation ask_first ->
 act_first requires a REAL (non-shadow) track record, but a domain that only
-acts at act_first never produces one. The beliefs engine solved this for
-itself (U26) with a domain-specific flag; this module is the same rung for
-ANY domain, so every future consumer shares one definition of "supervised"
-instead of growing private variants.
+acts at act_first never produces one. This module is the one rung for ANY
+domain, so every consumer shares one definition of "supervised" instead of
+growing private variants.
 
 The rung: at trust stage ask_first, a domain listed in
 PROTAGINE_SUPERVISED_LIVE_DOMAINS (comma-separated, default EMPTY = rung off
@@ -19,8 +18,9 @@ in ``REVERSIBLE_CONTRACT`` below, and ``reversible()`` fails CLOSED — an
 unknown domain or an unlisted operation is non-reversible, full stop.
 Trust-engine errors likewise degrade to the plain env mode (never upward).
 
-Legacy alias: PROTAGINE_BELIEFS_SUPERVISED_LIVE=1 still enables the rung for
-the beliefs domain (the live deployments that set it keep working).
+No domain lists a reversible operation today: the belief engine and the world
+model that did are gone (M8), so ``reversible()`` answers False everywhere
+until a consumer registers its operations here.
 """
 
 from __future__ import annotations
@@ -36,30 +36,7 @@ logger = logging.getLogger(__name__)
 # Adding an entry here is a design review, not a config change: the
 # operation's implementation must journal prior state and keep the old
 # value recoverable.
-REVERSIBLE_CONTRACT: Dict[str, FrozenSet[str]] = {
-    # Belief maintenance (see beliefs/engine.py):
-    #  - supersede: loser node is MARKED (epistemic_state + superseded_by),
-    #    old value preserved on it, transition journaled.
-    #  - decay: bounded multiplicative confidence drop floored at 0.1,
-    #    never a deletion, prior value journaled.
-    "beliefs": frozenset({"supersede", "decay"}),
-    # World-model LLM extraction (see world_model/llm_extract.py, H1.5):
-    #  - entity_upsert: creates/updates an entity row, journaled with its
-    #    id — removable without touching anything else.
-    #  - alias_merge: adds an alias string to an existing entity; the
-    #    alias list is additive and the addition is journaled.
-    #  - edge_corroborate: bounded confidence bump on an EXISTING
-    #    non-causal edge, journaled; never creates, deletes, or retypes.
-    #  Edge CREATION and every causal edge type stay live-only (causal
-    #  writes additionally require the explicit causal-extract unlock).
-    "world_model": frozenset({"entity_upsert", "alias_merge",
-                              "edge_corroborate"}),
-}
-
-# Domain-specific flags that predate the generic rung; kept working forever.
-_LEGACY_ALIASES: Dict[str, str] = {
-    "beliefs": "PROTAGINE_BELIEFS_SUPERVISED_LIVE",
-}
+REVERSIBLE_CONTRACT: Dict[str, FrozenSet[str]] = {}
 
 _TRUTHY = ("1", "true", "yes")
 
@@ -87,17 +64,9 @@ def supervised_domains() -> FrozenSet[str]:
 
 
 def supervised_enabled(domain: str) -> bool:
-    """Is the supervised rung unlocked for ``domain``? (generic flag OR the
-    domain's legacy alias)."""
+    """Is the supervised rung unlocked for ``domain``?"""
     domain = (domain or "").strip().lower()
-    if not domain:
-        return False
-    if domain in supervised_domains():
-        return True
-    legacy = _LEGACY_ALIASES.get(domain)
-    if legacy:
-        return os.environ.get(legacy, "0").strip().lower() in _TRUTHY
-    return False
+    return bool(domain) and domain in supervised_domains()
 
 
 def reversible(domain: str, op: str) -> bool:

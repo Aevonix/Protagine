@@ -72,7 +72,7 @@ async def collect_sources(ledger, *, query: str, contact_id: str, session_id: st
 async def select_memory(collected: CollectedSources, *, query: str, selector,
                         contact_facts=None, contact_facts_allowed=False,
                         timezone_name=None, current_work_available=False, limit=5,
-                        session_history=None) -> MemoryPacket:
+                        session_history=None, now=None) -> MemoryPacket:
     """Apply the existing projections, corrections, ranking and shared budget once.
 
     The caller supplies an authenticated audience and an optional projected
@@ -80,7 +80,8 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
     ``session_history="intact"`` says the host still shows this session's own
     turns verbatim: quoting them back is the one recall that can add nothing,
     so those quotations and conversation pairs are left out (derived claims,
-    media and other sessions' evidence stay).
+    media and other sessions' evidence stay). ``now`` pins the time query; the
+    recall benchmark replays fixtures at their recorded date.
     """
     from protagine.beliefs.source_time import interpret_time_query, filter_unstructured
     from protagine.util import temporal
@@ -88,7 +89,7 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
     scope = {'contact_id': collected.contact_id, 'session_id': collected.session_id}
     beliefs = []
     quotations = source_candidates(collected.hits)
-    time_query = interpret_time_query(query, now=temporal.now_utc(), timezone_name=timezone_name)
+    time_query = interpret_time_query(query, now=now or temporal.now_utc(), timezone_name=timezone_name)
     if ledger is not None:
         from protagine.beliefs.source_projection import SourceClaimProjection
         from protagine.memory.selection import current_work_query
