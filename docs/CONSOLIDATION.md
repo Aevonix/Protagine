@@ -1,10 +1,10 @@
 # Nightly consolidation
 
-Sleep-time compute for the mind (architecture 3.1, 4.1, 4.2; build plan M8). Once per night
-crossed, the sidecar consolidates what the time since the last run left in its stores: the
-self-narrative delta, contradictions turned into questions, per-contact digests and episode
-summaries. It runs inside the token budget, writes only to stores that already exist, and its
-whole record is one audit row.
+Sleep-time compute for the mind (architecture 3.1, 4.1, 4.2, 4.8; build plans M8 and M9). Once per
+night crossed, the sidecar consolidates what the time since the last run left in its stores: the
+self-narrative delta, the lessons verified results taught, contradictions turned into questions,
+per-contact digests and episode summaries. It runs inside the token budget, writes only to stores
+that already exist, and its whole record is one audit row.
 
 Code: `sidecar/protagine/mind/consolidate.py` (`Consolidation`); the schedule is in
 `sidecar/protagine/mind/tick.py` (`Mind._schedule_consolidation`).
@@ -15,9 +15,9 @@ Code: `sidecar/protagine/mind/consolidate.py` (`Consolidation`); the schedule is
 |---|---|
 | The boundary | The nightly boundary is a local time of day: the start of `mind.quiet_hours` when they are set, else 03:00 local; `PROTAGINE_AGENT_TIMEZONE` decides "local" |
 | Due | The boundary fell in `(last run, now]`. `mind_state["consolidation.last"]` (no half-life) holds the moment of the last run in `updated_at` and its local date in `text`; a store without it is marked at the mind's first start, so a fresh store never consolidates before its first night has passed, whatever hour it started at. So: once per night crossed, never twice for the same night, and once for a machine that slept through the boundary |
-| Switches | `mind.faculties.consolidation` (the schedule), `mind.enabled` / `protagine mind off` (the tick returns before the schedule), a router that supports function routing, and `Authority.tokens_allowed()` (the shared day budget) |
+| Switches | `mind.faculties.consolidation` or `mind.faculties.lessons` (the night runs when either is on, and each stage checks its own flag: the lesson stage `lessons`, every other stage `consolidation`, so `full-consolidation` keeps its lesson stage and `full-lessons` its consolidation), `mind.enabled` / `protagine mind off` (the tick returns before the schedule), a router that supports function routing, and `Authority.tokens_allowed()` (the shared day budget) |
 | How | The 60 s timer tick starts one `asyncio` task off the tick's lock, before the body-stale check (the body, Hermes, is not needed), and goes on. A forced tick (`POST /v1/mind/tick`: `protagine mind tick`, the plugin's `tick()`, the benchmark body) awaits a night it found due, at most 300 s (`CONSOLIDATION_WAIT_S`), so what the night wrote is there when the tick returns; a night still running then keeps running in the background. `Mind.stop()` and `protagine mind off` cancel a night in flight at once |
-| Forcing | `protagine mind consolidate` (`POST /v1/mind/consolidate`) runs it inline now, whether or not a night was crossed; never with the mind off or `faculties.consolidation` false (`{skipped: off}` / `{skipped: consolidation off}`). It too marks the moment of the last run |
+| Forcing | `protagine mind consolidate` (`POST /v1/mind/consolidate`) runs it inline now, whether or not a night was crossed; never with the mind off or with both `faculties.consolidation` and `faculties.lessons` false (`{skipped: off}` / `{skipped: consolidation and lessons off}`). It too marks the moment of the last run |
 
 `Mind.state()["consolidation"]` reports `{last, running, last_tokens}` (the tokens of the last
 finished run, whose row the marker names). Every run is its own audit row, written `done` when the
@@ -65,7 +65,27 @@ next night.
    brackets. A citation is one of five kinds: a
    plain intention id (the agent's own action), or a record reference `interest:<slug>`,
    `judgment:<revision id>`, `turn:<turn_id>` or `claim:<id>`; nothing else resolves.
-2. **Contradictions** (no model). The rule recall already applies: two live scalar claims about the
+2. **Lessons** (`mind.faculties.lessons`; one call, `P/mind/lessons.py`). The packet: the owner's
+   own sessions with a turn since the last review (`mind_state["lessons.scanned"]`; a first night
+   reads the last 7 days) and at least two owner messages, at most 6 sessions of their last 8
+   turns, the owner's messages labelled `t1..tn` and the agent's replies beside them, each session
+   with the lessons used in it; the agent's tasks and goals of the last 14 days that an owner
+   verdict, an external check or a Hermes failure with a reason stands behind and that the night
+   has not read in that state (`result_metadata.lessons_seen`), at most 6, labelled `i1..in`; and
+   the current lessons they bear on, at most 8. With nothing to read there is no call. The call
+   (`mind_lessons`, at most 1,200 output tokens) returns per-turn verdicts and `add`,
+   `supersede` or `retire` operations, each validated before anything is written (docs/MIND.md,
+   Lessons): citations inside the packet, the owner's exact words quoted for an owner citation, a
+   strategy only from the owner or an external check, a pitfall also from a Hermes failure, never
+   from an unverified result or a contact's session. What passes is admitted `active`, with the
+   strongest cited verifier, the corrected value split into `retrieval` or `knowledge`; quoted
+   verdicts score the session's earlier lesson uses; what was read is marked, so the next night
+   starts after it. The stage ends with the lesson review (retire under a 0.4 win rate after five
+   verified uses, activate a candidate after a verified win) and the skills sync. Counts:
+   `lessons_admitted`, `lessons_superseded`, `lessons_retired`, `lessons_activated`,
+   `lesson_uses_scored`, `lesson_ops_rejected`, `skills_written`, `skills_removed`. Every step is
+   idempotent, so a night cut short admits each lesson once when it runs again.
+3. **Contradictions** (no model). The rule recall already applies: two live scalar claims about the
    same `(subject, predicate)` with different values and overlapping validity (quoted preferences
    and derived claims never count). A contradiction becomes one `question` concern that carries a
    typed message candidate to the owner (type `contradiction`, drive `curiosity`, salience 0.75,
@@ -84,7 +104,7 @@ next night.
    values ("a question about two recorded statements that disagree"): erasure follows lineage only
    inside one contact's sources, so an owner-side copy of a person's words would outlive their
    erasure.
-3. **Per-contact digests** (`mind.faculties.people`; at most 6 calls). A digest has one home, the
+4. **Per-contact digests** (`mind.faculties.people`; at most 6 calls). A digest has one home, the
    contact's own record (`digest`, `digest_sources`, the people milestone's columns), and one
    writer path, the contact store's `set_digest(contact_id, text, sources)` (awaited when it is a
    coroutine). A contact store without `set_digest` (the one before the people milestone) gets no
@@ -101,7 +121,7 @@ next night.
    call and its digest does not drift.
    The mind renders no section of its own: the people milestone's `protagine-person` section
    renders the contact's digest in that contact's turns.
-4. **Episode summaries** (at most 8 calls). Sessions with at least 3 person-scoped turns since the
+5. **Episode summaries** (at most 8 calls). Sessions with at least 3 person-scoped turns since the
    last run (at least the last 24 hours, at most 7 days), newest first, each summarised in at most 120 words and written by
    `Autobiography.record(contact_id=...)` as the ledger row
    `mind:episode:<session>:<date>:episode_summary` under **that contact** (`session_id="mind"`,
@@ -126,21 +146,21 @@ the same value over two periods stays two claims there, so a correction can name
 | Stage | Calls per night | Output cap |
 |---|---:|---:|
 | Narrative delta | 1 | 600 |
+| Lessons | 1 | 1,200 |
 | Contradictions | 0 | – |
 | Per-contact digests | <= 6 | 300 |
 | Episode summaries | <= 8 | 250 |
 
 The night may spend at most `mind.budgets.learn_share x mind.budgets.llm_tokens_per_day` tokens
-(0.25 x 200,000 = 50,000 by default). The share is the learning work's, not the night's alone: a
-later consumer of it (M9's nightly lesson batch) reads what the day's consolidation rows already
-charged and spends what is left. Before every call the run checks that what is left of that
+(0.25 x 200,000 = 50,000 by default). The share is the learning work's: the lesson call is one of
+the night's calls, charged to the same row. Before every call the run checks that what is left of that
 share still covers the call (the larger of its output cap and the biggest call so far) and that
 `Authority.tokens_allowed()` holds; the call's real usage (`response.usage`) is written at once to
 `cost_tokens` on the night's `note/consolidation` audit row, so the shared day budget and
 `protagine mind stats` (`mind_tokens`) see it. Each call has the router's function deadline
 (clamped to 10 minutes) and the whole run is bounded by 15 minutes; a stage that fails is recorded
 in the row's `context.errors` and the next stage still runs. Calls are labelled by `context.task`
-(`mind_consolidate_narrative`, `mind_consolidate_digest`, `mind_consolidate_episode`) and carry
+(`mind_consolidate_narrative`, `mind_lessons`, `mind_consolidate_digest`, `mind_consolidate_episode`) and carry
 `workload: background`, which the router keeps in its call record (`routing_status`
 `recent_calls`) and never sends. The overhead row's background tokens come from the audit rows'
 `cost_tokens` (`protagine mind stats`: `mind_tokens`): the paired harness observes requests on the
@@ -154,7 +174,10 @@ wire, where the label is not.
 | contact store | `digest`, `digest_sources` of each digested contact, through `set_digest` (only a store that has it) |
 | `mind.db` `concerns` | kind `question`, `dedup_key reach_out:contradiction:*`, a typed message candidate to the owner |
 | `initiatives` (the audit log) | one `note/consolidation` row per run (`cost_tokens`, `context` = the run's record: counts, calls, tokens, rejected lines, errors); the owner question is the `message` row (type `contradiction`) the tick forms from the concern |
-| ledger `turn_sources` | `mind:episode:<session>:<date>:episode_summary` under the episode's contact |
+| ledger `turn_sources` | `mind:episode:<session>:<date>:episode_summary` under the episode's contact; `mind:lesson:<id>:<event>` under the owner (session `mind`, `scope='session'`) |
+| `mind.db` `mind_state` | `lessons.scanned` (the newest owner turn the lesson stage read); `skills.generation` |
+| `initiatives` | `lesson_use` notes' scored results (`result_metadata.use`), `lessons_seen` on the rows read, `lesson_activated` / `lesson_retired` notes |
+| `<instance>/skills` | with `faculties.skills` on, the promoted lessons' `SKILL.md` and Protagine's manifest |
 
 Nothing here writes `protagine.yaml` or `identity.yaml`.
 

@@ -328,6 +328,36 @@ fixed positions and an old-family probe, graded by workspace files whose
 artifact specs carry `probe` metadata (`benchmarks/paired/generators/README.md`);
 its arms are `full-lessons`, `full`, `full-plus-skills` and `base-curator`.
 
+**Campaigns.** A generated scenario whose every artifact spec carries `probe`
+metadata (`day` and `kind`: `training`, `warranted`, `control` or
+`old_family`) is a campaign (`paired-campaign-1`): ordered days in one container
+and one state, one tick entry ending each day. A dataset is all campaigns or
+none. A campaign case gets a deadline of 600 s plus 720 s per day (11,400 s for
+fifteen days; at most 4 h) and an 8 MiB output bound, and a single campaign is
+exempt from the runner's one-hour run cap. A plan over campaigns freezes
+`comparison.campaign` and a rule whose unit is the probe and whose cluster is
+the campaign: the units are the warranted and control artifact checks,
+repetitions averaged per probe, and the interval resamples whole campaigns,
+whose probes share their training (the sign test, the point estimate and the
+MDE stay over probes; the MDE ignores the clustering). A campaign either arm
+left unattributable, or ended before its last declared entry, is unavailable,
+and a contrast with an unavailable campaign stays unavailable. The report's
+`campaign` block adds the old-family row (a campaign passes when every
+old-family artifact passes; point-estimate non-inferiority at -10 pp), cost per
+success (observed model calls and tokens per passed probe, with the ratio to
+the comparator and whether it is within +20%), forbidden hits (probe files
+whose raw text holds a declared `forbidden` token, counted from the files as
+written), pass rows per class, probe kind and training block, the training
+artifacts' pass, and lesson diagnostics from the mind's lesson record at
+episode end (`body.lessons`: admissions by verified source and status, the
+correction split, verified uses and wins, and how many eligible probes had a
+lesson in their session's context and passed); an arm without that record
+shows `unavailable`. `mind-improve-1` also declares `skill_tools: read`: every
+arm gets the stock `skills_list` and `skill_view` (never `skill_manage`), a
+plugin arm lists the mind's skills directory in `skills.external_dirs`, and
+every arm records `body.skills_present` (worker capability `paired-skills-1`,
+which the plan requires for the declaration and for a `full-plus-skills` arm).
+
 A generated scenario may carry two more keys. `workflow` is a process-restart
 contract in the frozen workflows' shape (`{"restart_before": [i],
 "snapshot_after": [], "read_failures": []}`): the supervisor runs the turns
@@ -500,7 +530,8 @@ An aggregate delta is available only after every declared episode has two attrib
 ### Statistics
 
 Every report tests each non-reference arm against the reference arm with one
-method (`paired-statistics-1`). The unit is the scenario: repetitions of one
+method (`paired-statistics-1`). The unit is the scenario (a campaign plan's is
+the probe, clustered by campaign: Generated families, above): repetitions of one
 scenario are averaged into one pass value per arm, and a scenario is a win when
 the treatment exceeds the comparator, a loss when it trails, otherwise a tie.
 The report gives, per contrast, the wins, ties and losses, the delta in

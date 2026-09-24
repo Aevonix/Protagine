@@ -118,11 +118,11 @@ scope.
 
 | Trigger | Work | Model calls |
 |---|---|---|
-| **Each turn**, inside Hermes: provider `prefetch` (`H/agent/memory_provider.py:111`) | Recall plus a "Mind" section of at most 600 characters: an affect line with causes, up to 3 broadcast concerns, relevant stances, up to 1 lesson and open asks (owner only). | None; under 50 ms of sidecar time |
+| **Each turn**, inside Hermes: provider `prefetch` (`H/agent/memory_provider.py:111`) | Recall plus a "Mind" section of at most 600 characters: an affect line with causes, up to 3 broadcast concerns and open asks (owner only). As built, relevant stances ride their own `protagine-stances` section and up to 1 lesson its own `protagine-lessons` section (owner's own turn only, at most 420 characters), each built from the turn's text. | None; under 50 ms of sidecar time |
 | **After each turn**, in the existing projection worker (`P/beliefs/source_projection.py:1066-1129`) | Ledger record. Then claims, the appraisal call (extended with `their_valence` and `opt_out`), commitment extraction and the opinion pass. The resulting events drive rule updates, concern bumps and expectation checks. | The existing per-turn calls. Commitment extraction moves from its private endpoint (`P/cognition/introspection.py:10-17`) onto the router. |
 | **Tick**, a 60 s sidecar timer that does nothing unless state is dirty or a timer is due | Decay, drives, concerns, reconsideration of active intentions, deliberation, authority, then the dispatch queue and the outbox. | At most 1 per tick, inside `llm_tokens_per_day` |
 | **Plugin tick**, stock `on_kanban_dispatch_tick` every 60 s (`H/hermes_cli/kanban_db.py:236-257`) | Pull the dispatch queue and create kanban tasks. Pull the outbox and send. Reconcile `mind:*` tasks. Post board and goal observations. | None |
-| **Outcome events** | Update the intention, resolve its expectation, record whether it was verified, update affect, satiate the drive, update feedback multipliers, admit a lesson (verified outcomes only), add opinion evidence, write an autobiography entry. | None, except a lesson extraction, which is batched nightly |
+| **Outcome events** | Update the intention, resolve its expectation, record whether it was verified, update affect, satiate the drive, update feedback multipliers, apply a reflector's lesson operations, add opinion evidence, write an autobiography entry. Lessons from verified outcomes are admitted by the nightly batch. | None; lesson extraction is batched nightly |
 | **Nightly**, in quiet hours | Consolidation: per-contact digests, claim dedupe, contradictions turned into question concerns, episode summaries, the self-narrative delta and batched lessons. | Yes, inside the same token budget |
 
 Three properties of the plugin tick shape the design:
@@ -567,6 +567,13 @@ Four loops. Each closes only on an **external, verified** signal. The intention 
 | `hermes_failure` | A task Hermes reports `failed` or `blocked` with a reason | Pitfall lessons only |
 | `none` | A worker's completion summary alone, or anything self-reported | Nothing. It is kept as an experience note in the autobiography. |
 
+As built (M9): only the mind grants `owner` and `check`. A body report may claim only
+`hermes_failure`, and only for a failure that carries a reason; a claimed `owner` or `check` is
+ignored and the verifier computed. A `blocked` report with a reason records `hermes_failure` on
+the still-open row. For lessons, a `check` counts only when its kind reads state the worker cannot
+write (`commitment_resolved`, `reply_recorded`): a `result_field` check passes on the worker's own
+summary, so it verifies no lesson (the other faculties read `verified` as before).
+
 A completed kanban task shows what the worker reported, not that its strategy worked. So an
 unverified summary never earns a lesson win, a satiation of mastery or a skill promotion. Replies,
 silence and prediction hits or misses feed priority learning directly. Self-scored credit and
@@ -577,11 +584,18 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    existing profiler logic.
 2. **Experience memory (lessons).** Lessons have the ReasoningBank shape: title, when it applies,
    content and evidence references. There are strategy lessons and pitfall lessons.
-   - **Storage.** Lessons are `procedure` source claims (`P/beliefs/promotion.py:11-13`) with
-     outcome metadata. `P/mind/lessons.py` writes them directly against the autobiography entries
-     they cite, not through the user-message claim extractor. There is no new table.
+   - **Storage.** As built, lessons are the mind's own record, not source claims: a source claim
+     quotes a person's own message, so a lesson stored as one would read as something the owner
+     said (section 4.1). `P/mind/lessons.py` writes one owner-audience ledger entry per lesson
+     event in the mind's session with `scope='session'` (`mind:lesson:<id>:admitted`, then
+     `activated`, `superseded` or `retired`; `memory_kind: "procedure"` stays a metadata label).
+     Recall from any other session never shows them, and each entry's lineage (the owner turns it
+     quotes, the outcome entries it cites) erases it together with its evidence. There is no new
+     table; a lesson is the fold of its entries.
    - **Admission.** Only on a verified outcome, as the table above allows. Extraction is batched
-     nightly (one tool-less call).
+     nightly (one tool-less call) over the owner's own sessions since the last review and the
+     verified results of the last two weeks; every operation cites what it rests on, and an owner
+     citation quotes the owner's exact words, validated before anything is written.
    - **Edits** are delta edits: a newer lesson on the same signature supersedes the old one.
      Whole rewrites are not allowed.
    - **Use.** Up to 2 lessons go into deliberation and kanban task bodies, and 1 into turn
@@ -599,8 +613,11 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
      in its completion summary. The mind validates them and applies them to lesson claims. A
      reflector lesson starts as `candidate`: it is used in task bodies, but it becomes `active`
      only after a verified win in its class.
-   - The mastery drive's level decides which failure class goes next and how much of
-     `budgets.learn_share` is spent. Self-improvement is a desire, not a cron job.
+   - The mastery drive's level decides which failure class goes next. As built, the reflector is
+     an internal task under the ordinary task budgets (`tasks_per_hour`, `concurrent_tasks`) and
+     the weekly per-signature re-arm; `budgets.learn_share` bounds the sidecar's own learning
+     calls (the night, lesson extraction included). No new budget key. Self-improvement is a
+     desire, not a cron job.
 4. **Skill proposals** (flag `skills`, **off by default**).
    - An active lesson with ≥3 verified wins and a win rate ≥0.7 becomes a `SKILL.md` in a
      Protagine-owned `skills.external_dirs` entry (`H/agent/skill_utils.py:337-360`).
@@ -693,8 +710,11 @@ lesson_ids     json      cost_tokens int      due_at, expires_at
 **Judgments** gains `subject_kind`, `audience`, `premises` and `revise_if`. Its lease tables fold
 into the projection worker queue.
 
-**Claims.** Lessons are `memory_kind='procedure'` with metadata `{signature, kind, when_to_use,
-evidence_intention_ids, status: candidate | active | retired}`.
+**Lessons** (as built, M9) are not claims: they are owner-audience ledger entries of the mind's
+own session with `scope='session'`, one per lesson event, carrying `{id, signature, kind, title,
+when_to_use, content, evidence, verified, origin, status: candidate | active | superseded |
+retired, supersedes, correction, retrieval_source}` (section 4.8). Their uses are the intention
+rows' `lesson_ids` and one `lesson_use` note per owner session.
 
 **Autobiography.** Owner-audience ledger entries with `origin='mind'` (section 4.1).
 

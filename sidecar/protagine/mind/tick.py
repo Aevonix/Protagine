@@ -2183,8 +2183,9 @@ class Mind:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
         Affect's notes and its calm tone line come first but take only the room the rest leaves
-        (at most 360 characters), so they never cut the open asks; stances and lessons join it
-        with their milestones.
+        (at most 360 characters), so they never cut the open asks. Stances and the turn's lesson
+        ride their own sections (``protagine-stances``, ``protagine-lessons``), built from the
+        turn's text.
         """
         if not self.enabled:
             return ""

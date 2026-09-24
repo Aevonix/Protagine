@@ -74,9 +74,13 @@ Arm order rotates by campaign; each arm runs the whole campaign in its own fresh
 **Flag note.** `mind.faculties.lessons` and `mind.faculties.skills` are the documented flags
 (`protagine.yaml`, `protagine.config.DEFAULTS`). The benchmark worker's `mind_section` writes
 them into the disposable `protagine.yaml` from the arm's switches, and a plan refuses an image
-whose worker cannot apply the switches (`arm_profiles`). Nothing reads either flag until the M9
-faculty lands, so the three mind arms run as one today; the pilot's instrument check (section
-6) requires the `full-lessons` attempt records to show no lesson admitted.
+whose worker cannot apply the switches (`arm_profiles`). As built (M9), both flags are read:
+`lessons` gates the night's lesson stage, lesson lines in task bodies and deliberation, the
+owner-turn lesson section, the use log and the reflector; `skills` gates the promotion of proven
+lessons to `SKILL.md` in the arm's skills directory. Each arm's lesson record is read at episode
+end (`body.lessons`), so the pilot's instrument check (section 6) reads directly that the
+`full-lessons` attempts admitted no lesson and that `full` admitted only from `owner` or `check`
+sources.
 
 ## 5. Primary metric and rule
 
@@ -138,6 +142,11 @@ even 80 gives under 50% power the family runs at 64 and a failure is reported as
 | `<pilot>` | | | | | | `<pilot>` | |
 
 ## 7. Known limitations recorded with the plan
+
+- The correction split (knowledge versus retrieval) searches the owner's own earlier messages,
+  never the workspace: a value that lives only in a seeded file (the `retrieval` designs'
+  `rates.json` and `stock.json`) counts as `knowledge`. The workspace is the task's material,
+  not the agent's memory; the split's diagnostic reads the designs accordingly.
 
 - The dev designs' verified signals are owner corrections and verdicts. Hermes-reported
   failures (`verified: hermes_failure`) are not scripted: the generated grammar has no fault

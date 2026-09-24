@@ -8,10 +8,11 @@ executor.
 
 This document describes what ships: the drives, the concerns (the
 workspace), the agent's own feelings, deliberation, agent-owned goals, the
-tick, authority, asks, the audit log, the outbox, outcomes and the off switch.
+tick, authority, asks, the audit log, the outbox, outcomes and their
+verification, lessons, skills and the off switch.
 The design is in
 [docs/proto-agi/PROTO-AGI-ARCHITECTURE.md](proto-agi/PROTO-AGI-ARCHITECTURE.md)
-(sections 3, 4.3, 4.5, 5 and 7).
+(sections 3, 4.3, 4.5, 4.8, 5 and 7).
 
 ## The loop
 
@@ -266,7 +267,8 @@ The design is in
     and is never resent.
 11. **Outcome.** The body reconciles every `mind:*` task from its run row and
     posts `POST /v1/mind/outcome {id, hermes_ref, status, summary}`. The mind
-    records the outcome, runs the intention's `success_check`, resolves the
+    records the outcome and its verifier (Verification, below), runs the
+    intention's `success_check`, resolves the
     expectation it registered, records implicit feedback, checks the
     breaker, settles the concern and satiates the drive, closes the
     commitment a done `commitment_*` intention was raised for (the worker
@@ -388,7 +390,9 @@ then "On my mind" (the broadcast set), "Working toward" (open goals) and
 "Waiting for your say on" (open asks with their codes). Affect's lines come
 first but take only the room the others leave, at most 360 characters, and
 drop whole lines from the end to fit, so they never cut the open asks. Guests never see it. With `faculties.broadcast` off the concerns are neither shown
-nor added to the recall query.
+nor added to the recall query. A relevant lesson rides in its own
+`protagine-lessons` section (Lessons, below), and recorded views in
+`protagine-stances`.
 
 ## Identity: the constitution, the narrative and `protagine_self`
 
@@ -481,6 +485,98 @@ bodies never disagree; `mind.enabled` counts as configured, not the runtime off 
 (forming views is memory, not an effect). Only a process that serves no mind reads
 `protagine.yaml` for it.
 
+## Verification
+
+Every settled intention records `verified` beside its `outcome`: which verifier
+stands behind it (architecture 4.8). `owner` is the owner's verdict or
+confirmation, `check` a `success_check` that actually ran, `hermes_failure` a
+task Hermes reported failed or blocked with a reason, and `none` anything else,
+a worker's completion summary included. Only the mind grants `owner` and
+`check`: a body report (`POST /outcome`) may claim only `hermes_failure`, and
+only for a failure that carries a reason (`error` or `summary`); a claimed
+`owner` or `check` is ignored and the verifier computed. A failure without a
+reason is not a Hermes failure. A `blocked` report with a reason records
+`verified: hermes_failure` and the reason on the still-open row; a later
+report settles it and recomputes. For lessons a `check` counts only when its
+kind reads state the worker cannot write (`commitment_resolved`,
+`reply_recorded`): a `result_field` check passes on the worker's own summary,
+so it verifies no lesson (the other faculties read `verified` as before).
+
+## Lessons
+
+With `faculties.lessons` on (the default) the mind learns short, transferable
+procedures from verified results (`P/mind/lessons.py`). A lesson is a
+`strategy` (what to do and when, with its exceptions) or a `pitfall` (what to
+avoid), with a title, when it applies, its content and its evidence. It is the
+mind's own record, not a memory of the owner's: owner-audience ledger entries
+in the mind's session with `scope='session'`, one per event
+(`mind:lesson:<id>:admitted`, then `activated`, `superseded` or `retired`), so
+ordinary recall never shows a lesson as something the owner said, and each
+entry's lineage (the owner turns it quotes, the outcome entries it cites)
+erases it together with its evidence.
+
+- **Admission, at night.** The night's lesson stage (docs/CONSOLIDATION.md)
+  makes one tool-less call over the owner's own sessions since the last review
+  (sessions with at least two owner messages: a verdict follows work; the
+  agent's replies beside them) and the agent's tasks and goals of the last two
+  weeks that a verifier stands behind, with the current lessons they bear on.
+  The model returns `add`, `supersede` or `retire` operations and per-turn
+  verdicts; each is validated before anything is written. Every citation must
+  be in the packet; an operation citing an owner message quotes the owner's
+  exact words (at least 12 characters); a strategy needs the owner or an
+  external check, while a Hermes failure with its reason teaches only a
+  pitfall; a result nobody verified can never be cited; a contact's session is
+  never read. At most six operations a night are applied. One current lesson
+  per class and kind: an add that meets one supersedes it.
+- **Use.** A task body and its deliberation carry at most two lessons, those of
+  the task's own failure class first, then active lessons whose title and use
+  share at least two terms and a third of their terms with the work; the
+  intention records them in `lesson_ids`. An owner's own turn gets at most one
+  active lesson in a `protagine-lessons` context section ("What you learned",
+  at most 420 characters), which says where it came from and that the owner's
+  word in the conversation comes first, and logs one `lesson_use` note for the
+  session. A guest, a recipient packet, the mind switched off or the faculty
+  off gets none.
+- **Scoring and retirement.** A use counts when a verifier scored it: a task
+  that carried the lesson and was verified by the owner (`useful`, `actioned`
+  or `wrong`, `not_useful`), by an external check, or failed with Hermes'
+  reason; a turn use when the owner's quoted verdict later in that session says
+  the work was right or wrong. Over 90 days, a lesson under a 0.4 win rate
+  after five verified uses is retired, and a `candidate` becomes active after a
+  verified win in its class; each change is an audit note.
+- **Corrections.** An operation that carries the value the owner corrected is
+  split deterministically: when an earlier owner message (not the correcting
+  turn, never the agent's reply or a workspace file) already held the value,
+  the lesson is a `retrieval` lesson that names that turn and tells the agent
+  to look there first; otherwise it is `knowledge`.
+- **The reflector.** A failure-class investigation of the mastery drive asks
+  for at most three lesson operations as one JSON object at the end of its
+  report. The mind validates them when the report comes back (supersede and
+  retire only on a candidate of the investigated class, never on an active
+  lesson) and admits what passes as `candidate` lessons of that class, tried
+  only in task bodies of that class until a verified win activates them. The
+  row's `result_metadata.lesson_ops` says what was applied and refused.
+
+With the faculty off nothing new is admitted or used and investigations are
+the plain ones; stored lessons are kept and come back when it is turned on.
+`protagine mind lessons` lists, shows and retires them.
+
+## Skills (off by default)
+
+With `faculties.skills` on (and lessons on), an active lesson with at least
+three verified wins at a win rate of at least 0.7 becomes
+`<instance>/skills/protagine-<slug>/SKILL.md`, the directory `protagine init`
+lists in Hermes' `skills.external_dirs` (`P/mind/skills.py`). Protagine owns
+these files: a manifest lists what it wrote, a skill goes when its lesson is
+retired, superseded, erased or no longer promotable, and with the flag off
+every skill it wrote goes and nothing else is touched. The sync runs at the end
+of the night's lesson stage and when the mind starts; every change bumps
+`skills.generation` in `/v1/mind/state`, which the plugin reads to clear
+Hermes' skills prompt cache, so the next session lists the skill without a
+restart. Loads of Protagine's skills reach `POST /v1/mind/skills/used` and are
+counted in `/v1/mind/stats`. The flag stays off until the skills arm beats
+lessons alone.
+
 ## Asks
 
 An ask lives only in the sidecar. Nothing is created in Hermes until the owner
@@ -559,6 +655,8 @@ mind:
     consolidation: true             # the nightly consolidation (docs/CONSOLIDATION.md)
     self_narrative: true            # the self-narrative in the owner's prompt and protagine_self state
     opinions: true                  # the opinion pass, approach views in task bodies, the stance section
+    lessons: true                   # lessons: the night's lesson stage, lesson lines, the lesson section, the reflector
+    skills: false                   # proven lessons as SKILL.md in Protagine's skills.external_dirs entry
 ```
 
 `identity.yaml` holds the constitution (`agent.name`, `agent.values`,
@@ -589,6 +687,7 @@ protagine mind interest <topic>    seed an interest for the curiosity drive
 protagine mind consolidate         run the nightly consolidation now (docs/CONSOLIDATION.md)
 protagine mind narrative           the self-narrative as the owner's prompt section renders it
 protagine mind opinions [list|show <id>|withdraw <id>|reconsider <id>] [--query Q] [--history] [--reason R]
+protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 ```
 
 ## The API (`/v1/mind`, one bearer key)
@@ -604,7 +703,10 @@ protagine mind opinions [list|show <id>|withdraw <id>|reconsider <id>] [--query 
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation` and `affect`), `GET /stats` | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
+| `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, text}`: each lesson with its verified tally, and with `uses=true` every use in the 90-day window; a guest viewer gets nothing |
+| `POST /lessons/{id}/retire` | `{reason, by?}` | the retired lesson; 404 unknown, 409 already closed |
+| `POST /skills/used` | `{skill, session_id?, task_id?}` (the plugin's `on_skill_lifecycle` forwarding) | `{ok, counted, loads}`; only `protagine-*` skills are counted |
 | `GET /narrative` | | the self-narrative `{enabled, text, sections: {interests, strengths, recent, stances}, cites, updated_at}`; `enabled: false` and empty text until the mind keeps one or while `faculties.self_narrative` is off |
 | `POST /consolidate` | | runs the nightly consolidation now and returns the night's record (`protagine mind consolidate`); 501 `consolidation_not_available` on a sidecar without it |
 | `GET /concerns`, `GET /goals` | | the workspace (open concerns, the broadcast set, drive levels) and the open goals |

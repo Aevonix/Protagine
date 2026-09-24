@@ -628,6 +628,42 @@ both arms, and `mind-self-1`.
 
 **Size.** +0.9k / −10k; 3 PRs.
 
+**As built.** Where the design above met the code, these decisions were taken (the release
+notes and `docs/MIND.md` describe the behaviour):
+- **Campaign mode** needed no new episode grammar: every generated scenario already runs its
+  episodes in order in one container and one state. What it added is a campaign case's deadline
+  (600 s plus 720 s per day, at most 4 h) and output bound (8 MiB), the probe as the report's unit
+  with the campaign as the bootstrap cluster, the old-family row, cost per success, forbidden hits
+  and lesson diagnostics. The improve family also gives every arm the read-only skill tools
+  (evals section 11, 2026-09-24), since no arm could otherwise see a skill.
+- **Lessons are not `procedure` source claims.** A source claim quotes a person's own message, so
+  a lesson stored as one would read as something the owner said. Lessons are owner-audience
+  entries of the mind's own ledger session with `scope='session'` (architecture 4.8), erased with
+  the turns they quote; there is still no new table.
+- **Where corrections come from.** The correction API has no client, and owner verdicts arrive as
+  ordinary chat turns, so the nightly lesson call reads the owner's multi-turn sessions and the
+  verified intention outcomes; every owner-verified operation quotes the owner's exact words.
+- **Verification.** Only the mind grants `owner` and `check`; the body may claim a Hermes failure,
+  and only with a reason, and a blocked task with a reason is a Hermes failure. For lessons only an
+  external check (`commitment_resolved`, `reply_recorded`) counts: a `result_field` check reads the
+  worker's own report.
+- **The night** runs when `consolidation` or `lessons` is on; each stage checks its own flag, so
+  each ablation stays one faculty.
+- **The lesson line** in an owner turn is its own `protagine-lessons` section (at most 420
+  characters), like the stances; the Mind section takes no query.
+- **The reflector's budget** is the ordinary task budgets and the weekly per-signature re-arm; no
+  new budget key. Only a failure-class investigation is a reflector; a corrections investigation
+  keeps the M8 form, since its lessons would name no task class.
+- **Deletions**, by the grep of callers: `P/toolsmith/` (1,732), the whole `P/skills/` package
+  (3,404: the registry was built empty since M3, so every route answered empty or 404),
+  `P/self_model/experiments.py` (1,101) with its parameter store `params.py` (201),
+  `P/intelligence/cognition/` (1,678), `P/skills_memory/` (551), `P/mining/` (945) with its router
+  (104), `P/sandbox/` (360), and the whole `P/self_model/trust.py` (347) with `supervised.py` (106),
+  plus their routes, schemas, capabilities, server wiring and flags. `protagine upgrade` moves their
+  stores into the backup and drops the trust tables.
+- **Size**: product code +2.1k / -11.7k lines (`lessons.py` 988, `skills.py` 166); tests
+  +2.6k / -3.9k.
+
 ### M10: Scorecard, defaults and surface
 
 **Scope:**

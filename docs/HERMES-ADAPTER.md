@@ -32,6 +32,8 @@ memory:
   provider: protagine-memory
 kanban:
   dispatch_in_gateway: true         # the plugin's heartbeat is the dispatch tick
+skills:
+  external_dirs: [~/.protagine/skills]   # Protagine's own skills (with faculties.skills on); nothing else writes there
 security:
   protected_instruction_extra_patterns: [protagine.yaml, identity.yaml, api.key]
 ```
@@ -55,6 +57,8 @@ Every request to the sidecar carries `Authorization: Bearer <key>`.
 | Owner commands | `register_command("mind")`: read-only in chat plus `off`; `pre_gateway_dispatch` drops a `/mind` whose sender is not the owner, since the command handler gets no sender |
 | Tools | `register_tool`; handlers receive `session_id`, which the session map resolves to a sender |
 | Reminders | stock cron: a one-shot job whose id is the only thing the plugin keeps |
+| Skill loads | `on_skill_lifecycle`: a `loaded` fact for a `protagine-*` skill is queued in the turn outbox as a `skill_use` row, which the body delivers to `POST /v1/mind/skills/used`; every other skill and action is Hermes' own |
+| Skills index | `skills.external_dirs` lists `<instance>/skills`; when `/v1/mind/state` reports a new `skills.generation`, the body calls `agent.prompt_builder.clear_skills_system_prompt_cache()` so the next session lists the change (stock caches the index per process with no file times in its key); without that function a change shows after a restart |
 
 ## Owner and guest
 
@@ -109,7 +113,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
 1. `GET /v1/mind/state`. With `enabled: false` there, or `mind.enabled: false`
    in `protagine.yaml`, steps 2 and 3 are skipped and every unstarted `mind:*`
    task is archived; running workers end on their own. None of this needs a
-   model endpoint.
+   model endpoint. When `skills.generation` moved since the last tick (the
+   sidecar wrote or removed one of its skills), Hermes' skills prompt cache is
+   cleared; the first value a process sees is only recorded.
 2. `GET /v1/mind/dispatch` → for each `kind: task` intention one
    `kanban_db.create_task(title, body, assignee="protagine-act",
    idempotency_key=dedup_key or "mind:<id>", workspace_kind="scratch",
@@ -153,7 +159,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    `done | blocked | review | archived` or its latest run has ended, one
    `POST /v1/mind/outcome {id, hermes_ref, hermes_kind, status, outcome:
    done|blocked|failed|cancelled|uncertain, final, summary, error, verified:
-   "hermes_failure"|null, run: {id, outcome, status, profile, started_at,
+   "hermes_failure"|null (the sidecar honours the claim only for a failure
+   with a reason, and never takes `owner` or `check` from the body),
+   run: {id, outcome, status, profile, started_at,
    ended_at}, block_kind, consecutive_failures, completed_at, observed_at}` per
    state change (a failed run that Hermes requeues is one `failed`, `final:
    false` outcome; a task parked `blocked` with its failed run once

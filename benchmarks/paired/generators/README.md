@@ -223,7 +223,13 @@ renders its questions this way into an `anchor` split.
   campaign report takes the probe as its unit and the campaign as its cluster.
   Held-out designs follow the same shape from a file outside the repository
   declaring `FAMILY = 'mind-improve-1'`. Its arms are `full-lessons`, `full`,
-  `full-plus-skills` and `base-curator`.
+  `full-plus-skills` and `base-curator`. Since M9 the arms differ in behaviour
+  (`full` learns lessons at night and carries them into task bodies and owner
+  turns; `full-lessons` does not; `full-plus-skills` also writes proven lessons
+  as skills), every arm has the read-only skill tools (`skill_tools: read`, an
+  instrument setting of the loader, not of the dataset), and the campaign mode
+  of the harness sets each campaign's deadline and output bound; nothing in the
+  dataset changed, so the dev split hash below is the same.
 
 Decision-turn rule (affect): the decision turn is the only turn that asks for
 work, it comes last, it restates the options in neutral words (which items are
