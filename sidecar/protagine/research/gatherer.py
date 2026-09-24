@@ -2,7 +2,6 @@
 
 Collects evidence from multiple sources in parallel:
   - WEB      — search engine results with citation metadata
-  - GRAPH    — an injected graph client (none is wired since M8)
   - DOCUMENT — structured extraction from attached documents
   - EMAIL    — email / contact archive search
   - API      — structured external API sources
@@ -31,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 class SourceType(str, Enum):
     WEB = "web"
-    GRAPH = "graph"
     DOCUMENT = "document"
     EMAIL = "email"
     API = "api"
@@ -48,7 +46,7 @@ class EvidenceItem:
 
     source_type: SourceType
     content: str                   # Extracted text (Markdown)
-    citation: str                  # URL, graph node ID, doc ID, or email ID
+    citation: str                  # URL, doc ID, or email ID
     retrieved_at: datetime
     relevance_score: float = 1.0   # 0.0–1.0
     pii_flagged: bool = False
@@ -74,7 +72,6 @@ class GatherConfig:
     """Configuration for the gather stage."""
 
     max_web_results: int = 20
-    max_graph_depth: int = 3
     max_documents: int = 10
     max_email_threads: int = 50
     evidence_dedup_threshold: float = 0.92
@@ -82,7 +79,6 @@ class GatherConfig:
 
     # Which source types to query
     enable_web: bool = True
-    enable_graph: bool = True
     enable_documents: bool = True
     enable_email: bool = True
 
@@ -148,46 +144,6 @@ class WebGatherer:
         except Exception as exc:
             logger.debug("WebGatherer: no search provider available (%s) — returning empty", exc)
 
-        return results
-
-
-class GraphGatherer:
-    """Gather evidence from an injected graph client.
-
-    Nothing wires one today: the graph memory is gone (M8), so without an
-    injected client this source contributes no evidence.
-    """
-
-    def __init__(self, graph: Any = None) -> None:
-        self._graph = graph
-
-    async def gather(
-        self,
-        query: str,
-        max_depth: int = 3,
-    ) -> List[EvidenceItem]:
-        """Traverse the injected graph for entities related to *query*."""
-        results: List[EvidenceItem] = []
-        if self._graph is None:
-            return results
-        try:
-            memories = await self._graph.recall(query, limit=20)
-            for mem in memories:
-                content = mem.get("content", mem.get("text", ""))
-                if not content:
-                    continue
-                results.append(
-                    EvidenceItem(
-                        source_type=SourceType.GRAPH,
-                        content=content,
-                        citation=f"graph://{mem.get('id', 'unknown')}",
-                        retrieved_at=datetime.now(timezone.utc),
-                        relevance_score=float(mem.get("strength", mem.get("score", 0.6))),
-                        metadata=mem,
-                    )
-                )
-        except Exception as exc:
-            logger.debug("GraphGatherer: graph client unavailable (%s)", exc)
         return results
 
 
@@ -275,12 +231,9 @@ class SourceGatherer:
     def __init__(
         self,
         config: Optional[GatherConfig] = None,
-        *,
-        graph: Any = None,
     ) -> None:
         self.config = config or GatherConfig()
         self._web = WebGatherer()
-        self._graph = GraphGatherer(graph=graph)
         self._document = DocumentGatherer()
         self._email = EmailGatherer()
 
@@ -311,14 +264,6 @@ class SourceGatherer:
                 timeout=cfg.timeout_seconds,
             )
 
-        async def _gather_graph() -> List[EvidenceItem]:
-            if not cfg.enable_graph:
-                return []
-            return await asyncio.wait_for(
-                self._graph.gather(query, max_depth=cfg.max_graph_depth),
-                timeout=cfg.timeout_seconds,
-            )
-
         async def _gather_docs() -> List[EvidenceItem]:
             if not cfg.enable_documents or not document_ids:
                 return []
@@ -335,7 +280,7 @@ class SourceGatherer:
                 timeout=cfg.timeout_seconds,
             )
 
-        gather_fns = [_gather_web, _gather_graph, _gather_docs, _gather_email]
+        gather_fns = [_gather_web, _gather_docs, _gather_email]
         results = await asyncio.gather(
             *[fn() for fn in gather_fns],
             return_exceptions=True,
@@ -343,7 +288,7 @@ class SourceGatherer:
 
         all_items: List[EvidenceItem] = []
         for i, result in enumerate(results):
-            source_name = ["web", "graph", "documents", "email"][i]
+            source_name = ["web", "documents", "email"][i]
             if isinstance(result, BaseException):
                 logger.warning("gather[%s] failed: %s", source_name, result)
                 continue

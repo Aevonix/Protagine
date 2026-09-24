@@ -28,6 +28,9 @@ RETIRED_MODULES = (
     "protagine.beliefs.contradictions",
     "protagine.beliefs.resolve",
     "protagine.beliefs.decay",
+    # Graph-only code nothing could construct or feed once the graph went.
+    "protagine.intelligence.mind_model.graph_baseline",
+    "protagine.sessions.context_loader",
 )
 RETIRED_ROUTE_PREFIXES = ("/v1/host/world", "/v1/host/world-model", "/v1/host/beliefs",
                           "/v1/host/identity", "/v1/host/chain")
@@ -42,6 +45,22 @@ ALLOWED_LITERAL = re.compile(r"""["'](?:world_model|protagine_world_model\.db)["
 def test_retired_modules_do_not_exist(module):
     assert find_spec(module) is None, f"{module} still exists"
 
+
+def test_research_gathers_from_no_graph():
+    """The research pipeline's graph stage had no client to query once the graph went: it is gone."""
+    import inspect
+    from protagine.research import gatherer, pipeline, synthesizer
+    assert not hasattr(gatherer, "GraphGatherer") and "GRAPH" not in gatherer.SourceType.__members__
+    assert not {"enable_graph", "max_graph_depth"} & set(gatherer.GatherConfig.__dataclass_fields__)
+    assert "graph" not in inspect.signature(pipeline.ResearchPipeline).parameters
+    assert "graph" not in inspect.signature(gatherer.SourceGatherer).parameters
+    assert "graph_entities_referenced" not in synthesizer.SynthesisReport.__dataclass_fields__
+
+
+def test_the_consolidate_help_names_the_stages_that_run():
+    from protagine.mind.consolidate import NIGHT_TASKS
+    source = (PACKAGE / "mind" / "cli.py").read_text()
+    assert "dedupe" not in source and set(NIGHT_TASKS) == {"narrative", "contradictions", "digests", "episodes"}
 
 def test_no_retired_route_is_served():
     from protagine.server import create_app

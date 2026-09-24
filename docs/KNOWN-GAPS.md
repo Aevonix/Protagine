@@ -57,13 +57,16 @@ general self-improvement simply by recording a successful review.
   local state files into the upgrade backup. Changing databases does not fix
   memory admission quality or recover missing provenance.
 - Graph consumers outside the deleted packages await the M10 audit. Those that
-  only optionally read the graph lost that branch (the research
-  `GraphGatherer`, the insight validator's data-age check, the relationship
-  scorer's and cognition components' type hints). Those that cannot work
-  without a Neo4j driver (`CognitionPipeline`, `SignalCollector` with
-  `GraphBaselineStore`, `ConnectionDiscoverer`) are no longer constructed by
-  the server; their routes report the subsystem as not wired. The briefing
-  `RelationshipAggregator` (Cypher only), the node-certificate signer and the
+  only optionally read the graph lost that branch (the insight validator's
+  data-age check, the relationship scorer's and cognition components' type
+  hints); the research pipeline's graph stage (`GraphGatherer`, its source type
+  and its web-versus-graph contradiction rule) is deleted. Those that cannot
+  work without a Neo4j driver (`CognitionPipeline`, whose MetaLearner and CPI
+  M9 deletes, `SignalCollector`, which M6 deletes with `mind_model`, and
+  `ConnectionDiscoverer` with the synthesis and insight routes) are no longer
+  constructed by the server; their routes report the subsystem as not wired.
+  The briefing `RelationshipAggregator` (Cypher only), `GraphBaselineStore`,
+  the session `SessionContextLoader`, the node-certificate signer and the
   `extraction` extra had no other use and are deleted.
 
 ## Deliberate no-builds (division of responsibility with the host agent)

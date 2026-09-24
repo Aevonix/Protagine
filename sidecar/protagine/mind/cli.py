@@ -62,7 +62,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     interest.add_argument("topic")
     interest.add_argument("--why", default="")
     commands.add_parser("consolidate", help="Run the nightly consolidation now: the self-narrative delta, "
-                                            "contradictions, dedupe, per-contact digests, episode summaries")
+                                            "contradictions, per-contact digests, episode summaries")
     commands.add_parser("narrative", help="The self-narrative as the prompt section renders it")
 
 
