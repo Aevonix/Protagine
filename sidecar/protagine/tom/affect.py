@@ -249,6 +249,25 @@ class AffectStore(SourceLinkedStore):
         ).fetchone()
         return row is not None and row["valence"] <= threshold
 
+    def trend(self, contact_id: str) -> Dict[str, Any]:
+        """The one read the social drive uses: current valence, trend, and whether the decline
+        is sustained enough to hold outreach (architecture 4.7 item 5)."""
+        state = self.get_state(contact_id)
+        return {"valence": float(state["current_valence"]), "trend": str(state["trend"]),
+                "declining": self.detect_sustained_decline(contact_id)}
+
+    def reattribute(self, old_id: str, new_id: str) -> int:
+        """Move every event of ``old_id`` to ``new_id`` (a merge) and recompute both states."""
+        if not old_id or not new_id or old_id == new_id:
+            return 0
+        with self._conn:
+            cursor = self._conn.execute("UPDATE affect_events SET contact_id=? WHERE contact_id=?", (new_id, old_id))
+            moved = int(cursor.rowcount or 0)
+            if moved:
+                self._recompute_state(old_id, commit=False)
+                self._recompute_state(new_id, commit=False)
+        return moved
+
     def detect_sustained_decline(
         self,
         contact_id: str,
@@ -345,13 +364,14 @@ class AffectStore(SourceLinkedStore):
                 self._conn.commit()
             return
 
-        # Weighted average with exponential recency bias.
+        # Weighted average with exponential recency bias: the newest event weighs 1.0 and
+        # each older one 0.9 of the next newer (rows are oldest first, so walk them reversed).
         total_weight = 0.0
         weighted_valence = 0.0
         weighted_arousal = 0.0
         weight = 1.0
 
-        for row in rows:
+        for row in reversed(rows):
             weighted_valence += row["valence"] * weight
             weighted_arousal += row["arousal"] * weight
             total_weight += weight
