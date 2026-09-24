@@ -113,8 +113,6 @@ from protagine.api.schemas.host import (
     SecretListResponse,
     SecretSetRequest,
     SecretSetResponse,
-    SignalIngestRequest,
-    SignalIngestResponse,
     SkillDetailResponse,
     SkillSummary,
     SkillsListResponse,
@@ -208,7 +206,6 @@ v2_router = APIRouter(prefix="/v2/host", tags=["host-v2"])
 # Module-level wiring — subsystems are injected by the server lifespan
 # ---------------------------------------------------------------------------
 
-_signal_collector = None
 _embedder = None
 _event_subscribers: list[EventSubscriberBuffer] = []
 _event_broadcast_lock = threading.RLock()
@@ -235,7 +232,7 @@ def _event_subscriber_queue_size() -> int:
 def broadcast_event(event: dict) -> Optional[dict]:
     """Persist, canonicalize, then publish an event to live subscribers.
 
-    Called by the autonomy loop, signal collector, and other subsystems
+    Called by the autonomy loop and other subsystems
     when state changes that the host should know about (proactive
     messages, briefings, anomalies, etc.).  A journal failure suppresses the
     live frame: clients must never observe an event which cannot be replayed.
@@ -281,9 +278,6 @@ def broadcast_event(event: dict) -> Optional[dict]:
         return frame
 
 
-def set_signal_collector(collector) -> None:
-    global _signal_collector
-    _signal_collector = collector
 
 
 #: Why semantic recall is off although it was configured: set by the server when the
@@ -317,6 +311,18 @@ def _mind_section() -> str:
     except Exception:
         logger.debug("mind section unavailable", exc_info=True)
         return ""
+
+
+def _mind_note_novel(query_text: str) -> None:
+    """An owner turn memory recalled nothing for: a new topic, a little curiosity for the agent's own
+    affect at the next tick (architecture 4.3). A no-op without a mind; never breaks the turn."""
+    feelings = getattr(_mind(), "feelings", None)
+    if feelings is None:
+        return
+    try:
+        feelings.note_novel_topic(query_text)
+    except Exception:
+        logger.debug("novel topic not noted", exc_info=True)
 
 
 def _mind_recall_query(query_text: str) -> str:
@@ -364,8 +370,6 @@ def set_telemetry(telemetry) -> None:
 def supported_capabilities() -> List[str]:
     """Return the list of capabilities this sidecar advertises."""
     caps: list[str] = ["memory"]
-    if _signal_collector is not None:
-        caps.append("signals")
     if _embedder is not None:
         caps.append("embed")
     if _goals_store is not None:
@@ -640,8 +644,6 @@ async def health() -> HostHealthResponse:
         notes["briefings"] = "BriefingEngine wired"
     if _metalearner is not None:
         notes["cognition"] = "MetaLearner wired"
-    if _signal_collector is not None:
-        notes["signals"] = "SignalCollector wired"
     embed_degraded = False
     if _embed_failure:
         # Semantic recall was configured and is not running: say so in words, so the
@@ -1768,6 +1770,9 @@ async def _assemble_sections(
                 sections.append(ContextSection(
                     id="protagine-memory", title="Relevant Memories", body=packet.content,
                     priority=90, citations=packet.source_refs or None))
+            elif _owner_turn and _viewer_is_owner:
+                # The owner's own turn, by the viewer identity every other owner-only section uses.
+                _mind_note_novel(query_text)
         except Exception as exc:
             logger.warning("combined memory selection failed (%s)", type(exc).__name__)
 
@@ -2095,113 +2100,6 @@ async def claims_for(contact_id: str, limit: int = 8) -> list[str]:
         return lines
 
     return await asyncio.to_thread(read)
-
-
-# ---------------------------------------------------------------------------
-# Reasoning
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Signals
-# ---------------------------------------------------------------------------
-
-class _LooseMessage:
-    """Adapter that satisfies SignalCollector's Message Protocol."""
-    def __init__(self, sender_id: str, content: str, ts: datetime) -> None:
-        self.sender_id = sender_id
-        self.content = content
-        self.timestamp = ts
-        self.reply_to_id: Optional[str] = None
-        self.has_media = False
-
-
-async def _attribute_signal_contact(body: SignalIngestRequest) -> None:
-    """Attribution for /signals/ingest.
-
-    Mirrors the turns/sync chokepoint: a supplied ``sender`` resolves server-side
-    via ParticipantResolver and OVERWRITES context.contact_id (client contact ids
-    go stale in group sessions). Without a resolvable sender, a contact_id the
-    store does not know attributes to the reserved system sentinel: an
-    unattributable signal never accrues to a person. Never raises; any failure
-    keeps the client contact.
-    """
-    try:
-        from protagine.identity.participants import (
-            SYSTEM_CONTACT_ID, ParticipantResolver,
-        )
-        if body.sender is not None and _contacts_store is not None:
-            res = await ParticipantResolver(_contacts_store).resolve(
-                platform=body.sender.platform,
-                user_id=body.sender.user_id,
-                display_name=body.sender.display_name,
-                group_id=body.sender.group_id,
-                channel_id=body.context.channel_id or "",
-            )
-            if res.contact_id:
-                if res.contact_id != body.context.contact_id:
-                    logger.info(
-                        "signal attribution: %s -> %s (%s%s)",
-                        body.context.contact_id, res.contact_id, res.method,
-                        ", shadow-created" if res.created else "")
-                body.context.contact_id = res.contact_id
-                return
-        # No sender, or the sender was unresolvable: is the claimed contact real?
-        if _contacts_store is None or not body.context.contact_id:
-            return
-        known = None
-        try:
-            known = await _contacts_store.get(body.context.contact_id)
-        except Exception:
-            known = None
-        if known is not None:
-            return
-        logger.info("signal attribution: unknown contact %r -> %s",
-                    body.context.contact_id, SYSTEM_CONTACT_ID)
-        body.context.contact_id = SYSTEM_CONTACT_ID
-    except Exception:
-        logger.debug("signal attribution failed; keeping client contact",
-                     exc_info=True)
-
-
-@router.post("/signals/ingest", response_model=SignalIngestResponse)
-async def signals_ingest(body: SignalIngestRequest) -> SignalIngestResponse:
-    if _signal_collector is None:
-        return SignalIngestResponse(accepted=True, signals_recorded=0)
-    await _attribute_signal_contact(body)
-
-    recorded = 0
-    now = datetime.now(tz=timezone.utc)
-    incoming = body.incoming_message
-    if incoming and incoming.content:
-        try:
-            sigs = await _signal_collector.collect(
-                _LooseMessage(body.context.contact_id, incoming.content, now)
-            )
-            recorded += len(sigs or [])
-            # Form signals remain observations, not inferred communication preferences.
-        except Exception as exc:
-            logger.warning("signals_ingest collect(incoming) failed: %s", exc)
-
-    if body.outgoing_message and body.outgoing_message.content:
-        try:
-            sigs = await _signal_collector.collect(
-                _LooseMessage("assistant", body.outgoing_message.content, now)
-            )
-            recorded += len(sigs or [])
-        except Exception as exc:
-            logger.warning("signals_ingest collect(outgoing) failed: %s", exc)
-
-    # Raw signals from external sources. Count per item, so a mid-batch
-    # failure still reports the signals that WERE persisted.
-    if body.signals:
-        for sig in body.signals:
-            try:
-                await _signal_collector.ingest_raw(sig)
-                recorded += 1
-            except Exception as exc:
-                logger.warning("signals_ingest raw signal failed: %s", exc)
-
-    return SignalIngestResponse(accepted=True, signals_recorded=recorded)
 
 
 # ---------------------------------------------------------------------------

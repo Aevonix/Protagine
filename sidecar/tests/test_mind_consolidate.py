@@ -405,6 +405,15 @@ async def test_a_contradiction_asks_the_owner_once_and_resolves_when_one_side_is
     assert concern.detail["type"] == "contradiction" and concern.detail["kind"] == "message"
     assert concern.detail["recipient"] == OWNER and set(concern.sources) == {first, second}
     assert "which is right" in fx.mind.section().lower()
+    # Affect's lines lead the section but take only the room the rest leaves, so a long strategy-switch
+    # note never cuts the question (integration map X4f).
+    note = ("Prior attempts at the quarterly export failed 3 times using the archive export; choose a "
+            "different approach or ask one question. ") * 4
+    fx.mind.feelings.section_lines = lambda room: [note[:room].rstrip()] if room > 0 else []
+    with_affect = fx.mind.section()
+    assert with_affect.startswith("Prior attempts at") and "which is right" in with_affect.lower()
+    assert len(with_affect) <= 600
+    del fx.mind.feelings.section_lines
 
     tick = await fx.mind.tick(force=True)                                 # the ranker forms it like any concern
     assert [(row["kind"], row["type"]) for row in tick["formed"]] == [("message", "contradiction")]

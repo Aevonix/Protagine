@@ -356,20 +356,20 @@ async def test_old_view_alone_cannot_reinforce_itself_on_a_new_turn(state):
 
 
 @pytest.mark.asyncio
-async def test_identity_invalidated_view_stays_a_tombstone_but_new_evidence_can_rebuild(state):
+async def test_identity_invalidated_record_is_deleted_and_new_evidence_rebuilds(state):
     source(state, 'first', 'The export has failed again.')
     await state.process_one(Processor())
     old_id = view(state)['records'][0]['id']
     with state.ledger._connect() as conn, conn:
         module.invalidate_source_attribution(conn, ['first'], 'person', 'other')
     assert view(state, history=True)['records'] == []
+    with state.ledger._connect() as conn:
+        assert conn.execute('SELECT count(*) FROM appraisal_records WHERE id=?', (old_id,)).fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM appraisal_heads WHERE record_id=?', (old_id,)).fetchone()[0] == 0
     source(state, 'later', 'My own separate export attempt failed after the retry.')
     await state.process_one(Processor(name='processor-b'))
     current = view(state)['records'][0]
-    assert current['sources'][0]['source_id'] == 'later'
-    with state.ledger._connect() as conn:
-        old = conn.execute('SELECT status,payload_json FROM appraisal_records WHERE id=?', (old_id,)).fetchone()
-        assert tuple(old) == ('invalidated', '{}')
+    assert current['sources'][0]['source_id'] == 'later' and current['supersedes'] is None
 
 
 @pytest.mark.asyncio
@@ -404,10 +404,11 @@ async def test_machine_formatted_topic_remains_relevant_and_repair_has_no_residu
 @pytest.mark.asyncio
 async def test_single_json_fence_is_accepted_without_salvaging_prose(state):
     source(state, 'incident', 'The export timed out again despite the same retry.')
-    job = state._claim(20)
+    job = state._claim()
     _, payload, _ = state._prepare(job)
     raw = json.dumps({'observations': [observation(payload)], 'incident_decisions': []})
-    assert len(state._validate('```json\n' + raw + '\n```', payload)) == 1
+    items, outcomes = state._validate('```json\n' + raw + '\n```', payload)
+    assert len(items) == 1 and outcomes == []
     with pytest.raises(ValueError):
         state._validate('Here is an observation: ' + raw, payload)
 
@@ -529,11 +530,11 @@ def test_the_contact_block_is_required_by_the_schema_tolerated_when_missing_and_
     "no signal" is {their_valence: null, opt_out: false}; a prompt-only binding that leaves it out
     is still read (integration map X3)."""
     payload = {'evidence': [], 'previous': [], 'incident_ids': []}
-    assert state._validate(json.dumps({'observations': [], 'incident_decisions': []}), payload) == []
+    assert state._validate(json.dumps({'observations': [], 'incident_decisions': []}), payload) == ([], [])
     quiet = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': None, 'opt_out': False}}
-    assert state._validate(json.dumps(quiet), payload) == []
+    assert state._validate(json.dumps(quiet), payload) == ([], [])
     ok = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': -0.4, 'opt_out': False}}
-    assert state._validate(json.dumps(ok), payload) == []
+    assert state._validate(json.dumps(ok), payload) == ([], [])
     assert module.contact_signal(ok) == {'their_valence': -0.4, 'opt_out': False}
     assert module.contact_signal({'contact': {'their_valence': None, 'opt_out': True}}) == \
         {'their_valence': None, 'opt_out': True}
@@ -546,9 +547,13 @@ def test_the_contact_block_is_required_by_the_schema_tolerated_when_missing_and_
         state._validate(json.dumps({**ok, 'stance': {}}), payload)
     schema = module.RESPONSE_SCHEMA['schema']
     assert 'contact' in schema['properties'] and 'contact' in schema['required']
+    # Both side outputs are required by the strict schema and tolerated when a prompt-only binding omits them.
+    assert {'observations', 'incident_decisions', 'outcomes', 'contact'} == set(schema['required'])
+    both = {**ok, 'outcomes': []}
+    assert state._validate(json.dumps(both), payload) == ([], [])
     assert 'their_valence' in module.SYSTEM and 'opt_out' in module.SYSTEM
     assert '"their_valence": null, "opt_out": false' in module.SYSTEM
-    assert module.VERSION == 'source-appraisals-v5'
+    assert module.VERSION == 'source-appraisals-v6'
 
 
 @pytest.mark.asyncio

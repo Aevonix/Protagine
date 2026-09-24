@@ -683,3 +683,27 @@ async def test_a_merge_carries_the_check_in_history_so_the_backoff_holds(make):
     fx.shift(C * 2)
     formed = (await fx.tick())["formed"]
     assert [f["type"] for f in formed] == ["check_in"] and fx.store.get(formed[0]["id"]).entity_id == keep
+
+
+async def test_an_overload_postpones_a_due_check_in_without_a_send_or_a_streak(make):
+    """Integration map X5: the agent's overload postpones social work, a due check-in included. It is
+    not a send, so the contact's ignored streak and backoff are untouched, and the check-in keeps its
+    period key: it forms, once, at the first tick after the overload ends."""
+    from protagine.mind.affect import CONSUMERS, AffectView
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    real_view = fx.mind.feelings.view
+    overloaded = AffectView(route={name: "state" for name in CONSUMERS}, owner_id=OWNER, overloaded=True, load=0.8)
+    fx.mind.feelings.view = lambda: overloaded
+    fx.shift(C + PAST)
+    for _ in range(3):
+        summary = await fx.tick()
+        assert summary["formed"] == [] and await fx.send_all() == []
+    assert fx.messages_to(CONTACT) == []
+    rows = await fx.mind._social_rows(fx.now)
+    assert rows[0]["ignored_streak"] == 0 and rows[0].get("last_outbound_ts") in (None, "")
+    fx.mind.feelings.view = real_view
+    fx.shift(timedelta(minutes=1))
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "check_in" and formed["status"] == "approved"
+    sent, = await fx.send_all()
+    assert sent["recipient"] == CONTACT and (await fx.tick())["formed"] == []

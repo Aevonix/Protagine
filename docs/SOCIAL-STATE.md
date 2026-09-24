@@ -21,11 +21,21 @@ person/topic judgments with quotations, contrary evidence, source revisions,
 processor provenance and owner corrections. `protagine_judgments` inspects these
 records. Recollection selects relevant records for the current participant;
 private owner opinions are not disclosed to other contacts. Erasing or correcting
-supporting evidence removes its influence. Delayed extraction cannot resurrect
-invalidated evidence.
+supporting evidence removes its influence: the erasure or the attribution change
+deletes the records derived from that source version, with their heads and
+corrections, in the same transaction (no tombstones). Delayed extraction cannot
+resurrect invalidated evidence.
 
 Appraisals use low/moderate intensity and bounded decay, not a validated measure
-of feelings. Repeated evidence does not acquire extra votes. A cited repair report
+of feelings. Repeated evidence does not acquire extra votes. The same extraction
+call also lists outcomes: how pieces of work went as the current evidence reports
+them (failed, succeeded, dismissed or corrected, with the topic and the approach
+used). Outcomes are counted occurrences, not votes: "the export failed twice" is
+two entries, a restatement of an earlier report adds nothing, and only the owner's
+own turns are stored, once per turn, deleted with their source. An outcome that
+does not validate is dropped on its own, never failing the rest of the answer, and
+a contact's turn is not held to outcomes at all. They are how the
+owner's statements reach the agent's own feelings (docs/MIND.md). A cited repair report
 can settle an exact prior incident; the report remains attributed evidence.
 Each bounded supplied incident requires an explicit unchanged, uncertain or
 resolved decision in the existing extraction call. Resolution retains its

@@ -363,9 +363,10 @@ does not reproduce, and it is what the `affect` family tests.
   now holds check-ins only, and an owner-granted message or duty work is never held by a
   contact's mood.
 
-Flag: `affect`. The faculty claim is `full` vs `full−affect`. The stateless-rules arm decides the
-mechanism: for any consumer where the rules tie the decaying state, that consumer reads the rule
-instead. The state itself stays for self-report and tone (evals, section 6.4).
+Flag: `affect`; mechanism switch `affect_rules`. The faculty claim is `full` vs `full−affect`. The
+stateless-rules arm decides the mechanism: for any consumer where the rules tie the decaying state,
+that consumer reads the rule instead. The state itself stays for self-report and tone (evals,
+section 6.4).
 
 ### 4.4 Opinions
 
@@ -1228,6 +1229,7 @@ mind:
     initiative: true
     people: true
     affect: true
+    affect_rules: false # the affect mechanism arm: every consumer reads its stateless rule
     opinions: true
     broadcast: true
     semantic_recall: true

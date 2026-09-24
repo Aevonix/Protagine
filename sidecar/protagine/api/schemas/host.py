@@ -379,30 +379,6 @@ class HostSender(BaseModel):
     group_id: str = Field(default="", max_length=256)
 
 
-# --- Signals ----------------------------------------------------------------
-
-class HostToolCall(BaseModel):
-    id: str
-    name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SignalIngestRequest(BaseModel):
-    identity: HostIdentity
-    context: HostTurnContext
-    sender: Optional[HostSender] = None
-    incoming_message: Optional[HostMessage] = None
-    outgoing_message: Optional[HostMessage] = None
-    tool_calls: List[HostToolCall] = Field(default_factory=list)
-    correction: Optional[str] = None
-    signals: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class SignalIngestResponse(BaseModel):
-    accepted: bool
-    signals_recorded: int
-
-
 # --- Turns ------------------------------------------------------------------
 
 class CheckpointMessage(BaseModel):

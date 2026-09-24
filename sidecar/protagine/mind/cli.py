@@ -125,6 +125,8 @@ def run(args: argparse.Namespace) -> int:
                      + (" (body stale)" if value.get("body_stale") else ""),
                      "breaker: " + ", ".join(f"{b['cls']}={'tripped' if b['tripped'] else 'ok'}"
                                              for b in value.get("breaker", []))]
+            if isinstance(value.get("affect"), dict):
+                lines.append(_affect_line(value["affect"]))
             _emit(value, as_json=as_json, text="\n".join(lines))
         elif command == "log":
             value = sidecar.call("GET", "/v1/mind/log", params={k: v for k, v in {
@@ -219,6 +221,17 @@ def run(args: argparse.Namespace) -> int:
             return 1
         raise
     return 0
+
+
+def _affect_line(affect: Dict[str, Any]) -> str:
+    """``affect: <tone or calm>; load <x>[, overloaded][, satiated]; switch: <topics or none> [<source>]``."""
+    if not affect.get("enabled"):
+        return "affect: off"
+    load = affect.get("load") if isinstance(affect.get("load"), dict) else {}
+    flags = "".join([", overloaded" if load.get("overloaded") else "", ", satiated" if affect.get("satiated") else ""])
+    switch = ", ".join(str(topic) for topic in affect.get("switch") or []) or "none"
+    return (f"affect: {affect.get('line') or 'calm'}; load {float(load.get('level') or 0.0):g}{flags}; "
+            f"switch: {switch} [{affect.get('source')}]")
 
 
 def _state_dir(sidecar: Sidecar) -> Path:

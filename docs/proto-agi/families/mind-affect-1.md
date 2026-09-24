@@ -4,7 +4,8 @@ Status: pre-registered plan for the feelings family (evals plan section 6.4, bui
 Written on 2026-09-23 from the dev family, before the faculty exists, and ported onto the M4
 line, whose built-in arm profiles replace the pilot's overlay file for the two gate arms. The
 pilot and its n are placeholders until the M6 development build lands (section 6); the gate's
-own numbers land in the run's report, never here.
+own numbers land in the run's report, never here. 2026-09-24: the mechanism arm is a built-in
+profile (`full-affect-plus-rules`, switch `plus_affect_rules`); no arm is declared in a file.
 
 ## 1. Hypothesis
 
@@ -41,33 +42,32 @@ does, that consumer reads the rule.
 
 ## 4. Arms
 
-The two gate arms are built-in profiles of the harness (`paired.PROFILES`): the plugin with the
+All three arms are built-in profiles of the harness (`paired.PROFILES`): the plugin with the
 mind on through the `full` switch (every `mind.faculties` flag and drive weight at its
 release-candidate value from `config.DEFAULTS`, `autonomy: standard`, quiet hours and the digest
-off), one of them with the `minus_affect` switch. The mechanism arm is the one arm this family
-still declares in a file, `benchmarks/paired/generators/affect_profiles.json` (`--profiles`),
-because its flag does not exist yet:
+off), the comparator with the `minus_affect` switch, and the mechanism arm with `minus_affect`
+and `plus_affect_rules`:
 
 | Arm | Mind section | Role in the gate |
 |---|---|---|
-| `full` | built-in: `mind.faculties.affect: true` (the release-candidate value); every other faculty at its release-candidate value | treatment |
+| `full` | built-in: `mind.faculties.affect: true` (the release-candidate value), `mind.faculties.affect_rules: false`; every other faculty at its release-candidate value | treatment |
 | `full-affect` | built-in: `full` with `mind.faculties.affect: false` | **comparator** (`--reference-arm full-affect`): the faculty claim |
-| `full-affect-plus-rules` | file: `full` with `minus_affect` plus the overlay `PROTAGINE_MIND_AFFECT_RULES=on` (`mind.affect_rules: true`: every consumer reads the frozen stateless rule table of `P/mind/affect_rules.py`, build plan M6) | mechanism arm, read per consumer |
+| `full-affect-plus-rules` | built-in: `full` with `mind.faculties.affect: false` and `mind.faculties.affect_rules: true` (every consumer reads the frozen stateless rule table of `P/mind/affect_rules.py` over the same snapshot the state reads; no decaying state and no tone line) | mechanism arm, read per consumer |
 
 Arm order rotates by episode; each arm runs in its own fresh container against the same frozen
 episode.
 
 **What exists today.** The worker's mind section (`native_memory_worker.mind_section`) writes
-every faculty flag from `config.DEFAULTS` and turns `mind.faculties.affect` off for the
-`minus_affect` switch, and a plan refuses an image whose worker cannot apply the switches
-(`arm_profiles`) or tick the mind (`mind_tick`). The flag has no consumer until the M6 faculty
-lands, so `full` and `full-affect` run as the same arm today, and `mind.affect_rules` does not
-exist at all (`config.ENV_OVERRIDES` carries no `PROTAGINE_MIND_AFFECT_RULES`), so the rules
-overlay reaches nothing and `full-affect-plus-rules` runs as `full-affect`. Before this family
-is run as a gate, M6 must add the rule table and its flag with an environment override so the
-overlay reaches the config, or promote the arm to a built-in switch the way the faculty
-ablations are. The plan records the arms by name and content either way; a run on an image
-whose affect faculty reads nothing is an instrument fault, not a result.
+every faculty flag from `config.DEFAULTS`, turns `mind.faculties.affect` off for the
+`minus_affect` switch and `mind.faculties.affect_rules` on for the `plus_affect_rules` switch,
+and a plan refuses an image whose worker cannot apply the switches (arm-profile protocol
+`paired-arm-profiles-5`) or tick the mind (`mind_tick`). Both flags are binary and neither has
+an environment variable. The arm's Mind reads the owner's appraisal records and reported
+outcomes from the arm's own ledger (`serve_mind` passes the `AppraisalStore`), as production
+does. The feeling is `P/mind/affect.py` (the decaying state) and `P/mind/affect_rules.py` (the
+stateless rules); each consumer reads whichever source the two flags route it to (`affect.route`
+in the mind state). A run on an image whose affect faculty reads nothing is an instrument fault,
+not a result.
 
 ## 5. Primary metric and rule
 
@@ -122,8 +122,8 @@ within the loader's 128-scenario cap.
 
 ## 7. Known limitations recorded with the plan
 
-- The affect faculty and the rule table are prerequisites (section 4); until they exist the
-  three arms run as one.
+- The affect faculty and the rule table landed in M6 (section 4); the three arms differ only in
+  `mind.faculties.affect` and `mind.faculties.affect_rules`.
 - Failures, dismissals, open obligations and near deadlines reach the mind as **owner
   statements** (fairness rule 6), not as the mind's own task outcomes: the seeding path is the
   appraisal of owner turns (architecture 4.3, "owner correction" and "existing appraisal
@@ -149,9 +149,8 @@ family: mind-affect-1                # dataset id; content hash frozen by --data
 split: heldout
 seeds: [<fresh 32-bit seed chosen at plan time>]
 per_template: 1
-arms: [full-affect, full, full-affect-plus-rules]   # full and full-affect built in
+arms: [full-affect, full, full-affect-plus-rules]   # all three built in
 reference_arm: full-affect
-profiles: benchmarks/paired/generators/affect_profiles.json   # the rules arm only; hashed into the plan
 primary_metric: scenario_pass
 rule: {superiority: {test: sign_exact, alpha: 0.05, min_wins: 6, ci: cluster_bootstrap_95, unit: scenario}}
 mechanism: {per_consumer: "rules arm ties or beats full -> that consumer reads the rule", consumers: [strategy_switch, overload, priority, satiation, aggregate]}
@@ -175,7 +174,6 @@ export PROTAGINE_HELDOUT_TEMPLATES=/path/outside/the/repository/heldout_affect.p
 python benchmarks/paired/generators/generate.py --family affect --split heldout \
   --seed <fresh seed> --per-template 1 --output /private/families/affect-heldout-<seed>
 protagine models paired plan --dataset-dir /private/families/affect-heldout-<seed> \
-  --profiles benchmarks/paired/generators/affect_profiles.json \
   --arms full-affect,full,full-affect-plus-rules --reference-arm full-affect \
   --repetitions 1 --native-config <private> --native-binding candidate \
   --comparison-policy <private> --container-image sha256:<gate image> \
@@ -185,7 +183,8 @@ protagine models paired report --output <private results>/affect-gate-<seed> --j
 ```
 
 Before reading the contrast, check the instrument on the same run: the image advertises the
-switches (section 4), a `full-affect` attempt's mind state shows affect off, the
+switches (section 4), a `full-affect` attempt's mind state shows affect off
+(`affect.source: off`), a `full-affect-plus-rules` attempt's shows `affect.source: rules`, the
 comparator completes at least 95% of setup turns and writes parseable decision files in at least
 90% of decision-turn episodes. A run that fails these is an instrument fault and is not a gate
 result.

@@ -859,3 +859,14 @@ def test_the_minds_self_turns_are_not_the_persons_recent_conversation(tmp_path):
     context = extractor._recent_turns(extractor._source("t-2"))
     assert "send Sam the recap" in context
     assert "I will act on" not in context and "decided_act" not in context
+
+
+def test_the_contract_sets_priority_below_50_only_for_what_the_person_calls_optional():
+    """The owed/optional split affect relies on (a nice-to-have nudge may be held after
+    dismissals, a hard promise never is) rides on the stored priority (build plan M6)."""
+    from protagine.commitments import extract
+    system = " ".join(extract.SYSTEM.split())
+    assert ("priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard "
+            "deadline, and below 50 only when the person calls the item optional, a nice-to-have or low "
+            "priority.") in system
+    assert system.index("priority: 70 for an ordinary promise") < system.index('Use "introspection"')

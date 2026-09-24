@@ -17,6 +17,7 @@ without the model endpoint: it is a marker file and an in-memory flag.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -32,6 +33,7 @@ from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
+from .affect import SECTION_CHARS, Affect
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, Verdict, ask_expiry, boundary_crossed, in_quiet_hours,
     may_contact_of, new_ask_code, parse_quiet_hours,
@@ -65,10 +67,17 @@ MESSAGING_TOOLS = frozenset({"send_message", "react_to_message", "discord", "dis
 THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
 DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
-                     "people": True, "semantic_recall": True, "consolidation": True, "self_narrative": True}
+                     "people": True, "semantic_recall": True, "consolidation": True, "self_narrative": True,
+                     "affect": True, "affect_rules": False}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
+# How long a tick waits (never processes) for the owner's appraisal jobs in flight, alongside the drain:
+# their outcomes reach affect and their interests the curiosity drive in the same tick. It runs whatever
+# the faculties, so an arm differs only by what it switches off. A queue nobody works (nothing running
+# for APPRAISAL_IDLE_S) is not waited for.
+APPRAISAL_FORCED_S, APPRAISAL_TIMER_S = 30.0, 2.0
+APPRAISAL_IDLE_S, APPRAISAL_POLL_S = 3.0, 0.1
 # How long a forced tick waits for a night it found due: what it consolidated is there when the tick
 # returns (the CLI, the harness). The 60 s timer tick never waits; the night runs in the background.
 CONSOLIDATION_WAIT_S = 300.0
@@ -156,6 +165,8 @@ class Mind:
         self.commitments = commitments
         self.capture = capture      # the CommitmentExtractor over the same ledger, drained before each decision
         self.drain_forced_s, self.drain_timer_s = DRAIN_FORCED_S, DRAIN_TIMER_S
+        self.appraisal_forced_s, self.appraisal_timer_s = APPRAISAL_FORCED_S, APPRAISAL_TIMER_S
+        self.appraisal_idle_s, self.appraisal_poll_s = APPRAISAL_IDLE_S, APPRAISAL_POLL_S
         try:
             grace = float(mind.get("heads_up_grace_minutes", drive_functions.HEADS_UP_GRACE.total_seconds() / 60))
         except (TypeError, ValueError):
@@ -205,6 +216,11 @@ class Mind:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.concerns = concerns if concerns is not None else Concerns(self.state_dir / MIND_DB, clock=self.clock)
         self.mind_state = self.concerns.state
+        # The agent's own feelings (architecture 4.3); ``self.feelings`` so ``affect`` stays free for contacts'.
+        self.feelings = Affect(self.mind_state, store=store, commitments=commitments, appraisals=appraisals,
+                               expectations=expectations, budgets=self.policy.budgets, owner_id=self.owner_id,
+                               state_on=self.faculties["affect"], rules_on=self.faculties["affect_rules"],
+                               tz=self.tz, clock=self.clock)
         self.deliberation = Deliberation(router, clock=self.clock, tokens_allowed=self.authority.tokens_allowed,
                                          enabled=self.faculties["deliberation"], budgets=self.policy.budgets)
         self.composer = Composer(router, clock=self.clock, tokens_allowed=self.authority.tokens_allowed,
@@ -429,12 +445,15 @@ class Mind:
             self.deliberation.begin_tick()
             self.composer.begin_tick()
             summary["reconsidered"] = await self._reconsider(now)
-            summary["capture_drained"] = await self._drain_capture(force)
+            # The owner's statements seconds before a decision point reach this tick.
+            summary["capture_drained"], summary["appraisal_wait"] = await asyncio.gather(
+                self._drain_capture(force), self._await_appraisals(force))
             summary["overdue_flipped"] = self._flip_overdue(now)
             summary["check_ins_scored"] = await self._score_check_ins(now)
             self.mind_state.decay(now)
             summary["decay"] = self.concerns.decay(now)
             inputs = await self._gather(now)
+            summary["affect"] = self.feelings.update(now)
             summary["drives"], events = self._raise_concerns(inputs, now)
             summary["revised"] = self._bdi(now, events)
             summary["goals"] = self._tend_goals(now)
@@ -767,6 +786,38 @@ class Mind:
             return {"error": type(error).__name__, "budget_seconds": budget}
         return {**dict(result or {}), "budget_seconds": budget}
 
+    async def _await_appraisals(self, force: bool) -> Optional[Dict[str, Any]]:
+        """Wait, never process, for the owner's appraisal jobs: until none is pending or running,
+        until jobs have waited ``appraisal_idle_s`` with nothing running, or until the budget."""
+        reader = getattr(self.appraisals, "pending_jobs", None)
+        if reader is None or not self.owner_id:
+            return None
+        budget = self.appraisal_forced_s if force else self.appraisal_timer_s
+        loop = asyncio.get_running_loop()
+        started, idle_since = loop.time(), None
+        pending = running = 0
+        try:
+            while True:
+                counts = await asyncio.to_thread(reader, contact_id=self.owner_id)
+                pending, running = int(counts.get("pending") or 0), int(counts.get("running") or 0)
+                elapsed = loop.time() - started
+                if pending == 0 and running == 0:
+                    break
+                if running:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = elapsed
+                elif elapsed - idle_since >= self.appraisal_idle_s:
+                    break
+                if elapsed >= budget:
+                    break
+                await asyncio.sleep(min(self.appraisal_poll_s, max(0.0, budget - elapsed)))
+        except Exception as error:
+            logger.warning("appraisal wait failed (%s)", type(error).__name__)
+            return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running,
+                    "error": type(error).__name__}
+        return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running}
+
     # -- the drives: a snapshot of stored state, then concerns -------------------------------
 
     async def _gather(self, now: datetime) -> DriveInputs:
@@ -1016,9 +1067,10 @@ class Mind:
             pairs.append((concern, Candidate.from_detail(concern.detail)))
         by_key = {candidate.dedup_key: concern for concern, candidate in pairs}
         weights = self.effective_weights()
+        view = self.feelings.view()
         # The configured weight is factored out of the threshold; satiation is not, for self-chosen work (rank.py).
         ranked = eligible([candidate for _, candidate in pairs], threshold=self.act_threshold, drives=weights,
-                          base=self.drive_weights, feedback=self.feedback)
+                          base=self.drive_weights, feedback=self.feedback, affect=view)
         formed: List[Dict[str, Any]] = []
         for candidate, score in ranked:
             concern = by_key.get(candidate.dedup_key)
@@ -1033,8 +1085,11 @@ class Mind:
                     self.concerns.drop(concern.id, note="goal not open", now=now)
                     continue
                 steps_done = self.goals.summaries(goal)
+            failing = self.feelings.failing(candidate.topic or concern.summary)
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
-                                                  may_adopt_goal=may_adopt, steps_done=steps_done)
+                                                  may_adopt_goal=may_adopt, steps_done=steps_done,
+                                                  lessons=failing.pitfalls if failing else (), failing=failing,
+                                                  tried=view.tried if view is not None else ())
             if shaped.open_ended and not shaped.text:
                 continue  # the tick's one call is spent; the concern waits for the next tick
             if shaped.kind == "goal":
@@ -1177,6 +1232,10 @@ class Mind:
                                         may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now,
                                         cooldown_hours=candidate.cooldown_hours)
         verdict = self._owner_word(verdict, type=candidate.type, ask_owner=candidate.ask_owner)
+        if candidate.affect_ask and verdict.decision == "act" and self.feelings.active:
+            # The strategy switch asks the owner instead of acting; it never grants what authority withheld.
+            verdict = dataclasses.replace(verdict, decision="ask",
+                                          reason=f"{verdict.reason}; {candidate.affect_ask}"[:300])
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         context: Dict[str, Any] = {
             "concern": candidate.concern, "evidence": list(candidate.evidence), "score": round(score, 3),
@@ -1197,6 +1256,9 @@ class Mind:
             context["description"] = candidate.text
         else:
             context["body"] = candidate.text
+            # The deliberated plan before any guidance is appended (affect's note, a recorded view): the
+            # identical-plan refusal hashes this, so guidance never makes a repeat look new (map X13).
+            context["plan_body"] = candidate.text
             context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
             context["max_retries"] = self.policy.budgets.task_max_retries
             if candidate.parent_goal_id:
@@ -1803,10 +1865,15 @@ class Mind:
             if self._invalidated(row):
                 continue
             context = row.context if isinstance(row.context, dict) else {}
+            # The worker reads the strategy-switch note as it stands at dispatch (PL/body.py sends the body verbatim).
+            note = self.feelings.note_for(str(context.get("topic") or context.get("concern") or row.description))
+            body = context.get("body") or row.description
+            if note and note not in body:
+                body = body + "\n\n" + note
             payloads.append({
                 "id": row.id, "kind": row.kind, "type": row.type, "drive": row.drive,
                 "dedup_key": f"mind:{row.id}", "idempotency_key": f"mind:{row.id}",
-                "title": row.description, "body": context.get("body") or row.description,
+                "title": row.description, "body": body,
                 "assignee": WORKER_PROFILE, "recipient": row.entity_id, "reason": row.decision_reason,
                 "max_runtime_seconds": int(context.get("max_runtime_seconds") or self.policy.budgets.task_max_runtime_s),
                 "max_retries": int(context.get("max_retries") or self.policy.budgets.task_max_retries),
@@ -2042,7 +2109,9 @@ class Mind:
     def section(self, *, limit: int = MIND_SECTION_CHARS) -> str:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
-        The affect line, stances and lessons join it with their milestones.
+        Affect's notes and its calm tone line come first but take only the room the rest leaves
+        (at most 360 characters), so they never cut the open asks; stances and lessons join it
+        with their milestones.
         """
         if not self.enabled:
             return ""
@@ -2057,7 +2126,8 @@ class Mind:
         if asks:
             lines.append("Waiting for your say on: " + "; ".join(
                 f"[{row.ask_code}] {row.description}"[:100] for row in asks if row.ask_code) + ".")
-        text = "\n".join(lines)
+        room = limit - len("\n".join(lines)) - (1 if lines else 0)
+        text = "\n".join([*self.feelings.section_lines(min(SECTION_CHARS, room)), *lines])
         if len(text) > limit:
             text = text[: limit - 1].rstrip() + "…"
         return text
@@ -2103,6 +2173,7 @@ class Mind:
             "body": self.body_heartbeat or None,
             "running": self._running,
             "consolidation": self._consolidation_state(),
+            "affect": self.feelings.state(),
         }
 
     def _consolidation_state(self) -> Dict[str, Any]:
@@ -2115,6 +2186,6 @@ class Mind:
         return audit.stats(self.store, now=self.clock())
 
 
-__all__ = ["DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",
+__all__ = ["APPRAISAL_FORCED_S", "APPRAISAL_TIMER_S", "DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",
            "OFF_MARKER", "STALE_AFTER", "TASK_WINDOW", "THREADED_PLATFORMS", "WORKER_PROFILE", "faculties_of",
            "split_target", "task_body"]

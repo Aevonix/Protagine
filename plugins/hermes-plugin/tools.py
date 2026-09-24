@@ -147,6 +147,8 @@ class Tools:
                         "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
                         "sidecar_reachable": self.client.health() is not None}
             if not self._owners_own(session_id):
+                # The record is the owner's, the agent's feelings included (they quote the owner's
+                # obligations and reports): any other session gets the switches only.
                 return _json(switches)
             narrative = self.client.narrative() or {}
             return _json({"mind_routes": self.client.has_mind_routes() is True, **detail, **switches,

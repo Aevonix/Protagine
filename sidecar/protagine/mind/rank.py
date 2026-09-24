@@ -1,6 +1,6 @@
 """The one ranker: score, the feedback multiplier and eligibility (architecture 3.2).
 
-``score = salience x w_drive x feedback_mult x affect_mod x (1 - cost)``.
+``score = salience x w_drive x feedback_mult x affect x (1 - cost)``.
 The multiplier comes from ``TypeFeedbackStore`` keyed by ``(type, drive)`` and,
 for outreach, ``reach_out:<contact>``. Eligibility uses the same effective
 score, so a lowered multiplier drops a candidate below the act threshold even
@@ -13,14 +13,27 @@ questions, investigations, backlog upkeep): there it lowers the effective
 weight in the score and leaves the threshold alone, so a satisfied drive holds
 new self-work until the satiety decays. An obligation, a notice or the step of
 an adopted goal is owed whatever the drive's satiety; for those satiation only
-orders. Affect arrives with its own milestone; until then ``affect_mod`` is 1.
+orders.
+
+The agent's affect (``affect``, an ``AffectView``; ``None`` = no effect) scales
+both sides: worry multiplies the score of owed duty by ``1 + 0.5 x worry`` and
+curiosity the curiosity drive's by ``1 + curiosity`` (priority); under overload
+the threshold of curiosity, social and optional outreach is infinite, so it is
+postponed and its concern waits (overload); when satiated by recent dismissals
+or success, an optional message to the owner needs ``1 + boost`` times the
+threshold (satiation). Owed work is never postponed or held back, and nothing
+here touches authority.
+
 A social check-in is the exception to the multiplier gating: ``evaluate_outreach``
 already found it due (its backoff is the brake on silence), so its eligibility uses the
 score without feedback and the multiplier only orders it (architecture 4.7 item 6).
+Affect still applies to it: its score factor is in the gated score, and an overload's
+infinite threshold postpones it like any other social candidate.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -60,6 +73,7 @@ class Candidate:
     purpose: Optional[str] = None           # check_in | follow_up:<id> | reply_wait:<id>: the composer's enum
     grant: Optional[str] = None             # "owner": a per-commitment owner grant for this recipient only
     ask_owner: bool = False                 # the owner confirms before it acts (a recipient matched by name)
+    affect_ask: str = ""          # the owner question when affect demotes an act to an ask (strategy switch)
 
     def as_detail(self) -> Dict[str, Any]:
         """The candidate as a concern's stored detail (JSON); ``from_detail`` restores it."""
@@ -103,16 +117,22 @@ def weight_of(candidate: Candidate, drives: Mapping[str, float] | None) -> float
 
 
 def score(candidate: Candidate, *, drives: Mapping[str, float] | None = None, feedback: Any = None,
-          affect_mod: float = 1.0) -> float:
+          affect: Any = None) -> float:
     weight = weight_of(candidate, drives)
     salience = max(0.0, min(1.0, float(candidate.salience)))
     cost = max(0.0, min(0.99, float(candidate.cost)))
-    return salience * weight * feedback_multiplier(feedback, candidate) * float(affect_mod) * (1.0 - cost)
+    factor = float(affect.score_factor(candidate)) if affect is not None else 1.0
+    return salience * weight * feedback_multiplier(feedback, candidate) * factor * (1.0 - cost)
 
 
-def threshold_for(candidate: Candidate, threshold: float, drives: Mapping[str, float] | None) -> float:
-    """The act threshold scaled by the configured drive weight: the weight orders, it does not gate."""
-    return float(threshold) * weight_of(candidate, drives)
+def threshold_for(candidate: Candidate, threshold: float, drives: Mapping[str, float] | None,
+                  affect: Any = None) -> float:
+    """The act threshold scaled by the configured drive weight (the weight orders, it does not gate)
+    and by affect (``inf`` postpones the candidate)."""
+    factor = float(affect.threshold_factor(candidate)) if affect is not None else 1.0
+    if math.isinf(factor):
+        return math.inf
+    return float(threshold) * weight_of(candidate, drives) * factor
 
 
 def satiable(candidate: Candidate) -> bool:
@@ -126,49 +146,50 @@ def _floor(candidate: Candidate, drives: Mapping[str, float] | None,
 
 
 def rank(candidates: Iterable[Candidate], *, drives: Mapping[str, float] | None = None,
-         feedback: Any = None, affect_mod: float = 1.0) -> List[Tuple[Candidate, float]]:
-    scored = [(candidate, score(candidate, drives=drives, feedback=feedback, affect_mod=affect_mod))
+         feedback: Any = None, affect: Any = None) -> List[Tuple[Candidate, float]]:
+    scored = [(candidate, score(candidate, drives=drives, feedback=feedback, affect=affect))
               for candidate in candidates]
     scored.sort(key=lambda item: (-item[1], item[0].dedup_key))
     return scored
 
 
-def _gated(candidate: Candidate, value: float, *, drives: Mapping[str, float] | None, affect_mod: float) -> float:
+def _gated(candidate: Candidate, value: float, *, drives: Mapping[str, float] | None, affect: Any = None) -> float:
     """What eligibility compares with the threshold: the effective score, or for a social check-in
-    the score without feedback (replies and silence order check-ins; they never switch one off)."""
+    the score without feedback (replies and silence order check-ins; they never switch one off).
+    Affect's score factor stays in both; its threshold factor is applied by ``threshold_for``."""
     if candidate.drive == "social":
-        return score(candidate, drives=drives, feedback=None, affect_mod=affect_mod)
+        return score(candidate, drives=drives, feedback=None, affect=affect)
     return value
 
 
 def pick(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_THRESHOLD,
          drives: Mapping[str, float] | None = None, base: Mapping[str, float] | None = None,
-         feedback: Any = None, affect_mod: float = 1.0) -> Tuple[Optional[Candidate], float]:
+         feedback: Any = None, affect: Any = None) -> Tuple[Optional[Candidate], float]:
     """The best eligible candidate and its effective score, or (None, best score).
 
     ``drives`` are the effective (satiated) weights in the score; ``base`` the
     configured weights the threshold of satiable work normalizes by (``drives``
     when omitted, and for every candidate satiation may not hold).
     """
-    ranked = rank(candidates, drives=drives, feedback=feedback, affect_mod=affect_mod)
+    ranked = rank(candidates, drives=drives, feedback=feedback, affect=affect)
     if not ranked:
         return None, 0.0
     best, best_score = ranked[0]
-    if (weight_of(best, drives) > 0 and _gated(best, best_score, drives=drives, affect_mod=affect_mod)
-            >= threshold_for(best, threshold, _floor(best, drives, base))):
+    if (weight_of(best, drives) > 0 and _gated(best, best_score, drives=drives, affect=affect)
+            >= threshold_for(best, threshold, _floor(best, drives, base), affect)):
         return best, best_score
     return None, best_score
 
 
 def eligible(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_THRESHOLD,
              drives: Mapping[str, float] | None = None, base: Mapping[str, float] | None = None,
-             feedback: Any = None, affect_mod: float = 1.0) -> List[Tuple[Candidate, float]]:
+             feedback: Any = None, affect: Any = None) -> List[Tuple[Candidate, float]]:
     """Every candidate at or above its threshold, best first (duty work is not exclusive)."""
     return [(candidate, value) for candidate, value in
-            rank(candidates, drives=drives, feedback=feedback, affect_mod=affect_mod)
+            rank(candidates, drives=drives, feedback=feedback, affect=affect)
             if weight_of(candidate, drives) > 0
-            and _gated(candidate, value, drives=drives, affect_mod=affect_mod)
-            >= threshold_for(candidate, threshold, _floor(candidate, drives, base))]
+            and _gated(candidate, value, drives=drives, affect=affect)
+            >= threshold_for(candidate, threshold, _floor(candidate, drives, base), affect)]
 
 
 __all__ = ["Candidate", "DEFAULT_ACT_THRESHOLD", "eligible", "feedback_multiplier", "pick", "rank", "satiable",

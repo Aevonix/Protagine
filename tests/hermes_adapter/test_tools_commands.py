@@ -197,6 +197,55 @@ emit(state=call("protagine_self", {"operation": "state"}, g),
     assert sidecar.calls("/v1/mind/log", "GET") == [] and sidecar.calls("/v1/mind/why/i-01", "GET") == []
 
 
+AFFECT = {
+    "enabled": True, "source": "state",
+    "route": {"strategy_switch": "state", "overload": "state", "priority": "state", "satiation": "state"},
+    "levels": {"frustration": [{"topic": "quarterly figures", "level": 0.59, "failures": 2,
+                                "approaches": ["the archive export"],
+                                "causes": ["failed outcome:9f2c via the archive export",
+                                           "failed outcome:a41d via the archive export"]}],
+               "worry": {"level": 0.1, "causes": ["due_soon commitment:c-17"]},
+               "curiosity": {"level": 0.0, "causes": []}, "satisfaction": {"level": 0.0, "causes": []},
+               "dismissed": {"level": 0.0, "causes": []}},
+    "load": {"level": 0.2, "overloaded": False, "obligations": 1, "running": 0, "cap": 2, "failures_last_hour": 0,
+             "asks": 0},
+    "satiated": False, "boost": 0.0,
+    "due_soon": [{"id": "c-17", "description": "send the figures", "due_at": "2026-09-24T11:30:00+00:00"}],
+    "switch": ["quarterly figures"],
+    "notes": ["Prior attempts at quarterly figures failed 2 times using the archive export; choose a different "
+              "approach or ask one question."],
+    "line": "Mood: quite frustrated about quarterly figures; a little uneasy.",
+    "updated_at": "2026-09-24T09:30:00+00:00"}
+
+
+def test_self_tool_state_carries_affect_levels_and_causes_to_the_owner_only(home, sidecar):
+    """``protagine_self state`` shows the agent's own feelings with their cited causes, as the sidecar
+    reports them (``Mind.state()['affect']``), unchanged, to the owner's own session. The block quotes the
+    owner's obligations and reports, so a guest, a cron run or a worker gets the state without it."""
+    sidecar.mind_routes = True
+    handle = sidecar.mind.handle
+
+    def with_affect(method, path, body, query=None):
+        status, value = handle(method, path, body, query)
+        return (status, {**value, "affect": AFFECT}) if path.endswith("/state") and method == "GET" else (status, value)
+    sidecar.mind.handle = with_affect
+    result = probe(TOOL_CODE + '''
+guest_state = call("protagine_self", {"operation": "state"}, guest())
+cron_state = call("protagine_self", {"operation": "state"}, guest("cron-1", "1001", platform="cron"))
+owner_state = call("protagine_self", {"operation": "status"}, owner())
+import os
+os.environ["HERMES_KANBAN_TASK"] = "t_1"
+worker_state = call("protagine_self", {"operation": "state"}, owner("owner-2"))
+emit(guest=guest_state, cron=cron_state, owner=owner_state, worker=worker_state)
+''', home)
+    assert result["owner"]["affect"] == AFFECT
+    frustration = result["owner"]["affect"]["levels"]["frustration"][0]
+    assert frustration["level"] <= 0.7 and all(cause.startswith("failed outcome:") for cause in frustration["causes"])
+    for other in ("guest", "cron", "worker"):
+        assert "affect" not in result[other] and result[other]["enabled"] is True, other
+        assert "quarterly figures" not in json.dumps(result[other]) and "send the figures" not in json.dumps(result[other])
+
+
 def test_self_tool_approval_needs_the_owner_and_the_typed_code(home, sidecar):
     """Evals test 7: a guest, an owner turn without the code, a worker and a malformed code are refused."""
     sidecar.mind_routes = True

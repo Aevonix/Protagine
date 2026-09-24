@@ -34,7 +34,6 @@ async def client(app):
 SUBSYSTEMS = [
     ("protagine.intelligence.cognition.metalearner", "MetaLearner"),
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
-    ("protagine.intelligence.mind_model.signal_collector", "SignalCollector"),
     ("protagine.goals.store", "GoalStore"),
     ("protagine.briefings.engine", "BriefingEngine"),
     ("protagine.mind", "Mind"),
@@ -157,13 +156,23 @@ async def test_enriched_context(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_signals_ingest(client):
+async def test_signals_route_is_retired(client):
+    """The Neo4j-only signal collector and its ingest route are gone (build plan M6): no plugin
+    posted it, and the agent's affect reads the appraisal outcomes instead."""
+    import importlib
+    from protagine.api.routers import host
     resp = await client.post("/v1/host/signals/ingest", json={
         "identity": {"host_id": "test"},
         "context": {"session_id": "s1", "contact_id": "c1"},
     })
-    assert resp.status_code == 200
-    assert resp.json()["accepted"] is True
+    assert resp.status_code == 404
+    for module in ("protagine.intelligence.mind_model.signal_collector",
+                   "protagine.intelligence.mind_model.graph_baseline"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module)
+    assert "signals" not in host.supported_capabilities()
+    for name in ("set_signal_collector", "_signal_collector", "_attribute_signal_contact", "_LooseMessage"):
+        assert not hasattr(host, name), name
 
 
 # ---------------------------------------------------------------------------

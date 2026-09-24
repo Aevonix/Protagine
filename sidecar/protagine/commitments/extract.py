@@ -149,6 +149,8 @@ SYSTEM = (
     '{"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":"sms"|"dm"|"email"} or '
     '{"heads_up_at": ISO-8601-UTC string} or the notice or check_in object of case 3 or the cadence object of case 4, '
     '"listed_due": ISO-8601-UTC string or null, "counterpart": string or null, "obligor": string or null}\n'
+    "priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard deadline, and "
+    "below 50 only when the person calls the item optional, a nice-to-have or low priority.\n"
     "Use \"introspection\" + the deliverable metadata (due_at about two minutes from now) for case 2; "
     "\"cognition\" + the notice or check_in metadata for case 3; \"cognition\" + the cadence metadata for case 4; "
     "\"cognition\" + metadata null (or the heads-up metadata when one was asked for) for case 1, and "

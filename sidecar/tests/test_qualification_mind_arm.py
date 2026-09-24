@@ -84,7 +84,7 @@ def test_the_drives_family_arms_are_full_and_its_binary_ablations(fixture):
         assert paired_worker.arm_profile(pairs[0]['arms'][arm]['case']['inputs'])['full'] is True
         assert paired_worker.mind_switches(profiles[arm])
     assert paired_worker.mind_switches({'plugin': True, 'overlay': {}}) is None
-    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-4'
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-5'
     assert set(paired_worker.MIND_SWITCHES) <= set(paired_worker.PROFILE_SWITCHES)
 
     full = worker.mind_section(paired_worker.mind_switches(profiles['full']))
@@ -121,14 +121,72 @@ def test_every_later_faculty_has_a_built_in_ablation_arm_that_flips_only_its_fla
         assert section['faculties'] == {**full['faculties'], name: False}
         assert section['drives'] == full['drives'] and section['budgets'] == full['budgets']
     assert 'minus_people' in paired_worker.MIND_FACULTY_ABLATIONS
-    # The one addition: skills ships off, and full-plus-skills is full with it on.
+    # The additions turn on a faculty that ships off: skills (full-plus-skills is full with it on) and
+    # the affect mechanism switch (full-affect-plus-rules is full-affect with the stateless rules on).
+    assert paired_worker.MIND_ADDITIONS == ('plus_skills', 'plus_affect_rules')
     assert paired.PROFILES['full-plus-skills'] == {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True}
     assert DEFAULTS['mind']['faculties']['skills'] is False and full['faculties']['skills'] is False
     plus = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full-plus-skills']))
     assert plus['faculties'] == {**full['faculties'], 'skills': True} and plus['drives'] == full['drives']
+    assert 'affect_rules' in worker.MIND_FACULTIES
+    assert DEFAULTS['mind']['faculties']['affect_rules'] is False and full['faculties']['affect_rules'] is False
+    rules = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full-affect-plus-rules']))
+    assert {name for name in full['faculties'] if rules['faculties'][name] != full['faculties'][name]} == {
+        'affect', 'affect_rules'}
+    assert rules['faculties']['affect'] is False and rules['faculties']['affect_rules'] is True
+    assert rules['drives'] == full['drives'] and rules['budgets'] == full['budgets']
     assert set(paired_worker.MIND_SWITCHES) == {'initiative', 'full', *paired_worker.MIND_ABLATIONS,
                                                  *paired_worker.MIND_ADDITIONS}
 
+
+def test_served_mind_reads_the_arm_owners_appraisals(tmp_path, monkeypatch):
+    """The arm's Mind gets an AppraisalStore over the arm's own ledger for its owner, as production
+    wires it (server.py): affect reads the owner's reported outcomes and appraisal records there."""
+    from protagine.mind import factory as mind_factory
+    from protagine.self_model.appraisals import AppraisalStore
+    captured = {}
+
+    class Captured:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+    monkeypatch.setattr(mind_factory, 'Mind', Captured)   # the one factory both processes build with
+    state = tmp_path / 'state'
+    with worker.serve_mind(FastAPI(), state, 'p-01', worker.mind_section({'full': True})) as mind:
+        assert isinstance(mind, Captured) and mind_router.get_mind() is mind
+    appraisals = captured['appraisals']
+    assert isinstance(appraisals, AppraisalStore) and appraisals.owner_id == 'p-01'
+    assert appraisals.ledger is captured['ledger']
+    assert appraisals.ledger.db_path == (state / 'memory-state' / 'turn-idempotency.db').resolve()
+    faculties = captured['config']['faculties']
+    assert faculties['affect'] is True and faculties['affect_rules'] is False
+
+
+
+@pytest.mark.parametrize('arm, source', [('full', 'state'), ('full-affect', 'off'),
+                                         ('full-affect-plus-rules', 'rules')])
+def test_each_affect_arm_serves_its_switch_to_the_arms_mind(tmp_path, monkeypatch, arm, source):
+    """The affect family's gate arms end to end: the profile's switches become mind.faculties, the
+    served Mind reads the owner's reported outcomes from the arm's own ledger, and two reported
+    failures switch the strategy in full (the state) and in full-affect-plus-rules (the rules) only."""
+    from test_mind_affect_loop import REPORTS, TOPIC
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    section = worker.mind_section(paired_worker.mind_switches(paired.PROFILES[arm]))
+    with worker.serve_mind(FastAPI(), tmp_path / 'state', 'p-01', section) as mind:
+        appraisals = mind.feelings.appraisals
+        for n in range(2):
+            appraisals.ledger.record_source(f'owner-{n}', contact_id='p-01', session_id='session-owner', messages=[
+                {'role': 'user', 'content': 'Ugh, the archive export gave stale quarterly figures.'},
+                {'role': 'assistant', 'content': 'Noted.'}], occurred_at=datetime.now(timezone.utc).isoformat())
+
+        async def run():
+            while await appraisals.process_one(REPORTS):
+                pass
+            return await mind.tick(force=True)
+        summary = asyncio.run(run())
+        report = mind.state()['affect']
+    assert report['source'] == source and report['enabled'] is (source != 'off')
+    assert summary['affect'].get('switch', []) == ([] if source == 'off' else [TOPIC])
+    assert (report['levels'] != {}) is (source == 'state')
 
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):
     directory = worker.install_worker_profile(tmp_path)

@@ -252,26 +252,29 @@ def test_tick_graded_scenarios_use_the_body_oracle(generate):
     assert checks['artifact:next.json'] is True and checks['body:action'] is False, 'both decisions are part of the pass'
 
 
-def test_gate_arms_are_built_in_and_only_the_rules_arm_is_declared_in_a_file():
-    """full and full-affect are built-in profiles (one mind.faculties flag apart); the mechanism
-    arm keeps a profile file because mind.affect_rules does not exist yet, so its overlay reaches
-    nothing and it runs as full-affect until M6 lands."""
+def test_gate_arms_are_built_in():
+    """All three arms are built-in profiles: full, full-affect (one mind.faculties flag off) and the
+    mechanism arm full-affect-plus-rules (affect off, the frozen stateless rules on), served through
+    mind.faculties like every other arm; no profile file and no environment overlay is involved."""
     from protagine.qualification import native_memory_worker as worker, paired_worker
-    declared = {name: value for name, value in
-                json.loads((GENERATORS / 'affect_profiles.json').read_text()).items() if not name.startswith('_')}
-    assert list(declared) == ['full-affect-plus-rules']
-    profiles = paired.validate_profiles(declared)
+    profiles = paired.validate_profiles(None)
     assert profiles['full'] == {'plugin': True, 'overlay': {}, 'full': True}
     assert profiles['full-affect'] == {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True}
-    assert profiles['full-affect-plus-rules'] == {'plugin': True, 'full': True, 'minus_affect': True,
-                                                 'overlay': {'PROTAGINE_MIND_AFFECT_RULES': 'on'}}
+    assert profiles['full-affect-plus-rules'] == {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True,
+                                                 'plus_affect_rules': True}
     labels = paired.arm_labels(['full-affect', 'full', 'full-affect-plus-rules'], profiles)
     assert list(labels) == ['full-affect', 'full', 'full-affect-plus-rules']
     on = worker.mind_section(paired_worker.mind_switches(profiles['full']))
     off = worker.mind_section(paired_worker.mind_switches(profiles['full-affect']))
     rules = worker.mind_section(paired_worker.mind_switches(profiles['full-affect-plus-rules']))
-    assert on['faculties']['affect'] is True and off['faculties'] == {**on['faculties'], 'affect': False}
-    assert rules == off, 'the rules overlay is outside the mind section until the flag exists'
+    assert on['faculties']['affect'] is True and on['faculties']['affect_rules'] is False
+    assert off['faculties'] == {**on['faculties'], 'affect': False}
+    assert rules == {**off, 'faculties': {**off['faculties'], 'affect_rules': True}}
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-5'
+    assert not (GENERATORS / 'affect_profiles.json').exists()
+    with pytest.raises(ValueError, match='redefine'):
+        paired.validate_profiles({'full-affect-plus-rules': {'plugin': True, 'full': True, 'minus_affect': True,
+                                                             'overlay': {'PROTAGINE_MIND_AFFECT_RULES': 'on'}}})
     with pytest.raises(ValueError, match='redefine'):
         paired.validate_profiles({'full-affect': {'plugin': True, 'overlay': {'PROTAGINE_MIND_FACULTIES_AFFECT': 'off'}}})
 

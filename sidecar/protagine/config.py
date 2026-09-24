@@ -81,6 +81,7 @@ DEFAULTS: dict[str, Any] = {
             "goals": True,          # agent-owned goals
             "people": True,
             "affect": True,
+            "affect_rules": False,  # the affect mechanism arm: every consumer reads its stateless rule
             "opinions": True,
             "broadcast": True,
             "semantic_recall": True,

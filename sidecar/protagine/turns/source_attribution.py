@@ -113,12 +113,14 @@ def correct(ledger, *, operation_id, performed_by, old_contact_id, contact_id,
                 erase_preferences(conn, sid, row['session_id'], [])
                 erase_judgments(conn, sid, row['session_id'], [])
         try:
-            from protagine.self_model.appraisals import invalidate_source_attribution
+            from protagine.self_model.appraisals import invalidate_source_attribution, requeue_attributed
         except ModuleNotFoundError as exc:
             if exc.name != 'protagine.self_model.appraisals':
                 raise
         else:
             invalidate_source_attribution(conn, affected, old_contact_id, contact_id)
+            # The moved sources (not their invalidated descendants) are appraised again under the new contact.
+            requeue_attributed(conn, [row['turn_id'] for row in rows])
         result = {'schema': 'SourceAttributionCorrectionV1', 'operation_id': operation_id,
             'old_contact_id': old_contact_id, 'contact_id': contact_id,
             'source_ids': selected, 'affected_source_ids': affected,
