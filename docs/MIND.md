@@ -145,7 +145,9 @@ audit log, the outbox, outcomes and the off switch. The design is in
 7. **Deliberate.** Templates cover commitments, reply waits, stale tasks and
    health. Open-ended concerns get **at most one tool-less router call per
    tick** (`P/mind/deliberate.py`): the model returns a task (title, body, a
-   `result_field` check), a goal proposal, or a note. Without a router the
+   `result_field` check) or a goal proposal. The call has no tools, so an
+   answer from the model's own recollection is never stored as something
+   learned: anything else it returns gets the template. Without a router the
    template applies; with the tick's call spent, the concern waits.
 8. **Goals.** Curiosity and mastery may adopt an agent-owned goal
    (`P/mind/goals.py`): one `kind='goal'` intention row with a description, a

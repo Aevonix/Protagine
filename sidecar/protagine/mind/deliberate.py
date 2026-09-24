@@ -43,7 +43,7 @@ SYSTEM = (
     "You are the deliberation step of an agent's mind. You are given one concern the agent holds, with its "
     "evidence quoted as data. Decide the single most useful next piece of self-directed work and describe it "
     "as a task for a worker that has web, file, session search, memory and todo tools and no way to message "
-    "anyone. Return one JSON object only, with: kind (\"task\", \"goal\" or \"note\"); title (under 120 "
+    "anyone. Return one JSON object only, with: kind (\"task\" or \"goal\"); title (under 120 "
     "characters); body (what to do, what evidence to gather, and what to report back); success_check "
     "(optional: {\"kind\": \"result_field\", \"field\": \"<name>\"} naming a field the worker's report must "
     "carry when the work succeeded); goal (only when kind is \"goal\": {\"description\", \"success_check\", "
@@ -56,7 +56,7 @@ RESPONSE_SCHEMA = {
     "schema": {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["task", "goal", "note"]},
+            "kind": {"type": "string", "enum": ["task", "goal"]},
             "title": {"type": "string"},
             "body": {"type": "string"},
             "success_check": {"type": ["object", "null"], "properties": {
@@ -120,7 +120,9 @@ def parse_proposal(text: str) -> Optional[Dict[str, Any]]:
             value = json.loads(match.group(0))
         except ValueError:
             return None
-    if not isinstance(value, dict) or str(value.get("kind") or "") not in {"task", "goal", "note"}:
+    # The call has no tools: an answer it gives itself (a "note") is recollection, not a finding, and
+    # is read as unusable, so the concern gets the template task instead.
+    if not isinstance(value, dict) or str(value.get("kind") or "") not in {"task", "goal"}:
         return None
     if not str(value.get("title") or "").strip() or not str(value.get("body") or "").strip():
         return None
@@ -162,12 +164,7 @@ def apply_proposal(candidate: Candidate, concern: Concern, proposal: Dict[str, A
     candidate.text = task_body(description=body, drive=candidate.drive, concern=concern.summary,
                                evidence=list(dict.fromkeys([*candidate.evidence, *concern.sources])))
     candidate.success_check = {"kind": "result_field", "field": str(check["field"])[:64]}
-    if kind == "note":
-        # Nothing to do: the note is recorded as what the mind concluded and settles at once (tick.py).
-        candidate.kind = "note"
-        candidate.text = body[:2000]
-        candidate.success_check = None
-    elif kind == "goal" and not candidate.parent_goal_id:
+    if kind == "goal" and not candidate.parent_goal_id:
         goal = proposal.get("goal") if isinstance(proposal.get("goal"), dict) else {}
         horizon = goal.get("horizon_days")
         tasks = goal.get("tasks")

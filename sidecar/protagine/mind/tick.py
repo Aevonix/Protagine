@@ -909,11 +909,7 @@ class Mind:
                 self._charge_unformed(shaped, concern, now)
                 continue
             self.concerns.intended(concern.id, row.id, now=now)
-            if row.kind == "note":
-                # A note has no body to run and nothing to wait for: it is what the mind concluded.
-                self.outcomes.record(row.id, status="done", summary=shaped.text, verified="none", by="mind")
-                row = self.store.get(row.id) or row
-            elif row.kind == "goal":
+            if row.kind == "goal":
                 self.autobiography.record(row.id, "goal_adopted",
                                           f"I adopted a goal: {row.description} ({row.drive} drive), to be met by "
                                           f"{(row.due_at or row.expires_at).date().isoformat() if (row.due_at or row.expires_at) else 'its horizon'}.")
