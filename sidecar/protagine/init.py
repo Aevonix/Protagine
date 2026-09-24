@@ -627,15 +627,50 @@ def write_llm_config(home: Path, *, base_url: str, model: str, api_key: str) -> 
     return True
 
 
+def _contacts_db(home: Path) -> Path:
+    db_path = home / "contacts.db"
+    return db_path if db_path.exists() else home / "protagine-contacts.db"
+
+
+def _unresolved_owner(contact_id: str, where: str) -> str:
+    return (f"owner.contact_id {contact_id} in protagine.yaml does not resolve to a live contact ({where}); "
+            "correct the id, or remove owner.contact_id to create a new owner contact")
+
+
+def seeded_owner_problem(home: Path, contact_id: str) -> str | None:
+    """Why a seeded ``owner.contact_id`` cannot be the owner, or None when it names a live contact.
+
+    Checked before init writes anything: a typo, or an id naming a missing or deleted row,
+    must not turn into a second, empty owner contact that the mind and recall then treat as
+    the owner (cutover data-6).
+    """
+    db_path = _contacts_db(home)
+    if not db_path.exists():
+        return _unresolved_owner(contact_id, f"there is no contacts store in {home}")
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+
+    async def live() -> bool:
+        store = SQLiteContactStore(ContactsConfig(sqlite_path=str(db_path)))
+        await store.connect()
+        try:
+            return await store.get(contact_id) is not None
+        finally:
+            await store.close()
+
+    return None if asyncio.run(live()) else _unresolved_owner(contact_id, f"not in {db_path.name}, or deleted")
+
+
 def ensure_owner_contact(home: Path, cfg: Config, identity: dict[str, Any]) -> tuple[str, bool]:
-    """Create the owner contact once and return ``(contact_id, created)``."""
+    """Create the owner contact once and return ``(contact_id, created)``.
+
+    A recorded ``owner.contact_id`` that does not resolve is refused, never replaced.
+    """
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
     from protagine.setup import build_owner_contact
 
-    db_path = home / "contacts.db"
-    if not db_path.exists():
-        db_path = home / "protagine-contacts.db"
+    db_path = _contacts_db(home)
     existing = str(cfg.get("owner.contact_id") or "")
     owner = identity.get("owner", {})
     handles = [(str(item.get("platform") or ""), str(item.get("id") or ""))
@@ -645,7 +680,9 @@ def ensure_owner_contact(home: Path, cfg: Config, identity: dict[str, Any]) -> t
         store = SQLiteContactStore(ContactsConfig(sqlite_path=str(db_path)))
         await store.connect()
         try:
-            if existing and await store.get(existing) is not None:
+            if existing:
+                if await store.get(existing) is None:
+                    raise InitError(_unresolved_owner(existing, f"not in {db_path.name}, or deleted"))
                 return existing, False
             contact_id = await build_owner_contact(store, str(owner.get("name") or "Owner"), handles)
             return contact_id, True
@@ -1300,6 +1337,9 @@ def run_init(args) -> int:
         cfg = load_config(home)
         fresh = not cfg.exists
         data = copy.deepcopy(cfg.data)
+        seeded = str(cfg.get("owner.contact_id") or "").strip()
+        if seeded and (problem := seeded_owner_problem(home, seeded)):
+            raise InitError(problem)
 
         # 1. Identity and autonomy.
         identity = _collect_identity(args, load_identity(home), non_interactive)

@@ -42,7 +42,11 @@ default `standard`). Then it:
 
 1. writes `protagine.yaml`, `identity.yaml` and `api.key` (mode 600) to the
    instance directory (`$PROTAGINE_HOME`, default `~/.protagine`);
-2. creates the owner contact;
+2. creates the owner contact, or keeps the one `owner.contact_id` already
+   names. A recorded id that does not resolve to a live contact (a typo, a
+   deleted row, no contacts store) is refused before anything is written;
+   init never creates a second owner contact. Correct the id, or remove it
+   to create a new owner contact;
 3. points the router at the model endpoint Hermes uses, and records an
    embedding endpoint when you pass `--embed-url` (semantic recall is on only
    then);

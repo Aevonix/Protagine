@@ -186,6 +186,60 @@ def test_a_dispatched_worker_gets_the_main_model_and_only_the_mind_toolsets(home
     assert doctor.check_worker_profile().status == doctor.FAIL
 
 
+def _contacts(home):
+    import sqlite3
+    from contextlib import closing
+    path = home / "contacts.db" if (home / "contacts.db").exists() else home / "protagine-contacts.db"
+    with closing(sqlite3.connect(path)) as db:
+        return db.execute("SELECT contact_id, deleted_at FROM contacts ORDER BY contact_id").fetchall()
+
+
+def _seed_owner(home, contact_id):
+    data = yaml.safe_load((home / "protagine.yaml").read_text())
+    data["owner"]["contact_id"] = contact_id
+    (home / "protagine.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def test_init_refuses_a_seeded_owner_contact_that_does_not_resolve(homes, capsys):
+    """Cutover data-6: a seeded ``owner.contact_id`` with a typo, or naming a deleted row, is refused;
+    init never creates a second owner contact and never repoints protagine.yaml at it."""
+    import sqlite3
+    from contextlib import closing
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home)) == 0
+    owner = load_config(home, environ={}).get("owner.contact_id")
+    before = _contacts(home)
+    capsys.readouterr()
+
+    _seed_owner(home, "cid-typo")
+    assert init.run_init(_args(home, hermes_home)) == 1
+    out = capsys.readouterr().out
+    assert "cid-typo" in out and "does not resolve" in out and "recorded" not in out
+    assert _contacts(home) == before
+    assert load_config(home, environ={}).get("owner.contact_id") == "cid-typo"
+
+    _seed_owner(home, owner)
+    path = home / "contacts.db" if (home / "contacts.db").exists() else home / "protagine-contacts.db"
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("UPDATE contacts SET deleted_at = '2026-09-01T00:00:00+00:00' WHERE contact_id = ?", (owner,))
+        db.commit()
+    deleted = _contacts(home)
+    assert init.run_init(_args(home, hermes_home)) == 1
+    assert "does not resolve" in capsys.readouterr().out
+    assert _contacts(home) == deleted and load_config(home, environ={}).get("owner.contact_id") == owner
+
+
+def test_init_refuses_a_seeded_owner_contact_without_a_contacts_store(homes, capsys):
+    """A protagine.yaml seeded with an owner id on an instance whose contacts store is missing is refused
+    before anything is written: no contacts store is created, identity.yaml and api.key are not written."""
+    home, hermes_home = homes
+    home.mkdir(parents=True)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"owner": {"contact_id": "cid-1781077055726"}}))
+    assert init.run_init(_args(home, hermes_home)) == 1
+    assert "cid-1781077055726" in capsys.readouterr().out
+    assert sorted(path.name for path in home.iterdir()) == ["protagine.yaml"]
+
+
 def test_init_keeps_existing_answers_and_lets_flags_change_them(homes):
     home, hermes_home = homes
     assert init.run_init(_args(home, hermes_home)) == 0
