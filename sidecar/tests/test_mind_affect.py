@@ -488,6 +488,35 @@ def test_topic_matching_is_word_overlap_of_the_smaller_topic():
     assert topic_matches("report", "send the owner the weekly report")
 
 
+def test_topics_in_any_script_keep_their_own_rows_and_match_by_their_words(world):
+    """A topic with no Latin letters or digits still has its own frustration row (a digest key, not one
+    shared "topic" slug), and topics written with spaces match by their words in any script."""
+    world.outcome("failed", "四半期の数字", approach="アーカイブ")
+    world.outcome("failed", "квартальный отчёт", approach="экспорт")
+    world.update()
+    rows = {row["key"]: row["text"] for row in world.state.items("affect.frustration:")}
+    assert sorted(rows.values()) == ["квартальный отчёт", "四半期の数字"] and "affect.frustration:topic" not in rows
+    assert world.affect.view().frustrations == (), "one failure on each of two topics is no switch"
+    world.outcome("failed", "квартальный отчёт за сентябрь", approach="экспорт")
+    world.update()
+    [frustration] = world.affect.view().frustrations
+    assert frustration.topic == "квартальный отчёт" and frustration.failures == 2
+    assert world.affect.note_for("Отправить квартальный отчёт").startswith("Prior attempts at квартальный отчёт")
+    assert world.affect.note_for("四半期の数字") == "" and len(world.state.items("affect.frustration:")) == 2
+    assert topic_matches("Straße Plan", "der Straße Plan") and not topic_matches("отчёт", "план")
+
+
+def test_a_novel_topic_counts_its_words_in_any_script(world):
+    for text in ("спасибо", "ありがとう", "了解です"):
+        world.affect.note_novel_topic(text, at=world.now)
+    world.update()
+    assert world.level("affect.curiosity") == 0.0
+    world.affect.note_novel_topic("Когда отходит паром до Капри по пятницам?", at=world.now)
+    world.affect.note_novel_topic("四半期の数字がアーカイブと台帳で違うのはなぜですか", at=world.now)
+    world.update()
+    assert world.level("affect.curiosity") == pytest.approx(0.2)
+
+
 def test_a_frustration_keeps_its_first_topic_and_the_note_names_approaches_and_pitfalls(world):
     world.outcome("failed", hours=2, approach="the archive export")
     world.intention(topic="stale quarterly figure", status="failed", outcome="failed", failed_at=world.now,

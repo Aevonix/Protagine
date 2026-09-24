@@ -83,22 +83,46 @@ STOPWORDS = frozenset({"the", "and", "for", "with", "from", "about", "into", "on
                        "those", "its", "our", "your", "their", "was", "were", "are", "has", "have", "had", "not",
                        "but", "all", "any", "out", "off", "via", "using", "per"})
 NOTE_PREFIX = "Prior attempts at "
+# Katakana and CJK ideographs: Chinese and Japanese are written without spaces between words.
+IDEOGRAPHIC = re.compile(r"[\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 # -- small pure helpers ------------------------------------------------------------------------
 
 def topic_words(text: Any) -> frozenset:
+    """Casefolded words of 3+ letters or digits in any script, a few stopwords dropped, a plural ``s`` dropped."""
     words = set()
-    for word in re.findall(r"[a-z0-9]{3,}", str(text or "").casefold()):
+    for word in re.findall(r"[^\W_]{3,}", str(text or "").casefold()):
         if word in STOPWORDS:
             continue
         words.add(word[:-1] if len(word) >= 5 and word.endswith("s") else word)
     return frozenset(words)
 
 
+def content_size(text: Any) -> int:
+    """How much a text is about: its content words; a run of Chinese or Japanese, written without spaces,
+    counts one per two ideographs or katakana (kana endings and particles are not content)."""
+    size = 0
+    for word in topic_words(text):
+        dense = len(IDEOGRAPHIC.findall(word))
+        size += dense // 2 if dense else 1
+    return size
+
+
+def topic_key(topic: Any) -> str:
+    """The key of a topic's frustration row: its slug, with a digest when the topic is not plain ASCII (so
+    topics in other scripts never share one row)."""
+    text = " ".join(str(topic or "").split())
+    if text.isascii():
+        return slug(text)
+    digest = hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:10]
+    base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48]
+    return f"{base}-{digest}" if base else f"t-{digest}"
+
+
 def topic_matches(a: Any, b: Any) -> bool:
-    """Whether two topic phrases name the same thing: their word sets overlap by at least 0.6 of the
-    smaller one (casefolded words of 3+ characters, a few stopwords dropped, a plural ``s`` dropped)."""
+    """Whether two topic phrases name the same thing: their word sets (``topic_words``) overlap by at
+    least 0.6 of the smaller one."""
     left, right = topic_words(a), topic_words(b)
     if not left or not right:
         first, second = " ".join(str(a or "").split()).casefold(), " ".join(str(b or "").split()).casefold()
@@ -323,7 +347,7 @@ def failure_record(events: Sequence[AffectEvent], *, since: Optional[datetime] =
     for topic in topics:
         failures = recent_failures(events, topic, since=since)
         if len(failures) >= SWITCH_FAILURES:
-            record.append(frustration(topic, prefix + slug(topic), None, failures,
+            record.append(frustration(topic, prefix + topic_key(topic), None, failures,
                                       [event.cause() for event in failures][-5:]))
     return record
 
@@ -598,7 +622,7 @@ class Affect:
         for row in self.mind_state.items(FRUSTRATION):
             if topic_matches(row.get("text") or row["key"][len(FRUSTRATION):], topic):
                 return row["key"]
-        return FRUSTRATION + slug(topic)
+        return FRUSTRATION + topic_key(topic)
 
     def _key(self, dimension: str, event: AffectEvent) -> Optional[str]:
         if dimension == "frustration":
@@ -778,7 +802,7 @@ class Affect:
         Small talk ("ok", "thanks", "yes K7F") names no topic: fewer than ``NOVEL_WORDS`` content words."""
         try:
             text = " ".join(str(text or "").split())
-            if not self.state_on or len(topic_words(text)) < NOVEL_WORDS:
+            if not self.state_on or content_size(text) < NOVEL_WORDS:
                 return
             at = _aware(at or self.clock())
             ref = (f"novel:{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}@"
@@ -840,5 +864,5 @@ class Affect:
 
 __all__ = ["Affect", "AffectEvent", "AffectInputs", "AffectView", "CAP", "CONSUMERS", "DISCRETIONARY_PRIORITY",
            "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "SWITCH_FAILURES",
-           "compose", "discretionary", "effects", "failure_record", "frustration", "load_of", "plan_hash", "postponable",
-           "recent_failures", "topic_matches"]
+           "compose", "content_size", "discretionary", "effects", "failure_record", "frustration", "load_of", "plan_hash", "postponable",
+           "recent_failures", "topic_key", "topic_matches"]
