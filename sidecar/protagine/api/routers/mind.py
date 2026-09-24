@@ -21,7 +21,10 @@ text in docs/HERMES-ADAPTER.md):
   POST /guard                     {tool, args, session|session_id, run, task_id, recipients?}
                                                                                 -> {allow, action, reason}
   POST /decide                    {code, answer: yes|no, contact_id?, session_id?, message?} -> {ok, ...}
-  GET  /log, /log/{id}, /why/{id}, /asks, /state (/status), /stats
+  GET  /log?limit&status&kind&since_hours&recipient, /log/{id}, /why/{id}, /asks, /state (/status), /stats
+  GET  /narrative                 the self-narrative {enabled, text, sections, cites, updated_at} (empty
+                                   until the mind exposes narrative())
+  POST /consolidate               run the nightly consolidation now (501 until the mind exposes it)
   GET  /concerns, /goals          the workspace (open concerns, the broadcast set) and the open goals
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
@@ -30,6 +33,7 @@ text in docs/HERMES-ADAPTER.md):
 
 from __future__ import annotations
 
+from datetime import timedelta
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -66,6 +70,9 @@ def _entry(row: Any) -> Dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_intention"})
     return audit.entry(row)
+
+
+EMPTY_NARRATIVE: Dict[str, Any] = {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
 
 
 class BoundBody(BaseModel):
@@ -319,14 +326,42 @@ async def decide(body: DecideBody) -> Dict[str, Any]:
                    message=body.message)
 
 
+# -- the self-narrative and consolidation (architecture 4.1, 4.2) ------------------------
+
+@router.get("/narrative")
+async def narrative() -> Dict[str, Any]:
+    """The self-narrative the plugin renders into the session prompt and ``protagine_self state`` shows:
+    ``{enabled, text, sections, cites, updated_at}``, empty until the mind exposes ``narrative()``."""
+    render = getattr(_require(), "narrative", None)
+    value = render() if callable(render) else None
+    return {**EMPTY_NARRATIVE, **value} if isinstance(value, dict) else dict(EMPTY_NARRATIVE)
+
+
+@router.post("/consolidate")
+async def consolidate() -> Dict[str, Any]:
+    """Run the nightly consolidation now (the CLI, the benchmark); 501 until the mind can."""
+    run = getattr(_require(), "consolidate", None)
+    if not callable(run):
+        raise HTTPException(status_code=501, detail={"code": "consolidation_not_available",
+                                                     "message": "this sidecar has no consolidation"})
+    return await run(force=True)
+
+
 # -- the audit log (7.8) -----------------------------------------------------------------
 
 @router.get("/log")
-async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str] = None,
+              since_hours: Optional[float] = None, recipient: Optional[str] = None) -> Dict[str, Any]:
+    """Newest first. ``since_hours`` and ``recipient`` answer "did I message p-07 yesterday?" exactly."""
     mind = _require()
-    entries = audit.log(mind.store, limit=max(1, min(int(limit), 500)),
+    since = None
+    if since_hours is not None:
+        since = mind.clock() - timedelta(hours=max(0.0, float(since_hours)))
+    entries = audit.log(mind.store, limit=max(1, min(int(limit), 500)), since=since,
                         status=[s for s in (status or "").split(",") if s] or None,
                         kind=[k for k in (kind or "").split(",") if k] or None)
+    if recipient:
+        entries = [entry for entry in entries if entry.get("recipient") == recipient]
     return {"entries": entries, "text": audit.render_log(entries)}
 
 
@@ -334,7 +369,8 @@ async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str]
 async def why(intention_id: str) -> Dict[str, Any]:
     value = audit.why(_require().store, intention_id)
     if value is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_intention"})
+        raise HTTPException(status_code=404, detail={
+            "code": "unknown_intention", "message": f"no intention {intention_id} exists in the audit log"})
     return value
 
 
