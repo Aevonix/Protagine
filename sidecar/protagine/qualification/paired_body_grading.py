@@ -17,9 +17,10 @@ Three oracle kinds share those effects, and an oracle carries at most one.
 ``selection`` (drives): candidates in priority order, the leading ones owed.
 Every owed candidate is dispatched, each candidate in one tick, a lower one
 never in an earlier tick than an owed one (the order of work, however many a
-tick takes on), and nothing follows the satiating outcome or the off switch. ``goal`` (drives): the right goal's token is worked
-on, at most the allowed number of candidate goals are, and the fixture's
-success check is a separate artifact oracle. Candidate tokens are fixture
+tick takes on), and nothing follows the satiating outcome or the off switch.
+``goal`` (drives): the right goal's token is worked on, at most the allowed
+number of candidate goals are, and the fixture's success check is a separate
+artifact oracle. Candidate tokens are fixture
 strings that never contain one another, so a substring match on one cannot
 hit another.
 
