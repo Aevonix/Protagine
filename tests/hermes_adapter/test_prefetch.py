@@ -76,7 +76,7 @@ def test_guest_direct_tools_are_withheld(home, sidecar):
     """A guest turn is offered no direct tool; a call that still arrives is refused once, terminally."""
     result = probe('''
 tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_id="session-1")
-guest = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.1, "arousal": 0.1}))
+guest = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c-01", "action": "fulfilled"}))
 guest_tools = [s["name"] for s in provider.get_tool_schemas()]
 clear_session_vars(tokens)
 tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="1001", session_id="session-2")
@@ -87,8 +87,8 @@ emit(guest=guest, guest_tools=guest_tools, owner_tools=owner_tools)
     assert result["guest"] == {"unavailable": True, "retry": False, "reason": result["guest"]["reason"]}
     assert "owner-only" in result["guest"]["reason"]
     assert result["guest_tools"] == []
-    assert set(result["owner_tools"]) == {"protagine_record_affect", "protagine_resolve_commitment"}
-    assert not any(call["path"].startswith("/v1/host/affect") for call in sidecar.requests)
+    assert set(result["owner_tools"]) == {"protagine_resolve_commitment"}
+    assert not any(call["path"].startswith("/v1/host/commitments") for call in sidecar.requests)
 
 
 def test_unbound_channel_session_is_built_without_direct_tools(home, sidecar):

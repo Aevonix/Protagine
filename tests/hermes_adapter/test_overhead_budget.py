@@ -19,7 +19,7 @@ from protagine_hermes.tools import FORGET_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, 
 from protagine_memory.provider import _PROTAGINE_TOOL_SCHEMAS, _SYSTEM_PROMPT
 
 PLUGIN_SCHEMAS = (SELF_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, REMINDER_SCHEMA)
-TOOL_BUDGET_CHARS = 3_400       # 7 tools, measured 3,223; the first cut sent 12 tools in 6,700 characters
+TOOL_BUDGET_CHARS = 3_400       # 6 tools; the first cut sent 12 tools in 6,700 characters
 SYSTEM_BUDGET_CHARS = 800       # provider block + plugin section, measured 725; the first cut sent 1,004
 
 
@@ -31,7 +31,9 @@ def rendered(schema) -> str:
 def test_tool_schemas_stay_within_the_budget():
     schemas = [*PLUGIN_SCHEMAS, *_PROTAGINE_TOOL_SCHEMAS]
     names = [schema["name"] for schema in schemas]
-    assert len(names) == len(set(names)) == 7, names
+    # The provider's owner-lane affect write is gone: contact affect comes from the appraisal's
+    # their_valence (M5), and no mind code read what the tool wrote.
+    assert len(names) == len(set(names)) == 6 and "protagine_record_affect" not in names, names
     total = sum(len(rendered(schema)) for schema in schemas)
     assert total <= TOOL_BUDGET_CHARS, {schema["name"]: len(rendered(schema)) for schema in schemas}
     for schema in schemas:  # the person scope is bound server-side, never a model argument

@@ -73,10 +73,12 @@ own context path. Retained global-credential paths are outside the supported bas
 ## General-plugin coexistence
 
 With `PROTAGINE_GENERAL_PLUGIN_ACTIVE=1`, this provider is read/context-only. Its
-model-visible catalog is exactly the owner's two writes:
+model-visible catalog is exactly the owner's one write:
 
 - `protagine_resolve_commitment`
-- `protagine_record_affect`
+
+Contact affect is not a model write: the sidecar records it from the appraisal
+of each contact's own turns.
 
 Person selectors are not model arguments: the provider binds the turn's
 participant. What the model used to read through tools here (commitments,

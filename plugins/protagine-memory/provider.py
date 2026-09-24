@@ -2,7 +2,7 @@
 
 Implements Hermes's MemoryProvider ABC: per-turn recall through
 ``/v1/host/context/assemble``, turn sync when the general plugin is absent,
-a durable checkpoint before compression, and the owner's two write tools.
+a durable checkpoint before compression, and the owner's one write tool.
 
 Config key: memory.provider = "protagine-memory". The sidecar URL and key come
 from the shared ``plugins.protagine`` keys written by ``protagine init``, with
@@ -165,11 +165,12 @@ except ImportError:
 # Tool schemas: what the model sees
 # ---------------------------------------------------------------------------
 
-# The provider's two model tools are the owner's writes; every read the model used to have here
+# The provider's one model tool is the owner's write; every read the model used to have here
 # (commitments, facts, affect, timeline) arrives in the per-turn context instead, and
-# ``protagine_memory_search`` covers the rest. Each schema is sent with every request, so it says only
-# what the model needs to choose the tool and fill it in.
-_OWNER_LANE_TOOLS = frozenset({"protagine_resolve_commitment", "protagine_record_affect"})
+# ``protagine_memory_search`` covers the rest. Contact affect is not the model's to write: the
+# appraisal's their_valence records it from the contact's own turns. Each schema is sent with every
+# request, so it says only what the model needs to choose the tool and fill it in.
+_OWNER_LANE_TOOLS = frozenset({"protagine_resolve_commitment"})
 _LANE_REFUSALS = {
     "unbound": "no participant is bound to this turn; the direct Protagine tools do not work on this "
                "lane, answer from the message and the assembled context",
@@ -177,22 +178,11 @@ _LANE_REFUSALS = {
                   "assembled context",
     "guest": "the direct Protagine tools are owner-only; a guest turn answers from the assembled context",
 }
-_AFFECT_SOURCES = ("explicit", "inferred", "signal")  # the host route's vocabulary
 
 
 def _terminal(reason: str) -> str:
     """One final answer: the tool cannot work on this lane and a retry would only repeat it."""
     return json.dumps({"unavailable": True, "retry": False, "reason": reason})
-
-
-def _detail(response: Any) -> str:
-    try:
-        detail = response.json().get("detail")
-    except Exception:
-        return ""
-    if isinstance(detail, list):
-        detail = "; ".join(str(item.get("msg") or item) if isinstance(item, dict) else str(item) for item in detail)
-    return str(detail or "")[:200]
 
 
 _PROTAGINE_TOOL_SCHEMAS: List[Dict[str, Any]] = [
@@ -204,14 +194,6 @@ _PROTAGINE_TOOL_SCHEMAS: List[Dict[str, Any]] = [
          "action": {"type": "string", "enum": ["fulfilled", "dismissed", "snoozed"]},
          "reason": {"type": "string"}, "new_due_at": {"type": "string"}},
          "required": ["commitment_id", "action"]}},
-    {"name": "protagine_record_affect",
-     "description": "Record the participant's expressed feeling: valence -1 to 1, arousal 0 to 1, source "
-                    "explicit (said so), inferred (from their words) or signal (non-verbal), optional trigger.",
-     "parameters": {"type": "object", "properties": {
-         "valence": {"type": "number"}, "arousal": {"type": "number"},
-         "source": {"type": "string", "enum": list(_AFFECT_SOURCES)},
-         "trigger": {"type": "string"}},
-         "required": ["valence", "arousal"]}},
 ]
 
 # Static guidance lives here, once per request, instead of being repeated inside every turn's
@@ -750,24 +732,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                                     headers=self._headers(), json=body)
                 resp.raise_for_status()
                 return json.dumps({"ok": True, "action": action, "commitment": resp.json()})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    def _tool_protagine_record_affect(self, args: dict) -> str:
-        """The route accepts only its own ``source`` vocabulary and real person contacts; anything
-        else is a 422 no retry can fix, so the tool maps the first and reports the second once."""
-        source = str(args.get("source") or "").strip().lower()
-        payload = {"contact_id": self._contact_id, "valence": args["valence"],
-                   "arousal": args.get("arousal", 0.5), "source": source if source in _AFFECT_SOURCES else "inferred",
-                   "trigger": args.get("trigger") or None,
-                   **({"session_id": self._session_id} if self._session_id else {})}
-        try:
-            with httpx.Client(timeout=5) as client:
-                resp = client.post(f"{self.sidecar_url}/v1/host/affect/events", headers=self._headers(), json=payload)
-                if 400 <= resp.status_code < 500:
-                    return _terminal(f"affect was not recorded (HTTP {resp.status_code}): {_detail(resp)}")
-                resp.raise_for_status()
-                return json.dumps({"success": True})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
 

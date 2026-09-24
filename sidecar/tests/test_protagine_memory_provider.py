@@ -641,35 +641,24 @@ def test_guest_write_tools_never_reach_the_sidecar(provider_mod, monkeypatch):
     set_turn(platform="rcs", sender="alice", chat="thread-a")
     fake = _FakeHttpx(routes={
         _RESOLVE: {"contact_id": "cid-alice"},
-        ("POST", "/v1/host/affect/events"): {"id": "e-1"},
+        ("PATCH", "/v1/host/commitments/c-01"): {"id": "c-01"},
     })
     provider = _make_provider(provider_mod, fake, monkeypatch)
-    withheld = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.2, "arousal": 0.2}))
+    withheld = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c-01", "action": "fulfilled"}))
     assert "owner-only" in withheld["reason"] and withheld["retry"] is False
-    assert not any(request["url"].endswith("/v1/host/affect/events") for request in fake.requests)
+    assert not any("/v1/host/commitments/" in request["url"] for request in fake.requests)
     assert provider.get_tool_schemas() == []
-
-
-def test_owner_lane_write_binds_the_provider_contact(provider_mod, monkeypatch):
-    """The person scope is never a model argument: a supplied contact_id is ignored, the owner's is sent."""
-    monkeypatch.setenv("PROTAGINE_GENERAL_PLUGIN_ACTIVE", "1")
-    fake = _FakeHttpx(routes={("POST", "/v1/host/affect/events"): {"id": "e-1"}})
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-    result = json.loads(provider.handle_tool_call(
-        "protagine_record_affect", {"valence": 0.3, "arousal": 0.4, "contact_id": "cid-bob"}))
-    assert result == {"success": True}
-    call = next(request for request in fake.requests if request["url"].endswith("/v1/host/affect/events"))
-    assert call["json"]["contact_id"] == "cid-base"
 
 
 def test_removed_reads_are_unknown_tools_and_the_system_block_carries_the_guidance(provider_mod, monkeypatch):
     """The reads the model used to have (commitments, facts, affect, timeline, initiative feedback) arrive
     in the per-turn context; the schemas are gone, and the static reading rules live in the one system
-    block instead of inside every turn's injected context."""
+    block instead of inside every turn's injected context. The owner-lane affect write is gone too:
+    contact affect comes from the appraisal of the contact's own turns."""
     fake = _FakeHttpx()
     provider = _make_provider(provider_mod, fake, monkeypatch)
     for name in ("protagine_check_commitments", "protagine_get_facts", "protagine_get_affect",
-                 "protagine_timeline", "protagine_initiative_feedback"):
+                 "protagine_timeline", "protagine_initiative_feedback", "protagine_record_affect"):
         assert "Unknown Protagine tool" in json.loads(provider.handle_tool_call(name, {}))["error"], name
     assert fake.requests == []
     block = provider.system_prompt_block()
@@ -682,7 +671,7 @@ def test_removed_reads_are_unknown_tools_and_the_system_block_carries_the_guidan
 
 # --- lanes: the direct tools exist only on the owner's own lane ---------------
 
-_OWNER_LANE_TOOLS = {"protagine_resolve_commitment", "protagine_record_affect"}
+_OWNER_LANE_TOOLS = {"protagine_resolve_commitment"}
 
 
 def test_unbound_channel_turn_is_offered_no_direct_tool_and_a_stray_call_ends_once(
@@ -724,7 +713,7 @@ def test_bound_guest_is_offered_no_direct_tool(provider_mod, monkeypatch):
     fake = _FakeHttpx(routes={_RESOLVE: {"contact_id": "cid-alice"}})
     provider = _make_provider(provider_mod, fake, monkeypatch)
     assert provider.get_tool_schemas() == []
-    refused = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.2, "arousal": 0.2}))
+    refused = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c-01", "action": "fulfilled"}))
     assert refused["unavailable"] is True and refused["retry"] is False and "owner-only" in refused["reason"]
     assert [r["url"].rsplit("/", 1)[1] for r in fake.requests] == ["resolve"]
 
@@ -737,7 +726,7 @@ def test_unresolved_sender_keeps_the_tools_and_refuses_once(provider_mod, monkey
     fake = _FakeHttpx(routes={_RESOLVE: lambda request: {}})
     provider = _make_provider(provider_mod, fake, monkeypatch)
     assert {schema["name"] for schema in provider.get_tool_schemas()} == _OWNER_LANE_TOOLS
-    refused = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.1, "arousal": 0.1}))
+    refused = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c-01", "action": "fulfilled"}))
     assert refused["unavailable"] is True and refused["retry"] is False and "did not resolve" in refused["reason"]
 
 
@@ -804,42 +793,6 @@ def test_prefetch_tells_the_sidecar_whether_this_sessions_turns_are_still_visibl
     provider.on_session_switch("s-2", reset=True, reason="new_session")
     provider.prefetch("third", session_id="s-2")
     assert [call["json"]["session_history"] for call in _assemble_calls(fake)] == ["intact", "compressed", "intact"]
-
-
-def test_record_affect_speaks_the_routes_vocabulary(provider_mod, monkeypatch):
-    """The route's ``source`` is a closed enum and the old default ('user_message') was a 422 on every
-    call; free text maps to ``inferred`` and a 4xx is reported once, not retried."""
-    fake = _FakeHttpx(routes={("POST", "/v1/host/affect/events"): {"id": "e-1"}})
-    provider = _make_provider(provider_mod, fake, monkeypatch)
-    provider._session_id = "s-7"
-    assert json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.4, "arousal": 0.6})) == {
-        "success": True}
-    provider.handle_tool_call("protagine_record_affect", {"valence": -0.5, "arousal": 0.8, "source": "explicit",
-                                                          "trigger": "the delay"})
-    provider.handle_tool_call("protagine_record_affect", {"valence": 0.1, "arousal": 0.2, "source": "user_message"})
-    sent = [r["json"] for r in fake.requests if r["url"].endswith("/v1/host/affect/events")]
-    assert [s["source"] for s in sent] == ["inferred", "explicit", "inferred"]
-    assert sent[1]["trigger"] == "the delay" and sent[0]["trigger"] is None
-    assert all(s["contact_id"] == "cid-base" and s["session_id"] == "s-7" for s in sent)
-    schema = next(s for s in provider.get_tool_schemas() if s["name"] == "protagine_record_affect")
-    assert schema["parameters"]["properties"]["source"]["enum"] == ["explicit", "inferred", "signal"]
-
-    class _Rejecting(_FakeHttpx):
-        def __init__(self):
-            super().__init__()
-            outer = self
-
-            class _Client(outer.Client):
-                def post(self, url, **kwargs):
-                    outer.requests.append({"url": url, "json": kwargs.get("json")})
-                    return _FakeResponse(422, {"detail": "unknown contact_id 'cid-base'"})
-            self.Client = _Client
-
-    rejecting = _Rejecting()
-    monkeypatch.setattr(provider_mod, "httpx", rejecting)
-    refused = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.4, "arousal": 0.6}))
-    assert refused["unavailable"] is True and refused["retry"] is False
-    assert "422" in refused["reason"] and "unknown contact_id" in refused["reason"]
 
 
 def test_resolve_commitment_settles_through_the_outcome_path(provider_mod, monkeypatch):
@@ -951,33 +904,3 @@ def test_contact_resolution_transport_failures_open_the_breaker(
     p._turn_number = 3
     assert p._resolve_handle("telegram", "tg-1") is None
     assert len(fake.requests) == 3      # the open breaker skipped the call
-
-
-async def test_record_affect_payload_is_accepted_by_the_real_route(provider_mod, monkeypatch, tmp_path):
-    """The verified cause of the 422 the traces reported: the tool sent ``source: user_message`` and the
-    route's ``source`` is a closed enum. The payload the tool sends now is a 201 on the real route."""
-    from fastapi import FastAPI
-    from httpx import ASGITransport, AsyncClient
-    from protagine.api.routers import host
-    from protagine.tom.affect import AffectStore
-    from protagine.turns import get_turn_idempotency_ledger
-
-    recorder = _FakeHttpx(routes={("POST", "/v1/host/affect/events"): {"id": "e-1"}})
-    provider = _make_provider(provider_mod, recorder, monkeypatch)
-    provider._contact_id = "p-01"
-    provider.handle_tool_call("protagine_record_affect", {"valence": 0.4, "arousal": 0.6, "source": "user_message"})
-    sent, = [r["json"] for r in recorder.requests]
-
-    store = AffectStore(db_path=tmp_path / "affect.db", source_ledger=get_turn_idempotency_ledger(tmp_path))
-    app = FastAPI()
-    app.include_router(host.router)
-    host.set_affect_store(store)
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://sidecar.test") as client:
-            before = await client.post("/v1/host/affect/events", json={**sent, "source": "user_message"})
-            assert before.status_code == 422 and before.json()["detail"][0]["loc"] == ["body", "source"]
-            after = await client.post("/v1/host/affect/events", json=sent)
-            assert after.status_code == 201, after.text
-            assert after.json()["contact_id"] == "p-01" and after.json()["source"] == "inferred"
-    finally:
-        host.set_affect_store(None)

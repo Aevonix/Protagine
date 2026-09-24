@@ -30,9 +30,10 @@ If any step fails, use no Protagine context. Never substitute owner context.
 
 ## Model tools
 
-The provider's tools exist only on the owner's own lane: the two writes
-`protagine_resolve_commitment` and `protagine_record_affect`. Their person
-selectors are server/provider-bound, not model arguments. Commitments, facts,
+The provider's one tool exists only on the owner's own lane: the write
+`protagine_resolve_commitment`. Its person selector is server/provider-bound,
+not a model argument. Contact affect is recorded by the sidecar from each
+contact's own turns, never by a tool. Commitments, facts,
 affect and recent history are read from the assembled per-turn context, and
 `protagine_memory_search` (the general adapter's tool) finds more. A guest
 session, or a real channel with no sender binding, is offered none of them
