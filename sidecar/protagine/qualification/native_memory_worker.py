@@ -77,6 +77,18 @@ def benchmark_identity(person):
             'agent': {'name': 'Agent'}}
 
 
+def mount_routes(app, *, mind):
+    """The routes the arm serves, as the sidecar mounts them: the host routes, and with the mind
+    its own routes and the people routes (an owner's ``protagine_people`` reaches them)."""
+    from protagine.api.routers import host, people
+    from protagine.api.routers import mind as mind_router
+    app.include_router(host.router)
+    app.include_router(host.v2_router)
+    if mind:
+        app.include_router(mind_router.router)
+        app.include_router(people.router)
+
+
 @contextmanager
 def serve_mind(app, state, person, section):
     """A real Mind over this arm's stores, on ``/v1/mind`` next to the host routes.
@@ -204,10 +216,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'path': req.url.path, 'status': response.status_code})
         return response
 
-    app.include_router(host.router)
-    app.include_router(host.v2_router)
-    if mind:
-        app.include_router(mind_router.router)
+    mount_routes(app, mind=bool(mind))
     host_resources = ExitStack()
     listener = server = thread = None
     transport_observer = None

@@ -367,3 +367,35 @@ async def test_a_conversation_after_a_clock_advance_satisfies_the_cadence_end_to
             assert [item['type'] for item in (await mind.tick(force=True))['formed']] == ['check_in']
         finally:
             store.close()
+
+
+# -- The benchmark's Mind is the production Mind (audit M1) ---------------------------------------
+
+async def test_the_mind_arm_serves_the_people_routes_and_its_mind_has_the_people_reads(tmp_path, monkeypatch):
+    """An owner's ``protagine_people merge`` in the benchmark reaches ``/v1/mind/people`` as it does
+    in a real install, and the served Mind composes and digests from the same host callables."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from protagine.api.routers import host
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+    monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
+    store = SQLiteContactStore(ContactsConfig(sqlite_path=str(tmp_path / 'protagine-contacts.db')))
+    await store.connect()
+    monkeypatch.setattr(host, '_contacts_store', store)
+    try:
+        await store.create(display_name='p-02', trust_tier='regular')
+        for mind, expected in ((True, 200), (False, 404)):
+            app = FastAPI()
+            worker.mount_routes(app, mind=mind)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://arm') as client:
+                response = await client.get('/v1/mind/people', params={'q': 'p-02'})
+            assert response.status_code == expected, (mind, response.text)
+        state = tmp_path / 'state'
+        full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))
+        with worker.serve_mind(FastAPI(), state, 'p-01', full) as served:
+            assert served.packet_for is host.assemble_packet and served.claims_for is host.claims_for
+            assert served.contacts is store and served.composer.enabled is True
+    finally:
+        await store.close()
