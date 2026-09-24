@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - people, memory, feelings and opinions, integrated
+## Unreleased - people, memory, feelings, opinions and self-improvement, integrated
 
 The people (M5) and memory and identity (M8) milestones merged onto one line
 (integration map steps 1 and 2). One Mind factory, `protagine.mind.factory`,
@@ -51,6 +51,71 @@ opinion jobs again under the new contact (X14). The self-narrative lists no
 stance with `faculties.opinions` off and never a view about a person (X15,
 X7). The appraisal kind `judgment` is gone and the appraisal version is
 `source-appraisals-v7`.
+
+The self-improvement milestone (M9) followed ([docs/MIND.md](docs/MIND.md),
+Verification, Lessons and Skills). Only the mind grants `verified: owner` or
+`check` now: a body report may claim `hermes_failure`, and only for a failure
+that carries a reason, and a failure without one verifies nothing; a blocked
+task with a reason is a Hermes failure on its still-open row. The mind learns
+lessons from verified results (`mind/lessons.py`, `mind.faculties.lessons`, on
+by default): strategies and pitfalls with a title, when they apply, their
+content and their evidence, kept as the mind's own record (owner-audience
+ledger entries of its own session with `scope='session'`, one per event), so
+recall never shows a lesson as something the owner said and forgetting a turn
+a lesson quotes forgets the lesson. The night gains a lesson stage (one call,
+charged to the night inside `learn_share`) over the owner's own sessions since
+the last review and the agent's verified results: every operation cites what
+it rests on and an owner citation quotes the owner's exact words, a strategy
+needs the owner or a check that reads state the worker cannot write (a
+`result_field` check reads only the worker's own report, so it verifies no
+lesson), a Hermes failure with its reason teaches only a pitfall, and a
+contact's session is never read. A corrected value an earlier owner message
+already held makes a `retrieval` lesson that says where the answer was;
+otherwise it is `knowledge`. A task body and its deliberation carry at most two
+lessons (`lesson_ids` on the intention), and the owner's own turn at most one,
+in a `protagine-lessons` section; uses are scored by the owner's verdicts and
+external checks, and a lesson under a 0.4 win rate after five verified uses is
+retired. A failure-class investigation of the mastery drive is now a reflector:
+its report ends with at most three lesson operations, validated and admitted as
+`candidate` lessons of that class, which a verified win there activates; it
+never changes an active lesson. The night runs when consolidation or lessons is
+on, each stage under its own flag. Skills stay off (`mind.faculties.skills`):
+turned on, an active lesson with three verified wins at a 0.7 win rate becomes
+`<instance>/skills/protagine-<slug>/SKILL.md` in the directory `protagine init`
+lists in Hermes' `skills.external_dirs`, which Protagine owns and prunes; the
+adapter forwards loads of those skills (`on_skill_lifecycle`) and clears
+Hermes' skills prompt cache when they change, so a new session lists them
+without a restart. New surfaces: `GET /v1/mind/lessons`,
+`POST /v1/mind/lessons/{id}/retire`, `POST /v1/mind/skills/used`,
+`protagine mind lessons [list|show|retire]`, and lessons and skills in
+`/v1/mind/state` and `/v1/mind/stats` (`lesson_use_rate`).
+
+The paired harness learned campaigns: a generated scenario whose artifacts all
+carry `probe` metadata gets a deadline from its day count and an 8 MiB output
+bound, its plan takes the probe as the unit and the campaign as the bootstrap
+cluster, and its report adds the old-family non-inferiority row, cost per
+success, forbidden hits and lesson diagnostics. `mind-improve-1` gives every
+arm the read-only skill tools, recorded as a dated amendment of the evals plan
+before any improve result.
+
+Removed with what replaces them, about 11k lines of dormant learning machinery:
+the toolsmith, the whole `skills` package (its registry was empty since the
+executor sweep, so its `/v1/host/skills/*` routes answered empty or 404, and
+the `skills`, `skill_sandbox` and `security_scanner` capabilities), the P4
+experiment engine and its parameter store (`/v1/host/self/experiments*`,
+`/self/params`), the MetaLearner, CPI and strategy adjuster, skills memory,
+the escalation miner (`/v1/host/mining/*`) and the exploration sandbox
+(`/v1/host/sandbox/*`), and the trust ladder with its supervised rung (the
+floor and the breaker stay in the mind's authority). `protagine upgrade` moves
+`protagine-toolsmith.db`, `toolsmith_library`, `protagine-experiments.db`,
+`protagine-params.db`, `protagine-skills.db` and `protagine-mining.db` into the
+backup and drops the `trust_stage` and `trust_notices` tables; corpus exports
+under `<instance>/exports` and `SKILL.md` files an older release exported under
+`<hermes_home>/skills/protagine` are left in place and no longer managed. Gone
+from `.env.example`: `PROTAGINE_TOOLSMITH*`, `PROTAGINE_EXPERIMENTS_*`,
+`PROTAGINE_EXPERIMENT_PREGRANTS_JSON`, `PROTAGINE_SKILLS_DISTILL`,
+`PROTAGINE_ESCALATION_MINING`, `PROTAGINE_CORPUS_EXPORT_ENABLED`,
+`PROTAGINE_SANDBOX_*` and `PROTAGINE_TRUST_*`.
 
 Hardening from a live upgrade rehearsal. `POST /v1/host/memory/search`
 requires a non-blank `person_id` again: the owner default for a body that
