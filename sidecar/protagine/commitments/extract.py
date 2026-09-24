@@ -51,7 +51,7 @@ import re
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from protagine.util.model_output import final_text
@@ -93,16 +93,17 @@ SYSTEM = (
     "send is present in the exchange. IMPORTANT: in a chat the assistant's reply already IS a message to the "
     "person, so a plain \"text me\"/\"message me\" is ALREADY satisfied; do NOT record that; only record a "
     "deliverable for a genuinely different channel or time. Anything for SOMEONE ELSE is case 3, never case 2.\n"
-    "3. A MESSAGE TO A THIRD PARTY: the person wants a named contact told or asked something, now or if something "
-    "has not happened by a time. Record it with due_at = that time (about two minutes from now when it is to go "
-    "now), obligor \"assistant\", counterpart = that contact, and metadata "
+    "3. A MESSAGE TO A THIRD PARTY LATER: the person wants a named contact told or asked something at a later time, "
+    "or if something has not happened by a time. Record it with due_at = that time, obligor \"assistant\", "
+    "counterpart = that contact, and metadata "
     '{"kind":"notice","recipient":"<contact as named>","content":"<the words the person wants delivered, ready '
     'as-is>","grant":"owner"} when the person dictates what to say, or '
     '{"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, at most 6 words>","grant":"owner"} '
     "when the person asks you to check on, chase or ask them about something. content is only the person's own "
     "words for the contact, never your paraphrase. The topic names the matter only: "
-    "never figures, amounts, codes or reasons. Record it unless the reply shows it already went to them. A "
-    "check-in that repeats (every N minutes, hours or days) is case 4, never case 3.\n"
+    "never figures, amounts, codes or reasons. Record it unless the reply shows it already went to them. A message "
+    "the person wants passed on NOW is the reply's own job (the assistant sends it in the turn): record nothing for "
+    "it. A check-in that repeats (every N minutes, hours or days) is case 4, never case 3.\n"
     "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: the person says a named contact is to be checked in "
     "with (or on) every N minutes, hours or days, usually about a matter. Record it with due_at null, obligor "
     "\"assistant\", counterpart = that contact, and metadata "
@@ -196,10 +197,7 @@ SYSTEM = (
     "Assistant replied: Noted.\n"
     "[]   (nothing is sent until the owner says so)\n"
     "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
-    '[{"action":"create","target":null,"description":"Tell p-05 the meeting moved to Tuesday",'
-    '"due_at":"2026-06-26T17:02:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"notice",'
-    '"recipient":"p-05","content":"The meeting moved to Tuesday.","grant":"owner"},"listed_due":null,'
-    '"counterpart":"p-05","obligor":"assistant"}]\n'
+    "[]   (a message to pass on now is the reply's own job)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
@@ -423,6 +421,9 @@ def _target_row(listed: List[Dict[str, Any]], target: Any, description: str,
 # given; ``check_in``: composed later around a topic). Its fields are the model's; the recipient's
 # contact id is the tick's to resolve, and only the owner's own turn carries the grant.
 MESSAGE_KINDS = ("notice", "check_in")
+# A message to a third party due within this of the turn is a relay to pass on now: the reply's own
+# job (the foreground turn sends it), never a notice the mind would send a second time.
+IMMEDIATE_RELAY = timedelta(minutes=3)
 # Case 4: the owner's recurring check-in with a contact, undated; the tick sets the contact's
 # cadence from it once and the social drive's check-ins carry its topic. Never a grant.
 CADENCE_KIND = "cadence"
@@ -465,7 +466,8 @@ def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_
     One rule covers every message a third party is to receive: it is a
     ``notice`` to that counterpart, which ``message_metadata`` keeps only with
     the person's own words (otherwise a check-in around the matter) and grants
-    only on the owner's turn.
+    only on the owner's turn, and which ``record_items`` drops when it is due as
+    the turn happens (a relay the reply passes on itself).
     """
     metadata = dict(stated or {})
     other = " ".join(str(counterpart or "").split())
@@ -517,7 +519,8 @@ def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool, turn_text: O
 def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_store: Any,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]],
                  source_context: str = "turn commitment extraction", turn_id: str = "",
-                 owner_id: Optional[str] = None, owner_text: Optional[str] = None) -> Dict[str, Any]:
+                 owner_id: Optional[str] = None, owner_text: Optional[str] = None,
+                 turn_time: Optional[datetime] = None) -> Dict[str, Any]:
     """Apply what the model proposed: create new items, act on listed ones.
 
     Deadlines are resolved against the turn's own time, so a promise captured
@@ -534,7 +537,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     A message to a third party (case 3) is stored through ``message_metadata``:
     the owner's grant only when ``person_id`` is ``owner_id``; an owner's cadence (case 4)
     only then, and never from anyone else's turn. ``owner_text`` is what the person said in the
-    turn: a notice's words must be found in it.
+    turn: a notice's words must be found in it. ``turn_time`` is when the turn happened: a message
+    to a third party due within ``IMMEDIATE_RELAY`` of it is a relay the reply itself passes on,
+    never recorded (it would reach them twice).
     """
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
     listed = list(existing[:OPEN_ITEMS_LISTED])
@@ -596,6 +601,11 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                                     turn_text=owner_text, description=description)
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes
+            continue
+        due = _utc(item.get("due_at"))
+        if (metadata.get("kind") in MESSAGE_KINDS and turn_time is not None and due is not None
+                and due - turn_time.astimezone(timezone.utc) <= IMMEDIATE_RELAY):
+            ignored += 1       # an immediate relay: the foreground turn's job, never a notice
             continue
         for field in ("counterpart", "obligor"):
             value = str(item.get(field) or "").strip()[:120]
@@ -935,7 +945,8 @@ class CommitmentExtractor:
         from protagine.identity import get_owner_contact_id
         result = record_items(items, person_id=person_id, commitment_store=commitments, existing=existing,
                               rejections=rejections, turn_id=job["turn_id"], owner_id=get_owner_contact_id(),
-                              owner_text=user_message)
+                              owner_text=user_message,
+                              turn_time=_utc(str(source.get("occurred_at") or source.get("ingested_at") or "")))
         if result.get("conflicts") and job.get("error") != "stale_snapshot":
             # A row moved between the listing and the write (the owner corrected it while the model
             # was thinking): what landed stays, the job runs once more against the fresh state.

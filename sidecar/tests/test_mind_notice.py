@@ -3,7 +3,8 @@
 "If X has not happened by T, tell C": capture records a ``notice`` (the owner's own words) or
 a ``check_in`` (the matter, composed later) with a per-commitment owner grant; the duty drive
 emits the message at T; the grant counts as ``may_contact=auto`` for that recipient only, never
-over a ``never``; a sent row settles the commitment; a message to send now is a notice due in minutes.
+over a ``never``; a sent row settles the commitment; a message to pass on now is the reply's own job,
+never a notice. Permission is read again when a message may leave.
 The ``delegated_chase`` template of ``mind-initiative-1`` runs here end to end with a fake body.
 """
 
@@ -47,16 +48,11 @@ def test_the_extractor_contract_names_case_three_with_both_shapes():
     assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
 
 
-def test_every_message_for_a_third_party_is_case_three_including_one_to_send_now():
-    """Audit M5: stock Hermes gives the reply no send tool, so "tell p-05 X" recorded as nothing was
-    never delivered; and case 2 sent "send it to someone else" back to the person who asked."""
-    assert "reply's own job" not in extract.SYSTEM
+def test_every_timed_message_for_a_third_party_is_case_three_and_case_two_is_the_persons_own():
+    """Audit M5 (timed half): case 2 no longer sends "send it to someone else" back to the person
+    who asked; a message for a third party at a time or on a condition is case 3."""
     assert "send it to someone else" not in extract.SYSTEM
-    example = extract.SYSTEM.split("They said: Tell p-05 the meeting moved to Tuesday.", 1)[1]
-    item, = json.loads(example.split("\n", 2)[1])
-    assert item["metadata"] == {"kind": "notice", "recipient": "p-05", "content": "The meeting moved to Tuesday.",
-                                "grant": "owner"}
-    assert item["counterpart"] == "p-05" and item["obligor"] == "assistant" and item["due_at"]
+    assert "Anything for SOMEONE ELSE is case 3, never case 2" in extract.SYSTEM
     assert "unless the reply shows it already went to them" in extract.SYSTEM
 
 
@@ -347,9 +343,10 @@ async def test_delegated_chase_reaches_the_contact_not_the_owner_and_never_the_o
     assert fx.mind.dispatch() == [] and (await fx.tick())["formed"] == []
 
 
-async def test_an_owner_message_for_a_contact_now_reaches_that_contact_at_the_next_tick(make):
-    """Audit M5: "Tell p-05 the meeting moved to Tuesday" is a notice due in two minutes; the next
-    tick past it sends the owner's words to the contact, and nothing goes to the owner."""
+async def test_an_owner_message_for_a_contact_now_is_the_replys_job_and_never_a_notice(make):
+    """Task scope: "an immediate relay is the foreground turn's job and never becomes a notice".
+    Even when the model records "tell p-05 X" as a notice due in two minutes, capture drops it, so
+    the mind never sends a second copy of what the reply (with its own send tool) already sent."""
     item = {"action": "create", "target": None, "description": f"Tell {CONTACT} the meeting moved to Tuesday",
             "due_at": (T0 + timedelta(minutes=2)).isoformat(), "priority": 70, "source_type": "cognition",
             "listed_due": None, "counterpart": CONTACT, "obligor": "assistant",
@@ -360,12 +357,139 @@ async def test_an_owner_message_for_a_contact_now_reaches_that_contact_at_the_ne
     fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
     fx.ledger.record_source("turn-1", contact_id=OWNER, session_id="owner-1", messages=[
         {"role": "user", "content": f"Tell {CONTACT} the meeting moved to Tuesday."},
-        {"role": "assistant", "content": "I will let them know."}], occurred_at=fx.now.isoformat())
+        {"role": "assistant", "content": "Done, I sent it to them."}], occurred_at=fx.now.isoformat())
     first = await fx.tick()
-    assert first["capture_drained"]["recorded"] == 1 and first["formed"] == []
+    assert first["capture_drained"]["processed"] == 1 and first["formed"] == []
+    assert fx.commitments.get_pending_for_person(OWNER) == []
     fx.shift(timedelta(minutes=2, seconds=30))
+    assert (await fx.tick())["formed"] == []
+    assert await fx.mind.outbox_ready() == []
+    assert fx.messages_to(CONTACT) == [] and fx.messages_to(OWNER) == []
+
+
+# ---------------------------------------------------------------------------
+# permission at send time, and the owner's word on a name (review F1, F2)
+# ---------------------------------------------------------------------------
+
+async def test_an_approved_notice_is_not_sent_after_the_recipient_opts_out(make):
+    """Review F1: a notice formed at 22:40 is approved and held by quiet hours; the contact texts
+    STOP at 23:10 and is lowered to never. At 07:15 it must not go: permission is read again at
+    the moment a message may leave, not only when it was formed."""
+    fx = make([contact(CONTACT, may_contact="ask")], config={"quiet_hours": "22:00-07:00"})
+    fx.now = T0.replace(hour=22, minute=30)
+    fx.commitments.create(person_id=OWNER, description=NOTICE["description"],
+                          due_at=(fx.now + timedelta(minutes=10)).isoformat(), source_type="cognition",
+                          metadata={**NOTICE["metadata"], "counterpart": CONTACT, "obligor": "assistant"})
+    fx.shift(timedelta(minutes=10) + PAST)
     formed, = (await fx.tick())["formed"]
-    assert formed["type"] == "commitment_notice" and formed["decision"] == "act"
-    payload, = await fx.mind.outbox_ready()
-    assert payload["recipient"] == CONTACT and payload["text"] == "The meeting moved to Tuesday."
-    assert fx.messages_to(OWNER) == [] and fx.messages_to(OTHER) == []
+    assert formed["type"] == "commitment_notice" and formed["status"] == "approved"
+    assert await fx.mind.outbox_ready() == []
+    fx.contacts.records[CONTACT]["may_contact"] = "never"
+    fx.shift(timedelta(hours=8, minutes=30))
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    row = fx.store.get(formed["id"])
+    assert row.status == "cancelled" and "never" in (row.cancelled_reason or "")
+    await fx.tick()
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+
+
+async def test_the_owners_yes_does_not_send_to_someone_who_opted_out_since_the_ask(make):
+    """Review F1: ``answer(yes)`` approved an asked message without reading ``may_contact`` again,
+    so a contact who opted out while the ask waited was messaged on the owner's yes."""
+    fx = make([contact(CONTACT, may_contact="ask", cadence=10)])
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    asked = fx.store.get(formed["id"])
+    assert asked.status == "asked" and asked.type == "check_in"
+    fx.contacts.records[CONTACT]["may_contact"] = "never"
+    answered = await fx.mind.answer(asked.ask_code, yes=True, contact_id=OWNER)
+    assert answered is not None and answered.status == "cancelled"
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+
+
+async def test_a_name_matched_notice_held_by_the_cooldown_still_waits_for_the_owners_word(make):
+    """Review F2: the owner named "Sam" and the store matched the contact by name only. The first,
+    exact notice to them started the 24 h cooldown; the name-matched one must never go out on a
+    re-decision without the owner confirming who "Sam" is."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    _seed(fx, NOTICE)
+    fx.shift(C + PAST)
+    first, = (await fx.tick())["formed"]
+    assert first["status"] == "approved"
+    await fx.send_all()
+    named = {**NOTICE, "description": "Tell Sam the van is booked",
+             "metadata": {**NOTICE["metadata"], "recipient": "Sam", "content": "The van is booked."},
+             "counterpart": "Sam"}
+    row = _seed(fx, named)
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    assert fx.commitments.get(row["id"])["metadata"]["recipient_exact"] is False
+    assert formed["decision"] == "ask" and formed["status"] == "asked"
+    for _ in range(3):
+        fx.shift(timedelta(hours=25))
+        await fx.tick()
+        assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    stored = fx.store.get(formed["id"])
+    assert stored.status in {"asked", "expired"} and stored.context.get("ask_owner") is True
+
+
+async def test_a_deferred_row_that_needs_the_owners_word_is_asked_when_it_is_reconsidered(make):
+    """Whatever deferred it (a budget, a breaker), a message the owner must confirm, or an owner
+    question, is re-decided as an ask: the rule is stored on the row, not only in the form step."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    row, _ = fx.store.create_intention(
+        kind="message", type="commitment_notice", title="Notice to Sam: Tell Sam the van is booked", drive="duty",
+        cls="contact", decision="defer", decision_reason="budget", status="proposed", dedup_key="commitment:x:notice",
+        recipient=CONTACT, context={"text": "The van is booked.", "may_contact": "auto", "ask_owner": True},
+        expires_at=fx.now + timedelta(hours=48), hermes_kind="none", created_at=fx.now)
+    fx.store.transition(row.id, "proposed", action="deferred", at=fx.now, decision="defer")
+    fx.shift(timedelta(minutes=1))
+    await fx.tick()
+    stored = fx.store.get(row.id)
+    assert stored.status == "asked" and stored.ask_code
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+
+
+async def test_a_name_match_ask_shows_the_name_given_and_the_person_and_handle_it_matched(make):
+    """Audit M4(a): the owner confirms who a name meant from the ask itself: the words they used,
+    the contact's name and a handle, not an internal id."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam Rivera")])
+    fx.contacts.records[CONTACT]["given_name"] = "Sam"
+    _seed(fx, {**NOTICE, "metadata": {**NOTICE["metadata"], "recipient": "Sam Rivera"}, "counterpart": "Sam Rivera"})
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    stored = fx.store.get(formed["id"])
+    assert formed["status"] == "asked"
+    assert "'Sam Rivera'" in stored.description and f"capture:{CONTACT}" in stored.description
+
+
+# ---------------------------------------------------------------------------
+# an immediate relay is the foreground turn's job (task scope; review F4)
+# ---------------------------------------------------------------------------
+
+def test_the_contract_says_a_message_to_pass_on_now_is_the_replys_own_job():
+    example = extract.SYSTEM.split("They said: Tell p-05 the meeting moved to Tuesday.", 1)[1]
+    assert example.split("\n", 2)[1].startswith("[]")
+    assert "reply's own job" in extract.SYSTEM
+    assert "about two minutes from now when it is to go now" not in extract.SYSTEM
+
+
+def test_capture_never_records_a_message_to_a_third_party_due_as_the_turn_happens(tmp_path):
+    """A notice, a check-in or a deliverable for someone else due within minutes of the turn is a
+    relay the reply itself sends (every arm's foreground has a send path): recording it as a
+    notice would send it twice. A message timed later or on a condition is recorded as before."""
+    from datetime import datetime
+    turn = datetime.fromisoformat(NOTICE["due_at"]) - timedelta(minutes=30)
+    store = _store(tmp_path)
+    now_notice = {**NOTICE, "due_at": (turn + timedelta(minutes=2)).isoformat()}
+    now_check_in = {**CHECK_IN, "due_at": turn.isoformat()}
+    deliverable = {**NOTICE, "description": f"Send {CONTACT} the venue address", "source_type": "introspection",
+                   "due_at": (turn + timedelta(minutes=2)).isoformat(),
+                   "metadata": {"kind": "deliverable", "content": "The venue is at 5 Main St.", "channel_hint": "sms"}}
+    later = {**NOTICE, "description": f"Tell {CONTACT} the parcel is late if it has not arrived"}
+    result = record_items([now_notice, now_check_in, deliverable, later], person_id=OWNER, commitment_store=store,
+                          existing=[], rejections=[], owner_id=OWNER, turn_time=turn,
+                          owner_text=f"Tell {CONTACT}: the parcel is running late, sorry. The venue is at 5 Main St.")
+    assert len(result["created"]) == 1 and result["ignored_actions"] == 3
+    kept = store.get(result["created"][0])
+    assert kept["metadata"]["kind"] == "notice" and kept["due_at"].startswith(NOTICE["due_at"][:16])

@@ -40,6 +40,10 @@ def _parse(ts: Any) -> Optional[datetime]:
         return None
 
 
+# ``external_ref`` of a message the mind itself sent: ``mind:<intention type>:<intention id>``.
+MIND_REF = "mind:"
+
+
 class CommsLog(SourceLinkedStore):
     """SQLite ledger of communications with each contact, across all channels."""
 
@@ -230,6 +234,22 @@ class CommsLog(SourceLinkedStore):
             "FROM communications WHERE contact_id=? AND direction='out' ORDER BY ts DESC LIMIT 1",
             (contact_id,), ('channel', 'summary', 'ts'), contact_id=contact_id)
         return rows[0] if rows else None
+
+    def mind_sends(self, contact_id: str, *, limit: int = 20) -> List[Dict[str, Any]]:
+        """The mind's own messages to a contact, newest first: ``{intention_id, type, ts}``. The mind
+        logs each one it sent with ``external_ref`` ``mind:<type>:<intention id>`` (``MIND_REF``), so
+        the social drive's streak and last send outlive the intention rows retention prunes, and
+        follow the person through a merge (architecture 4.7 item 6)."""
+        rows = self._conn.execute(
+            "SELECT external_ref, ts FROM communications WHERE contact_id=? AND direction='out' "
+            "AND external_ref LIKE ? ORDER BY ts DESC LIMIT ?",
+            (contact_id, MIND_REF + "%", max(1, min(int(limit), 200)))).fetchall()
+        sends = []
+        for row in rows:
+            kind, _, intention_id = str(row["external_ref"])[len(MIND_REF):].partition(":")
+            if kind and intention_id:
+                sends.append({"intention_id": intention_id, "type": kind, "ts": row["ts"]})
+        return sends
 
     def inbound_since(self, contact_id: str, since_iso: str) -> List[str]:
         """Timestamps of inbound rows from a contact since an ISO instant

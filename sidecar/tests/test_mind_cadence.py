@@ -100,8 +100,9 @@ def test_the_owners_cadence_is_an_undated_row_with_a_clean_topic_and_no_grant(tm
     assert row["metadata"]["cadence_minutes"] == CADENCE and "grant" not in row["metadata"]
     assert row["metadata"]["topic"] == "the budget draft figures and more"   # no digits, six words
     assert row["metadata"]["obligor"] == "assistant"
-    # The rhythm never falls due: duty leaves the row alone.
-    assert duty(DriveInputs(now=T0 + 100 * C, owner_id=OWNER, commitments=[row]))[1] == []
+    # The rhythm never falls due: once the tick resolved the contact, duty leaves the row alone.
+    resolved = {**row, "metadata": {**row["metadata"], "recipient_id": CONTACT, "recipient_exact": True}}
+    assert duty(DriveInputs(now=T0 + 100 * C, owner_id=OWNER, commitments=[resolved]))[1] == []
 
 
 def test_a_cadence_from_anyone_but_the_owner_or_without_minutes_is_not_recorded(tmp_path):
@@ -187,14 +188,58 @@ async def test_a_contacts_own_cadence_turn_and_people_off_set_nothing(make):
     assert off.contacts.records[CONTACT]["cadence_minutes"] is None and cadence_log(off) == []
 
 
-async def test_a_cadence_for_someone_matched_only_by_name_is_not_applied(make):
+async def test_a_cadence_for_someone_matched_only_by_name_waits_for_the_owners_word(make):
     """A cadence times check-ins to that person; set on a name guess it could time them to the
-    wrong one, so only a recipient the owner identified exactly gets it (audit M4)."""
+    wrong one, so only a recipient the owner identified exactly gets it at once (audit M4). A name
+    match is the owner's question, with the person and handle it matched (review F7: it was
+    dropped silently and the row stayed open for good); a yes sets it and its matter."""
     named = {**CADENCE_ITEM, "metadata": {**CADENCE_ITEM["metadata"], "recipient": "Sam"}, "counterpart": "Sam"}
     fx = make([contact(CONTACT, may_contact="auto", name="Sam")], router=CadenceRouter(named))
     fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
     owner_turn(fx, "turn-1", cadence_turns()[0].replace(CONTACT, "Sam"))
-    await fx.tick()
+    formed = (await fx.tick())["formed"]
     row, = fx.commitments.get_pending_for_person(OWNER)
     assert row["metadata"]["recipient_id"] == CONTACT and row["metadata"]["recipient_exact"] is False
     assert fx.contacts.records[CONTACT]["cadence_minutes"] is None and cadence_log(fx) == []
+    question, = formed
+    asked = fx.store.get(question["id"])
+    assert asked.type == "cadence_confirm" and asked.status == "asked" and asked.ask_code
+    assert "'Sam'" in asked.description and f"capture:{CONTACT}" in asked.description
+    assert (await fx.tick())["formed"] == []                                # asked once
+    await fx.mind.answer(asked.ask_code, yes=True, contact_id=OWNER)
+    assert fx.store.get(asked.id).status == "done"
+    assert fx.contacts.records[CONTACT]["cadence_minutes"] == CADENCE and len(cadence_log(fx)) == 1
+    fx.shift(C + PAST)
+    formed = [item for tick in [await fx.tick(), await fx.tick()] for item in tick["formed"]]
+    assert [item["type"] for item in formed] == ["check_in"]
+    payload, = [p for p in await fx.send_all() if p["recipient"] == CONTACT]
+    assert ITEM in payload["text"]
+
+
+async def test_a_no_to_a_name_matched_cadence_withdraws_it(make):
+    named = {**CADENCE_ITEM, "metadata": {**CADENCE_ITEM["metadata"], "recipient": "Sam"}, "counterpart": "Sam"}
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")], router=CadenceRouter(named))
+    fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
+    owner_turn(fx, "turn-1", cadence_turns()[0].replace(CONTACT, "Sam"))
+    question, = (await fx.tick())["formed"]
+    row, = fx.commitments.get_pending_for_person(OWNER)
+    await fx.mind.answer(fx.store.get(question["id"]).ask_code, yes=False, contact_id=OWNER)
+    assert fx.commitments.get(row["id"])["status"] != "pending"
+    assert fx.contacts.records[CONTACT]["cadence_minutes"] is None and cadence_log(fx) == []
+    fx.shift(C + PAST)
+    assert (await fx.tick())["formed"] == [] and fx.messages_to(CONTACT) == []
+
+
+async def test_a_cadence_naming_someone_unknown_asks_the_owner_who_they_are(make):
+    """Review F7: duty skipped undated rows before its unknown-recipient check, so a cadence for
+    someone the store cannot resolve was never applied and the owner never heard of it."""
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    fx.commitments.create(person_id=OWNER, description="Check in with Kim weekly about the kitchen quote",
+                          due_at=None, source_type="cognition",
+                          metadata={"kind": "cadence", "recipient": "Kim", "topic": "the kitchen quote",
+                                    "cadence_minutes": 10, "counterpart": "Kim", "obligor": "assistant"})
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "recipient_unknown" and formed["decision"] == "act"
+    ask = fx.store.get(formed["id"])
+    assert ask.entity_id == OWNER and "Kim" in ask.context["text"]
+    assert (await fx.tick())["formed"] == [] and fx.contacts.cadences == []

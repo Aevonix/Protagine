@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
-from protagine.contacts.comms import conversation_cadence_minutes
+from protagine.contacts.comms import MIND_REF, conversation_cadence_minutes
 from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
@@ -76,8 +76,10 @@ DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_
 # commitment it was raised for is done.
 FULFILLED_BY_SENDING = frozenset({"commitment_notice", "commitment_check_in"})
 # Questions only the owner answers: always an ask, whatever the level, settled by ``answer``.
-OWNER_QUESTIONS = frozenset({"link_proposal"})
-# How far back the social drive reads its own messages (the streak, the last send, in-flight check-ins).
+OWNER_QUESTIONS = frozenset({"link_proposal", "cadence_confirm"})
+# How far back the social drive reads its own intention rows (in-flight and unsent check-ins, and the
+# sends retention has not pruned yet). The sends themselves also live in the comms ledger, which
+# nothing prunes: the streak and the last send outlive these rows (architecture 4.7 item 6).
 SOCIAL_HISTORY = timedelta(days=120)
 # A sent check-in is scored once its reply window passed: the contact's cadence, else this.
 CHECK_IN_WINDOW = timedelta(hours=24)
@@ -387,7 +389,7 @@ class Mind:
                 summary["expired_asks"] = self._expire_asks(now)
                 return summary
             summary["expired_asks"] = self._expire_asks(now) + self._expire_messages(now)
-            summary["invalidated"] = self._invalidate(now) + await self._invalidate_replied(now)
+            summary["invalidated"] = self._invalidate(now) + await self._invalidate_messages(now)
             summary["expectations"] = self._resolve_expectations(now)
             summary["retention"] = self._retention(now)
             summary["digests"] = await self._digests(now)
@@ -627,6 +629,7 @@ class Mind:
                                             type=row.type, may_contact=may_contact,
                                             toolsets=self.policy.worker_toolsets, now=now,
                                             cooldown_hours=context.get("cooldown_hours"))
+            verdict = self._owner_word(verdict, type=row.type, ask_owner=bool(context.get("ask_owner")))
             if verdict.decision == "defer":
                 continue
             count += 1
@@ -1019,6 +1022,38 @@ class Mind:
             return "auto"
         return stored
 
+    @staticmethod
+    def _owner_word(verdict: Verdict, *, type: str | None, ask_owner: bool) -> Verdict:
+        """An owner question, or a message to someone the owner named only by a name the store
+        matched, waits for the owner's word whatever would have let it act or merely wait: the rule
+        is applied when the row forms and whenever a deferred row is re-decided."""
+        if verdict.decision in {"act", "defer"} and (type in OWNER_QUESTIONS or ask_owner):
+            return Verdict(decision="ask", reason="only the owner's word settles this", cls=verdict.cls)
+        return verdict
+
+    @staticmethod
+    def _never_reason(recipient: str) -> str:
+        return f"{recipient} may no longer be contacted (may_contact=never)"
+
+    async def _permission_withdrawn(self, row: StoredInitiative, now: datetime) -> bool:
+        """Permission is read again whenever a message to a contact may still leave (architecture
+        7.4: an opt-out or the owner's revocation holds from that moment, however long the message
+        waited for quiet hours or the body). A recipient now ``never`` cancels it; one lowered to
+        ``ask`` turns a message approved on ``auto`` into the owner's question. A message the owner
+        approved by its ask code needs no more than ``ask``. True when the row was withdrawn."""
+        if row.kind != "message" or not row.entity_id or self._is_owner(row.entity_id):
+            return False
+        context = row.context if isinstance(row.context, dict) else {}
+        permission = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+        if permission == "never":
+            self._cancel_stale(row, self._never_reason(row.entity_id))
+            return True
+        if permission == "ask" and row.status == "approved" and not row.ask_code:
+            self._apply_decision(row, Verdict(decision="ask", reason=f"may_contact is now ask for {row.entity_id}",
+                                              cls=row.cls or "contact"), now, reconsidered=True)
+            return True
+        return False
+
     async def _handles(self, recipient: str | None) -> List[Dict[str, Any]]:
         if not recipient or self.contacts is None or not hasattr(self.contacts, "get_handles"):
             return []
@@ -1048,8 +1083,7 @@ class Mind:
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
                                         may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now,
                                         cooldown_hours=candidate.cooldown_hours)
-        if (candidate.type in OWNER_QUESTIONS or candidate.ask_owner) and verdict.decision == "act":
-            verdict = Verdict(decision="ask", reason="only the owner's word settles this", cls=verdict.cls)
+        verdict = self._owner_word(verdict, type=candidate.type, ask_owner=candidate.ask_owner)
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         context: Dict[str, Any] = {
             "concern": candidate.concern, "evidence": list(candidate.evidence), "score": round(score, 3),
@@ -1057,6 +1091,8 @@ class Mind:
         }
         if candidate.topic:
             context["topic"] = candidate.topic
+        if candidate.ask_owner:
+            context["ask_owner"] = True     # re-decided later (a deferral), it is still the owner's word
         for key in ("grant", "purpose", "cooldown_hours"):
             if getattr(candidate, key) is not None:
                 context[key] = getattr(candidate, key)
@@ -1229,9 +1265,25 @@ class Mind:
 
     def _on_sent(self, row: StoredInitiative) -> None:
         """The body reported a message sent: an owner-granted message to a third party was the
-        obligation itself, so its commitment is done."""
+        obligation itself, so its commitment is done; and a message to a contact is an exchange
+        with them, logged in the comms ledger, where the social drive reads its sends."""
         if row.type in FULFILLED_BY_SENDING:
             self._close_commitment(row)
+        self._log_sent(row)
+
+    def _log_sent(self, row: StoredInitiative) -> None:
+        if self.comms is None or not hasattr(self.comms, "log") or not row.entity_id or self._is_owner(row.entity_id):
+            return
+        target = next((str((item.details or {}).get("target") or "") for item in self.store.get_history(row.id, limit=50)
+                       if item.action == "sending"), "")
+        context = row.context if isinstance(row.context, dict) else {}
+        try:
+            self.comms.log(row.entity_id, channel=split_target(target)[0] or "mind", direction="out",
+                           summary=str(context.get("text") or row.description or "")[:300],
+                           external_ref=f"{MIND_REF}{row.type}:{row.id}",
+                           ts=(_utc(row.completed_at) or self.clock()).isoformat())
+        except Exception as error:
+            logger.warning("send of %s not logged in the comms ledger (%s)", row.id, type(error).__name__)
 
     # -- people (architecture 4.7) -------------------------------------------------------------
 
@@ -1240,8 +1292,8 @@ class Mind:
         written back to the row (``metadata.recipient_id``) so it is resolved once, with
         ``recipient_exact``: whether the owner identified them exactly (an id, a handle, a number)
         or the store matched a name. Only an exact recipient carries the owner's grant; a name
-        match becomes an owner ask. An unknown name stays unresolved and the duty drive asks the
-        owner who it is."""
+        match becomes an owner ask showing ``recipient_match`` (the contact's name and a handle).
+        An unknown name stays unresolved and the duty drive asks the owner who it is."""
         resolver = getattr(self.contacts, "resolve_reference", None)
         if not callable(resolver):
             return
@@ -1261,6 +1313,13 @@ class Mind:
             if not contact_id:
                 continue
             found = {"recipient_id": str(contact_id), "recipient_exact": exact}
+            if not exact:
+                # What the owner confirms: the person the name matched, by name and a handle.
+                handles = await self._handles(str(contact_id))
+                label = str(getattr(contact, "display_name", None) or contact_id)
+                if handles:
+                    label += f", {handles[0]['gateway']}:{handles[0]['address']}"
+                found["recipient_match"] = label[:160]
             row["metadata"] = {**(row.get("metadata") or {}), **found}
             try:
                 self.commitments.update(row["id"], metadata=found)
@@ -1367,6 +1426,27 @@ class Mind:
                 return topic
         return own
 
+    def _sends(self, contact_id: str, mine: List[StoredInitiative]) -> List[tuple[str, datetime]]:
+        """``(type, sent_at)`` of every message the mind sent this contact, newest first: the comms
+        ledger (``CommsLog.mind_sends``: kept past retention, moved with a merge) together with the
+        intention rows still held (a send the body left ``uncertain`` is counted as sent)."""
+        seen: Dict[str, tuple[str, datetime]] = {}
+        for item in mine:
+            if item.status in {"sent", "uncertain"}:
+                seen[item.id] = (str(item.type or ""), self._sent_at(item))
+        reader = getattr(self.comms, "mind_sends", None)
+        if callable(reader):
+            try:
+                logged = reader(contact_id, limit=20)
+            except Exception as error:
+                logger.warning("sends to %s unavailable from the comms ledger (%s)", contact_id, type(error).__name__)
+                logged = []
+            for entry in logged:
+                at = _utc(entry.get("ts"))
+                if at is not None and entry.get("intention_id") not in seen:
+                    seen[str(entry["intention_id"])] = (str(entry.get("type") or ""), at)
+        return sorted(seen.values(), key=lambda item: item[1], reverse=True)
+
     async def _social_rows(self, now: datetime, *,
                            commitments: List[Dict[str, Any]] | None = None) -> List[Dict[str, Any]]:
         """``contacts.social_candidates()`` enriched for the social drive: the last send, the
@@ -1390,13 +1470,12 @@ class Mind:
             if not contact_id or self._is_owner(contact_id):
                 continue
             mine = history.get(contact_id, [])
-            sent = sorted((item for item in mine if item.status in {"sent", "uncertain"}), key=self._sent_at,
-                          reverse=True)
-            check_ins = [item for item in sent if item.type in CHECK_IN_TYPES]
+            sent = self._sends(contact_id, mine)
+            check_ins = [(kind, at) for kind, at in sent if kind in CHECK_IN_TYPES]
             last_in = _utc(row.get("last_interaction_at"))
             streak = 0
-            for item in check_ins:
-                if last_in is not None and last_in > self._sent_at(item):
+            for _, at in check_ins:
+                if last_in is not None and last_in > at:
                     break
                 streak += 1
             # A check-in that ended without going out (the owner let the ask expire or said no, the
@@ -1404,14 +1483,16 @@ class Mind:
             unsent = [_utc(item.cancelled_at) or _utc(item.completed_at) or _utc(item.created_at) for item in mine
                       if item.type in CHECK_IN_TYPES and item.status in {"expired", "cancelled", "dropped"}]
             row.update(
-                last_outbound_at=self._sent_at(sent[0]).isoformat() if sent else None,
+                last_outbound_at=sent[0][1].isoformat() if sent else None,
                 last_attempt_at=max(unsent).isoformat() if unsent else None,
-                last_check_in_at=self._sent_at(check_ins[0]).isoformat() if check_ins else None,
+                last_check_in_at=check_ins[0][1].isoformat() if check_ins else None,
                 ignored_streak=streak,
                 in_flight=any(item.status in MIND_ACTIVE_STATUSES for item in mine),
                 open_followups=self._open_followups(contact_id),
                 affect_declining=await self._affect_declining(contact_id),
-                topic=self._thread_topic(contact_id, commitments, sent, self.owner_id))
+                topic=self._thread_topic(contact_id, commitments,
+                                         sorted((item for item in mine if item.status in {"sent", "uncertain"}),
+                                                key=self._sent_at, reverse=True), self.owner_id))
             if row.get("cadence_minutes") is None:
                 row["estimated_cadence_minutes"] = conversation_cadence_minutes(
                     first_seen_ts=row.get("first_seen_at"), last_interaction_ts=row.get("last_interaction_at"),
@@ -1488,10 +1569,12 @@ class Mind:
         self._cancel_stale(row, reason)
         return True
 
-    async def _invalidate_replied(self, now: datetime) -> int:
+    async def _invalidate_messages(self, now: datetime) -> int:
+        """Every tick: a waiting message to a contact who replied since is cancelled, and one whose
+        recipient's permission fell is withdrawn (``_permission_withdrawn``)."""
         count = 0
         for row in self.store.intentions(status=["proposed", "asked", "approved"], kind=["message"], limit=500):
-            if await self._cancel_if_replied(row):
+            if await self._cancel_if_replied(row) or await self._permission_withdrawn(row, now):
                 count += 1
         return count
 
@@ -1656,15 +1739,17 @@ class Mind:
         return row
 
     async def outbox_ready(self) -> List[Dict[str, Any]]:
-        """The messages the body may send now, each re-checked against its source, carrying the
-        recipient's handles as they are at this pull rather than as they were when it formed: a
-        handle added after a message waited unroutable lets it go out on the next pull."""
-        self.last_pull_at = self.clock()
-        self._expire_messages(self.last_pull_at)
+        """The messages the body may send now, each re-checked against its source and against the
+        recipient's permission as it is now, carrying the recipient's handles as they are at this
+        pull rather than as they were when it formed: a handle added after a message waited
+        unroutable lets it go out on the next pull."""
+        now = self.last_pull_at = self.clock()
+        self._expire_messages(now)
         ready = []
         for payload in self.outbox.ready(enabled=self.enabled, quiet=self.in_quiet_hours()):
             row = self.store.get(str(payload["id"]))
-            if row is None or self._invalidated(row) or await self._cancel_if_replied(row):
+            if (row is None or self._invalidated(row) or await self._cancel_if_replied(row)
+                    or await self._permission_withdrawn(row, now)):
                 continue
             handles = await self._handles(payload["recipient"])
             if handles != payload["recipient_handles"]:
@@ -1734,6 +1819,9 @@ class Mind:
         if not yes:
             updated = self.outcomes.record(row.id, status="denied", summary=f"the owner said no ({by})", by=by)
             return updated
+        if await self._permission_withdrawn(row, now):
+            # The recipient opted out (or was set to never) while the ask waited: the yes sends nothing.
+            return self.store.get(row.id)
         updated = self.store.transition(row.id, "approved", action="queued", at=now, verdict="actioned",
                                         expires_at=now + TASK_WINDOW, details={"by": by, "code": code})
         if self.feedback is not None:
@@ -1748,6 +1836,8 @@ class Mind:
         """The owner's word on a name-only identity link: the contact store links or rejects the
         handle, and the question is done. The answer is not a verdict on asking: a ``no`` teaches
         the ranker nothing."""
+        if row.type == "cadence_confirm":
+            return await self._settle_cadence(row, yes=yes, by=by)
         verb = "confirm_link" if yes else "reject_link"
         method = getattr(self.contacts, verb, None)
         if not callable(method):
@@ -1757,14 +1847,47 @@ class Mind:
             await method(str(row.source_id), performed_by=by)
         except Exception as error:
             logger.warning("%s failed for %s (%s)", verb, row.source_id, type(error).__name__)
+            why = ("the handle belongs to another established contact; merge the two yourself if they are one person"
+                   if str(error) == "identity_handle_held" else type(error).__name__)
             return self.outcomes.record(row.id, status="cancelled", by=by, implicit_verdict=False,
-                                        summary=f"the link could not be {'confirmed' if yes else 'rejected'} "
-                                                f"({type(error).__name__})")
+                                        summary=f"the link could not be {'confirmed' if yes else 'rejected'} ({why})")
         if yes:
             return self.outcomes.record(row.id, status="done", summary=f"the owner confirmed the link ({by})",
                                         verified="owner", by=by)
         return self.outcomes.record(row.id, status="denied", summary=f"the owner rejected the link ({by})", by=by,
                                     implicit_verdict=False)
+
+    async def _settle_cadence(self, row: StoredInitiative, *, yes: bool, by: str) -> Optional[StoredInitiative]:
+        """The owner's word on a cadence whose contact was matched by name only: a yes makes the
+        match the owner's (the cadence is set now, and the row's topic rides on the check-ins); a no
+        withdraws the row, so the owner restates it naming the person exactly."""
+        ident = str(row.source_id or "")
+        try:
+            record = self.commitments.get(ident) if self.commitments is not None else None
+        except Exception:
+            record = None
+        metadata = record.get("metadata") if isinstance(record, dict) and isinstance(record.get("metadata"), dict) else {}
+        contact_id, minutes = str(metadata.get("recipient_id") or ""), metadata.get("cadence_minutes")
+        if not isinstance(record, dict) or record.get("status") not in {"pending", "overdue"} or not contact_id:
+            return self.outcomes.record(row.id, status="cancelled", summary="the cadence is no longer open", by=by,
+                                        implicit_verdict=False)
+        if not yes:
+            try:
+                self.commitments.resolve(ident, outcome="obsolete", resolved_by="owner",
+                                         note=f"the owner said {metadata.get('recipient')!r} is not {contact_id}")
+            except Exception as error:
+                logger.warning("cadence %s not withdrawn (%s)", ident, type(error).__name__)
+            return self.outcomes.record(row.id, status="denied", summary=f"the owner said the match was wrong ({by})",
+                                        by=by, implicit_verdict=False)
+        try:
+            await self.contacts.set_cadence(contact_id, minutes, by=f"owner-turn:commitment:{ident}")
+            self.commitments.update(ident, metadata={"recipient_exact": True, "cadence_applied": True})
+        except Exception as error:
+            logger.warning("cadence %s not applied (%s)", ident, type(error).__name__)
+            return self.outcomes.record(row.id, status="cancelled", by=by, implicit_verdict=False,
+                                        summary=f"the cadence could not be set ({type(error).__name__})")
+        return self.outcomes.record(row.id, status="done", summary=f"the owner confirmed the contact ({by})",
+                                    verified="owner", by=by)
 
     def rate(self, intention_id: str, verdict: str, *, by: str = "owner") -> Optional[StoredInitiative]:
         return self.outcomes.rate(intention_id, verdict, by=by)

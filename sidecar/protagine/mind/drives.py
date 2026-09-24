@@ -223,6 +223,33 @@ def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Option
     return str(metadata.get("recipient") or "").strip() or None
 
 
+def cadence_confirm_candidate(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Candidate]:
+    """A cadence the owner set for someone the store matched by name only: the owner's question
+    (an owner-question ``note``, settled by ``Mind.answer``), once per row, showing the name they
+    gave and the person and handle it matched. Their yes sets the cadence; a no withdraws the row."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    if (str(metadata.get("kind") or "") != CADENCE_KIND or not owner_id or str(row.get("person_id") or "") != owner_id
+            or metadata.get("recipient_exact") is not False or metadata.get("cadence_applied")):
+        return None
+    recipient = str(metadata.get("recipient_id") or "").strip()
+    if not recipient:
+        return None
+    spoken = str(metadata.get("recipient") or recipient).strip()
+    match = str(metadata.get("recipient_match") or recipient)
+    minutes = metadata.get("cadence_minutes")
+    every = span(timedelta(minutes=minutes)) if isinstance(minutes, int) and not isinstance(minutes, bool) else "?"
+    topic = str(metadata.get("topic") or "").strip()
+    question = (f"Check-ins every {every}" + (f" about {topic}" if topic else "")
+                + f": you said {spoken!r}; I matched {match}. Is that who you meant?")
+    return Candidate(
+        type="cadence_confirm", drive="duty", kind="note", title=question[:160],
+        dedup_key=f"commitment:{row['id']}:cadence", salience=0.8, cost=0.0, recipient=owner_id, text=question,
+        rationale="a cadence names a contact the store matched by name only; the owner confirms who",
+        evidence=[f"commitment:{row['id']}", f"recipient {spoken!r} matched {recipient} by name"],
+        concern=f"who is {spoken}", invalidates_if=f"commitment:{row['id']}:resolved",
+        source_type="commitment", source_id=row["id"], concern_kind="obligation")
+
+
 def recipient_unknown_candidate(row: Dict[str, Any], *, owner_id: str) -> Candidate:
     """The owner named someone the store cannot resolve: ask who they are, once per row."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -254,9 +281,11 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
     if granted is not None:
         kind, recipient = granted
         # The grant reaches only someone the owner identified exactly; a name the store matched is
-        # the owner's to confirm, shown with the name they gave and the contact it matched.
+        # the owner's to confirm, shown with the name they gave and the contact it matched (their
+        # name and a handle, ``recipient_match``).
         exact = metadata.get("recipient_exact") is True
-        named = "" if exact else f" (you said {str(metadata.get('recipient') or '').strip()!r}; matched {recipient})"
+        named = "" if exact else (f" (you said {str(metadata.get('recipient') or '').strip()!r}; I matched "
+                                  f"{str(metadata.get('recipient_match') or recipient)})")
         common = dict(drive="duty", kind="message", recipient=recipient, grant="owner" if exact else None,
                       ask_owner=not exact, evidence=evidence,
                       invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
@@ -377,13 +406,19 @@ def duty(inputs: DriveInputs) -> DriveResult:
     """Obligations: what the agent owes, is waiting on, or the owner left idle."""
     now, candidates = inputs.now, []
     for row in inputs.commitments:
-        due = _utc(row.get("due_at"))
-        if due is None or str(row.get("status") or "pending") not in {"pending", "overdue"}:
+        if str(row.get("status") or "pending") not in {"pending", "overdue"}:
             continue
         if inputs.people_on and unresolved_recipient(row, owner_id=inputs.owner_id) is not None:
-            # The tick could not resolve the third party the owner named: the owner is asked who
-            # they are now, so the message can go at its time; the row waits.
+            # The tick could not resolve the third party the owner named (for a message or a
+            # cadence, dated or not): the owner is asked who they are now; the row waits.
             candidates.append(recipient_unknown_candidate(row, owner_id=inputs.owner_id))
+            continue
+        confirm = cadence_confirm_candidate(row, owner_id=inputs.owner_id) if inputs.people_on else None
+        if confirm is not None:
+            candidates.append(confirm)
+            continue
+        due = _utc(row.get("due_at"))
+        if due is None:
             continue
         if due > now:
             warn_at = heads_up_at(row, due)
@@ -690,7 +725,8 @@ def run(inputs: DriveInputs, weights_map: Mapping[str, float]) -> Dict[str, Driv
 
 __all__ = ["CHECK_IN_TYPES", "DEFAULT_WEIGHTS", "DRIVES", "DRIVE_FUNCTIONS", "DUTY_DOMAINS", "DriveInputs",
            "FAILURE_CLUSTER", "FAILURE_WINDOW", "GRANTED_KINDS", "HEADS_UP_GRACE", "HEALTH_STRIKES", "SOCIAL_TIERS",
-           "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "commitment_candidate", "curiosity", "duty", "effective_weights",
+           "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "cadence_confirm_candidate", "commitment_candidate", "curiosity",
+           "duty", "effective_weights",
            "enabled", "failure_signature", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
            "link_proposal_candidate", "mastery", "period", "recipient_unknown_candidate", "reply_wait_candidate",
            "research_candidate", "run", "schedule_key", "slug", "social", "span", "stale_task_candidate",

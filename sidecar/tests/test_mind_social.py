@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from protagine.commitments.store import CommitmentStore
-from protagine.contacts.comms import evaluate_outreach
+from protagine.contacts.comms import CommsLog, evaluate_outreach
 from protagine.feedback import TypeFeedbackStore
 from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
@@ -126,10 +126,12 @@ class Fx:
         self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
         self.contacts = FakeContacts(records)
         self.affect = FakeAffect()
+        self.comms = CommsLog(str(tmp_path / "protagine-comms.db"), source_ledger=self.ledger)
         self.mind = Mind(config={"autonomy": "standard", **(config or {})}, store=self.store, state_dir=tmp_path,
                          owner_id=OWNER, commitments=self.commitments, feedback=self.feedback,
                          contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
-                         router=router, contact_affect=self.affect, packet_for=packet_for, claims_for=claims_for)
+                         router=router, comms=self.comms, contact_affect=self.affect, packet_for=packet_for,
+                         claims_for=claims_for)
         self.mind.digest_hour = 25
 
     def shift(self, delta):
@@ -152,6 +154,7 @@ class Fx:
 
     def close(self):
         self.store.close()
+        self.comms._conn.close()
 
 
 @pytest.fixture
@@ -574,3 +577,105 @@ async def test_the_owners_daily_digest_lists_the_opt_outs_since_the_last_one(mak
     summary = await fx.tick()
     digest = fx.store.get(summary["digest"])
     assert "Opted out (1)" in digest.context["text"] and "Sam: stop the check-ins" in digest.context["text"]
+
+
+# ---------------------------------------------------------------------------
+# review fixes: permission when a message leaves (F1), a history that outlives retention (F8, F6)
+# ---------------------------------------------------------------------------
+
+async def test_an_owner_revocation_after_approval_stops_a_queued_check_in(make):
+    """Review F1: a check-in approved at 22:15 waits out quiet hours; the owner revokes to never at
+    22:30 (the family's mid-episode revocation). At 07:15 it must not go."""
+    fx = make([contact(CONTACT, may_contact="auto", cadence=10)], config={"quiet_hours": "22:00-07:00"})
+    fx.now = T0.replace(hour=22, minute=0)
+    fx.contacts.records[CONTACT]["first_seen_at"] = fx.now.isoformat()
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "check_in" and formed["status"] == "approved"
+    assert await fx.mind.outbox_ready() == []
+    fx.contacts.records[CONTACT]["may_contact"] = "never"
+    fx.shift(timedelta(hours=9))
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert fx.store.get(formed["id"]).status == "cancelled"
+
+
+async def test_a_permission_lowered_to_ask_turns_an_approved_check_in_into_the_owners_question(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=10)], config={"quiet_hours": "22:00-07:00"})
+    fx.now = T0.replace(hour=22, minute=0)
+    fx.contacts.records[CONTACT]["first_seen_at"] = fx.now.isoformat()
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    assert formed["status"] == "approved"
+    fx.contacts.records[CONTACT]["may_contact"] = "ask"
+    fx.shift(timedelta(hours=9))
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    row = fx.store.get(formed["id"])
+    assert row.status == "asked" and row.ask_code
+    await fx.mind.answer(row.ask_code, yes=True, contact_id=OWNER)
+    payload, = [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT]
+    assert payload["id"] == formed["id"]
+
+
+async def test_a_sixty_day_cadence_keeps_checking_in_after_its_history_leaves_retention(make):
+    """Review F8: the streak and the last send were read from intention rows, which retention prunes
+    after 90 days. With a 60-day cadence and one ignored check-in (next after 2C = 120 d), the last
+    send was gone before the next was due, the drive fell back to the first check-in's key, and it
+    went silent for good. The sends live in the comms ledger (architecture 4.7 item 6)."""
+    day = timedelta(days=1)
+    fx = make([contact(CONTACT, may_contact="auto", cadence=60 * 24 * 60)])
+    fx.shift(60 * day + PAST)
+    first, = (await fx.tick())["formed"]
+    await fx.send_all()
+    sent_at = fx.now
+    fx.shift(61 * day)
+    await fx.tick()                                    # scored ignored: streak 1, the next after 2C
+    formed = []
+    for _ in range(12):
+        fx.shift(20 * day)
+        formed += [(fx.now, item) for item in (await fx.tick())["formed"]]
+        await fx.send_all()
+    check_ins = [at for at, item in formed if item["type"] == "check_in"]
+    assert check_ins and check_ins[0] >= sent_at + 120 * day
+    assert check_ins[0] <= sent_at + 120 * day + 20 * day + PAST
+
+
+async def test_a_monthly_cadence_backs_off_to_four_cadences_for_a_contact_who_never_replies(make):
+    """Review F8b: architecture 4.7 item 6 doubles the wait per ignored check-in up to four cadences;
+    with the history pruned at 90 days the streak never passed 1 and the wait stayed at 2C."""
+    day = timedelta(days=1)
+    fx = make([contact(CONTACT, may_contact="auto", cadence=30 * 24 * 60)])
+    days = []
+    for _ in range(45):
+        fx.shift(10 * day)
+        await fx.tick()
+        if [p for p in await fx.send_all() if p["recipient"] == CONTACT]:
+            days.append((fx.now - T0).days)
+    gaps = [b - a for a, b in zip(days, days[1:])]
+    assert gaps[:3] == [60, 120, 120], days
+
+
+async def test_a_merge_carries_the_check_in_history_so_the_backoff_holds(make):
+    """Review F6: a merge moves the comms ledger (``reattribute``), and the social drive reads the
+    kept contact's sends from it: two ignored check-ins to the dropped record still hold the kept
+    record in its backoff."""
+    keep, drop = CONTACT, OTHER
+    fx = make([contact(keep, may_contact="auto", cadence=10), contact(drop, may_contact="auto", cadence=10)])
+    fx.contacts.records[keep]["first_seen_at"] = (T0 + timedelta(days=30)).isoformat()
+    fx.shift(C + PAST)
+    await fx.tick()
+    await fx.send_all()
+    fx.shift(C * 4 + PAST)
+    await fx.tick()
+    fx.shift(C + PAST)
+    await fx.tick()
+    await fx.send_all()
+    fx.shift(C * 2)
+    assert (await fx.tick())["formed"] == []
+    record = fx.contacts.records.pop(drop)
+    fx.contacts.records[keep].update(first_seen_at=record["first_seen_at"], cadence_minutes=10)
+    fx.mind.comms.reattribute(drop, keep)              # the merge's comms hook
+    fx.shift(timedelta(minutes=1))
+    assert (await fx.tick())["formed"] == []
+    fx.shift(C * 2)
+    formed = (await fx.tick())["formed"]
+    assert [f["type"] for f in formed] == ["check_in"] and fx.store.get(formed[0]["id"]).entity_id == keep
