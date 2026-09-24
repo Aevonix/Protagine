@@ -165,6 +165,32 @@ def test_new_premise_rule_refuses_statements_repeats_and_restatements_but_revise
     assert [r['id'] for r in state.revisions()] == [result.stance_id]
 
 
+def test_a_revision_rests_first_on_its_new_evidence_and_not_on_the_words_it_replaced(judgments):
+    """The revised view is read with what now supports it: the new evidence first, then the data
+    the old view rested on (kept, so it can never come back as new). The agent's earlier words
+    stay a dependency, so forgetting them still tombstones the chain, but they are not a premise
+    of the view that replaced them."""
+    state, _ = judgments
+    source(state, 'said', 'Which should we use for long local work?', admitted=False,
+           reply='I favor explicit checkpoints for long local work.')
+    source(state, 'first', 'Inspection s-12 found 3 of 40 seals cracked after the long run without checkpoints.')
+    stance = state.form(proposal(state.statements('said') + state.admitted_premises('first'), source_ref='turn:said',
+                                 session_id='session-said')).stance_id
+    source(state, 'measured', 'Measured short runs lost nothing and checkpoints tripled their time.')
+    new = state.admitted_premises('measured')
+    revised = state.revise(stance, proposal(new, stance='I favor checkpoints for long work only.',
+                                            new_evidence=[new[0].ref], source_ref='turn:measured')).stance_id
+    row = state.get(revised)
+    assert [(p['kind'], p['ref']) for p in row['premises']] == [
+        ('claim', new[0].ref), ('claim', state.admitted_premises('first')[0].ref)]
+    # The view it replaced reads as replaced, wherever it is read by id.
+    assert state.get(stance)['status'] == 'superseded' and state.get(stance)['stance'] == (
+        'I favor explicit checkpoints for long local work.')
+    assert [(r['id'], r['status']) for r in state.revisions(history=True)] == [(revised, 'current'), (stance, 'superseded')]
+    state.ledger.erase_sources(contact_id='contact-a', turn_ids=['said'])
+    assert state.revisions() == [] and state.get(revised)['status'] == 'erased'
+
+
 @pytest.mark.asyncio
 async def test_a_correction_to_a_cited_claim_revises_once_inside_the_limit(tmp_path):
     from protagine.beliefs.source_projection import SourceClaimProjection

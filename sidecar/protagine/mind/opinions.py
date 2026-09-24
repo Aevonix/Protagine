@@ -16,8 +16,9 @@ autobiography entries. This module decides what the store is asked:
   (audience-filtered, cited, with what would change them), and ``task_lines`` puts
   the approach view into the body of the next task at the same work.
 
-One binary switch, ``mind.faculties.opinions``: off, jobs finish ``faculty_off``
-without a call and nothing is formed or rendered; stored stances are kept.
+One binary switch, ``mind.faculties.opinions``, read once by the running mind (the pass
+asks it, and reads the instance config only when no mind is served): off, jobs finish
+``faculty_off`` without a call and nothing is formed or rendered; stored stances are kept.
 """
 
 from __future__ import annotations
@@ -142,6 +143,24 @@ def faculty_on(config: Mapping[str, Any] | None = None) -> bool:
     mind = config if isinstance(config, Mapping) else {}
     faculties = mind.get("faculties") if isinstance(mind.get("faculties"), Mapping) else {}
     return _on(mind.get("enabled", True)) and _on(faculties.get("opinions", True))
+
+
+def switched_on() -> bool:
+    """The switch the pass obeys: the running mind's, else the instance config's (``faculty_on``).
+
+    The sidecar and the benchmark worker serve a mind, and its ``opinions`` flag is the one
+    the context section and task bodies use, so the three never disagree. ``enabled`` is the
+    configured one: the runtime off switch stops effects, not memory (architecture 7.9).
+    """
+    try:
+        from protagine.api.routers.mind import get_mind
+        mind = get_mind()
+    except Exception:
+        mind = None
+    faculty = getattr(mind, "opinions", None) if mind is not None else None
+    if faculty is None:
+        return faculty_on()
+    return bool(getattr(getattr(mind, "policy", None), "enabled", True)) and bool(faculty.enabled)
 
 
 def _judgments():
@@ -464,7 +483,7 @@ async def run_one(store: Any, router: Any, *, enabled: bool | None = None) -> bo
     """Handle at most one opinion job; True when a job was finished, failed or deferred."""
     if not getattr(store, "owner_id", ""):
         return False
-    enabled = faculty_on() if enabled is None else bool(enabled)
+    enabled = switched_on() if enabled is None else bool(enabled)
     if not enabled:
         job = store.next_job()
         if job is None:
@@ -635,10 +654,12 @@ class Opinions:
         line = head
         for stance_n, reason_n, premise_n, revise_n in ((300, 200, 80, 120), (200, 140, 60, 100),
                                                          (140, 100, 45, 80), (90, 60, 30, 60)):
-            rests = "; ".join(f"{_clip(p.get('text'), premise_n)} ({p.get('ref')})" for p in support[:2])
+            # Cited by the source the agent can open, as recall cites it; an outcome by its intention.
+            rests = "; ".join(f"{_clip(p.get('text'), premise_n)} "
+                              f"({'turn:' + p['turn_id'] if p.get('turn_id') else p.get('ref')})" for p in support[:2])
             line = (head + f"{_clip(row.get('stance'), stance_n)} Because: {_clip(row.get('reason'), reason_n)}"
                     + (f" Rests on: {rests}." if rests else "")
-                    + (f" Would change if: {_clip(row.get('revise_if'), revise_n)}." if row.get("revise_if") else ""))
+                    + (f" Would change if: {_clip(row.get('revise_if'), revise_n).rstrip('.')}." if row.get("revise_if") else ""))
             if len(line) <= LINE_CHARS:
                 return line
         return _clip(line, LINE_CHARS)
@@ -675,4 +696,4 @@ class Opinions:
 
 __all__ = ["APPROACH_TOPIC", "CUE_LINE", "JUDGMENT_CUES", "OpinionOutputError", "Opinions", "Packet",
            "RESPONSE_SCHEMA", "ROUTER_CONTEXT", "STANDING", "SYSTEM", "TASK", "apply", "build_packet",
-           "faculty_on", "run_one", "validate"]
+           "faculty_on", "run_one", "switched_on", "validate"]

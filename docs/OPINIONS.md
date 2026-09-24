@@ -18,7 +18,11 @@ One store in the ledger database (`turn-idempotency.db`). A stance has a subject
 normalized topic, the stance, a reason, a certainty (`tentative | moderate | strong`),
 `revise_if` (the specific evidence that would change it), its premises and, for an
 approach, a class (`avoid | prefer`). Each change is a new revision that supersedes the
-head, so the history is kept; `GET /v1/mind/opinions/{id}` shows the chain.
+head, so the history is kept; `GET /v1/mind/opinions/{id}` shows the chain, where a
+replaced revision reads `superseded`. A revision rests first on its new evidence, then on
+the data the old view rested on (kept, so it can never come back as new); the agent's
+earlier words stay a dependency of the chain, so forgetting them still removes it, but they
+are not a premise of the view that replaced them.
 
 Premises are explicit:
 
@@ -85,7 +89,8 @@ the same content); a paraphrased restatement is left to the model.
 **Turn context.** Every `POST /v1/host/context/assemble` may carry a `protagine-stances`
 section ("Your recorded views", priority 87, at most 1,400 characters, no model call): up
 to three relevant views the viewer may see, each with its id, reason, up to two premises
-and what would change it, then the standing sentence: change a view only on new evidence;
+(cited by the source the agent can open, `turn:<id>`, as recall cites it, or by
+`intention:<id>`) and what would change it, then the standing sentence: change a view only on new evidence;
 the agent may disagree and still do what the owner authorizes, and says so when it does.
 When newer turns from the viewer have not been weighed yet, a line says so. For an owner
 turn that asks for a judgment when no view is relevant yet, the section only asks the
@@ -95,7 +100,9 @@ next pass can form a view from.
 **Task bodies.** When the mind forms a task, the current approach view for the same work
 is appended to the body ("Your recorded view on this work [opinion N]: ...") and its id is
 kept on the intention (`context.opinion_ids`); `GET /v1/mind/dispatch` sends it with the
-body.
+body. A view flags the work and never holds it back: the three failures that form an
+`avoid` view also trip the breaker, so the next attempt is usually an ask, and when the
+owner authorizes it, it runs with the view in its body.
 
 ## Owner surfaces
 
@@ -128,7 +135,14 @@ each write one owner-audience autobiography entry (`mind:opinion:<id>:<event>`).
 `mind.faculties.opinions` (on in `config.DEFAULTS`, the release-candidate value). Off: jobs
 finish `faculty_off` without a call, no approach opinion is formed, no stance section or
 task-body line is rendered, and the list answers `{"enabled": false, "opinions": []}`;
-stored views are kept. The benchmark's `full-opinions` arm is this flag off.
+stored views are kept, and what the agent is given (every context section, every task
+body) is what it was given without the faculty. The running mind reads the flag once at
+start; the opinion pass asks the running mind, so the three uses never disagree, and reads
+`protagine.yaml` only in a process that serves no mind. `mind.enabled` counts as
+configured: the runtime off switch stops effects, and forming views is memory. The
+benchmark's `full-opinions` arm is this flag off, served to the mind by the worker's mind
+section. The `protagine_opinions` tool stays listed when the faculty is off, as the other
+adapter tools stay listed with theirs.
 
 ## What is measured
 

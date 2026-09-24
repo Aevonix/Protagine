@@ -163,7 +163,10 @@ async def test_a_judgment_turn_makes_one_call_and_forms_a_cited_stance(world):
     assert written['metadata']['origin'] == 'mind' and 'Plan Ash' in written['content']
     text = view(world)
     assert f"[opinion {row['id']}]: Plan Ash" in text and 'Would change if: A longer measurement' in text
-    assert '(claim:' in text and text.endswith(STANDING)
+    assert 'reverses the figures.\n' in text and '..' not in text
+    # Premises are cited by the source the agent can open, as recall cites it, not by a claim hash.
+    assert 'Rests on: Record s-12: over 30 days Plan Ash had a 3% defect rate and Plan Birch 9%. (turn:ask-1)' in text
+    assert 'claim:' not in text and text.endswith(STANDING)
 
 
 async def test_turns_without_a_premise_or_a_judgment_cue_cost_no_call(world):
@@ -419,6 +422,32 @@ async def test_stale_jobs_and_the_faculty_switch_cost_no_call(world, tmp_path, m
     assert not await run_one(world.store, SimpleNamespace(), enabled=True)
     assert not await run_one(SelfJudgments(world.ledger, owner_id='', clock=world.clock), silent, enabled=True)
     assert job(world, 'kept-1')['done_at'] is None
+
+
+@pytest.mark.parametrize('running, config, disposition', [
+    ({'enabled': True, 'opinions': True}, {'enabled': True, 'digest_hour': 24}, 'formed'),
+    ({'enabled': True, 'opinions': False}, {'enabled': True}, 'faculty_off'),
+    ({'enabled': False, 'opinions': True}, {'enabled': True}, 'faculty_off'),
+])
+async def test_a_running_mind_decides_the_switch_the_pass_obeys(world, tmp_path, monkeypatch, running, config,
+                                                                  disposition):
+    """The sidecar and the benchmark worker serve a mind; its flag (and its configured ``enabled``, not the
+    runtime off switch) is the one the pass obeys, so the context section, task bodies and the pass never
+    disagree. The worker's instance file carries ``digest_hour: 24`` (no digest), which the config
+    validator refuses; read alone it would turn the faculty off in every arm."""
+    (tmp_path / 'protagine.yaml').write_text(json.dumps({'mind': {**config, 'faculties': {'opinions': True}}}))
+    monkeypatch.setenv('PROTAGINE_HOME', str(tmp_path))
+    assert faculty_on() is ('digest_hour' not in config)
+    turn(world, 'ask-1', OWNER, ASK, REPLY, admitted=RECORD)
+    router = Router(lambda packet: form())
+    mind_router.set_mind(SimpleNamespace(policy=SimpleNamespace(enabled=running['enabled']),
+                                         opinions=SimpleNamespace(enabled=running['opinions'])))
+    try:
+        assert await run_one(world.store, router) is True
+    finally:
+        mind_router.set_mind(None)
+    assert job(world, 'ask-1')['disposition'] == disposition
+    assert len(router.packets) == (1 if disposition == 'formed' else 0)
 
 
 # ---------------------------------------------------------------------------------------------- other jobs

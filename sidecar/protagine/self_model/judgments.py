@@ -498,7 +498,7 @@ class SelfJudgments:
                                     (original['supersedes'], self.owner_id)).fetchone()
         return original if original is not None and original['status'] == 'current' and original['topic'] else None
 
-    def _row(self, conn, sources, row, premises=None):
+    def _row(self, conn, sources, row, premises=None, *, superseded=False):
         payload = json.loads(row['payload_json'] or '{}')
         result = {'id': row['id'], 'topic': row['topic'], 'subject_kind': row['subject_kind'], 'subject': row['subject'],
                   'audience': row['audience'], 'stance': '', 'reason': '', 'certainty': '', 'revise_if': '',
@@ -519,10 +519,15 @@ class SelfJudgments:
             result.update(stance=data.get('stance', ''), reason=data.get('reason', ''), certainty=data.get('certainty', ''),
                           revise_if=view['revise_if'], stance_class=data.get('stance_class'), session_id=data.get('session_id', ''),
                           premises=[p.as_dict() for p in premises])
-        if row['status'] == 'current' and not (premises and sources.retained(json.loads(row['dependency_json'] or '[]'))
-                                               and all(sources.current(p) for p in premises)):
+        if row['status'] == 'current' and superseded:
+            result['status'] = 'superseded'  # revised since: a later revision is the topic's head
+        elif row['status'] == 'current' and not (premises and sources.retained(json.loads(row['dependency_json'] or '[]'))
+                                                 and all(sources.current(p) for p in premises)):
             result['status'] = 'unsupported_premise'
         return result
+
+    def _head_ids(self, conn):
+        return {r[0] for r in conn.execute('SELECT revision_id FROM self_judgment_heads WHERE owner_id=?', (self.owner_id,))}
 
     def _heads(self, conn, *, subject_kind=None, limit=500):
         query = '''SELECT r.* FROM self_judgment_heads h JOIN self_judgment_revisions r ON r.id=h.revision_id
@@ -540,7 +545,11 @@ class SelfJudgments:
     def get(self, stance_id):
         with closing(self.ledger._connect()) as conn:
             row = conn.execute('SELECT * FROM self_judgment_revisions WHERE id=? AND owner_id=?', (stance_id, self.owner_id)).fetchone()
-            return None if row is None else self._row(conn, _Sources(conn, self.owner_id), row)
+            if row is None:
+                return None
+            head = conn.execute('SELECT 1 FROM self_judgment_heads WHERE owner_id=? AND revision_id=?',
+                                (self.owner_id, row['id'])).fetchone()
+            return self._row(conn, _Sources(conn, self.owner_id), row, superseded=bool(row['topic']) and head is None)
 
     def head(self, *, subject_kind, subject='', topic):
         try:
@@ -563,11 +572,11 @@ class SelfJudgments:
                 rows = conn.execute(query + 'ORDER BY id DESC LIMIT 500', args).fetchall()
             else:
                 rows = self._heads(conn, subject_kind=subject_kind)
-            result = []
+            result, heads = [], self._head_ids(conn) if history else set()
             for row in rows:
                 if audience == 'all' and row['audience'] != 'all':
                     continue
-                item = self._row(conn, sources, row)
+                item = self._row(conn, sources, row, superseded=history and bool(row['topic']) and row['id'] not in heads)
                 if history or item['status'] == 'current':
                     result.append(item)
                 if len(result) >= limit:
@@ -812,8 +821,11 @@ class SelfJudgments:
                                                                         row['topic'], self.clock() - LIMIT_WINDOW_S))]
                     if len(recent) >= REVISIONS_PER_DAY:
                         return Result('rate_limited', stance_id, retry_at=min(recent) + LIMIT_WINDOW_S)
-                # The head's current premises keep their roles; the proposal adds the rest.
-                merged = [p for p in earlier if sources.current(p)] + [p for p in premises if p.ref not in refs]
+                # The new evidence first, then the data the head rested on (roles kept, so it can
+                # never come back as new). The agent's earlier words stay a dependency below, not a
+                # premise of the view that replaces them.
+                merged = [p for p in premises if p.ref not in refs] + [
+                    p for p in earlier if p.kind != 'statement' and sources.current(p)]
                 old = json.loads(row['payload_json']).get('stance', '')
             if not any(p.role == 'support' for p in merged):
                 return Result('invalid:support', stance_id)

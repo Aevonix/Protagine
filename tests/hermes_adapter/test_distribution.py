@@ -39,8 +39,7 @@ def test_wheel_contains_the_adapter_modules_and_nothing_else(artifacts):
 
 
 def test_adapter_line_count_is_reported():
-    """Tracked, not gated (build plan section 5). The ceiling moved from 2,500 to 2,600 with the opinions
-    milestone's ``protagine_opinions`` tool (2,450 lines before, 2,511 after)."""
+    """Tracked, not gated (build plan section 5)."""
     total = sum(len((ROOT / f"plugins/hermes-plugin/{m}.py").read_text().splitlines()) for m in ADAPTER_MODULES)
     print(f"plugin lines: {total}")
-    assert total < 2600
+    assert total < 2500
