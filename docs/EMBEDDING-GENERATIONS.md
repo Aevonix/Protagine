@@ -15,8 +15,8 @@ from that alias alone; declare a new revision and rebuild after such a change.
 Endpoint addresses and credentials are not index identity and are not copied
 into index metadata.
 
-The pipeline retains its query instruction for its lifetime, and graph recall
-uses that same query formatter. The API embedder checks response cardinality,
+The pipeline retains its query instruction for its lifetime, and source semantic
+recall uses that same query formatter. The API embedder checks response cardinality,
 ordering, finite values and dimensions before returning vectors. A changed
 reported serving model cannot silently reuse the old pipeline. This change does
 not add dynamic embedding provider configuration; selecting a different
@@ -37,16 +37,14 @@ configurations retain their existing generation identity.
 
 Existing Lance collections have no trustworthy embedding identity. They remain
 on disk as an unverified legacy generation, and semantic search through the
-managed runtime refuses to compare them with a newly configured model. Graph
-keyword recall and canonical lexical source recall remain available. The
+managed runtime refuses to compare them with a newly configured model. Canonical
+lexical source recall remains available. The
 installer's optional vector dependency remains optional.
 
 The existing `protagine migrate-tier` and `/v1/host/memory/migrate` operation rebuild
-all retained text collections into a separate Lance directory. The server now
-actually registers the same store used by graph recall with that operation.
-For graph memories, rebuilding reads current graph facts, including facts whose
-old vector write failed. Other retained text collections use their retained
-text and metadata. A model-filtered partial rebuild cannot be promoted because
+all retained text collections into a separate Lance directory. The server
+registers the same store semantic recall reads with that operation. Every
+retained text collection is rebuilt from its retained text and metadata. A model-filtered partial rebuild cannot be promoted because
 it would leave the replacement incomplete.
 
 The generation catalog, active pointer and exact-ID deletion fences use the
