@@ -125,6 +125,28 @@ class TestAgentEndpoints:
         assert "agent_id" in data
         assert "node_cert" in data
 
+    def test_every_agent_route_names_the_instance_by_its_stable_id(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Invite, connect and register all name this instance by <state>/instance-id.
+
+        The chain that signed node certificates is gone (M8): the certificate is
+        issued unsigned, and the id no longer changes from one call to the next.
+        """
+        from protagine.instance import INSTANCE_ID_FILE
+
+        monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
+        code = client.post("/v1/host/agents/invite", json={"granted_capabilities": ["messaging"]}).json()["code"]
+        connected = client.post("/v1/host/agents/connect", json={
+            "setup_code": code, "name": "remote", "node_public_key": "test-key"}).json()
+        registered = client.post("/v1/host/agents/register", json={"name": "local"}).json()
+
+        instance = (tmp_path / INSTANCE_ID_FILE).read_text().strip()
+        assert instance
+        assert connected["protagine_id"] == connected["node_cert"]["protagine_id"] == instance
+        assert registered["protagine_id"] == instance
+        assert connected["node_cert"]["signature"] == ""
+
     def test_register_local_agent(self, client: TestClient) -> None:
         """Test POST /agents/register for local agent."""
         response = client.post(

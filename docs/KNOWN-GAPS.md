@@ -51,6 +51,7 @@ general self-improvement simply by recording a successful review.
   `GraphBaselineStore`, `ConnectionDiscoverer`, the briefing
   `RelationshipAggregator`) are no longer constructed by the server; their
   routes report the subsystem as not wired.
+
 ## Deliberate no-builds (division of responsibility with the host agent)
 
 Protagine is the cognitive substrate; the host agent framework (e.g. Hermes)
