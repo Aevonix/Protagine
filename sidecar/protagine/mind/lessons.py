@@ -730,8 +730,36 @@ class Lessons:
             night.count("lessons_superseded")
 
     def _correction(self, plan: Mapping[str, Any], packet: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-        """Filled in by the correction split."""
+        """The split of an owner correction: the correcting turn is the cited owner message holding the value."""
+        value = plan["corrected_value"]
+        for label in plan["cites"]:
+            owner = packet["owner"].get(label)
+            if owner is not None and _folded(value) in _folded(owner["text"]):
+                return self.correction_split(value, turn_id=owner["turn_id"], occurred_at=owner["at"])
         return None, None
+
+    def correction_split(self, value: Any, *, turn_id: str, occurred_at: Any) -> Tuple[str, Optional[str]]:
+        """Deterministic (architecture 4.8): ``retrieval`` when an earlier message of the owner's own already
+        held the corrected value (recall missed it; the lesson says where it was), else ``knowledge`` (it
+        was new). Only the owner's person-scoped messages count: never the correcting turn, the agent's
+        replies, the mind's own record or a workspace file. A value with no searchable word is knowledge."""
+        value = " ".join(str(value or "").split())
+        said = _utc(occurred_at)
+        if not value or not self.available or said is None:
+            return "knowledge", None
+        pattern = re.compile(r"(?<!\w)" + re.escape(value) + r"(?!\w)", re.IGNORECASE)
+        try:
+            hits = self.ledger.search_sources(value, contact_id=self.owner_id, session_id="", limit=20)
+        except Exception as error:
+            logger.warning("correction split search failed (%s)", type(error).__name__)
+            return "knowledge", None
+        for hit in hits:
+            when = _utc(hit.get("occurred_at") or hit.get("ingested_at"))
+            if (hit.get("role") == "user" and hit.get("turn_id") != turn_id and hit.get("scope") == "person"
+                    and not str(hit.get("turn_id") or "").startswith("mind:") and when is not None and when < said
+                    and pattern.search(" ".join(str(hit.get("content") or "").split()))):
+                return "retrieval", f"turn:{hit['turn_id']}"
+        return "knowledge", None
 
     def _score(self, verdicts: Any, packet: Mapping[str, Any], night: Any, now: datetime) -> None:
         """Each quoted owner verdict scores the lesson uses of its session that came before it."""

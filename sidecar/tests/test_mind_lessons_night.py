@@ -341,3 +341,72 @@ async def test_an_owner_retirement_with_a_quote_retires_the_lesson(tmp_path, mon
     assert result["counts"]["lessons_retired"] == 1
     assert fx.mind.lessons.get(state["lesson"].id).status == "retired"
     fx.store.close()
+
+
+# -- the correction split (architecture 4.8: knowledge vs retrieval) ---------------------------------
+
+LOCKER = "Verdict: the spare keys are in the north annex locker, not the office drawer."
+
+
+def correcting(tmp_path, monkeypatch, value, *, verdict=LOCKER):
+    def answer(prompt):
+        return {"verdicts": [], "ops": [add([label(prompt, verdict[:30])], quote=verdict[9:60], topic="spare keys",
+                                            title="Where the spare keys are", when_to_use="the spare keys are asked for",
+                                            content="They are in the north annex locker.", corrected_value=value)]}
+    return make(tmp_path, monkeypatch, answer)
+
+
+def ask_and_correct(fx, verdict=LOCKER, session="day-02"):
+    fx.turn(f"{session}-ask", OWNER, session, "Where are the spare keys?", "In the office drawer.")
+    fx.shift(minutes=2)
+    fx.turn(f"{session}-verdict", OWNER, session, verdict, "Noted, the north annex locker.")
+
+
+async def test_a_corrected_value_an_earlier_owner_turn_held_is_a_retrieval_lesson(tmp_path, monkeypatch):
+    fx = correcting(tmp_path, monkeypatch, "north annex locker")
+    fx.turn("early", OWNER, "day-00", "I put the spare keys in the north annex locker today.", "Noted.")
+    fx.shift(hours=2)
+    ask_and_correct(fx)
+    result = await night(fx)
+    [lesson] = fx.mind.lessons.all()
+    assert result["counts"]["lessons_admitted"] == 1
+    assert lesson.correction == "retrieval" and lesson.retrieval_source == "turn:early"
+    assert "The answer was already in your records (turn:early); look there before answering." in lesson.section()
+    assert fx.mind.lessons.stats(fx.now)["corrections"] == {"retrieval": 1}
+    fx.store.close()
+
+
+async def test_a_new_corrected_value_is_a_knowledge_lesson(tmp_path, monkeypatch):
+    fx = correcting(tmp_path, monkeypatch, "north annex locker")
+    fx.turn("early", OWNER, "day-00", "The spare keys are somewhere in the building.", "Noted.")
+    fx.shift(hours=2)
+    ask_and_correct(fx)
+    await night(fx)
+    [lesson] = fx.mind.lessons.all()
+    assert lesson.correction == "knowledge" and lesson.retrieval_source is None
+    assert "already in your records" not in lesson.section()
+    # A value with no searchable word (every word of two characters or fewer) is knowledge; a value the
+    # owner never wrote is dropped.
+    assert fx.mind.lessons.correction_split("17", turn_id="day-02-verdict", occurred_at=fx.now.isoformat()) == (
+        "knowledge", None)
+    fx.store.close()
+    other = correcting(tmp_path / "other", monkeypatch, "south wing cupboard")
+    ask_and_correct(other)
+    await night(other)
+    [lesson] = other.mind.lessons.all()
+    assert lesson.correction is None
+    other.store.close()
+
+
+async def test_the_correcting_turn_itself_and_the_agents_replies_never_count_as_retrieval(tmp_path, monkeypatch):
+    fx = correcting(tmp_path, monkeypatch, "north annex locker")
+    fx.turn("earlier-reply", OWNER, "day-00", "Where did we store the ladder?",
+            "In the north annex locker, next to the spare keys.")       # the agent's words, not the owner's
+    fx.shift(hours=2)
+    ask_and_correct(fx)
+    fx.shift(minutes=5)
+    fx.turn("later", OWNER, "day-03", "The north annex locker needs a new padlock.", "Noted.")
+    await night(fx)
+    [lesson] = fx.mind.lessons.all()
+    assert lesson.correction == "knowledge"
+    fx.store.close()
