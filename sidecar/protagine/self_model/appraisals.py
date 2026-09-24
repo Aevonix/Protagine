@@ -9,7 +9,6 @@ import asyncio
 from contextlib import closing
 import json
 import math
-import os
 import re
 import time
 import uuid
@@ -67,8 +66,8 @@ and leave any supplied incidents unchanged. A room or date contradiction belongs
 factual memory, not an inferred social preference or character interpretation.
 Never reward persistence
 or praise with reliability. Prefer abstention to speculative personality judgments.
-Policy or chosen values belong to the agent and are NEVER evidence of a contact's
-preferences. Opaque evidence handles are citations, never names of people.
+Policy and the agent's constitution (agent_constitution: its name, values and
+boundaries) belong to the agent and are NEVER evidence of a contact's preferences. Opaque evidence handles are citations, never names of people.
 Use a stable short topic made of ordinary space-separated words, retaining the
 concrete task words from the evidence so relevant queries can find it.
 Text and reason are concise, with reported/inferred
@@ -231,20 +230,22 @@ def invalidate_source_attribution(conn, source_ids, old_contact_id, contact_id):
 
 def chosen_values():
     """The agent's values from the constitution (``identity.yaml`` ``agent.values``, owner-authored,
-    never inferred or changed by experience). ``PROTAGINE_AGENT_VALUES`` counts only when the file
-    declares none, so an old service unit keeps working."""
+    never inferred or changed by experience). ``init`` moved an old unit's ``PROTAGINE_AGENT_VALUES``
+    into the file; the variable is reserved and nothing reads it."""
     from protagine.config import constitution_list, load_identity
     try:
-        values = constitution_list(load_identity().get('agent', {}).get('values'))
+        return constitution_list(load_identity().get('agent', {}).get('values'))
     except Exception:
-        values = []
-    if values:
-        return values
-    try:
-        legacy = json.loads(os.environ.get('PROTAGINE_AGENT_VALUES', '[]'))
-    except (ValueError, TypeError):
         return []
-    return constitution_list(legacy)
+
+
+def constitution():
+    """The constitution as the plugin renders it into every prompt: name, values and boundaries."""
+    from protagine.config import load_identity, render_constitution
+    try:
+        return render_constitution(load_identity())
+    except Exception:
+        return ''
 
 
 def _text(message):
@@ -678,9 +679,9 @@ class AppraisalStore:
             # contact/source/version IDs stay server-side for exact validation;
             # exposing several competing IDs caused otherwise correct output
             # to cite a source ID as if it were a message handle.
-            # The constitution's values are an input of every appraisal (SYSTEM: they belong to the
-            # agent and are never evidence of a contact's preferences); the schema has no field for them.
-            prompt_payload = {**payload, 'agent_values': chosen_values(), 'evidence': [
+            # The constitution is an input of every appraisal (SYSTEM: it belongs to the agent and is
+            # never evidence of a contact's preferences); the schema has no field for it.
+            prompt_payload = {**payload, 'agent_constitution': constitution(), 'evidence': [
                 {k: evidence[k] for k in ('handle', 'text', 'quotes', 'current', 'occurred_at', 'attribution')
                  if k in evidence} for evidence in payload['evidence']]}
             response = await asyncio.wait_for(router.complete(messages=[{'role': 'system', 'content': SYSTEM},

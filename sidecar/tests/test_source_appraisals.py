@@ -196,11 +196,20 @@ async def test_incident_changes_relevant_decision_replay_does_not_reinforce_and_
 
 
 @pytest.mark.asyncio
-async def test_private_views_stay_private_preference_has_attribution_and_values_are_not_grants(state, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_AGENT_VALUES', json.dumps(['Be candid', 'Respect promises']))
+async def test_private_views_stay_private_preference_has_attribution_and_values_are_not_grants(state, monkeypatch, tmp_path):
+    from protagine.config import render_constitution, save_identity
+    identity = {'owner': {'name': 'Owner'}, 'agent': {'name': 'Agent', 'values': ['Be candid', 'Respect promises'],
+                                                      'boundaries': ['never send money']}}
+    monkeypatch.setenv('PROTAGINE_HOME', str(tmp_path))
+    save_identity(identity, tmp_path)
+    monkeypatch.setenv('PROTAGINE_AGENT_VALUES', json.dumps(['An old service unit value']))   # never read
     source(state, 'incident', 'The export has failed again after the same retry.')
     processor = Processor(); await state.process_one(processor)
-    assert 'chosen_values' not in processor.requests[0]
+    # The constitution (name, values and boundaries) is an input of the appraisal, never an output.
+    assert processor.requests[0]['agent_constitution'] == render_constitution(identity)
+    assert 'Respect promises' in processor.requests[0]['agent_constitution']
+    assert 'agent_constitution' not in json.dumps(module.RESPONSE_SCHEMA)
+    assert 'chosen_values' not in processor.requests[0] and 'agent_values' not in processor.requests[0]
     assert not {'source_id', 'source_version', 'source_contact_id', 'message_hash'} & set(processor.requests[0]['evidence'][0])
     assert view(state)['chosen_values'] == ['Be candid', 'Respect promises']
     assert state.view('person', viewer_contact_id='person')['records'] == []

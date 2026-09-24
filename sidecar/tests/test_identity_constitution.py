@@ -99,18 +99,16 @@ def test_init_refuses_an_over_long_constitution_and_names_the_list_to_shorten():
 
 # -- values reach the appraisal prompt --------------------------------------------------------
 
-def test_chosen_values_come_from_identity_yaml_with_the_environment_as_fallback(home, monkeypatch):
+def test_chosen_values_come_from_identity_yaml_only(home, monkeypatch):
+    """identity.yaml replaced PROTAGINE_AGENT_VALUES (init moves an old unit's values into the file); the
+    variable stays reserved, and nothing reads it."""
     assert appraisals.chosen_values() == []
-    save_identity({"owner": {"name": "Ada"}, "agent": {"name": "Sol", "values": ["candour", " care ", "candour", ""]}},
+    monkeypatch.setenv("PROTAGINE_AGENT_VALUES", json.dumps(["Be candid"]))
+    assert appraisals.chosen_values() == []
+    save_identity({"owner": {"name": "Owner"}, "agent": {"name": "Agent", "values": ["candour", " care ", "candour", ""]}},
                   home)
     assert appraisals.chosen_values() == ["candour", "care"]
-    # The env var counts only when the file has no agent.values (an old service unit keeps working).
-    monkeypatch.setenv("PROTAGINE_AGENT_VALUES", json.dumps(["Be candid"]))
-    assert appraisals.chosen_values() == ["candour", "care"]
-    save_identity({"owner": {"name": "Ada"}, "agent": {"name": "Sol"}}, home)
-    assert appraisals.chosen_values() == ["Be candid"]
-    monkeypatch.setenv("PROTAGINE_AGENT_VALUES", "not json")
-    assert appraisals.chosen_values() == []
+    assert "PROTAGINE_AGENT_VALUES" in config.RESERVED_ENVIRONMENT
 
 
 class _Processor:
@@ -129,8 +127,10 @@ class _Processor:
                                model_id="fixture", binding="fixture", config_revision="r1", model_revision="w1")
 
 
-def test_agent_values_are_an_input_of_the_appraisal_prompt_never_an_output(home, tmp_path):
-    save_identity({"owner": {"name": "Ada"}, "agent": {"name": "Sol", "values": ["candour"]}}, home)
+def test_the_constitution_is_an_input_of_the_appraisal_prompt_never_an_output(home, tmp_path):
+    identity = {"owner": {"name": "Owner"}, "agent": {"name": "Agent", "values": ["candour"],
+                                                      "boundaries": ["never send money"]}}
+    save_identity(identity, home)
     store = appraisals.AppraisalStore(TurnIdempotencyLedger(tmp_path / "sources.db"), owner_id="p-01",
                                       clock=lambda: 1800000000.0)
     messages = [{"role": "user", "content": "The export has failed again after the same retry."}]
@@ -141,10 +141,11 @@ def test_agent_values_are_an_input_of_the_appraisal_prompt_never_an_output(home,
     processor = _Processor()
     assert asyncio.run(store.process_one(processor)) is True
     (payload, context), = processor.requests
-    assert payload["agent_values"] == ["candour"]
-    assert "chosen_values" not in payload
-    assert "agent_values" not in json.dumps(context["response_schema"])
-    assert "chosen values" in appraisals.SYSTEM
+    assert payload["agent_constitution"] == render_constitution(identity) == (
+        "You are Agent. Your values: candour. Your boundaries: never send money.")
+    assert "chosen_values" not in payload and "agent_values" not in payload
+    assert "agent_constitution" not in json.dumps(context["response_schema"])
+    assert "agent_constitution" in appraisals.SYSTEM
 
 
 # -- the constitution has no writer among the learning paths ---------------------------------
