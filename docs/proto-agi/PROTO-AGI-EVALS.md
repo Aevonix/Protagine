@@ -629,3 +629,21 @@ The dev split is development data; this changes what the family can diagnose, no
 templates or the rule. Two 6.2 dev types (a stale owner board task, a failing health check) and the
 restart-duplicate control still need harness extensions (an initial board state, a restart event)
 and are not in the split.
+
+**2026-09-24: generated episodes start at 12:00 UTC, and the memory and self families cross one
+night before the probe.** Two changes, applied identically to every arm of every generated family
+from this date. (1) The body clock was the container's wall clock plus the episode's advances, so
+a rule tied to a time of day (the mind's nightly consolidation at 03:00 local, the daily digest)
+fired or not by the hour each arm's container started, and two arms of one pair could differ in
+whether a night passed. The worker now moves the clock forward to the next 12:00 UTC before the
+first turn (`clock_start: '12:00'`, protocol `paired-clock-start-1`, recorded as
+`comparison.clock_start`; a restarted phase continues the same clock, never re-pinned). Frozen
+datasets keep the container's clock. (2) Every `mind-memory-1` and `mind-self-1` template now
+crosses one night (`advance_clock: 86400`, then `tick: 1`) after its setup and before its probe;
+a restart, where the type has one, still comes right before the probe. The dev splits were
+re-rendered (seed 7, `--per-template 3`; new content hashes in `families/mind-memory-1.md`
+section 2 and `benchmarks/paired/generators/README.md`), and the held-out authors' schema-only
+brief for both families requires the same crossing. Reason: the nightly faculties (consolidation,
+and the self-narrative it writes) act only when a night passes; no template crossed one, so
+`full-consolidation` and `full-self_narrative` were `full` by construction and their flag rules
+could only return "not demonstrated". No memory or self result was measured before this date.

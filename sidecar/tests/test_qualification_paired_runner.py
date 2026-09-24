@@ -70,7 +70,8 @@ def fixture(tmp_path, monkeypatch):
                                   'workflow_protocol': paired_workflow_runtime.PROTOCOL,
                                   'tool_loading': paired.TOOL_LOADING_PROTOCOL,
                                   'message_timestamps': paired.MESSAGE_TIMESTAMPS_PROTOCOL,
-                                  'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL}}
+                                  'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL,
+                                  'clock_start': paired_body.CLOCK_START_PROTOCOL}}
 
     def context(config, recipe):
         return SimpleNamespace(binding=recipe['binding'], trace=trace, modes=modes, usage=usage)

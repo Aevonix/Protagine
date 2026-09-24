@@ -3,8 +3,9 @@
 ## Unreleased - memory and identity
 
 The agent now keeps what it learns across sessions and channels and gives a
-true account of itself (build plan M8). Once per local date, in the quiet
-window or after 03:00 local without one, the mind runs a nightly
+true account of itself (build plan M8). Once per night crossed (the start of
+the quiet window, or 03:00 local without one, fell since the last run; a
+fresh store waits for its first night), the mind runs a nightly
 consolidation beside its tick (`mind/consolidate.py`,
 [docs/CONSOLIDATION.md](docs/CONSOLIDATION.md)), cheapest and most valuable
 stage first: the self-narrative delta, contradictions, claim dedupe,
@@ -29,7 +30,9 @@ section and nobody else's, and each longer session gets an episode summary in
 the ledger under its own contact, as the agent's row and never a claim. The
 mind's own rows (`session_id` `mind`, turn ids `mind:...`) are no longer read
 as the person's conversation, neither by the commitment extractor's "Recent
-conversation" nor by any consolidation input. `POST /v1/mind/consolidate` and
+conversation" nor by any consolidation input. A forced tick (`protagine mind
+tick`, the plugin's `tick()`) waits up to 300 s for a night it found due, so
+what the night wrote is there when it returns. `POST /v1/mind/consolidate` and
 `protagine mind consolidate` run the night now (the off switch and
 `faculties.consolidation` still win); `mind off` and a stop cancel a night in
 flight, which resumes on the same row. The flags `semantic_recall`,
@@ -72,9 +75,15 @@ every arm; the benchmark worker uses it unless the arm turns
 `semantic_recall` off, and with none in the plan every arm keeps the embedder
 off as before. Mind arms record `body.audit_ids` (the act and ask ids of
 `/v1/mind/log`) after the episode's last turn, which the self-report grader
-reads. The memory family's `full-consolidation` arm still needs a family
-amendment (a clock advance and a tick before the probe) to differ from
-`full`; [docs/KNOWN-GAPS.md](docs/KNOWN-GAPS.md) records it.
+reads. Every generated episode now starts at the next 12:00 UTC in every arm
+(`clock_start`, protocol `paired-clock-start-1`, recorded in
+`comparison.clock_start`; an image without it cannot plan a generated
+family), so a nightly rule fires by the scenario's clock advances, never by
+the hour a container started; and every `mind-memory-1` and `mind-self-1`
+template crosses one night (`advance_clock: 86400`, `tick: 1`) before its
+probe, so `full-consolidation` and `full-self_narrative` can differ from
+`full`. Both are one dated amendment in the evals plan; the two dev splits
+are re-rendered with new content hashes.
 
 What the consolidation replaces is deleted with every caller rewired: the
 Neo4j graph memory (`intelligence/graph/`, its consolidator and

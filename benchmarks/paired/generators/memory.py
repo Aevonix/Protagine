@@ -1,8 +1,9 @@
 """Dev templates for the memory family (evals section 6.1).
 
-Every episode is owner turns in plain words, in one or more sessions, with a
-process restart before the probe session where the type calls for one, and one
-probe turn that asks for a small JSON file. The harness grades the file against
+Every episode is owner turns in plain words, in one or more sessions, then one
+night crossed (a day of body clock and a tick), a process restart before the
+probe session where the type calls for one, and one probe turn that asks for a
+small JSON file. The harness grades the file against
 values drawn together with the setup turns: a fact stated once, the newest of
 two values, a scoped correction, a standing preference applied after unrelated
 turns, the agent's own earlier result, and two abstention types where the right
@@ -30,6 +31,9 @@ LEDGER_ENTRIES = (6, 14)
 NOTHING_NOW = ['Nothing to do right now.', 'No action needed at the moment.', 'Nothing for you to do yet.']
 MINUTE_LABELS = ['minutes', 'minute', 'min', 'mins']
 ANSWER = 'answer.json'
+# One night crossed before the probe, in every template: a day of body clock, then a tick. The
+# nightly faculties (consolidation) act only when a night passes, so without it they are unobservable.
+NIGHT = [{'advance_clock': 86400}, {'tick': 1}]
 
 
 def _contacts(draw, *contacts):
@@ -39,6 +43,10 @@ def _contacts(draw, *contacts):
 
 def _owner(text, session='owner-1'):
     return {'session_id': session, 'user': text}
+
+
+def _night():
+    return [dict(entry) for entry in NIGHT]
 
 
 def _restart(before):
@@ -80,8 +88,8 @@ def fact_after_restart(draw):
         f'I need the details of the {item} review with {contact} that I gave you before. Write {ANSWER} as '
         'exactly {"day": string, "time": string, "place": string}, the time as HH:MM and the place as I named it.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first), _owner(_distractor(draw, other)), _owner(probe, 'owner-2')],
-            'workflow': _restart(2),
+            'episodes': [_owner(first), _owner(_distractor(draw, other)), *_night(), _owner(probe, 'owner-2')],
+            'workflow': _restart(4),
             'artifacts': [_artifact({'day': day, 'time': time, 'place': place})]}
 
 
@@ -100,7 +108,7 @@ def fact_across_channels(draw):
         f'Writing from my other device: for the {item} handover to {contact}, write {ANSWER} as exactly '
         '{"time": string, "place": string}, the time as HH:MM and the place as I named it.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first, 'owner-chat-1'), _owner(probe, 'owner-sms-1')],
+            'episodes': [_owner(first, 'owner-chat-1'), *_night(), _owner(probe, 'owner-sms-1')],
             'artifacts': [_artifact({'time': time, 'place': place})]}
 
 
@@ -121,8 +129,8 @@ def knowledge_update(draw):
         f'Current venue of the {item} meeting with {contact}: write {ANSWER} as exactly {{"place": string}}, '
         'the place as I named it, and nothing else in the file.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first), _owner(update), _owner(probe, 'owner-2')],
-            'workflow': _restart(2),
+            'episodes': [_owner(first), _owner(update), *_night(), _owner(probe, 'owner-2')],
+            'workflow': _restart(4),
             'artifacts': [_artifact({'place': new}, forbidden=[old])]}
 
 
@@ -145,8 +153,8 @@ def scoped_correction(draw):
         f'The {item} handover with {contact}: write {ANSWER} as exactly {{"day": string, "time": string, '
         '"place": string}, the time as HH:MM and the place as I named it, from what I told you.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first), _owner(correction), _owner(probe, 'owner-2')],
-            'workflow': _restart(2),
+            'episodes': [_owner(first), _owner(correction), *_night(), _owner(probe, 'owner-2')],
+            'workflow': _restart(4),
             'artifacts': [_artifact({'day': day, 'time': new_time, 'place': place}, forbidden=[old_time])]}
 
 
@@ -171,8 +179,8 @@ def preference_after_distractors(draw):
         f'Write {ANSWER} as exactly {{"duration": number, "unit": string}} for the length of the {item} '
         f'session with {contact}.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(preference), _owner(fact), *distractors, _owner(probe, 'owner-2')],
-            'workflow': _restart(4),
+            'episodes': [_owner(preference), _owner(fact), *distractors, *_night(), _owner(probe, 'owner-2')],
+            'workflow': _restart(6),
             'artifacts': [_artifact({'duration': hours * 60, 'unit': list(MINUTE_LABELS)})]}
 
 
@@ -190,7 +198,7 @@ def never_said(draw):
         f'Write {ANSWER} as exactly {{"place": string}} with where I keep the {other}, or "unknown" as '
         'the place if I never said.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first), _owner(probe, 'owner-2')],
+            'episodes': [_owner(first), *_night(), _owner(probe, 'owner-2')],
             'artifacts': [_artifact({'place': 'unknown'}, forbidden=[place])]}
 
 
@@ -212,8 +220,9 @@ def contradiction_ask(draw):
         f'pickup with {contact}: if my statements agree, status "answer" and the time as HH:MM; if they '
         'conflict, status "ask", an empty time, and your question to me in question.'])
     return {'initial_files': _contacts(draw, contact),
-            'episodes': [_owner(first, 'owner-chat-1'), _owner(second, 'owner-sms-1'), _owner(probe, 'owner-2')],
-            'workflow': _restart(2),
+            'episodes': [_owner(first, 'owner-chat-1'), _owner(second, 'owner-sms-1'), *_night(),
+                         _owner(probe, 'owner-2')],
+            'workflow': _restart(4),
             'artifacts': [{'path': ANSWER, 'format': 'json', 'forbidden': [],
                            'assertions': [{'path': [], 'op': 'keys_equal', 'value': ['question', 'status', 'time']},
                                           {'path': ['status'], 'op': 'label_one_of', 'value': ['ask']}]}]}
@@ -236,8 +245,8 @@ def own_action_recall(draw):
         f'Earlier you told me how many entries ledger.txt had before it was archived. Write {ANSWER} as '
         'exactly {"entries": number} with that number.'])
     return {'initial_files': {**_contacts(draw, contact), 'ledger.txt': '\n'.join(lines) + '\n'},
-            'episodes': [_owner(first), _owner(archive), _owner(probe, 'owner-2')],
-            'workflow': _restart(2),
+            'episodes': [_owner(first), _owner(archive), *_night(), _owner(probe, 'owner-2')],
+            'workflow': _restart(4),
             'artifacts': [_artifact({'entries': count})]}
 
 

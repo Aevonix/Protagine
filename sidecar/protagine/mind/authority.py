@@ -16,7 +16,7 @@ import json
 import random
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 LEVELS = ("off", "suggest", "standard", "trusted")
@@ -479,9 +479,29 @@ def in_quiet_hours(local_minute: int, window: Optional[tuple[int, int]]) -> bool
     return local_minute >= start or local_minute < end
 
 
+def last_boundary(now: datetime, tz: Any, minute: int) -> datetime:
+    """The latest local time of day ``minute`` (minutes after local midnight) at or before ``now``."""
+    local = now.astimezone(tz)
+    at = time(int(minute) // 60 % 24, int(minute) % 60)
+    boundary = datetime.combine(local.date(), at, tzinfo=tz)
+    if boundary > local:
+        boundary = datetime.combine(local.date() - timedelta(days=1), at, tzinfo=tz)
+    return boundary
+
+
+def boundary_crossed(since: datetime, now: datetime, *, tz: Any, minute: int) -> bool:
+    """Whether the local time of day ``minute`` fell in ``(since, now]``.
+
+    The rule for anything nightly: it holds once per night crossed, whatever hour
+    the clock started at, never twice for the same night, and once for a machine
+    that slept through the hour. ``since`` is the persisted moment of the last run.
+    """
+    return since < last_boundary(now, tz, minute) <= now
+
+
 __all__ = [
     "ASK_ALPHABET", "Authority", "Breaker", "Budgets", "CLASSES", "DECISIONS", "FLOOR_PATTERNS",
-    "INTERNAL_SAFE_TOOLSETS", "LEVELS", "MAY_CONTACT", "Policy", "Verdict", "ask_expiry", "classify",
-    "decide_table", "demote", "floor_class", "in_quiet_hours", "may_contact_of", "new_ask_code",
-    "parse_quiet_hours",
+    "INTERNAL_SAFE_TOOLSETS", "LEVELS", "MAY_CONTACT", "Policy", "Verdict", "ask_expiry", "boundary_crossed",
+    "classify", "decide_table", "demote", "floor_class", "in_quiet_hours", "last_boundary", "may_contact_of",
+    "new_ask_code", "parse_quiet_hours",
 ]

@@ -66,6 +66,9 @@ DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
+# How long a forced tick waits for a night it found due: what it consolidated is there when the tick
+# returns (the CLI, the harness). The 60 s timer tick never waits; the night runs in the background.
+CONSOLIDATION_WAIT_S = 300.0
 # Intention types formed because a commitment row was due; a deadline that moves back into the
 # future, or away, makes them stale.
 DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable"})
@@ -172,7 +175,7 @@ class Mind:
                                          enabled=self.faculties["deliberation"], budgets=self.policy.budgets)
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
-        # Nightly consolidation (architecture 3.1, 4.1, 4.2): off the tick's lock, once per local date.
+        # Nightly consolidation (architecture 3.1, 4.1, 4.2): once per night crossed since the last run.
         self.consolidation = Consolidation(
             store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
             router=router, outbox=self.outbox, autobiography=self.autobiography, request_message=self.request_message,
@@ -187,6 +190,7 @@ class Mind:
                 self.add_interest(str(topic), why="a declared identity interest", by="owner")
 
         self.started_at = self.clock()
+        self.consolidation.last_run(self.started_at)       # a fresh store is watched from its first start
         self.last_pull_at: Optional[datetime] = None
         self.last_tick_at: Optional[datetime] = None
         self.ticks = 0
@@ -381,7 +385,7 @@ class Mind:
             summary["expectations"] = self._resolve_expectations(now)
             summary["retention"] = self._retention(now)
             summary["backup"] = await self._backup(now)
-            summary["consolidation"] = self._schedule_consolidation(now)
+            summary["consolidation"] = await self._consolidation_step(now, force=force)
             if self.body_stale(now) and not force:
                 summary["skipped"] = "body stale"
                 return summary
@@ -603,14 +607,32 @@ class Mind:
         task = self._consolidation_task
         if task is not None and not task.done():
             return "running"
-        if not self.faculties.get("consolidation", True) or not self.consolidation.available:
-            return None
-        if not self.consolidation.due(now, tz=self.tz, quiet=self.quiet) or not self.authority.tokens_allowed(now):
+        if not self.consolidation.due(now):
             return None
         self._consolidation_task = asyncio.get_running_loop().create_task(
             self.consolidation.run(now), name="protagine-consolidation")
         self._consolidation_task.add_done_callback(self._consolidation_done)
         return "started"
+
+    async def _consolidation_step(self, now: datetime, *, force: bool) -> Optional[str]:
+        """A timer tick starts a due night and goes on; a forced tick waits for it, at most
+        ``CONSOLIDATION_WAIT_S``, so a probe after it reads what the night wrote. A night still
+        running after the wait keeps running in the background and is never cancelled by it."""
+        state = self._schedule_consolidation(now)
+        task = self._consolidation_task
+        if not force or state is None or task is None:
+            return state
+        try:
+            await asyncio.wait_for(asyncio.shield(task), CONSOLIDATION_WAIT_S)
+        except asyncio.TimeoutError:
+            return "running"
+        except asyncio.CancelledError:
+            if task.cancelled():        # ``mind off`` or ``stop()`` ended the night, not this tick
+                return "cancelled"
+            raise
+        except Exception:
+            return "failed"             # logged by the task's own callback
+        return "done"
 
     @staticmethod
     def _consolidation_done(task: asyncio.Task) -> None:
@@ -624,7 +646,7 @@ class Mind:
     async def consolidate(self, *, force: bool = True) -> Dict[str, Any]:
         """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness).
 
-        Forcing skips the window and the once-a-night marker, never a switch: with the mind off or
+        Forcing runs it whether or not a night was crossed, never past a switch: with the mind off or
         ``faculties.consolidation`` false nothing runs.
         """
         now = self.clock()

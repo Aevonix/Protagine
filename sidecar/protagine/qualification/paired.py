@@ -10,7 +10,7 @@ import re
 import sys
 from urllib.parse import urlsplit
 
-from . import paired_arms
+from . import paired_arms, paired_body
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
@@ -71,6 +71,9 @@ MESSAGE_TIMESTAMPS = {'gateway': {'protocol': MESSAGE_TIMESTAMPS_PROTOCOL, 'mode
 ENVIRONMENT_NOTE = {mode: {'protocol': ENVIRONMENT_NOTE_PROTOCOL, 'mode': mode, 'text': text,
                            'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
                     for mode, text in ENVIRONMENT_NOTES.items()}
+# The body clock's pinned start: every episode of every arm begins at this UTC time of day.
+CLOCK_START = {value: {'protocol': paired_body.CLOCK_START_PROTOCOL, 'utc': value}
+               for value in paired_body.CLOCK_STARTS}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
@@ -285,6 +288,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     environment_note = declared_mode(by_arm, 'environment_note', tuple(ENVIRONMENT_NOTES), 'environment note')
     if environment_note is not None and payload.get('environment_note') != ENVIRONMENT_NOTE_PROTOCOL:
         raise ValueError('An environment note requires an image whose worker carries it to every arm')
+    clock_start = declared_mode(by_arm, 'clock_start', paired_body.CLOCK_STARTS, 'clock start')
+    if clock_start is not None and payload.get('clock_start') != paired_body.CLOCK_START_PROTOCOL:
+        raise ValueError('A pinned clock start requires an image whose worker pins it in every arm')
     identifiers = [case.id for case in by_arm[first]]
     if not 1 <= len(identifiers) <= 128 or len(set(identifiers)) != len(identifiers):
         raise ValueError('Paired plan requires 1..128 distinct episodes')
@@ -329,6 +335,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
     if embedding is not None:
         comparison['embedding'] = deepcopy(embedding)
+    if clock_start is not None:
+        comparison['clock_start'] = deepcopy(CLOCK_START[clock_start])
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,

@@ -504,7 +504,7 @@ async def test_stances_come_from_the_stances_reader_and_cite_their_source_turn(f
 
 
 # ---------------------------------------------------------------------------
-# 6. The schedule: once per local date, in the quiet window, off the tick's lock
+# 6. The schedule: once per night crossed (a local boundary since the last run), persisted
 # ---------------------------------------------------------------------------
 
 def test_default_faculties_include_the_memory_flags():
@@ -512,65 +512,186 @@ def test_default_faculties_include_the_memory_flags():
     assert DEFAULT_FACULTIES["semantic_recall"] is True
 
 
-async def test_consolidation_runs_once_per_night_in_the_quiet_window_and_survives_a_restart(tmp_path, monkeypatch):
+def test_the_nightly_boundary_is_a_local_time_of_day_crossed_since_the_last_run():
+    from zoneinfo import ZoneInfo
+    from protagine.mind.authority import boundary_crossed, last_boundary
+
+    def at(hour, minute=0, day=24):
+        return datetime(2026, 9, day, hour, minute, tzinfo=UTC)
+
+    assert last_boundary(at(12), UTC, 180) == at(3)
+    assert last_boundary(at(3), UTC, 180) == at(3)
+    assert last_boundary(at(2, 59), UTC, 180) == at(3, day=23)
+    assert boundary_crossed(at(2, 59), at(3), tz=UTC, minute=180)
+    assert not boundary_crossed(at(3), at(3), tz=UTC, minute=180)                 # (since, now]: never twice
+    assert not boundary_crossed(at(3, 1), at(23, 59), tz=UTC, minute=180)
+    assert boundary_crossed(at(1, day=22), at(9), tz=UTC, minute=180)             # slept through it: once
+    new_york = ZoneInfo("America/New_York")
+    assert last_boundary(at(6, 30), new_york, 180) == at(7, day=23)              # 02:30 local: yesterday's 03:00
+    assert boundary_crossed(at(6, 30), at(7, 10), tz=new_york, minute=180)       # 03:10 local
+    assert last_boundary(at(12), new_york, 22 * 60) == at(2)                      # 22:00 local the evening before
+
+
+def night_rows(fx):
+    return [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "consolidation"]
+
+
+@pytest.mark.parametrize("start", ["00:30", "02:59", "03:00", "12:00", "23:59"])
+async def test_a_fresh_store_runs_once_per_night_crossed_whatever_hour_its_clock_started(tmp_path, monkeypatch, start):
+    """The rule a benchmark episode relies on: the first tick of a fresh store never consolidates, a tick a
+    day later always does, inline when forced, and the same instant never runs twice, whatever the hour."""
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    hour, minute = (int(part) for part in start.split(":"))
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, hour, minute, tzinfo=UTC))
+    marker = fx.mind.mind_state.get(LAST_KEY)
+    assert marker["text"] == "" and marker["half_life_s"] is None               # watched from here, never run
+    assert marker["updated_at"] == fx.now.isoformat()
     settled_task(fx)
-    fx.shift(minutes=10)                                                   # the body never pulled: stale
-    summary = await fx.mind.tick()                                         # a timer tick, not forced
-    assert summary["skipped"] == "body stale" and summary["consolidation"] == "started"
-    assert fx.mind.state()["consolidation"]["running"] is True
-    await fx.mind._consolidation_task
-    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
-    note = fx.store.get_by_dedup_key("consolidation:2026-09-24")
-    assert note.status == "done" and note.outcome == "done" and note.kind == "note" and note.cost_tokens == 100
-    assert fx.mind.state()["consolidation"] == {"last": "2026-09-24", "running": False, "last_tokens": 100}
-    fx.shift(minutes=30)
-    assert (await fx.mind.tick())["consolidation"] is None                 # the same night: once
+    assert (await fx.mind.tick(force=True))["consolidation"] is None
+    assert night_rows(fx) == [] and fx.router.calls == []
+    fx.shift(hours=24)
+    summary = await fx.mind.tick(force=True)
+    assert summary["consolidation"] == "done"                                   # the forced tick waited for it
+    night, = night_rows(fx)
+    assert night.status == "done" and fx.router.tasks() == [TASK_NARRATIVE]
+    assert fx.mind.state()["consolidation"]["running"] is False
+    assert (await fx.mind.tick(force=True))["consolidation"] is None            # the same instant: once
     fx.restart()
-    assert (await fx.mind.tick())["consolidation"] is None                 # the marker persists across a restart
-    assert fx.mind.state()["consolidation"]["last"] == "2026-09-24"
-    fx.shift(days=1)
-    assert (await fx.mind.tick())["consolidation"] == "started"            # the next night runs again
-    await fx.mind._consolidation_task
-    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
+    assert (await fx.mind.tick(force=True))["consolidation"] is None            # the marker survives a restart
+    assert len(night_rows(fx)) == 1
     fx.store.close()
 
 
-async def test_consolidation_waits_for_the_window_and_respects_every_off_switch(tmp_path, monkeypatch):
+async def test_the_timer_tick_runs_the_night_in_the_background_once_and_again_the_next_night(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    noon = Fixture(tmp_path / "noon", config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC))
-    assert (await noon.mind.tick())["consolidation"] is None
-    noon.store.close()
-    # Without quiet hours the window opens at 03:00 local (the backup's rule), in the configured timezone.
-    early = Fixture(tmp_path / "early", config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 2, 30, tzinfo=UTC),
-                    timezone_name="UTC")
-    assert (await early.mind.tick())["consolidation"] is None
-    early.shift(minutes=40)
-    assert (await early.mind.tick())["consolidation"] == "started"
-    await early.mind._consolidation_task
-    early.store.close()
-    local = Fixture(tmp_path / "local", config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 6, 30, tzinfo=UTC),
-                    timezone_name="America/New_York")                       # 02:30 local: not yet
-    assert (await local.mind.tick())["consolidation"] is None
-    local.shift(minutes=40)                                                 # 03:10 local
-    assert (await local.mind.tick())["consolidation"] == "started"
-    await local.mind._consolidation_task
-    assert local.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"     # the local date
-    local.store.close()
-    off = Fixture(tmp_path / "off", config={"quiet_hours": "22:00-07:00", "faculties": {"consolidation": False}},
-                  at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
-    assert (await off.mind.tick())["consolidation"] is None
-    off.store.close()
-    switched = Fixture(tmp_path / "switched", config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC))
+    settled_task(fx)
+    fx.shift(hours=15, minutes=10)                                              # 03:10: the body never pulled
+    summary = await fx.mind.tick()                                              # a timer tick, not forced
+    assert summary["skipped"] == "body stale" and summary["consolidation"] == "started"
+    assert fx.mind.state()["consolidation"]["running"] is True
+    await fx.mind._consolidation_task
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
+    note = fx.store.get_by_dedup_key("consolidation:2026-09-25")
+    assert note.status == "done" and note.outcome == "done" and note.kind == "note" and note.cost_tokens == 100
+    assert fx.mind.state()["consolidation"] == {"last": "2026-09-25", "running": False, "last_tokens": 100}
+    fx.shift(hours=20)
+    assert (await fx.mind.tick())["consolidation"] is None                      # 23:10: the same night
+    fx.restart()
+    assert (await fx.mind.tick())["consolidation"] is None
+    fx.shift(hours=4)
+    assert (await fx.mind.tick())["consolidation"] == "started"                 # 03:10 the next day
+    await fx.mind._consolidation_task
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-26"
+    fx.store.close()
+
+
+async def test_the_boundary_is_the_start_of_the_quiet_window_in_local_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+                 timezone_name="America/New_York")                              # 08:00 local
+    fx.shift(hours=13, minutes=50)                                              # 21:50 local: not yet
+    assert (await fx.mind.tick(force=True))["consolidation"] is None
+    fx.shift(minutes=20)                                                        # 22:10 local, 02:10 UTC the next day
+    assert (await fx.mind.tick(force=True))["consolidation"] == "done"
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"             # the local date
+    fx.store.close()
+
+
+async def test_a_forced_tick_waits_for_the_night_only_so_long(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    monkeypatch.setattr("protagine.mind.tick.CONSOLIDATION_WAIT_S", 0.05)
+
+    class HangingRouter(NightRouter):
+        async def complete(self, messages, *, context=None, **kwargs):
+            await asyncio.Event().wait()
+
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+                 router=HangingRouter())
+    settled_task(fx)
+    fx.shift(days=1)
+    summary = await fx.mind.tick(force=True)
+    assert summary["consolidation"] == "running" and summary["formed"] is not None   # the tick went on
+    task = fx.mind._consolidation_task
+    assert task is not None and not task.done()                                 # not cancelled by the wait
+    assert (await fx.mind.tick(force=True))["consolidation"] == "running"
+    await fx.mind.stop()
+    assert task.cancelled() and fx.mind.mind_state.get(LAST_KEY)["text"] == ""
+    fx.store.close()
+
+
+def test_the_plugin_and_cli_ticks_wait_longer_than_a_forced_tick_waits_for_its_night(tmp_path, monkeypatch, capsys):
+    """The harness's body tick and ``protagine mind tick`` read what the night wrote only if they do not
+    give up on the forced tick before the night it waits for can finish."""
+    import protagine_hermes
+    from protagine.config import DEFAULTS, save_config
+    from protagine.mind import cli as mind_cli
+    from protagine.mind.tick import CONSOLIDATION_WAIT_S
+
+    posts = []
+
+    class Client:
+        def has_mind_routes(self):
+            return True
+
+        def post(self, path, **kwargs):
+            posts.append((path, kwargs.get("timeout")))
+            return SimpleNamespace(is_success=True, json=lambda: {"formed": []})
+
+    monkeypatch.setattr(protagine_hermes, "_BODY", SimpleNamespace(client=Client(), run_once=lambda mind: {}))
+    protagine_hermes.tick()
+    assert posts[0][0] == "/v1/mind/tick" and posts[0][1] > CONSOLIDATION_WAIT_S
+
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
+    monkeypatch.delenv("PROTAGINE_API_KEY", raising=False)
+    save_config({**DEFAULTS, "owner": {"contact_id": OWNER}}, tmp_path)
+    (tmp_path / "api.key").write_text("k\n")
+    timeouts = []
+    real_client = httpx.Client
+
+    def client(**kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return real_client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"tick": 1})),
+                           timeout=kwargs.get("timeout", 5))
+
+    monkeypatch.setattr(httpx, "Client", client)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--instance", default=None)
+    mind_cli.add_parser(parser.add_subparsers(dest="command"))
+    assert mind_cli.run(parser.parse_args(["mind", "tick"])) == 0
+    assert timeouts and timeouts[-1] > CONSOLIDATION_WAIT_S
+    capsys.readouterr()
+
+
+async def test_consolidation_is_never_due_with_a_switch_off_even_after_a_night(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    noon = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    off = Fixture(tmp_path / "off", config={"quiet_hours": "", "faculties": {"consolidation": False}}, at=noon)
+    switched = Fixture(tmp_path / "switched", config={"quiet_hours": ""}, at=noon)
+    routerless = Fixture(tmp_path / "routerless", config={"quiet_hours": ""}, at=noon)
+    spent = Fixture(tmp_path / "spent", config={"quiet_hours": "", "budgets": {"llm_tokens_per_day": 1000}}, at=noon)
+    row, _ = spent.store.create_intention(kind="note", type="deliberation", title="earlier thinking", drive="upkeep",
+                                          cls="internal", decision="act", decision_reason="r", status="done",
+                                          dedup_key=None, hermes_kind="none", created_at=noon + timedelta(hours=23))
+    spent.store.update(row.id, cost_tokens=1000)
     switched.mind.off()
-    assert (await switched.mind.tick()).get("consolidation") is None
-    switched.store.close()
-    routerless = Fixture(tmp_path / "routerless", config={"quiet_hours": "22:00-07:00"},
-                         at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC))
-    routerless.mind.router = None                                          # the setter reaches consolidation too
-    assert (await routerless.mind.tick())["consolidation"] is None
-    routerless.store.close()
+    routerless.mind.router = None                                              # the setter reaches consolidation
+    for fx in (off, switched, routerless, spent):
+        fx.shift(days=1)
+        assert fx.mind.consolidation.due(fx.now) is (fx is switched)        # mind off: the tick returns first
+        assert (await fx.mind.tick(force=True)).get("consolidation") is None
+        assert night_rows(fx) == []
+        fx.store.close()
+
+
+async def test_a_night_summarises_every_session_since_the_last_run(fx):
+    """A night a day after the last run (a benchmark's clock advance, a laptop that slept) still sees the
+    sessions of that day, not only the last 24 hours."""
+    for index in range(3):
+        fx.turn(f"c-{index}", CONTACT, "sms-p02", f"Can you send me slide {index}?", "On its way.")
+    fx.shift(hours=24, minutes=10)
+    assert (await fx.mind.tick(force=True))["consolidation"] == "done"
+    assert fx.router.tasks().count(TASK_EPISODE) == 1
 
 
 async def test_a_running_night_is_reported_and_not_started_twice(tmp_path, monkeypatch):
@@ -581,15 +702,16 @@ async def test_a_running_night_is_reported_and_not_started_twice(tmp_path, monke
             await asyncio.sleep(0.2)
             return await super().complete(messages, context=context, **kwargs)
 
-    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
                  router=SlowRouter())
     settled_task(fx)
+    fx.shift(days=1)
     assert (await fx.mind.tick())["consolidation"] == "started"
     await asyncio.sleep(0.05)
     assert (await fx.mind.tick())["consolidation"] == "running"
     assert (await fx.mind.consolidate())["skipped"] == "running"            # the force path does not overlap it
     await fx.mind._consolidation_task
-    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
     await fx.mind.stop()
     fx.store.close()
 
@@ -601,19 +723,20 @@ async def test_stop_cancels_a_night_in_flight_and_the_next_run_resumes_the_same_
         async def complete(self, messages, *, context=None, **kwargs):
             await asyncio.Event().wait()
 
-    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
                  router=HangingRouter())
     settled_task(fx)
+    fx.shift(days=1)
     assert (await fx.mind.tick())["consolidation"] == "started"
     await asyncio.sleep(0.05)
     await fx.mind.stop()
-    assert fx.mind._consolidation_task is None and fx.mind.mind_state.get(LAST_KEY) is None
-    note = fx.store.get_by_dedup_key("consolidation:2026-09-24")
+    assert fx.mind._consolidation_task is None and fx.mind.mind_state.get(LAST_KEY)["text"] == ""
+    note = fx.store.get_by_dedup_key("consolidation:2026-09-25")
     assert note.status == "dispatched"                                      # the night is not marked done
     fx.mind.router = NightRouter()
     night = await fx.mind.consolidate(force=False)
     assert night["id"] == note.id and fx.store.get(note.id).status == "done"
-    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-24"
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
     fx.store.close()
 
 
@@ -626,22 +749,23 @@ async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both
         async def complete(self, messages, *, context=None, **kwargs):
             await asyncio.Event().wait()
 
-    fx = Fixture(tmp_path, config={"quiet_hours": "22:00-07:00"}, at=datetime(2026, 9, 24, 1, 0, tzinfo=UTC),
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
                  router=HangingRouter())
     settled_task(fx)
+    fx.shift(days=1)
     assert (await fx.mind.tick())["consolidation"] == "started"
     await asyncio.sleep(0.05)
     task = fx.mind._consolidation_task
     fx.mind.off()
     await asyncio.sleep(0.05)
     assert task.cancelled() and fx.mind.state()["consolidation"]["running"] is False
-    assert fx.store.get_by_dedup_key("consolidation:2026-09-24").status == "dispatched"
-    assert fx.mind.mind_state.get(LAST_KEY) is None
+    assert fx.store.get_by_dedup_key("consolidation:2026-09-25").status == "dispatched"
+    assert fx.mind.mind_state.get(LAST_KEY)["text"] == ""
     fx.mind.router = NightRouter()
     assert (await fx.mind.consolidate())["skipped"] == "off" and fx.mind.router.calls == []
     fx.mind.on()
     night = await fx.mind.consolidate()
-    assert night["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id   # resumed, not a second row
+    assert night["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-25").id   # resumed, not a second row
     assert fx.store.get(night["id"]).status == "done"
     fx.store.close()
     flagged = Fixture(tmp_path / "flag", config={"faculties": {"consolidation": False}})
@@ -651,19 +775,21 @@ async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both
     flagged.store.close()
 
 
-async def test_a_forced_run_after_a_finished_night_is_a_new_row_and_old_interrupted_nights_are_closed(tmp_path, monkeypatch):
+async def test_a_second_run_the_same_date_is_a_new_row_and_old_interrupted_nights_are_closed(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fx = Fixture(tmp_path, at=datetime(2026, 9, 24, 4, 0, tzinfo=UTC))
+    fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 2, 0, tzinfo=UTC))
     stale, _ = fx.store.create_intention(
         kind="note", type="consolidation", title="nightly consolidation 2026-09-22", drive="upkeep", cls="internal",
         decision="act", decision_reason="nightly", status="dispatched", dedup_key="consolidation:2026-09-22",
         hermes_kind="none", created_at=fx.now - timedelta(days=2))
-    first = await fx.mind.consolidate(force=False)
-    assert first["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id
+    assert (await fx.mind.consolidate(force=False))["skipped"] == "done"       # no night crossed yet
+    forced = await fx.mind.consolidate()                                       # 02:00: forced, ignores the boundary
+    assert forced["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id
     closed = fx.store.get(stale.id)
-    assert closed.status == "cancelled" and "interrupted" in closed.result          # the log never shows it running
-    again = await fx.mind.consolidate()                                             # forced: a second row that night
-    assert again["id"] != first["id"] and fx.store.get(again["id"]).status == "done"
+    assert closed.status == "cancelled" and "interrupted" in closed.result     # the log never shows it running
+    fx.shift(hours=2)                                                          # 04:00: 03:00 crossed since the run
+    nightly = await fx.mind.consolidate(force=False)
+    assert nightly["id"] != forced["id"] and fx.store.get(nightly["id"]).status == "done"
     assert (await fx.mind.consolidate(force=False))["skipped"] == "done"
     fx.store.close()
 

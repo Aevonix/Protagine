@@ -2,7 +2,9 @@
 
 Status: pre-registered plan for the memory family (evals plan section 6.1), the identity
 family (section 6.7) and the LongMemEval_S anchor (section 6.1), build plan M8. Written from
-the dev render of 2026-09-23, before any pilot: `n` below is the evals plan's default until
+the dev render of 2026-09-23 and amended on 2026-09-24 (every scenario crosses one night
+before the probe, and every episode starts at 12:00 UTC; evals plan, "Amendments"), before
+any pilot: `n` below is the evals plan's default until
 the paired dev pilot sets it, and ported onto the M4 line, whose built-in arm profiles replace
 the families' profile file. The gate's own numbers land in the run's report, never here.
 
@@ -23,16 +25,17 @@ the families' profile file. The gate's own numbers land in the run's report, nev
 |---|---|---|
 | Dataset id / version | `mind-memory-1` (generator protocol `paired-generator-1`, episode grammar `paired-workflow-runtime-1`, history `paired-history-1`) | `mind-self-1` (same protocols, body grading `paired-body-tick-1`) |
 | Dev templates | `benchmarks/paired/generators/memory.py`: 6 `recall` (`fact-after-restart`, `fact-across-channels`, `knowledge-update`, `scoped-correction`, `preference-after-distractors`, `own-action-recall`), 2 `abstain` (`never-said`, `contradiction-ask`) | `benchmarks/paired/generators/identity.py`: 3 `narrative` (`stance-after-restart`, `self-report-after-action`, `self-report-nothing-done`), 2 `premise` (`false-premise`, `true-premise`) |
-| Dev split (this render) | seed 7, `--per-template 3`, 24 episodes (18 recall, 6 abstain); content hash `855a8d4e6ab0075cf78e8e3393e313eca3c2b8c3f4e57877cf3d8eccefc6c8b3`, at `~/protagine-bench/families/mind-memory-1-dev-7` | seed 7, `--per-template 3`, 15 episodes (9 narrative, 6 premise); content hash `7adcbd5b230f47f2c61b304bb14b9ed6f3cbf171527a704a9cc3da989d463b2a`, at `~/protagine-bench/families/mind-self-1-dev-7` |
-| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, covers the eight scenario types of section 6.1 with phrasings not written to match the dev generators, and keeps the two abstention types as hard controls | Same mechanism; declares `mind-self-1`, covers types (a), (b) with a true and a false premise, and (c) with and without an unprompted action |
+| Dev split (this render) | seed 7, `--per-template 3`, 24 episodes (18 recall, 6 abstain); content hash `30fa34aa6ea0340bd755ae1689954acb59bfb90877f93fb426b4e504f78ce06d` (the 2026-09-24 render; the pre-amendment `855a8d4e...` split is retired), rendered to `~/protagine-bench/families/mind-memory-1-dev-7` | seed 7, `--per-template 3`, 15 episodes (9 narrative, 6 premise); content hash `032fd22fca7d7ab17528aa7023a34795c5ae09882a73f58149faed29194d86ee` (the 2026-09-24 render; `7adcbd5b...` is retired), rendered to `~/protagine-bench/families/mind-self-1-dev-7` |
+| Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from the schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository and the file is never committed. It declares the same `FAMILY`, covers the eight scenario types of section 6.1 with phrasings not written to match the dev generators, and keeps the two abstention types as hard controls. The brief requires every scenario to cross one night (at least 24 h of clock, then a tick) before the probe, with any restart after it | Same mechanism; declares `mind-self-1`, covers types (a), (b) with a true and a false premise, and (c) with and without an unprompted action; the same night crossing before the probe |
 | Held-out rendering at the gate | a fresh 32-bit seed chosen at plan time, `--per-template` set so the split holds at least `n` scenarios, into a fresh private directory whose content hash the plan freezes; never re-rendered over; a failed gate is re-tested only on fresh instances | same |
-| Episode shape | owner turns in plain words, in one or two sessions; a process restart (`workflow.restart_before`) right before the probe session where the type calls for one; one probe turn asking for `answer.json`, graded by `keys_equal` plus `label_one_of` (strings, case-insensitive) or `number`, with the stale value `forbidden` where the type says so | the same, plus `advance_clock` and `tick: 3` before the probe in the premise and self-report types, an `inbound` contact message in `true-premise`, and the `self_report` oracle for the two self-report types |
+| Episode shape | owner turns in plain words, in one or two sessions; one night crossed (`advance_clock: 86400`, then `tick: 1`) after the setup; a process restart (`workflow.restart_before`) right before the probe session where the type calls for one; one probe turn asking for `answer.json`, graded by `keys_equal` plus `label_one_of` (strings, case-insensitive) or `number`, with the stale value `forbidden` where the type says so | the same, plus `advance_clock` and `tick: 3` before the night in `false-premise` and the self-report types, an `inbound` contact message in `true-premise`, and the `self_report` oracle for the two self-report types |
 
 ## 3. Instrument settings (identical in every arm)
 
 | Setting | Value | Where it is frozen |
 |---|---|---|
 | Tool loading, body clock, environment note | as `mind-initiative-1`: `tool_loading: eager`, `message_timestamps: gateway`, `environment_note: messaging` | `comparison.*`, the protocols `paired-tool-loading-1`, `paired-message-timestamps-1`, `paired-environment-note-1` |
+| Clock start | every episode's body clock starts at the next 12:00 UTC (`clock_start: '12:00'`), in every arm; a restarted phase continues it. The night crossed before the probe (03:00 local, the mind's nightly boundary with quiet hours off) is therefore the only one in the episode, whatever hour the run starts | `comparison.clock_start`, protocol `paired-clock-start-1`; the plan refuses an image without it |
 | Process restart | `workflow: {restart_before: [i], snapshot_after: [], read_failures: []}` on the scenarios that declare one; the supervisor runs the probe session in a fresh worker process over the preserved `/state`; `lifecycle:*` checks join the scenario's checks | scenario `workflow`, protocol `paired-workflow-runtime-1`; the plan refuses an image without it |
 | Seeded history (anchor only) | `history` sessions imported into Hermes `state.db` in every arm and into the Protagine ledger in plugin arms before the first turn, without model calls | scenario `history`, protocol `paired-history-1`; the plan refuses an image without it |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
@@ -45,9 +48,13 @@ the families' profile file. The gate's own numbers land in the run's report, nev
 Every arm is a built-in profile of the harness (`paired.PROFILES`; no `--profiles` file).
 Faculty flags are the `mind.faculties.*` binary switches of the architecture (section 9): a
 `full-<faculty>` arm is `full` with the `minus_<faculty>` switch, which the worker's mind section
-turns into `mind.faculties.<faculty>: false` in the disposable `protagine.yaml`. **The M8
-faculty code does not exist on this base yet**: the flags are served from `config.DEFAULTS` and
-read by nothing until M8 lands, so until then a `full-<faculty>` arm behaves as `full`.
+turns into `mind.faculties.<faculty>: false` in the disposable `protagine.yaml`. Since M8 the
+mind reads `consolidation` (the nightly run: narrative delta, contradictions, per-contact
+digests, episode summaries), `self_narrative` (the narrative's sections and its prompt block)
+and `semantic_recall` (the embedding provider). A night runs only when the body clock crosses
+the nightly boundary after the served mind first started, which the amended templates do once,
+right before the probe; before the amendment no episode crossed one and `full-consolidation`
+could not differ from `full`.
 
 | Arm | Profile | Memory | Self |
 |---|---|---|---|
@@ -116,9 +123,14 @@ instrument acceptance: `base_hermes` completes at least 95% of setup turns and p
 
 ## 8. Known limitations recorded with the plan
 
-- The benchmark worker forces `PROTAGINE_EMBED_PROVIDER=skip`, so semantic recall is off in
-  every plugin arm today; `full-semantic_recall` cannot differ from `full` until the
-  worker is given an embedding endpoint. The flag rule is judged only from a run that has one.
+- Without `paired plan --embedding-config` the benchmark worker sets
+  `PROTAGINE_EMBED_PROVIDER=skip` in every plugin arm, so `full-semantic_recall` cannot differ
+  from `full`. With it, every case carries the same endpoint and every arm but
+  `full-semantic_recall` embeds. The flag rule is judged only from a run that has one.
+- `stance-after-restart` cannot move with the narrative in this milestone: the narrative's
+  `stances` section is filled only once M7 supplies stances, so that type is not expected to
+  separate `full` from `full-self_narrative` until then. The self contrast rests on the
+  self-report and premise types.
 - "Two owner platforms" is two owner sessions with different session ids; the worker gives
   every owner turn the `cli` platform. The channel difference is a session difference.
 - The self-report grader's observed set is the ids of tasks the agent created during ticks plus

@@ -1,7 +1,7 @@
 # Nightly consolidation
 
-Sleep-time compute for the mind (architecture 3.1, 4.1, 4.2; build plan M8). Once per local
-date, in the quiet window, the sidecar consolidates what the day left in its stores: the
+Sleep-time compute for the mind (architecture 3.1, 4.1, 4.2; build plan M8). Once per night
+crossed, the sidecar consolidates what the time since the last run left in its stores: the
 self-narrative delta, contradictions turned into questions, claim dedupe, per-contact digests
 and episode summaries. It runs inside the token budget, writes only to stores that already
 exist, and its whole record is one audit row.
@@ -13,18 +13,18 @@ Code: `sidecar/protagine/mind/consolidate.py` (`Consolidation`); the schedule is
 
 | Condition | Rule |
 |---|---|
-| Window | Inside `mind.quiet_hours` when they are set, else at or after 03:00 local (the same rule as the nightly backup); `PROTAGINE_AGENT_TIMEZONE` decides "local" |
-| Once a night | `mind_state["consolidation.last"]` holds the local date of the last run; the tick starts nothing while it equals today |
+| The boundary | The nightly boundary is a local time of day: the start of `mind.quiet_hours` when they are set, else 03:00 local; `PROTAGINE_AGENT_TIMEZONE` decides "local" |
+| Due | The boundary fell in `(last run, now]`. `mind_state["consolidation.last"]` (no half-life) holds the moment of the last run in `updated_at` and its local date in `text`; a store without it is marked at the mind's first start, so a fresh store never consolidates before its first night has passed, whatever hour it started at. So: once per night crossed, never twice for the same night, and once for a machine that slept through the boundary |
 | Switches | `mind.faculties.consolidation` (the schedule), `mind.enabled` / `protagine mind off` (the tick returns before the schedule), a router that supports function routing, and `Authority.tokens_allowed()` (the shared day budget) |
-| How | One `asyncio` task started by the tick, off the tick's lock, before the body-stale check: the body (Hermes) is not needed. `Mind.stop()` and `protagine mind off` cancel a night in flight at once |
-| Forcing | `protagine mind consolidate` (`POST /v1/mind/consolidate`) runs it inline now, whatever the window or the marker; never with the mind off or `faculties.consolidation` false (`{skipped: off}` / `{skipped: consolidation off}`) |
+| How | The 60 s timer tick starts one `asyncio` task off the tick's lock, before the body-stale check (the body, Hermes, is not needed), and goes on. A forced tick (`POST /v1/mind/tick`: `protagine mind tick`, the plugin's `tick()`, the benchmark body) awaits a night it found due, at most 300 s (`CONSOLIDATION_WAIT_S`), so what the night wrote is there when the tick returns; a night still running then keeps running in the background. `Mind.stop()` and `protagine mind off` cancel a night in flight at once |
+| Forcing | `protagine mind consolidate` (`POST /v1/mind/consolidate`) runs it inline now, whether or not a night was crossed; never with the mind off or `faculties.consolidation` false (`{skipped: off}` / `{skipped: consolidation off}`). It too marks the moment of the last run |
 
 `Mind.state()["consolidation"]` reports `{last, running, last_tokens}`. A night interrupted mid-way
-(a restart, `mind off`) leaves its audit row `dispatched`; the next run that date, scheduled or
-forced, resumes on that row, and every stage is idempotent, so nothing is redone or doubled. A
-row left `dispatched` from an earlier date is closed as `cancelled` ("interrupted") by the next
-run, so the audit log never shows a night still running that is not. A forced run after the
-night already finished writes a second row for that date.
+(a restart, `mind off`) leaves its audit row `dispatched` and the marker unmoved, so the night is
+still due; the next run that date, scheduled or forced, resumes on that row, and every stage is
+idempotent, so nothing is redone or doubled. A row left `dispatched` from an earlier date is closed
+as `cancelled` ("interrupted") by the next run, so the audit log never shows a night still running
+that is not. A second run on a local date that already has a finished one writes a second row.
 
 ## What runs, in order
 

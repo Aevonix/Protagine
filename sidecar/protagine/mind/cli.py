@@ -20,7 +20,7 @@ from protagine.config import load_config, read_api_key, update_config
 from .audit import render_log, render_stats
 from .authority import CLASSES, LEVELS
 from .outcomes import VERDICTS
-from .tick import OFF_MARKER
+from .tick import CONSOLIDATION_WAIT_S, OFF_MARKER
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
             "concerns", "goals", "interest", "consolidate", "narrative")
@@ -178,7 +178,7 @@ def run(args: argparse.Namespace) -> int:
                 value = {"enabled": True, "note": f"sidecar unreachable ({exc}); marker removed"}
             _emit(value, as_json=as_json, text="mind on" + (f" ({value['note']})" if value.get("note") else ""))
         elif command == "tick":
-            value = sidecar.call("POST", "/v1/mind/tick", timeout=120)
+            value = sidecar.call("POST", "/v1/mind/tick", timeout=CONSOLIDATION_WAIT_S + 120)
             formed = ", ".join(f"{item['type']}={item['decision']}" for item in value.get("formed", [])) or "nothing"
             _emit(value, as_json=as_json, text=f"tick {value.get('tick')}: formed {formed}"
                   + (f"; skipped: {value['skipped']}" if value.get("skipped") else ""))

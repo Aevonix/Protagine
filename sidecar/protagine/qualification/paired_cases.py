@@ -124,6 +124,9 @@ GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
 # Every turn and cron run of a generated family carries the same description of
 # the body (paired_worker.ENVIRONMENT_NOTES); the frozen datasets carry none.
 GENERATED_ENVIRONMENT_NOTE = 'messaging'
+# Every episode of a generated family starts its body clock at this UTC time of day, in
+# every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
+GENERATED_CLOCK_START = '12:00'
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
 # A generated scenario may also declare a process-restart contract (``workflow``, the
@@ -253,6 +256,7 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['tool_loading'] = GENERATED_TOOL_LOADING
             inputs['message_timestamps'] = GENERATED_MESSAGE_TIMESTAMPS
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
+            inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
                 # the probe and the workflow grader checks the lifecycle and the checkpoints.

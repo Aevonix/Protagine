@@ -110,7 +110,8 @@ def tick() -> dict[str, Any]:
     result: dict[str, Any] = {"mind_tick": None}
     try:
         if _BODY.client.has_mind_routes() is True:
-            response = _BODY.client.post("/v1/mind/tick", timeout=60)
+            # A forced tick waits up to 300 s for a nightly consolidation it found due.
+            response = _BODY.client.post("/v1/mind/tick", timeout=420)
             result["mind_tick"] = response.json() if response.is_success else {"http": response.status_code}
     except (SidecarUnavailable, ValueError) as error:
         result["mind_tick"] = {"error": type(error).__name__}

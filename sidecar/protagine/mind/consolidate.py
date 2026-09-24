@@ -1,6 +1,7 @@
 """Nightly consolidation: sleep-time compute inside the token budget (architecture 3.1, 4.1, 4.2).
 
-Once per local date, in the quiet window, the mind consolidates what the day
+Once per night crossed (the local boundary, the start of the quiet window or
+03:00, fell since the last run), the mind consolidates what the time since then
 left in its stores, cheapest and most valuable first:
 
 1. the self-narrative delta: one call that edits only ``self.recent``; every
@@ -37,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from . import audit
-from .authority import in_quiet_hours
+from .authority import boundary_crossed
 from .concerns import SETTLED_FOR
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,14 @@ SELF_TURN_SQL = "s.session_id<>'mind' AND s.turn_id NOT LIKE 'mind:%'"
 DIGEST_CHARS, DIGEST_CONTACTS_PER_NIGHT, DIGEST_WINDOW = 600, 6, timedelta(days=7)
 DIGEST_CLAIMS = 40
 EPISODES_PER_NIGHT, EPISODE_MIN_TURNS, EPISODE_CHARS = 8, 3, 6000
-EPISODE_WINDOW = timedelta(hours=24)
+EPISODE_WINDOW, EPISODE_MAX_WINDOW = timedelta(hours=24), timedelta(days=7)    # or back to the last run
 NARRATIVE_KEYS = ("self.interests", "self.strengths", "self.recent", "self.stances")
 NARRATIVE_CHARS, SECTION_CHARS, RECENT_DAYS, STRENGTHS_DAYS = 2000, 500, 7, 30
 NARRATIVE_LINES, NARRATIVE_AUDIT_ROWS, NARRATIVE_FINDINGS = 8, 40, 10
-LAST_KEY = "consolidation.last"                                                 # mind_state text = local date
+# mind_state, no half-life: updated_at = the moment of the last run (of the first sighting until one ran),
+# text = that run's local date ("" before the first run).
+LAST_KEY = "consolidation.last"
+NIGHT_MINUTE = 180                                                              # 03:00 local without quiet hours
 CITE = re.compile(r"\[([^\[\]]+)\]$")                                            # trailing "[id, id]" on a line
 RUN_DEADLINE_S = 900.0
 DEFAULT_DEADLINE = 60.0
@@ -114,6 +118,7 @@ class Night:
 
     local_date: str
     started_at: str
+    since: str = ""                     # the previous run: the sessions since then are the night's episodes
     note_id: str = ""
     budget: int = 0
     tokens: int = 0
@@ -253,18 +258,33 @@ class Consolidation:
         return now.astimezone(tz or self.tz).date().isoformat()
 
     def last_date(self) -> Optional[str]:
+        """The local date of the last run, None before the first."""
         entry = self.mind_state.get(LAST_KEY)
         return (entry or {}).get("text") or None
 
-    def due(self, now: datetime, *, tz: Any = None, quiet: Optional[tuple] = None) -> bool:
-        """Once per local date, inside the quiet window (or after 03:00 local without one), with a router."""
-        tz = tz or self.tz
-        quiet = self.quiet if quiet is None else quiet
-        local = now.astimezone(tz)
-        if self.last_date() == local.date().isoformat():
+    def boundary_minute(self) -> int:
+        """The nightly boundary: the start of the quiet window when there is one, else 03:00 local."""
+        quiet = self.quiet
+        return int(quiet[0]) if quiet and quiet[0] != quiet[1] else NIGHT_MINUTE
+
+    def last_run(self, now: datetime) -> datetime:
+        """The moment of the last run. A store with none is watched from ``now`` on, so it never
+        consolidates before its first night has passed, whatever the hour it started at."""
+        moment = _utc((self.mind_state.get(LAST_KEY) or {}).get("updated_at"))
+        if moment is None:
+            self.mind_state.set(LAST_KEY, text="", now=now)
+            return now
+        return moment
+
+    def crossed(self, now: datetime) -> bool:
+        """The nightly boundary fell since the last run."""
+        return boundary_crossed(self.last_run(now), now, tz=self.tz, minute=self.boundary_minute())
+
+    def due(self, now: datetime) -> bool:
+        """A night crossed since the last run, with the faculty on, a router and day budget left."""
+        if not self.faculties.get("consolidation", True) or not self.available:
             return False
-        window = in_quiet_hours(local.hour * 60 + local.minute, quiet) if quiet else local.hour >= 3
-        return bool(window) and self.available
+        return self.crossed(now) and bool(self.tokens_allowed())
 
     # -- the run ----------------------------------------------------------------------------
 
@@ -277,21 +297,18 @@ class Consolidation:
         return max(0, int(share * per_day))
 
     async def run(self, now: datetime | None = None, *, force: bool = False) -> Dict[str, Any]:
-        """The whole night, resumable per stage; ``force`` ignores the once-per-date marker."""
+        """The whole night, resumable per stage; ``force`` runs it whether or not a night was crossed."""
         now = now or self.clock()
         local_date = self.local_date(now)
         if self._running:
             return {"skipped": "running", "local_date": local_date}
-        if not force and self.last_date() == local_date:
+        if not force and not self.crossed(now):
             return {"skipped": "done", "local_date": local_date}
+        since = self.last_run(now)
         key = f"consolidation:{local_date}"
         row = self.store.get_by_dedup_key(key)
         if row is not None and row.status != "dispatched":
-            if not force:
-                # A restarted process finds the night already run: the marker is restored, nothing is redone.
-                self.mind_state.set(LAST_KEY, text=local_date, now=now)
-                return {"skipped": "done", "local_date": local_date, "id": row.id}
-            key, row = f"{key}:{uuid.uuid4().hex[:6]}", None                 # a second, forced run that night
+            key, row = f"{key}:{uuid.uuid4().hex[:6]}", None                 # a second run that local date
         if row is None:
             row, _ = self.store.create_intention(
                 kind="note", type="consolidation", title=f"nightly consolidation {local_date}", drive="upkeep",
@@ -301,8 +318,8 @@ class Consolidation:
         # An interrupted night (a restart, ``mind off``) is resumed on its own row the same date; one left
         # from an earlier date is closed, so the audit log never shows a night still running that is not.
         self._close_interrupted(row.id, now)
-        night = Night(local_date=local_date, started_at=now.isoformat(), note_id=row.id, budget=self.budget(),
-                      tokens=int(row.cost_tokens or 0))
+        night = Night(local_date=local_date, started_at=now.isoformat(), since=since.isoformat(), note_id=row.id,
+                      budget=self.budget(), tokens=int(row.cost_tokens or 0))
         self._running = True
         try:
             try:
@@ -865,8 +882,12 @@ class Consolidation:
 
     # -- stage 5: episode summaries --------------------------------------------------------------
 
-    def _sessions(self, now: datetime, local_date: str) -> List[Dict[str, Any]]:
-        since = (now - EPISODE_WINDOW).astimezone(timezone.utc).isoformat()
+    def _sessions(self, now: datetime, local_date: str, last: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Sessions since the last run (at least the last 24 hours, at most 7 days)."""
+        start = now - EPISODE_WINDOW
+        if last is not None and last < start:
+            start = max(last, now - EPISODE_MAX_WINDOW)
+        since = start.astimezone(timezone.utc).isoformat()
         with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT s.contact_id, s.session_id, count(*) AS turns, max(coalesce(s.occurred_at, s.ingested_at)) AS last_at "
@@ -907,7 +928,7 @@ class Consolidation:
 
     async def episodes(self, night: Night, now: datetime) -> None:
         written = 0
-        for session in self._sessions(now, night.local_date):
+        for session in self._sessions(now, night.local_date, _utc(night.since)):
             cid, session_id = str(session["contact_id"]), str(session["session_id"])
             transcript, turn_ids = self._transcript(cid, session_id)
             if not transcript.strip():

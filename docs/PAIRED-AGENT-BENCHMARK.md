@@ -415,6 +415,21 @@ every arm. The plan records the protocol, mode, text and text hash as
 protocol; each attempt records the applied mode. The frozen datasets carry no
 note, and a cron run in a frozen dataset gets no system message, as before.
 
+**The pinned clock start.** The body clock is the wall clock plus the
+episode's advances, so a rule tied to a time of day fired or not by the hour
+the container happened to start: the mind's nightly consolidation (03:00 local
+without quiet hours) would run at the first tick of an episode started at
+02:59 and never in one started at 04:00, and an arm started later could cross
+a night its paired arm did not. A generated family therefore declares
+`clock_start: '12:00'` (`paired_body.CLOCK_STARTS`, protocol
+`paired-clock-start-1`): the worker moves the body clock forward to the next
+12:00 UTC before the first turn, in every arm, and a workflow's supervisor
+decides that offset once and carries it into every restarted phase, so the
+clock never runs back. A day-boundary rule then fires by the scenario's own
+advances alone. The plan records it as `comparison.clock_start` and refuses an
+image whose worker lacks the protocol; the frozen datasets keep the
+container's clock.
+
 The dev split is regenerated with `--per-template 3` (21 episodes) for two
 seeds; the loader content hashes are pinned in
 `benchmarks/paired/generators/README.md` and in the generator tests, so a

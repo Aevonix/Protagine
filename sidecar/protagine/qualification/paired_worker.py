@@ -124,6 +124,7 @@ def inspect_payload():
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
             'body_protocol': paired_body.PROTOCOL,
+            'clock_start': paired_body.CLOCK_START_PROTOCOL,
             'history_protocol': paired_history.PROTOCOL,
             'capture_platform_sha256': hashlib.sha256(
                 (paired_body.plugin_source() / '__init__.py').read_bytes()).hexdigest()}
@@ -477,6 +478,10 @@ def main():
     # A restarted phase may hold events only; the dataset loader owns the whole-episode rules.
     kinds = [episode_kind(entry) for entry in inputs['episodes']]
     body_before = {'clock_offset_seconds': 0, 'ticks_completed': 0, **((phase or {}).get('body_before', {}))}
+    if phase is None and inputs.get('clock_start') is not None:
+        # One process runs the whole episode: its pinned start is decided here (the supervisor
+        # decides it for a workflow and carries it in body_before).
+        body_before['clock_offset_seconds'] = paired_body.start_offset(inputs['clock_start'])
     agents, histories, rows, ticks, audit_ids = {}, {}, [], [], []
     mind = mind_switches(profile) if plugin else None
     tick_number = body_before['ticks_completed']
