@@ -117,7 +117,8 @@ emit(result=result, exists=os.path.exists(%r))
 
 def test_a_mind_run_cannot_change_the_owner_authored_files(home, sidecar):
     """Evals test 14 on the constitution: identity.yaml, protagine.yaml and api.key are blocked for every
-    effectful tool in a mind run, wherever the file is and however the path is spelled; reads still work."""
+    effectful tool in a mind run that names them, wherever the file is and whether the name is quoted,
+    escaped, split or upper-cased; reads still work."""
     home.write_mind(deny={"commands": [], "tools": [], "text": []})  # the rule below, not the deny list
     identity = home.instance / "identity.yaml"
     before = identity.read_text()
@@ -158,6 +159,18 @@ emit(outside=write(%r), inside=write("identity.yaml"), nested=write("sub/identit
     assert result["plain"]["action"] is None
     assert result["read"]["action"] is None and "never send money" in result["read_tool"]
 
+
+def test_the_default_worker_has_no_shell_or_code_tool(home, sidecar):
+    """The constitution stays the owner's because a default mind worker can reach a file only through the
+    workspace-confined write tools: its toolsets resolve to no shell or code tool, whose spellings of a
+    file name no text rule can follow."""
+    from protagine.config import DEFAULTS
+    result = probe('''
+import toolsets
+emit(tools=sorted(toolsets.resolve_multiple_toolsets(%r)))
+''' % (list(DEFAULTS["mind"]["worker_toolsets"]),), home, env=worker_env(home))
+    assert result["tools"] and "write_file" in result["tools"]
+    assert not {"terminal", "process_manage", "execute_code"} & set(result["tools"])
 
 def test_deny_list_and_floor(home, sidecar):
     result = probe(WORKER_CODE + '''

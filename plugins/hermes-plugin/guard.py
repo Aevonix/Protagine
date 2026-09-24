@@ -3,10 +3,14 @@
 A mind-originated run is a kanban worker spawned on the ``protagine-act``
 profile. A non-owner run is a session whose sender is not the owner. The
 guard fails closed for effectful tools: its own errors and a silent sidecar
-both block. Read-only tools never wait on the sidecar. In a mind run the
-owner-authored files (``protagine.yaml``, ``identity.yaml``, ``api.key``) are
-off limits to every effectful tool, however the path is spelled (architecture
-4.2, 7.5): the mind cannot rewrite its own constitution.
+both block. Read-only tools never wait on the sidecar. In a mind run an
+effectful call that names an owner-authored file (``protagine.yaml``,
+``identity.yaml``, ``api.key``) is blocked (architecture 4.2, 7.5). What keeps
+the constitution the owner's is the worker's tool surface: its default
+toolsets have no shell or code tool, and ``write_file``/``patch`` are confined
+to the task workspace. The name rule is a tripwire on top: a shell or code
+tool an owner adds can spell a file name in ways no text rule sees (a glob, an
+escape, a computed string).
 """
 
 from __future__ import annotations
@@ -120,7 +124,10 @@ def names_protected_file(tool: str, args: Mapping[str, Any]) -> str | None:
     """The protected basename an effectful call names: in its write targets (``write_file``, ``patch``,
     including V4A headers), else anywhere in its serialized arguments (a command, code, a message).
     The comparison ignores case (a case-insensitive file system writes ``IDENTITY.YAML`` to the same
-    file) and the quoting, escaping and concatenation a shell or code can split a name with."""
+    file) and the quotes, backslashes, whitespace, backticks and ``+`` a shell or code can split a
+    literal name with. It does not see a name a shell or code builds another way (``ident?ty.yaml``,
+    ``$'\\x69dentity.yaml'``, ``'%s.yaml' % 'identity'``): the worker's default toolsets have no such
+    tool, and that, not this rule, is the guarantee."""
     if tool in WRITE_TOOLS:
         haystack = [str(target) for target in write_targets(tool, args)]
     else:

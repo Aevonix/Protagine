@@ -222,13 +222,19 @@ The same constitution reaches every appraisal prompt as `agent_constitution`
 are never confused with the agent's own. `PROTAGINE_AGENT_VALUES` is reserved
 and read by nothing: `init` moves an old unit's values into the file.
 
-The mind cannot rewrite its constitution. In a mind run the plugin guard
-blocks every effectful tool that names `protagine.yaml`, `identity.yaml` or
-`api.key` (a write target, a V4A patch header, a shell command, code), in any
-case and through the quotes, escapes, whitespace or string concatenation a
-shell or code can split a name with, before the workspace rule, reads stay allowed, and Hermes' own
-`protected_instruction_extra_patterns` (written by `init`) still asks a human
-for a write to any of them. No module under `mind/`, `self_model/`,
+The mind cannot rewrite its constitution. What guarantees it is the worker's
+tool surface: the default `mind.worker_toolsets` have no shell or code tool
+(a test holds this), and `write_file` and `patch` are confined to the task
+workspace. On top of that, in a mind run the plugin guard blocks every
+effectful tool that names `protagine.yaml`, `identity.yaml` or `api.key` (a
+write target, a V4A patch header, a shell command, code), in any case and
+through the quotes, backslashes, whitespace, backticks or `+` a literal name
+can be split with, before the workspace rule; reads stay allowed, and Hermes'
+own `protected_instruction_extra_patterns` (written by `init`) still asks a
+human for a write to any of them. A text rule cannot follow every spelling a
+shell or code can build (a glob, an escape, a computed string), so an owner
+who adds a `terminal` or `code_execution` toolset to the worker takes the
+constitution's protection into their own hands. No module under `mind/`, `self_model/`,
 `beliefs/`, `memory/` or `commitments/` writes either file; the owner's CLI
 and the mind's `persist` hook write `mind.enabled` and `mind.autonomy` only
 (a static test holds this).
