@@ -1,7 +1,7 @@
-"""P4 startup and HTTP integration regression locks.
+"""The owner's corrections ledger: startup wiring and the HTTP route.
 
-These tests exercise the wiring intentionally omitted from the isolated P4
-source slice.  They use temporary state and scoped credentials only.
+The P4 experiment engine and its parameter store are gone (M9); the corrections ledger and the
+selfhood benchmark that reads it remain. Temporary state and scoped credentials only.
 """
 
 from __future__ import annotations
@@ -14,17 +14,12 @@ import pytest
 
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
-from protagine.self_model.params import (
-    AdaptiveParamStore,
-)
-from protagine.server import _initialize_controlled_learning
+from protagine.server import _initialize_learning_feedback
 from onekey import KEY
 
 
 HOST_GLOBALS = (
-    "_adaptive_params",
     "_benchmark",
-    "_experiments",
     "_learning_feedback_store",
     "_metalearner",
 )
@@ -42,16 +37,7 @@ def _configure(monkeypatch, state_dir, *, mode="shadow"):
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(state_dir))
     monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", mode)
     monkeypatch.setenv("PROTAGINE_BENCHMARK_ENABLED", "true")
-    monkeypatch.setenv("PROTAGINE_EXPERIMENTS_ENABLED", "true")
-    monkeypatch.setenv("PROTAGINE_EXPERIMENT_PREGRANTS_JSON", "")
     monkeypatch.setenv("PROTAGINE_SKIP_DOTENV", "1")
-
-
-def _params(state_dir):
-    state_dir.mkdir(parents=True, exist_ok=True)
-    params = AdaptiveParamStore(str(state_dir / "protagine-params.db"))
-    host.set_adaptive_params(params)
-    return params
 
 
 def _principal(principal, secret, scopes):
@@ -79,13 +65,12 @@ def _app(tmp_path):
                 [
                     "api:access",
                     "cognition:benchmark-manage",
-                    "cognition:experiment-manage",
                 ],
             ),
             _principal(
                 "p4-reader",
                 "reader-secret",
-                ["cognition:benchmark-read", "cognition:experiment-read"],
+                ["cognition:benchmark-read"],
             ),
         ],
     }))
@@ -103,35 +88,15 @@ def _headers(kind="manager"):
     }
 
 
-def _proposal(**overrides):
-    payload = {
-        "hypothesis": "bounded recall tuning improves verified coverage",
-        "ref": "recall.min_relevance",
-        "variant": 0.2,
-        "metric": "recall.fact_coverage",
-        "metric_version": "v2",
-        "assignment_mode": "cohort",
-        "min_control_samples": 1,
-        "min_variant_samples": 1,
-        "min_total_samples": 2,
-        "min_power": 0.0,
-        "min_effect": 0.0,
-        "source": "body-spoofed-principal",
-        "sample_principal": "body-spoofed-principal",
-    }
-    payload.update(overrides)
-    return payload
-
-
 @pytest.mark.asyncio
 async def test_correction_is_persisted_durably(
     tmp_path, monkeypatch,
 ):
     state_dir = tmp_path / "state"
     _configure(monkeypatch, state_dir)
-    params = _params(state_dir)
-    wiring = _initialize_controlled_learning(
-        state_dir=state_dir, adaptive_params=params)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    wiring = _initialize_learning_feedback(state_dir)
+    assert set(wiring) == {"corrections", "benchmark"}
 
     app = _app(tmp_path)
     payload = {

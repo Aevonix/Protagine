@@ -108,45 +108,22 @@ def _attach_situation_spine(*, state_dir: Path):
     }
 
 
-def _initialize_controlled_learning(
-    *,
-    state_dir: Path,
-    adaptive_params,
-    journal=None,
-) -> dict:
-    """Build the one P4 evidence/experiment graph for this process.
+def _initialize_learning_feedback(state_dir: Path) -> dict:
+    """The owner's corrections ledger (``/v1/host/learning/correction``) and the selfhood benchmark that
+    reads it (deleted in M10). Setters are cleared before construction so a second lifespan in the same
+    interpreter cannot keep a stale store."""
 
-    The migration flags retain their historical meanings: P4 mode defaults to
-    ``off`` (legacy weekly evaluation), while the independent benchmark and
-    experiment feature flags control whether their databases are opened at
-    all.  Setters are cleared before construction so a second lifespan in the
-    same interpreter cannot retain stale authority or a stale writer.
-    """
-
-    from protagine.api.routers.host import (
-        set_benchmark,
-        set_experiments,
-        set_learning_feedback_store,
-    )
-    from protagine.intelligence.learning.feedback_store import (
-        FeedbackStore,
-    )
+    from protagine.api.routers.host import set_benchmark, set_learning_feedback_store
+    from protagine.intelligence.learning.feedback_store import FeedbackStore
     from protagine.self_model.benchmark import (
         BenchmarkStore,
         SelfhoodBenchmark,
         benchmark_enabled,
         canonical_probe_recall,
     )
-    from protagine.self_model.experiments import (
-        ExperimentEngine,
-        ExperimentStore,
-        experiment_pregrants_from_env,
-        experiments_enabled,
-    )
 
     set_learning_feedback_store(None)
     set_benchmark(None)
-    set_experiments(None)
 
     correction_store = FeedbackStore(
         db_path=str(state_dir / "protagine-learning-feedback.db"))
@@ -159,40 +136,9 @@ def _initialize_controlled_learning(
             recall=canonical_probe_recall(state_dir),
         )
 
-    experiments = None
-    approval_authority = None
-    if experiments_enabled():
-        if adaptive_params is None:
-            raise RuntimeError(
-                "P4 experiments require the adaptive parameter store")
-        if benchmark is None:
-            raise RuntimeError(
-                "P4 experiments require the canonical SelfhoodBenchmark")
-        # There is no approval ledger any more: live mutations outside a
-        # pregranted range have no approval path and never start.
-        approval_authority = None
-        experiments = ExperimentEngine(
-            ExperimentStore(
-                db_path=str(state_dir / "protagine-experiments.db")),
-            params=adaptive_params,
-            benchmark=benchmark,
-            journal=journal,
-            approval_authority=approval_authority,
-            pregranted_ranges=experiment_pregrants_from_env(),
-        )
-
-    # Publish only after the complete configured graph constructed.  A bad
-    # pregrant or missing dependency must not expose a partially wired P4.
     set_learning_feedback_store(correction_store)
     set_benchmark(benchmark)
-    set_experiments(experiments)
-
-    return {
-        "corrections": correction_store,
-        "benchmark": benchmark,
-        "experiments": experiments,
-        "approval_authority": approval_authority,
-    }
+    return {"corrections": correction_store, "benchmark": benchmark}
 
 
 async def _initialize_contacts_store():
@@ -225,24 +171,6 @@ async def lifespan(app: FastAPI):
     from protagine.resources import raise_open_file_limit
     raise_open_file_limit()
     state_dir = _state_dir()
-
-    # --- 0. Adaptive parameters (the experiment engine's one writer) ---
-    # Created first; the ActionJournal is attached in the self-model section
-    # once it exists.
-    _adaptive_params = None
-    try:
-        from protagine.self_model.params import AdaptiveParamStore
-        _adaptive_params = AdaptiveParamStore(
-            db_path=str(state_dir / "protagine-params.db"))
-        try:
-            from protagine.api.routers.host import set_adaptive_params
-            set_adaptive_params(_adaptive_params)
-        except ImportError:
-            pass
-        logger.info("AdaptiveParamStore initialized (db=%s)",
-                    state_dir / "protagine-params.db")
-    except Exception as exc:
-        logger.warning("AdaptiveParamStore init failed: %s", exc)
 
     # --- 1. LLM Router ---
     llm_router = None
@@ -627,8 +555,6 @@ async def lifespan(app: FastAPI):
             _sm_for_directed = SelfModel(_competence, trust=_trust, journal=_journal)
             _sm_for_directed.perspective = getattr(locals().get('preference_learner'), 'perspective', None)
             set_self_model(_sm_for_directed)
-            if _adaptive_params is not None:
-                _adaptive_params.set_journal(_journal)
             logger.info(
                 "SelfModel/TrustEngine initialized (db=%s, journal=%s, "
                 "autograduate=%s)",
@@ -640,20 +566,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("SelfModel init failed: %s", exc)
 
-    # --- P4 controlled learning: one evidence and authority graph ---
-    _controlled_learning = {
-        "corrections": None,
-        "benchmark": None,
-        "experiments": None,
-        "approval_authority": None,
-    }
+    # --- The owner's corrections ledger and the selfhood benchmark ---
     try:
-        _controlled_learning = _initialize_controlled_learning(
-            state_dir=state_dir,
-            adaptive_params=_adaptive_params,
-            journal=locals().get("_journal"),
-        )
-        if _controlled_learning["benchmark"] is not None:
+        _learning = _initialize_learning_feedback(state_dir)
+        if _learning["benchmark"] is not None:
             logger.info(
                 "Selfhood benchmark ready (db=%s, corrections=%s)",
                 state_dir / "protagine-benchmark.db",
@@ -662,17 +578,8 @@ async def lifespan(app: FastAPI):
         else:
             logger.info(
                 "Selfhood benchmark disabled (PROTAGINE_BENCHMARK_ENABLED=false)")
-        if _controlled_learning["experiments"] is not None:
-            logger.info(
-                "Controlled experiment framework ready (db=%s)",
-                state_dir / "protagine-experiments.db",
-            )
-        else:
-            logger.info(
-                "Experiment framework disabled "
-                "(PROTAGINE_EXPERIMENTS_ENABLED=false)")
     except Exception as exc:
-        logger.error("Controlled learning init failed closed: %s", exc)
+        logger.error("Learning feedback init failed closed: %s", exc)
 
     # --- Expectation engine (Mind M3a): predictions + surprise + calibration ---
     try:
@@ -1124,19 +1031,13 @@ async def lifespan(app: FastAPI):
     set_briefings_engine(None)
     try:
         from protagine.api.routers.host import (
-            set_adaptive_params as _set_adaptive_params,
             set_benchmark as _set_benchmark,
-            set_experiments as _set_experiments,
             set_learning_feedback_store as _set_learning_feedback_store,
         )
-        _set_experiments(None)
         _set_benchmark(None)
         _set_learning_feedback_store(None)
-        _set_adaptive_params(None)
-        if _adaptive_params is not None:
-            _adaptive_params.close()
     except Exception:
-        logger.debug("controlled learning shutdown failed", exc_info=True)
+        logger.debug("learning feedback shutdown failed", exc_info=True)
     set_research_pipeline(None)
     set_commitment_store(None)
     set_affect_store(None)

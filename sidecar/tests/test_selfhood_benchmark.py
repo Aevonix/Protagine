@@ -1,15 +1,19 @@
 """Selfhood benchmark (Mind M0a): store, derivations, honest skips, API."""
 
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import protagine.api.routers.host as host_mod
+from protagine.contacts.comms import CommsLog
+from protagine.intelligence.learning.feedback_store import FeedbackStore, UserCorrection
 from protagine.self_model.benchmark import (
-    BenchmarkStore, SelfhoodBenchmark, previous_week, week_window,
+    BenchmarkStore, MetricDefinition, SelfhoodBenchmark, cognition_p4_mode, legacy_cpi_payload, previous_week,
+    week_window,
 )
 
 WEEK = "2026-W26"
@@ -353,3 +357,244 @@ async def test_canonical_probe_recall_reads_the_scoped_source_ledger(tmp_path, m
     assert rows and all("8093" in row["content"] for row in rows)
     other = await recall("reranker port", person_id="cid-other")
     assert other and "9000" in other[0]["content"] and not any("8093" in row["content"] for row in other)
+
+
+# --- P4 evidence, kept from the deleted experiment suite (M9) --------------------------------
+
+METRIC = MetricDefinition(
+    metric="quality.answer_accuracy",
+    version="v1",
+    direction="higher",
+    unit="ratio",
+    evidence_query="receipt.type=answer_grade AND receipt.verified=true",
+    minimum_samples=6,
+    description="Receipt-verified answer accuracy for an assigned exposure.",
+)
+
+
+def test_p4_flag_is_default_off(monkeypatch):
+    monkeypatch.delenv("PROTAGINE_COGNITION_P4_MODE", raising=False)
+    assert cognition_p4_mode() == "off"
+
+
+def test_metric_definitions_are_immutable_and_samples_attested(tmp_path):
+    store = BenchmarkStore(str(tmp_path / "benchmark.db"))
+    first = store.register_definition(METRIC)
+    assert first["definition_hash"]
+    assert store.register_definition(METRIC) == first
+    with pytest.raises(ValueError, match="immutable"):
+        store.register_definition(MetricDefinition(
+            **{**METRIC.__dict__, "evidence_query": "anything=true"}
+        ))
+
+    assert store.add_evidence_sample(
+        METRIC.metric,
+        0.75,
+        definition_version=METRIC.version,
+        sample_principal="verifier:answer-grader",
+        source_ref="turn:abc",
+        receipt_ref="receipt:abc",
+        sample_id="sample-abc",
+    )
+    # Idempotent retry, not a duplicate sample.
+    assert store.add_evidence_sample(
+        METRIC.metric,
+        0.75,
+        definition_version=METRIC.version,
+        sample_principal="verifier:answer-grader",
+        source_ref="turn:abc",
+        receipt_ref="receipt:abc",
+        sample_id="sample-abc",
+    )
+    rows = store.evidence_samples_in(0, datetime.now(timezone.utc).timestamp() + 60)
+    assert len(rows) == 1
+    assert rows[0]["sample_principal"] == "verifier:answer-grader"
+    assert rows[0]["receipt_ref"] == "receipt:abc"
+    with pytest.raises(ValueError, match="registered metric definition"):
+        store.add_evidence_sample(
+            "made.up_metric", 1.0, definition_version="v1",
+            sample_principal="verifier:test", source_ref="source:x",
+        )
+
+
+def test_benchmark_sqlite_migrations_are_additive(tmp_path):
+    benchmark_path = tmp_path / "legacy-benchmark.db"
+    with sqlite3.connect(benchmark_path) as conn:
+        conn.executescript("""
+            CREATE TABLE benchmark_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric TEXT NOT NULL,value REAL NOT NULL,source TEXT NOT NULL,
+                ts REAL NOT NULL,meta TEXT);
+            CREATE TABLE benchmark_rollups (
+                week TEXT NOT NULL,metric TEXT NOT NULL,value REAL,
+                numerator REAL,denominator REAL,detail TEXT,
+                computed_at REAL NOT NULL,PRIMARY KEY(week,metric));
+            INSERT INTO benchmark_samples(metric,value,source,ts)
+                VALUES('latency.jobs_p50_secs',1.5,'legacy',1.0);
+        """)
+    benchmark = BenchmarkStore(str(benchmark_path))
+    legacy = benchmark.samples_in(0, 2)
+    assert len(legacy) == 1 and legacy[0]["source"] == "legacy"
+    assert legacy[0]["definition_version"] is None
+    assert benchmark.definition("actions.success", "v2") is not None
+
+
+def test_the_legacy_cpi_payload_points_to_the_benchmark(tmp_path):
+    benchmark = SelfhoodBenchmark(BenchmarkStore(str(tmp_path / "b.db")))
+    payload = legacy_cpi_payload(benchmark)
+    assert payload["deprecated"] is True
+    assert payload["canonical_endpoint"] == "/v1/host/self/benchmark"
+    assert "memory" not in payload and "reasoning" not in payload
+
+
+class _CommitmentCohort:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def list(self, **kwargs):
+        return {"commitments": list(self.rows)}
+
+
+class _DeliveryEvidence:
+    def snapshot(self):
+        return [{"domain": "delivery"}]
+
+    def reconciliation_revision(self, **kwargs):
+        return 0
+
+    def active_evidence_gaps(self, *args, **kwargs):
+        return []
+
+    def events(self, domain, **kwargs):
+        return list(self.rows) if domain == "delivery" else []
+
+    def __init__(self, rows):
+        self.rows = rows
+
+
+def test_commitment_metric_uses_one_due_date_cohort(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", "live")
+    start, end = week_window("2026-W26")
+    inside = start + timedelta(days=2)
+    rows = [
+        {"id": "on-time", "status": "fulfilled",
+         "due_at": inside.isoformat(),
+         "fulfilled_at": (inside - timedelta(hours=1)).isoformat()},
+        {"id": "late", "status": "fulfilled",
+         "due_at": inside.isoformat(),
+         "fulfilled_at": (inside + timedelta(hours=1)).isoformat()},
+        {"id": "open", "status": "pending", "due_at": inside.isoformat(),
+         "fulfilled_at": None},
+        {"id": "outside", "status": "fulfilled",
+         "due_at": (end + timedelta(days=1)).isoformat(),
+         "fulfilled_at": end.isoformat()},
+        {"id": "cancelled", "status": "cancelled",
+         "due_at": inside.isoformat(), "fulfilled_at": None},
+    ]
+    benchmark = SelfhoodBenchmark(
+        BenchmarkStore(str(tmp_path / "benchmark.db")),
+        commitments=_CommitmentCohort(rows),
+    )
+    result = benchmark._m_commitments(
+        start, end, start.timestamp(), end.timestamp())
+    assert result["numerator"] == 1
+    assert result["denominator"] == 3
+    assert result["detail"]["late"] == 1
+    assert result["detail"]["cohort"] == "due_at_in_iso_week"
+
+
+def test_initiative_acceptance_requires_exact_message_reaction(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", "live")
+    start, end = week_window("2026-W26")
+    deliveries = _DeliveryEvidence([
+        {"id": 1, "ts": start.timestamp() + 100, "outcome": "success",
+         "evidence_status": "verified", "source_ref": "delivery:d1",
+         "evidence": {"delivery_id": "delivery:d1"}},
+        {"id": 2, "ts": start.timestamp() + 200, "outcome": "success",
+         "evidence_status": "verified", "source_ref": "delivery:d2",
+         "evidence": {"delivery_id": "delivery:d2"}},
+    ])
+    comms = CommsLog(str(tmp_path / "comms.db"))
+    comms.log(
+        "owner", direction="in", summary="yes", reaction="accepted",
+        reply_to_ref="delivery:d1",
+        ts=(start + timedelta(hours=1)).isoformat())
+    # This would have counted in v1's any-inbound-within-24h heuristic.
+    comms.log(
+        "owner", direction="in", summary="unrelated", reaction="accepted",
+        reply_to_ref="delivery:someone-else",
+        ts=(start + timedelta(hours=2)).isoformat())
+    benchmark = SelfhoodBenchmark(
+        BenchmarkStore(str(tmp_path / "benchmark.db")),
+        competence=deliveries, comms=comms, owner_contact_id="owner")
+    result = benchmark._m_acceptance(
+        start, end, start.timestamp(), end.timestamp())
+    assert result["numerator"] == 1
+    assert result["denominator"] == 2
+    assert result["detail"]["binding"] == "reply_to_ref"
+
+
+def test_correction_rate_binds_to_receipt_backed_outbound_cohort(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", "live")
+    start, end = week_window("2026-W26")
+    comms = CommsLog(str(tmp_path / "comms.db"))
+    for index in (1, 2):
+        comms.log(
+            "owner", direction="out", summary=f"answer {index}",
+            external_ref=f"response:r{index}", receipt_ref=f"receipt:r{index}",
+            ts=(start + timedelta(hours=index)).isoformat())
+    # An outbound row without a receipt is intentionally not a denominator.
+    comms.log(
+        "owner", direction="out", summary="unverified",
+        external_ref="response:unverified",
+        ts=(start + timedelta(hours=3)).isoformat())
+    feedback = FeedbackStore(str(tmp_path / "feedback.db"))
+    feedback.record_correction(UserCorrection(
+        correction_id="correction-1",
+        timestamp=start + timedelta(hours=4),
+        original_response="answer 1", correction_text="fix it",
+        correction_type="factual", context_hash="response:r1",
+        person_id="owner"))
+    benchmark = SelfhoodBenchmark(
+        BenchmarkStore(str(tmp_path / "benchmark.db")),
+        comms=comms, corrections=feedback, owner_contact_id="owner")
+    result = benchmark._m_corrections(
+        start, end, start.timestamp(), end.timestamp())
+    assert result["value"] == pytest.approx(0.5)
+    assert result["numerator"] == 1
+    assert result["denominator"] == 2
+
+
+@pytest.mark.asyncio
+async def test_recall_probe_is_subject_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_COGNITION_P4_MODE", "live")
+
+    class Facts:
+        def list_facts(self, **kwargs):
+            assert kwargs["contact_id"] == "owner"
+            return {"facts": [
+                {"id": "owner-fact", "contact_id": "owner",
+                 "shareability": "owner_private",
+                 "fact": "the owner project uses a cobalt release marker"},
+                {"id": "guest-fact", "contact_id": "guest",
+                 "shareability": "shared",
+                 "fact": "guest unrelated private phrase"},
+            ]}
+
+    person_ids = []
+
+    async def recall(query, *, person_id=None, limit=5):
+        person_ids.append(person_id)
+        return [{"content": query}]
+
+    benchmark = SelfhoodBenchmark(
+        BenchmarkStore(str(tmp_path / "benchmark.db")),
+        recall=recall, facts=Facts(), owner_contact_id="owner", probes=10)
+    result = await benchmark._m_recall(0, float("inf"))
+    assert result["value"] == 1.0
+    assert result["denominator"] == 1
+    assert person_ids == ["owner"]

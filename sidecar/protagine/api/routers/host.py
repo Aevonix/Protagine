@@ -4453,17 +4453,11 @@ _self_model = None
 _skill_store = None
 _sandbox = None
 _connector_manager = None
-_adaptive_params = None
 
 
 def set_self_model(sm) -> None:
     global _self_model
     _self_model = sm
-
-
-def set_adaptive_params(store) -> None:
-    global _adaptive_params
-    _adaptive_params = store
 
 
 def set_skill_store(store) -> None:
@@ -4608,14 +4602,6 @@ async def post_benchmark_recall_probe(body: RecallProbeRequest) -> dict:
         return {"available": True, "error": str(exc)}
 
 
-_experiments = None
-
-
-def set_experiments(e) -> None:
-    global _experiments
-    _experiments = e
-
-
 _situation_store = None
 _situation_reducer = None
 
@@ -4710,221 +4696,6 @@ async def get_expectations(limit: int = 50) -> dict:
         return {"available": True, "error": str(exc)}
 
 
-@router.get("/self/experiments")
-async def list_experiments(limit: int = 30) -> dict:
-    """Self-experiments: running and recently decided controlled changes."""
-    if _experiments is None:
-        return {"available": False}
-    try:
-        return {"available": True,
-                **_experiments.snapshot(limit=max(1, min(200, limit)))}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-class ExperimentRequest(BaseModel):
-    hypothesis: str
-    ref: str
-    variant: float
-    metric: str
-    metric_version: str = ""
-    assignment_mode: str = ""
-    control_ratio: float = 0.5
-    min_control_samples: int = 20
-    min_variant_samples: int = 20
-    min_total_samples: int = 40
-    min_power: float = 0.8
-    min_effect: float = 0.0
-    owner_negative_limit: int = 1
-    max_regression: float = 0.05
-    window_days: int = 7
-    # Deprecated compatibility field.  The handler always derives source from
-    # the authenticated credential and never treats this body label as
-    # authority.
-    source: str = "api"
-
-
-def _experiment_approval_response(
-    exc,
-    response: Response,
-) -> dict:
-    """Project a durable approval request without calling it pending falsely."""
-
-    exp = exc.experiment
-    request_id = exp.get("approval_request_id")
-    approval_status = "unknown"
-    authority_store = getattr(_experiments, "_approval_authority", None)
-    if authority_store is not None and request_id:
-        request_row = authority_store.get_request(request_id)
-        if request_row is not None:
-            approval_status = request_row.get("status") or "unknown"
-    if approval_status == "pending":
-        response.status_code = status.HTTP_202_ACCEPTED
-        projected_status = "approval_required"
-    else:
-        # Rejected/expired/superseded authority must never be advertised as a
-        # pending approval that could still authorize this immutable action.
-        response.status_code = status.HTTP_409_CONFLICT
-        projected_status = f"approval_{approval_status}"
-    return {
-        "available": True,
-        "status": projected_status,
-        "approval_status": approval_status,
-        "experiment": exp,
-        "approval_request_id": request_id,
-    }
-
-
-@router.post("/self/experiments")
-async def post_experiment(
-    body: ExperimentRequest,
-    request: Request,
-    response: Response,
-) -> dict:
-    """Propose and start a bounded self-experiment (adaptive-param variant,
-    judged against a benchmark metric with auto-revert on regression)."""
-    if _experiments is None:
-        return {"available": False}
-    from protagine.self_model.experiments import (
-        ExperimentApprovalRequired,
-    )
-
-    try:
-        exp = _experiments.propose_and_start(
-            hypothesis=body.hypothesis, ref=body.ref, variant=body.variant,
-            metric=body.metric, max_regression=body.max_regression,
-            window_days=body.window_days,
-            metric_version=body.metric_version,
-            assignment_mode=body.assignment_mode,
-            control_ratio=body.control_ratio,
-            min_control_samples=body.min_control_samples,
-            min_variant_samples=body.min_variant_samples,
-            min_total_samples=body.min_total_samples,
-            min_power=body.min_power,
-            min_effect=body.min_effect,
-            owner_negative_limit=body.owner_negative_limit,
-            source=request_authority(request).principal_id)
-        return {"available": True, "experiment": exp}
-    except ExperimentApprovalRequired as exc:
-        return _experiment_approval_response(exc, response)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.post("/self/experiments/{exp_id}/start")
-async def start_experiment(exp_id: str, response: Response) -> dict:
-    """Start an already-approved or pregranted durable proposal."""
-    if _experiments is None:
-        return {"available": False}
-    existing = _experiments.store.get(exp_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="experiment was not found")
-    if existing.get("status") == "running":
-        return {"available": True, "experiment": existing,
-                "idempotent_replay": True}
-    if existing.get("status") != "proposed":
-        raise HTTPException(
-            status_code=409,
-            detail=f"experiment cannot start from {existing.get('status')}",
-        )
-    from protagine.self_model.experiments import (
-        ExperimentApprovalRequired,
-    )
-
-    try:
-        exp = _experiments.start(exp_id)
-        return {"available": True, "experiment": exp}
-    except ExperimentApprovalRequired as exc:
-        return _experiment_approval_response(exc, response)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-class ExperimentExposureRequest(BaseModel):
-    unit_id: str
-    source_ref: str
-    receipt_ref: str = ""
-    exposed_at: Optional[float] = None
-
-
-@router.post("/self/experiments/{exp_id}/exposures")
-async def assign_experiment_exposure(
-    exp_id: str,
-    body: ExperimentExposureRequest,
-    request: Request,
-) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    try:
-        exposure = _experiments.assign_exposure(
-            exp_id,
-            unit_id=body.unit_id,
-            sample_principal=request_authority(request).principal_id,
-            source_ref=body.source_ref,
-            receipt_ref=body.receipt_ref,
-            exposed_at=body.exposed_at,
-        )
-        return {"available": True, "exposure": exposure}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-class ExperimentOutcomeRequest(BaseModel):
-    exposure_id: str
-    value: float
-    source_ref: str
-    receipt_ref: str
-    owner_reaction: str = ""
-    outcome_id: str = ""
-    recorded_at: Optional[float] = None
-
-
-@router.post("/self/experiments/{exp_id}/outcomes")
-async def record_experiment_outcome(
-    exp_id: str,
-    body: ExperimentOutcomeRequest,
-    request: Request,
-) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    try:
-        outcome = _experiments.record_outcome(
-            exp_id,
-            exposure_id=body.exposure_id,
-            value=body.value,
-            sample_principal=request_authority(request).principal_id,
-            source_ref=body.source_ref,
-            receipt_ref=body.receipt_ref,
-            owner_reaction=body.owner_reaction,
-            outcome_id=body.outcome_id,
-            recorded_at=body.recorded_at,
-        )
-        return {"available": True, "outcome": outcome}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/self/experiments/{exp_id}/evidence")
-async def get_experiment_evidence(exp_id: str) -> dict:
-    if _experiments is None:
-        return {"available": False}
-    evidence = _experiments.evidence(exp_id)
-    if evidence.get("experiment") is None:
-        raise HTTPException(status_code=404, detail="experiment was not found")
-    return {"available": True, **evidence}
-
-
-@router.post("/self/experiments/{exp_id}/abort")
-async def abort_experiment(exp_id: str, reason: str = "manual abort") -> dict:
-    if _experiments is None:
-        return {"available": False}
-    ok = _experiments.abort(exp_id, reason=reason)
-    if not ok:
-        raise HTTPException(status_code=404,
-                            detail="no running experiment with that id")
-    return {"available": True, "aborted": exp_id}
-
-
 @router.post("/self/benchmark/compute")
 async def compute_benchmark(week: str = "") -> dict:
     """Compute (or recompute) a week's rollups on demand. Default: the
@@ -4951,18 +4722,6 @@ async def get_self_model(request: Request = None) -> dict:
         if getattr(_self_model, 'perspective', None) is not None:
             out['perspective'] = _self_model.perspective.status()
         return out
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.get("/self/params")
-async def get_adaptive_params() -> dict:
-    """Adaptive parameters: the meta-learning knobs consumers read back,
-    with their bounds, current values, and last adjustment attribution."""
-    if _adaptive_params is None:
-        return {"available": False}
-    try:
-        return {"available": True, "params": _adaptive_params.snapshot()}
     except Exception as exc:
         return {"available": True, "error": str(exc)}
 

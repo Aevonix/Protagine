@@ -21,11 +21,9 @@ from protagine.self_model.supervised import (
     reversible,
     supervised_enabled,
 )
-from protagine.self_model.params import AdaptiveParamStore
 
 __all__ = [
     "CompetenceStore", "SelfModel", "self_brief", "self_model_enabled",
     "ActionJournal", "TrustEngine", "floor_class", "autograduate_enabled",
     "REVERSIBLE_CONTRACT", "effective_mode", "reversible", "supervised_enabled",
-    "AdaptiveParamStore",
 ]

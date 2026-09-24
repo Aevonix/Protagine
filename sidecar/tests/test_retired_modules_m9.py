@@ -18,9 +18,12 @@ PACKAGE = ROOT / "protagine"
 RETIRED_MODULES = (
     "protagine.toolsmith",
     "protagine.skills",          # the whole package: registry, executor, sandbox runner, synthesis, packager
+    "protagine.self_model.experiments",
+    "protagine.self_model.params",
 )
-RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools", "/v1/host/skills/")
-RETIRED_ENV = ("PROTAGINE_TOOLSMITH",)
+RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools", "/v1/host/skills/", "/v1/host/self/experiments",
+                          "/v1/host/self/params")
+RETIRED_ENV = ("PROTAGINE_TOOLSMITH", "PROTAGINE_EXPERIMENTS_", "PROTAGINE_EXPERIMENT_PREGRANTS_JSON")
 RETIRED_CAPABILITIES: tuple = ("skills", "skill_sandbox", "security_scanner")
 
 
