@@ -93,7 +93,11 @@ class Fixture:
         self.contacts = FakeContacts({OWNER: {"contact_id": OWNER, "interaction_allowed": True},
                                       CONTACT: {"contact_id": CONTACT, "interaction_allowed": True},
                                       "p-03": {"contact_id": "p-03", "interaction_allowed": False}})
-        self.config = {"autonomy": autonomy, **(config or {})}
+        # The nightly consolidation has its own suite (test_mind_consolidate.py); here it stays off so a
+        # wall clock past 03:00 UTC never starts a background night against these fixtures' fake routers.
+        config = dict(config or {})
+        self.config = {"autonomy": autonomy, **config,
+                       "faculties": {"consolidation": False, **(config.get("faculties") or {})}}
         self.router, self.drain = router, drain      # the mind's router; drain = wire the extractor as production does
         self.persisted = []
         self.mind = self.build()

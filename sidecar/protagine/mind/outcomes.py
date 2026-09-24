@@ -54,15 +54,19 @@ class Autobiography:
         self.owner_id = owner_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def record(self, intention_id: str, event: str, text: str, **metadata: Any) -> bool:
-        if self.ledger is None or not self.owner_id or not text.strip():
+    def record(self, intention_id: str, event: str, text: str, *, contact_id: str | None = None,
+               **metadata: Any) -> bool:
+        """One entry under the owner, or under ``contact_id`` (an episode summary lands with its own
+        contact, so that person's later sessions recall it); never a claim."""
+        audience = contact_id or self.owner_id
+        if self.ledger is None or not audience or not text.strip():
             return False
         now = self.clock()
         message = {"role": "assistant", "content": text.strip(),
                    "metadata": {"origin": "mind", "intention_id": intention_id, "event": event, **metadata}}
         try:
             return bool(self.ledger.record_source(
-                f"mind:{intention_id}:{event}", contact_id=self.owner_id, session_id=self.SESSION,
+                f"mind:{intention_id}:{event}", contact_id=audience, session_id=self.SESSION,
                 messages=[message], scope="person", occurred_at=now.isoformat(), derive_claims=False))
         except Exception as error:
             logger.warning("autobiography entry not written (%s)", type(error).__name__)
