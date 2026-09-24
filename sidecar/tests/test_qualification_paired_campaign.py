@@ -14,6 +14,11 @@ from protagine.qualification.records import (CaseSpec, MAX_CAMPAIGN_OUTPUT_BYTES
 
 from test_qualification_paired_runner import fixture  # noqa: F401  (pytest fixture)
 
+# These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
+# no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
+needs_hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_time") is None,
+                                  reason="needs stock Hermes in the test interpreter")
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 # The runner fixture replaces paired_cases.cases with its controlled cases; campaign plans need the real one.
 CASES = paired_cases.cases
@@ -445,6 +450,7 @@ def test_a_plus_skills_arm_needs_an_image_whose_worker_mounts_the_skills_dir(fix
 
 
 @pytest.mark.asyncio
+@needs_hermes
 async def test_every_end_of_day_tick_of_a_campaign_starts_a_night(tmp_path, monkeypatch):
     """Nightly work needs nothing new in a campaign: the mind arms run with quiet hours off, so the 03:00
     boundary falls inside every one-day clock advance, and the forced end-of-day tick waits for the night."""
