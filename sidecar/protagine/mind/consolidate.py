@@ -35,7 +35,9 @@ import inspect
 import json
 import logging
 import math
+import os
 import re
+import time
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -365,11 +367,9 @@ class Consolidation:
         ``CLAIM_SETTLE_S``. The extraction is the projection's own work, not the night's, so its calls are
         not charged to the night; a job that fails goes back to its retry time and is not waited for.
         Where the sidecar runs no claim extraction (``PROTAGINE_SOURCE_CLAIMS`` off) the night runs none."""
-        import os
         if self.ledger is None or os.environ.get("PROTAGINE_SOURCE_CLAIMS", "on").strip().lower() not in {
                 "on", "1", "true"}:
             return
-        import time
         projection = self._projection()
         started, processed = time.monotonic(), 0
         while True:
