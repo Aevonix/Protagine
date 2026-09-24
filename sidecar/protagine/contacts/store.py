@@ -458,12 +458,14 @@ class SQLiteContactStore(ContactStore):
         return await self._match_canonical(gateway, address)
 
     async def resolve_messaging_handle(self, gateway: str, address: str) -> Optional[Contact]:
-        """Resolve a live sender, preferring a verified exact transport handle.
+        """Resolve a live sender: the exact transport handle (verified first, then any usable
+        one), else the unambiguous canonical phone/email match (C1).
 
         An explicit channel correction can split previously shared phone
-        attribution. Cross-gateway phone inference must not undo that decision.
-        Without an exact verified handle, retain the unambiguous canonical
-        phone/email match. This does not grant a contact any authority.
+        attribution, and a second contact may keep the same number as a
+        separate alias. Cross-gateway phone inference must not undo either:
+        a number held by two contacts is ambiguous and resolves to None.
+        This does not grant a contact any authority.
         """
         g, stored = stored_handle(gateway, address)
         if not stored:

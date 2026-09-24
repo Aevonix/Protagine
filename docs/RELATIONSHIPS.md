@@ -71,9 +71,11 @@ authoritative server-side attribution regardless of client caching bugs.
 `resolve(platform, user_id, display_name, group_id, channel_id) -> Resolution(contact_id, method, created)`
 
 Resolution ladder, first hit wins:
-1. **Verified exact handle**: `contact_handles(gateway=platform, address=user_id)`
-   in its stored form. An explicit per-channel correction takes precedence
-   over cross-gateway phone inference.
+1. **Exact transport handle**: `contact_handles(gateway=platform, address=user_id)`
+   in its stored form, a verified one first, then any other that is not a
+   name guess. An explicit per-channel correction, or a second contact kept
+   on the same number as a separate alias, takes precedence over
+   cross-gateway phone inference.
 2. **Canonical identity (C1)**: `canonical_handle(gateway, address)` in
    `contacts/store.py`. An address that parses as an E.164 number
    (`is_e164`: `^\+?[1-9]\d{6,14}$` after stripping spaces, dashes, dots and
