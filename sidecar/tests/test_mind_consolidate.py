@@ -65,14 +65,23 @@ class NightRouter:
                         TASK_EPISODE: {"summary": "They asked for the slides; the assistant promised them by Friday."},
                         **(answers or {})}
         self.tokens, self.calls = tokens, []
+        # Claim extraction the night settles before it reads claims: a test_source_claim_projection.Model
+        # answers it when set; otherwise a statement yields no claim.
+        self.claims, self.claim_calls = None, []
 
     def function_deadline_seconds(self, *, context=None):
         return 20
 
     def tasks(self):
+        """The consolidation's own calls (claim extraction is the projection's, kept in ``claim_calls``)."""
         return [context["task"] for _, context in self.calls]
 
-    async def complete(self, messages, *, context=None, **_):
+    async def complete(self, messages, *, context=None, **kwargs):
+        if (context or {}).get("task") in {"source_claim_extraction", "source_claim_review"}:
+            self.claim_calls.append(context["task"])
+            if self.claims is not None:
+                return await self.claims.complete(messages, context=context, **kwargs)
+            return SimpleNamespace(content="[]", model_id="night-fixture")
         self.calls.append((messages, context))
         schema = (context or {}).get("response_schema")
         assert isinstance(schema, dict) and set(schema) == {"name", "schema"}
@@ -1103,6 +1112,53 @@ async def test_the_agents_record_of_a_contradiction_question_never_quotes_the_st
     assert not any("room" in text for text in record), record
     fx.ledger.erase_sources(contact_id=CONTACT, turn_ids=["c-1", "c-2"])
     assert not fx.ledger.search_sources("office room", contact_id=OWNER, session_id="later-session")
+
+async def test_the_night_first_extracts_the_statements_still_queued(fx):
+    """A statement made just before the night is extracted before the night reads claims (the projection's
+    own call, with the mind's router, not charged to the night), so its contradiction is asked tonight,
+    not a day later."""
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("turn-a", OWNER, "chat-1", "My office is room 4.", "room 4")
+    fx.shift(minutes=2)
+    text = "My office is room 7."
+    fx.ledger.record_source("turn-b", contact_id=OWNER, session_id="sms-1", occurred_at=fx.now.isoformat(),
+                            messages=[{"role": "user", "content": text}, {"role": "assistant", "content": "Noted."}])
+    fx.router.claims = Model({text: claim(text, "room 7")})
+    fx.shift(days=1)
+    tick = await fx.mind.tick(force=True)
+    assert tick["consolidation"] == "done"
+    assert [(row["kind"], row["type"]) for row in tick["formed"]] == [("message", "contradiction")]
+    assert "source_claim_extraction" in fx.router.claim_calls
+    with closing(fx.ledger._connect()) as conn:
+        assert conn.execute("SELECT status FROM source_claim_jobs WHERE turn_id='turn-b'").fetchone()[0] == "complete"
+    night = fx.mind.consolidation.last
+    assert night.counts["claims_settled"] >= 1 and night.tokens == 100 * night.calls
+
+
+async def test_the_night_waits_for_an_extraction_the_projection_worker_holds(fx, monkeypatch):
+    monkeypatch.setattr("protagine.mind.consolidate.CLAIM_POLL_S", 0.05)
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("turn-a", OWNER, "chat-1", "My office is room 4.", "room 4")
+    fx.shift(minutes=2)
+    text = "My office is room 7."
+    fx.ledger.record_source("turn-b", contact_id=OWNER, session_id="sms-1", occurred_at=fx.now.isoformat(),
+                            messages=[{"role": "user", "content": text}, {"role": "assistant", "content": "Noted."}])
+    projection = SourceClaimProjection(fx.ledger)
+    job = projection.claim_job()                                     # the worker's lease, on its own loop
+
+    async def worker():
+        await asyncio.sleep(0.3)
+        message = json.loads(job["messages_json"])[0]
+        claims = [dict(claim(text, "room 7"), id=None)]
+        from protagine.beliefs.source_claims import validated_claims
+        found = validated_claims(json.dumps([claim(text, "room 7")]), message=text, prior=[],
+                                 observed_at=job["occurred_at"], timezone_name="UTC")
+        projection.commit(job, message, found, model="worker", lease_token=job["lease_token"])
+        projection.finish_job(job, model="worker")
+    running = asyncio.create_task(worker())
+    night = await fx.mind.consolidate()
+    await running
+    assert night["counts"]["contradictions"] == 1 and fx.router.claim_calls == []
 
 async def test_the_whole_night_is_bounded_and_a_failing_stage_does_not_stop_the_rest(fx, monkeypatch):
     monkeypatch.setattr("protagine.mind.consolidate.RUN_DEADLINE_S", 0.2)

@@ -70,6 +70,7 @@ LAST_KEY = "consolidation.last"
 NIGHT_MINUTE = 180                                                              # 03:00 local without quiet hours
 CITE = re.compile(r"\[([^\[\]]+)\]$")                                            # trailing "[id, id]" on a line
 RUN_DEADLINE_S = 900.0
+CLAIM_SETTLE_S, CLAIM_POLL_S = 120.0, 0.25
 DEFAULT_DEADLINE = 60.0
 FINDING_EVENTS = frozenset({"finding", "outcome_done", "goal_adopted"})
 QUESTION_KEY = "reach_out:contradiction:"           # a contradiction's concern and owner question share this key
@@ -333,6 +334,7 @@ class Consolidation:
         return {**night.as_dict(), "id": row.id}
 
     async def _stages(self, night: Night, now: datetime) -> None:
+        await self._settle_claims(night)
         for name in NIGHT_TASKS:
             stage = getattr(self, STAGES[name])
             try:
@@ -354,6 +356,41 @@ class Consolidation:
         self.store.transition(night.note_id, "done", action="consolidated", at=now, cost_tokens=int(night.tokens),
                               result=summary[:500], context=night.as_dict(), completed_at=now)
         self.mind_state.set(LAST_KEY, text=night.local_date, causes=[night.note_id], now=now)
+
+    async def _settle_claims(self, night: Night) -> None:
+        """Statements still waiting for claim extraction (one said minutes before the night) are extracted
+        first, so the night reads them tonight rather than a day later: a claimable job is processed here
+        with the mind's router, one the projection worker holds is waited for, all within
+        ``CLAIM_SETTLE_S``. The extraction is the projection's own work, not the night's, so its calls are
+        not charged to the night; a job that fails goes back to its retry time and is not waited for."""
+        if self.ledger is None:
+            return
+        import time
+        projection = self._projection()
+        started, processed = time.monotonic(), 0
+        while True:
+            remaining = CLAIM_SETTLE_S - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+            try:
+                if self.available and await asyncio.wait_for(projection.process_one(self.router), remaining):
+                    processed += 1
+                    continue
+                with self._conn() as conn:
+                    held = conn.execute("SELECT count(*) FROM source_claim_jobs WHERE status='running' "
+                                        "AND lease_until>?", (time.time(),)).fetchone()[0]
+            except asyncio.TimeoutError:
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("claim settling stopped (%s)", type(error).__name__)
+                break
+            if not held:
+                break
+            await asyncio.sleep(min(CLAIM_POLL_S, remaining))
+        if processed:
+            night.count("claims_settled", processed)
 
     def last_note(self) -> Any:
         """The audit row of the last finished run, None before the first."""

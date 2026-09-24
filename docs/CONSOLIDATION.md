@@ -31,6 +31,15 @@ stage is idempotent, so nothing is doubled.
 Cheapest and most valuable first; a stage that runs out of budget stops and the rest waits for the
 next night.
 
+0. **Settle the claims** (no call of the night's own). Statements still waiting for claim
+   extraction, such as one said minutes before the boundary, are extracted first, so the night
+   reads them tonight rather than a day later: a claimable job is processed with the mind's router,
+   one the projection worker holds is waited for, all within 120 s (`CLAIM_SETTLE_S`). This is the
+   claim projection's own work, not the night's, so it is not charged to the night's share; a job
+   that fails goes back to its retry time and is not waited for. The night's record counts
+   `claims_settled`. A forced tick's wait (300 s) covers it, so the paired body's night tick sees a
+   statement from the turn just before it whatever the model's latency.
+
 1. **Narrative delta** (`mind.faculties.self_narrative`; one call). The computed sections are
    rebuilt from the stores and stored: `self.interests` (the three strongest seeded and declared
    interests, each citing its own record, `interest:<slug>`), `self.strengths` (the two task
