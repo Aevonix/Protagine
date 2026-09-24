@@ -470,9 +470,21 @@ class SQLiteContactStore(ContactStore):
             return None
         if g:
             exact = await self.resolve_verified_handles(g, [stored])
+            if exact is None:
+                exact = await self._match_exact(g, stored)
             if exact is not None:
                 return exact
         return await self._match_canonical(g, address)
+
+    async def _match_exact(self, gateway: str, address: str) -> Optional[Contact]:
+        """The live contact holding this exact transport handle (never a name guess)."""
+        async with self._require_db().execute(
+            "SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
+            "WHERE c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name') "
+            "AND h.gateway = ? AND h.address = ?", (gateway, address),
+        ) as cur:
+            row = await cur.fetchone()
+        return Contact.from_row(dict(row)) if row else None
 
     async def _match_canonical(self, gateway: str, address: str) -> Optional[Contact]:
         db = self._require_db()
@@ -765,7 +777,8 @@ class SQLiteContactStore(ContactStore):
         if not gateway or not address:
             raise ValueError("a handle needs a gateway and an address")
 
-        # An exact handle, or the same phone identity on any gateway, belongs to one live contact.
+        # An exact handle belongs to one live contact. The same number on another gateway may be
+        # kept as a separate alias (an owner split); resolution treats that number as ambiguous.
         async with db.execute(
             "SELECT h.handle_id, h.contact_id, c.deleted_at FROM contact_handles h "
             "JOIN contacts c ON c.contact_id = h.contact_id WHERE h.gateway = ? AND h.address = ?",
@@ -776,17 +789,6 @@ class SQLiteContactStore(ContactStore):
             raise ValueError(
                 f"Handle ({gateway}, {address}) is already assigned to contact {existing['contact_id']}"
             )
-        if is_e164(address):
-            async with db.execute(
-                "SELECT h.contact_id FROM contact_handles h JOIN contacts c ON c.contact_id = h.contact_id "
-                "WHERE phone_key(h.address) = ? AND c.deleted_at IS NULL AND h.contact_id != ? LIMIT 1",
-                (_phone_key(address), contact_id),
-            ) as cur:
-                same_number = await cur.fetchone()
-            if same_number is not None:
-                raise ValueError(
-                    f"Handle ({gateway}, {address}) is already assigned to contact {same_number['contact_id']}"
-                )
         if existing is not None and existing["contact_id"] == contact_id:
             async with db.execute("SELECT * FROM contact_handles WHERE handle_id = ?",
                                   (existing["handle_id"],)) as cur:

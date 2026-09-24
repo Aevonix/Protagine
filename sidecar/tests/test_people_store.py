@@ -330,21 +330,39 @@ async def test_a_sender_whose_old_record_was_deleted_gets_one_new_shadow_not_one
 
 
 @pytest.mark.asyncio
-async def test_an_ambiguous_number_leaves_no_orphan_shadow_behind(store):
+async def test_an_ambiguous_number_gets_one_shadow_found_again_by_its_exact_handle(store):
     """The owner split one number between two people; a third gateway cannot tell which one it
-    is, so the sender stays unresolved and no shadow row is left behind on any turn."""
+    is, so the sender becomes one shadow on that gateway, found again by its exact handle on every
+    later turn instead of a new shadow per turn."""
     one = await store.create(display_name="One")
     two = await store.create(display_name="Two")
     await store.add_handle(one.contact_id, "sms", "+15550000061", verified=True)
     await store.correct_handle_identity(operation_id="split-61", performed_by=OWNER_ID, gateway="signal",
                                         address="+15550000061", expected_contact_id=None, contact_id=two.contact_id,
                                         evidence_refs=["turn:owner-said"])
-    before = await _all_rows(store)
     resolver = ParticipantResolver(store)
+    first = await resolver.resolve(platform="custom-phone-app", user_id="+1 555 000 0061")
+    assert first.created and first.contact_id not in {one.contact_id, two.contact_id}
     for _ in range(3):
-        result = await resolver.resolve(platform="custom-phone-app", user_id="+1 555 000 0061")
+        again = await resolver.resolve(platform="custom-phone-app", user_id="+1 555 000 0061")
+        assert again.contact_id == first.contact_id and again.method == "handle"
+    assert len(await _all_rows(store)) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_whose_handle_cannot_be_attached_is_discarded(store):
+    class Refusing(SQLiteContactStore):
+        async def add_handle(self, *args, **kwargs):
+            raise ValueError("handle refused")
+
+    refusing = Refusing(ContactsConfig(sqlite_path=":memory:"))
+    await refusing.connect()
+    try:
+        result = await ParticipantResolver(refusing).resolve(platform="custom", user_id="user-71")
         assert result.contact_id is None and result.method == "none"
-    assert await _all_rows(store) == before
+        assert await _all_rows(refusing) == []
+    finally:
+        await refusing.close()
 
 
 @pytest.mark.asyncio
@@ -360,9 +378,15 @@ async def test_handles_resolve_through_the_canonical_form_on_every_path(store):
     assert not hasattr(store, "find_by_handle")  # no caller: resolve_handle is the one lookup
     assert (await store.resolve_verified_handles("imessage", ["+15550101234"])).contact_id == contact.contact_id
     assert (await store.resolve_messaging_handle("", "+15550101234")).contact_id == contact.contact_id
-    with pytest.raises(ValueError, match="already assigned"):
-        other = await store.create(display_name="Other")
-        await store.add_handle(other.contact_id, "sms", "(555) 010-1234")
+    with pytest.raises(ValueError, match="already assigned"):  # an exact handle belongs to one live contact
+        await store.add_handle((await store.create(display_name="Dup")).contact_id, "imessage", "+15550101234")
+    # The same number on another gateway may be kept as a separate alias: the exact transport handle
+    # still resolves to its holder, and phone inference from any other gateway becomes ambiguous.
+    other = await store.create(display_name="Other")
+    await store.add_handle(other.contact_id, "sms", "+1 (555) 010-1234")
+    assert (await store.resolve_messaging_handle("sms", "+15550101234")).contact_id == other.contact_id
+    assert (await store.resolve_messaging_handle("imessage", "+15550101234")).contact_id == contact.contact_id
+    assert await store.resolve_messaging_handle("rcs", "+15550101234") is None
 
 
 @pytest.mark.asyncio
@@ -371,8 +395,6 @@ async def test_verified_transport_handle_wins_over_the_phone_key(store):
     one = await store.create(display_name="One")
     two = await store.create(display_name="Two")
     await store.add_handle(one.contact_id, "sms", "+15550000021", verified=True)
-    with pytest.raises(ValueError, match="already assigned"):  # add_handle never splits a number
-        await store.add_handle(two.contact_id, "signal", "+15550000021", verified=True)
     await store.correct_handle_identity(operation_id="split-1", performed_by=OWNER_ID, gateway="signal",
                                         address="+15550000021", expected_contact_id=None, contact_id=two.contact_id,
                                         evidence_refs=["turn:owner-said-two-people-share-it"])

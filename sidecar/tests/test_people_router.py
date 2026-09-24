@@ -26,7 +26,7 @@ async def world(tmp_path, monkeypatch):
     guest = await store.create(display_name="Casey Lee", trust_tier="regular")
     await store.add_handle(guest.contact_id, "sms", "+15550000005")
     monkeypatch.setattr(host_mod, "_contacts_store", store)
-    for name in ("_comms_log", "_affect_store", "_facts_store", "_graph", "_world_store"):
+    for name in ("_comms_log", "_affect_store", "_facts_store", "_engagement_store", "_graph", "_world_store"):
         monkeypatch.setattr(host_mod, name, None, raising=False)
     app = FastAPI()
     app.include_router(people_mod.router)
