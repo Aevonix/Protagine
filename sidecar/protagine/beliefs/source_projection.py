@@ -141,14 +141,18 @@ def subject_basis(conn, claim, *, contact_id):
 
 
 def one_witness_per_value(rows):
-    """Claim dedupe at read time: of the scalar claims repeating one ``(subject_key, predicate, value)``,
-    only the newest witness, the rule ``_rows(..., distinct_values=True)`` applies per key. A quoted
-    preference is a source statement, never folded. The stored claims are never rewritten."""
+    """Claim dedupe at read time: of the scalar claims repeating one ``(subject_key, predicate, value)``
+    over one period (the same validity and event time), only the newest witness, the rule
+    ``_rows(..., distinct_values=True)`` applies per key to the claims valid at one time. The same value
+    over two periods is two claims (a correction may name either). A quoted preference is a source
+    statement, never folded. The stored claims are never rewritten."""
     kept, seen = [], set()
     rows = {row['id']: row for row in rows}.values()
     for row in sorted(rows, key=lambda row: (row.get('recorded_at') or '', row['id']), reverse=True):
         if row.get('representation') != 'preference':
-            value = (row['subject_key'], row['predicate'], norm_value(row.get('value')))
+            event = row.get('event_at') or (row.get('event_time') or {}).get('start')
+            value = (row['subject_key'], row['predicate'], norm_value(row.get('value')),
+                     row.get('valid_from'), row.get('valid_to'), event)
             if value in seen:
                 continue
             seen.add(value)

@@ -460,6 +460,19 @@ async def test_the_extractors_prior_claims_offer_one_witness_per_value_and_keep_
     assert len([row for row in rows if row["predicate"] == "drink"]) == 2  # quoted preferences are never folded
 
 
+async def test_one_value_over_two_periods_stays_two_claims_for_the_extractor(fx):
+    """The fold is one witness per value *and period*: the same city over 2010-2012 and since 2020 are two
+    claims, so a correction to the older period can still name it."""
+    old = await fx.fact("t-1", OWNER, "s-1", "I lived in Paris from 2010-01-01 to 2012-06-01.", "Paris",
+                        predicate="home_city", valid_from_text="2010-01-01", valid_to_text="2012-06-01")
+    fx.shift(minutes=5)
+    new = await fx.fact("t-2", OWNER, "s-2", "I have lived in Paris again since 2020-03-01.", "Paris",
+                        predicate="home_city", valid_from_text="2020-03-01")
+    prior = SourceClaimProjection(fx.ledger).prior({"contact_id": OWNER, "session_id": "s-3", "turn_id": "t-3"},
+                                                   {"role": "user", "content": "Correction: I left Paris in 2011, not 2012."})
+    assert sorted(row["id"] for row in prior if row["predicate"] == "home city") == sorted([old, new])
+
+
 # ---------------------------------------------------------------------------
 # 5. The narrative cites ids that exist; strengths are computed; the flag turns it off
 # ---------------------------------------------------------------------------

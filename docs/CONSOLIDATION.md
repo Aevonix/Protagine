@@ -101,10 +101,11 @@ NOT LIKE 'mind:%'`). The same exclusion applies to the commitment extractor's "R
 the autobiography is the agent's record, not the person's conversation.
 
 Claim dedupe happens where the night reads claims, never in the store: of the scalar claims
-repeating one `(subject, predicate, value)`, the contradiction and digest stages see only the
-newest witness, the rule recall's `current_group` already applies (`distinct_values`); quoted
-preferences are never folded. The commitment extractor's prior claims use the same rule
-(`source_projection.one_witness_per_value`).
+repeating one `(subject, predicate, value)` over one period (the same validity and event time),
+the contradiction and digest stages see only the newest witness, the rule recall's
+`current_group` already applies (`distinct_values`); quoted preferences are never folded. The
+commitment extractor's prior claims use the same rule (`source_projection.one_witness_per_value`):
+the same value over two periods stays two claims there, so a correction can name either.
 
 ## Budget
 
