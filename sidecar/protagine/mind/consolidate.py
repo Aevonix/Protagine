@@ -363,8 +363,11 @@ class Consolidation:
         first, so the night reads them tonight rather than a day later: a claimable job is processed here
         with the mind's router, one the projection worker holds is waited for, all within
         ``CLAIM_SETTLE_S``. The extraction is the projection's own work, not the night's, so its calls are
-        not charged to the night; a job that fails goes back to its retry time and is not waited for."""
-        if self.ledger is None:
+        not charged to the night; a job that fails goes back to its retry time and is not waited for.
+        Where the sidecar runs no claim extraction (``PROTAGINE_SOURCE_CLAIMS`` off) the night runs none."""
+        import os
+        if self.ledger is None or os.environ.get("PROTAGINE_SOURCE_CLAIMS", "on").strip().lower() not in {
+                "on", "1", "true"}:
             return
         import time
         projection = self._projection()

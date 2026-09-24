@@ -1207,6 +1207,15 @@ async def test_the_night_first_extracts_the_statements_still_queued(fx):
     assert night.counts["claims_settled"] >= 1 and night.tokens == 100 * night.calls
 
 
+async def test_the_night_extracts_nothing_where_claim_extraction_is_off(fx, monkeypatch):
+    """``PROTAGINE_SOURCE_CLAIMS=off`` turns the projection off for the sidecar; the night does not run it."""
+    monkeypatch.setenv("PROTAGINE_SOURCE_CLAIMS", "off")
+    fx.ledger.record_source("turn-b", contact_id=OWNER, session_id="sms-1", occurred_at=fx.now.isoformat(),
+                            messages=[{"role": "user", "content": "My office is room 7."},
+                                      {"role": "assistant", "content": "Noted."}])
+    await fx.mind.consolidate()
+    assert fx.router.claim_calls == []
+
 async def test_the_night_waits_for_an_extraction_the_projection_worker_holds(fx, monkeypatch):
     monkeypatch.setattr("protagine.mind.consolidate.CLAIM_POLL_S", 0.05)
     fx.router.answers[TASK_DIGEST] = None
