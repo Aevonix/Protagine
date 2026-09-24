@@ -189,7 +189,9 @@ word; the sidecar checks the contact and the message again and answers
 `{ok, id, status, ...}` (404: no open ask with that code, 403: not the owner).
 A guest, a worker whose task body quotes the code, or a page injected into an
 owner session cannot approve. `protagine_self rate {id, verdict}` posts
-`POST /v1/mind/rate` for the owner only.
+`POST /v1/mind/rate` for the owner only. `log` and `why` are the owner's too,
+and a guest's `state` says only whether the mind is on and at what level: the
+log and the asks name what the owner asked about other people.
 
 ## People
 

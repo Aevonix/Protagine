@@ -13,7 +13,7 @@ needs; nothing else is required.
 | `body.py` | The body thread: turn delivery, then the mind loop on `/v1/mind` (dispatch to kanban with `mind:<id>` keys, the outbox sent verbatim once, outcome reconciliation, orphan archiving, board observations, off-switch cleanup) with its own ledger in `<hermes_home>/state/protagine-body.sqlite3` |
 | `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5), including a delivering cron job's recipients (`may_contact: never` blocks); `POST /v1/mind/guard` → `{allow, reason}` |
 | `commands.py` | `/mind status|log|why <id>|asks|off` |
-| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`), `protagine_people` (`who|inspect|propose_link`; owner: `set_permission|set_cadence|merge`; with `mind.faculties.people: false` only `who|inspect|set_permission`), `protagine_memory_search`, `protagine_memory_forget` |
+| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`; a guest gets only whether the mind is on), `protagine_people` (`who|inspect|propose_link`; owner: `set_permission|set_cadence|merge`; with `mind.faculties.people: false` only `who|inspect|set_permission`), `protagine_memory_search`, `protagine_memory_forget` |
 | `reminders.py` | `protagine_reminder` on stock cron; the plugin keeps only the job id |
 
 Hermes config written by `protagine init`:

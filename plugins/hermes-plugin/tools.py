@@ -127,14 +127,15 @@ class Tools:
 
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
-        operation = str(args.get("operation") or "")
-        if operation in {"state", "status"}:
-            detail = mind_state(self.client) or {}
-            mind = self.settings.mind()
-            return _json({"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
-                          "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
-                          "sidecar_reachable": self.client.health() is not None,
-                          "mind_routes": self.client.has_mind_routes() is True, **detail})
+        operation, owner = str(args.get("operation") or ""), self._owner(session_id)
+        if operation in {"state", "status"}:  # a guest learns only whether the mind is on: its log and asks
+            detail, mind = mind_state(self.client) or {}, self.settings.mind()  # hold the owner's words (X7)
+            state = {"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
+                     "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
+                     "sidecar_reachable": self.client.health() is not None}
+            return _json({**state, "mind_routes": self.client.has_mind_routes() is True, **detail} if owner else state)
+        if operation in {"log", "why"} and not owner:
+            return _error("only the owner can read the mind's log")
         if operation == "log":
             limit = max(1, min(int(args.get("limit") or 20), 100))
             return self._mind("GET", "/v1/mind/log", params={"limit": limit})

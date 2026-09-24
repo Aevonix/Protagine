@@ -86,13 +86,13 @@ def test_self_tool_state_log_and_why(home, sidecar):
     sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "dispatched", "drive": "duty",
                                        "title": "Check", "hermes_ref": "t_1"}
     result = probe(TOOL_CODE + '''
-g, o = guest(), owner()
-emit(state=call("protagine_self", {"operation": "state"}, g),
+o = owner()
+emit(state=call("protagine_self", {"operation": "state"}, o),
      status_alias=call("protagine_self", {"operation": "status"}, o),
-     log=call("protagine_self", {"operation": "log", "limit": 5}, g),
-     why=call("protagine_self", {"operation": "why", "id": "i-01"}, g),
-     missing=call("protagine_self", {"operation": "why"}, g),
-     unknown=call("protagine_self", {"operation": "why", "id": "nope"}, g))
+     log=call("protagine_self", {"operation": "log", "limit": 5}, o),
+     why=call("protagine_self", {"operation": "why", "id": "i-01"}, o),
+     missing=call("protagine_self", {"operation": "why"}, o),
+     unknown=call("protagine_self", {"operation": "why", "id": "nope"}, o))
 ''', home)
     assert result["state"]["enabled"] is True and result["state"]["sidecar_reachable"] is True
     assert result["state"]["mind_routes"] is True and result["state"]["autonomy"] == "standard"
@@ -103,6 +103,28 @@ emit(state=call("protagine_self", {"operation": "state"}, g),
     assert "not found" in result["unknown"]["error"]
     logs = sidecar.calls("/v1/mind/log", "GET")
     assert logs and logs[0]["query"] == {"limit": "5"}
+
+
+def test_a_guest_reads_only_whether_the_mind_is_on_never_its_log_or_asks(home, sidecar):
+    """Review F14 (integration map X7): the mind's log and asks carry the owner's instructions
+    about other people (who is told what, who opted out); a guest session gets the switch state
+    only, and log and why refuse."""
+    sidecar.mind_routes = True
+    sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "message", "status": "asked", "ask_code": "K7F",
+                                       "title": "Tell p-02 the lease is not being renewed", "recipient": "p-02"}
+    result = probe(TOOL_CODE + '''
+g = guest()
+emit(state=call("protagine_self", {"operation": "state"}, g),
+     log=call("protagine_self", {"operation": "log"}, g),
+     why=call("protagine_self", {"operation": "why", "id": "i-01"}, g),
+     worker=call("protagine_self", {"operation": "log"}, "never-seen"))
+''', home)
+    assert set(result["state"]) == {"enabled", "autonomy", "sidecar_reachable"}
+    assert result["state"]["enabled"] is True and result["state"]["autonomy"] == "standard"
+    assert "owner" in result["log"]["error"] and "owner" in result["why"]["error"]
+    assert "owner" in result["worker"]["error"]
+    assert "lease" not in json.dumps(result)
+    assert sidecar.calls("/v1/mind/log", "GET") == [] and sidecar.calls("/v1/mind/why/i-01", "GET") == []
 
 
 def test_self_tool_approval_needs_the_owner_and_the_typed_code(home, sidecar):
