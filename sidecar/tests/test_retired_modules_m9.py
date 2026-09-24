@@ -90,3 +90,59 @@ def test_no_environment_flag_names_a_retired_subsystem():
 def test_health_capabilities_never_advertise_the_m9_subsystems():
     from protagine.api.routers.host import supported_capabilities
     assert not set(RETIRED_CAPABILITIES) & set(supported_capabilities())
+
+
+M9_RETIRED_STATE = ("protagine-toolsmith.db", "toolsmith_library", "protagine-experiments.db", "protagine-params.db",
+                    "protagine-skills.db", "protagine-mining.db")
+M9_RETIRED_TABLES = {"protagine-self-model.db": ("trust_stage", "trust_notices")}
+
+
+def test_upgrade_retires_the_m9_stores_and_the_trust_tables(tmp_path):
+    """An upgrade backs up first, moves the removed subsystems' stores into the backup and drops the trust
+    tables from the surviving self-model store (the competence tables stay); a second pass changes nothing."""
+    import sqlite3
+    from protagine import init
+    assert set(M9_RETIRED_STATE) <= set(init.RETIRED_STATE)
+    assert set(M9_RETIRED_TABLES["protagine-self-model.db"]) <= set(init.RETIRED_TABLES["protagine-self-model.db"])
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in M9_RETIRED_STATE:
+        if name == "toolsmith_library":
+            (home / name / "t-1").mkdir(parents=True)
+            (home / name / "t-1" / "tool.py").write_text("def run():\n    return 1\n")
+            continue
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x)")
+            db.execute("INSERT INTO t VALUES (1)")
+    (home / "protagine-mining.db-wal").write_bytes(b"")
+    with sqlite3.connect(home / "protagine-self-model.db") as db:
+        db.execute("CREATE TABLE competence (domain TEXT PRIMARY KEY, success INTEGER)")
+        db.execute("INSERT INTO competence VALUES ('worker:x', 3)")
+        for table in ("trust_stage", "trust_notices"):
+            db.execute(f"CREATE TABLE {table} (domain TEXT, value TEXT)")
+            db.execute(f"INSERT INTO {table} VALUES ('worker:x', 'act_first')")
+    (home / "exports").mkdir()
+    (home / "exports" / "corpus.jsonl").write_text("{}\n")
+    assert sorted(init.retired_state_present(home)) == sorted(M9_RETIRED_STATE)
+    assert sorted(init.retired_tables_present(home)) == [
+        "protagine-self-model.db:trust_notices", "protagine-self-model.db:trust_stage"]
+
+    backup = init.backup_instance(home)                      # what run_upgrade does first
+    notes = init.retire_state(home, backup) + init.retire_tables(home)
+
+    assert init.retired_state_present(home) == [] and init.retired_tables_present(home) == []
+    assert len(notes) == len(M9_RETIRED_STATE) + 2
+    retired = backup / "retired"
+    assert sorted(path.name for path in retired.iterdir()) == sorted(M9_RETIRED_STATE + ("protagine-mining.db-wal",))
+    assert (retired / "toolsmith_library" / "t-1" / "tool.py").exists()
+    with sqlite3.connect(retired / "protagine-skills.db") as db:
+        assert db.execute("SELECT x FROM t").fetchall() == [(1,)]
+    with sqlite3.connect(backup / "protagine-self-model.db") as db:          # the backup keeps the rows
+        assert db.execute("SELECT value FROM trust_stage").fetchall() == [("act_first",)]
+    with sqlite3.connect(home / "protagine-self-model.db") as db:
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert names == {"competence"} and db.execute("SELECT success FROM competence").fetchone() == (3,)
+    assert (home / "exports" / "corpus.jsonl").exists()                    # the owner's exports stay
+    # A second pass finds nothing.
+    assert init.retire_state(home, tmp_path / "again") == [] and init.retire_tables(home) == []
+    assert not (tmp_path / "again").exists()
