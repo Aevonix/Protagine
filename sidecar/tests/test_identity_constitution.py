@@ -183,3 +183,28 @@ def test_no_learning_path_writes_the_constitution():
 def test_render_helpers_are_exported():
     assert config.CONSTITUTION_CHARS == 1500
     assert callable(config.constitution_list)
+
+
+def test_the_adapter_renders_the_same_constitution_as_the_sidecar():
+    """The plugin cannot import the sidecar, so it carries the same render; the two must not drift."""
+    import importlib
+    import importlib.util
+    import sys
+    package = "hermes_plugin_constitution_under_test"
+    if package not in sys.modules:
+        location = Path(__file__).resolve().parents[2] / "plugins" / "hermes-plugin"
+        spec = importlib.util.spec_from_loader(package, loader=None, is_package=True)
+        module = importlib.util.module_from_spec(spec)
+        module.__path__ = [str(location)]
+        sys.modules[package] = module
+    client = importlib.import_module(f"{package}.client")
+    assert client.CONSTITUTION_CHARS == CONSTITUTION_CHARS
+    long_identity = {"agent": {"name": "Sol", "values": [f"v{i}".ljust(160, "v") for i in range(14)],
+                               "boundaries": [f"b{i}".ljust(160, "b") for i in range(3)] + ["", "x\ny", 3]}}
+    for identity in (IDENTITY, long_identity, {}, {"agent": {"name": " Sol  Two "}}):
+        assert client.render_constitution(identity) == render_constitution(identity)
+    settings = client.Settings(sidecar_url="http://127.0.0.1:1", key_file=Path("/nonexistent/api.key"), api_key="",
+                               home=Path("/nonexistent"), hermes_home=Path("/nonexistent"),
+                               outbox_path=Path("/nonexistent/outbox.sqlite3"))
+    assert settings.constitution() == ""
+

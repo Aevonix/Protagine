@@ -50,6 +50,7 @@ class FakeMind:
     def __init__(self):
         self.enabled = True
         self.autonomy = "standard"
+        self.narrative: dict = {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
         self.intentions: dict[str, dict] = {}
         self.outbox: dict[str, dict] = {}
         self.guard_verdict: dict = {"allow": True, "reason": ""}
@@ -65,8 +66,9 @@ class FakeMind:
         self.pulls = 0
         self.last_pull_at = None
 
-    def handle(self, method, path, body):
+    def handle(self, method, path, body, query=None):
         import time as _time
+        query = query or {}
         parts = path.split("/")[3:]  # after /v1/mind
         head = parts[0] if parts else ""
         if head == "state" and method == "GET":
@@ -140,11 +142,20 @@ class FakeMind:
             self.rates.append(dict(body or {}))
             return 200, {"ok": True, **(body or {})}
         if head == "log" and method == "GET":
+            statuses = {s for s in query.get("status", "").split(",") if s}
+            kinds = {k for k in query.get("kind", "").split(",") if k}
+            rows = [i for i in self.intentions.values()
+                    if (not statuses or i.get("status") in statuses) and (not kinds or i.get("kind", "task") in kinds)
+                    and (not query.get("recipient") or i.get("recipient") == query["recipient"])]
             return 200, {"entries": [{"id": i["id"], "kind": i.get("kind", "task"), "status": i.get("status"),
-                                      "title": i.get("title")} for i in self.intentions.values()]}
+                                      "title": i.get("title"), "decision": i.get("decision"),
+                                      "recipient": i.get("recipient")} for i in rows]}
+        if head == "narrative" and method == "GET":
+            return 200, dict(self.narrative)
         if head == "why" and len(parts) == 2 and method == "GET":
             intention = self.intentions.get(parts[1])
-            return (200, dict(intention)) if intention else (404, {"detail": "unknown intention"})
+            return (200, dict(intention)) if intention else (404, {"detail": {
+                "code": "unknown_intention", "message": f"no intention {parts[1]} exists in the audit log"}})
         if head == "off" and method == "POST":
             self.enabled = False
             for message in self.outbox.values():
@@ -249,7 +260,7 @@ class FakeSidecar:
 
     def dispatch(self, method, path, query, body):
         if path.startswith("/v1/mind/"):
-            return self._mind(method, path, body)
+            return self._mind(method, path, body, query)
         if path == "/v1/host/health":
             return 200, {"status": "ok", "capabilities": ["memory"]}
         if path == "/v1/host/contacts/resolve":
@@ -294,11 +305,11 @@ class FakeSidecar:
                          "root_claim_id": body.get("claim_id"), "source_refs": []}
         return 404, {"detail": "not found"}
 
-    def _mind(self, method, path, body):
+    def _mind(self, method, path, body, query=None):
         if not self.mind_routes:
             return 404, {"detail": "not found"}
         with self.lock:
-            return self.mind.handle(method, path, body)
+            return self.mind.handle(method, path, body, query)
 
 
 @pytest.fixture
@@ -330,7 +341,7 @@ def build_home(tmp_path, port, url):
     }))
     (instance / "identity.yaml").write_text(yaml.safe_dump({
         "owner": {"name": "Owner", "contact_id": OWNER, "handles": {"telegram": ["1001"]}},
-        "agent": {"name": "Agent", "values": ["care"]},
+        "agent": {"name": "Agent", "values": ["care"], "boundaries": ["never send money"]},
     }))
     config = {
         "plugins": {"enabled": ["protagine"], "hook_callback_timeout": 0,

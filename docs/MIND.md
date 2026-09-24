@@ -186,6 +186,44 @@ goals) and "Waiting for your say on" (open asks with their codes). Guests
 never see it. With `faculties.broadcast` off the concerns are neither shown
 nor added to the recall query.
 
+## Identity: the constitution, the narrative and `protagine_self`
+
+Three layers (architecture 4.2). The **constitution** is `identity.yaml`
+`agent.{name, values, boundaries}`, owner-authored and written only by
+`protagine init` (`--agent-values`, `--agent-boundaries`; at most 12 items of
+160 characters each). It renders as one paragraph of at most 1,500 characters
+(`You are Sol. Your values: care; candour. Your boundaries: never send
+money.`); `init` refuses a longer one and says which list to shorten, and
+`protagine doctor` reports the rendered length. The plugin reads the file
+itself and renders the constitution into its `protagine` prompt section, which
+Hermes freezes per session, together with `Your owner is <name>.`, the
+**self-narrative** (`GET /v1/mind/narrative`: at most 2,000 characters, four
+computed or cited sections, every line ending in the audit ids it rests on;
+fetched with a 2 s timeout, cached 60 s, and left out when the sidecar or the
+`self_narrative` faculty is off) and two tool notes, 4,000 characters in all.
+The same values reach every appraisal prompt as `agent_values` (an input the
+response schema has no field for), so a contact's preferences are never
+confused with the agent's own.
+
+The mind cannot rewrite its constitution. In a mind run the plugin guard
+blocks every effectful tool that names `protagine.yaml`, `identity.yaml` or
+`api.key` (a write target, a V4A patch header, a shell command, code) before
+the workspace rule, reads stay allowed, and Hermes' own
+`protected_instruction_extra_patterns` (written by `init`) still asks a human
+for a write to any of them. No module under `mind/`, `self_model/`,
+`beliefs/`, `memory/` or `commitments/` writes either file; the owner's CLI
+and the mind's `persist` hook write `mind.enabled` and `mind.autonomy` only
+(a static test holds this).
+
+**`protagine_self`** is the only source for claims about the agent's own
+actions: `state` (level, budgets, open asks with codes, `working_on`: the
+approved and dispatched tasks with their ids, and the narrative text),
+`log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
+yesterday?" is one call, and an action that is not in the log did not happen),
+`why <id>` (an unknown id answers "no intention `<id>` exists in the audit
+log"), `rate <id> <verdict>`, `yes|no <code>`. `rate`, `yes` and `no` stay
+owner-only.
+
 ## Asks
 
 An ask lives only in the sidecar. Nothing is created in Hermes until the owner
@@ -247,10 +285,13 @@ mind:
     broadcast: true                 # the top-3 concerns in turn context and recall
 ```
 
-`identity.yaml` may list `agent.interests`; each becomes a seeded interest at
-startup. Learning writes `mind.db`, the feedback multipliers and the
-intention rows; nothing the mind learns writes `protagine.yaml` or
-`identity.yaml`.
+`identity.yaml` holds the constitution (`agent.name`, `agent.values`,
+`agent.boundaries`) and may list `agent.interests`; each interest becomes a
+seeded interest at startup. `faculties.semantic_recall` is a real switch:
+with it off the embedder stays off (`PROTAGINE_EMBED_PROVIDER=skip`) even
+when `router.embed_url` is set. Learning writes `mind.db`, the feedback
+multipliers and the intention rows; nothing the mind learns writes
+`protagine.yaml` or `identity.yaml`.
 
 ## The CLI
 
@@ -284,7 +325,9 @@ protagine mind interest <topic>    seed an interest for the curiosity drive
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log`, `GET /why/{id}`, `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests` and `deliberation`), `GET /stats` | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests` and `deliberation`), `GET /stats` | | |
+| `GET /narrative` | | the self-narrative `{enabled, text, sections: {interests, strengths, recent, stances}, cites, updated_at}`; `enabled: false` and empty text until the mind keeps one or while `faculties.self_narrative` is off |
+| `POST /consolidate` | | runs the nightly consolidation now and returns the night's record (`protagine mind consolidate`); 501 `consolidation_not_available` on a sidecar without it |
 | `GET /concerns`, `GET /goals` | | the workspace (open concerns, the broadcast set, drive levels) and the open goals |
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
