@@ -382,6 +382,7 @@ def evaluate_outreach(
     last_interaction_ts: Any = None,
     first_seen_ts: Any = None,
     last_outbound_ts: Any = None,
+    last_attempt_ts: Any = None,
     ignored_streak: int = 0,
     open_followups: Optional[List[str]] = None,
     affect_declining: bool = False,
@@ -390,8 +391,9 @@ def evaluate_outreach(
     """Whether a check-in to ``contact`` is warranted now, and when it next would be.
 
     The reference is the later of the last conversation (or, before any, when
-    the contact was first seen) and the last message sent to them; a check-in
-    is due one cadence after it. Silence moves the next one back: the cooldown
+    the contact was first seen), the last message sent to them and the end of
+    the last check-in that never went out (an ask that expired or was refused);
+    a check-in is due one cadence after it. Silence moves the next one back: the cooldown
     after a send is ``cadence x 2**ignored_streak``, capped at four cadences,
     measured from the last send; a reply resets the streak (the caller
     computes it from the sent rows and the contact's last interaction).
@@ -421,7 +423,7 @@ def evaluate_outreach(
     cooldown = min(cadence * (2 ** streak), 4 * cadence)
     result["cooldown_hours"] = cooldown.total_seconds() / 3600.0
     last_in, first_seen, last_out = _parse(last_interaction_ts), _parse(first_seen_ts), _parse(last_outbound_ts)
-    anchors = [value for value in (last_in or first_seen, last_out) if value is not None]
+    anchors = [value for value in (last_in or first_seen, last_out, _parse(last_attempt_ts)) if value is not None]
     if not anchors:
         result["reason"] = "no history to time a check-in from"
         return result

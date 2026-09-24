@@ -178,6 +178,9 @@ def test_outreach_is_due_one_cadence_after_the_reference_and_not_before():
     # A conversation moves the reference: the contact wrote 0.6 cadences ago.
     talked = outreach(T0 + 1.3 * C, last_interaction_ts=(T0 + 0.6 * C).isoformat())
     assert talked["should_contact"] is False and "not due" in talked["reason"]
+    # So does a check-in that ended unsent (an expired or refused ask): the next is a cadence later.
+    unsent = outreach(T0 + C + PAST, last_attempt_ts=(T0 + C).isoformat())
+    assert unsent["should_contact"] is False and unsent["next_eligible_at"] == T0 + 2 * C
 
 
 def test_outreach_cooldown_doubles_per_ignored_check_in_and_caps_at_four_cadences():
@@ -478,3 +481,24 @@ async def test_a_granted_check_in_due_now_is_the_one_word_and_its_topic_carries_
     assert second["text"] == f"Hi {CONTACT}, checking in about the budget draft: how is it going?"
     fx.shift(C + PAST)
     assert (await fx.tick())["formed"] == [] and len(fx.messages_to(CONTACT)) == 2
+
+
+async def test_a_check_in_that_never_went_out_starts_the_next_period(make):
+    """An ask the owner let expire, or refused, is neither lost for good nor asked again at once:
+    the next check-in is due one cadence after it ended, and the owner's silence and refusal
+    teach the ranker (0.9 x 0.85 on both keys holds the third below the threshold)."""
+    fx = make([contact(CONTACT, may_contact="ask", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    first, = (await fx.tick())["formed"]
+    fx.shift(timedelta(hours=73))
+    expired = await fx.tick()
+    assert fx.store.get(first["id"]).status == "expired" and expired["formed"] == []
+    fx.shift(C + PAST)
+    second, = (await fx.tick())["formed"]
+    assert second["type"] == "check_in" and second["status"] == "asked" and second["id"] != first["id"]
+    refused = await fx.mind.answer(fx.store.get(second["id"]).ask_code, yes=False)
+    assert refused.status == "cancelled"
+    assert (await fx.tick())["formed"] == []
+    fx.shift(C + PAST)
+    held = await fx.tick()
+    assert held["formed"] == [] and held["below_threshold"] == 1

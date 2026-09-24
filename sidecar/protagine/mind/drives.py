@@ -149,7 +149,7 @@ class DriveInputs:
     heads_up_grace: timedelta = HEADS_UP_GRACE
     worker_profile: str = "protagine-act"
     # Rows of ``contacts.social_candidates()`` enriched by the tick: last_check_in_at, last_outbound_at,
-    # ignored_streak, open_followups, affect_declining, in_flight (a check-in still under way), topic
+    # last_attempt_at (a check-in that ended unsent), ignored_streak, open_followups, affect_declining, in_flight (a check-in still under way), topic
     # (the open thread) and estimated_cadence_minutes (tier-only contacts: conversations, floor one day).
     contacts: List[Dict[str, Any]] = field(default_factory=list)
     link_proposals: List[Dict[str, Any]] = field(default_factory=list)  # pending name-only identity candidates
@@ -600,6 +600,7 @@ def social(inputs: DriveInputs) -> DriveResult:
         verdict = evaluate_outreach(
             row, now=inputs.now, cadence_minutes=cadence, last_interaction_ts=row.get("last_interaction_at"),
             first_seen_ts=row.get("first_seen_at"), last_outbound_ts=row.get("last_outbound_at"),
+            last_attempt_ts=row.get("last_attempt_at"),
             ignored_streak=int(row.get("ignored_streak") or 0), open_followups=row.get("open_followups") or [],
             affect_declining=bool(row.get("affect_declining")))
         if not verdict["should_contact"] or verdict["next_eligible_at"] is None:

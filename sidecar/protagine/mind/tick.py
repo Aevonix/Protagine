@@ -1354,8 +1354,13 @@ class Mind:
                 if last_in is not None and last_in > self._sent_at(item):
                     break
                 streak += 1
+            # A check-in that ended without going out (the owner let the ask expire or said no, the
+            # deny list dropped it) starts the next period, so it is neither lost for good nor re-asked at once.
+            unsent = [_utc(item.cancelled_at) or _utc(item.completed_at) or _utc(item.created_at) for item in mine
+                      if item.type in CHECK_IN_TYPES and item.status in {"expired", "cancelled", "dropped"}]
             row.update(
                 last_outbound_at=self._sent_at(sent[0]).isoformat() if sent else None,
+                last_attempt_at=max(unsent).isoformat() if unsent else None,
                 last_check_in_at=self._sent_at(check_ins[0]).isoformat() if check_ins else None,
                 ignored_streak=streak,
                 in_flight=any(item.status in MIND_ACTIVE_STATUSES for item in mine),
