@@ -22,7 +22,7 @@ unless a selected qualification explicitly requires a real model or service.
 |---|---|
 | `sidecar/protagine/` | The Python package: FastAPI sidecar, CLI, all subsystems |
 | `sidecar/protagine/api/` | Pydantic schemas and routers: the single source of truth for the HTTP contract |
-| `sidecar/protagine/intelligence/` | Graph memory, mind model, cognition components |
+| `sidecar/protagine/intelligence/` | Graph memory, cognition components |
 | `sidecar/protagine/mind/` | The mind: authority, the tick, the ranker, outcomes, the outbox and the audit log |
 | `sidecar/tests/` | Sidecar test suite, kept out of the installed product package |
 | `plugins/` | Host integration plugins: `hermes-plugin` (general adapter), `protagine-memory` (memory provider), `feeds-manage` |
