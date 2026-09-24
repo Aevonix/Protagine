@@ -154,11 +154,19 @@ def _require_owner(contact_id: Optional[str], by: str) -> str:
 
 
 async def _resolve(reference: str) -> Any:
-    contact = await _store().resolve_reference(reference)
+    """The one contact a reference names; otherwise 404 with the people it could mean (who they
+    are only), so an ambiguous name is answered, never guessed."""
+    store = _store()
+    contact = await store.resolve_reference(reference)
     if contact is None:
+        try:
+            candidates = [_row(c, [], full=False) for c in await store.search(reference, limit=5)]
+        except Exception:
+            candidates = []
         raise HTTPException(status_code=404, detail={
-            "code": "unknown_contact",
-            "message": f"no single contact matches {reference!r}; `who` lists the candidates"})
+            "code": "unknown_contact", "candidates": candidates,
+            "message": f"no single contact matches {reference!r}"
+                       + (": " + "; ".join(_line(row) for row in candidates) if candidates else "")})
     return contact
 
 
@@ -171,8 +179,10 @@ def _handles(handles: List[Any]) -> List[Dict[str, Any]]:
 def _row(contact: Any, handles: List[Any], *, full: bool) -> Dict[str, Any]:
     if not full:
         return {key: getattr(contact, key) for key in PUBLIC_FIELDS}
+    from protagine.mind.authority import may_contact_of
     return {"contact_id": contact.contact_id, "display_name": contact.display_name, "trust_tier": contact.trust_tier,
-            "may_contact": contact.may_contact, "cadence_minutes": contact.cadence_minutes,
+            # The owner is ``auto`` by identity, whatever an older row's column says.
+            "may_contact": may_contact_of(contact, owner_id=_owner_id()), "cadence_minutes": contact.cadence_minutes,
             "last_interaction_at": contact.last_interaction_at, "interaction_count": contact.interaction_count,
             "handles": _handles(handles)}
 

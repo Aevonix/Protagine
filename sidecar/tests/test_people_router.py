@@ -211,6 +211,29 @@ async def test_a_merge_keeps_the_dropped_records_sourced_affect_through_the_reco
 
 
 @pytest.mark.asyncio
+async def test_the_owner_reads_as_auto_and_an_unresolved_reference_lists_the_candidates(world):
+    """Audit m5, m7: the owner's permission is ``auto`` by identity whatever the column says (a
+    pre-M5 row may say never); a reference that names no single contact is answered with the
+    people it could mean, and nothing is changed."""
+    client, store, owner, guest = world
+    db = store._require_db()
+    await db.execute("UPDATE contacts SET may_contact = 'never' WHERE contact_id = ?", (owner.contact_id,))
+    await db.commit()
+    inspected = (await client.get(f"/v1/mind/people/{owner.contact_id}")).json()
+    assert inspected["contact"]["may_contact"] == "auto" and "may_contact=auto" in inspected["text"]
+    listed = (await client.get("/v1/mind/people", params={"q": "Owner"})).json()
+    assert [row["may_contact"] for row in listed["contacts"]] == ["auto"]
+    await store.create(display_name="Casey Park", trust_tier="regular")
+    ambiguous = await client.post("/v1/mind/people/merge", json={"keep": "Casey", "drop": guest.contact_id, "by": "cli"})
+    assert ambiguous.status_code == 404
+    detail = ambiguous.json()["detail"]
+    assert detail["code"] == "unknown_contact"
+    assert {row["display_name"] for row in detail["candidates"]} == {"Casey Lee", "Casey Park"}
+    assert all(set(row) == {"contact_id", "display_name", "trust_tier"} for row in detail["candidates"])
+    assert await store.get(guest.contact_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_anyone_may_propose_a_link_and_the_proposal_waits_for_the_owner(world):
     client, store, owner, guest = world
     response = await client.post("/v1/mind/people/link", json={
