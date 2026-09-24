@@ -189,9 +189,10 @@ nor added to the recall query.
 ## Opinions
 
 With `faculties.opinions` on, the mind keeps the agent's opinions (docs/OPINIONS.md).
-Three failed attempts in a row at the same work (the failure signature `type:topic`)
-become an `avoid` approach opinion with no model call, and a verified success turns it
-into `prefer`; the next task at that work carries the view in its body
+Three failed attempts in a row at the same work (the failure signature `type:topic`; a
+done report whose success check failed is a failure) become an `avoid` approach opinion
+with no model call, and a success a check confirmed or the owner verified turns it into
+`prefer`; the next task at that work carries the view in its body
 ("Your recorded view on this work [opinion N]: ...", with `context.opinion_ids`). A view
 flags work, it never holds it back: those three failures also trip the breaker, so the
 next attempt is usually an ask, and once the owner says yes it is dispatched with the

@@ -3,7 +3,9 @@
 Architecture 4.4. Reads are audience-filtered: the owner (``contact_id`` equal to
 the owner's, or ``by=cli``) sees every stance; anyone else sees only the stances
 whose audience is ``all``, and an owner-audience stance asked for by id is a 404,
-the same answer as an unknown one. Withdraw and reconsider are owner-only.
+the same answer as an unknown one. The owner's controls (withdraw and reconsider,
+with their reasons) are owner-audience rows, and what a view rests on (the owner's
+ledger rows) is shown to anyone else only by kind. Withdraw and reconsider are owner-only.
 
   GET  /v1/mind/opinions?q=&contact_id=&by=&history=false&limit=10 -> {enabled, opinions: [rows]}
   GET  /v1/mind/opinions/{id}?contact_id=&by=                       -> {opinion, history: [the topic's chain]}
@@ -49,6 +51,15 @@ def _visible(row: Optional[Dict[str, Any]], owner: bool) -> bool:
     return row is not None and (owner or row.get("audience") == "all")
 
 
+def _shown(row: Dict[str, Any], owner: bool) -> Dict[str, Any]:
+    """The row as this viewer may read it: anyone but the owner gets no owner correction, no
+    premise text or ledger reference (only each premise's kind and role) and no model provenance."""
+    if owner:
+        return row
+    return {**row, "owner_correction": None, "processor": {},
+            "premises": [{"kind": p.get("kind"), "role": p.get("role", "support")} for p in row.get("premises") or []]}
+
+
 @router.get("")
 async def list_opinions(q: str = "", contact_id: str = "", by: str = "", history: bool = False,
                         limit: int = 10) -> Dict[str, Any]:
@@ -62,7 +73,7 @@ async def list_opinions(q: str = "", contact_id: str = "", by: str = "", history
         rows = opinions.store.relevant(q, audience=audience, limit=limit)
     else:
         rows = opinions.store.revisions(history=history, audience=audience, limit=limit)
-    return {"enabled": True, "opinions": [row for row in rows if _visible(row, owner)]}
+    return {"enabled": True, "opinions": [_shown(row, owner) for row in rows if _visible(row, owner)]}
 
 
 @router.get("/{opinion_id}")
@@ -84,7 +95,7 @@ async def show_opinion(opinion_id: int, contact_id: str = "", by: str = "") -> D
         current = opinions.store.get(int(current["supersedes"])) if current.get("supersedes") else None
     if row["id"] not in seen:          # a row the head's chain does not reach (an erased topic): itself
         chain.insert(0, row)
-    return {"opinion": row, "history": [item for item in chain if _visible(item, owner)]}
+    return {"opinion": _shown(row, owner), "history": [_shown(item, owner) for item in chain if _visible(item, owner)]}
 
 
 @router.post("/{opinion_id}/{action}")

@@ -9,7 +9,7 @@ import time
 import pytest
 
 from protagine.self_model.judgments import (
-    ENTRY_PREFIX, LIMIT_WINDOW_S, Premise, Proposal, SelfJudgments, content_key, head_key, initialize,
+    ENTRY_PREFIX, LIMIT_WINDOW_S, Premise, Proposal, Result, SelfJudgments, content_key, head_key, initialize,
 )
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.idempotency import source_message_hash
@@ -81,11 +81,15 @@ def proposal(premises, **kwargs):
     return Proposal(**(values | kwargs))
 
 
-def finding(judgments, intention='int-1', text='Research found that staged checkpoints recover long renders.'):
+def finding(judgments, intention='int-1', text='Research found that staged checkpoints recover long renders.',
+            *, public=False):
+    """A stored finding; ``public`` marks research into the agent's own declared interest."""
     turn = f'mind:{intention}:finding'
+    metadata = {'origin': 'mind', 'intention_id': intention, 'event': 'finding'}
+    if public:
+        metadata['audience'] = 'all'
     judgments.ledger.record_source(turn, contact_id='contact-a', session_id='mind', derive_claims=False,
-        messages=[{'role': 'assistant', 'content': text,
-                   'metadata': {'origin': 'mind', 'intention_id': intention, 'event': 'finding'}}])
+        messages=[{'role': 'assistant', 'content': text, 'metadata': metadata}])
     return turn
 
 
@@ -266,14 +270,27 @@ def test_a_statement_only_stance_is_refused_beside_a_current_one_from_the_same_s
     assert state.form(proposal(state.statements('second'), topic='export queue batching', source_ref='turn:second',
                                session_id='another-session')).disposition == 'formed'
     clock.value += LIMIT_WINDOW_S + 1
-    assert state.form(proposal(said, topic='render queue order')).disposition == 'formed'
+    source(state, 'third', 'And the backups?', admitted=False, session_id='session-first',
+           reply='Weekly full backups with daily increments.')
+    assert state.form(proposal(state.statements('third'), topic='backup rotation', source_ref='turn:third',
+                               stance='Weekly full backups with daily increments.')).disposition == 'formed'
 
 
 def test_audience_is_all_only_for_topic_stances_resting_on_findings_or_outcomes(judgments):
     state, _ = judgments
-    found = state.finding_premise(finding(state))
-    assert found.kind == 'finding' and found.ref == 'finding:mind:int-1:finding'
+    found = state.finding_premise(finding(state, public=True))
+    assert found.kind == 'finding' and found.ref == 'finding:mind:int-1:finding' and found.audience == 'all'
     everyone = state.form(proposal([found], topic='render checkpoints', source_ref='finding:mind:int-1:finding', session_id='mind'))
+    private = state.finding_premise(finding(state, 'int-2', 'What I learned about my tax filing: the deadline moved.'))
+    assert private.audience == ''
+    owners = state.form(proposal([private], topic='tax filing', stance='File early.', source_ref='finding:mind:int-2:finding',
+                                 session_id='mind'))
+    assert state.get(owners.stance_id)['audience'] == 'owner'
+    # Written with an owner-only view in sight (the pass says so), a public finding forms an owner view.
+    third = state.finding_premise(finding(state, 'int-3', 'Research found that render farms bill by the minute.',
+                                          public=True))
+    seen = state.form(replace(proposal([third], topic='render billing', stance='Render farms bill by the minute.',
+                                       source_ref='finding:mind:int-3:finding', session_id='mind'), owner_only=True))
     outcome = state.outcome_premise({'id': 'int-4', 'outcome': 'done', 'result': 'Staged the long render.'})
     also = state.form(proposal([outcome], topic='staged renders', source_ref='intention:int-4', session_id=''))
     source(state)
@@ -285,7 +302,8 @@ def test_audience_is_all_only_for_topic_stances_resting_on_findings_or_outcomes(
                                    topic='render checkpoints', stance_class='avoid', source_ref='intention:int-4'))
     audiences = {r['id']: r['audience'] for r in state.revisions()}
     assert audiences == {everyone.stance_id: 'all', also.stance_id: 'all', claimed: 'owner',
-                         person.stance_id: 'owner', approach.stance_id: 'owner'}
+                         person.stance_id: 'owner', approach.stance_id: 'owner', owners.stance_id: 'owner',
+                         seen.stance_id: 'owner'}
     assert {r['id'] for r in state.revisions(audience='all')} == {everyone.stance_id, also.stance_id}
     assert {r['id'] for r in state.relevant('render checkpoints delivery reliability', audience='all', limit=10)} <= {
         everyone.stance_id, also.stance_id}
@@ -294,6 +312,122 @@ def test_audience_is_all_only_for_topic_stances_resting_on_findings_or_outcomes(
                                source_ref='intention:int-4')).disposition == 'invalid:stance_class'
     assert state.form(proposal([outcome], subject_kind='person', subject='', topic='x',
                                source_ref='intention:int-4')).disposition == 'invalid:subject'
+
+
+def test_content_key_erases_record_ids_and_hashes_but_keeps_figures_years_and_versions():
+    same = [('Inspection s-12 found 3 of 40 seals cracked.', 'Inspection s-40 found 3 of 40 seals cracked.'),
+            ('Run 3f9a2c7b41 finished cleanly.', 'Run 9c1d0e22ab finished cleanly.'),
+            ('Upload 1234567890123456 finished.', 'Upload 6543210987654321 finished.')]
+    for one, other in same:
+        assert content_key(one) == content_key(other), (one, other)
+    different = [('The vendor quote totals 12500000 dollars.', 'The vendor quote totals 98000000 dollars.'),
+                 ('FY-2024 revenue grew 12%.', 'FY-2026 revenue grew 12%.'),
+                 ('The eval on gpt-4 scored 71 of 100.', 'The eval on gpt-5 scored 71 of 100.'),
+                 ('Shipped on 20260915.', 'Shipped on 20260916.'),
+                 ('The report is deadbeefcafe-free.', 'The report is decadefacade-free.')]
+    for one, other in different:
+        assert content_key(one) != content_key(other), (one, other)
+
+
+def test_a_record_that_changes_only_a_large_figure_is_new_evidence(judgments):
+    state, _ = judgments
+    source(state, 'first', 'The vendor quote for the rebuild totals 12500000 dollars.')
+    stance = formed(state, topic='rebuild vendor', stance='The rebuild vendor is affordable.')
+    source(state, 'later', 'The vendor quote for the rebuild totals 98000000 dollars.')
+    new = state.admitted_premises('later')
+    result = state.revise(stance, proposal(new, topic='rebuild vendor', stance='The rebuild vendor is not affordable.',
+                                           new_evidence=[new[0].ref], source_ref='turn:later'))
+    assert result.disposition == 'revised'
+
+
+def test_a_view_on_a_matter_already_held_needs_a_premise_no_view_cites(judgments):
+    """Forming under another topic is no way around the new-premise rule: the same record under a
+    fresh id cannot form a rival view, and neither can the agent's own words on the same matter, in
+    any session and after any wait; words on an unrelated matter still form."""
+    state, clock = judgments
+    source(state, 'first', 'Inspection s-12 found 3 of 40 seals cracked after the long run without checkpoints.')
+    stance = formed(state)
+    source(state, 'restated', 'Inspection s-40 found 3 of 40 seals cracked after the long run without checkpoints.')
+    rival = state.form(proposal(state.admitted_premises('restated'), topic='checkpoint policy',
+                                stance='Skip checkpoints.', source_ref='turn:restated', session_id='session-other'))
+    assert rival == Result('no_new_premise', stance)
+    clock.value += LIMIT_WINDOW_S + 1
+    source(state, 'pushback', 'Are you sure checkpoints help long local work?', admitted=False,
+           reply='You are right, checkpoints do not help long local work.')
+    words = state.form(proposal(state.statements('pushback'), topic='checkpoints for long runs',
+                                stance='Checkpoints do not help.', source_ref='turn:pushback',
+                                session_id='session-pushback'))
+    assert words == Result('no_new_premise', stance)
+    source(state, 'other', 'Which day suits the retro?', admitted=False, reply='Friday suits the retro.')
+    assert state.form(proposal(state.statements('other'), topic='retro day', stance='Friday suits the retro.',
+                               source_ref='turn:other', session_id='session-other')).disposition == 'formed'
+    assert [r['id'] for r in state.revisions() if r['topic'] != 'retro day'] == [stance]
+
+
+def test_a_revision_never_widens_the_audience(judgments):
+    """A view formed in a conversation stays the owner's when a public finding revises it or an owner
+    reconsideration keeps only that finding; an everyone view reconsidered stays everyone's."""
+    state, _ = judgments
+    source(state, 'said', 'Which render settings for long jobs?', admitted=False,
+           reply='I recommend stage checkpoints for renders over an hour.')
+    stance = state.form(proposal(state.statements('said'), topic='render checkpoints', source_ref='turn:said',
+                                 session_id='session-said')).stance_id
+    assert state.get(stance)['audience'] == 'owner'
+    found = state.finding_premise(finding(state, public=True))
+    revised = state.revise(stance, proposal([found], topic='render checkpoints', new_evidence=[found.ref],
+                                            source_ref='finding:mind:int-1:finding'))
+    assert revised.disposition == 'revised' and state.get(revised.stance_id)['audience'] == 'owner'
+    assert entry(state, revised.stance_id, 'revised')['message']['metadata']['audience'] == 'owner'
+    control = state.correct(revised.stance_id, action='reconsider', correction_id='r-1', reason='Look again.')
+    again = state.revise(control['revision_id'], proposal([found], topic='render checkpoints', owner_reconsider=True,
+                                                          source_ref=f"reconsider:{control['revision_id']}"))
+    assert again.disposition == 'revised' and state.get(again.stance_id)['audience'] == 'owner'
+    other = state.finding_premise(finding(state, 'int-5', 'Research found that bees fan their wings to cool hives.',
+                                          public=True))
+    public = state.form(proposal([other], topic='hive cooling', stance='Bees cool hives by fanning.',
+                                 source_ref='finding:mind:int-5:finding', session_id='mind')).stance_id
+    control = state.correct(public, action='reconsider', correction_id='r-2', reason='Check it again.')
+    assert state.get(control['revision_id'])['audience'] == 'owner'          # the owner's control row is the owner's
+    kept = state.revise(control['revision_id'], proposal([other], topic='hive cooling', owner_reconsider=True,
+                                                         stance='Bees cool hives by fanning, re-checked.',
+                                                         source_ref=f"reconsider:{control['revision_id']}"))
+    assert state.get(kept.stance_id)['audience'] == 'all'
+
+
+def test_relevance_puts_this_sessions_views_first_only_among_those_that_match(judgments):
+    state, _ = judgments
+    source(state, 'old', 'Inspection found 3 of 40 seals cracked after the long run without checkpoints.',
+           session_id='monday')
+    wanted = state.form(proposal(state.admitted_premises('old'), source_ref='turn:old', session_id='monday')).stance_id
+    for n, (topic, text) in enumerate([('database engine', 'Postgres handled 9000 writes a second in the load test.'),
+                                       ('vacation dates', 'Flights in June cost 40 percent less than in July.'),
+                                       ('diet plan', 'The trial showed the plan cut weekly grocery spend by 20 dollars.')]):
+        source(state, f't{n}', text, session_id='long-session')
+        state.form(proposal(state.admitted_premises(f't{n}'), topic=topic, stance=f'A view on {topic}.',
+                            source_ref=f'turn:t{n}', session_id='long-session'))
+    query = 'Should we add checkpoints to the long local work runs? The seals cracked last time.'
+    ranked = [r['id'] for r in state.relevant(query, session_id='long-session', limit=3)]
+    assert ranked[0] == wanted and len(ranked) == 3        # free slots still show this session's views
+    diet = [r['id'] for r in state.relevant('How is the diet plan going?', session_id='long-session', limit=3)]
+    assert state.get(diet[0])['topic'] == 'diet plan' and wanted not in diet
+
+
+def test_relevance_ranks_the_heads_themselves_without_searching_the_ledger(judgments, monkeypatch):
+    """The stance section runs on every context assembly: it ranks the store's own heads (topic,
+    stance, reason, what would change it and what it rests on) and never runs a search over the
+    ledger's whole text index, whose cost grows with every turn."""
+    state, _ = judgments
+    source(state, 'first', 'Inspection s-12 found 3 of 40 seals cracked after the long run without checkpoints.')
+    stance = formed(state)
+    statements, connect = [], state.ledger._connect
+
+    def traced():
+        conn = connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+    monkeypatch.setattr(state.ledger, '_connect', traced)
+    assert [r['id'] for r in state.relevant('How many seals cracked?')] == [stance]      # a premise's words
+    assert statements and not any('turn_source_search' in sql for sql in statements)
 
 
 def test_relevance_ranks_by_entries_boosts_the_session_filters_audience_and_falls_back(judgments):
@@ -355,6 +489,23 @@ def test_withdraw_reconsider_and_their_idempotent_owner_controls(judgments):
     assert ended.disposition == 'reconsider_withdrawn'
     assert state.get(second['revision_id'])['status'] == 'withdrawn' and state.revisions() == []
     assert entry(state, second['revision_id'], 'withdrawn')['message']['content'].endswith('Once more.')
+
+
+def test_owner_control_rows_are_owner_audience(judgments):
+    state, _ = judgments
+    outcome = state.outcome_premise({'id': 'int-4', 'outcome': 'done', 'result': 'Staged the long render.'})
+    shared = state.form(proposal([outcome], topic='staged renders', source_ref='intention:int-4', session_id='')).stance_id
+    assert state.get(shared)['audience'] == 'all'
+    control = state.correct(shared, action='withdraw', correction_id='w-1', reason='My landlord is evicting us in May.')
+    row = state.get(control['revision_id'])
+    assert row['audience'] == 'owner' and row['owner_correction']['reason'].startswith('My landlord')
+    assert entry(state, control['revision_id'], 'withdrawn')['message']['metadata']['audience'] == 'owner'
+    assert state.revisions(history=True, audience='all') == [state.get(shared)]
+    with state.ledger._connect() as conn:       # a control row an earlier build wrote for everyone
+        conn.execute("UPDATE self_judgment_revisions SET audience='all' WHERE id=?", (control['revision_id'],))
+        initialize(conn)
+        assert conn.execute('SELECT audience FROM self_judgment_revisions WHERE id=?',
+                            (control['revision_id'],)).fetchone()[0] == 'owner'
 
 
 def test_a_captured_control_turn_erasure_removes_the_copied_reason_and_fences_new_controls(judgments):
@@ -528,6 +679,34 @@ def test_appraisal_judgments_migrate_into_person_opinions_and_the_kind_is_delete
             json.dumps({'observations': [item], 'incident_decisions': []}), {'evidence': [], 'previous': [], 'incident_ids': []})
     ledger.erase_sources(contact_id='contact-b', turn_ids=['seen'])
     assert store.revisions() == []
+
+
+def test_migrated_judgments_with_long_topics_that_share_a_prefix_stay_distinct(tmp_path):
+    ledger = TurnIdempotencyLedger(tmp_path / 'sources.db')
+    text = 'The export report claimed completion before any output existed.'
+    ledger.record_source('seen', contact_id='contact-b', session_id='s-seen', messages=[{'role': 'user', 'content': text}])
+    base = 'delivery of the quarterly warehouse inventory reconciliation report for '
+    topics = [base + 'north', base + 'south']
+    with ledger._connect() as conn:
+        (session, messages), = conn.execute("SELECT session_id,messages_json FROM turn_sources WHERE turn_id='seen'")
+        digest = source_message_hash(session, json.loads(messages)[0])
+        dependency = {'source_id': 'seen', 'source_version': 'v', 'source_contact_id': 'contact-b', 'message_hash': digest}
+        for n, topic in enumerate(topics):
+            item = {'kind': 'judgment', 'dimension': 'reliability', 'topic': topic, 'text': f'Reliable at {topic[-5:]}.',
+                    'reason': 'Twice on time.', 'support': [{'handle': digest, 'quote': 'claimed completion'}],
+                    'contrary': [], 'intensity': 'moderate', 'hint': 'none'}
+            conn.execute('INSERT INTO appraisal_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (f'j-{n}', 'owner', 'contact-b',
+                f'k{n}', 'judgment', json.dumps(item), json.dumps([dependency]), '{}', 'seen', 'v', 100.0 + n, None, 'current', None))
+            conn.execute("INSERT INTO appraisal_heads VALUES ('owner','contact-b',?,?)", (f'k{n}', f'j-{n}'))
+        initialize(conn)
+        initialize(conn)
+    rows = SelfJudgments(TurnIdempotencyLedger(ledger.db_path), owner_id='owner').revisions()
+    assert sorted(r['stance'] for r in rows) == ['Reliable at north.', 'Reliable at south.']
+    assert len({r['topic'] for r in rows}) == 2 and all(len(r['topic']) <= 80 for r in rows)
+    whole = set(f'reliability {base}north south'.split())
+    for row in rows:                                    # cut at a word, then told apart by a short tag
+        assert row['topic'].startswith('reliability delivery of the quarterly warehouse inventory')
+        assert set(row['topic'].split()[:-1]) <= whole and row['topic'].split()[-1] not in whole
 
 
 @pytest.mark.asyncio

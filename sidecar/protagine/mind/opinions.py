@@ -10,15 +10,17 @@ autobiography entries. This module decides what the store is asked:
   that the agent answered. Pushback and flattery therefore cost nothing and can never
   revise: they bring no admitted premise, and the agent's own reply never revises.
 - ``Opinions.observe_outcome`` forms approach opinions from settled task intentions
-  with no model call: three failures in a row at the same work become an ``avoid``
-  view, a verified success turns it into ``prefer``.
+  with no model call: three failures in a row at the same work (a done report whose
+  success check failed is a failure) become an ``avoid`` view, and a success a check
+  confirmed (or the owner verified) turns it into ``prefer``.
 - ``Opinions.context`` renders at most three relevant stances into a turn's context
   (audience-filtered, cited, with what would change them), and ``task_lines`` puts
   the approach view into the body of the next task at the same work.
 
 One binary switch, ``mind.faculties.opinions``, read once by the running mind (the pass
 asks it, and reads the instance config only when no mind is served): off, jobs finish
-``faculty_off`` without a call and nothing is formed or rendered; stored stances are kept.
+``faculty_off`` without a call and nothing is formed or rendered; stored stances are kept,
+and an owner's reconsider request waits for the faculty.
 """
 
 from __future__ import annotations
@@ -48,7 +50,6 @@ CERTAINTIES = ("tentative", "moderate", "strong")
 APPROACH_TOPIC = "approach"
 FAILURE_RUN = 3
 OUTCOME_WINDOW = timedelta(days=30)
-VERIFIED_SUCCESS = frozenset({"check", "owner"})
 CONTEXT_CHARS, LINE_CHARS, CONTEXT_STANCES = 1400, 420, 3
 STANDING = ("Change a recorded view only on new evidence: a new record or measurement, an observed outcome, a "
             "research result or a correction to a premise it cites. Doubt, insistence, flattery or the same claim "
@@ -214,6 +215,7 @@ class Packet:
     source_ref: str = ""
     session_id: str = ""
     control_id: Optional[int] = None
+    owner_only: bool = False             # an owner-only view is in sight: what the model writes is the owner's
 
 
 def _stance_entry(row: Mapping[str, Any], *, stance_id: Optional[int] = None) -> Dict[str, Any]:
@@ -323,7 +325,9 @@ async def build_packet(store: Any, job: Mapping[str, Any]):
         mapping, entries, _ = _premise_entries([premise], [], stances)
         data = {"kind": "finding", "finding": _clip(premise.text, TEXT_CHARS), "premises": entries,
                 "statements": [], "stances": [_stance_entry(row) for row in stances.values()]}
-        return Packet(dict(job), kind, data, mapping, stances, source_ref=f"finding:{ref}")
+        # A finding may bear on the owner's own views; with one of them in sight, the answer is the owner's.
+        return Packet(dict(job), kind, data, mapping, stances, source_ref=f"finding:{ref}",
+                      owner_only=any(row.get("audience") != "all" for row in rows))
     if kind == "reconsider":
         try:
             control_id = int(ref.split(":", 1)[1])
@@ -457,7 +461,7 @@ def apply(store: Any, packet: Packet, action: Mapping[str, Any], processor: Mapp
                                 for item in action["new_evidence"]]
     common = dict(stance=action["stance"], reason=action["reason"], certainty=action["certainty"],
                   revise_if=action["revise_if"], premises=premises, source_ref=packet.source_ref,
-                  session_id=packet.session_id, processor=meta)
+                  session_id=packet.session_id, processor=meta, owner_only=packet.owner_only)
     if action["action"] == "form":
         return store.form(J.Proposal(subject_kind=action["subject_kind"], subject=action["subject"],
                                      topic=action["topic"], **common))
@@ -485,7 +489,7 @@ async def run_one(store: Any, router: Any, *, enabled: bool | None = None) -> bo
         return False
     enabled = switched_on() if enabled is None else bool(enabled)
     if not enabled:
-        job = store.next_job()
+        job = store.next_job(skip=("reconsider",))     # an owner's reconsider request waits for the faculty
         if job is None:
             return False
         store.finish(job["ref"], "faculty_off")
@@ -500,8 +504,8 @@ async def run_one(store: Any, router: Any, *, enabled: bool | None = None) -> bo
         return False
     ref = str(job["ref"])
     now = float(getattr(store, "clock", time.time)())
-    if now - float(job.get("enqueued_at") or now) > STALE_JOB_S:
-        store.finish(ref, "stale")
+    if job.get("kind") != "reconsider" and now - float(job.get("enqueued_at") or now) > STALE_JOB_S:
+        store.finish(ref, "stale")       # evidence goes stale; the owner's request does not
         return True
     processor: Dict[str, str] = {}
     try:
@@ -550,6 +554,33 @@ def _settled_at(row: Any) -> datetime:
         or _utc(getattr(row, "created_at", None)) or datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _check(row: Any) -> Optional[bool]:
+    """What the row's success check found when it settled, or None when no check ran."""
+    metadata = getattr(row, "result_metadata", None)
+    check = metadata.get("check") if isinstance(metadata, dict) else None
+    passed = check.get("passed") if isinstance(check, dict) else None
+    return passed if isinstance(passed, bool) else None
+
+
+def _missed(row: Any, outcome: Optional[str], check_result: Optional[bool]) -> bool:
+    """Failed, or reported done while its success check found it not achieved (the owner's word aside).
+
+    ``verified`` names the verifier that ran, so a failed check reads ``check`` too."""
+    return outcome == "failed" or (outcome == "done" and check_result is False
+                                   and getattr(row, "verified", None) != "owner")
+
+
+def _succeeded(row: Any, check_result: Optional[bool]) -> bool:
+    """A success a check confirmed or the owner verified; a bare claim of a check that never ran is not."""
+    return check_result is True or getattr(row, "verified", None) == "owner"
+
+
+def _what_failed(row: Any) -> str:
+    if row.outcome == "done":
+        return f"check failed: {row.result or 'done'}"
+    return str(row.failed_reason or row.result or "failed")
+
+
 class Opinions:
     """Approach opinions from outcomes, stances into turn context, approach views into task bodies."""
 
@@ -564,15 +595,17 @@ class Opinions:
     def observe_outcome(self, row: Any, outcome: str, check_result: Optional[bool]) -> None:
         """Three failures in a row at the same work -> ``avoid``; a verified success -> ``prefer``.
 
-        No model call. A fourth failure agrees with ``avoid`` and an unverified success
-        admits nothing, so both change nothing.
+        No model call. A done report whose success check failed is a failure of the work. A
+        success counts only when a check confirmed it or the owner verified it. A fourth
+        failure agrees with ``avoid`` and an unverified success admits nothing, so both
+        change nothing.
         """
         if not self.enabled or getattr(row, "kind", None) != "task" or outcome not in {"done", "failed"}:
             return
         signature = failure_signature(_row_dict(row))
         head = self.store.head(subject_kind="approach", subject=signature, topic=APPROACH_TOPIC)
         status = (head or {}).get("status")
-        if outcome == "failed":
+        if _missed(row, outcome, check_result):
             now = _utc(self.clock()) or datetime.now(timezone.utc)
             history = [item for item in self.initiatives.intentions(kind=["task"], since=now - OUTCOME_WINDOW,
                                                                     limit=2000)
@@ -581,10 +614,11 @@ class Opinions:
                 history.append(row)
             history.sort(key=_settled_at, reverse=True)
             last = history[:FAILURE_RUN]
-            if len(last) < FAILURE_RUN or any(item.outcome != "failed" for item in last):
+            if len(last) < FAILURE_RUN or not all(
+                    _missed(item, item.outcome, check_result if item.id == row.id else _check(item)) for item in last):
                 return
             premises = [self.store.outcome_premise(item) for item in last]
-            reasons = "; ".join(_clip(item.failed_reason or item.result or "failed", 90) for item in last)
+            reasons = "; ".join(_clip(_what_failed(item), 90) for item in last)
             proposal = dict(
                 stance=_clip(f"The last {len(last)} attempts at \"{_clip(row.description, 120)}\" failed: {reasons}. "
                              "Do not repeat what they did; take a different approach, or stop and report what "
@@ -597,9 +631,10 @@ class Opinions:
             elif status == "current" and head.get("stance_class") == "prefer":
                 self._revise(head, signature, row, proposal)
             return
-        verified = str(getattr(row, "verified", "") or "")
-        if verified not in VERIFIED_SUCCESS or status != "current" or head.get("stance_class") != "avoid":
+        if outcome != "done" or not _succeeded(row, check_result) or status != "current" \
+                or head.get("stance_class") != "avoid":
             return
+        verified = "owner" if getattr(row, "verified", None) == "owner" else "check"
         summary = _clip(row.result or "done", 200)
         self._revise(head, signature, row, dict(
             stance=_clip(f"After failed attempts at \"{_clip(row.description, 120)}\", attempt {row.id} succeeded "
@@ -648,9 +683,11 @@ class Opinions:
     # -- B.4 turn context ----------------------------------------------------------------------
 
     @staticmethod
-    def _line(row: Mapping[str, Any]) -> str:
+    def _line(row: Mapping[str, Any], *, cite: bool = True) -> str:
+        """One view, bounded. ``cite`` quotes what it rests on: the owner's ledger rows, so only for the owner."""
         head = f"- Your recorded view on {_clip(row.get('topic'), 80)}{_about(row)} [opinion {row['id']}]: "
-        support = [p for p in (_premise_dict(p) for p in row.get("premises") or []) if p.get("role", "support") == "support"]
+        support = [p for p in (_premise_dict(p) for p in row.get("premises") or [])
+                   if cite and p.get("role", "support") == "support"]
         line = head
         for stance_n, reason_n, premise_n, revise_n in ((300, 200, 80, 120), (200, 140, 60, 100),
                                                          (140, 100, 45, 80), (90, 60, 30, 60)):
@@ -674,7 +711,7 @@ class Opinions:
             rows = [row for row in rows if row.get("audience") == "all"]
         if not rows:
             return CUE_LINE if viewer_is_owner and JUDGMENT_CUES.search(query or "") else ""
-        lines = [self._line(row) for row in rows]
+        lines = [self._line(row, cite=viewer_is_owner) for row in rows]
         pending: List[Any] = []
         if viewer_contact_id:
             try:

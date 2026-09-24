@@ -37,6 +37,7 @@ VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 # investigations write what they learned as an autobiography entry a later turn recalls.
 FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step"})
 FINDING_CHARS = 800
+OWNER_EVIDENCE = ("appraisal:", "turn:", "claim:")   # evidence read from what the owner said
 
 
 class Autobiography:
@@ -261,7 +262,8 @@ class Outcomes:
                                       outcome=outcome, verified=verifier)
             if outcome == "done" and updated.type in FINDING_TYPES and str(summary or "").strip():
                 self.autobiography.record(updated.id, "finding", self._finding(updated, summary),
-                                          topic=self._topic(updated), verified=verifier)
+                                          topic=self._topic(updated), verified=verifier,
+                                          audience=self.finding_audience(updated))
         if callable(self.on_settled) and updated is not None:
             try:
                 self.on_settled(updated, outcome, check_result)
@@ -338,6 +340,16 @@ class Outcomes:
                                   completed_at=self.clock(), at=self.clock())
             if callable(self.on_breaker_trip):
                 self.on_breaker_trip(row.cls, state)
+
+    @staticmethod
+    def finding_audience(row: StoredInitiative) -> str:
+        """Who a view formed from this finding may reach: ``all`` only for research into an interest
+        of the agent's own. An owner's question, a goal step, an investigation of work done for the
+        owner, or an interest the owner's own words raised (evidence from the owner's turns, claims or
+        appraisals) is the owner's."""
+        context = row.context if isinstance(row.context, dict) else {}
+        raised = any(str(ref).startswith(OWNER_EVIDENCE) for ref in context.get("evidence") or [])
+        return "all" if row.type == "research" and not raised else "owner"
 
     @staticmethod
     def _topic(row: StoredInitiative) -> str:

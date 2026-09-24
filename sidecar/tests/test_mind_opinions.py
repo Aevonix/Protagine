@@ -8,6 +8,8 @@ changes nothing. The context section is bounded, cited and audience-filtered.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from protagine.api.routers import mind as mind_router
@@ -22,6 +24,7 @@ SIGNATURE = f"research:{slug(TOPIC)}"
 # The breaker and the hourly budget would turn later attempts into asks or deferrals; these tests
 # are about the view the outcomes form, not about authority.
 ROOMY = {"breaker": {"failures": 50}, "budgets": {"tasks_per_hour": 50, "concurrent_tasks": 50}}
+FINDING_CHECK = {"kind": "result_field", "field": "finding"}     # what deliberation gives every task by default
 
 
 @pytest.fixture
@@ -40,10 +43,12 @@ def candidate(n: int, topic: str = TOPIC) -> Candidate:
                      concern=f"research {topic}", evidence=[f"interest:{slug(topic)}"])
 
 
-async def attempt(fx, n: int, status: str, *, topic: str = TOPIC, **report):
+async def attempt(fx, n: int, status: str, *, topic: str = TOPIC, check=None, **report):
     fx.shift(minutes=5)
     row = await fx.mind._form(candidate(n, topic), 0.9, fx.now)
     assert row is not None and row.status == "approved", row
+    if check is not None:
+        fx.store.update(row.id, success_check=json.dumps(check))
     fx.mind.bound(row.id, f"kanban:{n}")
     return fx.mind.outcomes.record(row.id, status=status, hermes_ref=f"kanban:{n}", **report)
 
@@ -96,13 +101,78 @@ async def test_a_verified_success_turns_it_into_prefer_and_an_unverified_one_doe
     avoid = approach(fx)
     await attempt(fx, 4, "done", summary="finding: they encode distance in the waggle run.")
     assert approach(fx)["id"] == avoid["id"]                      # unverified: admits nothing
-    done = await attempt(fx, 5, "done", summary="finding: the waggle run encodes distance.", verified="check")
+    done = await attempt(fx, 5, "done", summary="finding: the waggle run encodes distance.", check=FINDING_CHECK)
+    assert done.verified == "check" and done.result_metadata["check"]["passed"] is True
     prefer = approach(fx)
     assert prefer["id"] != avoid["id"] and prefer["supersedes"] == avoid["id"]
     assert prefer["stance_class"] == "prefer" and f"attempt {done.id} succeeded (check)" in prefer["stance"]
     assert prefer["revise_if"] == "Three failures in a row at this work."
     row = await fx.mind._form(candidate(6), 0.9, fx.now)
     assert row.context["opinion_ids"] == [prefer["id"]] and "Prefer that approach." in row.context["body"]
+
+
+async def test_a_done_report_whose_check_failed_is_not_a_success(fx):
+    """``verified`` names the verifier that ran, so a failed check is ``check`` too: only a check
+    that passed (or the owner) verifies a success. A body's bare claim of a check that never ran
+    verifies nothing."""
+    await three_failures(fx)
+    avoid = approach(fx)
+    done = await attempt(fx, 4, "done", check=FINDING_CHECK, summary="nothing was found, the mirror was empty.")
+    assert done.verified == "check" and done.result_metadata["check"]["passed"] is False
+    claimed = await attempt(fx, 5, "done", summary="all good", verified="check")
+    assert claimed.verified == "check" and "check" not in (claimed.result_metadata or {})
+    head = approach(fx)
+    assert head["id"] == avoid["id"] and head["stance_class"] == "avoid"
+    body = (await fx.mind._form(candidate(6), 0.9, fx.now)).context["body"]
+    assert f"[opinion {avoid['id']}]" in body and "Prefer that approach." not in body
+
+
+async def test_a_failed_check_is_a_failure_in_the_run(fx):
+    await attempt(fx, 1, "failed", error="the archive site timed out")
+    await attempt(fx, 2, "failed", error="the archive site timed out again")
+    missed = await attempt(fx, 3, "done", check=FINDING_CHECK, summary="nothing was found, the mirror was empty.")
+    head = approach(fx)
+    assert head is not None and head["stance_class"] == "avoid"
+    assert "check failed: nothing was found" in head["stance"]
+    [premise] = [p for p in head["premises"] if p["ref"] == f"intention:{missed.id}"]
+    assert premise["text"].startswith("done, check failed: nothing was found")
+    await attempt(fx, 4, "done", check=FINDING_CHECK, summary="finding: the waggle run encodes distance.")
+    prefer = approach(fx)
+    assert prefer["stance_class"] == "prefer" and prefer["supersedes"] == head["id"]
+    # Three misses in a row at the preferred work turn it back into avoid.
+    for n in (5, 6, 7):
+        await attempt(fx, n, "done", check=FINDING_CHECK, summary=f"still nothing, run {n}.")
+    again = approach(fx)
+    assert again["stance_class"] == "avoid" and again["supersedes"] == prefer["id"]
+
+
+def _finding_audience(fx, intention_id):
+    with fx.ledger._connect() as conn:
+        row = conn.execute("SELECT messages_json FROM turn_sources WHERE turn_id=?",
+                           (f"mind:{intention_id}:finding",)).fetchone()
+    return json.loads(row[0])[0]["metadata"].get("audience") if row else None
+
+
+async def test_a_finding_is_public_only_when_it_researched_the_agents_own_interest(fx):
+    """Findings are the owner's autobiography entries; only research into an interest the agent
+    declared (not one the owner's own words raised, never an owner's question, goal step or an
+    investigation of work done for the owner) is marked for everyone."""
+    interest = await attempt(fx, 1, "done", summary="finding: the waggle run encodes distance.")
+    assert _finding_audience(fx, interest.id) == "all"
+    asked = Candidate(type="question", drive="curiosity", kind="task", title="Answer: custody hearing date",
+                      dedup_key="question:custody-hearing:1", salience=0.9, cost=0.1,
+                      text="Find the hearing date; report finding: <text>.", topic="custody hearing",
+                      concern="custody hearing", evidence=["turn:ask-1"])
+    raised = Candidate(type="research", drive="curiosity", kind="task", title="Research: garden soil",
+                       dedup_key="research:garden-soil:1", salience=0.9, cost=0.1,
+                       text="Find out about garden soil; report finding: <text>.", topic="garden soil",
+                       concern="garden soil", evidence=["appraisal:a-7"])
+    for n, item in enumerate((asked, raised), 2):
+        fx.shift(minutes=5)
+        row = await fx.mind._form(item, 0.9, fx.now)
+        fx.mind.bound(row.id, f"kanban:{n}")
+        fx.mind.outcomes.record(row.id, status="done", hermes_ref=f"kanban:{n}", summary="finding: in March.")
+        assert _finding_audience(fx, row.id) == "owner"
 
 
 async def test_opinions_off_forms_and_renders_nothing(tmp_path, monkeypatch):
@@ -146,12 +216,13 @@ def stance(store, ledger, n, *, topic, text, reason="It rests on what was said."
 
 def test_the_section_is_bounded_cited_and_carries_the_standing_sentence(fx):
     store = fx.mind.opinions.store
-    for n in range(1, 6):
-        stance(store, fx.ledger, n, topic=f"garden plan {n}", text=f"Garden plan {n}: " + "raised beds " * 35,
+    # Five views on five matters (views on one matter from the agent's words alone would be one view).
+    for n, topic in enumerate(["kitchen herbs", "front lawn", "rose bushes", "vegetable patch", "fruit trees"], 1):
+        stance(store, fx.ledger, n, topic=topic, text=f"Garden plan for the {topic}: " + "raised beds " * 35,
                reason="Because " + "the soil drains poorly " * 20, revise_if="A soil test " * 15)
     text = fx.mind.opinions.context("Which garden plan should we use?", viewer_contact_id=OWNER,
                                     viewer_is_owner=True, session_id="later")
-    lines = [line for line in text.splitlines() if line.startswith("- Your recorded view on garden plan")]
+    lines = [line for line in text.splitlines() if line.startswith("- Your recorded view on ")]
     assert 1 <= len(lines) <= 3 and all(len(line) <= 420 for line in lines)
     assert len(text) <= CONTEXT_CHARS and text.endswith(STANDING)
     assert "You may disagree and still do what the owner authorizes; say so when you do." in STANDING

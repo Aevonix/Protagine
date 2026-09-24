@@ -5,18 +5,22 @@ rests on explicit premises: an admitted source claim of any contact, a settled m
 task outcome, a mind finding, the agent's own statement, or a quote carried over from
 a migrated appraisal. The store, not the model, enforces the new-premise rule: a
 revision needs a current premise of a revising kind that the head does not already
-cite, by reference or by content. Every formation, revision and withdrawal is an
-owner-audience autobiography entry in the ledger. The pass that proposes stances is
-``protagine.mind.opinions``; the projection worker reaches it through ``process_one``.
+cite, by reference or by content, and forming under another topic is no way around it.
+A revision never widens who may see a view, and the owner's controls are the owner's.
+Every formation, revision and withdrawal is an owner-audience autobiography entry in the
+ledger. The pass that proposes stances is ``protagine.mind.opinions``; the projection
+worker reaches it through ``process_one``.
 """
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import closing
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import unicodedata
@@ -40,10 +44,12 @@ STALE_JOB_S = 48 * 3600
 ENTRY_PREFIX = 'mind:opinion:'
 ENTRY_EVENTS = ('formed', 'revised', 'withdrawn')
 _RUNTIME_MARKERS = ('_native_runtime_observation', '_task_artifact_assessment', '_task_execution_outcome')
-_RECORD_ID = re.compile(r'\b[a-z]{1,6}-\d{1,8}\b', re.I)
-_HEX_RUN = re.compile(r'\b[0-9a-f]{8,}\b', re.I)
-# The ledger's recall stop list plus the entry template's own words, so a query is
-# not matched to every stance merely because it asks for a "view".
+# A record id ("s-12", "INC-4410"): at least two digits, and never a year (FY-2025) or a
+# one-digit version (gpt-5). A hash: a letter and a digit, or 16 characters; never a figure.
+_RECORD_ID = re.compile(r'\b[a-z]{1,6}-(?!(?:19|20)\d\d\b)\d{2,8}\b', re.I)
+_HEX_RUN = re.compile(r'\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}|[0-9a-f]{16,})\b', re.I)
+# Words a view is never found by: the ledger's recall stop list plus the entry template's
+# own words, so a query is not matched to every stance merely because it asks for a "view".
 _FTS_STOP = {'the', 'and', 'that', 'this', 'what', 'when', 'where', 'how', 'you', 'your', 'was', 'were',
              'are', 'for', 'with', 'remember', 'about', 'view', 'opinion', 'formed', 'changed', 'withdrew',
              'because', 'would', 'change', 'now', 'new', 'evidence', 'owner', 'request'}
@@ -85,6 +91,7 @@ class Premise:
     corrects: tuple = ()
     role: str = 'support'
     at: str = ''
+    audience: str = ''     # 'all' only for a finding the mind marked public: research into its own interest
 
     def as_dict(self):
         return asdict(self) | {'corrects': list(self.corrects)}
@@ -114,6 +121,7 @@ class Proposal:
     stance_class: str | None = None
     processor: dict = field(default_factory=dict)
     owner_reconsider: bool = False
+    owner_only: bool = False    # written with an owner-only view in sight: the owner's, whatever it rests on
 
 
 @dataclass(frozen=True)
@@ -146,8 +154,9 @@ def _claim_ref(identifier):
 
 
 def _audience(subject_kind, premises):
+    """Everyone's only for a topic stance resting on outcomes and public findings alone."""
     return 'all' if subject_kind == 'topic' and premises and all(
-        p.kind in {'finding', 'outcome'} for p in premises) else 'owner'
+        p.kind == 'outcome' or (p.kind == 'finding' and p.audience == 'all') for p in premises) else 'owner'
 
 
 def _about(subject_kind, subject):
@@ -288,7 +297,36 @@ def initialize(conn):
         contact_id TEXT NOT NULL, enqueued_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, done_at REAL, disposition TEXT)''')
     conn.execute('CREATE INDEX IF NOT EXISTS opinion_jobs_pending ON opinion_jobs(done_at,next_attempt)')
+    # The owner's controls, and the reason each carries, are the owner's whatever view they name.
+    conn.execute("UPDATE self_judgment_revisions SET audience='owner' WHERE correction_id IS NOT NULL AND audience!='owner'")
     _migrate_appraisal_judgments(conn)
+    _requeue_reconsiderations(conn)
+
+
+def _requeue_reconsiderations(conn):
+    """A view the owner asked to reconsider keeps its job: a lost one (a legacy head whose run row
+    was retired) is queued again, and one finished while the faculty was off or as stale is
+    reopened. One the pass ended stays ended: its view is withdrawn then, not reconsidering."""
+    for row in conn.execute('''SELECT r.id,r.owner_id FROM self_judgment_heads h JOIN self_judgment_revisions r
+            ON r.id=h.revision_id AND r.owner_id=h.owner_id WHERE r.status='reconsidering' AND r.topic!=?''',
+                            ('',)).fetchall():
+        ref = f"reconsider:{row['id']}"
+        conn.execute('INSERT OR IGNORE INTO opinion_jobs(ref,kind,contact_id,enqueued_at) VALUES (?,?,?,?)',
+                     (ref, 'reconsider', row['owner_id'], time.time()))
+        conn.execute('''UPDATE opinion_jobs SET done_at=NULL,disposition=NULL,attempts=0,next_attempt=0
+            WHERE ref=? AND disposition IN ('faculty_off','stale')''', (ref,))
+
+
+def _migrated_topic(dimension, topic):
+    """``dimension topic``; past 80 characters, cut at a word and told apart by a short tag of the whole."""
+    full = ' '.join(f'{dimension} {topic}'.casefold().split())
+    if len(full) <= 80:
+        return normalize_topic(full)
+    tag = hashlib.sha256(full.encode()).hexdigest()[:6]
+    cut = full[:80 - len(tag) - 1]
+    if full[len(cut)] != ' ' and ' ' in cut:
+        cut = cut.rsplit(' ', 1)[0]
+    return normalize_topic(f'{cut.strip()} {tag}')
 
 
 def _migrate_appraisal_judgments(conn):
@@ -306,7 +344,7 @@ def _migrate_appraisal_judgments(conn):
         if not data.get('topic') or record['status'] not in {'current', 'withdrawn', 'reconsidering'}:
             continue
         try:
-            topic = normalize_topic(' '.join(f"{data.get('dimension', '')} {data['topic']}".split())[:80])
+            topic = _migrated_topic(data.get('dimension', ''), data['topic'])
         except ValueError:
             continue
         dependencies = json.loads(record['dependencies_json'] or '[]')
@@ -390,10 +428,40 @@ def _words(text):
         'should', 'think', 'judgment', 'opinion', 'please', 'could', 'there', 'which'}
 
 
-def _fts_expression(query):
-    words = list(dict.fromkeys(word.lower() for word in re.findall(r'\w+', str(query)[:4096])
-                               if len(word) > 2 and word.lower() not in _FTS_STOP))[:12]
-    return ' OR '.join('"' + word + '"' for word in words)
+def _terms(text):
+    return [w for w in re.findall(r'\w+', unicodedata.normalize('NFKC', str(text or '')).casefold())
+            if len(w) > 2 and w not in _FTS_STOP]
+
+
+def _document(head):
+    """What a view is found by: its topic, stance, reason, what would change it and what it rests on."""
+    return ' '.join([head['topic'], head['stance'], head['reason'], head['revise_if'],
+                     *(str(p.get('text') or '')[:300] for p in head['premises'][:8])])
+
+
+def _bm25(query, documents, k1=1.2, b=0.75):
+    """Okapi BM25 of each document for the query's distinct terms; only the documents that match."""
+    wanted = set(_terms(str(query)[:4096]))
+    if not wanted or not documents:
+        return {}
+    counts = {key: Counter(_terms(text)) for key, text in documents.items()}
+    average = sum(sum(c.values()) for c in counts.values()) / len(counts) or 1.0
+    frequency = {term: sum(1 for c in counts.values() if term in c) for term in wanted}
+    scores = {}
+    for key, count in counts.items():
+        size = sum(count.values())
+        score = sum(math.log(1 + (len(counts) - frequency[term] + 0.5) / (frequency[term] + 0.5))
+                    * count[term] * (k1 + 1) / (count[term] + k1 * (1 - b + b * size / average))
+                    for term in wanted if term in count)
+        if score > 0:
+            scores[key] = score
+    return scores
+
+
+def _covers(topic, words):
+    """Most of a view's topic words are among ``words``: the same matter, whatever the new topic is called."""
+    wanted = _words(topic)
+    return bool(wanted) and 2 * len(wanted & words) > len(wanted)
 
 
 class SelfJudgments:
@@ -444,15 +512,21 @@ class SelfJudgments:
             return None
         text = _text(message)
         return Premise('finding', f'finding:{turn_id}', text[:PREMISE_CHARS], content_key(text[:2000]), turn_id,
-                       message_hash, found['contact_id'], at=found['occurred_at'] or found['ingested_at'] or '')
+                       message_hash, found['contact_id'], at=found['occurred_at'] or found['ingested_at'] or '',
+                       audience='all' if metadata.get('audience') == 'all' else '')
 
     def outcome_premise(self, row):
         def get(name):
             return row.get(name) if isinstance(row, dict) else getattr(row, name, None)
         at = get('failed_at') or get('completed_at') or ''
         identifier = f"intention:{get('id')}"
-        return Premise('outcome', identifier, f"{get('outcome') or ''}: {get('failed_reason') or get('result') or ''}"[:PREMISE_CHARS],
-                       content_key(identifier), verified=str(get('verified') or ''),
+        check = (get('result_metadata') or {}).get('check') if isinstance(get('result_metadata'), dict) else None
+        outcome = str(get('outcome') or '')
+        if outcome == 'done' and isinstance(check, dict) and check.get('passed') is False:
+            outcome = 'done, check failed'     # reported done; the success check found it not achieved
+        # The intention is the content: its id is never erased as a fresh id of something else.
+        return Premise('outcome', identifier, f"{outcome}: {get('failed_reason') or get('result') or ''}"[:PREMISE_CHARS],
+                       hashlib.sha256(identifier.encode()).hexdigest(), verified=str(get('verified') or ''),
                        at=at.isoformat() if isinstance(at, datetime) else str(at))
 
     def premise_current(self, premise):
@@ -584,44 +658,37 @@ class SelfJudgments:
             return result
 
     def relevant(self, query, *, audience=None, session_id='', limit=3, semantic_turn_ids=()):
-        """Current heads for a query: this session's first, then FTS/semantic rank, then word overlap."""
+        """Current heads for a query, most relevant first; no model call and no ledger-wide search.
+
+        The heads themselves are ranked (BM25 over topic, stance, reason, what would change them
+        and what they rest on), fused with the semantic index's hits on their entries. This
+        session's views come first among the views that match, then fill the slots left, so
+        pushback that shares no word with the view it pushes on still keeps that view in sight.
+        """
         heads = {head_key(r['subject_kind'], r['subject'], r['topic']): r
                  for r in self.revisions(audience=audience, limit=500)}
         if not heads or limit <= 0:
             return []
-        def revision(turn_id):
-            parts = str(turn_id).split(':')
-            return int(parts[2]) if len(parts) == 4 and str(turn_id).startswith(ENTRY_PREFIX) and parts[2].isdigit() else None
-        with closing(self.ledger._connect()) as conn:
-            entries = [r[0] for r in conn.execute('SELECT turn_id FROM turn_sources WHERE turn_id>=? AND turn_id<?',
-                                                  (ENTRY_PREFIX, ENTRY_PREFIX[:-1] + ';'))]
-            expression = _fts_expression(query)
-            lexical = [r[0] for r in conn.execute('''SELECT f.turn_id FROM turn_source_search f
-                WHERE turn_source_search MATCH ? AND f.turn_id LIKE 'mind:opinion:%'
-                ORDER BY bm25(turn_source_search) LIMIT 50''', (expression,))] if expression else []
-            named = {revision(t) for t in [*entries, *lexical, *(semantic_turn_ids or ())]} - {None}
-            keys = {r['id']: head_key(r['subject_kind'], r['subject'], r['topic']) for r in conn.execute(
-                "SELECT id,subject_kind,subject,topic FROM self_judgment_revisions WHERE owner_id=? AND topic!='' "
-                'AND id IN (SELECT value FROM json_each(?))', (self.owner_id, json.dumps(sorted(named))))}
-
-        def key_of(turn_id):
-            return keys.get(revision(turn_id))
-        entered = {key_of(turn_id) for turn_id in entries}
+        lexical = _bm25(query, {key: _document(head) for key, head in heads.items()})
+        rankings = [sorted(lexical, key=lambda k: (-lexical[k], -heads[k]['id']))]
+        semantic = [str(t) for t in semantic_turn_ids or ()]
+        if semantic:
+            def revision(turn_id):
+                parts = turn_id.split(':')
+                return int(parts[2]) if len(parts) == 4 and turn_id.startswith(ENTRY_PREFIX) and parts[2].isdigit() else None
+            with closing(self.ledger._connect()) as conn:
+                keys = {r['id']: head_key(r['subject_kind'], r['subject'], r['topic']) for r in conn.execute(
+                    "SELECT id,subject_kind,subject,topic FROM self_judgment_revisions WHERE owner_id=? AND topic!='' "
+                    'AND id IN (SELECT value FROM json_each(?))',
+                    (self.owner_id, json.dumps(sorted({revision(t) for t in semantic} - {None}))))}
+            rankings.append(list(dict.fromkeys(key for key in (keys.get(revision(t)) for t in semantic) if key in heads)))
         scores = {}
-        for ranked in (lexical, list(semantic_turn_ids or ())):
-            seen = []
-            for turn_id in ranked:
-                key = key_of(turn_id)
-                if key in heads and key not in seen:
-                    seen.append(key)
-            for rank, key in enumerate(seen):
+        for ranked in rankings:
+            for rank, key in enumerate(ranked):
                 scores[key] = scores.get(key, 0.0) + 1.0 / (60 + rank)
-        order = [k for k in heads if session_id and heads[k]['session_id'] == session_id]
-        order += sorted((k for k in scores if k not in order), key=lambda k: (-scores[k], -heads[k]['id']))
-        words = _words(query)
-        overlap = {k: len(words & _words(h['topic'] + ' ' + h['stance'])) for k, h in heads.items()
-                   if k not in entered and k not in order}
-        order += sorted((k for k, n in overlap.items() if n), key=lambda k: (-overlap[k], -heads[k]['id']))
+        hits = sorted(scores, key=lambda k: (-scores[k], -heads[k]['id']))
+        here = [k for k in heads if session_id and heads[k]['session_id'] == session_id]
+        order = [k for k in hits if k in here] + [k for k in hits if k not in here] + [k for k in here if k not in scores]
         return [heads[k] for k in order[:limit]]
 
     def citing(self, refs):
@@ -716,13 +783,15 @@ class SelfJudgments:
                 refs.extend(found[1] if found else [])
         return refs
 
-    def _insert(self, conn, proposal, premises, dependencies, *, supersedes):
+    def _insert(self, conn, proposal, premises, dependencies, *, supersedes, floor='all'):
+        """One revision, made the head. ``floor`` is the audience of the view it replaces: a
+        revision never widens who may see a view (the old view's conversation stays in its chain)."""
         payload = {'stance': proposal.stance, 'reason': proposal.reason, 'certainty': proposal.certainty,
                    'session_id': str(proposal.session_id or '')}
         if proposal.stance_class:
             payload['stance_class'] = proposal.stance_class
         kind, _, rest = proposal.source_ref.partition(':')
-        audience = _audience(proposal.subject_kind, premises)
+        audience = 'owner' if proposal.owner_only or floor != 'all' else _audience(proposal.subject_kind, premises)
         cur = conn.execute('''INSERT INTO self_judgment_revisions (owner_id,topic,payload_json,dependency_json,supersedes,
             processor_json,created_at,status,source_turn_id,version,subject_kind,subject,audience,premises_json,revise_if)
             VALUES (?,?,?,?,?,?,?,'current',?,?,?,?,?,?,?)''', (self.owner_id, proposal.topic, _json(payload),
@@ -733,6 +802,42 @@ class SelfJudgments:
             DO UPDATE SET revision_id=excluded.revision_id''',
                      (self.owner_id, head_key(proposal.subject_kind, proposal.subject, proposal.topic), cur.lastrowid))
         return cur.lastrowid, audience
+
+    def _held(self, conn, sources, clean, premises):
+        """Refuse a new view on a matter a current view of the same subject already holds, unless it
+        brings a premise no current view cites; ``None`` lets it form.
+
+        Forming under another topic is no way around the new-premise rule. A view whose revising
+        premises are all cited already (by reference or content: the same record under a fresh id)
+        is ``no_new_premise``. A view resting on the agent's words alone forms once per session and
+        subject a day (``duplicate_topic``), and never on a matter a current view is about, in any
+        session: most of that view's topic words are in the new topic, the stance, the agent's
+        words or what the speaker said (``no_new_premise``).
+        """
+        others = [row for row in self._heads(conn, subject_kind=clean.subject_kind) if row['subject'] == clean.subject]
+        revising = [p for p in premises if p.kind in REVISING_KINDS]
+        if revising:
+            citing = []
+            for premise in revising:
+                holder = next((row['id'] for row in others if any(
+                    premise.ref == p.ref or (premise.text and premise.key == p.key) for p in self._premises_of(conn, row))),
+                    None)
+                if holder is None:
+                    return None
+                citing.append(holder)
+            return Result('no_new_premise', citing[0])
+        for other in others:
+            if (clean.session_id and other['created_at'] > self.clock() - LIMIT_WINDOW_S
+                    and json.loads(other['payload_json']).get('session_id') == clean.session_id):
+                return Result('duplicate_topic', other['id'])
+        kind, _, turn_id = clean.source_ref.partition(':')
+        found = sources.source(turn_id) if kind == 'turn' else None
+        said = [_text(m) for m in (found or {}).get('messages') or [] if m.get('role') == 'user']
+        words = _words(' '.join([clean.topic, clean.stance, *(p.text for p in premises), *said])[:8000])
+        for other in others:
+            if _covers(other['topic'], words):
+                return Result('no_new_premise', other['id'])
+        return None
 
     def form(self, proposal):
         try:
@@ -752,11 +857,9 @@ class SelfJudgments:
                 premises = [self._canonical(sources, p) for p in clean.premises]
                 if None in premises:
                     return Result('invalid:premise_not_current')
-                if clean.session_id and not any(p.kind in REVISING_KINDS for p in premises):
-                    for other in self._heads(conn, subject_kind=clean.subject_kind):
-                        if (other['subject'] == clean.subject and other['created_at'] > self.clock() - LIMIT_WINDOW_S
-                                and json.loads(other['payload_json']).get('session_id') == clean.session_id):
-                            return Result('duplicate_topic', other['id'])
+                held = self._held(conn, sources, clean, premises)
+                if held is not None:
+                    return held
                 identifier, audience = self._insert(conn, clean, premises, self._dependencies(sources, premises), supersedes=None)
         if route is not None:
             return self.revise(route, replace(clean, new_evidence=tuple(
@@ -807,6 +910,7 @@ class SelfJudgments:
                     return Result('invalid:premise_not_current', stance_id)
                 merged, new = premises, [p for p in premises if p.ref not in allowed]
                 old = json.loads(original['payload_json']).get('stance', '') if original is not None else ''
+                floor = original['audience'] if original is not None else 'owner'
             else:
                 earlier = self._premises_of(conn, row)
                 refs, keys = {p.ref for p in earlier}, {p.key for p in earlier}
@@ -827,10 +931,11 @@ class SelfJudgments:
                 merged = [p for p in premises if p.ref not in refs] + [
                     p for p in earlier if p.kind != 'statement' and sources.current(p)]
                 old = json.loads(row['payload_json']).get('stance', '')
+                floor = row['audience']
             if not any(p.role == 'support' for p in merged):
                 return Result('invalid:support', stance_id)
             dependencies = self._dependencies(sources, merged) + json.loads(row['dependency_json'] or '[]')
-            identifier, audience = self._insert(conn, clean, merged, dependencies, supersedes=stance_id)
+            identifier, audience = self._insert(conn, clean, merged, dependencies, supersedes=stance_id, floor=floor)
         evidence = '; '.join(p.text[:120] for p in new[:2])
         self._entry(identifier, 'revised', f"I changed my view on {clean.topic}{_about(clean.subject_kind, clean.subject)}: "
                     f"now {clean.stance} (was: {old}). Because: {clean.reason}" + (f" New evidence: {evidence}." if evidence else '')
@@ -856,7 +961,7 @@ class SelfJudgments:
         if changed:
             self._entry(control_id, 'withdrawn', f"At the owner's request I withdrew my view on {row['topic']}"
                         f"{_about(row['subject_kind'], row['subject'])} [opinion {control_id}]: {reason}",
-                        audience=row['audience'], subject_kind=row['subject_kind'], subject=row['subject'])
+                        audience='owner', subject_kind=row['subject_kind'], subject=row['subject'])
         return Result('reconsider_withdrawn', control_id)
 
     def correct(self, revision_id, *, action, correction_id, reason, source_id=None, control_turn_id=None):
@@ -898,11 +1003,12 @@ class SelfJudgments:
                     raise ValueError('retained_owner_source_required')
                 refs.extend(current)
             status = 'withdrawn' if action == 'withdraw' else 'reconsidering'
+            # The control row carries the owner's reason: it is the owner's, whatever the view's audience.
             cur = conn.execute('''INSERT INTO self_judgment_revisions (owner_id,topic,payload_json,dependency_json,supersedes,
                 processor_json,created_at,status,source_turn_id,version,correction_id,subject_kind,subject,audience,premises_json,revise_if)
-                VALUES (?,?,?,?,?,'{}',?,?,?,?,?,?,?,?,'[]','')''', (self.owner_id, row['topic'], _json({'owner_correction': operation}),
-                _json(_unique(refs)), revision_id, self.clock(), status, source_id or '', VERSION, correction_id,
-                row['subject_kind'], row['subject'], row['audience']))
+                VALUES (?,?,?,?,?,'{}',?,?,?,?,?,?,?,'owner','[]','')''', (self.owner_id, row['topic'],
+                _json({'owner_correction': operation}), _json(_unique(refs)), revision_id, self.clock(), status,
+                source_id or '', VERSION, correction_id, row['subject_kind'], row['subject']))
             conn.execute('UPDATE self_judgment_heads SET revision_id=? WHERE owner_id=? AND topic=?',
                          (cur.lastrowid, self.owner_id, head_key(row['subject_kind'], row['subject'], row['topic'])))
             if action == 'reconsider':
@@ -911,7 +1017,7 @@ class SelfJudgments:
         if action == 'withdraw':
             self._entry(cur.lastrowid, 'withdrawn', f"At the owner's request I withdrew my view on {row['topic']}"
                         f"{_about(row['subject_kind'], row['subject'])} [opinion {cur.lastrowid}]: {reason}",
-                        audience=row['audience'], subject_kind=row['subject_kind'], subject=row['subject'])
+                        audience='owner', subject_kind=row['subject_kind'], subject=row['subject'])
         return {'revision_id': cur.lastrowid, 'status': status, 'correction_id': correction_id}
 
     def _entry(self, revision_id, event, text, *, audience, subject_kind, subject):
@@ -931,14 +1037,17 @@ class SelfJudgments:
             return False
 
     # -- the queue ------------------------------------------------------------------
-    def next_job(self):
-        """The oldest eligible job; a turn waits for its claim job unless it is older than 48 h."""
+    def next_job(self, *, skip=()):
+        """The oldest eligible job of a kind not in ``skip``; a turn waits for its claim job unless it
+        is older than 48 h."""
         now = self.clock()
+        kinds = json.dumps([kind for kind in ('turn', 'finding', 'reconsider') if kind not in skip])
         with closing(self.ledger._connect()) as conn:
             row = conn.execute('''SELECT ref,kind,contact_id,enqueued_at,attempts FROM opinion_jobs j
-                WHERE done_at IS NULL AND next_attempt<=? AND (kind!='turn' OR j.enqueued_at<? OR NOT EXISTS
+                WHERE done_at IS NULL AND next_attempt<=? AND kind IN (SELECT value FROM json_each(?))
+                AND (kind!='turn' OR j.enqueued_at<? OR NOT EXISTS
                     (SELECT 1 FROM source_claim_jobs c WHERE c.turn_id=j.ref AND c.status!='complete'))
-                ORDER BY enqueued_at,ref LIMIT 1''', (now, now - STALE_JOB_S)).fetchone()
+                ORDER BY enqueued_at,ref LIMIT 1''', (now, kinds, now - STALE_JOB_S)).fetchone()
             return dict(row) if row else None
 
     def finish(self, ref, disposition, *, retry_at=None):

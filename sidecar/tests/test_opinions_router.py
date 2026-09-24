@@ -82,6 +82,29 @@ async def test_show_is_a_404_for_a_guest_asking_for_an_owner_view(served):
     assert public.status_code == 200 and public.json()["opinion"]["audience"] == "all"
 
 
+async def test_a_guest_never_reads_the_owners_correction_or_what_a_view_rests_on(served):
+    """The owner's withdrawal of an everyone view is the owner's: not by id, not in the view's
+    history, not in the history list. What a view rests on (owner-audience ledger rows) is cited
+    to the owner only."""
+    reason = "Drop it: my landlord is evicting us in May, so the garden is moot."
+    async with await client_for(served.app) as client:
+        before = (await client.get(f"/v1/mind/opinions/{served.shared}", params={"contact_id": GUEST})).json()
+        done = await client.post(f"/v1/mind/opinions/{served.shared}/withdraw",
+                                 json={"reason": reason, "contact_id": OWNER})
+        control = done.json()["revision_id"]
+        ctl = await client.get(f"/v1/mind/opinions/{control}", params={"contact_id": GUEST})
+        by_id = (await client.get(f"/v1/mind/opinions/{served.shared}", params={"contact_id": GUEST})).json()
+        hist = await client.get("/v1/mind/opinions", params={"contact_id": GUEST, "history": "true"})
+        owner = (await client.get(f"/v1/mind/opinions/{control}", params={"contact_id": OWNER})).json()
+    assert [p["kind"] for p in before["opinion"]["premises"]] == ["outcome"]
+    assert all(set(p) == {"kind", "role"} for p in before["opinion"]["premises"])
+    assert ctl.status_code == 404
+    assert "landlord" not in json.dumps(by_id) and "landlord" not in hist.text
+    assert [row["id"] for row in by_id["history"]] == [served.shared]
+    assert owner["opinion"]["owner_correction"]["reason"] == reason
+    assert owner["history"][0]["id"] == control and "clay soil" in json.dumps(owner["opinion"]["premises"])
+
+
 async def test_withdraw_and_reconsider_are_owner_only(served):
     async with await client_for(served.app) as client:
         refused = await client.post(f"/v1/mind/opinions/{served.private}/withdraw",

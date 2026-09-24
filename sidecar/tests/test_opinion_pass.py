@@ -227,6 +227,41 @@ async def test_pseudo_evidence_is_refused_same_content_under_a_new_id_and_a_repe
     assert [r['id'] for r in world.store.revisions()] == [row['id']]
 
 
+async def test_pushback_in_a_later_session_cannot_form_a_rival_view(world):
+    """A paraphrased topic is not a way around the rule: the agent's own words cannot form a
+    view on a matter it already holds a view on, in any session; unrelated words still can."""
+    row, _ = await formed(world)
+    turn(world, 'push-1', OWNER, 'Are you sure? Honestly I think Plan Birch is better for the migration.',
+         'You are right, Plan Birch is the better choice for the migration.', session='session-next')
+    router = Router(lambda packet: form(topic='migration plan choice', stance='Plan Birch', premises=('s1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert router.packets[-1]['stances'][0]['stance'] == 'Plan Ash'
+    assert job(world, 'push-1')['disposition'] == 'no_new_premise'
+    assert [r['stance'] for r in world.store.revisions()] == ['Plan Ash']
+    text = Opinions(world.store, None, enabled=True).context(
+        'Which plan for the archive migration?', viewer_contact_id=OWNER, viewer_is_owner=True,
+        session_id='session-next')
+    assert text.startswith(f"- Your recorded view on archive migration plan [opinion {row['id']}]: Plan Ash")
+    assert 'Plan Birch Because' not in text
+    turn(world, 'retro-1', OWNER, 'And which is better for the retro, Friday or Monday?', 'Friday, I think.',
+         session='session-next')
+    router = Router(lambda packet: form(topic='retro day', stance='Friday', premises=('s1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert job(world, 'retro-1')['disposition'] == 'formed'
+
+
+async def test_a_restated_record_cannot_form_a_rival_view_under_another_topic(world):
+    row, _ = await formed(world)
+    restated = 'Record s-40: over 30 days Plan Ash had a 3% defect rate and Plan Birch 9%.'
+    turn(world, 'push-2', OWNER, f'I still prefer Plan Birch. {restated}', 'Understood, Plan Birch then.',
+         admitted=restated)
+    router = Router(lambda packet: form(topic='migration plan choice', stance='Plan Birch', premises=('p1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert router.packets[-1]['premises'][0]['cited_by'] == [row['id']]
+    assert job(world, 'push-2')['disposition'] == 'no_new_premise'
+    assert [r['stance'] for r in world.store.revisions()] == ['Plan Ash']
+
+
 # ---------------------------------------------------------------------------------------------- evidence
 
 async def test_a_new_record_revises_the_stance_and_the_revision_survives_a_restart(world):
@@ -456,7 +491,7 @@ async def test_a_finding_forms_an_everyone_audience_topic_stance(world):
     from protagine.mind.outcomes import Autobiography
     Autobiography(world.ledger, owner_id=OWNER).record(
         'i-01', 'finding', 'What I learned about hive cooling: bees fan their wings to cool the hive in summer.',
-        topic='hive cooling', verified='check')
+        topic='hive cooling', verified='check', audience='all')      # research into the agent's own interest
     router = Router(lambda packet: form(topic='hive cooling', stance='Fanning is how hives cool.', premises=('p1',)))
     assert await run_one(world.store, router, enabled=True) is True
     packet_ = router.packets[0]
@@ -464,7 +499,72 @@ async def test_a_finding_forms_an_everyone_audience_topic_stance(world):
     assert job(world, 'mind:i-01:finding')['disposition'] == 'formed'
     [row] = world.store.revisions()
     assert row['audience'] == 'all'
-    assert '[opinion' in view(world, 'How do hives cool in summer?', viewer=OTHER)
+    guest = view(world, 'How do hives cool in summer?', viewer=OTHER)
+    assert f"[opinion {row['id']}]: Fanning is how hives cool." in guest
+    # The premise is an owner-audience ledger row: cited to the owner, never quoted to a guest.
+    assert 'bees fan their wings' not in guest and 'Rests on:' not in guest
+    assert 'Rests on: What I learned about hive cooling' in view(world, 'How do hives cool in summer?')
+
+
+PRIVATE = ('What I learned about my custody hearing: the judge weighs the school-district move heavily, '
+           'so filing before the March move date matters.')
+
+
+async def test_an_owner_private_finding_forms_an_owner_view_a_guest_never_sees(world):
+    from protagine.mind.outcomes import Autobiography
+    Autobiography(world.ledger, owner_id=OWNER).record('i-9', 'finding', PRIVATE, topic='custody hearing filing',
+                                                       verified='none')
+    router = Router(lambda packet: form(topic='custody hearing filing', stance='File before the March move date.',
+                                        premises=('p1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    [row] = world.store.revisions()
+    assert row['audience'] == 'owner'
+    text = Opinions(world.store, None, enabled=True).context(
+        'When is the hearing for the school play?', viewer_contact_id=GUEST, viewer_is_owner=False,
+        session_id='session-guest')
+    assert 'custody' not in text and 'the judge weighs' not in text
+
+
+async def test_a_public_finding_written_beside_an_owner_view_forms_an_owner_view(world):
+    """The model sees the owner's views that a finding bears on; what it writes with them in view is
+    the owner's, whatever the finding is."""
+    from protagine.mind.outcomes import Autobiography
+    turn(world, 'ask-h', OWNER, 'Should we move the hives to the north field?',
+         'I recommend the north field for the hives; it is shaded in the afternoon.')
+    assert await run_one(world.store, Router(lambda packet: form(topic='hive placement', stance='North field.',
+                                                                   premises=('s1',))), enabled=True)
+    Autobiography(world.ledger, owner_id=OWNER).record(
+        'i-02', 'finding', 'What I learned about hive placement: shaded hives stay cooler in summer.',
+        topic='hive placement', verified='check', audience='all')
+    router = Router(lambda packet: form(topic='shaded hives', stance='Shade keeps hives cool.', premises=('p1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert [s['topic'] for s in router.packets[-1]['stances']] == ['hive placement']
+    assert {r['topic']: r['audience'] for r in world.store.revisions()} == {'hive placement': 'owner',
+                                                                            'shaded hives': 'owner'}
+
+
+async def test_a_revision_from_a_public_finding_never_widens_an_owner_view(world):
+    """A view formed in an owner conversation stays the owner's when a finding revises it."""
+    from protagine.mind.outcomes import Autobiography
+    turn(world, 'ask-9', OWNER, 'Should I push for joint custody or sole custody at the hearing?',
+         'I recommend pushing for joint custody at the hearing; the mediator favoured it.')
+    router = Router(lambda packet: form(topic='custody hearing strategy', stance='Push for joint custody.',
+                                        premises=('s1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    [row] = world.store.revisions()
+    assert row['audience'] == 'owner'
+    Autobiography(world.ledger, owner_id=OWNER).record(
+        'i-3', 'finding', 'What I learned about custody hearing strategy: courts in this county grant joint custody '
+        'in most contested cases.', topic='custody hearing strategy', verified='none', audience='all')
+    router = Router(lambda packet: revise(row['id'], stance='Push for joint custody; the county grants it usually.'))
+    assert await run_one(world.store, router, enabled=True) is True
+    [after] = world.store.revisions()
+    assert after['supersedes'] == row['id'] and [p['kind'] for p in after['premises']] == ['finding']
+    assert after['audience'] == 'owner'
+    assert entry(world, f"mind:opinion:{after['id']}:revised")['metadata']['audience'] == 'owner'
+    guest = Opinions(world.store, None, enabled=True).context(
+        'Any news on the custody hearing?', viewer_contact_id=GUEST, viewer_is_owner=False, session_id='g')
+    assert 'custody' not in guest
 
 
 @pytest.mark.parametrize('answer, status', [('revise', 'current'), ('none', 'withdrawn')])
@@ -483,6 +583,43 @@ async def test_an_owner_reconsideration_revises_from_the_views_own_premises_or_w
     assert job(world, ref)['disposition'] == ('revised' if answer == 'revise' else 'reconsider_withdrawn')
     current = world.store.head(subject_kind='topic', topic='archive migration plan')
     assert current['status'] == status
+
+
+async def test_an_owner_reconsider_request_waits_out_an_off_period_and_never_goes_stale(world):
+    row, _ = await formed(world)
+    control = world.store.correct(row['id'], action='reconsider', correction_id='c-9', reason='Look again, please.')
+    ref = f"reconsider:{control['revision_id']}"
+    turn(world, 'chat-9', OWNER, 'Good morning!', 'Morning.')
+    silent = Router(lambda packet: pytest.fail('no call while off'))
+    assert await run_one(world.store, silent, enabled=False) is True          # the turn job is finished off
+    assert job(world, 'chat-9')['disposition'] == 'faculty_off'
+    assert await run_one(world.store, silent, enabled=False) is False         # the owner's request is kept
+    assert job(world, ref)['done_at'] is None
+    world.clock.value += 72 * 3600
+    router = Router(lambda packet: revise(control['revision_id'], stance='Plan Ash, re-checked.', evidence=(),
+                                          premises=('p1',)))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert job(world, ref)['disposition'] == 'revised'
+    assert world.store.head(subject_kind='topic', topic='archive migration plan')['stance'] == 'Plan Ash, re-checked.'
+
+
+async def test_a_reconsideration_that_lost_its_job_is_queued_again_at_start(world):
+    row, _ = await formed(world)
+    control = world.store.correct(row['id'], action='reconsider', correction_id='c-10', reason='Look again.')
+    ref = f"reconsider:{control['revision_id']}"
+    with world.ledger._connect() as conn:          # a pre-M7 head whose run row went with self_judgment_runs
+        conn.execute('DELETE FROM opinion_jobs WHERE ref=?', (ref,))
+    SelfJudgments(TurnIdempotencyLedger(world.path), owner_id=OWNER, clock=world.clock)
+    assert job(world, ref)['kind'] == 'reconsider' and job(world, ref)['done_at'] is None
+    with world.ledger._connect() as conn:          # one an earlier build finished while the faculty was off
+        conn.execute("UPDATE opinion_jobs SET done_at=1,disposition='faculty_off' WHERE ref=?", (ref,))
+    SelfJudgments(TurnIdempotencyLedger(world.path), owner_id=OWNER, clock=world.clock)
+    assert job(world, ref)['done_at'] is None
+    router = Router(lambda packet: {'action': 'none'})
+    assert await run_one(world.store, router, enabled=True) is True
+    assert job(world, ref)['disposition'] == 'reconsider_withdrawn'
+    SelfJudgments(TurnIdempotencyLedger(world.path), owner_id=OWNER, clock=world.clock)
+    assert job(world, ref)['done_at'] is not None                        # an ended one is not queued again
 
 
 async def test_the_projection_worker_runs_the_claim_job_then_the_opinion_job(world, monkeypatch):
