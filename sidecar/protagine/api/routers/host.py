@@ -2950,14 +2950,12 @@ async def _process_turn_sync(
     # means every downstream consumer in this handler sees the truth.
     _resolved_human_sender = False
     _contact_grant_attested = False
-    _resolution_method = "client"   # server did NOT verify the claimed contact
     try:
         from protagine.identity.participants import (
             SYSTEM_CONTACT_ID, ParticipantResolver, is_machine_turn,
         )
         if resolved_sender_contact_id is not None:
             body.context.contact_id = resolved_sender_contact_id
-            _resolution_method = "verified_handle"
             _resolved_human_sender = True
         elif body.sender is not None and _contacts_store is not None:
             _res = await ParticipantResolver(_contacts_store).resolve(
@@ -2974,7 +2972,6 @@ async def _process_turn_sync(
                         body.context.contact_id, _res.contact_id, _res.method,
                         ", shadow-created" if _res.created else "")
                 body.context.contact_id = _res.contact_id
-                _resolution_method = _res.method
                 _resolved_human_sender = True
                 # The server resolved the sender itself; that is the attestation.
                 _contact_grant_attested = True
@@ -3034,19 +3031,6 @@ async def _process_turn_sync(
             # record_source still schedules grounded USER claim projection.
             # Only the ordinary summary/tool/relationship effects are skipped.
             return TurnSyncResponse(accepted=True, source_recorded=True, continuity_updated=False, skipped_reason='source_survivor_only')
-
-    # Conversation presence (passive): now that WHO is settled, record who was
-    # seen in which conversation. The store itself skips the system sentinel;
-    # any failure must never affect turn processing.
-    if _presence_store is not None and not _is_system_turn:
-        try:
-            _presence_store.record(
-                body.context.channel_id or "",
-                body.context.contact_id or "",
-                method=_resolution_method,
-                group_id=(body.sender.group_id if body.sender else "") or "")
-        except Exception:
-            logger.debug("conversation presence record failed", exc_info=True)
 
     # If structured fields are empty but raw messages are present,
     # extract topics/entities/summary from the raw messages.
@@ -4660,16 +4644,6 @@ def set_channel_store(store) -> None:
     """Wire the channel registration store so turn traffic keeps it alive."""
     global _channel_store
     _channel_store = store
-
-
-_presence_store = None
-
-
-def set_presence_store(store) -> None:
-    """Wire the conversation presence registry: attributed turns record who
-    was seen in which conversation."""
-    global _presence_store
-    _presence_store = store
 
 
 def _observe_channel(channel_id: str) -> None:

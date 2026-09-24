@@ -687,15 +687,6 @@ async def lifespan(app: FastAPI):
         set_facts_store(facts_store)
         logger.info("SharedFactsStore initialized (db=%s)", facts_db)
 
-        # Conversation presence registry: passive census of WHO was seen in
-        # WHICH conversation, fed from the turns/sync attribution chokepoint.
-        from protagine.channels.presence import ConversationPresenceStore
-        from protagine.api.routers.host import set_presence_store
-        presence_db = state_dir / "protagine-presence.db"
-        presence_store = ConversationPresenceStore(db_path=str(presence_db))
-        set_presence_store(presence_store)
-        logger.info("ConversationPresenceStore initialized (db=%s)", presence_db)
-
         from protagine.contacts.comms import CommsLog
         comms_log = CommsLog(db_path=state_dir / "protagine-comms.db", source_ledger=source_ledger)
         comms_log.purge_erased_sources()
@@ -1612,16 +1603,6 @@ async def lifespan(app: FastAPI):
     set_commitment_store(None)
     set_affect_store(None)
     set_facts_store(None)
-    try:
-        from protagine.api.routers.host import (
-            set_presence_store as _set_presence_store,
-            _presence_store as _presence_ref,
-        )
-        if _presence_ref is not None:
-            _presence_ref.close()
-        _set_presence_store(None)
-    except Exception:
-        logger.debug("presence store shutdown failed", exc_info=True)
     set_pattern_store(None)
     if channel_store is not None:
         try:

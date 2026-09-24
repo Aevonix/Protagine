@@ -61,7 +61,6 @@ def graph(monkeypatch, tmp_path):
     value = _CountingGraph()
     monkeypatch.setattr(host, "_graph", value)
     # Keep this contract test focused on synchronous ingestion effects.
-    monkeypatch.setattr(host, "_presence_store", None)
     monkeypatch.setattr(host, "_contacts_store", None)
     monkeypatch.setattr(host, "_telemetry", None)
     value.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")

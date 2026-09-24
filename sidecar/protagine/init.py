@@ -763,7 +763,8 @@ def run_store_migrations(home: Path) -> list[str]:
 # cognition spine, its evidence and drive-governance ledgers, the external
 # event inbox and the surprise store, and (since the people milestone) the
 # second-order theory-of-mind stores, the engagement profiles, the relationship
-# briefs the per-contact digest replaced and the P8 shadow stores. An upgrade
+# briefs the per-contact digest replaced, the P8 shadow stores, the conversation
+# presence census (its readers went with P8) and the identity bootstrap report. An upgrade
 # moves them into the backup instead of leaving orphans behind. A directory
 # entry names a whole tree.
 RETIRED_STATE = (
@@ -793,15 +794,22 @@ RETIRED_STATE = (
     "protagine-p8-visibility.db",
     "protagine-p8-arcs.db",
     "protagine-p8-recipient-audit.db",
+    "protagine-presence.db",
+    "bootstrap.db",
     "bridge",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG
 # tables (agent goals are intention rows) and the legacy perspective tables (the
-# automatic opinion revisions and the attention snapshot). The backup taken before
-# the migrations keeps their rows; the upgrade drops them from the live store.
+# automatic opinion revisions and the attention snapshot), and (since the people
+# milestone) the contact store's owner-provisioning receipts and its old merge-proposal,
+# merge-audit and confirmed-distinct tables (merges are identity-link receipts now). The
+# backup taken before the migrations keeps their rows; the upgrade drops them from the
+# live store.
 RETIRED_TABLES: dict[str, tuple[str, ...]] = {
     "protagine-goals.db": ("subtasks", "goal_dag_versions"),
     "turn-idempotency.db": ("self_opinion_revisions", "self_attention"),
+    "protagine-contacts.db": ("contact_provision_operations", "contact_merge_proposals", "contact_merge_audit",
+                              "contact_confirmed_distinct"),
 }
 INITIATIVES_DB = "initiatives.db"
 COMMS_DB = "protagine-comms.db"
