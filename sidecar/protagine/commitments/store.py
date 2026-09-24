@@ -818,6 +818,25 @@ class CommitmentStore:
             finally:
                 conn.close()
 
+    def reattribute(self, old_id: str, new_id: str) -> int:
+        """Move a merged contact's items to the contact kept (a merge): the rows owed to or by
+        ``old_id``, and every owner's message addressed to it (``metadata.recipient_id``)."""
+        if not old_id or not new_id or old_id == new_id:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    moved = conn.execute("UPDATE commitments SET person_id = ? WHERE person_id = ?",
+                                         (new_id, old_id)).rowcount
+                    moved += conn.execute(
+                        "UPDATE commitments SET metadata = json_set(metadata, '$.recipient_id', ?) "
+                        "WHERE json_valid(metadata) AND json_extract(metadata, '$.recipient_id') = ?",
+                        (new_id, old_id)).rowcount
+            finally:
+                conn.close()
+        return int(moved or 0)
+
     def get_pending_for_person(self, person_id: str) -> List[Dict[str, Any]]:
         """Get OPEN commitments (pending + overdue) for a specific person.
         Callers use this as "what is still owed" — an item that went overdue

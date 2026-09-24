@@ -1165,8 +1165,10 @@ class SQLiteContactStore(ContactStore):
         comms log and the affect store). Last, in one commit: ``last_interaction_at`` is the max,
         ``first_seen_at`` the min, ``interaction_count`` the sum, the cadence the keeper's else the
         dropped one's, ``may_contact`` ``never`` if either was (an opt-out survives a merge;
-        nothing else changes it), the tier the keeper's, digests joined, tags and notes appended,
-        identity candidates moved and ``drop`` soft-deleted. Both records are audited. A merge
+        nothing else changes it), the tier the keeper's, the keeper's digest (the dropped one's
+        when the keeper has none; never two joined), tags and notes appended, group memberships
+        and identity candidates moved and ``drop`` soft-deleted, guarded so that a merge of the
+        same pair that finished meanwhile is not folded twice. Both records are audited. A merge
         that stopped half way can be run again: moved handles and recorded sources are skipped.
 
         ``reattribute`` and ``sources_of`` default to the store's own (set once by the server).
@@ -1204,20 +1206,34 @@ class SQLiteContactStore(ContactStore):
 
         now = _now_iso()
         db = self._require_db()
-        await db.execute(
+        digest = keep if keep.digest else drop
+        # The fold and the soft delete are one write guarded on the dropped record still being live:
+        # a merge of the same pair that finished meanwhile leaves this one nothing to fold twice.
+        folded = await db.execute(
             "UPDATE contacts SET last_interaction_at = ?, first_seen_at = ?, interaction_count = ?, "
             "cadence_minutes = ?, may_contact = ?, digest = ?, digest_sources = ?, tags_json = ?, notes = ?, "
-            "updated_at = ? WHERE contact_id = ?",
+            "updated_at = ? WHERE contact_id = ? AND EXISTS (SELECT 1 FROM contacts d WHERE d.contact_id = ? "
+            "AND d.deleted_at IS NULL)",
             (_pick([keep.last_interaction_at, drop.last_interaction_at], max),
              _pick([keep.first_seen_at, drop.first_seen_at], min) or keep.first_seen_at,
              int(keep.interaction_count) + int(drop.interaction_count),
              keep.cadence_minutes if keep.cadence_minutes is not None else drop.cadence_minutes,
              "never" if "never" in (keep.may_contact, drop.may_contact) else keep.may_contact,
-             "\n".join(d for d in (keep.digest, drop.digest) if d) or None,
-             json.dumps(sorted(set(keep.digest_sources) | set(drop.digest_sources))),
+             digest.digest or None, json.dumps(list(digest.digest_sources) if digest.digest else []),
              json.dumps(list(keep.tags) + [t for t in drop.tags if t not in keep.tags]),
-             "\n".join(n for n in (keep.notes, drop.notes) if n) or None, now, keep_id),
+             "\n".join(n for n in (keep.notes, drop.notes) if n) or None, now, keep_id, drop_id),
         )
+        if not folded.rowcount:
+            await db.rollback()
+            merged = await self.get(keep_id)
+            assert merged is not None
+            return merged
+        # Group memberships follow the person; one both records held stays one (current if either was).
+        await db.execute("UPDATE scope_members SET left_at = NULL WHERE contact_id = ? AND left_at IS NOT NULL "
+                         "AND scope_id IN (SELECT scope_id FROM scope_members WHERE contact_id = ? AND left_at IS NULL)",
+                         (keep_id, drop_id))
+        await db.execute("UPDATE OR IGNORE scope_members SET contact_id = ? WHERE contact_id = ?", (keep_id, drop_id))
+        await db.execute("DELETE FROM scope_members WHERE contact_id = ?", (drop_id,))
         async with db.execute("SELECT candidate_id FROM contact_identity_candidates WHERE contact_id = ?",
                               (drop_id,)) as cur:
             candidates = [row["candidate_id"] for row in await cur.fetchall()]

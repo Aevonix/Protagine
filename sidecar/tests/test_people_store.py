@@ -553,7 +553,8 @@ async def test_merge_moves_handles_through_correct_folds_history_and_reattribute
     assert merged.cadence_minutes == 120
     assert merged.may_contact == "never"           # an opt-out survives a merge
     assert merged.trust_tier == "regular"
-    assert merged.digest == "Keep digest\nDrop digest" and merged.digest_sources == ["turn:d", "turn:k"]
+    # One digest, the keeper's, never two joined past the 600-character bound; tomorrow's writer re-renders it.
+    assert merged.digest == "Keep digest" and merged.digest_sources == ["turn:k"]
     assert merged.tags == ["vendor"] and "met at the shop" in (merged.notes or "")
     assert await store.get(drop.contact_id) is None
     assert calls == [(drop.contact_id, keep.contact_id)]
@@ -637,6 +638,44 @@ async def test_merge_uses_the_hooks_the_server_set_on_the_store(store):
     assert calls == [("comms", drop.contact_id, keep.contact_id)]
     pending, = await store.pending_identity_reconciliations()
     assert pending["affected_source_ids"] == ["turn:x"]
+
+
+@pytest.mark.asyncio
+async def test_merge_moves_group_memberships_and_takes_the_dropped_digest_only_when_the_keeper_has_none(store):
+    """Audit m6: the person's group memberships follow them; a membership both records held is one."""
+    keep = await store.create(display_name="Keep")
+    drop = await store.create(display_name="Drop")
+    await store.set_digest(drop.contact_id, "Drop digest", ["template"])
+    shared = await store.create_scope(scope_type="group", platform="whatsapp", external_id="both")
+    only = await store.create_scope(scope_type="group", platform="whatsapp", external_id="drop-only")
+    for scope in (shared, only):
+        await store.add_scope_member(scope.scope_id, drop.contact_id)
+    await store.add_scope_member(shared.scope_id, keep.contact_id)
+    merged = await store.merge(keep.contact_id, drop.contact_id, performed_by=OWNER_ID)
+    assert merged.digest == "Drop digest" and merged.digest_sources == ["template"]
+    for scope in (shared, only):
+        members = [m.contact_id for m in await store.scope_members(scope.scope_id)]
+        assert members == [keep.contact_id]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_raced_another_folds_once(store):
+    """Audit m6: two merges of the same pair both pass the existence check; the fold and the
+    soft delete are one guarded write, so the second folds nothing and counts nothing twice."""
+    keep = await store.create(display_name="Keep")
+    drop = await store.create(display_name="Drop")
+    await store.record_interaction(drop.contact_id, "2026-09-01T10:00:00Z")
+    await store.record_interaction(keep.contact_id, "2026-09-02T10:00:00Z")
+    raced = []
+
+    async def other_merge(old_id, new_id):
+        if not raced:
+            raced.append(await store.merge(new_id, old_id, performed_by="cli", reattribute=[]))
+
+    merged = await store.merge(keep.contact_id, drop.contact_id, performed_by=OWNER_ID, reattribute=[other_merge])
+    assert raced[0].interaction_count == 2 and merged.interaction_count == 2
+    audit = [row["action"] for row in await store.get_audit_log(keep.contact_id)]
+    assert audit.count("merged_in") == 1
 
 
 @pytest.mark.asyncio

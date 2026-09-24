@@ -164,6 +164,53 @@ async def test_merge_is_owner_only_and_moves_handles_sources_and_the_other_store
 
 
 @pytest.mark.asyncio
+async def test_a_merge_moves_the_dropped_records_commitments_and_messages_owed_to_it(world, monkeypatch, tmp_path):
+    """Audit m6: the dropped record's open items are the person's; an owner's message granted to
+    the dropped record now goes to the person, never to a soft-deleted contact."""
+    from protagine.commitments.store import CommitmentStore
+    client, store, owner, guest = world
+    shadow = await store.create(display_name="+15550000078", import_source="auto:sender")
+    commitments = CommitmentStore(tmp_path / "protagine-commitments.db")
+    monkeypatch.setattr(host_mod, "_commitment_store", commitments)
+    theirs = commitments.create(person_id=shadow.contact_id, description="Send the signed form")
+    notice = commitments.create(person_id=owner.contact_id, description="Tell them the venue moved",
+                                metadata={"kind": "notice", "recipient": "+15550000078", "content": "It moved.",
+                                          "grant": "owner", "recipient_id": shadow.contact_id,
+                                          "recipient_exact": True})
+    other = commitments.create(person_id=owner.contact_id, description="Unrelated",
+                               metadata={"recipient_id": guest.contact_id})
+    response = await client.post("/v1/mind/people/merge", json={"keep": guest.contact_id, "drop": shadow.contact_id,
+                                                                "by": "cli"})
+    assert response.status_code == 200, response.text
+    assert commitments.get(theirs["id"])["person_id"] == guest.contact_id
+    moved = commitments.get(notice["id"])
+    assert moved["person_id"] == owner.contact_id and moved["metadata"]["recipient_id"] == guest.contact_id
+    assert moved["metadata"]["content"] == "It moved." and moved["metadata"]["recipient_exact"] is True
+    assert commitments.get(other["id"])["metadata"] == {"recipient_id": guest.contact_id}
+
+
+@pytest.mark.asyncio
+async def test_a_merge_keeps_the_dropped_records_sourced_affect_through_the_reconciliation(world, monkeypatch, tmp_path):
+    """C2 on the real stores (audit m6): the affect row moves before its source does, so the
+    reconciliation's purge of rows whose source no longer agrees finds nothing to delete."""
+    from protagine.tom.affect import AffectStore
+    client, store, owner, guest = world
+    shadow = await store.create(display_name="+15550000079", import_source="auto:sender")
+    ledger = get_turn_idempotency_ledger(people_mod._ledger().db_path.parent)
+    ledger.record_source("t-affect", contact_id=shadow.contact_id, session_id="s-affect",
+                         messages=[{"role": "user", "content": "This is taking far too long."}], derive_claims=False)
+    affect = AffectStore(str(tmp_path / "affect.db"), source_ledger=ledger)
+    monkeypatch.setattr(host_mod, "_affect_store", affect)
+    lineage, _ = affect.source_input("t-affect", shadow.contact_id)
+    affect.create_event(contact_id=shadow.contact_id, valence=-0.6, source="appraisal", source_lineage=lineage)
+    response = await client.post("/v1/mind/people/merge", json={"keep": guest.contact_id, "drop": shadow.contact_id,
+                                                                "by": "cli"})
+    assert response.status_code == 200 and response.json()["sources_moved"] == 1, response.text
+    rows = affect._conn.execute("SELECT contact_id FROM affect_events").fetchall()
+    assert [row["contact_id"] for row in rows] == [guest.contact_id]
+
+
+@pytest.mark.asyncio
 async def test_anyone_may_propose_a_link_and_the_proposal_waits_for_the_owner(world):
     client, store, owner, guest = world
     response = await client.post("/v1/mind/people/link", json={

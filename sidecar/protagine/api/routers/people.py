@@ -111,13 +111,14 @@ async def person_sources(contact_id: str) -> List[str]:
 
 
 def reattribute_hooks(*, reconcile: bool = True) -> List[Any]:
-    """``reattribute(old_id, new_id)`` of the stores that key rows by contact (comms, affect), then
-    (``reconcile``) the ledger move of the merge's sources. That order matters: a row whose contact
-    and ledger source disagree is purged as erased, so the rows move first and the sources right
-    after, before anything reads them. The router reconciles itself, to report what moved."""
+    """``reattribute(old_id, new_id)`` of the stores that key rows by contact (comms, affect,
+    commitments), then (``reconcile``) the ledger move of the merge's sources. That order matters:
+    a row whose contact and ledger source disagree is purged as erased, so the rows move first and
+    the sources right after, before anything reads them. The router reconciles itself, to report
+    what moved."""
     from protagine.api.routers import host
     hooks = []
-    for name in ("_comms_log", "_affect_store"):
+    for name in ("_comms_log", "_affect_store", "_commitment_store"):
         hook = getattr(getattr(host, name, None), "reattribute", None)
         if callable(hook):
             hooks.append(hook)
