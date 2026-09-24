@@ -24,8 +24,6 @@ from .models import (
     ScopeMember,
     TrustScope,
     TRUST_TIERS,
-    _TIER_RANK,
-    more_permissive_tier,
     regular_or_above,
     tier_rank,
 )
@@ -71,23 +69,29 @@ def _phone_key(address: str) -> str:
 
 
 # C1: a phone number is ONE identity on every gateway. The rule is derived from the handle's
-# format, never from a channel name: any address that parses as an E.164 number (a bare NANP
-# number counts; so does the numeric local part of a ``<number>@<host>`` messaging id) matches
-# on ``phone_key`` regardless of the gateway it arrived on.
-_E164 = re.compile(r"^\+?[1-9]\d{6,14}$")
+# format, never from a channel name: an address written as an international number (``+`` and 7
+# to 15 digits, separators allowed) or a messaging id whose host says its local part is a phone
+# number (``<number>@s.whatsapp.net``, ``<number>@c.us``) matches on ``phone_key`` whatever
+# gateway it arrived on. A bare digit string is not a phone number by its format (numeric user
+# ids are common, and ``<number>@lid`` is an opaque id): it matches exactly, on its own gateway.
+_E164 = re.compile(r"^\+[1-9]\d{6,14}$")
+_PHONE_JID = re.compile(r"^[1-9]\d{6,14}@(s\.whatsapp\.net|c\.us)$", re.IGNORECASE)
+_BARE_DIGITS = re.compile(r"^\d{7,15}$")
 _PHONE_SEPARATORS = re.compile(r"[\s().\-]")
 _CONVERSATION_GAP = timedelta(minutes=30)   # C3: a longer silence starts a new conversation
 
 
 def is_e164(address: Optional[str]) -> bool:
-    """True when ``address`` (or the local part of a ``number@host`` id) is an E.164 number."""
-    local = (address or "").strip().split("@", 1)[0]
-    return bool(_E164.match(_PHONE_SEPARATORS.sub("", local)))
+    """True when ``address`` is written as a phone number: E.164 with its ``+``, or a phone JID."""
+    text = (address or "").strip()
+    if "@" in text:
+        return bool(_PHONE_JID.match(text))
+    return bool(_E164.match(_PHONE_SEPARATORS.sub("", text)))
 
 
 def canonical_handle(gateway: Optional[str], address: Optional[str]) -> Tuple[str, str]:
     """The identity a handle matches on: ``("email", lower)``, ``("phone", "+<digits>")`` for an
-    E.164 address on any gateway, else the exact ``(gateway, address)``."""
+    address written as a phone number on any gateway, else the exact ``(gateway, address)``."""
     g, a = (gateway or "").strip().lower(), (address or "").strip()
     if g == "email":
         return "email", _normalize_email(a)
@@ -98,13 +102,13 @@ def canonical_handle(gateway: Optional[str], address: Optional[str]) -> Tuple[st
 
 def stored_handle(gateway: Optional[str], address: Optional[str]) -> Tuple[str, str]:
     """The form a handle is stored and looked up exactly in: the transport gateway (needed for
-    sending) with a lower-cased email, a separator-free phone number, or the address as given
-    (a ``number@host`` id and a bare numeric user id keep their transport form)."""
+    sending) with a lower-cased email, a separator-free number, or the address as given (a
+    ``number@host`` id keeps its transport form)."""
     kind, key = canonical_handle(gateway, address)
     g, a = (gateway or "").strip().lower(), (address or "").strip()
     if kind == "email":
         return g, key
-    if kind == "phone" and "@" not in a:
+    if (kind == "phone" and "@" not in a) or _BARE_DIGITS.match(_PHONE_SEPARATORS.sub("", a)):
         return g, _normalize_phone(a)
     return g, a
 
@@ -187,25 +191,6 @@ class ContactStore(ABC):
         verified: bool = False,
     ) -> ContactHandle:
         """Add a gateway handle to an existing contact."""
-
-    @abstractmethod
-    async def provision_verified_handle(
-        self,
-        *,
-        operation_id: str,
-        performed_by: str,
-        gateway: str,
-        address: str,
-        display_name: Optional[str] = None,
-        contact_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Atomically create/map one exact owner-verified contact handle.
-
-        Exactly one of ``display_name`` (create) and ``contact_id`` (map) is
-        required.  Creation never grants permission (``may_contact`` starts at ``ask``).
-        ``operation_id`` is a durable idempotency key bound to the exact input
-        and authenticated principal.
-        """
 
     @abstractmethod
     async def get_handles(self, contact_id: str) -> List[ContactHandle]:
@@ -335,6 +320,7 @@ class SQLiteContactStore(ContactStore):
         # a data migration (the stored side is keyed at query time).
         await self._db.create_function(
             "phone_key", 1, lambda v: _phone_key(v) if v else "")
+        await self._db.create_function("is_phone", 1, lambda v: 1 if is_e164(v) else 0)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         from protagine.migrations import run_migrations
@@ -373,7 +359,7 @@ class SQLiteContactStore(ContactStore):
             raise RuntimeError("ContactStore not connected. Use async with or call connect().")
         return self._db
 
-    async def _open_provision_connection(self) -> aiosqlite.Connection:
+    async def _open_durable_connection(self) -> aiosqlite.Connection:
         """Open one dedicated durable connection for a provisioning command.
 
         Provisioning promises crash-safe idempotency.  A process-local memory
@@ -403,11 +389,6 @@ class SQLiteContactStore(ContactStore):
         await db.execute("PRAGMA foreign_keys=ON")
         await db.execute("PRAGMA busy_timeout=5000")
         return db
-
-    async def _after_provision_contact_insert(self) -> None:
-        """Internal fault-injection seam; production has no side effect."""
-
-        return None
 
     # ── Read ops ──────────────────────────────────────────────────────────────
 
@@ -495,10 +476,15 @@ class SQLiteContactStore(ContactStore):
             return None
         base = ("SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
                 "WHERE c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name') AND ")
+        g = (gateway or "").strip().lower()
         if kind == "email":
             sql, params = base + "h.gateway = 'email' AND lower(h.address) = ?", (key,)
         elif kind == "phone":
-            sql, params = base + "phone_key(h.address) = ?", (key[1:],)
+            # Every handle written as a phone number, and a legacy bare-digit row on the sender's
+            # own gateway; never a numeric id on another gateway that happens to share the digits.
+            sql, params = base + "phone_key(h.address) = ? AND (is_phone(h.address) OR h.gateway = ?)", (key[1:], g)
+        elif _BARE_DIGITS.match(_PHONE_SEPARATORS.sub("", key)):
+            sql, params = base + "h.gateway = ? AND phone_key(h.address) = ?", (g, _phone_key(key))
         else:
             sql, params = base + "h.gateway = ? AND h.address = ?", stored_handle(gateway, address)
         async with db.execute(sql, params) as cur:
@@ -827,325 +813,6 @@ class SQLiteContactStore(ContactStore):
         ) as cur:
             row = await cur.fetchone()
         return ContactHandle.from_row(dict(row))
-
-    async def provision_verified_handle(
-        self,
-        *,
-        operation_id: str,
-        performed_by: str,
-        gateway: str,
-        address: str,
-        display_name: Optional[str] = None,
-        contact_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Atomically create/map an exact verified handle with an audit receipt.
-
-        This is intentionally generic at the store boundary.  The API layer
-        decides which gateway/address grammar and which authenticated principal
-        are authorized.  The store guarantees that create+handle cannot leave
-        an orphan contact, that an exact handle cannot cross contacts, and that
-        an operation retry cannot repeat or change the original mutation.
-        """
-
-        shared_db = self._require_db()
-        operation = str(operation_id or "")
-        principal = str(performed_by or "")
-        exact_gateway = str(gateway or "")
-        exact_address = str(address or "")
-        create_name = display_name if isinstance(display_name, str) else None
-        selected_id = contact_id if isinstance(contact_id, str) else None
-        creating = create_name is not None and selected_id is None
-        mapping = selected_id is not None and create_name is None
-        if not (creating or mapping):
-            raise ValueError("exactly one of display_name and contact_id is required")
-        if (
-            not operation
-            or operation != operation.strip()
-            or not principal
-            or principal != principal.strip()
-            or not exact_gateway
-            or exact_gateway != exact_gateway.strip()
-            or not exact_address
-            or exact_address != exact_address.strip()
-        ):
-            raise ValueError("provisioning identifiers must be exact non-empty text")
-        if creating and (
-            not create_name
-            or create_name != create_name.strip()
-            or any(
-                ord(character) < 0x20 or ord(character) == 0x7F
-                for character in create_name
-            )
-        ):
-            raise ValueError("display_name must be canonical text")
-        if mapping and (
-            not selected_id
-            or selected_id != selected_id.strip()
-        ):
-            raise ValueError("contact_id must be canonical text")
-
-        request_value = {
-            "contact_id": selected_id,
-            "display_name": create_name,
-            "gateway": exact_gateway,
-            "address": exact_address,
-        }
-        request_sha256 = hashlib.sha256(json.dumps(
-            request_value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")).hexdigest()
-        now = _now_iso()
-
-        # connect() applies migrations on the shared connection.  Prove the
-        # idempotency ledger exists before opening the dedicated operation
-        # connection; never create or migrate schema in the mutation window.
-        async with shared_db.execute(
-            "SELECT 1 FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'contact_provision_operations'"
-        ) as cur:
-            migration_ready = await cur.fetchone()
-        if migration_ready is None:
-            raise RuntimeError("contact provisioning migration is unavailable")
-
-        db = await self._open_provision_connection()
-        try:
-            await db.execute("BEGIN IMMEDIATE")
-            try:
-                async with db.execute(
-                    "SELECT request_sha256, performed_by, result_json "
-                    "FROM contact_provision_operations WHERE operation_id = ?",
-                    (operation,),
-                ) as cur:
-                    prior = await cur.fetchone()
-                if prior is not None:
-                    if (
-                        prior["request_sha256"] != request_sha256
-                        or prior["performed_by"] != principal
-                    ):
-                        raise ValueError(
-                            "operation_id is already bound to another "
-                            "provisioning request"
-                        )
-                    try:
-                        result = json.loads(prior["result_json"])
-                    except (TypeError, ValueError) as exc:
-                        raise RuntimeError(
-                            "stored provisioning receipt is invalid"
-                        ) from exc
-                    if not isinstance(result, dict):
-                        raise RuntimeError(
-                            "stored provisioning receipt is invalid"
-                        )
-                    await db.commit()
-                    return result
-
-                # Exact uniqueness remains authoritative for every gateway.
-                async with db.execute(
-                    "SELECT contact_id, handle_id, verified "
-                    "FROM contact_handles WHERE gateway = ? AND address = ?",
-                    (exact_gateway, exact_address),
-                ) as cur:
-                    existing_handle = await cur.fetchone()
-
-                # C1: a phone number is one identity on every gateway; the rule
-                # comes from the address format, never from a channel name.
-                phone_equivalents = []
-                if is_e164(exact_address):
-                    identity_key = _phone_key(exact_address)
-                    async with db.execute(
-                        "SELECT h.contact_id, h.handle_id, h.gateway, "
-                        "h.address, h.verified FROM contact_handles h "
-                        "JOIN contacts c ON c.contact_id = h.contact_id "
-                        "WHERE phone_key(h.address) = ? "
-                        "AND c.deleted_at IS NULL "
-                        "ORDER BY h.contact_id, h.handle_id",
-                        (identity_key,),
-                    ) as cur:
-                        phone_equivalents = await cur.fetchall()
-
-                created_contact = False
-                if creating:
-                    assert create_name is not None
-                    if existing_handle is not None:
-                        raise ValueError("exact handle is already assigned")
-                    if phone_equivalents:
-                        raise ValueError(
-                            "phone-equivalent handle is already assigned"
-                        )
-                    async with db.execute(
-                        "SELECT contact_id, display_name FROM contacts "
-                        "WHERE deleted_at IS NULL "
-                        "AND display_name IS NOT NULL"
-                    ) as cur:
-                        named_contacts = await cur.fetchall()
-                    if any(
-                        str(row["display_name"] or "").casefold()
-                        == create_name.casefold()
-                        for row in named_contacts
-                    ):
-                        raise ValueError("display_name is not unique")
-                    selected_id = _gen_id("cid")
-                    await db.execute(
-                        """
-                        INSERT INTO contacts
-                          (contact_id, display_name, trust_tier,
-                           may_contact, tags_json, privacy_level,
-                           import_source, first_seen_at, created_at, updated_at)
-                        VALUES (?, ?, 'unknown', 'ask', '[]', 'private',
-                                'owner_operator', ?, ?, ?)
-                        """,
-                        (selected_id, create_name, now, now, now),
-                    )
-                    created_contact = True
-                    await self._after_provision_contact_insert()
-                    await db.execute(
-                        "INSERT INTO contact_audit "
-                        "(id, contact_id, action, detail, performed_by, "
-                        "created_at) VALUES (?, ?, 'created', ?, ?, ?)",
-                        (
-                            _gen_id("cau"),
-                            selected_id,
-                            json.dumps({"import_source": "owner_operator"}),
-                            principal,
-                            now,
-                        ),
-                    )
-                else:
-                    assert selected_id is not None
-                    async with db.execute(
-                        "SELECT display_name, may_contact "
-                        "FROM contacts WHERE contact_id = ? "
-                        "AND deleted_at IS NULL",
-                        (selected_id,),
-                    ) as cur:
-                        selected = await cur.fetchone()
-                    if selected is None:
-                        raise ValueError("selected contact does not exist")
-                    create_name = selected["display_name"]
-
-                assert selected_id is not None
-                if (
-                    existing_handle is not None
-                    and existing_handle["contact_id"] != selected_id
-                ):
-                    raise ValueError(
-                        "exact handle is already assigned to another contact"
-                    )
-                if any(
-                    row["contact_id"] != selected_id
-                    for row in phone_equivalents
-                ):
-                    raise ValueError(
-                        "phone-equivalent handle is already assigned to "
-                        "another contact"
-                    )
-
-                handle_created = existing_handle is None
-                handle_changed = (
-                    handle_created or not bool(existing_handle["verified"])
-                )
-                if handle_created:
-                    handle_id = _gen_id("hdl")
-                    await db.execute(
-                        """
-                        INSERT INTO contact_handles
-                          (handle_id, contact_id, gateway, address, is_primary,
-                           verified, confidence, source, created_at)
-                        VALUES (?, ?, ?, ?, 1, 1, 1.0,
-                                'owner_operator', ?)
-                        """,
-                        (
-                            handle_id,
-                            selected_id,
-                            exact_gateway,
-                            exact_address,
-                            now,
-                        ),
-                    )
-                else:
-                    handle_id = str(existing_handle["handle_id"])
-                    if handle_changed:
-                        await db.execute(
-                            "UPDATE contact_handles SET verified = 1, "
-                            "confidence = 1.0, source = 'owner_operator' "
-                            "WHERE handle_id = ?",
-                            (handle_id,),
-                        )
-
-                address_sha256 = hashlib.sha256(
-                    exact_address.encode("utf-8")
-                ).hexdigest()
-                await db.execute(
-                    "INSERT INTO contact_audit "
-                    "(id, contact_id, action, detail, performed_by, created_at) "
-                    "VALUES (?, ?, 'contact_handle_owner_verified', ?, ?, ?)",
-                    (
-                        _gen_id("cau"),
-                        selected_id,
-                        json.dumps({
-                            "operation_id": operation,
-                            "gateway": exact_gateway,
-                            "address_sha256": address_sha256,
-                            "handle_created": handle_created,
-                            "verification_changed": handle_changed,
-                            "contact_created": created_contact,
-                        }, sort_keys=True),
-                        principal,
-                        now,
-                    ),
-                )
-
-                # Read permission in the same transaction.  This method never
-                # raises it; a created contact starts at ``ask``.
-                async with db.execute(
-                    "SELECT may_contact FROM contacts "
-                    "WHERE contact_id = ?",
-                    (selected_id,),
-                ) as cur:
-                    standing_row = await cur.fetchone()
-                if standing_row is None:
-                    raise RuntimeError("provisioned contact disappeared")
-                result = {
-                    "contact_id": selected_id,
-                    "display_name": create_name,
-                    "gateway": exact_gateway,
-                    "address": exact_address,
-                    "handle_id": handle_id,
-                    "created": created_contact,
-                    "handle_created": handle_created,
-                    "changed": created_contact or handle_changed,
-                    "verified": True,
-                    "may_contact": str(standing_row["may_contact"]),
-                    "operation_id": operation,
-                }
-                result_json = json.dumps(
-                    result,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                await db.execute(
-                    "INSERT INTO contact_provision_operations "
-                    "(operation_id, request_sha256, performed_by, contact_id, "
-                    "result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        operation,
-                        request_sha256,
-                        principal,
-                        selected_id,
-                        result_json,
-                        now,
-                    ),
-                )
-                await db.commit()
-                return result
-            except Exception:
-                await db.rollback()
-                raise
-        finally:
-            await db.close()
 
     async def update_tier(
         self,

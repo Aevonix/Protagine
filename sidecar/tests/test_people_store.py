@@ -254,14 +254,17 @@ async def test_resolve_reference_by_id_handle_email_address_or_unique_name(store
 # -- C1: one phone identity on any gateway ------------------------------------------------------
 
 def test_is_e164_and_canonical_handle():
-    assert is_e164("+15550001234") and is_e164("15550001234") and is_e164("+1 (555) 000-1234")
-    assert is_e164("5550001234") and is_e164("+44 20 7946 0958") and is_e164("15550001234@s.whatsapp.net")
+    assert is_e164("+15550001234") and is_e164("+1 (555) 000-1234")
+    assert is_e164("+44 20 7946 0958") and is_e164("15550001234@s.whatsapp.net") and is_e164("15550001234@c.us")
     assert not is_e164("p-05") and not is_e164("user@lid") and not is_e164("+0123456") and not is_e164("12345")
+    # A bare digit string is a numeric user id as often as a number; an opaque ``@lid`` id never is one.
+    assert not is_e164("5550001234") and not is_e164("15550001234") and not is_e164("15550001234@lid")
     assert not is_e164("1234567890123456") and not is_e164("") and not is_e164("sam@example.test")
     assert canonical_handle("email", "Sam@Example.test") == ("email", "sam@example.test")
     assert canonical_handle("sms", "+1 (555) 000-1234") == ("phone", "+15550001234")
     assert canonical_handle("whatsapp", "15550001234@s.whatsapp.net") == ("phone", "+15550001234")
-    assert canonical_handle("custom-phone-app", "5550001234") == ("phone", "+15550001234")
+    assert canonical_handle("custom-phone-app", "+1 555 000 1234") == ("phone", "+15550001234")
+    assert canonical_handle("telegram", "5550001234") == ("telegram", "5550001234")
     assert canonical_handle("rcs", "+15550001234") == ("phone", "+15550001234")
     assert canonical_handle("Telegram", " 2003 ") == ("telegram", "2003")
     assert canonical_handle("capture", "p-05") == ("capture", "p-05")
@@ -289,11 +292,29 @@ async def test_three_phone_senders_on_three_gateways_are_three_contacts_and_no_o
 
 
 @pytest.mark.asyncio
+async def test_a_numeric_id_on_another_gateway_is_not_the_phone_contact(store):
+    """A bare digit string is a user id as often as a number: only an address written as a phone
+    number (``+`` and digits, or a phone JID) reaches the contact holding that number elsewhere."""
+    owner_of_number = await store.create(display_name="Number holder")
+    await store.add_handle(owner_of_number.contact_id, "sms", "+15551234567", verified=True)
+    assert await store.resolve_messaging_handle("telegram", "5551234567") is None
+    assert await store.resolve_messaging_handle("telegram", "15551234567") is None
+    assert (await store.resolve_messaging_handle("whatsapp", "+15551234567")).contact_id == owner_of_number.contact_id
+    stranger = await ParticipantResolver(store).resolve(platform="telegram", user_id="5551234567")
+    assert stranger.created and stranger.contact_id != owner_of_number.contact_id
+    # A number stored bare on its own gateway (a legacy row) still answers there, NANP form included.
+    legacy = await store.create(display_name="Legacy")
+    await store.add_handle(legacy.contact_id, "voice", "15550007777", verified=True)
+    assert (await store.resolve_messaging_handle("voice", "5550007777")).contact_id == legacy.contact_id
+    assert await store.resolve_messaging_handle("telegram", "15550007777") is None
+
+
+@pytest.mark.asyncio
 async def test_same_number_on_two_gateways_is_one_contact_and_a_custom_id_stays_scoped(store, monkeypatch):
     monkeypatch.setenv("PROTAGINE_IDENTITY_SHADOW_CONTACTS", "false")  # the switch is gone: shadows are the design
     resolver = ParticipantResolver(store)
     by_sms = await resolver.resolve(platform="sms", user_id="+15550000009")
-    by_other = await resolver.resolve(platform="some-voip-app", user_id="(555) 000-0009")
+    by_other = await resolver.resolve(platform="some-voip-app", user_id="+1 (555) 000-0009")
     by_jid = await resolver.resolve(platform="whatsapp", user_id="15550000009@s.whatsapp.net")
     assert by_sms.created and by_sms.contact_id == by_other.contact_id == by_jid.contact_id
     assert by_other.method == "handle" and by_jid.method == "handle"
@@ -370,7 +391,7 @@ async def test_handles_resolve_through_the_canonical_form_on_every_path(store):
     contact = await store.create(display_name="Phone person")
     await store.add_handle(contact.contact_id, "imessage", "+1 (555) 010-1234", verified=True)
     await store.add_handle(contact.contact_id, "email", "Person@Example.test")
-    for gateway, address in [("sms", "15550101234"), ("rcs", "+1 555 010 1234"), ("signal", "5550101234"),
+    for gateway, address in [("sms", "+15550101234"), ("rcs", "+1 555 010 1234"), ("signal", "+1 555-010-1234"),
                              ("whatsapp", "15550101234@s.whatsapp.net"), ("voice", "+15550101234")]:
         assert (await store.resolve_messaging_handle(gateway, address)).contact_id == contact.contact_id, gateway
         assert (await store.resolve_handle(gateway, address)).contact_id == contact.contact_id, gateway

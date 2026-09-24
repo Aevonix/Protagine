@@ -80,7 +80,7 @@ async def correct(store, *, operation_id, performed_by, gateway, address,
             raise ValueError('invalid_identity_contact')
     request_hash = hashlib.sha256(_json([operation_id, performed_by, gateway, address,
         expected_contact_id, contact_id, refs, sources]).encode()).hexdigest()
-    db = await store._open_provision_connection()
+    db = await store._open_durable_connection()
     try:
         await db.execute('BEGIN IMMEDIATE')
         async with db.execute('SELECT * FROM contact_identity_operations WHERE operation_id=?', (operation_id,)) as cur:
@@ -165,7 +165,7 @@ async def move_sources(store, *, operation_prefix, performed_by, old_contact_id,
     if any(len(s) > 256 for s in wanted):
         raise ValueError('invalid_identity_evidence')
     pattern = operation_prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
-    db = await store._open_provision_connection()
+    db = await store._open_durable_connection()
     try:
         await db.execute('BEGIN IMMEDIATE')
         async with db.execute("SELECT result_json FROM contact_identity_operations WHERE operation_id LIKE ? "
@@ -235,7 +235,7 @@ async def pending_reconciliations(store, *, limit=100):
 
 async def mark_sources_reconciled(store, *, operation_id, source_result):
     """Finish an exact source correction without introducing a second queue."""
-    db = await store._open_provision_connection()
+    db = await store._open_durable_connection()
     try:
         await db.execute('BEGIN IMMEDIATE')
         async with db.execute('SELECT result_json FROM contact_identity_operations WHERE operation_id=?', (operation_id,)) as cur:
@@ -276,7 +276,7 @@ async def mark_sources_conflicted(store, *, operation_id, code):
     from .store import _now_iso
     if code not in {'source_erased', 'source_attribution_preimage_changed'}:
         raise ValueError('invalid_identity_reconciliation_conflict')
-    db = await store._open_provision_connection()
+    db = await store._open_durable_connection()
     try:
         await db.execute('BEGIN IMMEDIATE')
         async with db.execute('SELECT result_json FROM contact_identity_operations WHERE operation_id=?', (operation_id,)) as cur:

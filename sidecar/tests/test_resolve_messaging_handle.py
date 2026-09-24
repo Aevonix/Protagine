@@ -33,8 +33,6 @@ async def test_phone_resolves_across_gateways_and_formats(store):
         ("sms", PHONE),                 # different gateway, same number
         ("rcs", PHONE),                 # a gateway nobody listed: the number is the identity
         ("rcs", "+1 (555) 010-1234"),   # messy formatting
-        ("sms", "15550101234"),         # no leading +
-        ("sms", "5550101234"),          # national-form (last-10) digits
         ("whatsapp", PHONE),            # any gateway
         ("whatsapp", "15550101234@s.whatsapp.net"),  # a number@host messaging id
         ("voice-kiosk-7", PHONE),       # a custom channel with an E.164 handle
@@ -43,6 +41,10 @@ async def test_phone_resolves_across_gateways_and_formats(store):
     for gw, addr in cases:
         got = await store.resolve_messaging_handle(gw, addr)
         assert got is not None and got.contact_id == c.contact_id, f"{gw}:{addr} should resolve"
+    # Digits without a ``+`` are not a phone number by their format (numeric user ids are common):
+    # they match only a handle stored on their own gateway, never this contact's number elsewhere.
+    for gw, addr in [("sms", "15550101234"), ("sms", "5550101234"), ("telegram", "15550101234")]:
+        assert await store.resolve_messaging_handle(gw, addr) is None, f"{gw}:{addr} must not resolve"
 
 
 @pytest.mark.asyncio

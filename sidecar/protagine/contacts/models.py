@@ -36,11 +36,6 @@ def regular_or_above(tier: str) -> bool:
     return tier_rank(tier) >= _TIER_RANK["regular"]
 
 
-def more_permissive_tier(a: str, b: str) -> str:
-    """Return the more permissive (higher-ranked) trust tier."""
-    return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
-
-
 def more_restrictive_privacy(a: str, b: str) -> str:
     """Return the more restrictive privacy level."""
     rank = {"public": 0, "private": 1, "restricted": 2}
