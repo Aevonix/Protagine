@@ -178,3 +178,22 @@ async def test_a_guest_is_contact_scoped_without_the_key_and_without_a_configure
     assert sections <= {"temporal-context", "protagine-memory", "protagine-commitments", "protagine-person"}
     assert private.calls == [] and contacts.calls == [] and contacts.reads == ["guest-a"]
     assert "omitted" in response.json()["notices"][0]
+
+
+@pytest.mark.asyncio
+async def test_the_person_section_is_bounded_like_the_template_digest(source_app, tmp_path, monkeypatch):
+    """Integration map X16: the person section is M5's per-turn cost, at most the template
+    digest's 600 characters on every non-owner turn, whoever wrote the stored digest."""
+    from protagine.contacts.digest import MAX_CHARS
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
+
+    class LongDigest(GuestContacts):
+        async def get(self, contact_id):
+            return SimpleNamespace(contact_id=contact_id, digest="A long generated digest. " * 200)
+
+    monkeypatch.setattr(host, "_contacts_store", LongDigest())
+    monkeypatch.setattr(host, "_commitment_store", None)
+    async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
+        response = await client.post("/v1/host/context/assemble", json=context("guest-a", "office"))
+    person, = [row["body"] for row in response.json()["sections"] if row["id"] == "protagine-person"]
+    assert 0 < len(person) <= MAX_CHARS

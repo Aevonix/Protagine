@@ -2030,13 +2030,17 @@ async def _assemble_sections(
             logger.debug("context_assemble relationship failed: %s", exc)
 
     # --- About this person: their digest, for any viewer but the owner; the people faculty's ---
+    # At most the template digest's length on every turn, whichever writer stored it.
     from protagine.api.routers.mind import faculty_on
     if _contacts_store is not None and contact_id and contact_id != owner_id and faculty_on("people"):
         try:
-            _digest = getattr(await _contacts_store.get(contact_id), "digest", None)
+            from protagine.contacts.digest import MAX_CHARS as _DIGEST_CHARS
+            _digest = str(getattr(await _contacts_store.get(contact_id), "digest", None) or "").strip()
             if _digest:
                 sections.append(ContextSection(
-                    id="protagine-person", title="About this person", body=_digest, priority=84))
+                    id="protagine-person", title="About this person",
+                    body=_digest if len(_digest) <= _DIGEST_CHARS else _digest[:_DIGEST_CHARS - 1] + "…",
+                    priority=84))
         except Exception as exc:
             logger.debug("context_assemble person digest failed: %s", exc)
 
