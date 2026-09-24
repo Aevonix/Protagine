@@ -134,8 +134,6 @@ async def correct(store, *, operation_id, performed_by, gateway, address,
         raise
     finally:
         await db.close()
-    from protagine.identity.resolver import reset_identity_resolver
-    reset_identity_resolver()
     return result
 
 

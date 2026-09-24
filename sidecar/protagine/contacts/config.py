@@ -37,8 +37,8 @@ class ContactsConfig:
         """Build config from the environment, persisting to the state dir.
 
         The bare default of ":memory:" exists for tests; a production
-        sidecar must survive restarts (the IdentityResolver treats the
-        contact store as the source of truth for the owner), so the
+        sidecar must survive restarts (the contact store is the source of
+        truth for who people are), so the
         server path resolves PROTAGINE_CONTACTS_DB or falls back to
         ``$PROTAGINE_STATE_DIR/protagine-contacts.db``.
         """

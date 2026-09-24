@@ -3723,9 +3723,8 @@ async def list_contacts(
 async def create_contact(body: ContactCreateRequest) -> ContactResponse:
     """Create a curated contact (with optional handles) via the API.
 
-    Exists primarily so deployments can bootstrap the OWNER contact the
-    IdentityResolver requires — before this, contacts could only appear
-    as side effects of message ingestion.
+    Exists primarily so deployments can bootstrap the OWNER contact; before
+    this, contacts could only appear as side effects of message ingestion.
     """
     if _contacts_store is None:
         raise HTTPException(status_code=501, detail="Contact store not initialized")
