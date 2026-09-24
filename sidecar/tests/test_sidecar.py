@@ -28,14 +28,12 @@ async def client(app):
 
 
 # ---------------------------------------------------------------------------
-# Import checks — all 16 subsystems
+# Import checks — every wired subsystem
 # ---------------------------------------------------------------------------
 
 SUBSYSTEMS = [
-    ("protagine.intelligence.graph.client", "ProtagineGraph"),
     ("protagine.intelligence.cognition.metalearner", "MetaLearner"),
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
-    ("protagine.intelligence.learning.continuous_learner", "ContinuousLearner"),
     ("protagine.intelligence.mind_model.signal_collector", "SignalCollector"),
     ("protagine.intelligence.relationships.trust_tiers", "TrustTier"),
     ("protagine.goals.store", "GoalStore"),
@@ -43,7 +41,6 @@ SUBSYSTEMS = [
     ("protagine.mind", "Mind"),
     ("protagine.research.pipeline", "ResearchPipeline"),
     ("protagine.contacts.store", "ContactStore"),
-    ("protagine.world_model.store", "WorldModelStore"),
     ("protagine.vector.embedder", "EmbeddingPipeline"),
     ("protagine.skills.registry", "SkillRegistry"),
 ]
@@ -244,58 +241,6 @@ async def test_list_briefings_empty(client):
 
 
 # ---------------------------------------------------------------------------
-# World model
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_list_entities_empty(client):
-    resp = await client.get("/v1/host/world/entities")
-    assert resp.status_code == 200
-    assert resp.json()["entities"] == []
-
-
-@pytest.mark.asyncio
-async def test_query_entities_empty(client):
-    resp = await client.post("/v1/host/world/entities/query", json={
-        "identity": {"host_id": "test"},
-        "query": "python",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["entities"] == []
-
-
-@pytest.mark.asyncio
-async def test_query_entities_requires_identity(client):
-    resp = await client.post("/v1/host/world/entities/query", json={
-        "query": "python",
-    })
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_query_entities_forwards_the_type_filter(client, monkeypatch):
-    from protagine.api.routers import host as host_router
-
-    class _Store:
-        def __init__(self):
-            self.calls = []
-
-        async def find_entities(self, **kwargs):
-            self.calls.append(kwargs)
-            return []
-
-    store = _Store()
-    monkeypatch.setattr(host_router, "_world_store", store)
-    for entity_type, expected in (("person", "person"), ("all", None), (None, None)):
-        body = {"identity": {"host_id": "test"}, "query": "python", "limit": 3}
-        if entity_type is not None:
-            body["entity_type"] = entity_type
-        resp = await client.post("/v1/host/world/entities/query", json=body)
-        assert resp.status_code == 200
-        assert store.calls[-1] == {"query": "python", "entity_type": expected, "limit": 3}
-
-
-# ---------------------------------------------------------------------------
 # Cognition
 # ---------------------------------------------------------------------------
 
@@ -346,7 +291,7 @@ async def test_discover_connections_empty(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_submit_correction_no_learner(client):
+async def test_submit_correction_without_a_feedback_store(client):
     resp = await client.post("/v1/host/learning/correction", json={
         "identity": {"host_id": "test"},
         "context": {"session_id": "s1", "contact_id": "c1"},
@@ -355,24 +300,6 @@ async def test_submit_correction_no_learner(client):
     })
     assert resp.status_code == 200
     assert resp.json()["accepted"] is False
-
-
-@pytest.mark.asyncio
-async def test_submit_engagement_no_learner(client):
-    resp = await client.post("/v1/host/learning/engagement", json={
-        "identity": {"host_id": "test"},
-        "briefing_id": "b1",
-        "action": "opened",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["accepted"] is False
-
-
-@pytest.mark.asyncio
-async def test_learning_weights_no_learner(client):
-    resp = await client.get("/v1/host/learning/weights")
-    assert resp.status_code == 200
-    assert resp.json()["weights"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -426,36 +353,6 @@ def test_setup_wizard_import():
 
 
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Chain / Identity
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_identity_status_not_initialized(client):
-    resp = await client.get("/v1/host/identity/status")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["initialized"] is False
-
-
-@pytest.mark.asyncio
-async def test_identity_init_not_wired(client):
-    resp = await client.post("/v1/host/identity/init", json={
-        "identity": {"host_id": "test"},
-    })
-    assert resp.status_code == 501
-
-
-@pytest.mark.asyncio
-async def test_chain_verify_no_chain(client):
-    resp = await client.post("/v1/host/chain/verify", json={
-        "identity": {"host_id": "test"},
-        "data": "hello",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["valid"] is False
 
 
 # ---------------------------------------------------------------------------

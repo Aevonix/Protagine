@@ -153,7 +153,6 @@ async def test_projection_cleanup_failure_stays_pending_and_read_retries(source_
 async def test_absent_store_status_is_not_a_deletion_claim(source_app, tmp_path, monkeypatch, disabled):
     import protagine.vector as vector
     monkeypatch.setattr(vector, '_store', None)
-    monkeypatch.setenv('PROTAGINE_GRAPH_ENABLED', 'false' if disabled else 'true')
     monkeypatch.setenv('PROTAGINE_EMBED_PROVIDER', 'skip' if disabled else 'openai_api')
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     ledger.record_source('original', contact_id='person', session_id='session',
@@ -162,16 +161,14 @@ async def test_absent_store_status_is_not_a_deletion_claim(source_app, tmp_path,
         result = (await client.post('/v1/host/memory/sources/forget',
             json={'contact_id': 'person', 'source_ids': ['original']})).json()
     assert result['source_erased']
-    assert result['graph_cleanup'] == result['vector_cleanup'] == ('disabled_not_checked' if disabled else 'unavailable')
+    assert result['vector_cleanup'] == ('disabled_not_checked' if disabled else 'unavailable')
     assert result['host_reconciliation'] == 'not_observed'
 
 
 @pytest.mark.asyncio
 async def test_configured_store_failure_remains_pending(source_app, tmp_path, monkeypatch):
     import protagine.vector as vector
-    graph = SimpleNamespace(delete_source_memories=AsyncMock(side_effect=OSError('offline')))
     vectors = SimpleNamespace(catalog=object(), erase_source_projections=AsyncMock(side_effect=OSError('offline')))
-    monkeypatch.setattr(host, '_graph', graph)
     monkeypatch.setattr(vector, '_store', vectors)
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     ledger.record_source('original', contact_id='person', session_id='session',
@@ -179,8 +176,7 @@ async def test_configured_store_failure_remains_pending(source_app, tmp_path, mo
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url='http://fixture') as client:
         result = (await client.post('/v1/host/memory/sources/forget',
             json={'contact_id': 'person', 'source_ids': ['original']})).json()
-    assert result['source_erased'] and result['graph_cleanup'] == result['vector_cleanup'] == 'pending'
-    graph.delete_source_memories.assert_awaited_once()
+    assert result['source_erased'] and result['vector_cleanup'] == 'pending'
     vectors.erase_source_projections.assert_awaited_once()
 
 

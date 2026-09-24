@@ -6,7 +6,6 @@ import pytest
 
 from protagine.self_model.expectations import ExpectationStore, ExpectationEngine
 from protagine.self_model import runtime_forecasts
-from protagine.world_model.expectation_resolvers import register_world_resolvers, CAUSAL_PREFIX
 
 
 def issue(store, key='one', **changes):
@@ -112,11 +111,12 @@ def test_scope_time_and_evidence_validation(tmp_path):
 
 
 def test_causal_self_survival_remains_historical_not_predictive_truth(tmp_path):
+    # Rows the retired world model left behind stay history: never resolved
+    # again, never counted as calibration evidence.
     store = ExpectationStore(str(tmp_path/'expectations.db'))
-    prediction = store.create(subject=CAUSAL_PREFIX+'edge',domain='world_model',expectation='edge remains',confidence=.9,horizon=1100,source='legacy',dedup_key='edge')
+    prediction = store.create(subject='world-causal:edge',domain='world_model',expectation='edge remains',confidence=.9,horizon=1100,source='legacy',dedup_key='edge')
     store.resolve(prediction.prediction_id,'hit')
     engine = ExpectationEngine(store)
-    register_world_resolvers(engine)
     assert engine._resolve(prediction) is None
     assert engine.calibration() == {}
     assert engine.calibration_report()['resolved_n'] == 0

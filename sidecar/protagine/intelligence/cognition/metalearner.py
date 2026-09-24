@@ -10,7 +10,6 @@ import time
 from .types import GapSeverity
 
 if TYPE_CHECKING:
-    from protagine.intelligence.graph.client import ProtagineGraph
     from .gap_detector import Gap, GapDetector
     from .metrics_collector import MetricsCollector
     from .performance_index import CognitivePerformanceIndex, PerformanceIndexComputer
@@ -48,7 +47,7 @@ logger = __import__('logging').getLogger(__name__)
 class MetaLearner:
     """Orchestrates cognitive performance tracking and self-improvement."""
 
-    def __init__(self, graph: "ProtagineGraph", config: Optional[MetaLearnerConfig] = None):
+    def __init__(self, graph: Any, config: Optional[MetaLearnerConfig] = None):
         self.graph = graph
         self.config = config or MetaLearnerConfig()
 

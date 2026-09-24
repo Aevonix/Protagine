@@ -77,8 +77,7 @@ class FakeFacts:
 
 
 class FakeGraph:
-    async def recall(self, query, limit=10, min_strength=0.1,
-                     min_confidence=0.1):
+    async def recall(self, query, *, person_id=None, limit=5):
         if "reranker" in query:
             return [{"content": "the reranker service runs on port 8093 "
                                 "behind the tunnel"}]
@@ -95,7 +94,7 @@ def make_bench(tmp_path, **overrides):
     store = BenchmarkStore(db_path=str(tmp_path / "bench.db"))
     deps = dict(
         commitments=FakeCommitments(), competence=FakeCompetence(),
-        journal=FakeJournal(), comms=FakeComms(), graph=FakeGraph(),
+        journal=FakeJournal(), comms=FakeComms(), recall=FakeGraph().recall,
         facts=FakeFacts(), queue=FakeQueue(),
         owner_contact_id="cid-owner", probes=2,
     )
@@ -169,7 +168,7 @@ async def test_compute_week_honest_skips(tmp_path):
     """Missing sources omit metrics; nothing is zero-filled."""
     store = BenchmarkStore(db_path=str(tmp_path / "b2.db"))
     bench = SelfhoodBenchmark(store, commitments=None, competence=None,
-                              journal=None, comms=None, graph=None,
+                              journal=None, comms=None, recall=None,
                               facts=None, queue=None,
                               owner_contact_id="", probes=2)
     # Force lazy resolution to find nothing rather than the real host globals
@@ -258,8 +257,7 @@ class HalfHitGraph:
     def __init__(self):
         self.queries = []
 
-    async def recall(self, query, limit=10, min_strength=0.1,
-                     min_confidence=0.1):
+    async def recall(self, query, *, person_id=None, limit=5):
         self.queries.append(query)
         import re
         m = re.search(r"number(\d+)", query)
@@ -270,8 +268,8 @@ class HalfHitGraph:
 
 async def test_recall_probe_seeded_deterministic(tmp_path):
     g1, g2 = HalfHitGraph(), HalfHitGraph()
-    b1 = make_bench(tmp_path, graph=g1, facts=ManyFakeFacts())
-    b2 = make_bench(tmp_path, graph=g2, facts=ManyFakeFacts())
+    b1 = make_bench(tmp_path, recall=g1.recall, facts=ManyFakeFacts())
+    b2 = make_bench(tmp_path, recall=g2.recall, facts=ManyFakeFacts())
     r1 = await b1.run_recall_probe(probes=4, seed=42)
     r2 = await b2.run_recall_probe(probes=4, seed=42)
     assert r1 is not None and r2 is not None
@@ -285,7 +283,7 @@ async def test_recall_probe_seeded_deterministic(tmp_path):
 
 
 async def test_recall_probe_samples_excluded_from_rollups(tmp_path):
-    bench = make_bench(tmp_path, graph=HalfHitGraph(), facts=ManyFakeFacts())
+    bench = make_bench(tmp_path, recall=HalfHitGraph().recall, facts=ManyFakeFacts())
     await bench.run_recall_probe(probes=5, seed=7)
     import time as _time
     samples = bench.store.samples_in(0, _time.time() + 10,
@@ -299,11 +297,11 @@ async def test_recall_probe_samples_excluded_from_rollups(tmp_path):
 
 
 async def test_recall_probe_clamps_and_skips(tmp_path):
-    bench = make_bench(tmp_path, graph=HalfHitGraph(), facts=ManyFakeFacts())
+    bench = make_bench(tmp_path, recall=HalfHitGraph().recall, facts=ManyFakeFacts())
     r = await bench.run_recall_probe(probes=500, seed=1)
     assert r is not None and r["denominator"] == 10  # capped at 100, 10 facts
     # honest skip when a source is missing
-    assert await make_bench(tmp_path, graph=None,
+    assert await make_bench(tmp_path, recall=None,
                             facts=ManyFakeFacts()).run_recall_probe() is None
 
 
@@ -321,7 +319,7 @@ async def test_weekly_recall_metric_unchanged_by_refactor(tmp_path):
 
 
 async def test_api_recall_probe(tmp_path):
-    bench = make_bench(tmp_path, graph=HalfHitGraph(), facts=ManyFakeFacts())
+    bench = make_bench(tmp_path, recall=HalfHitGraph().recall, facts=ManyFakeFacts())
     async with _client(bench) as c:
         r = await c.post("/v1/host/self/benchmark/recall-probe",
                          json={"probes": 4, "seed": 42})
@@ -333,3 +331,25 @@ async def test_api_recall_probe(tmp_path):
     async with _client(None) as c:
         r = await c.post("/v1/host/self/benchmark/recall-probe", json={})
         assert r.json() == {"available": False}
+
+
+async def test_canonical_probe_recall_reads_the_scoped_source_ledger(tmp_path, monkeypatch):
+    """The probe's production read path is the source ledger, scoped to the subject."""
+    import protagine.identity as identity
+    from protagine.self_model.benchmark import canonical_probe_recall
+    from protagine.turns import TurnIdempotencyLedger
+
+    ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+    ledger.record_source("owner-turn", contact_id="cid-owner", session_id="s1", derive_claims=False,
+                         messages=[{"role": "user", "content": "the reranker service runs on port 8093"}])
+    ledger.record_source("other-turn", contact_id="cid-other", session_id="s1", derive_claims=False,
+                         messages=[{"role": "user", "content": "the reranker service moved to port 9000"}])
+    recall = canonical_probe_recall(tmp_path)
+
+    monkeypatch.setattr(identity, "get_owner_contact_id", lambda: "")
+    assert await recall("reranker port") == []   # no owner, no subject: read nothing
+    monkeypatch.setattr(identity, "get_owner_contact_id", lambda: "cid-owner")
+    rows = await recall("reranker port")
+    assert rows and all("8093" in row["content"] for row in rows)
+    other = await recall("reranker port", person_id="cid-other")
+    assert other and "9000" in other[0]["content"] and not any("8093" in row["content"] for row in other)

@@ -127,15 +127,13 @@ rapport topics are projected only for a request-sealed exact viewer. The
 outbound observer receives a detached, structurally bounded snapshot with the
 exact untruncated draft rather than live delivery dictionaries.
 
-The configured server graph enforces current-source and legacy-marker mirror
-exclusions across semantic recall, direct reads, multimodal memory-vector
-results, model/internal consumers, and the borrowed research graph path. This
-is a content boundary for SharedFacts compatibility mirrors, not invented
-visibility authority for unrelated graph memories.
+The graph memory that once held SharedFacts compatibility mirrors was removed
+in M8; under P8, legacy memory-vector text is never released because it carries
+no authoritative scope.
 
 The context routers also contain legacy sources that have no visibility
-envelope. With P8 attached, goals, initiatives, global briefings, world-model
-search, insights, known-contact lists, cognition, surprises,
+envelope. With P8 attached, goals, initiatives, global briefings,
+insights, known-contact lists, cognition, surprises,
 and global temporal heads-up data are queried only for a server-attested exact
 owner viewer. A non-owner or unsealed caller cannot cause those sources to be
 queried. This fail-closed owner projection preserves useful owner context while
@@ -171,7 +169,7 @@ python -m pytest -q \
 
 ## Remaining integration gaps
 
-- No existing graph/world-model/goal/initiative/briefing/surprise fact source
+- No existing goal/initiative/briefing/surprise fact source
   emits stored candidates yet; untyped global context is contained to an exact
   attested owner rather than given invented authority or shown to a guest.
 - Outbound items do not consistently carry the exact fact references used by

@@ -137,7 +137,7 @@ model below. The broader producers remain future work:
 2. **Fact envelope producer (SharedFacts implemented):**
    `_run_tom_extraction`, manual extraction, create, and update append an
    immutable visibility record with server-derived subject and source receipt.
-   Graph, world-model, goal, initiative, briefing, and surprise producers still
+   Goal, initiative, briefing, and surprise producers still
    need their own typed candidates.
 3. **One arc writer (store implemented; producers future):** startup attaches
    one `ArcStore`. Commitment, expectation, project, and extraction seams do
@@ -162,7 +162,7 @@ model below. The broader producers remain future work:
 
 This core is not the full P8 graduation:
 
-- graph, world model, goals, initiatives, briefings, and surprises do not yet
+- goals, initiatives, briefings, and surprises do not yet
   emit versioned fact candidates;
 - there is no canonical arc extraction/classification producer;
 - outbound draft producers do not yet consistently retain the exact fact

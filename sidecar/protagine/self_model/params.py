@@ -199,22 +199,3 @@ class AdaptiveParamStore:
                 self._conn.close()
             except Exception:
                 pass
-
-
-# Canonical parameter names (registered at boot; consumers read these).
-PARAM_CONSOLIDATION_THRESHOLD = "consolidation.similarity_threshold"
-PARAM_RECALL_MIN_RELEVANCE = "recall.min_relevance"
-
-
-def register_core_params(store: AdaptiveParamStore) -> None:
-    """Register the parameters core subsystems consume."""
-    store.register(
-        PARAM_CONSOLIDATION_THRESHOLD, default=0.92, lo=0.85, hi=0.98,
-        description="MemoryConsolidator merge threshold: pairs at or above "
-                    "this similarity are deduplicated. Hard floor 0.85 so a "
-                    "self-adjustment can never mass-merge distinct memories.")
-    store.register(
-        PARAM_RECALL_MIN_RELEVANCE, default=0.0, lo=0.0, hi=0.5,
-        description="ProtagineGraph.recall drops vector hits scoring below "
-                    "this. 0 = no filter; capped at 0.5 so retrieval can "
-                    "never be starved by a self-adjustment.")

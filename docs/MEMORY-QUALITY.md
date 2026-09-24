@@ -66,8 +66,7 @@ Canonical ingestion no longer duplicates every exchange as an episodic graph
 summary. Automatic ToM fact extraction is also removed: guessing what a contact
 accepted from an assistant is a separate task from learning a supported assertion.
 Affect and engagement updates continue. Explicit contact-knowledge APIs remain;
-their model estimates are marked as automatic projections and cannot be copied
-into the graph by a later backfill. Explicitly supplied facts and legacy
+their model estimates are marked as automatic projections. Explicitly supplied facts and legacy
 summary-only integrations retain their existing APIs.
 
 In default native per-turn context assembly (`/v1/host/context/assemble`),
@@ -107,13 +106,11 @@ automatically. Their historical source enum and free-form metadata do not
 reliably distinguish owner curation from automated extraction. No curation or
 canonical source is invented for those records.
 
-Shared-fact writes no longer create graph copies. Explicit fact listing uses
-only the canonical store; automatic recall reads its current source-checked
-view. Automatic context uses no graph memory candidates, including retained
-`tom:shared_fact` copies and copies marked with shared-fact metadata. A mirror
-cannot bypass an expired, deleted, unlinked or outdated contact estimate.
-Other graph consumers retain their existing policies. No retained fact, mirror
-or original source is deleted or migrated by this selection change.
+Shared-fact writes create no graph copies, and the graph memory itself was
+removed in M8. Explicit fact listing uses only the canonical store; automatic
+recall reads its current source-checked view, so no copy can bypass an expired,
+deleted, unlinked or outdated contact estimate. No retained fact or original
+source is deleted or migrated by this selection change.
 
 Persistent extraction consumers use the provider's completed final answer.
 Reasoning-only and truncated responses are not saved as assertions, affect,

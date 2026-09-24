@@ -22,10 +22,6 @@ class HostIdentity(BaseModel):
     host_version: Optional[str] = None
     plugin_version: Optional[str] = None
     instance_id: Optional[str] = None
-    protagine_id: Optional[str] = None
-    node_id: Optional[str] = None
-    node_cert_fingerprint: Optional[str] = None
-    trust_tier: Optional[Literal["REGULAR", "TRUSTED", "PRIVILEGED", "GENESIS"]] = None
 
 
 class HostTurnContext(BaseModel):
@@ -773,47 +769,6 @@ class BriefingListResponse(BaseModel):
     briefings: List[BriefingResponse] = []
 
 
-# --- World Model ------------------------------------------------------------
-
-class EntityResponse(BaseModel):
-    id: str
-    entity_type: str
-    name: str
-    properties: Optional[Dict[str, Any]] = None
-
-
-class EntityListResponse(BaseModel):
-    entities: List[EntityResponse] = []
-
-
-class EntityQueryRequest(BaseModel):
-    identity: HostIdentity
-    query: str
-    entity_type: Optional[str] = None  # None or "all" = every type
-    limit: Optional[int] = 10
-
-
-class ExtractionRequest(BaseModel):
-    identity: HostIdentity
-    content: str  # Base64-encoded document content
-    filename: Optional[str] = None
-    mime_type: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class ExtractedEntityResponse(BaseModel):
-    name: str
-    entity_type: str
-    attributes: Optional[Dict[str, Any]] = None
-    confidence: float = 1.0
-
-
-class ExtractionResponse(BaseModel):
-    format_detected: str
-    entities: List[ExtractedEntityResponse] = []
-    text_length: int = 0
-
-
 # --- Cognition --------------------------------------------------------------
 
 class CognitivePerformanceIndex(BaseModel):
@@ -902,18 +857,6 @@ class LearningCorrectionRequest(BaseModel):
     source_id: Optional[str] = None
 
 
-class LearningEngagementRequest(BaseModel):
-    identity: HostIdentity
-    briefing_id: str
-    action: str  # opened | dismissed | clicked | saved
-    dwell_seconds: Optional[float] = None
-
-
-class LearningWeightsResponse(BaseModel):
-    weights: Dict[str, float] = {}
-    stats: Dict[str, int] = {}
-
-
 # --- Skills -----------------------------------------------------------------
 
 class SkillSummary(BaseModel):
@@ -953,40 +896,6 @@ class InsightResponse(BaseModel):
 
 class InsightsListResponse(BaseModel):
     insights: List[InsightResponse] = []
-
-
-# --- Chain / Identity -------------------------------------------------------
-
-class IdentityStatusResponse(BaseModel):
-    protagine_id: Optional[str] = None
-    public_key: Optional[str] = None
-    node_id: Optional[str] = None
-    node_public_key: Optional[str] = None
-    node_cert_fingerprint: Optional[str] = None
-    initialized: bool = False
-    keys_configured: bool = False
-    is_genesis: bool = False
-    trust_tier: Optional[Literal["REGULAR", "TRUSTED", "PRIVILEGED", "GENESIS"]] = None
-    trust_anchor_verified: bool = False
-
-
-class IdentityInitRequest(BaseModel):
-    identity: HostIdentity
-    force: bool = False
-
-
-class ChainVerifyRequest(BaseModel):
-    identity: HostIdentity
-    data: str
-    signature: Optional[str] = None
-
-
-class ChainVerifyResponse(BaseModel):
-    valid: bool
-    protagine_id: Optional[str] = None
-    signed_attestation: Optional[str] = None
-    attested_at: Optional[str] = None
-    signer_public_key: Optional[str] = None
 
 
 # --- Secrets ----------------------------------------------------------------
@@ -1306,110 +1215,6 @@ class TomExtractResponse(BaseModel):
     affect: Optional[Dict[str, Any]] = None
     facts: List[Dict[str, Any]] = []
     throttled: bool = False
-
-
-# ---------------------------------------------------------------------------
-# World Model — Entities
-# ---------------------------------------------------------------------------
-
-class WorldEntityCreateRequest(BaseModel):
-    name: str
-    entity_type: str
-    aliases: Optional[List[str]] = []
-    external_ids: Optional[Dict[str, str]] = {}
-    confidence: float = 0.5
-    properties: Optional[Dict[str, Any]] = {}
-
-
-class WorldEntityUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    confidence: Optional[float] = None
-    properties: Optional[Dict[str, Any]] = None
-    aliases: Optional[List[str]] = None
-
-
-class WorldEntityDetailResponse(BaseModel):
-    id: str
-    name: str
-    entity_type: str
-    aliases: List[str] = []
-    external_ids: Dict[str, str] = {}
-    confidence: float = 0.5
-    properties: Dict[str, Any] = {}
-    first_seen: Optional[str] = None
-    last_seen: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class WorldEntityListResponse(BaseModel):
-    entities: List[WorldEntityDetailResponse] = []
-    total: int = 0
-
-
-# ---------------------------------------------------------------------------
-# World Model — Relationships
-# ---------------------------------------------------------------------------
-
-class WorldRelationshipCreateRequest(BaseModel):
-    source_id: str
-    target_id: str
-    relationship_type: str
-    confidence: float = 0.5
-    valid_from: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = {}
-
-
-class WorldRelationshipUpdateRequest(BaseModel):
-    confidence: Optional[float] = None
-    valid_to: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
-
-
-class WorldRelationshipResponse(BaseModel):
-    id: str
-    source_id: str
-    target_id: str
-    relationship_type: str
-    confidence: float = 0.5
-    valid_from: Optional[str] = None
-    valid_to: Optional[str] = None
-    properties: Dict[str, Any] = {}
-    is_active: bool = True
-    created_at: Optional[str] = None
-
-
-class WorldRelationshipListResponse(BaseModel):
-    relationships: List[WorldRelationshipResponse] = []
-    total: int = 0
-
-
-# ---------------------------------------------------------------------------
-# World Model — Graph Traversal
-# ---------------------------------------------------------------------------
-
-class WorldNeighborhoodResponse(BaseModel):
-    center: Optional[WorldEntityDetailResponse] = None
-    reachable: List[WorldEntityDetailResponse] = []
-    edges: List[WorldRelationshipResponse] = []
-    hop_counts: Dict[str, int] = {}
-    truncated: bool = False
-
-
-class WorldPathResponse(BaseModel):
-    source_id: str
-    target_id: str
-    path: Optional[List[WorldRelationshipResponse]] = None
-    found: bool = False
-
-
-class WorldStatsResponse(BaseModel):
-    total_entities: int = 0
-    entities_by_type: Dict[str, int] = {}
-    total_relationships: int = 0
-    active_relationships: int = 0
-    total_observations: int = 0
-    merge_proposals_pending: int = 0
 
 
 # ---------------------------------------------------------------------------

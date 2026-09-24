@@ -1,8 +1,7 @@
-"""Phase 4 tests — signed chain-verify attestation + host LLM configure."""
+"""Host LLM configure: retained router references and refused invalid updates."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import json
 
 import pytest
@@ -10,98 +9,6 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from protagine.api.routers import host as host_mod
-
-
-@asynccontextmanager
-async def _client_with(patches: dict):
-    originals = {k: getattr(host_mod, k) for k in patches}
-    for k, v in patches.items():
-        setattr(host_mod, k, v)
-    app = FastAPI()
-    app.include_router(host_mod.router)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as client:
-            yield client
-    finally:
-        for k, v in originals.items():
-            setattr(host_mod, k, v)
-
-
-@pytest.mark.asyncio
-async def test_chain_verify_returns_signed_attestation():
-    """When a key manager is attached, chain/verify produces a signed attestation."""
-
-    class _FakeKeyManager:
-        def sign(self, payload: bytes) -> str:
-            return "ab" * 32  # deterministic fake signature
-
-        def public_key_hex(self) -> str:
-            return "cd" * 32
-
-    class _FakeState:
-        height = 1
-
-    class _FakeChain:
-        protagine_id = "protagine-xyz"
-        _key_manager = _FakeKeyManager()
-
-        async def get_state(self):
-            return _FakeState()
-
-    async with _client_with({"_chain_manager": _FakeChain()}) as client:
-        resp = await client.post(
-            "/v1/host/chain/verify",
-            json={
-                "identity": {"host_id": "h"},
-                "data": "claim: I am genesis",
-            },
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["valid"] is True
-        assert body["protagine_id"] == "protagine-xyz"
-        assert body["signed_attestation"] == "ab" * 32
-        assert body["signer_public_key"] == "cd" * 32
-        assert body["attested_at"] is not None
-
-
-@pytest.mark.asyncio
-async def test_chain_verify_without_key_manager_omits_attestation():
-    """Verify bit is still computed even if no key manager is loaded."""
-
-    class _FakeState:
-        height = 1
-
-    class _FakeChain:
-        protagine_id = "protagine-xyz"
-        _key_manager = None
-
-        async def get_state(self):
-            return _FakeState()
-
-    async with _client_with({"_chain_manager": _FakeChain()}) as client:
-        resp = await client.post(
-            "/v1/host/chain/verify",
-            json={"identity": {"host_id": "h"}, "data": "x"},
-        )
-        body = resp.json()
-        assert body["valid"] is True
-        assert body["signed_attestation"] is None
-        assert body["signer_public_key"] is None
-
-
-@pytest.mark.asyncio
-async def test_chain_verify_no_chain_returns_invalid():
-    async with _client_with({"_chain_manager": None}) as client:
-        resp = await client.post(
-            "/v1/host/chain/verify",
-            json={"identity": {"host_id": "h"}, "data": "x"},
-        )
-        body = resp.json()
-        assert body["valid"] is False
 
 
 @pytest.mark.asyncio

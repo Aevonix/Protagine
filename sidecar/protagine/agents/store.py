@@ -536,12 +536,10 @@ class AgentStore:
     ) -> Dict[str, Any]:
         """Sign a node certificate for remote agent."""
         if not self._protagine_km:
-            raise ValueError("Protagine key not available for signing")
+            raise ValueError("signing key not available")
+        from protagine.instance import instance_id
 
-        # Import here to avoid circular dependency
-        from protagine.chain.identity import get_or_create_protagine_id
-
-        protagine_id = get_or_create_protagine_id(self._state_dir)
+        protagine_id = instance_id(self._state_dir)
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=expires_days)

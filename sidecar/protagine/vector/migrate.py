@@ -98,7 +98,6 @@ async def migrate_tier(
     pipeline,
     old_model_id: Optional[str] = None,
     batch_size: int = 64,
-    graph=None,
 ) -> MigrationResult:
     """Migrate all vectors to the current embedding model.
 
@@ -119,7 +118,7 @@ async def migrate_tier(
     MigrationResult
     """
     if getattr(store, 'catalog', None) is not None:
-        return await _migrate_generation(store, pipeline, graph=graph,
+        return await _migrate_generation(store, pipeline,
                                          old_model_id=old_model_id, batch_size=batch_size)
     from protagine.vector.collections import Collection
     from protagine.vector.backfill import _backfill_collection
@@ -207,7 +206,7 @@ async def migrate_tier(
     return result
 
 
-async def _migrate_generation(store, pipeline, *, graph, old_model_id, batch_size):
+async def _migrate_generation(store, pipeline, *, old_model_id, batch_size):
     """Rebuild from retained evidence; the selected generation is never rewritten."""
     from protagine.vector.collections import Collection
     from protagine.vector.indexes import IncompatibleIndex
@@ -223,17 +222,11 @@ async def _migrate_generation(store, pipeline, *, graph, old_model_id, batch_siz
     source_generation = store.catalog.active()
 
     async def source_rows(collection):
-        if collection == Collection.MEMORIES and graph is not None:
-            # The graph is authoritative for memories, including rows missed by
-            # the old index during embedding outages. This is not a restore.
-            async for row in graph.iter_indexable_memories():
+        db = await store._generation_db(source_generation)
+        if collection.value in await db.table_names():
+            table = await db.open_table(collection.value)
+            for row in (await table.query().select(['id', 'text', 'metadata']).to_pandas()).to_dict('records'):
                 yield row
-        else:
-            db = await store._generation_db(source_generation)
-            if collection.value in await db.table_names():
-                table = await db.open_table(collection.value)
-                for row in (await table.query().select(['id', 'text', 'metadata']).to_pandas()).to_dict('records'):
-                    yield row
 
     async def write_batch(collection, rows):
         vectors = await pipeline.embed_batch([row['text'] for row in rows])

@@ -2,7 +2,7 @@
 
 Collects evidence from multiple sources in parallel:
   - WEB      — search engine results with citation metadata
-  - GRAPH    — knowledge graph traversal (ProtagineGraph)
+  - GRAPH    — an injected graph client (none is wired since M8)
   - DOCUMENT — structured extraction from attached documents
   - EMAIL    — email / contact archive search
   - API      — structured external API sources
@@ -152,43 +152,26 @@ class WebGatherer:
 
 
 class GraphGatherer:
-    """Gather evidence from the Protagine knowledge graph."""
+    """Gather evidence from an injected graph client.
 
-    def __init__(
-        self,
-        graph: Any = None,
-        *,
-        allow_fallback_graph: bool = True,
-    ) -> None:
+    Nothing wires one today: the graph memory is gone (M8), so without an
+    injected client this source contributes no evidence.
+    """
+
+    def __init__(self, graph: Any = None) -> None:
         self._graph = graph
-        self._allow_fallback_graph = bool(allow_fallback_graph)
 
     async def gather(
         self,
         query: str,
         max_depth: int = 3,
     ) -> List[EvidenceItem]:
-        """Traverse the knowledge graph for entities related to *query*."""
+        """Traverse the injected graph for entities related to *query*."""
         results: List[EvidenceItem] = []
+        if self._graph is None:
+            return results
         try:
-            graph = self._graph
-            owns_graph = graph is None
-            if graph is None:
-                if not self._allow_fallback_graph:
-                    return []
-                from protagine.intelligence.graph.client import ProtagineGraph
-                graph = ProtagineGraph()
-            try:
-                memories = await graph.recall(query, limit=20)
-            finally:
-                if owns_graph:
-                    # A fallback gather owns its fresh driver. The server path
-                    # borrows the shared policy-configured graph and must not
-                    # close it.
-                    try:
-                        await graph.close()
-                    except Exception:
-                        pass
+            memories = await self._graph.recall(query, limit=20)
             for mem in memories:
                 content = mem.get("content", mem.get("text", ""))
                 if not content:
@@ -294,12 +277,10 @@ class SourceGatherer:
         config: Optional[GatherConfig] = None,
         *,
         graph: Any = None,
-        allow_fallback_graph: bool = True,
     ) -> None:
         self.config = config or GatherConfig()
         self._web = WebGatherer()
-        self._graph = GraphGatherer(
-            graph=graph, allow_fallback_graph=allow_fallback_graph)
+        self._graph = GraphGatherer(graph=graph)
         self._document = DocumentGatherer()
         self._email = EmailGatherer()
 

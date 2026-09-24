@@ -2,13 +2,16 @@
 
 > **Status.** Two tiers, different maturity:
 > - **Supported:** local agent hosts and MCP coding tools connecting to one
->   Protagine over its HTTP/WebSocket API and sharing unified context, and
->   the local identity anchor (protagine_id, node keypair, signed node
->   certificate).
-> - **Experimental — not production-ready:** the *remote* agent-connect
->   handshake, cert-chain verification, and the blockchain/consensus layer
->   (`chain/`). No consensus loop is started at boot; the remote handshake is
->   not verified end-to-end. Use MCP for real multi-agent work today.
+>   Protagine over its HTTP/WebSocket API and sharing unified context.
+> - **Experimental, under audit (M10):** the *remote* agent-connect handshake
+>   and the agent registry behind it. The node certificate it issues is
+>   **unsigned**: the instance holds no signing key, so a remote agent's
+>   certificate proves nothing by itself. The remote handshake is not verified
+>   end-to-end. Use MCP for real multi-agent work today.
+>
+> The instance is named by a random id in `<state>/instance-id` (created on
+> first use). The blockchain, consensus layer and cryptographic identity chain
+> that once signed certificates were removed in M8.
 
 Protagine's multi-agent support enables multiple agent hosts, coding agents, and other AI systems to connect to a central Protagine instance and share unified context.
 
@@ -196,25 +199,22 @@ score = 100 * is_primary + 10 * priority + (1 - load) * 100
 
 #### Authentication
 
-After WebSocket connection, agent sends:
+After the WebSocket opens, Protagine sends a challenge:
 
 ```json
-{
-  "type": "auth",
-  "agent_id": "agent-abc123",
-  "node_id": "node-xyz789",
-  "signature": "cert-signature"
-}
+{"type": "auth_challenge", "nonce": "9f2c...", "timestamp": 1777100000}
 ```
 
-Protagine responds with:
+The agent signs `nonce:timestamp:agent_id` with its own node key and answers:
 
 ```json
-{
-  "type": "auth_ok",
-  "seq": 1
-}
+{"type": "auth_response", "nonce": "9f2c...", "timestamp": 1777100001, "signature": "<hex Ed25519 signature>"}
 ```
+
+Protagine verifies the signature against `node_public_key_ed25519` in the
+agent's stored node certificate and responds with `{"type": "connected"}`. The
+connect route does not store that certificate today, so a remote agent's
+WebSocket authentication fails; this is one of the gaps the M10 audit decides.
 
 #### Initiative Delivery
 
@@ -377,16 +377,20 @@ ships with the adapter.
 
 ### Node Certificates
 
-- Protagine signs node certificates with its private key
-- Private key never leaves Protagine host
-- Certificates include: protagine_id, node_id, public_key, signature, expiry
+- A certificate names the instance (`protagine_id`, the instance id), the node
+  and its public key, with an issue time.
+- The certificate is **unsigned** (`signature` is empty): Protagine keeps no
+  signing key since M8, so treat a certificate as a label, not a credential.
 
 ### Authentication Flow
 
-1. Agent generates keypair
-2. Agent sends public key during `protagine agent connect`
-3. Protagine signs certificate
-4. Agent includes signature in WebSocket auth
+1. Agent generates an Ed25519 keypair
+2. Agent sends the public key with a setup code during `protagine agent connect`
+3. Protagine records the node and returns an unsigned certificate
+4. Agent answers each WebSocket challenge (`nonce:timestamp:agent_id`) with a
+   signature from its own key, checked against the agent's stored certificate
+   (not stored by the connect route today: see WebSocket Protocol above). The
+   instance vouches for nothing beyond the setup code.
 
 ## Configuration
 
@@ -419,7 +423,7 @@ ships with the adapter.
   "node_cert": {
     "protagine_id": "protagine-1",
     "node_id": "node-xyz789",
-    "signature": "...",
+    "signature": "",
     "issued_at": "2026-04-25T00:00:00Z"
   }
 }

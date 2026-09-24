@@ -1,7 +1,6 @@
 """Selective erasure across source, projection and disconnected-host boundaries."""
 import json
 import sqlite3
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response, Request
@@ -69,9 +68,8 @@ def test_feed_pages_and_detects_restore_behind_host(ledger):
 
 
 @pytest.mark.asyncio
-async def test_api_erases_before_graph_cleanup_and_blocks_replay(ledger, monkeypatch):
+async def test_api_erasure_blocks_replay(ledger, monkeypatch):
     messages = source(ledger)
-    monkeypatch.setattr(host, "_graph", SimpleNamespace(delete_source_memories=AsyncMock(side_effect=OSError("graph down"))))
     effects = AsyncMock(side_effect=AssertionError("erased turn ran effects"))
     monkeypatch.setattr(host, "_process_turn_sync", effects)
     app = FastAPI()
@@ -79,29 +77,13 @@ async def test_api_erases_before_graph_cleanup_and_blocks_replay(ledger, monkeyp
     app.include_router(host.v2_router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         erased = await client.post("/v1/host/memory/sources/forget", json={"contact_id": "contact-a", "source_ids": ["turn-a"]})
-        assert erased.status_code == 200 and erased.json()["graph_cleanup"] == "pending"
+        assert erased.status_code == 200 and erased.json()["source_erased"]
         body = {"identity": {"host_id": "test"}, "context": {"session_id": "session-a", "contact_id": "contact-a", "turn_id": "turn-a"}, "checkpoint_messages": messages}
         replay = await client.put("/v2/host/turns/turn-a", json=body)
         assert replay.json()["skipped_reason"] == "source_erased"
         assert replay.json()["source_recorded"] is False and effects.await_count == 0
         wrong = await client.post("/v1/host/memory/sources/forget", json={"contact_id": "contact-b", "source_ids": ["turn-a"]})
         assert wrong.status_code == 422
-
-@pytest.mark.asyncio
-async def test_graph_lineage_and_late_projection_guard(ledger):
-    from protagine.intelligence.graph.client import ProtagineGraph
-    graph = object.__new__(ProtagineGraph)
-    graph.store_memory = AsyncMock(return_value="memory-a")
-    source(ledger)
-    await graph.record_turn("session-a", "contact-a", [], [], [], "A meaningful hydrofoil summary.", turn_id="turn-a")
-    stored = graph.store_memory.call_args.kwargs
-    assert stored["source_uri"] == "turn:turn-a" and stored["metadata"]["source_turn_id"] == "turn-a"
-    ledger.erase_sources(contact_id="contact-a", turn_ids=["turn-a"])
-    await graph.record_turn("session-a", "contact-a", [], [], [], "A late summary.", turn_id="turn-a")
-    assert graph.store_memory.await_count == 1
-    assert await graph._filter_erased_source_memories([{"source_uri": "turn:turn-a"}, {"source_uri": "file:unrelated"}]) == [{"source_uri": "file:unrelated"}]
-    assert await ProtagineGraph.store_memory(graph, "late", "episodic", [], source_uri="turn:turn-a") == ""
-
 
 def test_repeat_erase_retains_derived_cleanup_targets(ledger):
     messages = source(ledger)
@@ -117,7 +99,6 @@ async def test_mcp_forget_tool_reaches_the_real_erasure_api(ledger, monkeypatch)
     from protagine.mcp.server import create_server
     import httpx
     source(ledger)
-    monkeypatch.setattr(host, "_graph", None)
     monkeypatch.setenv("PROTAGINE_MCP_SOURCE", "test-host")
     app = FastAPI()
     app.include_router(host.router)

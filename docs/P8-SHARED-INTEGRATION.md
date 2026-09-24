@@ -49,23 +49,11 @@ current facts, so legacy topics, deleted/expired facts, changed envelopes,
 projection errors, and autonomy cache reads cannot become stored authority.
 
 SharedFacts use their canonical store for explicit reads and current scoped
-context. Fact writes and manual extraction do not create graph mirrors. While
-other graph consumers remain, P8 startup excludes existing copies with the
-`tom:shared_fact` source URI or `shared_fact` metadata marker. It applies during
-`recall()` and `read_memories()` hydration before
-confidence/relevance ranking or reranking, so model tools, synthesis,
-background thinkers and the research pipeline all share
-the same boundary. Research borrows this configured graph and never creates or
-closes a policy-free live client. Multimodal searches over the `memories`
-collection boundedly oversample, hydrate ambiguous vector IDs against the
-authoritative graph, filter, and then trim; non-graph image vectors remain
-available. Canonical memory reads and automatic context do not query the graph.
-Current typed facts reach context through P8 projection rather than retained
-graph copies; other graph consumers retain their existing exact-person recall
-behavior. If the governed startup graph is
-unavailable while P8 is attached, research graph gathering and ambiguous
-multimodal memory text fail empty; they never create a policy-free fallback
-client.
+context. Fact writes and manual extraction create no mirrors, and the graph
+memory that once held compatibility copies was removed in M8. Under P8, text
+from the legacy `memories` vector collection carries no authoritative scope, so
+multimodal memory searches return none of it; image vectors are unaffected.
+Current typed facts reach context through P8 projection only.
 
 Existing Tom2 context renderers receive a bounded `get_fact`/`list_facts`
 adapter backed by current P8 projection. Unresolved legacy refs disappear
@@ -75,7 +63,7 @@ Older global context producers do not yet carry P8 visibility envelopes.
 While P8 is attached, `/context/assemble` queries
 those sources only for a server-attested exact owner viewer. A guest or an
 unsealed migration caller receives no global goals, initiatives, briefings,
-world-model entities, insights, contact list, cognition snapshot or surprises;
+insights, contact list, cognition snapshot or surprises;
 the sources are not queried at all. The temporal endpoint and
 assembled temporal block likewise keep owner-last-seen, global overdue
 commitments, and other-contact cadence heads-up content owner-only while still
@@ -134,7 +122,7 @@ that turns those rows into model/user-visible content must use P8 projection.
 - There is no live P8 advisory or enforcement mode.
 - Arc storage is attached, but no canonical arc extraction/transition producer
   is introduced by this slice.
-- Existing graph, world-model, goal, initiative, briefing, and surprise rows do
+- Existing goal, initiative, briefing, and surprise rows do
   not gain invented visibility envelopes; untyped global projections are
   therefore exact-owner-only while P8 is attached.
 - Initiative producers do not yet consistently retain exact fact references;

@@ -17,7 +17,7 @@ from protagine.turns import TurnIdempotencyLedger, canonical_turn_digest
 @pytest.fixture
 def source_app(monkeypatch, tmp_path):
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
-    for name in ("_graph", "_contacts_store", "_presence_store", "_telemetry", "_p8_runtime", "_reranker", "_context_recall_selector", "_comms_log"):
+    for name in ("_contacts_store", "_presence_store", "_telemetry", "_p8_runtime", "_reranker", "_context_recall_selector", "_comms_log"):
         monkeypatch.setattr(host, name, None)
     app = FastAPI()
     install_exception_handlers(app)

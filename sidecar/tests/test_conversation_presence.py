@@ -142,7 +142,6 @@ def _turn(contact_id="cid-alice", channel_id="rcs:conv-1", sender=None,
 async def test_turns_sync_feeds_presence_with_resolution_method(monkeypatch):
     store = ConversationPresenceStore()
     monkeypatch.setattr(host_mod, "_presence_store", store)
-    monkeypatch.setattr(host_mod, "_graph", None)
     monkeypatch.setattr(host_mod, "_contacts_store", _FakeContacts())
     await host_mod.turns_sync(_turn(
         contact_id="cid-stale",
@@ -159,7 +158,6 @@ async def test_turns_sync_feeds_presence_with_resolution_method(monkeypatch):
 async def test_turns_sync_unresolved_records_client_method(monkeypatch):
     store = ConversationPresenceStore()
     monkeypatch.setattr(host_mod, "_presence_store", store)
-    monkeypatch.setattr(host_mod, "_graph", None)
     monkeypatch.setattr(host_mod, "_contacts_store", None)
     await host_mod.turns_sync(_turn(contact_id="cid-claimed"))
     rows = store.census("rcs:conv-1")
@@ -171,7 +169,6 @@ async def test_turns_sync_unresolved_records_client_method(monkeypatch):
 async def test_turns_sync_machine_turn_not_recorded(monkeypatch):
     store = ConversationPresenceStore()
     monkeypatch.setattr(host_mod, "_presence_store", store)
-    monkeypatch.setattr(host_mod, "_graph", None)
     monkeypatch.setattr(host_mod, "_contacts_store", None)
     await host_mod.turns_sync(_turn(contact_id="whatever",
                                     channel_id="cron:heartbeat"))
@@ -185,7 +182,6 @@ async def test_turns_sync_survives_presence_failure(monkeypatch):
             raise RuntimeError("disk full")
 
     monkeypatch.setattr(host_mod, "_presence_store", _Broken())
-    monkeypatch.setattr(host_mod, "_graph", None)
     monkeypatch.setattr(host_mod, "_contacts_store", None)
     resp = await host_mod.turns_sync(_turn())
     assert resp.accepted is True
@@ -194,7 +190,6 @@ async def test_turns_sync_survives_presence_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_turns_sync_without_store_unchanged(monkeypatch):
     monkeypatch.setattr(host_mod, "_presence_store", None)
-    monkeypatch.setattr(host_mod, "_graph", None)
     monkeypatch.setattr(host_mod, "_contacts_store", None)
     resp = await host_mod.turns_sync(_turn())
     assert resp.accepted is True

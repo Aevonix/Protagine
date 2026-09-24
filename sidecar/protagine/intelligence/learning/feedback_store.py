@@ -1,10 +1,10 @@
 """FeedbackStore — persist and retrieve user corrections for learning.
 
-Corrections feed into ContinuousLearner and are periodically summarized
-by MetaLearner into durable preference updates.
+Corrections are durable owner evidence: the selfhood benchmark joins them to
+outbound receipts.
 
 Storage: SQLite (default ~/.protagine/feedback.db) so corrections survive
-process restarts without requiring Neo4j to be reachable.
+process restarts.
 """
 
 from __future__ import annotations
