@@ -314,7 +314,7 @@ async def test_an_own_outcome_is_narrated_with_its_id_and_recalled_in_a_new_sess
 
 
 # ---------------------------------------------------------------------------
-# 3. A contradiction: exactly one owner question, one broadcast concern, resolved when settled
+# 3. A contradiction: one typed question concern, formed by the ranker into exactly one owner question
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("autonomy,status", [("standard", "approved"), ("suggest", "asked")])
@@ -329,30 +329,58 @@ async def test_a_contradiction_asks_the_owner_once_and_resolves_when_one_side_is
 
     night = await fx.mind.consolidate()
     assert night["counts"]["contradictions"] == 1
+    assert fx.messages() == []                                           # the night raises a concern, sends nothing
+    concern, = [c for c in fx.mind.broadcast() if c.kind == "question"]
+    assert concern.drive == "curiosity" and concern.dedup_key.startswith("reach_out:contradiction:")
+    assert concern.detail["type"] == "contradiction" and concern.detail["kind"] == "message"
+    assert concern.detail["recipient"] == OWNER and set(concern.sources) == {first, second}
+    assert "which is right" in fx.mind.section().lower()
+
+    tick = await fx.mind.tick(force=True)                                 # the ranker forms it like any concern
+    assert [(row["kind"], row["type"]) for row in tick["formed"]] == [("message", "contradiction")]
+    assert fx.mind.concerns.get(concern.id).status == "intended"
+    ask, = fx.messages("contradiction")
+    assert ask.status == status and ask.entity_id == OWNER and ask.dedup_key == concern.dedup_key
+    assert fx.mind.concerns.get(concern.id).intention_id == ask.id
+    assert ask.description == "Which is right for your office location: 'room 4' or 'room 7'?"
+    text = ask.context["text"]
+    assert text.startswith("You told me two things about your office location: 'room 4' on ")
+    assert "room 7" in text and "which is right" in text.lower()
+    if status == "asked":
+        assert "which is right" in fx.mind.section().lower()             # the ask line carries both values
     again = await fx.mind.consolidate()
     assert again["counts"].get("contradictions", 0) == 0                 # already asked: nothing new
-
-    asks = fx.messages("reach_out:contradiction")
-    assert len(asks) == 1 and asks[0].status == status and asks[0].entity_id == OWNER
-    text = asks[0].context["text"]
-    assert "room 4" in text and "room 7" in text and "which is right" in text.lower()
-    assert text.startswith("You told me two things about your office location: 'room 4' on ")
-    questions = [c for c in fx.mind.broadcast() if c.kind == "question"]
-    assert len(questions) == 1 and questions[0].drive == "curiosity"
-    concern = questions[0]
-    subject_key, predicate = fx.claims()[0]["subject_key"], fx.claims()[0]["predicate"]
-    assert concern.dedup_key == f"contradiction:{OWNER}:{subject_key}:{predicate}"
-    assert set(concern.sources) == {first, second} and "type" not in concern.detail   # broadcast only, never a task
-    assert "which is right" in fx.mind.section().lower()
-    assert (await fx.mind.tick(force=True))["formed"] == []                # no research task from the question
+    assert (await fx.mind.tick(force=True))["formed"] == [] and len(fx.messages("contradiction")) == 1
 
     with closing(fx.ledger._connect()) as conn, conn:
         conn.execute("UPDATE source_claims SET retracted_by='owner-correction' WHERE id=?", (second,))
     resolved = await fx.mind.consolidate()
     assert resolved["counts"].get("resolved") == 1
-    assert fx.mind.concerns.by_key(concern.dedup_key).status == "resolved"
-    assert fx.mind.broadcast() == [] and len(fx.messages("reach_out:contradiction")) == 1
+    assert fx.mind.concerns.get(concern.id).status == "resolved"
+    assert fx.mind.broadcast() == [] and len(fx.messages("contradiction")) == 1
     fx.store.close()
+
+
+async def test_at_most_one_new_contradiction_question_a_night_newest_first(fx):
+    """The owner's message budget (3 a day) is not spent on questions: one new one a night, the newest
+    conflicting pair first; the others are asked on later nights."""
+    fx.router.answers[TASK_DIGEST] = None
+    for index, predicate in enumerate(("office_location", "desk_number", "parking_spot")):
+        await fx.fact(f"a-{index}", OWNER, "s-a", f"My {predicate} is {index}.", f"{index}", predicate=predicate)
+        fx.shift(hours=1)
+        await fx.fact(f"b-{index}", OWNER, "s-b", f"My {predicate} is {index + 10}.", f"{index + 10}", predicate=predicate)
+        fx.shift(hours=1)
+    night = await fx.mind.consolidate()
+    assert night["counts"]["contradictions"] == 1
+    question, = [c for c in fx.mind.concerns.open(limit=50) if c.kind == "question"]
+    assert "parking spot" in question.summary                             # the newest pair
+    await fx.mind.tick(force=True)
+    assert len(fx.messages("contradiction")) == 1
+    fx.shift(days=1)
+    assert (await fx.mind.consolidate())["counts"]["contradictions"] == 1
+    await fx.mind.tick(force=True)
+    asked = [row.description for row in fx.messages("contradiction")]
+    assert len(asked) == 2 and "desk number" in asked[0]                  # newest first; the next night's
 
 
 async def test_a_resolved_contradiction_withdraws_its_owner_question_while_it_is_still_pending(tmp_path, monkeypatch):
@@ -365,7 +393,8 @@ async def test_a_resolved_contradiction_withdraws_its_owner_question_while_it_is
     fx.shift(hours=2)
     second = await fx.fact("turn-b", OWNER, "discord-2", "My office is room 7.", "room 7")
     await fx.mind.consolidate()
-    ask, = fx.messages("reach_out:contradiction")
+    await fx.mind.tick(force=True)
+    ask, = fx.messages("contradiction")
     assert ask.status == "asked"
     with closing(fx.ledger._connect()) as conn, conn:
         conn.execute("UPDATE source_claims SET retracted_by='owner-correction' WHERE id=?", (second,))
@@ -384,11 +413,12 @@ async def test_a_contradiction_between_a_contacts_own_claims_names_the_contact(f
     await fx.fact("c-2", CONTACT, "sms-2", "My office is room 7.", "room 7")
     night = await fx.mind.consolidate()
     assert night["counts"]["contradictions"] == 1
-    ask, = fx.messages("reach_out:contradiction")
+    concern, = [c for c in fx.mind.broadcast() if c.kind == "question"]
+    assert concern.detail["contact_id"] == CONTACT
+    await fx.mind.tick(force=True)
+    ask, = fx.messages("contradiction")
     assert ask.entity_id == OWNER and CONTACT in ask.context["text"]     # the owner is asked, the contact is named
     assert ask.context["text"].startswith(f"Contact {CONTACT} told me two things about their office location: ")
-    concern, = [c for c in fx.mind.broadcast() if c.kind == "question"]
-    assert concern.detail["contact_id"] == CONTACT and concern.dedup_key.startswith(f"contradiction:{CONTACT}:")
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +508,9 @@ async def test_the_narrative_is_never_shown_other_peoples_business(fx):
     await fx.fact("c-1", CONTACT, "sms-1", "My office is room 4.", "room 4")
     fx.shift(hours=1)
     await fx.fact("c-2", CONTACT, "sms-2", "My office is room 7.", "room 7")
-    await fx.mind.consolidate()                                             # the contradiction question is asked
-    assert fx.messages("reach_out:contradiction")
+    await fx.mind.consolidate()
+    await fx.mind.tick(force=True)                                         # the contradiction question is asked
+    assert fx.messages("contradiction")
     fx.shift(days=1)
     await fx.mind.consolidate()
     prompts = [m[-1]["content"] for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE]
@@ -601,8 +632,9 @@ async def test_the_timer_tick_runs_the_night_in_the_background_once_and_again_th
     assert fx.mind.state()["consolidation"]["running"] is True
     await fx.mind._consolidation_task
     assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
-    note = fx.store.get_by_dedup_key("consolidation:2026-09-25")
+    note, = night_rows(fx)
     assert note.status == "done" and note.outcome == "done" and note.kind == "note" and note.cost_tokens == 100
+    assert note.dedup_key is None and "1 call(s), 100 tokens" in note.result
     assert fx.mind.state()["consolidation"] == {"last": "2026-09-25", "running": False, "last_tokens": 100}
     fx.shift(hours=20)
     assert (await fx.mind.tick())["consolidation"] is None                      # 23:10: the same night
@@ -745,7 +777,9 @@ async def test_a_running_night_is_reported_and_not_started_twice(tmp_path, monke
     fx.store.close()
 
 
-async def test_stop_cancels_a_night_in_flight_and_the_next_run_resumes_the_same_note(tmp_path, monkeypatch):
+async def test_a_night_stopped_mid_way_leaves_no_open_row_and_runs_again_at_the_next_tick(tmp_path, monkeypatch):
+    """A night's audit row is never left running: it is written done at the start and charged per call; a
+    night cut short (``stop``, a crash) simply runs again at the next due tick, every stage being idempotent."""
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
 
     class HangingRouter(NightRouter):
@@ -760,17 +794,19 @@ async def test_stop_cancels_a_night_in_flight_and_the_next_run_resumes_the_same_
     await asyncio.sleep(0.05)
     await fx.mind.stop()
     assert fx.mind._consolidation_task is None and fx.mind.mind_state.get(LAST_KEY)["text"] == ""
-    note = fx.store.get_by_dedup_key("consolidation:2026-09-25")
-    assert note.status == "dispatched"                                      # the night is not marked done
+    cut, = night_rows(fx)
+    assert cut.status == "done" and cut.dedup_key is None and "did not finish" in cut.result
     fx.mind.router = NightRouter()
     night = await fx.mind.consolidate(force=False)
-    assert night["id"] == note.id and fx.store.get(note.id).status == "done"
+    assert night["id"] != cut.id and fx.store.get(night["id"]).status == "done"
     assert fx.mind.mind_state.get(LAST_KEY)["text"] == "2026-09-25"
+    assert fx.mind.state()["consolidation"]["last_tokens"] == 100
+    assert {row.status for row in night_rows(fx)} == {"done"}
     fx.store.close()
 
 
 async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both_switches(tmp_path, monkeypatch):
-    """7.9: no further effects, at once. A night in flight is cancelled (its row stays resumable), and
+    """7.9: no further effects, at once. A night in flight is cancelled (the next run starts over), and
     neither ``mind off`` nor ``faculties.consolidation=false`` can be bypassed by forcing a run."""
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
 
@@ -788,14 +824,13 @@ async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both
     fx.mind.off()
     await asyncio.sleep(0.05)
     assert task.cancelled() and fx.mind.state()["consolidation"]["running"] is False
-    assert fx.store.get_by_dedup_key("consolidation:2026-09-25").status == "dispatched"
-    assert fx.mind.mind_state.get(LAST_KEY)["text"] == ""
+    cut, = night_rows(fx)
+    assert "did not finish" in cut.result and fx.mind.mind_state.get(LAST_KEY)["text"] == ""
     fx.mind.router = NightRouter()
     assert (await fx.mind.consolidate())["skipped"] == "off" and fx.mind.router.calls == []
     fx.mind.on()
     night = await fx.mind.consolidate()
-    assert night["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-25").id   # resumed, not a second row
-    assert fx.store.get(night["id"]).status == "done"
+    assert night["id"] != cut.id and fx.store.get(night["id"]).status == "done"
     fx.store.close()
     flagged = Fixture(tmp_path / "flag", config={"faculties": {"consolidation": False}})
     settled_task(flagged)
@@ -804,22 +839,18 @@ async def test_mind_off_stops_a_night_in_flight_and_the_force_path_respects_both
     flagged.store.close()
 
 
-async def test_a_second_run_the_same_date_is_a_new_row_and_old_interrupted_nights_are_closed(tmp_path, monkeypatch):
+async def test_every_run_is_its_own_finished_row_forced_or_nightly(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     fx = Fixture(tmp_path, config={"quiet_hours": ""}, at=datetime(2026, 9, 24, 2, 0, tzinfo=UTC))
-    stale, _ = fx.store.create_intention(
-        kind="note", type="consolidation", title="nightly consolidation 2026-09-22", drive="upkeep", cls="internal",
-        decision="act", decision_reason="nightly", status="dispatched", dedup_key="consolidation:2026-09-22",
-        hermes_kind="none", created_at=fx.now - timedelta(days=2))
     assert (await fx.mind.consolidate(force=False))["skipped"] == "done"       # no night crossed yet
     forced = await fx.mind.consolidate()                                       # 02:00: forced, ignores the boundary
-    assert forced["id"] == fx.store.get_by_dedup_key("consolidation:2026-09-24").id
-    closed = fx.store.get(stale.id)
-    assert closed.status == "cancelled" and "interrupted" in closed.result     # the log never shows it running
     fx.shift(hours=2)                                                          # 04:00: 03:00 crossed since the run
     nightly = await fx.mind.consolidate(force=False)
     assert nightly["id"] != forced["id"] and fx.store.get(nightly["id"]).status == "done"
     assert (await fx.mind.consolidate(force=False))["skipped"] == "done"
+    rows = night_rows(fx)
+    assert len(rows) == 2 and all(row.status == "done" and row.dedup_key is None for row in rows)
+    assert {row.decision_reason for row in rows} == {"forced", "nightly"}
     fx.store.close()
 
 

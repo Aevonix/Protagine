@@ -232,10 +232,12 @@ async def test_a_contradiction_across_channels_is_one_question_to_the_owner(worl
 
     for _ in range(3):
         await mind_call("POST", "/v1/mind/consolidate")
-    questions = fx.messages("reach_out:contradiction")
+        await mind_call("POST", "/v1/mind/tick")
+    questions = fx.messages("contradiction")
     assert len(questions) == 1 and questions[0].entity_id == fx.owner_id
     assert "room 4" in questions[0].context["text"] and "room 7" in questions[0].context["text"]
-    assert sum(1 for c in fx.mind.concerns.open(limit=100) if c.dedup_key.startswith("contradiction:")) == 1
+    concern, = [c for c in fx.mind.concerns.open(limit=100, status=("open", "intended")) if c.kind == "question"]
+    assert concern.status == "intended" and concern.intention_id == questions[0].id
     log = await mind_call("GET", "/v1/mind/log", params={"recipient": fx.owner_id, "kind": "message"})
     assert [entry["id"] for entry in log["entries"]] == [questions[0].id]
 

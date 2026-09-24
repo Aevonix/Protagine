@@ -67,6 +67,8 @@ CITE = re.compile(r"\[([^\[\]]+)\]$")                                           
 RUN_DEADLINE_S = 900.0
 DEFAULT_DEADLINE = 60.0
 FINDING_EVENTS = frozenset({"finding", "outcome_done", "goal_adopted"})
+QUESTION_KEY = "reach_out:contradiction:"           # a contradiction's concern and owner question share this key
+QUESTIONS_PER_NIGHT = 1
 STAGES = {"narrative": "narrative_delta", "contradictions": "contradictions", "digests": "digests",
           "episodes": "episodes"}
 
@@ -215,25 +217,21 @@ class Consolidation:
     """The night's five stages, their schedule test and the reads the mind serves from them."""
 
     def __init__(self, *, store: Any, ledger: Any, concerns: Any, mind_state: Any, contacts: Any, router: Any,
-                 outbox: Any, autobiography: Any, request_message: Callable[..., Any], owner_id: str | None,
-                 budgets: Any, tokens_allowed: Callable[[], bool], faculties: Mapping[str, bool], clock=None,
-                 expectations: Any = None, stances: Callable[[], List[Dict[str, Any]]] | None = None, tz: Any = None,
-                 quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None) -> None:
+                 autobiography: Any, owner_id: str | None, budgets: Any, tokens_allowed: Callable[[], bool],
+                 faculties: Mapping[str, bool], clock=None, stances: Callable[[], List[Dict[str, Any]]] | None = None,
+                 tz: Any = None, quiet: Optional[tuple] = None, cancel: Callable[[Any, str], Any] | None = None) -> None:
         self.store = store
         self.ledger = ledger
         self.concerns = concerns
         self.mind_state = mind_state
         self.contacts = contacts
         self.router = router
-        self.outbox = outbox
         self.autobiography = autobiography
-        self.request_message = request_message
         self.owner_id = owner_id or None
         self.budgets = budgets
         self.tokens_allowed = tokens_allowed or (lambda: True)
         self.faculties = faculties
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.expectations = expectations
         self.stances = stances or self._default_stances                    # an opinion store may pass its own reader
         self.cancel = cancel            # (row, reason): the mind's check-cancellation of a moot intention
         self.tz = tz or timezone.utc
@@ -296,7 +294,12 @@ class Consolidation:
         return max(0, int(share * per_day))
 
     async def run(self, now: datetime | None = None, *, force: bool = False) -> Dict[str, Any]:
-        """The whole night, resumable per stage; ``force`` runs it whether or not a night was crossed."""
+        """The whole night; ``force`` runs it whether or not a night was crossed.
+
+        Its audit row is written ``done`` at the start and charged after every call, so the shared day
+        budget sees each call and no row is ever left running. A night cut short (``mind off``, a
+        restart) keeps what it wrote and runs again at the next due tick: every stage is idempotent.
+        """
         now = now or self.clock()
         local_date = self.local_date(now)
         if self._running:
@@ -304,21 +307,14 @@ class Consolidation:
         if not force and not self.crossed(now):
             return {"skipped": "done", "local_date": local_date}
         since = self.last_run(now)
-        key = f"consolidation:{local_date}"
-        row = self.store.get_by_dedup_key(key)
-        if row is not None and row.status != "dispatched":
-            key, row = f"{key}:{uuid.uuid4().hex[:6]}", None                 # a second run that local date
-        if row is None:
-            row, _ = self.store.create_intention(
-                kind="note", type="consolidation", title=f"nightly consolidation {local_date}", drive="upkeep",
-                cls="internal", decision="act", decision_reason="forced" if force else "nightly",
-                status="dispatched", dedup_key=key, hermes_kind="none", context={"local_date": local_date},
-                created_at=now)
-        # An interrupted night (a restart, ``mind off``) is resumed on its own row the same date; one left
-        # from an earlier date is closed, so the audit log never shows a night still running that is not.
-        self._close_interrupted(row.id, now)
+        row, _ = self.store.create_intention(
+            kind="note", type="consolidation", title=f"nightly consolidation {local_date}", drive="upkeep",
+            cls="internal", decision="act", decision_reason="forced" if force else "nightly", status="done",
+            dedup_key=None, hermes_kind="none", context={"local_date": local_date}, created_at=now)
+        self.store.transition(row.id, "done", action="consolidating", at=now, outcome="done", verified="none",
+                              result="started; did not finish (it runs again at the next due tick)")
         night = Night(local_date=local_date, started_at=now.isoformat(), since=since.isoformat(), note_id=row.id,
-                      budget=self.budget(), tokens=int(row.cost_tokens or 0))
+                      budget=self.budget())
         self._running = True
         try:
             try:
@@ -330,14 +326,6 @@ class Consolidation:
             self._running = False
         self.last = night
         return {**night.as_dict(), "id": row.id}
-
-    def _close_interrupted(self, current_id: str, now: datetime) -> None:
-        for stale in self.store.intentions(status=["dispatched"], kind=["note"], limit=50):
-            if stale.type == "consolidation" and stale.id != current_id:
-                self.store.transition(stale.id, "cancelled", action="interrupted", at=now, outcome="cancelled",
-                                      verified="none", cancelled_at=now, cancelled_by="mind",
-                                      cancelled_reason="interrupted",
-                                      result=f"interrupted; its stages ran again in {current_id}")
 
     async def _stages(self, night: Night, now: datetime) -> None:
         for name in NIGHT_TASKS:
@@ -358,10 +346,14 @@ class Consolidation:
         summary = f"{night.calls} call(s), {night.tokens} tokens; {counts or 'nothing to consolidate'}"
         if night.errors:
             summary += "; errors: " + ", ".join(night.errors)
-        self.store.update(night.note_id, cost_tokens=int(night.tokens))
-        self.store.transition(night.note_id, "done", action="consolidated", at=now, outcome="done", verified="none",
+        self.store.transition(night.note_id, "done", action="consolidated", at=now, cost_tokens=int(night.tokens),
                               result=summary[:500], context=night.as_dict(), completed_at=now)
-        self.mind_state.set(LAST_KEY, text=night.local_date, now=now)
+        self.mind_state.set(LAST_KEY, text=night.local_date, causes=[night.note_id], now=now)
+
+    def last_note(self) -> Any:
+        """The audit row of the last finished run, None before the first."""
+        causes = (self.mind_state.get(LAST_KEY) or {}).get("causes") or []
+        return self.store.get(str(causes[0])) if causes else None
 
     async def _call(self, night: Night, *, task: str, system: str, user: str, schema: Dict[str, Any],
                     max_output_tokens: int) -> Optional[Dict[str, Any]]:
@@ -606,7 +598,7 @@ class Consolidation:
         someone else, nor a contradiction question (it quotes what people said), nor the night's own row.
         The plugin renders the narrative only in the owner's own sessions; this keeps other people's
         business out of it even so."""
-        if entry.get("type") in {"consolidation", "reach_out:contradiction"}:
+        if entry.get("type") in {"consolidation", "contradiction"}:
             return False
         recipient = entry.get("recipient")
         return not recipient or recipient == self.owner_id
@@ -675,65 +667,71 @@ class Consolidation:
         from protagine.beliefs.source_claims import norm_value
         return norm_value(value)
 
-    async def contradictions(self, night: Night, now: datetime) -> None:
+    def contradictions(self, night: Night, now: datetime) -> None:
+        """Each contradiction becomes one typed question concern the ranker forms into one owner question,
+        at most ``QUESTIONS_PER_NIGHT`` new ones a night (the newest conflicting pair first), so the
+        owner's message budget is left to duty work; the rest are raised on later nights."""
         found: Dict[str, Dict[str, Any]] = {}
         with self._conn() as conn:
             for cid in self._contacts_with_claims(conn):
                 for (subject_key, predicate), (a, b, ids) in self._conflicts(self._live_claims(conn, cid, now)).items():
-                    key = f"contradiction:{cid}:{subject_key}:{predicate}"[:200]
+                    key = f"{QUESTION_KEY}{self._ask_id(cid, subject_key, predicate)}"
                     found[key] = {"contact_id": cid, "subject_key": subject_key, "predicate": predicate,
                                   "subject": str(a.get("subject") or subject_key), "a": a, "b": b, "ids": ids}
         for concern in self.concerns.open(limit=10000, status=("open", "intended")):
-            if str(concern.dedup_key).startswith("contradiction:") and concern.dedup_key not in found:
+            if str(concern.dedup_key).startswith(QUESTION_KEY) and concern.dedup_key not in found:
+                # The question goes first: its cancellation settles the intention, which would drop the concern.
+                if self._withdraw_question(concern.dedup_key):
+                    night.count("withdrawn")
                 self.concerns.resolve(concern.id, note="resolved: the claims no longer contradict", now=now)
                 night.count("resolved")
-                if self._withdraw_question(concern.detail):
-                    night.count("withdrawn")
         settled = self.concerns.settled_keys(now - SETTLED_FOR)
+        new: List[Tuple[str, Dict[str, Any]]] = []
         for key, info in found.items():
             existing = self.concerns.by_key(key)
-            if existing is not None and existing.status in {"open", "intended"}:
+            if key in settled or (existing is not None and existing.status == "intended"):
                 continue
-            if key in settled:
-                continue
-            cid, a, b = info["contact_id"], info["a"], info["b"]
-            who = "You" if cid == self.owner_id else f"Contact {cid}"
-            subject_text = self._topic(info)
-            summary = (f"Which is right about {subject_text}: '{_clean(a['value'], 40)}' or "
-                       f"'{_clean(b['value'], 40)}'? {who} said both.")
-            # No ``type`` in the detail: the concern has no task template, so it is broadcast only.
-            detail = {"contact_id": cid, "claims": info["ids"], "subject_key": info["subject_key"],
-                      "predicate": info["predicate"],
-                      "ask_id": self._ask_id(cid, info["subject_key"], info["predicate"])}
-            concern, outcome = self.concerns.bump(
-                drive="curiosity", kind="question", summary=summary, dedup_key=key, salience=0.75,
-                sources=info["ids"], detail=detail, now=now)
-            if outcome == "settled" or concern is None:
-                continue
-            night.count("contradictions")
-            await self._ask_owner(info, who=who, subject_text=subject_text)
+            if existing is not None and existing.status == "open":
+                self._raise_question(key, info, now)            # still waiting for the ranker: refreshed
+            elif self.store.get_by_dedup_key(key) is None:      # asked once already: never again
+                new.append((key, info))
+        new.sort(key=lambda item: max(self._stamp(item[1]["a"]), self._stamp(item[1]["b"])), reverse=True)
+        for key, info in new[:QUESTIONS_PER_NIGHT]:
+            concern, outcome = self._raise_question(key, info, now)
+            if concern is not None and outcome != "settled":
+                night.count("contradictions")
 
-    async def _ask_owner(self, info: Mapping[str, Any], *, who: str, subject_text: str) -> None:
-        """Exactly one owner question per contradiction, through the ordinary authority path."""
-        if not self.owner_id or not callable(self.request_message):
-            return
-        a, b = info["a"], info["b"]
+    @staticmethod
+    def _stamp(claim: Mapping[str, Any]) -> str:
+        return str(claim.get("observed_at") or claim.get("recorded_at") or "")
+
+    def _raise_question(self, key: str, info: Mapping[str, Any], now: datetime) -> Tuple[Any, str]:
+        """The question as a typed message candidate to the owner: ``_act`` forms it through rank and
+        authority like any other concern (level, budgets, ask codes), and its dedup key reports it once."""
+        from .rank import Candidate
+        cid, a, b = info["contact_id"], info["a"], info["b"]
+        who = "You" if cid == self.owner_id else f"Contact {cid}"
+        subject_text = self._topic(info)
+        first, second = _clean(a["value"], 40), _clean(b["value"], 40)
 
         def dated(claim: Mapping[str, Any]) -> str:
             when = _utc(claim.get("observed_at") or claim.get("recorded_at"))
             return f" on {when.date().isoformat()}" if when else ""
 
-        ident = self._ask_id(info["contact_id"], info["subject_key"], info["predicate"])
+        summary = f"Which is right about {subject_text}: '{first}' or '{second}'? {who} said both."
         message = (f"{who} told me two things about {subject_text}: '{_clean(a['value'], 120)}'{dated(a)} and "
                    f"'{_clean(b['value'], 120)}'{dated(b)}. Which is right?")
-        try:
-            result = self.request_message({"id": ident, "title": f"Which is right: {subject_text}?"[:160],
-                                           "message": message, "recipient": self.owner_id, "type": "contradiction"},
-                                          source="contradiction")
-            if inspect.isawaitable(result):
-                await result
-        except Exception as error:
-            logger.warning("contradiction question not queued (%s)", type(error).__name__)
+        ident = key[len(QUESTION_KEY):]
+        candidate = Candidate(
+            type="contradiction", drive="curiosity", kind="message", recipient=self.owner_id,
+            title=f"Which is right for {subject_text}: '{first}' or '{second}'?"[:160], text=message,
+            dedup_key=key, salience=0.75, cost=0.0, concern_kind="question", concern=summary,
+            evidence=list(info["ids"]), rationale="two recorded statements disagree", source_type="contradiction",
+            source_id=ident)
+        detail = {**candidate.as_detail(), "contact_id": cid, "claims": list(info["ids"]),
+                  "subject_key": info["subject_key"], "predicate": info["predicate"]}
+        return self.concerns.bump(drive="curiosity", kind="question", summary=summary, dedup_key=key, salience=0.75,
+                                  sources=info["ids"], detail=detail, now=now)
 
     def _topic(self, info: Mapping[str, Any]) -> str:
         """What the two claims are about, in the owner's words: "your office location" for the speaker's
@@ -745,16 +743,15 @@ class Consolidation:
 
     @staticmethod
     def _ask_id(contact_id: str, subject_key: str, predicate: str) -> str:
-        """The owner question's id; its message row's dedup key is ``reach_out:contradiction:<id>``."""
+        """The question's id: its concern's and its message row's dedup key is ``reach_out:contradiction:<id>``."""
         return hashlib.sha256(f"{contact_id}|{subject_key}|{predicate}".encode()).hexdigest()[:16]
 
-    def _withdraw_question(self, detail: Mapping[str, Any]) -> bool:
+    def _withdraw_question(self, key: str) -> bool:
         """A question the owner has not answered yet (still deferred, asked or queued) is moot once the
         claims agree: it is cancelled by the check. One already sent or answered is left as it is."""
-        ident = (detail or {}).get("ask_id")
-        if not ident or not callable(self.cancel):
+        if not callable(self.cancel):
             return False
-        row = self.store.get_by_dedup_key(f"reach_out:contradiction:{ident}")
+        row = self.store.get_by_dedup_key(key)
         if row is None or row.status not in {"proposed", "asked", "approved"}:
             return False
         try:

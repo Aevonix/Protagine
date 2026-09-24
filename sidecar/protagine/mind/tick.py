@@ -178,10 +178,9 @@ class Mind:
         # Nightly consolidation (architecture 3.1, 4.1, 4.2): once per night crossed since the last run.
         self.consolidation = Consolidation(
             store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
-            router=router, outbox=self.outbox, autobiography=self.autobiography, request_message=self.request_message,
-            owner_id=self.owner_id, budgets=self.policy.budgets, tokens_allowed=self.authority.tokens_allowed,
-            faculties=self.faculties, clock=self.clock, expectations=expectations, tz=self.tz, quiet=self.quiet,
-            cancel=self._cancel_stale)
+            router=router, autobiography=self.autobiography, owner_id=self.owner_id, budgets=self.policy.budgets,
+            tokens_allowed=self.authority.tokens_allowed, faculties=self.faculties, clock=self.clock, tz=self.tz,
+            quiet=self.quiet, cancel=self._cancel_stale)
         self._consolidation_task: Optional[asyncio.Task] = None
         if expectations is not None and hasattr(expectations, "register_resolver"):
             expectations.register_resolver("intention:", self._resolve_intention_expectation)
@@ -250,7 +249,7 @@ class Mind:
         self.off_reason = reason
         night = self._consolidation_task
         if night is not None and not night.done():
-            night.cancel()          # its row stays ``dispatched`` and resumes after ``mind on``
+            night.cancel()          # what it wrote stays; the next due tick after ``mind on`` runs it again
         cancelled = self.outbox.cancel_unsent("mind off")
         row, created = self.store.create_intention(
             kind="note", type="off_switch", title=f"mind off ({reason}) by {by}", drive="upkeep", cls="internal",
@@ -1477,15 +1476,10 @@ class Mind:
         }
 
     def _consolidation_state(self) -> Dict[str, Any]:
-        last = self.consolidation.last_date()
         task = self._consolidation_task
-        night = self.consolidation.last
-        if night is not None and night.local_date == last:
-            tokens = int(night.tokens)
-        else:
-            row = self.store.get_by_dedup_key(f"consolidation:{last}") if last else None
-            tokens = int(row.cost_tokens or 0) if row is not None else 0
-        return {"last": last, "running": bool(task is not None and not task.done()), "last_tokens": tokens}
+        row = self.consolidation.last_note()
+        return {"last": self.consolidation.last_date(), "running": bool(task is not None and not task.done()),
+                "last_tokens": int(row.cost_tokens or 0) if row is not None else 0}
 
     def stats(self) -> Dict[str, Any]:
         return audit.stats(self.store, now=self.clock())
