@@ -416,7 +416,7 @@ async def test_a_goal_awaiting_approval_owns_no_work_until_the_owner_says_yes(fx
     second, third = await idle(fx, 2)
     assert second["goals"]["steps_raised"] == 0 and third["goals"]["steps_raised"] == 0
     assert fx.mind.dispatch() == [] and len(router.calls) == 1
-    assert fx.mind.answer(goal_row.ask_code, yes=True).status == "approved"
+    assert (await fx.mind.answer(goal_row.ask_code, yes=True)).status == "approved"
     fourth, = await idle(fx)
     assert fourth["goals"]["steps_raised"] == 1
     steps = [item for item in fourth["formed"] if item["type"] == "goal_step"]

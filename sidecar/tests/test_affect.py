@@ -176,7 +176,8 @@ class TestAffectDetection:
 
         state = store.get_state("owner")
         assert state["trend"] == "declining"
-        assert -0.02 < state["current_valence"] < 0
+        # Newest first: (-0.08 + 0.9 x -0.04 + 0.81 x 0.06) / 2.71 = -0.025, still near neutral.
+        assert -0.03 < state["current_valence"] < 0
         assert store.detect_sustained_decline("owner") is False
 
     def test_time_decay_below_magnitude_floor_clears_detection(self, store):
@@ -205,3 +206,36 @@ class TestAffectDetection:
         assert state["trend"] == "stable"
         assert store.detect_sustained_decline("owner") is False
 
+
+class TestRecencyAndReattribution:
+    def test_the_newest_event_weighs_most(self, store):
+        store.create_event(contact_id="p-02", valence=0.8, source="explicit")
+        store.create_event(contact_id="p-02", valence=0.6, source="explicit")
+        store.create_event(contact_id="p-02", valence=-0.9, source="explicit")
+        state = store.get_state("p-02")
+        # Weights 1.0, 0.9, 0.81 newest first: (-0.9 + 0.54 + 0.648) / 2.71 = 0.106; the old
+        # oldest-first weighting gave 0.32 and left a fresh negative turn nearly invisible.
+        assert state["current_valence"] == pytest.approx(0.1063, abs=1e-3)
+        assert state["last_event_id"] == store.list_events(contact_id="p-02", limit=1)[0]["id"]
+        store.create_event(contact_id="p-02", valence=-0.9, source="explicit")
+        assert store.get_state("p-02")["current_valence"] < 0            # two fresh negatives flip it
+
+    def test_reattribute_moves_events_and_recomputes_both_states(self, store):
+        store.create_event(contact_id="dup", valence=-0.8, source="explicit")
+        store.create_event(contact_id="dup", valence=-0.7, source="explicit")
+        store.create_event(contact_id="keep", valence=0.5, source="explicit")
+        assert store.reattribute("dup", "keep") == 2
+        assert store.get_state("dup")["event_count"] == 0
+        keep = store.get_state("keep")
+        assert keep["event_count"] == 3 and keep["current_valence"] < 0.5
+        assert store.count_events(contact_id="dup") == 0 and store.reattribute("dup", "keep") == 0
+
+    def test_trend_is_the_one_read_the_social_drive_uses(self, store):
+        assert store.trend("nobody") == {"valence": 0.0, "trend": "stable", "declining": False}
+        for valence in (0.4, 0.0, -0.5, -0.7, -0.9):
+            store.create_event(contact_id="p-03", valence=valence, source="appraisal")
+        down = store.trend("p-03")
+        assert down["declining"] is True and down["trend"] == "declining" and down["valence"] < -0.3
+        store.create_event(contact_id="p-04", valence=-0.9, source="explicit")
+        one = store.trend("p-04")
+        assert one["declining"] is False and one["trend"] == "stable" and one["valence"] == -0.9

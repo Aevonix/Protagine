@@ -94,6 +94,70 @@ ENVIRONMENT_NOTES = {'messaging': (
     'address are in contacts.json in the workspace. There is no terminal, clock, timer or '
     'scheduler tool here, so nothing can be armed or polled for later: what falls due later is '
     'handled when a later message arrives.')}
+# Every arm reaches a contact through the same outbound path: the capture platform's
+# send_message sender (the stock tool in a plain arm, the plugin's verbatim outbox send in a
+# mind arm), recorded in the plan under comparison.outbound (families/mind-people-1.md 7.1).
+OUTBOUND_PROTOCOL = 'capture-send-message-1'
+# The plugin arm's people store holds the records every arm reads from contacts.json (7.2):
+# one contact per record, reachable at its capture address, with the fixture's permission and
+# cadence. Tier ``regular`` is the host API's default for a curated contact; a tier grants nothing.
+PEOPLE_FILE = 'contacts.json'
+CAPTURE_GATEWAY = 'capture'
+
+
+def people_records(files):
+    """The ``contacts.json`` records a fixture seeds, keyed by contact id; {} when there are none."""
+    try:
+        records = json.loads((files or {}).get(PEOPLE_FILE) or '{}')
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(records, dict):
+        return {}
+    return {str(key): value for key, value in records.items() if isinstance(value, dict)}
+
+
+def seed_people(records, post):
+    """Create each record in the plugin arm's people store through the host API, before the first
+    turn; ``{contact id in the fixture: contact id in the store}``. A record without a capture
+    address is skipped, and a failing sidecar seeds nothing rather than failing the episode."""
+    seeded = {}
+    for contact, record in records.items():
+        gateway, _, address = str(record.get('address') or '').partition(':')
+        if gateway != CAPTURE_GATEWAY or not address:
+            continue
+        body = {'display_name': str(record.get('name') or contact), 'trust_tier': 'regular',
+                'may_contact': str(record.get('may_contact') or 'ask'),
+                'cadence_minutes': record.get('cadence_minutes'), 'notes': 'seeded from contacts.json',
+                'handles': [{'gateway': CAPTURE_GATEWAY, 'address': address, 'is_primary': True, 'verified': True}]}
+        try:
+            created = post('/v1/host/contacts', body)
+        except Exception:
+            return {}
+        seeded[contact] = str((created or {}).get('contact_id') or '')
+    return seeded
+
+
+def sidecar_post(url, key):
+    """A JSON POST to the arm's own sidecar with its one key."""
+    import httpx
+
+    def post(path, body):
+        response = httpx.post(url.rstrip('/') + path, json=body, headers={'Authorization': f'Bearer {key}'}, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    return post
+
+
+def bind_sender(agent, entry):
+    """An inbound message carries its sender the way the gateway sets it (``agent._user_id``), so
+    the plugin's pre_llm_call sees ``sender_id`` and the turn is attributed to that contact."""
+    inbound = entry.get('inbound') if isinstance(entry, dict) else None
+    if not isinstance(inbound, dict) or not inbound.get('contact'):
+        return None
+    agent._user_id = str(inbound['contact'])
+    return agent._user_id
+
+
 # The disposable, single-owner fixture API has one key (protagine init's
 # api.key shape); the adapter's memory tools are the treatment arm's extras.
 PAIRED_FIXTURE_SCOPES = None
@@ -118,6 +182,7 @@ def inspect_payload():
             'tool_loading': TOOL_LOADING_PROTOCOL,
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
+            'outbound': OUTBOUND_PROTOCOL,
             'treatment_tools': MEMORY_TOOLS, 'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
@@ -266,13 +331,46 @@ def provider_read_services(state):
         yield
 
 
+def body_now_iso():
+    """The contact store's clock in a plugin arm: the body clock the mind ticks on (``time.time``
+    as the paired body shifts it), so a conversation, a first meeting and the mind's now agree."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(time.time(), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+@asynccontextmanager
+async def people_store(state):
+    """The plugin arm's people store, as a real install has one (``protagine-contacts.db`` in the
+    state directory): contacts.json is seeded into it, inbound senders resolve against it and the
+    mind reads permissions, cadences and handles from it."""
+    from unittest.mock import patch
+    from protagine.api.routers import host
+    from protagine.contacts import store as contacts_module
+    from protagine.contacts.config import ContactsConfig
+    directory = state / 'memory-state'
+    directory.mkdir(parents=True, exist_ok=True)
+    store = contacts_module.SQLiteContactStore(ContactsConfig(sqlite_path=str(directory / 'protagine-contacts.db')))
+    previous = host._contacts_store
+    with ExitStack() as clock:
+        if hasattr(contacts_module, '_now_iso'):
+            clock.enter_context(patch.object(contacts_module, '_now_iso', body_now_iso))
+        await store.connect()
+        host.set_contacts_store(store)
+        try:
+            yield store
+        finally:
+            host.set_contacts_store(previous)
+            await store.close()
+
+
 def provider_read_lifespan(state):
     @asynccontextmanager
     async def lifespan(app):
         # SQLite-backed facts/affect stores require construction and shutdown
         # on the same thread that serves their HTTP handlers.
         with provider_read_services(state):
-            yield
+            async with people_store(state):
+                yield
     return lifespan
 
 
@@ -523,6 +621,12 @@ def main():
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
                 toolsets.append('paired_protagine_memory')
+                if not resuming:
+                    records = people_records(inputs['initial_files'])
+                    if records:
+                        sidecar = config['plugins']['protagine']
+                        result['tool_evidence']['people_seeded'] = seed_people(records, sidecar_post(
+                            sidecar['sidecar_url'], Path(sidecar['key_file']).read_text().strip()))
             else:
                 os.environ.update(overlay)
             # Seeded history enters every arm's state.db (and a plugin arm's ledger) once,
@@ -626,6 +730,7 @@ def main():
                     if session_id not in agents:
                         agents[session_id] = AIAgent(**{**arguments, 'platform': platform}, session_id=session_id)
                     agent = agents[session_id]
+                    bind_sender(agent, entry)
                     response = agent.run_conversation(message, system_message=turn_system,
                         conversation_history=histories.get(session_id))
                     histories[session_id] = response.get('messages', [])
@@ -688,7 +793,8 @@ def main():
                     'no executed coding tests', 'no attested multi-user boundary',
                     'fixed settling window; background completion not guaranteed',
                     'no gateway: deliveries land in the capture outbox; kanban workers run in-process',
-                    'inbound sender identity reaches the agent as message text, not gateway metadata'])
+                    'inbound sender identity reaches the agent as message text and the session user id, '
+                    'with no channel transport'])
             result['output'] = next((row['final_response'] for row in reversed(rows)
                                      if 'final_response' in row), None)
             result['stage'] = 'returned'

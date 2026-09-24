@@ -1,0 +1,504 @@
+"""The social drive: check-ins when warranted and permitted, timed by replies and silence.
+
+Architecture 4.5 (the social row of the drive table) and 4.7 items 5 and 6;
+build plan M5 acceptance: single-contact backoff (after two ignored check-ins
+the next waits at least twice as long), a group of unknown members produces no
+check-in asks, and the ``never`` contact under a strong reason gets nothing.
+The tick timings are the family's (``mind-people-1``: ``+C+300``, ``+2C+300``,
+``+C+300``). A fake contact store plays Part A's ``social_candidates``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from protagine.commitments.store import CommitmentStore
+from protagine.contacts.comms import evaluate_outreach
+from protagine.feedback import TypeFeedbackStore
+from protagine.initiatives.store import InitiativeStore
+from protagine.mind import Mind
+from protagine.mind.authority import Authority, Policy
+from protagine.mind.drives import DriveInputs, social
+from protagine.turns.idempotency import TurnIdempotencyLedger
+
+OWNER, CONTACT, OTHER = "p-01", "p-02", "p-03"
+# Noon two days ahead: the commitment store refuses a deadline in the real past, and every test
+# stays inside one UTC day (the daily digest writer keys on the date).
+T0 = (datetime.now(timezone.utc) + timedelta(days=2)).replace(hour=12, minute=0, second=0, microsecond=0)
+CADENCE = 10                         # minutes, the family's range is 5..20
+C = timedelta(minutes=CADENCE)
+PAST = timedelta(seconds=300)        # the family's PAST_HORIZON_SECONDS
+REGULAR = {"regular", "trusted", "inner_circle"}
+
+
+def contact(cid, *, may_contact="ask", cadence=None, tier="regular", first_seen=T0, last=None, count=0, name=None):
+    return {"contact_id": cid, "display_name": name or cid, "trust_tier": tier, "may_contact": may_contact,
+            "cadence_minutes": cadence, "first_seen_at": first_seen.isoformat(),
+            "last_interaction_at": last.isoformat() if last else None, "interaction_count": count, "timezone": None}
+
+
+class FakeContacts:
+    """Part A's store surface as the mind reads it (plan section 2.3)."""
+
+    def __init__(self, records):
+        self.records = {record["contact_id"]: dict(record) for record in records}
+        self.digests, self.links, self.proposals, self.interactions = {}, [], [], []
+
+    def _obj(self, record):
+        return SimpleNamespace(**record, to_dict=lambda record=record: dict(record))
+
+    async def get(self, contact_id):
+        record = self.records.get(contact_id)
+        return self._obj(record) if record else None
+
+    async def get_handles(self, contact_id):
+        return [SimpleNamespace(gateway="capture", address=contact_id, is_primary=True, verified=True)]
+
+    async def resolve_handle(self, gateway, address):
+        return SimpleNamespace(contact_id=address) if address in self.records else None
+
+    async def social_candidates(self, *, limit=200):
+        return [dict(r) for r in self.records.values()
+                if r["may_contact"] != "never" and (r["cadence_minutes"] is not None or r["trust_tier"] in REGULAR)][:limit]
+
+    async def resolve_reference(self, reference):
+        wanted = str(reference or "").strip().lower()
+        for record in self.records.values():
+            if wanted in {record["contact_id"].lower(), str(record["display_name"] or "").lower()}:
+                return self._obj(record)
+        return None
+
+    async def record_interaction(self, contact_id, at_iso=None):
+        self.interactions.append((contact_id, at_iso))
+        return contact_id in self.records
+
+    async def list_handle_proposals(self, limit=50):
+        return list(self.proposals)
+
+    async def confirm_link(self, candidate_id, *, performed_by):
+        self.links.append(("confirm", candidate_id, performed_by))
+
+    async def reject_link(self, candidate_id, *, performed_by):
+        self.links.append(("reject", candidate_id, performed_by))
+
+    async def set_digest(self, contact_id, text, sources):
+        self.digests[contact_id] = (text, list(sources))
+
+    async def list(self, **_):
+        return [self._obj(record) for record in self.records.values()]
+
+    def talk(self, contact_id, at):
+        """A conversation with the contact happened at ``at`` (what turns/sync records)."""
+        record = self.records[contact_id]
+        record["last_interaction_at"] = at.isoformat()
+        record["interaction_count"] = int(record.get("interaction_count") or 0) + 1
+
+
+class FakeAffect:
+    def __init__(self):
+        self.declining = set()
+
+    def trend(self, contact_id):
+        down = contact_id in self.declining
+        return {"valence": -0.6 if down else 0.1, "trend": "declining" if down else "stable", "declining": down}
+
+
+class Fx:
+    def __init__(self, tmp_path, records, *, config=None, router=None, packet_for=None, claims_for=None):
+        self.now = T0
+        self.store = InitiativeStore(state_dir=tmp_path)
+        self.commitments = CommitmentStore(tmp_path / "protagine-commitments.db")
+        self.feedback = TypeFeedbackStore(str(tmp_path / "protagine-feedback.db"))
+        self.ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+        self.contacts = FakeContacts(records)
+        self.affect = FakeAffect()
+        self.mind = Mind(config={"autonomy": "standard", **(config or {})}, store=self.store, state_dir=tmp_path,
+                         owner_id=OWNER, commitments=self.commitments, feedback=self.feedback,
+                         contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
+                         router=router, affect=self.affect, packet_for=packet_for, claims_for=claims_for)
+        self.mind.digest_hour = 25
+
+    def shift(self, delta):
+        self.now += delta
+
+    async def tick(self):
+        return await self.mind.tick(force=True)
+
+    async def send_all(self):
+        """The body: pull the outbox, claim and send each message, report ``sent``."""
+        sent = []
+        for payload in await self.mind.outbox_ready():
+            self.mind.outbox.sending(payload["id"], target=f"capture:{payload['recipient']}")
+            self.mind.outbox.sent(payload["id"])
+            sent.append(payload)
+        return sent
+
+    def messages_to(self, contact_id):
+        return [row for row in self.store.intentions(kind=["message"], limit=500) if row.entity_id == contact_id]
+
+    def close(self):
+        self.store.close()
+
+
+@pytest.fixture
+def make(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    made = []
+
+    def build(records, **kwargs):
+        directory = tmp_path / f"fx-{len(made)}"
+        directory.mkdir()
+        fx = Fx(directory, records, **kwargs)
+        made.append(fx)
+        return fx
+    yield build
+    for fx in made:
+        fx.close()
+
+
+# ---------------------------------------------------------------------------
+# evaluate_outreach: the policy (architecture 4.7 items 5 and 6)
+# ---------------------------------------------------------------------------
+
+def outreach(now, **fields):
+    base = dict(is_owner=False, cadence_minutes=CADENCE, last_interaction_ts=None, first_seen_ts=T0.isoformat(),
+                last_outbound_ts=None, ignored_streak=0, open_followups=None, affect_declining=False)
+    base.update(fields)
+    return evaluate_outreach({"contact_id": CONTACT}, now=now, **base)
+
+
+def test_outreach_is_due_one_cadence_after_the_reference_and_not_before():
+    assert outreach(T0 + C / 3)["should_contact"] is False
+    due = outreach(T0 + C + PAST)
+    assert due["should_contact"] is True and due["cooldown_active"] is False
+    assert due["next_eligible_at"] == T0 + C and due["cooldown_hours"] == pytest.approx(CADENCE / 60)
+    # A conversation moves the reference: the contact wrote 0.6 cadences ago.
+    talked = outreach(T0 + 1.3 * C, last_interaction_ts=(T0 + 0.6 * C).isoformat())
+    assert talked["should_contact"] is False and "not due" in talked["reason"]
+    # So does a check-in that ended unsent (an expired or refused ask): the next is a cadence later.
+    unsent = outreach(T0 + C + PAST, last_attempt_ts=(T0 + C).isoformat())
+    assert unsent["should_contact"] is False and unsent["next_eligible_at"] == T0 + 2 * C
+
+
+def test_outreach_cooldown_doubles_per_ignored_check_in_and_caps_at_four_cadences():
+    sent = T0 + C
+    one = outreach(sent + C + PAST, last_outbound_ts=sent.isoformat(), ignored_streak=1)
+    assert one["should_contact"] is False and one["cooldown_active"] is True
+    assert one["cooldown_hours"] == pytest.approx(2 * CADENCE / 60) and one["next_eligible_at"] == sent + 2 * C
+    assert outreach(sent + 2 * C + PAST, last_outbound_ts=sent.isoformat(), ignored_streak=1)["should_contact"] is True
+    two = outreach(sent + C + PAST, last_outbound_ts=sent.isoformat(), ignored_streak=2)
+    assert two["cooldown_active"] is True and two["cooldown_hours"] == pytest.approx(4 * CADENCE / 60)
+    capped = outreach(sent + C, last_outbound_ts=sent.isoformat(), ignored_streak=5)
+    assert capped["cooldown_hours"] == pytest.approx(4 * CADENCE / 60) and capped["next_eligible_at"] == sent + 4 * C
+
+
+def test_outreach_holds_for_declining_affect_the_owner_and_no_cadence():
+    declining = outreach(T0 + 2 * C, affect_declining=True)
+    assert declining["should_contact"] is False and "affect declining" in declining["reason"]
+    assert outreach(T0 + 2 * C, is_owner=True)["should_contact"] is False
+    assert outreach(T0 + 2 * C, cadence_minutes=None)["should_contact"] is False
+    with_threads = outreach(T0 + 2 * C, open_followups=["the invoice", "", "the draft"])
+    assert with_threads["talking_points"] == ["the invoice", "the draft"] and with_threads["should_contact"] is True
+
+
+# ---------------------------------------------------------------------------
+# social(): the drive over the tick's snapshot
+# ---------------------------------------------------------------------------
+
+def snapshot(rows, *, now=T0 + C + PAST, people_on=True):
+    return DriveInputs(now=now, owner_id=OWNER, contacts=rows, people_on=people_on)
+
+
+def enriched(record, **extra):
+    row = {**record, "last_check_in_at": None, "ignored_streak": 0, "open_followups": [], "affect_declining": False}
+    row.update(extra)
+    return row
+
+
+def test_unknown_and_group_only_contacts_weigh_zero_and_ten_unknown_members_raise_nothing():
+    members = [enriched(contact(f"p-{n:02d}", tier="unknown")) for n in range(10, 20)]
+    group = [enriched(contact("p-30", tier="group_guest"))]
+    assert social(snapshot(members + group)) == (0.0, [])
+
+
+def test_an_owner_cadence_forms_one_check_in_with_the_family_key_and_no_dedup_base():
+    level, candidates = social(snapshot([enriched(contact(CONTACT, may_contact="auto", cadence=CADENCE))]))
+    candidate, = candidates
+    assert candidate.type == "check_in" and candidate.drive == "social" and candidate.kind == "message"
+    assert candidate.recipient == CONTACT and candidate.text == "" and candidate.purpose == "check_in"
+    assert candidate.dedup_key == f"check_in:{CONTACT}:{(T0 + C):%Y%m%dT%H%M}" and candidate.dedup_base is None
+    assert candidate.salience == pytest.approx(0.9) and candidate.cost == pytest.approx(0.05)
+    assert candidate.cooldown_hours == pytest.approx(CADENCE / 60) and candidate.concern_kind == "social"
+    assert candidate.invalidates_if == f"contact:{CONTACT}:replied" and candidate.grant is None
+    assert 0 < level <= 1.0
+
+
+def test_a_tier_only_contact_uses_the_estimated_cadence_at_lower_salience():
+    row = enriched(contact(CONTACT, tier="regular"), estimated_cadence_minutes=1440)
+    assert social(snapshot([row], now=T0 + timedelta(hours=12)))[1] == []
+    _, candidates = social(snapshot([row], now=T0 + timedelta(days=1, minutes=1)))
+    assert len(candidates) == 1 and candidates[0].salience == pytest.approx(0.7)
+
+
+def test_the_drive_skips_the_owner_never_rows_declining_affect_in_flight_and_people_off():
+    rows = [enriched(contact(OWNER, may_contact="auto", cadence=CADENCE)),
+            enriched(contact("p-04", may_contact="never", cadence=CADENCE)),
+            enriched(contact("p-05", may_contact="auto", cadence=CADENCE), affect_declining=True),
+            enriched(contact("p-06", may_contact="auto", cadence=CADENCE), in_flight=True),
+            enriched(contact("p-07", may_contact="auto", cadence=CADENCE))]
+    _, candidates = social(snapshot(rows))
+    assert [c.recipient for c in candidates] == ["p-07"]
+    assert social(snapshot(rows, people_on=False)) == (0.0, [])
+
+
+def test_the_topic_is_the_contacts_open_thread():
+    row = enriched(contact(CONTACT, may_contact="auto", cadence=CADENCE), topic="the budget draft")
+    candidate, = social(snapshot([row]))[1]
+    assert candidate.topic == "the budget draft"
+
+
+# ---------------------------------------------------------------------------
+# The cooldown override reaches the budget check
+# ---------------------------------------------------------------------------
+
+def test_a_candidates_own_cooldown_replaces_the_flat_contact_cooldown(tmp_path):
+    store = InitiativeStore(state_dir=tmp_path)
+    try:
+        clock = [T0]
+        authority = Authority(Policy.from_config({"autonomy": "standard"}), store, owner_id=OWNER, clock=lambda: clock[0])
+        row, _ = store.create_intention(kind="message", type="check_in", title="check in", drive="social", cls="contact",
+                                        decision="act", decision_reason="t", status="approved", dedup_key="k1",
+                                        recipient=CONTACT, hermes_kind="none", created_at=T0)
+        store.transition(row.id, "approved", action="queued", at=T0)
+        clock[0] = T0 + 2 * C
+        assert "cooldown" in authority.budget_check(kind="message", recipient=CONTACT)
+        assert authority.budget_check(kind="message", recipient=CONTACT, cooldown_hours=CADENCE / 60) is None
+        assert "0.5 h cooldown" in authority.budget_check(kind="message", recipient=CONTACT, cooldown_hours=0.5)
+        assert authority.decide(kind="message", recipient=CONTACT, text="hi", may_contact="auto",
+                                cooldown_hours=CADENCE / 60).decision == "act"
+        assert authority.decide(kind="message", recipient=CONTACT, text="hi", may_contact="auto").decision == "defer"
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# The tick, at the family's timings
+# ---------------------------------------------------------------------------
+
+async def test_cadence_due_sends_one_check_in_in_the_first_tick_and_none_in_the_next_two(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE), contact(OTHER)])
+    fx.shift(C + PAST)
+    first = await fx.tick()
+    formed, = first["formed"]
+    assert formed["type"] == "check_in" and formed["decision"] == "act" and formed["status"] == "approved"
+    sent = await fx.send_all()
+    assert len(sent) == 1 and sent[0]["recipient"] == CONTACT and sent[0]["recipient_is_owner"] is False
+    assert sent[0]["recipient_handles"] == [{"gateway": "capture", "address": CONTACT, "is_primary": True, "verified": True}]
+    assert sent[0]["text"].startswith(f"Hi {CONTACT}, checking in")
+    assert (await fx.tick())["formed"] == [] and (await fx.tick())["formed"] == []
+    assert fx.messages_to(OTHER) == [] and await fx.mind.outbox_ready() == []
+
+
+async def test_cadence_not_due_forms_nothing(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.shift(C / 3)
+    for _ in range(3):
+        assert (await fx.tick())["formed"] == []
+    assert fx.messages_to(CONTACT) == []
+
+
+async def test_a_conversation_satisfies_the_cadence(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.shift(0.7 * C)
+    fx.contacts.talk(CONTACT, fx.now)
+    fx.shift(0.6 * C)
+    for _ in range(3):
+        assert (await fx.tick())["formed"] == []
+    fx.shift(0.5 * C)                      # 1.1 cadences after the conversation: due again
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
+
+
+async def test_ignored_check_ins_back_off_at_the_familys_ticks(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
+    first, = await fx.send_all()
+    fx.shift(2 * C + PAST)
+    second_tick = await fx.tick()
+    assert [item["type"] for item in second_tick["formed"]] == ["check_in"]
+    second, = await fx.send_all()
+    assert second["id"] != first["id"]
+    # The first check-in was scored ignored when its window passed: both feedback keys moved.
+    assert fx.store.get(first["id"]).verdict == "ignored"
+    assert fx.feedback.multiplier("check_in:social") == pytest.approx(0.9)
+    assert fx.feedback.multiplier(f"reach_out:{CONTACT}") == pytest.approx(0.9)
+    fx.shift(C + PAST)
+    third_tick = await fx.tick()
+    assert third_tick["formed"] == [] and await fx.send_all() == []
+    rows = await fx.mind._social_rows(fx.now)
+    assert rows[0]["ignored_streak"] == 2 and fx.store.get(second["id"]).verdict == "ignored"
+    assert len(fx.messages_to(CONTACT)) == 2
+    # Past the doubled cooldown (four cadences from the second send) the timing allows the next one,
+    # but two ignored check-ins taught the ranker to hold it: 0.9 x 0.95 x 0.9^4 is under 0.6.
+    fx.shift(3 * C)
+    held = await fx.tick()
+    assert held["formed"] == [] and held["below_threshold"] == 1
+    # They come back: the silence they broke is not held against them for good, and the next
+    # check-in is due one cadence after that conversation.
+    fx.contacts.talk(CONTACT, fx.now)
+    back = await fx.tick()
+    assert back["check_ins_scored"] == {"actioned": 1, "ignored": 0} and back["formed"] == []
+    assert fx.store.get(second["id"]).verdict == "actioned"
+    assert (await fx.mind._social_rows(fx.now))[0]["ignored_streak"] == 0
+    fx.shift(C + PAST)
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
+
+
+async def test_a_reply_inside_the_window_scores_actioned_resets_the_streak_and_satiates_social(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    await fx.tick()
+    sent, = await fx.send_all()
+    fx.shift(C / 2)
+    fx.contacts.talk(CONTACT, fx.now)       # they replied
+    fx.shift(C)
+    summary = await fx.tick()
+    assert summary["check_ins_scored"] == {"actioned": 1, "ignored": 0}
+    assert fx.store.get(sent["id"]).verdict == "actioned"
+    assert fx.feedback.multiplier("check_in:social") > 1.0 and fx.feedback.multiplier(f"reach_out:{CONTACT}") > 1.0
+    assert float(fx.mind.mind_state.get("satiety.social")["level"]) > 0
+    rows = await fx.mind._social_rows(fx.now)
+    assert rows[0]["ignored_streak"] == 0
+
+
+async def test_satiety_never_holds_a_due_check_in(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.mind.mind_state.bump("satiety.social", 1.0, half_life_s=4 * 3600, now=fx.now)
+    fx.shift(C + PAST)
+    summary = await fx.tick()
+    assert [item["type"] for item in summary["formed"]] == ["check_in"]
+    assert summary["drives"]["weights"]["social"] < fx.mind.drive_weights["social"]
+
+
+async def test_permission_ask_holds_with_an_owner_ask_and_never_sends(make):
+    fx = make([contact(CONTACT, may_contact="ask", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    for index in range(3):
+        summary = await fx.tick()
+        if index == 0:
+            formed, = summary["formed"]
+            assert formed["type"] == "check_in" and formed["decision"] == "ask" and formed["status"] == "asked"
+        else:
+            assert summary["formed"] == []
+        assert [p["recipient"] for p in await fx.mind.outbox_ready()] == [OWNER]     # the ask notice only
+    row, = [r for r in fx.messages_to(CONTACT)]
+    assert row.status == "asked" and row.ask_code
+    notice, = [r for r in fx.messages_to(OWNER) if r.type == "ask_notice"]
+    assert row.ask_code in notice.context["text"]
+
+
+async def test_a_never_contact_under_a_strong_reason_gets_nothing(make):
+    fx = make([contact(CONTACT, may_contact="never", cadence=CADENCE)])
+    fx.commitments.create(person_id=OWNER, description=f"Check on {CONTACT}", due_at=(fx.now + C).isoformat(),
+                          metadata={"kind": "check_in", "recipient": CONTACT, "topic": "their health", "grant": "owner"})
+    fx.shift(C + PAST)
+    for _ in range(3):
+        await fx.tick()
+        assert [p["recipient"] for p in await fx.mind.outbox_ready()] == [OWNER] or await fx.mind.outbox_ready() == []
+    assert all(row.status == "dropped" for row in fx.messages_to(CONTACT))
+    assert [row.type for row in fx.messages_to(OWNER)] == ["grant_refused"]
+
+
+async def test_declining_affect_suppresses_the_check_in(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.affect.declining.add(CONTACT)
+    fx.shift(C + PAST)
+    assert (await fx.tick())["formed"] == []
+    fx.affect.declining.clear()
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["check_in"]
+
+
+async def test_a_reply_cancels_an_unsent_check_in(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    formed, = (await fx.tick())["formed"]
+    fx.shift(timedelta(minutes=1))
+    fx.contacts.talk(CONTACT, fx.now)
+    assert await fx.mind.outbox_ready() == []
+    row = fx.store.get(formed["id"])
+    assert row.status == "cancelled" and "replied" in row.cancelled_reason and row.verdict is None
+
+
+async def test_people_off_gives_social_weight_zero_and_no_contact_messages(make):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)], config={"faculties": {"people": False}})
+    assert fx.mind.drive_weights["social"] == 0.0 and fx.mind.composer.enabled is False
+    fx.shift(C + PAST)
+    summary = await fx.tick()
+    assert summary["formed"] == [] and summary["check_ins_scored"] is None and fx.messages_to(CONTACT) == []
+
+
+async def test_a_pending_link_proposal_becomes_one_owner_ask_answered_through_the_store(make):
+    fx = make([contact(CONTACT, name="Sam")])
+    fx.contacts.proposals = [{"candidate_id": "cand-1", "contact_id": CONTACT, "gateway": "email",
+                              "address": "sam@example.org", "display_name": "Sam", "status": "pending"}]
+    summary = await fx.tick()
+    formed, = summary["formed"]
+    assert formed["type"] == "link_proposal" and formed["decision"] == "ask"
+    row = fx.store.get(formed["id"])
+    assert row.dedup_key == "link:cand-1" and row.entity_id == OWNER and row.ask_code
+    assert "sam@example.org" in row.description and "Sam" in row.description
+    assert (await fx.tick())["formed"] == []                      # one ask per candidate
+    answered = await fx.mind.answer(row.ask_code, yes=True, contact_id=OWNER, message=f"yes {row.ask_code}")
+    assert answered.status == "done" and fx.contacts.links == [("confirm", "cand-1", "owner")]
+    fx.contacts.proposals = [{"candidate_id": "cand-2", "contact_id": CONTACT, "gateway": "sms",
+                              "address": "+15550002", "display_name": "Sam"}]
+    formed, = (await fx.tick())["formed"]
+    code = fx.store.get(formed["id"]).ask_code
+    refused = await fx.mind.answer(code, yes=False)
+    assert refused.status == "cancelled" and fx.contacts.links[-1] == ("reject", "cand-2", "owner")
+
+
+async def test_a_granted_check_in_due_now_is_the_one_word_and_its_topic_carries_into_the_next(make):
+    """The owner's cadence turn captured as a granted check-in falls due with the cadence: the
+    contact gets that one message, not a second from the social drive, and the next check-in
+    keeps the thread it raised."""
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
+    fx.commitments.create(person_id=OWNER, description=f"Check in with {CONTACT} on the budget draft",
+                          due_at=(fx.now + C).isoformat(), source_type="cognition",
+                          metadata={"kind": "check_in", "recipient": CONTACT, "topic": "the budget draft",
+                                    "grant": "owner", "counterpart": CONTACT, "obligor": "assistant"})
+    fx.shift(C + PAST)
+    assert [item["type"] for item in (await fx.tick())["formed"]] == ["commitment_check_in"]
+    first, = await fx.send_all()
+    assert "the budget draft" in first["text"]
+    fx.shift(2 * C + PAST)
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "check_in" and fx.store.get(formed["id"]).context["topic"] == "the budget draft"
+    second, = await fx.send_all()
+    assert second["text"] == f"Hi {CONTACT}, checking in about the budget draft: how is it going?"
+    fx.shift(C + PAST)
+    assert (await fx.tick())["formed"] == [] and len(fx.messages_to(CONTACT)) == 2
+
+
+async def test_a_check_in_that_never_went_out_starts_the_next_period(make):
+    """An ask the owner let expire, or refused, is neither lost for good nor asked again at once:
+    the next check-in is due one cadence after it ended, and the owner's silence and refusal
+    teach the ranker (0.9 x 0.85 on both keys holds the third below the threshold)."""
+    fx = make([contact(CONTACT, may_contact="ask", cadence=CADENCE)])
+    fx.shift(C + PAST)
+    first, = (await fx.tick())["formed"]
+    fx.shift(timedelta(hours=73))
+    expired = await fx.tick()
+    assert fx.store.get(first["id"]).status == "expired" and expired["formed"] == []
+    fx.shift(C + PAST)
+    second, = (await fx.tick())["formed"]
+    assert second["type"] == "check_in" and second["status"] == "asked" and second["id"] != first["id"]
+    refused = await fx.mind.answer(fx.store.get(second["id"]).ask_code, yes=False)
+    assert refused.status == "cancelled"
+    assert (await fx.tick())["formed"] == []
+    fx.shift(C + PAST)
+    held = await fx.tick()
+    assert held["formed"] == [] and held["below_threshold"] == 1

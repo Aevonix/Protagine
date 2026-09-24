@@ -76,9 +76,9 @@ def new_ask_code(taken: Iterable[str], *, rng: random.Random | None = None) -> s
 def may_contact_of(contact: Any, *, owner_id: str | None) -> str:
     """``may_contact`` for a contact record or id (architecture 7.4).
 
-    The column arrives with the people milestone; until then it is derived:
-    the owner is ``auto``, ``interaction_allowed`` false is ``never`` and
-    everyone else is ``ask``.
+    The owner is ``auto`` by identity; everyone else is what the
+    ``contacts.may_contact`` column says, and ``ask`` when the record has no
+    usable value. Nothing else (a tier, a legacy flag, familiarity) grants.
     """
     contact_id = contact if isinstance(contact, str) else getattr(contact, "contact_id", None)
     if contact_id is None and isinstance(contact, Mapping):
@@ -88,11 +88,7 @@ def may_contact_of(contact: Any, *, owner_id: str | None) -> str:
     if contact is None or isinstance(contact, str):
         return "ask"
     value = contact.get("may_contact") if isinstance(contact, Mapping) else getattr(contact, "may_contact", None)
-    if value in MAY_CONTACT:
-        return str(value)
-    allowed = contact.get("interaction_allowed") if isinstance(contact, Mapping) \
-        else getattr(contact, "interaction_allowed", None)
-    return "never" if allowed is False else "ask"
+    return str(value) if value in MAY_CONTACT else "ask"
 
 
 def classify(*, kind: str, recipient: str | None, owner_id: str | None,
@@ -328,8 +324,14 @@ class Authority:
     # -- budgets -------------------------------------------------------------------
 
     def budget_check(self, *, kind: str, recipient: str | None, type: str = "",
-                     now: datetime | None = None) -> Optional[str]:
-        """The reason an act must wait, or None when the budgets allow it (7.6)."""
+                     now: datetime | None = None, cooldown_hours: float | None = None) -> Optional[str]:
+        """The reason an act must wait, or None when the budgets allow it (7.6).
+
+        ``cooldown_hours`` is a message's own per-contact cooldown (a check-in's
+        reply-and-silence backoff, architecture 4.7 item 6); it replaces the
+        flat ``per_contact_cooldown_hours`` for that one decision. The daily
+        contact-message cap still applies.
+        """
         if self.store is None:
             return None
         now = now or self.clock()
@@ -367,9 +369,10 @@ class Authority:
             if sent - owner_sent >= budgets.contact_messages_per_day:
                 return f"budget: {budgets.contact_messages_per_day} contact messages per day reached"
             if recipient:
+                hours = budgets.per_contact_cooldown_hours if cooldown_hours is None else max(0.0, float(cooldown_hours))
                 last = self.store.last_transition_at(self.BUDGET_ACTION, recipient=recipient)
-                if last is not None and now - last < timedelta(hours=budgets.per_contact_cooldown_hours):
-                    return f"budget: {budgets.per_contact_cooldown_hours:g} h cooldown for this contact"
+                if last is not None and now - last < timedelta(hours=hours):
+                    return f"budget: {hours:g} h cooldown for this contact"
         return None
 
     def tokens_allowed(self, now: datetime | None = None) -> bool:
@@ -382,14 +385,14 @@ class Authority:
 
     def decide(self, *, kind: str, recipient: str | None, text: str, type: str = "",
                may_contact: str = "ask", toolsets: Iterable[str] = (), tools: Iterable[str] = (),
-               now: datetime | None = None) -> Verdict:
+               now: datetime | None = None, cooldown_hours: float | None = None) -> Verdict:
         """act | ask | drop | defer for one intention, with the reason (7.2-7.6)."""
         now = now or self.clock()
         cls = classify(kind=kind, recipient=recipient, owner_id=self.owner_id, toolsets=toolsets, text=text)
         matched = floor_class(text)
         denied = self.policy.denied(text, tools)
         breaker = self.breaker_state(cls if cls != "floor" else "owner", now) if cls != "floor" else {"tripped": False}
-        budget = self.budget_check(kind=kind, recipient=recipient, type=type, now=now)
+        budget = self.budget_check(kind=kind, recipient=recipient, type=type, now=now, cooldown_hours=cooldown_hours)
         decision = decide_table(level=self.level, cls=cls, may_contact=may_contact, floor=matched is not None,
                                 deny=denied is not None, budget_exhausted=budget is not None,
                                 breaker_tripped=bool(breaker.get("tripped")), enabled=self.enabled)
