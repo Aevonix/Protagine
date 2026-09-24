@@ -803,3 +803,41 @@ def test_the_contract_names_the_obligor():
     assert "obligor" in extract.SYSTEM and "assistant" in extract.SYSTEM
     assert extract.ITEM_SCHEMA["properties"]["obligor"]["type"] == ["string", "null"]
     assert "obligor" in extract.ITEM_SCHEMA["required"]
+
+
+# --- the owner-granted message to a third party (case 3) ---------------------------------------
+
+
+def test_the_contract_carries_case_three_and_its_metadata_shapes():
+    from protagine.commitments import extract
+    assert "DEADLINE-CONDITIONED MESSAGE TO A THIRD PARTY" in extract.SYSTEM
+    assert '{"kind":"notice","recipient":' in extract.SYSTEM and '{"kind":"check_in","recipient":' in extract.SYSTEM
+    assert "sent NOW to a third party is the reply's own job" in extract.SYSTEM
+    assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
+    assert extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the Q3 figure 4.2m code X7",
+                                     "grant": "owner"}, owner_turn=True) == \
+        {"kind": "check_in", "recipient": "p-05", "topic": "the figure code", "grant": "owner"}
+    assert extract.message_metadata({"kind": "notice", "recipient": "", "content": "hi"}, owner_turn=True) == {}
+    assert extract.message_metadata({"kind": "notice", "recipient": "p-05", "content": "hi", "grant": "owner",
+                                     "recipient_id": "cid-9"}, owner_turn=False) == \
+        {"kind": "notice", "recipient": "p-05", "content": "hi"}
+
+
+async def test_the_job_grants_only_on_the_owners_own_turn(tmp_path, monkeypatch):
+    """The extractor job passes the configured owner: the same case-3 answer is a grant on the owner's
+    turn and an ordinary row, never a relay, on a contact's."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    cstore, ledger, extractor = _setup(tmp_path)
+    notice = _item("Tell p-05 the venue booking lapses", due_at=_iso(hours=3), counterpart="p-05", obligor="assistant",
+                   metadata={"kind": "notice", "recipient": "p-05", "content": "The booking lapses tonight.",
+                             "grant": "owner"})
+    _turn(ledger, "t-owner", "If p-05 has not confirmed by five, tell them the booking lapses tonight.",
+          person=OWNER)
+    _turn(ledger, "t-contact", "If nobody confirms by five, tell p-05 the booking lapses tonight.",
+          person=SAM, session="s-2")
+    router = _Router(_reply(notice))
+    assert await extractor.process_one(router) is True and await extractor.process_one(router) is True
+    owners, = _open(cstore, OWNER)
+    contacts, = _open(cstore, SAM)
+    assert owners["metadata"]["grant"] == "owner" and owners["metadata"]["kind"] == "notice"
+    assert "grant" not in contacts["metadata"] and contacts["metadata"]["content"] == "The booking lapses tonight."

@@ -91,7 +91,16 @@ SYSTEM = (
     "did NOT satisfy (email it, text a DIFFERENT number, send it to someone else, send it later), AND the "
     "actual content to send is present in the exchange. IMPORTANT: in a chat the assistant's reply already "
     "IS a message to the person, so a plain \"text me\"/\"message me\" is ALREADY satisfied; do NOT record "
-    "that; only record a deliverable for a genuinely different channel, recipient, or time.\n\n"
+    "that; only record a deliverable for a genuinely different channel, recipient, or time.\n"
+    "3. A DEADLINE-CONDITIONED MESSAGE TO A THIRD PARTY: the person says that if something has not happened by a "
+    "time, a named contact is to be told or asked something. Record it with due_at = that time, obligor "
+    "\"assistant\", counterpart = that contact, and metadata "
+    '{"kind":"notice","recipient":"<contact as named>","content":"<the words the person wants delivered, ready '
+    'as-is>","grant":"owner"} when the person dictates what to say, or '
+    '{"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, at most 6 words>","grant":"owner"} '
+    "when the person asks you to check on, chase or ask them about something. The topic names the matter only: "
+    "never figures, amounts, codes or reasons. A message the person wants sent NOW to a third party is the "
+    "reply's own job: record nothing for it.\n\n"
     "Record an UPDATE to a numbered open item (action \"reschedule\", \"complete\" or \"cancel\", target = its "
     "number, description = its listed wording EXACTLY as shown, listed_due = the due time shown next to it, or null "
     "when it showed \"no due\") when the turn changes it. An update whose wording or listed_due does not match the "
@@ -129,9 +138,10 @@ SYSTEM = (
     '"description": string, "due_at": ISO-8601-UTC string or null, "priority": integer 0-100, '
     '"source_type": "cognition" | "introspection", "metadata": null or '
     '{"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":"sms"|"dm"|"email"} or '
-    '{"heads_up_at": ISO-8601-UTC string}, "listed_due": ISO-8601-UTC string or null, "counterpart": string or null, '
-    '"obligor": string or null}\n'
+    '{"heads_up_at": ISO-8601-UTC string} or the notice or check_in object of case 3, '
+    '"listed_due": ISO-8601-UTC string or null, "counterpart": string or null, "obligor": string or null}\n'
     "Use \"introspection\" + the deliverable metadata (due_at about two minutes from now) for case 2; "
+    "\"cognition\" + the notice or check_in metadata for case 3; "
     "\"cognition\" + metadata null (or the heads-up metadata when one was asked for) for case 1, and "
     "metadata null for every update, unless the turn states a NEW heads-up time for a rescheduled item (then the "
     "heads-up metadata; an unchanged heads-up moves with the deadline by itself).\n\n"
@@ -154,6 +164,20 @@ SYSTEM = (
     '[{"action":"create","target":null,"description":"p-07 sends the signed form","due_at":"2026-06-26T17:00:00+00:00",'
     '"priority":60,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"owner",'
     '"obligor":"p-07"}]\n'
+    "They said: If p-05 has not confirmed the venue by 5pm, tell them: The booking lapses tonight, please "
+    "confirm. | Assistant replied: Will do.\n"
+    '[{"action":"create","target":null,"description":"Tell p-05 the venue booking lapses if unconfirmed",'
+    '"due_at":"2026-06-26T21:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"notice",'
+    '"recipient":"p-05","content":"The booking lapses tonight, please confirm.","grant":"owner"},'
+    '"listed_due":null,"counterpart":"p-05","obligor":"assistant"}]\n'
+    "They said: p-05 owes me the site photos by noon; if nothing arrives, chase them yourself. | "
+    "Assistant replied: Understood.\n"
+    '[{"action":"create","target":null,"description":"Chase p-05 for the site photos",'
+    '"due_at":"2026-06-26T16:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"check_in",'
+    '"recipient":"p-05","topic":"the site photos","grant":"owner"},"listed_due":null,"counterpart":"p-05",'
+    '"obligor":"assistant"}]\n'
+    "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
+    "[]   (a message to send now is the reply's own job)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
@@ -373,9 +397,42 @@ def _target_row(listed: List[Dict[str, Any]], target: Any, description: str,
     return row
 
 
+# Case 3: a message to a third party the mind sends at the condition time (``notice``: the words
+# given; ``check_in``: composed later around a topic). Its fields are the model's; the recipient's
+# contact id is the tick's to resolve, and only the owner's own turn carries the grant.
+MESSAGE_KINDS = ("notice", "check_in")
+MESSAGE_FIELDS = ("kind", "recipient", "content", "topic", "grant", "recipient_id")
+TOPIC_WORDS = 6
+
+
+def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool) -> Dict[str, Any]:
+    """Case 3 metadata as stored: a notice needs its words and a check-in its recipient; the topic
+    keeps at most six words and none with a digit in it (no figures, amounts or codes); the grant
+    survives only on the owner's own turn. Anything else is an ordinary commitment."""
+    kind = metadata.get("kind")
+    if kind not in MESSAGE_KINDS:
+        return metadata
+    cleaned = {key: value for key, value in metadata.items() if key not in MESSAGE_FIELDS}
+    recipient = " ".join(str(metadata.get("recipient") or "").split())[:120]
+    if not recipient:
+        return cleaned
+    if kind == "notice":
+        content = str(metadata.get("content") or "").strip()
+        if not content:
+            return cleaned
+        cleaned.update(kind="notice", recipient=recipient, content=content[:1000])
+    else:
+        words = [word for word in str(metadata.get("topic") or "").split() if not any(ch.isdigit() for ch in word)]
+        cleaned.update(kind="check_in", recipient=recipient, topic=" ".join(words[:TOPIC_WORDS]))
+    if owner_turn and metadata.get("grant") == "owner":
+        cleaned["grant"] = "owner"
+    return cleaned
+
+
 def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_store: Any,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]],
-                 source_context: str = "turn commitment extraction", turn_id: str = "") -> Dict[str, Any]:
+                 source_context: str = "turn commitment extraction", turn_id: str = "",
+                 owner_id: Optional[str] = None) -> Dict[str, Any]:
     """Apply what the model proposed: create new items, act on listed ones.
 
     Deadlines are resolved against the turn's own time, so a promise captured
@@ -389,6 +446,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     action is written against the listed description and deadline
     (``expect``); a row that changed since is a ``conflict``, counted for the
     caller to rerun the extraction, and left as the newer writer left it.
+    A message to a third party (case 3) is stored through ``message_metadata``:
+    the owner's grant only when ``person_id`` is ``owner_id``.
     """
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
     listed = list(existing[:OPEN_ITEMS_LISTED])
@@ -445,7 +504,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if any(_similar_desc(norm, k) for k in known):
             skipped += 1
             continue
-        metadata = dict(stated or {})
+        metadata = message_metadata(dict(stated or {}), owner_turn=bool(owner_id) and person_id == owner_id)
         for field in ("counterpart", "obligor"):
             value = str(item.get(field) or "").strip()[:120]
             if value:
@@ -781,8 +840,9 @@ class CommitmentExtractor:
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)
             self._retry(job, defect or type(error).__name__, immediate=defect is not None)
             return {}
+        from protagine.identity import get_owner_contact_id
         result = record_items(items, person_id=person_id, commitment_store=commitments, existing=existing,
-                              rejections=rejections, turn_id=job["turn_id"])
+                              rejections=rejections, turn_id=job["turn_id"], owner_id=get_owner_contact_id())
         if result.get("conflicts") and job.get("error") != "stale_snapshot":
             # A row moved between the listing and the write (the owner corrected it while the model
             # was thinking): what landed stays, the job runs once more against the fresh state.
@@ -816,5 +876,6 @@ def contact_aliases(contacts_provider):
 
 
 __all__ = ["ACTIONS", "BACKOFF_SECONDS", "CommitmentExtractor", "HOLD_RETRY_SECONDS", "ITEM_SCHEMA", "MAX_ATTEMPTS",
-           "OPEN_ITEMS_LISTED", "OUTPUT_BUDGET_TOKENS", "RESPONSE_SCHEMA", "SYSTEM", "TASK", "build_prompt",
-           "contact_aliases", "enqueue", "erase_removed", "initialize", "parse_items", "record_items"]
+           "MESSAGE_KINDS", "OPEN_ITEMS_LISTED", "OUTPUT_BUDGET_TOKENS", "RESPONSE_SCHEMA", "SYSTEM", "TASK",
+           "build_prompt", "contact_aliases", "enqueue", "erase_removed", "initialize", "message_metadata",
+           "parse_items", "record_items"]
