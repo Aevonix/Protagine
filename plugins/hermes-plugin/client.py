@@ -34,7 +34,21 @@ CONSTITUTION_ITEM_CHARS = 160
 
 
 class SidecarUnavailable(RuntimeError):
-    """The sidecar gave no answer: connection refused, timeout or open breaker."""
+    """The sidecar gave no answer: connection refused, timeout or open breaker.
+
+    ``delivered`` is false when the request never left (refused, no connection, the
+    breaker open) and true when it may have reached the sidecar (the answer timed
+    out or the connection broke): its effect may have happened.
+    """
+
+    def __init__(self, message: str = "", *, delivered: bool = False):
+        super().__init__(message)
+        self.delivered = delivered
+
+
+# The request never reached the sidecar; any other transport error may have.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol,
+             httpx.ProxyError)
 
 
 def hermes_home() -> Path:
@@ -266,7 +280,8 @@ class ProtagineClient:
                 self._failures += 1
                 if self._failures >= 3:
                     self._open_until = time.monotonic() + self.cooldown
-            raise SidecarUnavailable(type(error).__name__) from error
+            raise SidecarUnavailable(type(error).__name__,
+                                     delivered=not isinstance(error, _NOT_SENT)) from error
         with self._lock:
             self._failures = 0
         return response

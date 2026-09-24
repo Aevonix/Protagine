@@ -67,6 +67,10 @@ class _FakeResponse:
     def json(self):
         return self._payload
 
+    @property
+    def is_success(self):
+        return 200 <= self.status_code < 300
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
@@ -85,19 +89,29 @@ class _FakeHttpx:
     class ConnectError(Exception):
         pass
 
+    class ConnectTimeout(Exception):
+        pass
+
+    class PoolTimeout(Exception):
+        pass
+
+    class ReadTimeout(Exception):
+        pass
+
     def __init__(self, routes=None, *, delay=0.0, error=None):
         """`delay` sleeps that long on every request (a slow sidecar); `error`
         is an exception class raised after the delay (a hung sidecar whose
         requests time out)."""
         self.routes = routes or {}
         self.requests = []
+        self.timeouts = []
         self.delay = delay
         self.error = error
         fake = self
 
         class _Client:
             def __init__(self, timeout=None):
-                pass
+                fake.timeouts.append(timeout)
 
             def __enter__(self):
                 return self
@@ -254,6 +268,31 @@ def test_native_file_edits_never_become_new_owner_evidence(
         assert not hasattr(provider, "_tool_" + name)
         assert "error" in json.loads(provider.handle_tool_call(name, args))
     assert fake.requests == []
+
+
+@pytest.mark.parametrize("error, state", [
+    (None, "source_erased"), ("ReadTimeout", "unconfirmed"), ("ConnectError", "failed"),
+    ("ConnectTimeout", "failed")])
+def test_a_native_removal_is_never_recorded_as_failed_when_it_may_have_landed(
+        provider_mod, monkeypatch, error, state):
+    """A timed-out forget was sent and the sidecar finishes it: the removal is unconfirmed, not
+    failed. Only a request that never left is a failure (operability-11)."""
+    fake = _FakeHttpx(routes={("POST", "/v1/host/memory/sources/forget"): {"source_erased": True, "watermark": 7}},
+                      error=getattr(_FakeHttpx, error) if error else None)
+    provider = _make_provider(provider_mod, fake, monkeypatch)
+    provider._session_id = "exact-session"
+    monkeypatch.setattr(provider, "_prefetch_contact", lambda: "cid-base")
+
+    provider.on_memory_write("remove", "MEMORY.md", "", metadata={"old_text": "The neutral locker code."})
+
+    erasure = provider.get_diagnostics()["source_erasure"]
+    assert erasure["state"] == state
+    assert fake.timeouts == [provider_mod.FORGET_TIMEOUT_SECONDS] and provider_mod.FORGET_TIMEOUT_SECONDS >= 5
+    forget, = fake.requests
+    assert forget["json"] == {"contact_id": "cid-base", "session_id": "exact-session",
+                              "old_text": "The neutral locker code."}
+    if state == "source_erased":
+        assert erasure["watermark"] == 7
 
 
 def test_standalone_memory_provider_syncs_the_turn_with_its_stable_id(

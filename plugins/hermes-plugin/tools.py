@@ -87,6 +87,12 @@ FORGET_SCHEMA = {
                    "required": ["source_ids"]}}
 
 
+# A forget answers in about a second on a long history (the closure is indexed; the
+# vector tables are compacted routinely). Past this bound the tool says the removal
+# is unconfirmed, never that it failed: the sidecar finishes a forget it received.
+FORGET_TIMEOUT_SECONDS = 5.0
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -369,10 +375,15 @@ class Tools:
             return _error("only the owner can forget sources")
         contact = self.sessions.contact_id(session_id)
         try:
-            response = self.client.post("/v1/host/memory/sources/forget", timeout=5,
+            response = self.client.post("/v1/host/memory/sources/forget", timeout=FORGET_TIMEOUT_SECONDS,
                                         json={"contact_id": contact, "source_ids": list(dict.fromkeys(ids))})
-        except SidecarUnavailable:
-            return _error("source removal is unconfirmed; the sidecar is unreachable")
+        except SidecarUnavailable as error:
+            if not error.delivered:
+                return _error("nothing was removed: the sidecar is unreachable; try again later")
+            return _json({"source_erased": None, "status": "unconfirmed",
+                          "note": f"The removal was sent and may have completed, but its answer did not arrive "
+                                  f"within {FORGET_TIMEOUT_SECONDS:g} s. Forgetting the same source_ids again "
+                                  "is safe and reports the result."})
         if response.status_code in {409, 422}:
             return _json({"source_erased": False, "error": "no matching sources; use exact source_id values"})
         if not response.is_success:
@@ -380,5 +391,5 @@ class Tools:
         return response.text
 
 
-__all__ = ["ASK_CODE", "AUTOMATED_PLATFORMS", "FORGET_SCHEMA", "PEOPLE_OPERATIONS", "PEOPLE_SCHEMA", "SEARCH_SCHEMA",
+__all__ = ["ASK_CODE", "AUTOMATED_PLATFORMS", "FORGET_SCHEMA", "FORGET_TIMEOUT_SECONDS", "PEOPLE_OPERATIONS", "PEOPLE_SCHEMA", "SEARCH_SCHEMA",
            "SELF_SCHEMA", "Tools", "VERDICTS"]

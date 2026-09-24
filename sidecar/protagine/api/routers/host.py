@@ -2335,6 +2335,7 @@ async def read_source_asset(asset_hash: str, contact_id: str, session_id: str, r
 async def forget_turn_sources(body: SourceForgetRequest, request: Request = None):
     person = resolve_request_person(request, claimed_person_id=body.contact_id) or body.contact_id
     from protagine.turns import get_turn_idempotency_ledger
+    started = time.monotonic()
     try:
         ledger = get_turn_idempotency_ledger(get_state_dir())
         result = await asyncio.to_thread(ledger.erase_sources,
@@ -2363,6 +2364,8 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
     vector_cleanup = ('disabled_not_checked' if os.environ.get('PROTAGINE_EMBED_PROVIDER') == 'skip'
                       else 'unavailable')
     vector_purge = 'not_run'
+    ledger_seconds = time.monotonic() - started
+    vector_started = time.monotonic()
     from protagine.vector import get_store
     vector_store = get_store()
     if vector_store is not None and getattr(vector_store, 'catalog', None) is not None:
@@ -2378,6 +2381,7 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             vector_purge = 'scheduled'
         except Exception:
             logger.warning('source erasure vector generation cleanup is pending', exc_info=True)
+    vector_seconds = time.monotonic() - vector_started
     transport_cleanup = 'pending'
     try:
         from protagine.api.routers.transport_ingress_api import forget_sources
@@ -2394,6 +2398,10 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             communications_cleanup = 'complete'
         except Exception:
             logger.warning('Source erasure communication summary cleanup remains pending', exc_info=True)
+    logger.info('source erasure: %d source(s), %d affected, answered in %.2f s (sources and facts %.2f s, '
+                'vector rows %.2f s); vector compaction %s', len(result['source_ids']),
+                len(result['affected_source_ids']), time.monotonic() - started, ledger_seconds, vector_seconds,
+                vector_purge)
     return {"source_erased": True, **result,
             "shared_facts_cleanup": fact_cleanup, "vector_cleanup": vector_cleanup, "vector_purge": vector_purge,
             "transport_cleanup": transport_cleanup, **tom_cleanup,

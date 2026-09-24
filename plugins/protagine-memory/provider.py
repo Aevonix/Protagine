@@ -26,6 +26,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# A forget answers in about a second on a long history. Past this bound the removal is
+# recorded as unconfirmed, never as failed: the sidecar finishes a forget it received.
+FORGET_TIMEOUT_SECONDS = 5.0
+
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
 
 
@@ -772,18 +776,32 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if not contact or not old_text or not self._session_id:
             return
         try:
-            with httpx.Client(timeout=3) as client:
+            with httpx.Client(timeout=FORGET_TIMEOUT_SECONDS) as client:
                 response = client.post(f"{self.sidecar_url}/v1/host/memory/sources/forget", headers=self._headers(),
                                        json={"contact_id": contact, "session_id": self._session_id, "old_text": old_text})
-            if response.is_success and response.json().get("source_erased") is True:
-                receipt = response.json()
-                self._last_erasure = {"state": "source_erased", "scope": "canonical_turn_sources",
-                                      "watermark": receipt.get("watermark")}
-                self._temporal_cache = (0.0, "")
-            else:
-                self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
-        except Exception:
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            # Never sent: nothing was removed.
             self._last_erasure = {"state": "failed", "scope": "canonical_turn_sources"}
+            return
+        except Exception:
+            # Sent, but the answer did not come back in time: the sidecar finishes a
+            # forget it received, so the removal may well have landed.
+            self._last_erasure = {"state": "unconfirmed", "scope": "canonical_turn_sources"}
+            return
+        if not response.is_success:
+            self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
+            return
+        try:
+            receipt = response.json()
+        except ValueError:
+            self._last_erasure = {"state": "unconfirmed", "scope": "canonical_turn_sources"}
+            return
+        if receipt.get("source_erased") is True:
+            self._last_erasure = {"state": "source_erased", "scope": "canonical_turn_sources",
+                                  "watermark": receipt.get("watermark")}
+            self._temporal_cache = (0.0, "")
+        else:
+            self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
 
     def on_pre_compress(self, messages: List[Dict[str, Any]], *, require_checkpoint: bool = False) -> str:
         """Commit direct evidence through the shared outbox before Hermes compresses."""

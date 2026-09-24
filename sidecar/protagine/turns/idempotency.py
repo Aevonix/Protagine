@@ -102,6 +102,69 @@ def _lexical_chunks(messages):
             yield message, content, content[start:start + 2000]
 
 
+def _names_dependencies(messages_json: str) -> bool:
+    return '"_supplied_sources"' in messages_json or '"_observation_sources"' in messages_json
+
+
+class _ErasureRules:
+    """A contact's erasure rules, indexed so each message costs a few lookups.
+
+    A message is erased by a rule when it is an exact copy (same session and
+    message hash) of an erased message, or when it depends on the erased
+    source: an assistant message's ``_supplied_sources`` or a native tool
+    observation's ``_observation_sources`` names the source, in any version
+    for a whole erasure or in the recorded version for a partial one. Testing
+    every message against every rule made one forget on a long history cost
+    seconds (source rows times rules); the index gives the same causes.
+    """
+
+    __slots__ = ('count', 'exact', 'whole', 'versions')
+
+    def __init__(self, rules):
+        self.count = 0
+        self.exact: dict[str, dict[str, set[str]]] = {}
+        self.whole: set[str] = set()
+        self.versions: dict[str, set[str]] = {}
+        for rule in rules:
+            self.count += 1
+            turn_id = rule['turn_id']
+            by_hash = self.exact.setdefault(rule['session_id'], {})
+            for message_hash in json.loads(rule['message_hashes_json']):
+                by_hash.setdefault(message_hash, set()).add(turn_id)
+            if rule['whole_source']:
+                self.whole.add(turn_id)
+            else:
+                self.versions.setdefault(turn_id, set()).add(rule['source_version'])
+
+    @classmethod
+    def of(cls, rules):
+        return rules if isinstance(rules, cls) else cls(rules)
+
+    def causes(self, message, session_id) -> set[str]:
+        refs = (message.get('_supplied_sources', []) if message.get('role') == 'assistant' else
+                message.get('_observation_sources', []) if message.get('role') == 'tool' and
+                message.get('_native_tool_observation') == 'native-tool-observation-v1' else [])
+        causes = set()
+        if not self.count:
+            return causes
+        exact = self.exact.get(session_id)
+        if exact:
+            causes.update(exact.get(source_message_hash(session_id, message), ()))
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            source = ref.get('source_id')
+            if not isinstance(source, str):
+                continue
+            if source in self.whole:
+                causes.add(source)
+            elif source in self.versions:
+                version = ref.get('source_version')
+                if isinstance(version, str) and version in self.versions[source]:
+                    causes.add(source)
+        return causes
+
+
 class TurnIdempotencyLedger:
     """SQLite reservation ledger safe across threads and sidecar processes."""
 
@@ -262,7 +325,7 @@ class TurnIdempotencyLedger:
         messages = json.loads(encoded)  # Resolving lineage never mutates caller-owned input.
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
-            rules = self._erasure_rules(conn, contact_id)
+            rules = _ErasureRules(self._erasure_rules(conn, contact_id))
             # Source IDs are globally unique. Reattributing an erased source
             # must not resurrect it under a different contact after restore or
             # a reviewed historical mapping change. Exact message-copy rules
@@ -347,25 +410,16 @@ class TurnIdempotencyLedger:
         )]
 
     @staticmethod
-    def _retained_messages(messages: list[dict[str, Any]], session_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [message for message in messages
-                if not TurnIdempotencyLedger._erasure_causes([message], session_id, rules)]
+    def _retained_messages(messages: list[dict[str, Any]], session_id: str, rules) -> list[dict[str, Any]]:
+        rules = _ErasureRules.of(rules)
+        return [message for message in messages if not rules.causes(message, session_id)]
 
     @staticmethod
     def _erasure_causes(messages, session_id, rules):
+        rules = _ErasureRules.of(rules)
         causes = set()
         for message in messages:
-            refs = (message.get('_supplied_sources', []) if message.get('role') == 'assistant' else
-                    message.get('_observation_sources', []) if message.get('role') == 'tool' and
-                    message.get('_native_tool_observation') == 'native-tool-observation-v1' else [])
-            for rule in rules:
-                exact = (rule['session_id'] == session_id and source_message_hash(session_id, message)
-                         in json.loads(rule['message_hashes_json']))
-                dependent = any(ref.get('source_id') == rule['turn_id'] and (
-                    rule['whole_source'] or ref.get('source_version') == rule['source_version'])
-                    for ref in refs if isinstance(ref, dict))
-                if exact or dependent:
-                    causes.add(rule['turn_id'])
+            causes |= rules.causes(message, session_id)
         return causes
 
     @staticmethod
@@ -568,17 +622,33 @@ class TurnIdempotencyLedger:
                     removed=messages, whole=True)
             affected = []
             remaining_rows = {row['turn_id']: dict(row) for row in rows}
+            # Each source is parsed once for the whole closure, not once per pass,
+            # and only when a rule can reach it: it is erased whole, its session
+            # has an exact-copy rule, or its text names a dependency field. Every
+            # writer stores messages through json.dumps, so a message carrying
+            # _supplied_sources or _observation_sources has that key verbatim.
+            parsed: dict[str, list[dict[str, Any]]] = {}
+            names_dependencies: dict[str, bool] = {}
+            relexed: dict[str, list[dict[str, Any]]] = {}
             # BEGIN IMMEDIATE keeps these rules stable until this transaction
             # adds a partial-copy erasure. Unchanged rows need no fresh query.
-            rules = self._erasure_rules(conn, contact_id)
-            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
+            rules = _ErasureRules(self._erasure_rules(conn, contact_id))
+            erased_ids = rules.whole
             # Each changed row loses at least one message. This finite closure
             # follows only recorded supplied-source revisions, never topic text.
             changed = True
             while changed:
                 changed = False
                 for row in list(remaining_rows.values()):
-                    messages = json.loads(row["messages_json"])
+                    if row['turn_id'] not in erased_ids and not rules.exact.get(row['session_id']):
+                        reachable = names_dependencies.get(row['turn_id'])
+                        if reachable is None:
+                            reachable = names_dependencies[row['turn_id']] = _names_dependencies(row['messages_json'])
+                        if not reachable:
+                            continue
+                    messages = parsed.get(row['turn_id'])
+                    if messages is None:
+                        messages = parsed[row['turn_id']] = json.loads(row["messages_json"])
                     retained = [] if row["turn_id"] in erased_ids else self._retained_messages(messages, row["session_id"], rules)
                     if retained == messages:
                         continue
@@ -588,8 +658,8 @@ class TurnIdempotencyLedger:
                             session_id=row['session_id'], scope=row['scope'], messages=messages,
                             removed=[message for message in messages if message not in retained], whole=False)
                         if appended:
-                            rules = self._erasure_rules(conn, contact_id)
-                            erased_ids = {rule['turn_id'] for rule in rules if rule['whole_source']}
+                            rules = _ErasureRules(self._erasure_rules(conn, contact_id))
+                            erased_ids = rules.whole
                     from protagine.beliefs.source_projection import erase_removed
                     erase_removed(conn, row["turn_id"], row["session_id"], retained)
                     from protagine.turns.media import erase_removed as erase_media
@@ -605,11 +675,13 @@ class TurnIdempotencyLedger:
                     affected.append(row["turn_id"])
                     for selected_id in selected:
                         conn.execute("INSERT OR IGNORE INTO source_projection_erasures(turn_id,source_turn_id) VALUES (?,?)", (row["turn_id"], selected_id))
-                    conn.execute("DELETE FROM turn_source_search WHERE turn_id=?", (row["turn_id"],))
+                    # The lexical index is rewritten once, after the closure.
+                    relexed[row['turn_id']] = retained
                     if retained:
                         row['messages_json'] = json.dumps(retained, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                        parsed[row['turn_id']] = json.loads(row['messages_json'])
+                        names_dependencies.pop(row['turn_id'], None)
                         conn.execute("UPDATE turn_sources SET messages_json=? WHERE turn_id=?", (row['messages_json'], row["turn_id"]))
-                        self._index_messages(conn, row["turn_id"], retained)
                         from protagine.turns.source_vectors import enqueue as enqueue_vectors
                         enqueue_vectors(conn, row['turn_id'])
                     else:
@@ -619,6 +691,16 @@ class TurnIdempotencyLedger:
                     # Keep the immutable request digest, but invalidate cached
                     # summaries and turn effects after partial source redaction.
                     conn.execute("UPDATE turn_ingestion SET response_json=NULL, error=NULL WHERE turn_id=?", (row["turn_id"],))
+            # turn_id is UNINDEXED in the full-text table, so each DELETE scans
+            # all of it: one scan per chunk of changed sources, not per source.
+            # Nothing in the closure reads the lexical index.
+            changed_ids = list(relexed)
+            for start in range(0, len(changed_ids), 500):
+                chunk = changed_ids[start:start + 500]
+                conn.execute("DELETE FROM turn_source_search WHERE turn_id IN (%s)" % ",".join("?" * len(chunk)), chunk)
+            for turn_id, retained in relexed.items():
+                if retained:
+                    self._index_messages(conn, turn_id, retained)
             # Preserve cleanup targets so a retry after a graph outage also
             # removes copies that disappeared from the source table already.
             for selected_id in selected:

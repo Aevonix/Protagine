@@ -15,6 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -184,6 +185,7 @@ class FakeSidecar:
         self.proposals: list[dict] = []
         self.people_owner = OWNER   # whom the sidecar knows as the owner (its own check)
         self.told: dict[str, list[str]] = {}   # what each contact said in synced turns, recalled by contact
+        self.delays: dict[str, float] = {}     # path -> seconds the answer is held (a slow route)
         self.lock = threading.Lock()
         sidecar = self
 
@@ -216,6 +218,8 @@ class FakeSidecar:
                         sidecar.unauthorized.append(parts.path)
                     return self._reply(401, {"detail": "unauthorized"})
                 status, reply = sidecar.dispatch(self.command, parts.path, query, body)
+                if sidecar.delays.get(parts.path):
+                    time.sleep(sidecar.delays[parts.path])
                 self._reply(status, reply)
 
             do_GET = do_POST = do_PUT = do_PATCH = _route

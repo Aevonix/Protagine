@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from conftest import API_KEY, CANARY, OWNER, probe, worker_env
 
 TOOL_CODE = '''
@@ -473,6 +475,43 @@ emit(guest_search=call("protagine_memory_search", {"query": "plans"}, g),
     searches = sidecar.calls("/v1/host/memory/search", "POST")
     assert {c["json"]["person_id"] for c in searches} == {"p-02", OWNER}
     assert all(c["json"]["session_id"] in {"guest-1", "owner-1"} for c in searches)
+
+
+def test_a_forget_answered_late_is_unconfirmed_never_failed(home, sidecar):
+    """The sidecar finishes a forget it received. When its answer misses the tool's bound the
+    owner is told the removal may have completed, not that it failed (operability-11)."""
+    sidecar.delays["/v1/host/memory/sources/forget"] = 1.5
+    result = probe(TOOL_CODE + '''
+import protagine_hermes.tools as tools
+tools.FORGET_TIMEOUT_SECONDS = 0.3
+o = owner()
+emit(late=call("protagine_memory_forget", {"source_ids": ["src-1"]}, o))
+''', home)
+    assert "error" not in result["late"]
+    assert result["late"]["source_erased"] is None and result["late"]["status"] == "unconfirmed"
+    assert "may have completed" in result["late"]["note"] and "again is safe" in result["late"]["note"]
+    forget, = sidecar.calls("/v1/host/memory/sources/forget", "POST")     # it was delivered
+    assert forget["json"] == {"contact_id": OWNER, "source_ids": ["src-1"]}
+
+
+def test_the_client_tells_a_request_never_sent_from_one_left_unanswered(sidecar):
+    import socket
+    from protagine_hermes.client import ProtagineClient, SidecarUnavailable
+    with socket.socket() as closed:
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+    with pytest.raises(SidecarUnavailable) as refused:
+        ProtagineClient(url=f"http://127.0.0.1:{port}", api_key=API_KEY).post("/v1/host/memory/sources/forget", json={})
+    assert refused.value.delivered is False
+    sidecar.delays["/v1/host/memory/sources/forget"] = 1.0
+    client = ProtagineClient(url=sidecar.url, api_key=API_KEY)
+    with pytest.raises(SidecarUnavailable) as late:
+        client.post("/v1/host/memory/sources/forget", timeout=0.2, json={"contact_id": OWNER, "source_ids": ["x"]})
+    assert late.value.delivered is True
+    client._open_until = float("inf")                   # the breaker open: nothing leaves
+    with pytest.raises(SidecarUnavailable) as breaker:
+        client.post("/v1/host/memory/sources/forget", json={})
+    assert breaker.value.delivered is False
 
 
 def test_memory_search_without_a_participant_answers_once(home, sidecar):
