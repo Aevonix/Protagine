@@ -74,9 +74,10 @@ contact's session is never read. A corrected value an earlier owner message
 already held makes a `retrieval` lesson that says where the answer was;
 otherwise it is `knowledge`. A task body and its deliberation carry at most two
 lessons (`lesson_ids` on the intention), and the owner's own turn at most one,
-in a `protagine-lessons` section; uses are scored by the owner's verdicts and
-external checks, and a lesson under a 0.4 win rate after five verified uses is
-retired. A failure-class investigation of the mastery drive is now a reflector:
+in a `protagine-lessons` section; a task's use is scored by the owner's rating
+or an external check, a turn's by the owner's next message when it is a
+verdict on that reply, and a lesson under a 0.4 win rate after five verified
+uses is retired. A failure-class investigation of the mastery drive is now a reflector:
 its report ends with at most three lesson operations, validated and admitted as
 `candidate` lessons of that class, which a verified win there activates; it
 never changes an active lesson. The night runs when consolidation or lessons is

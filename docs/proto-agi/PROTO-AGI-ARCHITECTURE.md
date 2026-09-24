@@ -602,7 +602,9 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    - **Edits** are delta edits: a newer lesson on the same signature supersedes the old one.
      Whole rewrites are not allowed.
    - **Use.** Up to 2 lessons go into deliberation and kanban task bodies, and 1 into turn
-     context above a relevance threshold. Their `lesson_ids` are logged on the intention.
+     context above a relevance threshold. Their `lesson_ids` are logged on the intention; a turn's
+     use is logged per owner message and scored only by the owner's next message in that
+     session, when it is a verdict on that reply.
    - **Retirement.** Win and loss counts are computed by joining lessons to verified intention
      outcomes. A lesson under a 0.4 win rate after 5 uses is retired.
    - **Owner corrections are split deterministically.** The ledger is searched for the corrected
@@ -717,7 +719,7 @@ into the projection worker queue.
 own session with `scope='session'`, one per lesson event, carrying `{id, signature, kind, title,
 when_to_use, content, evidence, verified, origin, status: candidate | active | superseded |
 retired, supersedes, correction, retrieval_source}` (section 4.8). Their uses are the intention
-rows' `lesson_ids` and one `lesson_use` note per owner session.
+rows' `lesson_ids` and one `lesson_use` note per owner message a lesson served.
 
 **Autobiography.** Owner-audience ledger entries with `origin='mind'` (section 4.1).
 

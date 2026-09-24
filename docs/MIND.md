@@ -540,14 +540,16 @@ erases it together with its evidence.
   intention records them in `lesson_ids`. An owner's own turn gets at most one
   active lesson in a `protagine-lessons` context section ("What you learned",
   at most 420 characters), which says where it came from and that the owner's
-  word in the conversation comes first, and logs one `lesson_use` note for the
-  session. A guest, a recipient packet, the mind switched off or the faculty
+  word in the conversation comes first, and logs one `lesson_use` note for that
+  owner message (named by a key of its words, not the words). A guest, a recipient packet, the mind switched off or the faculty
   off gets none.
 - **Scoring and retirement.** A use counts when a verifier scored it: a task
   that carried the lesson and was verified by the owner (`useful`, `actioned`
   or `wrong`, `not_useful`), by an external check, or failed with Hermes'
-  reason; a turn use when the owner's quoted verdict later in that session says
-  the work was right or wrong. Over 90 days, a lesson under a 0.4 win rate
+  reason; a turn use when the owner's next message in that session is a
+  verdict on the reply the lesson helped write (a verdict inside the message
+  the lesson answered judges earlier work, and one on another answer judges
+  that answer, so neither scores it). Over 90 days, a lesson under a 0.4 win rate
   after five verified uses is retired, and a `candidate` becomes active after a
   verified win in its class; each change is an audit note.
 - **Corrections.** An operation that carries the value the owner corrected is

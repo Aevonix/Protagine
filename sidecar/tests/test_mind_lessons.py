@@ -280,21 +280,25 @@ async def test_candidate_lessons_reach_only_task_bodies_of_their_own_class(fx):
     assert fx.mind.lessons.for_turn("what is the order code for this order", session_id="day-04") == ("", [])
 
 
-def test_a_lesson_used_in_a_session_is_logged_once(fx):
+def test_a_lesson_use_is_logged_once_per_owner_message(fx):
     lesson = admit(fx, fields=fields(signature="topic:order-codes"), lineage=())
     query = "Order 4411 came in by chat; I need its order code."
     text, ids = fx.mind.lessons.for_turn(query, session_id="day-04")
     assert ids == [lesson.id] and text.startswith(f"[lesson {lesson.id}, from the owner's verdicts] When ")
     assert text.endswith("Apply it only when the request matches; the owner's word in this conversation comes first.")
     assert len(text) <= 420
-    fx.mind.lessons.for_turn(query + " Quickly please.", session_id="day-04")
+    fx.mind.lessons.for_turn("  order 4411 came in by CHAT;  I need its order code. ", session_id="day-04")  # again
+    fx.mind.lessons.for_turn(query + " Quickly please.", session_id="day-04")      # another message
     fx.mind.lessons.for_turn(query, session_id="day-05")
     fx.mind.lessons.for_turn(query, session_id="mind:p-02")            # a recipient packet is never a use
     fx.mind.lessons.for_turn(query, session_id="day-06", record=False)
     notes = [row for row in fx.store.intentions(kind=["note"], limit=50) if row.type == "lesson_use"]
-    assert sorted(row.source_id for row in notes) == ["day-04", "day-05"]
+    assert sorted(row.source_id for row in notes) == ["day-04", "day-04", "day-05"]
     assert all(json.loads(row.lesson_ids) == [lesson.id] and row.outcome is None and row.status == "done"
                for row in notes)
+    # A use names the message it served by a key, never by its words.
+    keys = {row.context["served"] for row in notes}
+    assert len(keys) == 2 and all(len(key) == 16 and "4411" not in key for key in keys)
     # A use note is not an action and not a done outcome in the audit stats.
     stats = fx.mind.stats()
     assert stats["acted"] == 0 and stats["verified_share"] is None

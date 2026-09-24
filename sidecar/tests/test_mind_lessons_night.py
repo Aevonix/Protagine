@@ -317,8 +317,76 @@ async def test_a_verdict_scores_the_sessions_lesson_use(tmp_path, monkeypatch):
     assert f"lessons used: {lesson.id}" in fx.router.prompts[0][1]
     assert result["counts"]["lesson_uses_scored"] == 1
     [note] = [row for row in fx.store.intentions(kind=["note"], limit=20) if row.type == "lesson_use"]
-    assert note.result_metadata["use"] == {"result": "loss", "verified": "owner", "turn": "day-04-verdict"}
+    assert note.result_metadata["use"] == {"result": "loss", "verified": "owner", "turn": "day-04-verdict",
+                                           "served": "day-04-request"}
     assert fx.mind.lessons.tally(fx.now)[lesson.id] == {"uses": 1, "wins": 0, "losses": 1, "applied": 1}
+    fx.store.close()
+
+
+async def test_a_turn_lesson_use_is_scored_only_by_the_owners_next_message(tmp_path, monkeypatch):
+    """A use belongs to the owner message whose context carried the lesson (it is logged at prefetch, before
+    the turn is captured); only the owner's next message in the session judges the reply it helped write. A
+    verdict inside the message the lesson answered judges earlier work, and a verdict on another answer
+    judges that answer."""
+    def answer(prompt):
+        return {"verdicts": [judged(prompt, "The tide answer was right", "The tide answer was right", work_was="right"),
+                             judged(prompt, "That code is wrong", "That code is wrong, it is E2207")], "ops": []}
+    fx = make(tmp_path, monkeypatch, answer)
+    admit = lambda **fields: fx.mind.lessons.admit(
+        {"signature": "topic:order-codes", "kind": "strategy", "title": "Order codes by channel",
+         "when_to_use": "an order code is asked for", "content": "Channel letter first.", **fields},
+        verified="owner", origin="night", status="active", evidence=[], lineage=[], now=fx.now)
+    codes = admit()
+    tides = admit(signature="topic:tide-tables", title="Tide tables from the harbour",
+                  when_to_use="tide tables for the harbour are asked for",
+                  content="Read the harbour tide table, never the coastal one.")
+
+    def turn(turn_id, session, text, reply, used):
+        assert fx.mind.lessons.for_turn(text, session_id=session)[1] == used      # the prefetch
+        fx.shift(seconds=20)
+        fx.turn(turn_id, OWNER, session, text, reply)                             # the capture, after the reply
+        fx.shift(minutes=2)
+    turn("d2-a", "day-02", "An order code is asked for order 6633 by chat.", "C3307", [codes.id])    # never judged
+    turn("d2-b", "day-02", "Tide tables for the harbour are asked for: when is high tide tomorrow?", "At 06:10.",
+         [tides.id])
+    turn("d2-c", "day-02", "The tide answer was right, thanks.", "Good.", [])
+    turn("d3-a", "day-03", "Please check the delivery window for tomorrow.", "The code is E5522.", [])
+    turn("d3-b", "day-03", "That code is wrong, it is E2207. Now: an order code is asked for order 6633 by chat.",
+         "The order code is C3307.", [codes.id])                                                    # judges d3-a
+    result = await night(fx)
+    assert result["counts"]["lesson_uses_scored"] == 1
+    scored = {(use["session_id"], use["lesson_id"]): use["result"] for use in fx.mind.lessons.uses()}
+    assert scored == {("day-02", codes.id): None, ("day-02", tides.id): "win", ("day-03", codes.id): None}
+    tally = fx.mind.lessons.tally()
+    assert tally[tides.id] == {"uses": 1, "wins": 1, "losses": 0, "applied": 1}
+    assert tally[codes.id] == {"uses": 0, "wins": 0, "losses": 0, "applied": 2}
+    fx.store.close()
+
+
+async def test_the_same_words_twice_in_a_session_score_the_use_by_the_message_it_served(tmp_path, monkeypatch):
+    question = "An order code is asked for order 6633 by chat."
+
+    def answer(prompt):
+        return {"verdicts": [judged(prompt, "That was wrong", "That was wrong, it is C3307"),
+                             judged(prompt, "This one is right", "This one is right, thanks", work_was="right")],
+                "ops": []}
+    fx = make(tmp_path, monkeypatch, answer)
+    fx.turn("d5-a", OWNER, "day-05", question, "E6633.")                       # before any lesson
+    fx.shift(minutes=2)
+    fx.turn("d5-b", OWNER, "day-05", "That was wrong, it is C3307.", "Noted.")
+    fx.shift(hours=1)
+    lesson = fx.mind.lessons.admit(
+        {"signature": "topic:order-codes", "kind": "strategy", "title": "Order codes by channel",
+         "when_to_use": "an order code is asked for", "content": "Channel letter first."},
+        verified="owner", origin="night", status="active", evidence=[], lineage=[], now=fx.now)
+    assert fx.mind.lessons.for_turn(question, session_id="day-05")[1] == [lesson.id]
+    fx.shift(seconds=20)
+    fx.turn("d5-c", OWNER, "day-05", question, "C6633.")
+    fx.shift(minutes=2)
+    fx.turn("d5-d", OWNER, "day-05", "This one is right, thanks.", "Good.")
+    await night(fx)
+    [use] = fx.mind.lessons.uses()
+    assert use["result"] == "win"
     fx.store.close()
 
 

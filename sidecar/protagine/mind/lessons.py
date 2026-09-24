@@ -11,9 +11,10 @@ entries.
 
 Uses are joins, not counters: an intention that carried a lesson lists it in its ``lesson_ids``
 column (task bodies, deliberation), and a lesson in an owner turn's context leaves one
-``lesson_use`` note per session. A use counts only when a verifier that could not be the worker's
-own word scored it (``VERIFYING_SOURCES``; a ``result_field`` check reads only the worker's report,
-so it is not one, ``EXTERNAL_CHECKS``). ``review`` activates a candidate after a verified win in
+``lesson_use`` note per owner message, which the owner's next message in that session scores. A use
+counts only when a verifier that could not be the worker's own word scored it
+(``VERIFYING_SOURCES``; a ``result_field`` check reads only the worker's report, so it is not one,
+``EXTERNAL_CHECKS``). ``review`` activates a candidate after a verified win in
 its class and retires a lesson that wins under 40% of at least five verified uses.
 """
 
@@ -144,6 +145,12 @@ def _json(value: Any, default: Any) -> Any:
         return json.loads(value)
     except ValueError:
         return default
+
+
+def served_key(text: Any) -> str:
+    """The owner message a turn lesson served, as its use names it: a key of its words (case and runs of
+    whitespace aside), so the note keeps none of them."""
+    return hashlib.sha256(_folded(text).encode()).hexdigest()[:16]
 
 
 def lesson_id(signature: str, kind: str, content: str) -> str:
@@ -389,7 +396,7 @@ class Lessons:
     def for_turn(self, query: Any, *, session_id: str, record: bool = True,
                  now: datetime | None = None) -> Tuple[str, List[str]]:
         """The one active lesson most relevant to an owner turn, rendered for its context, and the use
-        logged for the session (never for a recipient packet, whose session is ``mind:<contact>``)."""
+        logged for the owner's message (never for a recipient packet, whose session is ``mind:<contact>``)."""
         if not self.enabled or not self.available or not str(query or "").strip():
             return "", []
         scored = [(relevance(lesson, query), lesson) for lesson in self.all()
@@ -399,12 +406,14 @@ class Lessons:
         _, best = max(scored, key=lambda item: (item[0][1], item[0][0], item[1].admitted_at or ""))
         session_id = str(session_id or "")
         if record and session_id and not session_id.startswith("mind:"):
-            self.record_use(session_id=session_id, lesson_ids=[best.id], now=now)
+            self.record_use(session_id=session_id, lesson_ids=[best.id], served=served_key(query), now=now)
         return best.section(), [best.id]
 
-    def record_use(self, *, session_id: str, lesson_ids: Iterable[str], now: datetime | None = None) -> None:
-        """One ``lesson_use`` note per session and lesson: done, with no outcome (it is not an action),
-        scored later from the owner's verdict in that session."""
+    def record_use(self, *, session_id: str, lesson_ids: Iterable[str], served: str,
+                   now: datetime | None = None) -> None:
+        """One ``lesson_use`` note per owner message (``served``, its ``served_key``) and lesson: done, with
+        no outcome (it is not an action). It is written before the turn is captured; the night finds the
+        message it served and scores it by the owner's next message in the session (``_score``)."""
         now = now or self.clock()
         for ident in dict.fromkeys(str(item) for item in lesson_ids if str(item)):
             try:
@@ -412,8 +421,9 @@ class Lessons:
                     kind="note", type=USE_TYPE, title=f"lesson {ident} in session {session_id}"[:160],
                     drive="mastery", cls="internal", decision="act",
                     decision_reason="a lesson in the owner's turn context", status="done",
-                    dedup_key=f"{USE_TYPE}:{session_id}:{ident}", hermes_kind="none", source_type="session",
-                    source_id=session_id, context={"lesson_id": ident, "session_id": session_id}, created_at=now)
+                    dedup_key=f"{USE_TYPE}:{session_id}:{ident}:{served}", hermes_kind="none", source_type="session",
+                    source_id=session_id, context={"lesson_id": ident, "session_id": session_id, "served": served},
+                    created_at=now)
                 if created == "created":
                     self.store.update(row.id, lesson_ids=[ident])
             except Exception as error:
@@ -724,6 +734,7 @@ class Lessons:
         sessions, newest = self._owner_sessions(now)
         uses = self._session_uses([item["session_id"] for item in sessions], now)
         owner: Dict[str, Dict[str, Any]] = {}
+        order: Dict[str, List[str]] = {}         # each session's owner labels, oldest first
         lines: List[str] = []
         if sessions:
             lines.append("The owner's sessions (owner messages are labelled; the agent's replies follow them):")
@@ -739,7 +750,9 @@ class Lessons:
                         label = f"t{len(owner) + 1}"
                         # ``after_work``: an agent reply precedes it in its session, so it can judge work.
                         owner[label] = {"turn_id": turn["turn_id"], "text": text, "at": turn["at"],
-                                        "session_id": session["session_id"], "after_work": replied}
+                                        "session_id": session["session_id"], "after_work": replied,
+                                        "key": served_key(text)}
+                        order.setdefault(session["session_id"], []).append(label)
                         lines.append(f"{label} [{turn['at'][:16]}] owner: {clipped}")
                     else:
                         replied = True
@@ -765,7 +778,8 @@ class Lessons:
             lines.append("Current lessons (id | status | kind | signature | title | when | content):")
             lines += [f"{lesson.id} | {lesson.status} | {lesson.kind} | {lesson.signature} | {lesson.title} | "
                       f"{lesson.when_to_use} | {lesson.content}" for lesson in current]
-        return {"owner": owner, "events": events, "lessons": {lesson.id: lesson for lesson in current},
+        return {"owner": owner, "order": order, "events": events,
+                "lessons": {lesson.id: lesson for lesson in current},
                 "text": "\n".join(lines), "newest": newest, "sessions": sessions}
 
     @staticmethod
@@ -935,19 +949,43 @@ class Lessons:
                 return "retrieval", f"turn:{hit['turn_id']}"
         return "knowledge", None
 
+    @staticmethod
+    def _served(row: Any, labels: Sequence[str], packet: Mapping[str, Any]) -> Optional[str]:
+        """The owner message a turn's lesson use served: the one of its session with the use's key, the
+        nearest in time when the owner said the same words twice; None when it is not in the packet."""
+        context = row.context if isinstance(getattr(row, "context", None), dict) else {}
+        key, created = context.get("served"), _utc(row.created_at)
+        matches = [label for label in labels if key and packet["owner"][label]["key"] == key]
+        if len(matches) < 2 or created is None:
+            return matches[0] if matches else None
+
+        def distance(label: str) -> float:
+            said = _utc(packet["owner"][label]["at"])
+            return abs((said - created).total_seconds()) if said is not None else float("inf")
+        return min(matches, key=distance)
+
     def _score(self, judged: Mapping[str, str], packet: Mapping[str, Any], night: Any, now: datetime) -> None:
-        """Each checked owner verdict (``_verdicts``) scores the lesson uses of its session that came before it."""
+        """A turn's lesson use is scored by the owner's next message in its session when that message is a
+        checked verdict (``_verdicts``): it judges the reply the lesson helped write. A verdict inside the
+        message the lesson answered judges earlier work, and one on another answer judges that answer, so
+        neither scores it; a use whose next message has not come yet waits for a later night."""
+        if not judged:
+            return
         by_session = self._session_uses([item["session_id"] for item in packet["sessions"]], now)
-        for label, work_was in judged.items():
-            owner = packet["owner"][label]
-            said = _utc(owner["at"])
-            for row in by_session.get(owner["session_id"], []):
-                created = _utc(row.created_at)
+        for session_id, rows in by_session.items():
+            labels = packet["order"].get(session_id) or []
+            for row in rows:
                 metadata = dict(row.result_metadata or {}) if isinstance(row.result_metadata, dict) else {}
-                if metadata.get("use") or said is None or created is None or created > said:
+                served = None if metadata.get("use") else self._served(row, labels, packet)
+                if served is None:
                     continue
-                metadata["use"] = {"result": "win" if work_was == "right" else "loss",
-                                   "verified": "owner", "turn": owner["turn_id"]}
+                position = labels.index(served) + 1
+                verdict = labels[position] if position < len(labels) else None
+                if verdict not in judged:
+                    continue
+                metadata["use"] = {"result": "win" if judged[verdict] == "right" else "loss", "verified": "owner",
+                                   "turn": packet["owner"][verdict]["turn_id"],
+                                   "served": packet["owner"][served]["turn_id"]}
                 self.store.update(row.id, result_metadata=metadata)
                 night.count("lesson_uses_scored")
 
@@ -1007,4 +1045,4 @@ class Lessons:
 __all__ = ["CURRENT", "EXTERNAL_CHECKS", "REFLECTOR_FORMAT", "REFLECTOR_OPS", "LESSON_SCHEMA", "LESSON_SYSTEM", "LESSON_TASK", "WATERMARK", "KINDS", "LINE_CHARS", "Lesson", "Lessons", "MIN_SHARED", "RELEVANCE",
            "RETIRE_RATE", "RETIRE_USES", "SECTION_CHARS", "STATUSES", "TALLY_WINDOW", "TASK_LESSONS",
            "TURN_LESSONS", "VERIFYING_SOURCES", "lesson_id", "lesson_ids_of", "relevance", "relevant",
-           "task_signature", "terms"]
+           "served_key", "task_signature", "terms"]

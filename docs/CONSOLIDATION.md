@@ -80,9 +80,9 @@ next night.
    an owner citation only of a reported verdict and with the owner's exact words quoted, a
    strategy only from an owner verdict or an external check, a pitfall also from a Hermes failure,
    a retirement only on a verdict or a verified failure, never from an unverified result or a
-   contact's session. What passes is admitted `active`, with the
-   strongest cited verifier, the corrected value split into `retrieval` or `knowledge`; quoted
-   verdicts score the session's earlier lesson uses; what was read is marked, so the next night
+   contact's session. What passes is admitted `active`, with the strongest cited verifier, the
+   corrected value split into `retrieval` or `knowledge`; each checked verdict scores the lesson
+   use of the owner message just before it in its session; what was read is marked, so the next night
    starts after it. The stage ends with the lesson review (retire under a 0.4 win rate after five
    verified uses, activate a candidate after a verified win) and the skills sync. Counts:
    `lessons_admitted`, `lessons_superseded`, `lessons_retired`, `lessons_activated`,
