@@ -629,12 +629,12 @@ async def test_three_queued_jobs_with_a_backoff_in_the_middle_land_in_order(tmp_
 
 
 async def test_a_head_job_that_exhausts_its_attempts_releases_the_persons_queue(tmp_path):
-    """The earlier job fails for the last time: it is finished as failed, not left pending, so the
-    later job of the same person runs in the same drain."""
+    """The earlier job fails its last scheduled attempt: it is finished as failed, not left pending,
+    so the later job of the same person runs in the same drain."""
     cstore, ledger, extractor = _setup(tmp_path)
     _turn(ledger, "t-1", "I'll send Sam the recap by five.")
     _turn(ledger, "t-2", "Remind me to call the vet at four.", session="s-2")
-    _set_job(ledger, "t-1", attempts=MAX_ATTEMPTS - 1, next_attempt=time.time() + 60,
+    _set_job(ledger, "t-1", attempts=MAX_ATTEMPTS - 1, next_attempt=time.time() - 1,
              hold_until=time.time() + HOLD_RETRY_SECONDS, error="ConnectionError")
 
     def down_once(call):

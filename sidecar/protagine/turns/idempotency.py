@@ -327,7 +327,7 @@ class TurnIdempotencyLedger:
                                    runtime_observation=runtime_judgment)
             if derive_claims:
                 from protagine.commitments.extract import enqueue as enqueue_commitments
-                enqueue_commitments(conn, turn_id, contact_id, messages, scope=scope)
+                enqueue_commitments(conn, turn_id, contact_id, messages, scope=scope, timezone_name=timezone_name)
             from protagine.turns.source_vectors import enqueue as enqueue_vectors
             enqueue_vectors(conn, turn_id)
         return True

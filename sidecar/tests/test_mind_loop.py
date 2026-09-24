@@ -949,7 +949,7 @@ async def test_a_forced_drain_takes_a_job_that_is_backed_off(tmp_path, monkeypat
         summary = await fx.mind.tick(force=True)
         assert summary["capture_drained"]["recorded"] == 1 and summary["overdue_flipped"] == 1
         assert [item["type"] for item in summary["formed"]] == ["commitment_reminder"]
-        assert _pending_jobs(fx)[0][:2] == ("complete", 2)
+        assert _pending_jobs(fx)[0][:2] == ("complete", 1)          # the early attempt is uncharged
     finally:
         fx.store.close()
 
