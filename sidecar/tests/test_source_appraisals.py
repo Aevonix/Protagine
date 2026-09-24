@@ -293,17 +293,30 @@ async def test_concurrent_interpretations_cannot_overwrite_newer_head(state):
 
 
 @pytest.mark.asyncio
-async def test_durable_view_retains_pending_contrary_evidence_until_interval(state):
-    decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
+async def test_durable_hypothesis_retains_pending_contrary_evidence_until_interval(state):
+    def decide(payload):
+        current = next(e for e in payload['evidence'] if e['current'])
+        prior = [e for e in payload['evidence'] if not e['current']]
+        if not prior:
+            return observation(payload)
+        item = observation(payload, kind='behavior_hypothesis', dimension='working_style', topic='export reports',
+                           hint='verify_before_relying')
+        item['support'] = [{'handle': current['handle'], 'quote': current['text']},
+                           {'handle': prior[0]['handle'], 'quote': prior[0]['text']}]
+        return item
     source(state, 'first', 'The export report claimed completion before output existed.')
     await state.process_one(Processor(decide))
+    source(state, 'second', 'Another export report claimed completion before its output existed.')
+    await state.process_one(Processor(decide))
+    assert [r['kind'] for r in view(state)['records']].count('behavior_hypothesis') == 1
     source(state, 'contrary', 'The next export report matched the output verification.')
     await state.process_one(Processor(decide, name='processor-b'))
     with state.ledger._connect() as conn:
         assert conn.execute("SELECT status FROM appraisal_runs WHERE turn_id='contrary'").fetchone()[0] == 'pending'
     state.test_clock.value += module.DURABLE_INTERVAL + 1
     await state.process_one(Processor(decide, name='processor-b'))
-    assert view(state)['records'][0]['processor']['model_id'] == 'processor-b'
+    hypothesis = next(r for r in view(state)['records'] if r['kind'] == 'behavior_hypothesis')
+    assert hypothesis['processor']['model_id'] == 'processor-b'
 
 
 @pytest.mark.asyncio
@@ -343,7 +356,7 @@ async def test_retired_numeric_engagement_does_not_call_another_model():
 
 @pytest.mark.asyncio
 async def test_revision_rehydrates_original_quotes_and_erasure_follows_both_sources(state):
-    decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
+    decide = lambda p: observation(p, kind='assessment', dimension='self_report', hint='verify_before_relying')
     source(state, 'first', 'The export report claimed completion before output existed.')
     await state.process_one(Processor(decide))
     state.test_clock.value += module.DURABLE_INTERVAL + 1
@@ -441,8 +454,8 @@ async def test_single_json_fence_is_accepted_without_salvaging_prose(state):
 @pytest.mark.asyncio
 async def test_duplicate_claim_across_sources_cannot_support_behavior_hypothesis(state):
     source(state, 'first', 'The export report was premature.')
-    await state.process_one(Processor(lambda p: observation(p, kind='judgment',
-        dimension='skepticism', hint='verify_before_relying')))
+    await state.process_one(Processor(lambda p: observation(p, kind='appraisal',
+        dimension='annoyance', hint='verify_before_relying')))
     source(state, 'second', 'The export report was premature.')
     def hypothesis(payload):
         item = observation(payload, kind='behavior_hypothesis', dimension='working_style', hint='none')

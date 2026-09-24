@@ -227,13 +227,8 @@ async def test_ingress_does_not_run_retired_engagement_extractor(relations, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('judgments_enabled', [False, True])
-async def test_badge_turn_keeps_source_learning_without_mood_inference_or_injection(approach, monkeypatch, judgments_enabled):
+async def test_badge_turn_keeps_source_learning_without_mood_inference_or_injection(approach, monkeypatch):
     r = approach
-    if judgments_enabled:
-        monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
-    else:
-        monkeypatch.delenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', raising=False)
     monkeypatch.setattr('protagine.identity.get_owner_contact_id', lambda: 'contact-a')
     async def forbidden(*args, **kwargs):
         raise AssertionError('Ordinary badge recall must not infer a mood')
@@ -248,11 +243,8 @@ async def test_badge_turn_keeps_source_learning_without_mood_inference_or_inject
             for table in ('source_claim_jobs', 'appraisal_runs'):
                 row = conn.execute('SELECT status FROM '+table+' WHERE turn_id=?', ('badge-turn',)).fetchone()
                 assert row and row['status'] == 'pending'
-            judgment = conn.execute('SELECT status FROM self_judgment_runs WHERE turn_id=?', ('badge-turn',)).fetchone()
-            if judgments_enabled:
-                assert judgment and judgment['status'] == 'pending'
-            else:
-                assert judgment is None
+            opinion = conn.execute('SELECT kind,done_at FROM opinion_jobs WHERE ref=?', ('badge-turn',)).fetchone()
+            assert opinion and opinion['kind'] == 'turn' and opinion['done_at'] is None
         assert 'cobalt-716' in await recalled(client, session='new-session', query='orchard badge')
         # Historical/explicit mood data still exists. Canonical context assembly
         # must not promote that numeric interpretation into current guidance.

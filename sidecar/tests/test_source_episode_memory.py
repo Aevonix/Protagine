@@ -10,7 +10,7 @@ from protagine.beliefs.source_projection import SourceClaimProjection
 from protagine.self_model.judgments import SelfJudgments
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns import source_read
-from test_self_judgments import Processor
+from test_self_judgments import proposal
 from test_self_perspective import perspective, tell
 from test_source_claim_projection import Model
 from test_turn_source_evidence import source_app
@@ -78,7 +78,7 @@ async def test_reported_episode_keeps_its_representation_in_history_and_next_ext
 
 
 @pytest.mark.asyncio
-async def test_ordinary_episode_reaches_deliberation_and_erasure_withdraws_it(source_app, perspective):
+async def test_ordinary_episode_is_an_opinion_premise_and_erasure_withdraws_the_stance(source_app, perspective):
     state, _, _ = perspective
     ledger = state.ledger
     projection = SourceClaimProjection(ledger)
@@ -88,12 +88,11 @@ async def test_ordinary_episode_reaches_deliberation_and_erasure_withdraws_it(so
         await tell(client, REPORT, 'checkpoint-episode')
         assert await projection.process_one(model)
     assert len(model.calls) == 1  # Exact whole-source reports need no second review.
-    thinker = Processor()
-    assert await judgments.process_one(thinker)
-    assert len(thinker.requests) == 1
-    premise, = thinker.requests[0]['evidence'][0]['admitted_premises']
-    assert premise['representation'] == 'episode' and premise['evidence'] == REPORT
-    assert len(judgments.revisions()) == 1
+    premise, = judgments.admitted_premises('checkpoint-episode')
+    assert premise.kind == 'claim' and premise.text == REPORT
+    result = judgments.form(proposal([premise], topic='checkpoint frequency', source_ref='turn:checkpoint-episode',
+        stance='I favor fewer checkpoints for short local tasks.'))
+    assert result.disposition == 'formed' and len(judgments.revisions()) == 1
     reopened = SelfJudgments(TurnIdempotencyLedger(ledger.db_path), owner_id='contact-a')
     assert len(reopened.revisions()) == 1
     ledger.erase_sources(contact_id='contact-a', turn_ids=['checkpoint-episode'])

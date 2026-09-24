@@ -57,12 +57,13 @@ the overrides as `task_roles`; each active request keeps its selected snapshot.
 Appraisal formation uses `source_appraisal`, which defaults to extraction. When
 the existing source worker must compare a retained appraisal, integrate an owner
 correction or resolve an open incident, it selects `source_appraisal_revision`,
-which defaults to reasoning. `self_judgment` also defaults to reasoning. All three
-can be assigned independently through `taskRoles`; each selected function supplies
-both the background request budget and its owned job lease. Ordinary recollection
-does not wait for these background updates. Assigning a role does not enable a
-disabled operator or automatic self-judgments. The recorded processor metadata
-names the task, model and configuration that actually produced each new appraisal.
+which defaults to reasoning. `self_judgment`, the opinion pass that proposes the
+agent's stances, also defaults to reasoning. All three can be assigned
+independently through `taskRoles`; each selected function supplies the background
+request budget. Ordinary recollection does not wait for these background updates.
+Assigning a role does not enable a disabled operator; the opinion pass runs only
+while `mind.faculties.opinions` is on. The recorded processor metadata names the
+task, model and configuration that actually produced each new appraisal or stance.
 
 ```json
 {

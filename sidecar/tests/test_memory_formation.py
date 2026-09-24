@@ -5,9 +5,7 @@ import pytest
 
 from protagine.beliefs.source_claims import validated_claims
 from protagine.beliefs.source_projection import SourceClaimProjection
-from protagine.self_model.judgments import SelfJudgments
 from protagine.turns import TurnIdempotencyLedger
-from test_self_judgments import Clock, Processor, revise, run_row, source
 from test_source_claim_projection import Model, claim, prepared
 
 
@@ -91,46 +89,3 @@ def test_ordinary_claim_still_requires_its_value_to_be_quoted():
     candidate = claim(text, 'Cedar', subject='I', predicate='office location')
     assert validated_claims(json.dumps([candidate]), message=text,
                             prior=[], observed_at=None) == []
-
-
-@pytest.mark.asyncio
-async def test_new_judgment_can_omit_only_its_null_predecessor(tmp_path, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'contact-a')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
-    clock = Clock()
-    state = SelfJudgments(TurnIdempotencyLedger(tmp_path / 'sources.db'), owner_id='contact-a', clock=clock)
-    source(state)
-
-    def without_predecessor(payload):
-        result = revise(payload)
-        result.pop('supersedes')
-        return result
-
-    assert await state.process_one(Processor(decide=without_predecessor))
-    assert run_row(state, 'first')['disposition'] == 'revised'
-    reopened = SelfJudgments(TurnIdempotencyLedger(state.ledger.db_path), owner_id='contact-a', clock=clock)
-    first = reopened.revisions()[0]
-    assert first['supersedes'] is None
-    clock.value += 86401
-    source(reopened, 'later', 'Local work checkpoints recovered a second interrupted task.')
-    assert await reopened.process_one(Processor(decide=without_predecessor))
-    assert run_row(reopened, 'later')['validation_code'] == 'invalid_judgment_predecessor'
-    assert [row['id'] for row in reopened.revisions()] == [first['id']]
-
-
-@pytest.mark.asyncio
-async def test_missing_predecessor_does_not_hide_other_invalid_judgment_fields(tmp_path, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'contact-a')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
-    state = SelfJudgments(TurnIdempotencyLedger(tmp_path / 'sources.db'), owner_id='contact-a', clock=Clock())
-    source(state)
-
-    def missing_reason(payload):
-        result = revise(payload)
-        result.pop('supersedes')
-        result.pop('reason')
-        return result
-
-    assert await state.process_one(Processor(decide=missing_reason))
-    assert run_row(state, 'first')['validation_code'] == 'invalid_judgment_shape'
-    assert state.revisions() == []
