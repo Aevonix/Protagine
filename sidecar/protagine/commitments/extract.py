@@ -88,22 +88,21 @@ SYSTEM = (
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later "
     "(\"remind me to X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\").\n"
-    "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something through a channel the reply "
-    "did NOT satisfy (email it, text a DIFFERENT number, send it to someone else, send it later), AND the "
-    "actual content to send is present in the exchange. IMPORTANT: in a chat the assistant's reply already "
-    "IS a message to the person, so a plain \"text me\"/\"message me\" is ALREADY satisfied; do NOT record "
-    "that; only record a deliverable for a genuinely different channel, recipient, or time.\n"
-    "3. A DEADLINE-CONDITIONED MESSAGE TO A THIRD PARTY: the person says that if something has not happened by a "
-    "time, a named contact is to be told or asked something. Record it with due_at = that time, obligor "
-    "\"assistant\", counterpart = that contact, and metadata "
+    "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the "
+    "reply did NOT satisfy (email it, text it to their other number, send it later), AND the actual content to "
+    "send is present in the exchange. IMPORTANT: in a chat the assistant's reply already IS a message to the "
+    "person, so a plain \"text me\"/\"message me\" is ALREADY satisfied; do NOT record that; only record a "
+    "deliverable for a genuinely different channel or time. Anything for SOMEONE ELSE is case 3, never case 2.\n"
+    "3. A MESSAGE TO A THIRD PARTY: the person wants a named contact told or asked something, now or if something "
+    "has not happened by a time. Record it with due_at = that time (about two minutes from now when it is to go "
+    "now), obligor \"assistant\", counterpart = that contact, and metadata "
     '{"kind":"notice","recipient":"<contact as named>","content":"<the words the person wants delivered, ready '
     'as-is>","grant":"owner"} when the person dictates what to say, or '
     '{"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, at most 6 words>","grant":"owner"} '
     "when the person asks you to check on, chase or ask them about something. content is only the person's own "
     "words for the contact, never your paraphrase. The topic names the matter only: "
-    "never figures, amounts, codes or reasons. A message the person wants sent NOW to a third party is the "
-    "reply's own job: record nothing for it. A check-in that repeats (every N minutes, hours or days) is case 4, "
-    "never case 3.\n"
+    "never figures, amounts, codes or reasons. Record it unless the reply shows it already went to them. A "
+    "check-in that repeats (every N minutes, hours or days) is case 4, never case 3.\n"
     "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: the person says a named contact is to be checked in "
     "with (or on) every N minutes, hours or days, usually about a matter. Record it with due_at null, obligor "
     "\"assistant\", counterpart = that contact, and metadata "
@@ -197,7 +196,10 @@ SYSTEM = (
     "Assistant replied: Noted.\n"
     "[]   (nothing is sent until the owner says so)\n"
     "They said: Tell p-05 the meeting moved to Tuesday. | Assistant replied: I will let them know.\n"
-    "[]   (a message to send now is the reply's own job)\n"
+    '[{"action":"create","target":null,"description":"Tell p-05 the meeting moved to Tuesday",'
+    '"due_at":"2026-06-26T17:02:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"notice",'
+    '"recipient":"p-05","content":"The meeting moved to Tuesday.","grant":"owner"},"listed_due":null,'
+    '"counterpart":"p-05","obligor":"assistant"}]\n'
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
@@ -451,6 +453,29 @@ def _words(text: Any) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", str(text or "").lower()).split())
 
 
+# A counterpart that names the person themselves, not a third party.
+SELF_COUNTERPARTS = frozenset({"", "owner", "assistant", "me", "null", "none"})
+
+
+def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_id: str) -> Dict[str, Any]:
+    """The stated metadata, with a deliverable meant for someone else read as a case-3 message to them.
+
+    A deliverable goes to the turn's own person, so words for a third party
+    ("send Kim the address") recorded as one would reach the person who asked.
+    One rule covers every message a third party is to receive: it is a
+    ``notice`` to that counterpart, which ``message_metadata`` keeps only with
+    the person's own words (otherwise a check-in around the matter) and grants
+    only on the owner's turn.
+    """
+    metadata = dict(stated or {})
+    other = " ".join(str(counterpart or "").split())
+    if (metadata.get("kind") != "deliverable" or other.lower() in SELF_COUNTERPARTS
+            or other == str(person_id or "")):
+        return metadata
+    return {key: value for key, value in metadata.items() if key != "channel_hint"} | {
+        "kind": "notice", "recipient": other, "grant": "owner"}
+
+
 def message_metadata(metadata: Dict[str, Any], *, owner_turn: bool, turn_text: Optional[str] = None,
                      description: str = "") -> Optional[Dict[str, Any]]:
     """Case 3 and case 4 metadata as stored: a notice needs its words and a check-in its recipient;
@@ -566,7 +591,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if any(_similar_desc(norm, k) for k in known):
             skipped += 1
             continue
-        metadata = message_metadata(dict(stated or {}), owner_turn=bool(owner_id) and person_id == owner_id,
+        metadata = message_metadata(_for_third_party(stated, item.get("counterpart"), person_id),
+                                    owner_turn=bool(owner_id) and person_id == owner_id,
                                     turn_text=owner_text, description=description)
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes

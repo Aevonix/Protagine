@@ -810,9 +810,8 @@ def test_the_contract_names_the_obligor():
 
 def test_the_contract_carries_case_three_and_its_metadata_shapes():
     from protagine.commitments import extract
-    assert "DEADLINE-CONDITIONED MESSAGE TO A THIRD PARTY" in extract.SYSTEM
+    assert "A MESSAGE TO A THIRD PARTY" in extract.SYSTEM
     assert '{"kind":"notice","recipient":' in extract.SYSTEM and '{"kind":"check_in","recipient":' in extract.SYSTEM
-    assert "sent NOW to a third party is the reply's own job" in extract.SYSTEM
     assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
     assert extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the Q3 figure 4.2m code X7",
                                      "grant": "owner"}, owner_turn=True) == \

@@ -60,15 +60,18 @@ audit log, the outbox, outcomes and the off switch. The design is in
    `metadata.lead_minutes`; the heads-up is part of that item, never a second
    one. A moved deadline moves an absolute heads-up by the same delta (a hold
    drops it); a turn that states a new warning time replaces it.
-   A deadline-conditioned message to a third party ("if Kim has not sent the
-   draft by 3, ask her for it"; "if the venue is not confirmed by 5, tell
-   them the booking lapses") is one item due at that time, obligor
-   `assistant`, with `metadata.kind` `notice` (the owner's own words, sent
-   verbatim) or `check_in` (a topic of at most six words, never a figure,
-   amount or code, composed at send time), the `recipient` as named and
-   `grant: owner`. Only the owner's own turn keeps the grant; the same shape
-   from a contact is an ordinary item. A message the owner wants sent now is
-   the reply's job and records nothing.
+   A message to a third party ("if Kim has not sent the draft by 3, ask her
+   for it"; "if the venue is not confirmed by 5, tell them the booking
+   lapses"; "tell Kim the meeting moved") is one item due at that time
+   (about two minutes out when it is to go now, since stock Hermes gives the
+   reply no send tool), obligor `assistant`, with `metadata.kind` `notice`
+   (the owner's own words, sent verbatim) or `check_in` (a topic of at most
+   six words, never a figure, amount or code, composed at send time), the
+   `recipient` as named and `grant: owner`. Only the owner's own turn keeps
+   the grant; the same shape from a contact is an ordinary item. A
+   deliverable goes only to the turn's own person: one the model records for
+   a named third party is read as a notice to that party, so the words never
+   go back to whoever asked.
    A recurring check-in the owner sets for a contact ("check on Kim every
    week about the kitchen quote") is one undated item, obligor `assistant`,
    with `metadata.kind` `cadence`, the `recipient` as named, a `topic` under

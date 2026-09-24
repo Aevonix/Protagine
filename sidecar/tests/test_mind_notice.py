@@ -3,7 +3,7 @@
 "If X has not happened by T, tell C": capture records a ``notice`` (the owner's own words) or
 a ``check_in`` (the matter, composed later) with a per-commitment owner grant; the duty drive
 emits the message at T; the grant counts as ``may_contact=auto`` for that recipient only, never
-over a ``never``; a sent row settles the commitment; an immediate relay is the reply's job.
+over a ``never``; a sent row settles the commitment; a message to send now is a notice due in minutes.
 The ``delegated_chase`` template of ``mind-initiative-1`` runs here end to end with a fake body.
 """
 
@@ -31,6 +31,7 @@ CHECK_IN = {**NOTICE, "description": f"Ask {CONTACT} about the budget draft",
 
 
 def _store(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     return CommitmentStore(tmp_path / "protagine-commitments.db")
 
 
@@ -38,12 +39,55 @@ def _store(tmp_path):
 # capture: the contract and the stored metadata
 # ---------------------------------------------------------------------------
 
-def test_the_extractor_contract_names_case_three_with_both_shapes_and_the_immediate_relay_rule():
+def test_the_extractor_contract_names_case_three_with_both_shapes():
     assert '"kind":"notice"' in extract.SYSTEM and '"kind":"check_in"' in extract.SYSTEM
-    assert "DEADLINE-CONDITIONED MESSAGE TO A THIRD PARTY" in extract.SYSTEM
+    assert "A MESSAGE TO A THIRD PARTY" in extract.SYSTEM
     assert '"grant":"owner"' in extract.SYSTEM and "p-05" in extract.SYSTEM
-    assert "6 words" in extract.SYSTEM and "record nothing" in extract.SYSTEM.lower()
+    assert "6 words" in extract.SYSTEM
     assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
+
+
+def test_every_message_for_a_third_party_is_case_three_including_one_to_send_now():
+    """Audit M5: stock Hermes gives the reply no send tool, so "tell p-05 X" recorded as nothing was
+    never delivered; and case 2 sent "send it to someone else" back to the person who asked."""
+    assert "reply's own job" not in extract.SYSTEM
+    assert "send it to someone else" not in extract.SYSTEM
+    example = extract.SYSTEM.split("They said: Tell p-05 the meeting moved to Tuesday.", 1)[1]
+    item, = json.loads(example.split("\n", 2)[1])
+    assert item["metadata"] == {"kind": "notice", "recipient": "p-05", "content": "The meeting moved to Tuesday.",
+                                "grant": "owner"}
+    assert item["counterpart"] == "p-05" and item["obligor"] == "assistant" and item["due_at"]
+    assert "unless the reply shows it already went to them" in extract.SYSTEM
+
+
+def test_a_deliverable_for_someone_else_is_a_message_to_them_never_to_the_person_who_asked(tmp_path):
+    """Audit M5: a deliverable goes to the turn's own person, so words meant for a third party are a
+    case-3 message to that party: a notice when they are the owner's own words, else a check-in."""
+    store = _store(tmp_path)
+    deliverable = {**NOTICE, "description": f"Send {CONTACT} the venue address", "source_type": "introspection",
+                   "metadata": {"kind": "deliverable", "content": "The venue is at 5 Main St.", "channel_hint": "sms"}}
+    composed = record_items([deliverable], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
+                            owner_id=OWNER, owner_text=f"Send {CONTACT} the venue address.")
+    row = store.get(composed["created"][0])
+    assert row["metadata"]["kind"] == "check_in" and row["metadata"]["recipient"] == CONTACT
+    assert row["metadata"]["grant"] == "owner" and "content" not in row["metadata"]
+    dictated = record_items([deliverable], person_id=OWNER,
+                            commitment_store=_store(tmp_path / "dictated"), existing=[], rejections=[], owner_id=OWNER,
+                            owner_text=f"Text {CONTACT}: the venue is at 5 Main St.")
+    row = _store(tmp_path / "dictated").get(dictated["created"][0])
+    assert row["metadata"]["kind"] == "notice" and row["metadata"]["content"] == "The venue is at 5 Main St."
+    # A contact cannot have their deliverable relayed: no grant, so it is an ordinary row.
+    relayed = record_items([deliverable], person_id=OTHER, commitment_store=store, existing=[], rejections=[],
+                           owner_id=OWNER, owner_text=f"Text {CONTACT}: the venue is at 5 Main St.")
+    row = store.get(relayed["created"][0])
+    assert row["metadata"]["kind"] == "notice" and "grant" not in row["metadata"]
+    # A deliverable for the person themselves is still one.
+    for index, counterpart in enumerate((None, "owner", OWNER)):
+        own_store = _store(tmp_path / f"own-{index}")
+        own = record_items([{**deliverable, "description": "Email me the venue address", "counterpart": counterpart}],
+                           person_id=OWNER, commitment_store=own_store, existing=[], rejections=[], owner_id=OWNER,
+                           owner_text="Email me the venue address.")
+        assert own_store.get(own["created"][0])["metadata"]["kind"] == "deliverable"
 
 
 def test_record_items_stores_the_notice_and_the_check_in_metadata_for_the_owner(tmp_path):
@@ -250,8 +294,8 @@ class ScriptedRouter:
 
     supports_function_routing = True
 
-    def __init__(self, item, reply):
-        self.item, self.reply, self.calls = item, reply, []
+    def __init__(self, item, reply, cue="within 12 minutes"):
+        self.item, self.reply, self.cue, self.calls = item, reply, cue, []
 
     def function_deadline_seconds(self, *, context=None):
         return 20
@@ -261,7 +305,7 @@ class ScriptedRouter:
         task = (context or {}).get("task")
         if task == "commitment_extract":
             prompt = messages[1]["content"].split("This turn, verbatim:", 1)[-1]
-            return SimpleNamespace(content=json.dumps([self.item] if "within 12 minutes" in prompt else []))
+            return SimpleNamespace(content=json.dumps([self.item] if self.cue in prompt else []))
         if task == "mind_compose":
             return SimpleNamespace(content=self.reply, usage={"total_tokens": 20})
         raise AssertionError(f"unexpected task {task}")
@@ -301,3 +345,27 @@ async def test_delegated_chase_reaches_the_contact_not_the_owner_and_never_the_o
     fx.mind.outbox.sent(payload["id"])
     assert fx.commitments.get(row["id"])["status"] == "fulfilled"
     assert fx.mind.dispatch() == [] and (await fx.tick())["formed"] == []
+
+
+async def test_an_owner_message_for_a_contact_now_reaches_that_contact_at_the_next_tick(make):
+    """Audit M5: "Tell p-05 the meeting moved to Tuesday" is a notice due in two minutes; the next
+    tick past it sends the owner's words to the contact, and nothing goes to the owner."""
+    item = {"action": "create", "target": None, "description": f"Tell {CONTACT} the meeting moved to Tuesday",
+            "due_at": (T0 + timedelta(minutes=2)).isoformat(), "priority": 70, "source_type": "cognition",
+            "listed_due": None, "counterpart": CONTACT, "obligor": "assistant",
+            "metadata": {"kind": "notice", "recipient": CONTACT, "content": "The meeting moved to Tuesday.",
+                         "grant": "owner"}}
+    router = ScriptedRouter(item, "unused", cue="the meeting moved to Tuesday")
+    fx = make([contact(CONTACT, may_contact="ask"), contact(OTHER, may_contact="auto")], router=router)
+    fx.mind.capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments)
+    fx.ledger.record_source("turn-1", contact_id=OWNER, session_id="owner-1", messages=[
+        {"role": "user", "content": f"Tell {CONTACT} the meeting moved to Tuesday."},
+        {"role": "assistant", "content": "I will let them know."}], occurred_at=fx.now.isoformat())
+    first = await fx.tick()
+    assert first["capture_drained"]["recorded"] == 1 and first["formed"] == []
+    fx.shift(timedelta(minutes=2, seconds=30))
+    formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "commitment_notice" and formed["decision"] == "act"
+    payload, = await fx.mind.outbox_ready()
+    assert payload["recipient"] == CONTACT and payload["text"] == "The meeting moved to Tuesday."
+    assert fx.messages_to(OWNER) == [] and fx.messages_to(OTHER) == []
