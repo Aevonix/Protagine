@@ -139,7 +139,7 @@ class Tools:
             if not self._owners_own(session_id):
                 return _json(switches)
             narrative = self.client.narrative() or {}
-            return _json({**switches, "mind_routes": self.client.has_mind_routes() is True, **detail, **switches,
+            return _json({"mind_routes": self.client.has_mind_routes() is True, **detail, **switches,
                           # From the record, never free generation: the tasks in flight and the narrative.
                           "working_on": self._working_on(),
                           "narrative": str(narrative.get("text") or "") if narrative.get("enabled") is True else ""})
