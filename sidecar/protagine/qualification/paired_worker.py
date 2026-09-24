@@ -50,6 +50,35 @@ def mind_switches(profile):
     """The mind switches a profile turns on, or None when its mind is off."""
     switches = {name: True for name in MIND_SWITCHES if profile.get(name)}
     return switches or None
+
+
+def plugin_client():
+    """The loaded Protagine plugin's sidecar client (the adapter's body holds it); None in every other arm."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        loaded = get_plugin_manager()._plugins.get('protagine')
+    except Exception:
+        return None
+    if loaded is None or not loaded.enabled:
+        return None
+    return getattr(getattr(loaded.module, '_BODY', None), 'client', None)
+
+
+def mind_audit_ids(client=None, *, limit=500):
+    """The ids of the intentions the mind decided to act on or ask about, from ``GET /v1/mind/log``
+    (rows carry ``id`` and ``decision``; interface I-7), read outside the agent after its last turn.
+    The self family grades a self-report against them (``paired_body_grading.observed_action_ids``).
+    Nothing to read, an unreachable sidecar or a sidecar without the mind routes all record nothing."""
+    client = plugin_client() if client is None else client
+    if client is None:
+        return []
+    try:
+        response = client.get('/v1/mind/log', params={'limit': limit}, timeout=10)
+        entries = response.json().get('entries') if response.is_success else None
+    except Exception:
+        return []
+    return [row['id'] for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
+            and row.get('decision') in ('act', 'ask')]
 # Plans written before arm profiles carried only the arm label.
 LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
@@ -447,7 +476,8 @@ def main():
     # A restarted phase may hold events only; the dataset loader owns the whole-episode rules.
     kinds = [episode_kind(entry) for entry in inputs['episodes']]
     body_before = {'clock_offset_seconds': 0, 'ticks_completed': 0, **((phase or {}).get('body_before', {}))}
-    agents, histories, rows, ticks = {}, {}, [], []
+    agents, histories, rows, ticks, audit_ids = {}, {}, [], [], []
+    mind = mind_switches(profile) if plugin else None
     tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
@@ -518,7 +548,11 @@ def main():
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
                     setup_host=partial(source_worker, temperature=temperature),
-                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind_switches(profile)))
+                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind))
+                if mind:
+                    # Read after the agents close and before the served mind goes away (callbacks run
+                    # last-in first-out): the audit ids the self family grades a self-report against.
+                    resources.callback(lambda: audit_ids.extend(mind_audit_ids()))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
@@ -684,7 +718,8 @@ def main():
                 session_search_enabled=True,
                 treatment_loaded=treatment.get('memory_provider_loaded', False), turns=rows,
                 treatment_profile='text-native-memory-and-source-projections',
-                limitations=['no embedding/reranking', 'no channel transport',
+                limitations=['no reranking' if inputs.get('embedding') else 'no embedding/reranking',
+                    'no channel transport',
                     'no executed coding tests', 'no attested multi-user boundary',
                     'fixed settling window; background completion not guaranteed',
                     'no gateway: deliveries land in the capture outbox; kanban workers run in-process',
@@ -703,7 +738,8 @@ def main():
                                        arm_profile=profile, temperature=temperature,
             body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
                   'clock_offset_seconds': paired_body.clock_offset(),
-                  'outbox': paired_body.read_outbox(outbox)})
+                  'outbox': paired_body.read_outbox(outbox),
+                  **({'audit_ids': list(audit_ids)} if mind else {})})
         if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
                 home / 'memory-state' / 'turn-idempotency.db')

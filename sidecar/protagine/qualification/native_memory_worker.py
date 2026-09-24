@@ -58,6 +58,28 @@ def mind_section(switches):
     return section
 
 
+def embedding_environment(inputs, section):
+    """The embedding provider for one arm, as a binary choice recorded in the plan (D9).
+
+    The plan may carry one embedding endpoint (``paired plan --embedding-config``), written
+    identically into every case's ``inputs['embedding']``. An arm uses it unless its mind
+    section turns ``faculties.semantic_recall`` off (the ``full-semantic_recall`` arm); the
+    plain plugin arm has no faculties and uses it too. With no endpoint in the plan every arm
+    keeps today's behaviour: the embedder off (``skip``). A named credential is read from this
+    process's environment (the plan admits only names the native config already forwards).
+    """
+    embedding = inputs.get('embedding')
+    faculties = section.get('faculties') if isinstance(section.get('faculties'), dict) else {}
+    semantic = isinstance(embedding, dict) and bool(embedding) and faculties.get('semantic_recall', True) is not False
+    if not semantic:
+        return {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    values = {'PROTAGINE_EMBED_PROVIDER': 'openai_api', 'PROTAGINE_EMBED_BASE_URL': str(embedding['base_url']),
+              'PROTAGINE_EMBED_MODEL': str(embedding['model']), 'PROTAGINE_EMBED_DIMS': str(int(embedding['dimensions']))}
+    if embedding.get('api_key_env'):
+        values['PROTAGINE_EMBED_API_KEY'] = os.environ[str(embedding['api_key_env'])]
+    return values
+
+
 def mind_clock():
     """The body clock: ``time.time`` as the paired body shifts it, as an aware UTC datetime."""
     from datetime import datetime, timezone
@@ -146,6 +168,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     """
     inputs = request['inputs']
     person = inputs['contact_id']
+    section = mind_section(mind)
+    embedding = embedding_environment(inputs, section)
     os.environ.update(PROTAGINE_STATE_DIR=str(state / 'memory-state'),
         PROTAGINE_EVENT_JOURNAL_DIR=str(state / 'memory-state' / 'events'),
         PROTAGINE_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
@@ -154,7 +178,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
         PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_TURN_WRITER='disabled',
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
         PROTAGINE_OWNER_CONTACT_ID=person,
-        PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false',
+        **embedding, PROTAGINE_GRAPH_ENABLED='false',
         # The body tick drives the adapter (tick() and flush()); its own thread stays parked
         # so no dispatch or send lands between two observed ticks.
         PROTAGINE_BODY_THREAD='0')
@@ -183,7 +207,6 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     key_file.write_text(secret + '\n')
     key_file.chmod(0o600)
     (instance / 'identity.yaml').write_text(json.dumps(benchmark_identity(person)))
-    section = mind_section(mind)
     (instance / 'protagine.yaml').write_text(json.dumps({'owner': {'contact_id': person}, 'mind': section}))
     os.environ.update(PROTAGINE_HOME=str(instance), PROTAGINE_API_KEY=secret)
     if mind:
@@ -338,7 +361,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'freshness_responses': list(freshness),
                 'erased_sources': {source: ledger.is_source_erased(source, person)
                                   for source in inputs.get('forget_source_ids', [])},
-                'embedding_and_reranking': 'not_exercised',
+                'embedding_and_reranking': ('endpoint' if embedding['PROTAGINE_EMBED_PROVIDER'] != 'skip'
+                                            else 'not_exercised'),
                 'transport_delivery': 'not_exercised'}
 
         yield evidence

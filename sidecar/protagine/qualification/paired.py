@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 
 from . import paired_arms
 from .pack_batch import implementation_identity
@@ -74,6 +75,9 @@ RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_boots
         'unit': 'scenario', 'non_inferior_pp': -10}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
 OVERLAY_DENIED = re.compile(r'URL|MODEL|KEY|TOKEN|CONTACT|PASSPHRASE|WEBHOOK|_DIR$|_DB$|_PATH$')
+# The plan's one embedding endpoint (semantic recall, evals 6.1): the same block in every arm; an arm
+# whose mind section turns faculties.semantic_recall off leaves the embedder off (native_memory_worker).
+EMBEDDING_KEYS = ('base_url', 'model', 'dimensions')
 ENDPOINT_WARNING = (
     'Benchmark calls may slow a live agent using the same endpoint, and competing traffic '
     'distorts timings. Prefer an idle endpoint when practical; sharing is allowed and '
@@ -91,6 +95,29 @@ def _policy(path):
                          'nonempty budget_policy, and environment.endpoint_usage')
     digest(value)  # Reject nonfinite/unserializable declarations before any execution.
     return value
+
+
+def validate_embedding(embedding, credentials):
+    """``{base_url, model, dimensions, api_key_env?}``: a credential-free URL, a model, a positive width, and
+    a credential name only among those the native config already declares (what the container receives)."""
+    if (not isinstance(embedding, dict) or set(embedding) - {*EMBEDDING_KEYS, 'api_key_env'}
+            or set(EMBEDDING_KEYS) - set(embedding)):
+        raise ValueError('An embedding config declares base_url, model, dimensions and optionally api_key_env')
+    url = urlsplit(str(embedding['base_url']))
+    if (not isinstance(embedding['base_url'], str) or url.scheme not in {'http', 'https'} or not url.hostname
+            or url.username or url.password):
+        raise ValueError('Use an explicit credential-free embedding URL')
+    if not isinstance(embedding['model'], str) or not embedding['model'].strip():
+        raise ValueError('Declare the embedding model')
+    if type(embedding['dimensions']) is not int or embedding['dimensions'] < 1:
+        raise ValueError('Declare positive embedding dimensions')
+    result = {'base_url': embedding['base_url'], 'model': embedding['model'], 'dimensions': embedding['dimensions']}
+    if 'api_key_env' in embedding:
+        name = embedding['api_key_env']
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) or name not in credentials:
+            raise ValueError('The embedding api_key_env must be a credential name the native config declares')
+        result['api_key_env'] = name
+    return result
 
 
 def validate_profiles(custom):
@@ -147,10 +174,12 @@ def _settings(temperature, seeds):
 
 
 def _task(case):
+    """The task shared by every arm: the case minus its arm label, profile and the plan-level embedding block."""
     value = case.record()
     value = {key: item for key, item in value.items()
              if key not in {'sha256', 'inputs_sha256', 'oracle_sha256'}}
-    value['inputs'] = {key: item for key, item in value['inputs'].items() if key not in {'arm', 'profile'}}
+    value['inputs'] = {key: item for key, item in value['inputs'].items()
+                       if key not in {'arm', 'profile', 'embedding'}}
     return value
 
 
@@ -177,7 +206,7 @@ def _execution_identity(consumers, evaluators):
 def prepare(*, output, native_config, native_binding, comparison_policy, container_image,
             docker_host=None, case_ids=None, dataset_version=None, repetitions=1,
             label='candidate', evidence_mode='actual_inference', arms=None, reference_arm=None,
-            profiles=None, temperature=None, seeds=None, dataset_dir=None):
+            profiles=None, temperature=None, seeds=None, dataset_dir=None, embedding=None):
     """Resolve local recipes and pinned image identity without calling a model."""
     from . import paired_body, paired_cases, paired_container
     from .native_memory_batch import preflight_output
@@ -212,6 +241,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         variables.update(provider[key] for key in ('key_env', 'api_key_env') if provider.get(key))
     if any(not os.environ.get(name) for name in variables):
         raise ValueError('Selected native provider references an unset credential environment variable')
+    if embedding is not None:
+        embedding = validate_embedding(embedding, variables)
     legacy_pair = list(labels) == list(ARMS) and all(
         {k: v for k, v in labels[arm].items() if k != 'name'} == BUILT_IN_PAIR[arm] for arm in labels)
     payload = recipe.get('container_payload', {})
@@ -226,6 +257,12 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)
               for arm in labels}
+    if embedding is not None:
+        # One endpoint for the whole plan, written into every case of every arm; the worker turns it into
+        # the arm's embedder through the semantic_recall flag alone.
+        from dataclasses import replace
+        by_arm = {arm: [replace(case, inputs={**case.inputs, 'embedding': deepcopy(embedding)}) for case in cases]
+                  for arm, cases in by_arm.items()}
     episodes = [case for cases in by_arm.values() for case in cases]
     if any(case.inputs.get('workflow') is not None for case in episodes):
         from .paired_workflow_runtime import PROTOCOL as workflow_protocol
@@ -290,6 +327,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['message_timestamps'] = deepcopy(MESSAGE_TIMESTAMPS[message_timestamps])
     if environment_note is not None:
         comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
+    if embedding is not None:
+        comparison['embedding'] = deepcopy(embedding)
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,
@@ -323,7 +362,7 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         'options': {'native_binding': native_binding, 'case_ids': identifiers, 'dataset_version': dataset_version,
                     'dataset_dir': dataset_dir,
                     'arms': list(arms) if arms is not None else list(ARMS), 'reference_arm': reference,
-                    'profiles': profiles, 'temperature': temperature, 'seeds': seeds},
+                    'profiles': profiles, 'temperature': temperature, 'seeds': seeds, 'embedding': embedding},
         'pairs': pairs, 'implementation': implementation,
         'execution_implementation_sha256': _execution_identity(paired_container.CONSUMERS, paired_cases.EVALUATORS),
         'coverage': 'Development pilot episodes; no held-out, deployment or model-tier qualification.'}
@@ -401,6 +440,9 @@ def add_parser(commands):
             item.add_argument('--profiles', type=Path, help='JSON object of additional arm profiles {name: {plugin, overlay}}')
             item.add_argument('--temperature', type=float, help='Pinned sampling temperature for every model call; unset keeps the provider default')
             item.add_argument('--seeds', help='Comma-separated scenario seeds frozen into the plan')
+            item.add_argument('--embedding-config', type=Path,
+                              help='Private JSON {base_url, model, dimensions, api_key_env?}: the one embedding '
+                                   'endpoint every arm may use (semantic_recall off in an arm leaves it unused)')
             item.add_argument('--label', default='candidate')
             item.add_argument('--evidence-mode', choices=['actual_inference', 'controlled'], default='actual_inference')
         elif command == 'run':
@@ -436,6 +478,7 @@ def cli(args):
             profiles=read(args.profiles) if args.profiles else None,
             temperature=args.temperature,
             seeds=[int(value) for value in args.seeds.split(',')] if args.seeds else None,
+            embedding=read(args.embedding_config) if args.embedding_config else None,
             label=args.label, evidence_mode=args.evidence_mode, **resources)
         print(json.dumps(result, indent=2))
         return 0
