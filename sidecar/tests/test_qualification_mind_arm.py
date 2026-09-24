@@ -54,7 +54,9 @@ def test_mind_section_is_off_in_the_plugin_arm_and_initiative_only_in_the_treatm
     section = worker.mind_section(True)
     assert section == worker.mind_section({'initiative': True})
     assert section['enabled'] is True and section['autonomy'] == 'standard'
-    assert section['faculties'] == {name: name == 'initiative' for name in worker.MIND_FACULTIES}
+    # Recall is the memory the plain plugin arm has too: semantic recall stays on, every mind faculty but
+    # initiative is off.
+    assert section['faculties'] == {name: name in {'initiative', 'semantic_recall'} for name in worker.MIND_FACULTIES}
     assert {'drives', 'deliberation', 'goals', 'broadcast'} <= set(section['faculties'])
     assert section['quiet_hours'] == '' and section['digest_hour'] == 24
     from protagine.mind.authority import Policy
@@ -217,26 +219,166 @@ def test_the_benchmark_identity_gives_the_body_an_owner_handle_to_send_to(tmp_pa
 EMBEDDING = {'base_url': 'http://127.0.0.1:8092/v1', 'model': 'e5', 'dimensions': 8}
 
 
-def test_the_worker_honours_the_plans_embedding_endpoint_through_the_semantic_recall_flag(monkeypatch):
-    """With no endpoint in the plan the embedder stays off in every arm (today's behaviour);
-    with one, ``full`` uses it and ``full-semantic_recall`` does not, so the two arms differ in exactly that."""
+def test_the_worker_honours_the_plans_embedding_endpoint_unless_the_arm_ablates_semantic_recall(monkeypatch):
+    """With no endpoint in the plan the embedder stays off in every arm (today's behaviour); with one, every
+    arm uses it except the one whose profile ablates semantic recall, so only that arm differs in it."""
     monkeypatch.setenv('EMBED_KEY', 'secret')
-    full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))
-    ablated = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full-semantic_recall']))
-    plain = worker.mind_section(None)
-    for section in (full, ablated, plain):
-        assert worker.embedding_environment({}, section) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
-        assert worker.embedding_environment({'embedding': None}, section) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    arms = {name: worker.mind_section(paired_worker.mind_switches(paired.PROFILES[name]))
+            for name in ('full', 'full-semantic_recall', 'full-consolidation', 'protagine-initiative')}
+    arms['protagine'] = worker.mind_section(None)                   # the plain plugin arm: no mind
+    for switches in arms.values():
+        assert worker.embedding_environment({}, switches) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+        assert worker.embedding_environment({'embedding': None}, switches) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
     with_key = {**EMBEDDING, 'api_key_env': 'EMBED_KEY'}
-    assert worker.embedding_environment({'embedding': with_key}, full) == {
+    assert worker.embedding_environment({'embedding': with_key}, arms['full']) == {
         'PROTAGINE_EMBED_PROVIDER': 'openai_api', 'PROTAGINE_EMBED_BASE_URL': 'http://127.0.0.1:8092/v1',
         'PROTAGINE_EMBED_MODEL': 'e5', 'PROTAGINE_EMBED_DIMS': '8', 'PROTAGINE_EMBED_API_KEY': 'secret'}
-    assert 'PROTAGINE_EMBED_API_KEY' not in worker.embedding_environment({'embedding': EMBEDDING}, full)
-    assert worker.embedding_environment({'embedding': with_key}, ablated) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
-    # The plain plugin arm has no faculties: it uses the endpoint the plan gives, like full.
-    assert worker.embedding_environment({'embedding': EMBEDDING}, plain)['PROTAGINE_EMBED_PROVIDER'] == 'openai_api'
-    # The initiative-only arm turns every other faculty off, semantic_recall included.
-    assert worker.embedding_environment({'embedding': EMBEDDING}, worker.mind_section(True)) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    assert 'PROTAGINE_EMBED_API_KEY' not in worker.embedding_environment({'embedding': EMBEDDING}, arms['full'])
+    assert worker.embedding_environment({'embedding': with_key}, arms['full-semantic_recall']) == {
+        'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    # Every other arm embeds alike: the plain plugin arm and the initiative-only arm (whose mind section
+    # turns the mind's faculties off) included, so no other contrast carries an embedding difference.
+    for name in ('protagine', 'protagine-initiative', 'full-consolidation'):
+        assert worker.embedding_environment({'embedding': EMBEDDING}, arms[name])['PROTAGINE_EMBED_PROVIDER'] == 'openai_api'
+
+
+class EmbeddingEndpoint:
+    """A local OpenAI-compatible ``/v1/embeddings``: a word's letters decide the vector, so texts that share
+    words are near."""
+
+    DIMENSIONS = 8
+
+    def __init__(self):
+        import http.server
+        import json as _json
+        import threading
+        self.requests = []
+        endpoint = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = _json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                endpoint.requests.append(body)
+                data = [{'index': index, 'embedding': endpoint.vector(text)} for index, text in enumerate(body['input'])]
+                payload = _json.dumps({'data': data, 'model': body['model']}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.url = f'http://127.0.0.1:{self.server.server_address[1]}/v1'
+
+    def vector(self, text):
+        values = [0.0] * self.DIMENSIONS
+        for word in str(text).lower().split():
+            values[sum(map(ord, word)) % self.DIMENSIONS] += 1.0
+        return values if any(values) else [1.0] + [0.0] * (self.DIMENSIONS - 1)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def served_host_embeds(tmp_path, monkeypatch, switches):
+    """Run the served host's lifespan (the one the paired source worker installs) under the environment
+    ``embedding_environment`` gives this arm, record one turn, and report what semantic recall saw."""
+    import protagine.vector as vector
+    from protagine.qualification import paired_history
+    from protagine.turns import get_turn_idempotency_ledger
+    from protagine.turns.source_vectors import SourceVectors
+    monkeypatch.setattr(vector, '_store', None)
+    monkeypatch.setattr(vector, '_pipeline', None)
+    with EmbeddingEndpoint() as endpoint:
+        embedding = {'base_url': endpoint.url, 'model': 'e', 'dimensions': EmbeddingEndpoint.DIMENSIONS}
+        for key, value in worker.embedding_environment({'embedding': embedding}, worker.mind_section(switches)).items():
+            monkeypatch.setenv(key, value)
+
+        async def run():
+            async with paired_worker.provider_read_lifespan(tmp_path)(FastAPI()):
+                store, pipeline = vector.get_store(), vector.get_pipeline()
+                ledger = get_turn_idempotency_ledger(tmp_path / 'memory-state')
+                ledger.record_source('h-1', contact_id='p-00', session_id='s-1', messages=[
+                    {'role': 'user', 'content': 'my locker code is 4471'}, {'role': 'assistant', 'content': 'noted'}])
+                drained = await asyncio.to_thread(paired_history.drain_vectors,
+                                                  tmp_path / 'memory-state' / 'turn-idempotency.db', timeout=20)
+                hits = (await SourceVectors(ledger, store, pipeline).search(
+                    'locker code', contact_id='p-00', session_id='s-2'))[0] if store is not None else []
+                return {'store': store is not None, 'pipeline': pipeline is not None, 'drained': drained,
+                        'hits': [hit['turn_id'] for hit in hits], 'requests': len(endpoint.requests)}
+        seen = asyncio.run(run())
+    seen['after'] = (vector.get_store(), vector.get_pipeline())
+    return seen
+
+
+def test_the_served_host_embeds_and_recalls_through_the_plans_endpoint(tmp_path, monkeypatch):
+    """The arm that embeds has a pipeline and a vector store for context assembly, and its source-vector
+    jobs are processed on the host's loop: the history drain finishes and a later session's semantic
+    search finds the turn. Both are gone when the host stops."""
+    seen = served_host_embeds(tmp_path, monkeypatch, paired_worker.mind_switches(paired.PROFILES['full']))
+    assert seen['store'] and seen['pipeline'] and seen['requests'] >= 2          # warm-up and the turn
+    assert seen['drained']['jobs'] >= 1 and seen['drained']['left'] == 0, seen
+    assert seen['hits'] and set(seen['hits']) == {'h-1'}
+    assert seen['after'] == (None, None)
+
+
+def test_the_semantic_recall_ablation_serves_no_embedder(tmp_path, monkeypatch):
+    seen = served_host_embeds(tmp_path, monkeypatch,
+                              paired_worker.mind_switches(paired.PROFILES['full-semantic_recall']))
+    assert not seen['store'] and not seen['pipeline'] and seen['requests'] == 0
+    assert seen['drained']['left'] == seen['drained']['jobs']                   # nothing embeds in this arm
+
+
+def test_the_threaded_source_worker_leaves_vector_jobs_to_the_host(tmp_path, monkeypatch):
+    """The claim worker on its own thread never touches the vector store the host's loop owns."""
+    import protagine.vector as vector
+    from protagine.beliefs import source_projection
+    from protagine.turns import get_turn_idempotency_ledger
+    touched = []
+
+    class Store:
+        catalog = object()
+    monkeypatch.setattr(vector, '_store', Store())
+    monkeypatch.setattr(vector, '_pipeline', object())
+    monkeypatch.setattr('protagine.turns.source_vectors.SourceVectors.process_one',
+                        lambda self, *a, **k: touched.append(self) or asyncio.sleep(0, False))
+    ledger = get_turn_idempotency_ledger(tmp_path / 'memory-state')
+
+    async def run(vectors):
+        task = asyncio.create_task(source_projection.run_source_claim_worker(
+            ledger, lambda: None, claims_enabled=False, vectors=vectors))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(run(False))
+    assert touched == []
+    asyncio.run(run(True))
+    assert touched
+
+
+def test_an_embedding_endpoint_needs_an_image_whose_worker_serves_it(fixture, monkeypatch):
+    from protagine.qualification import paired_container
+    original = paired_container.configuration
+
+    def without_embedding(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != 'embedding'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', without_embedding)
+    with pytest.raises(ValueError, match='embedding endpoint'):
+        paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                    arms=['base_hermes', 'full'], embedding=dict(EMBEDDING), **fixture.resources)
+    assert paired_worker.inspect_payload.__code__.co_names.count('EMBEDDING_PROTOCOL') == 1
 
 
 def test_a_plan_records_one_embedding_endpoint_identically_for_every_arm(fixture, monkeypatch):

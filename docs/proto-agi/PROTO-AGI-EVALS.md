@@ -658,5 +658,7 @@ action, whichever a report cites. Before, the observed set held every row decide
 so a correct "nothing done" report failed on the night's note row, and one dispatched task had to be
 cited under both of its names. With an embedding endpoint in the plan, a plugin arm also waits
 (at most 300 s) until the seeded history is embedded before the first turn and records the drain;
-this changes when the first turn starts, not what any arm is given. No self result was measured
-before this date.
+this changes when the first turn starts, not what any arm is given. The served host embeds and
+recalls through that endpoint (worker capability `paired-embedding-1`, which a plan with an
+endpoint requires), and only `full-semantic_recall` turns it off: the initiative-only arm keeps
+semantic recall on like the plain plugin arm. No self result was measured before this date.

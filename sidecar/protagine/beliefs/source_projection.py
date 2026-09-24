@@ -1078,8 +1078,12 @@ class SourceClaimProjection:
                 bundles + pair_conversation_candidates(quotations, input_pairs, sources))
 
 
-async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None):
-    """One consumer, durable jobs and leases; process loss resumes from SQLite."""
+async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None,
+                                  vectors=True):
+    """One consumer, durable jobs and leases; process loss resumes from SQLite.
+
+    ``vectors=False`` leaves the source-vector jobs to a task on the loop that owns the vector store (the
+    paired harness runs this worker on its own thread)."""
     projection = SourceClaimProjection(ledger)
     from protagine.identity import get_owner_contact_id
     from protagine.self_model.judgments import SelfJudgments
@@ -1096,8 +1100,9 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors
     from protagine.vector import get_store, get_pipeline
-    vectors = SourceVectors(ledger, get_store(), get_pipeline())
-    vectors.backfill()
+    source_vectors = SourceVectors(ledger, get_store(), get_pipeline()) if vectors else None
+    if source_vectors is not None:
+        source_vectors.backfill()
     try:
         media.recover_unowned_files()
     except OSError:
@@ -1130,7 +1135,8 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
                         reflection_tasks[name] = asyncio.create_task(
                             projection_worker.process_one(router_provider()))
             try:
-                worked = await vectors.process_one() or worked
+                if source_vectors is not None:
+                    worked = await source_vectors.process_one() or worked
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

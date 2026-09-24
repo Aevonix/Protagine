@@ -21,7 +21,8 @@ def mind_section(switches):
 
     Off (``None`` or ``False``) in the plain plugin arm. ``{'initiative': True}``
     (or ``True``) turns the mind on at autonomy ``standard`` with only the
-    initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
+    initiative faculty (mind-initiative-1); semantic recall, memory the plain
+    plugin arm has too, stays on. ``{'full': True}`` sets every
     faculty flag and drive weight to its release-candidate value from the
     shipped defaults; a ``minus_<faculty>`` switch turns that faculty's flag
     off, a ``plus_<faculty>`` switch turns on one that ships off, and a
@@ -39,7 +40,7 @@ def mind_section(switches):
         switches = {'initiative': True}
     section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24}
     if not switches.get('full'):
-        section['faculties'] = {name: name == 'initiative' for name in MIND_FACULTIES}
+        section['faculties'] = {name: name in {'initiative', 'semantic_recall'} for name in MIND_FACULTIES}
         return section
     from copy import deepcopy
     from protagine.config import DEFAULTS
@@ -63,10 +64,12 @@ def embedding_environment(inputs, section):
 
     The plan may carry one embedding endpoint (``paired plan --embedding-config``), written
     identically into every case's ``inputs['embedding']``. An arm uses it unless its mind
-    section turns ``faculties.semantic_recall`` off (the ``full-semantic_recall`` arm); the
-    plain plugin arm has no faculties and uses it too. With no endpoint in the plan every arm
-    keeps today's behaviour: the embedder off (``skip``). A named credential is read from this
-    process's environment (the plan admits only names the native config already forwards).
+    section turns ``faculties.semantic_recall`` off, the rule ``config.apply_environment``
+    applies on a real install; only the ``full-semantic_recall`` arm does, and the plain plugin
+    arm has no faculties and uses it too. With no endpoint in the plan every arm keeps today's
+    behaviour: the embedder off (``skip``). A named credential is read from this process's
+    environment (the plan admits only names the native config already forwards). The served
+    host opens the embedder from these variables (``paired_worker.semantic_recall``).
     """
     embedding = inputs.get('embedding')
     faculties = section.get('faculties') if isinstance(section.get('faculties'), dict) else {}
@@ -190,6 +193,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     from protagine.api.routers import host
     from protagine.api.routers import mind as mind_router
     from protagine.turns import get_turn_idempotency_ledger
+    from protagine.vector import get_store
     from hermes_cli.plugins import get_plugin_manager
     from hermes_state import SessionDB
     import httpx
@@ -361,8 +365,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'freshness_responses': list(freshness),
                 'erased_sources': {source: ledger.is_source_erased(source, person)
                                   for source in inputs.get('forget_source_ids', [])},
-                'embedding_and_reranking': ('endpoint' if embedding['PROTAGINE_EMBED_PROVIDER'] != 'skip'
-                                            else 'not_exercised'),
+                # What the served host actually opened, not what the plan asked for.
+                'embedding_and_reranking': 'endpoint' if get_store() is not None else 'not_exercised',
                 'transport_delivery': 'not_exercised'}
 
         yield evidence

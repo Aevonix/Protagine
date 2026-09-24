@@ -15,6 +15,7 @@ from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
                             MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
+                            EMBEDDING_PROTOCOL,
                             TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
@@ -79,7 +80,8 @@ RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_boots
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
 OVERLAY_DENIED = re.compile(r'URL|MODEL|KEY|TOKEN|CONTACT|PASSPHRASE|WEBHOOK|_DIR$|_DB$|_PATH$')
 # The plan's one embedding endpoint (semantic recall, evals 6.1): the same block in every arm; an arm
-# whose mind section turns faculties.semantic_recall off leaves the embedder off (native_memory_worker).
+# whose mind section turns faculties.semantic_recall off (full-semantic_recall only) leaves the embedder
+# off (native_memory_worker), and the served host embeds and recalls through it (paired_worker).
 EMBEDDING_KEYS = ('base_url', 'model', 'dimensions')
 ENDPOINT_WARNING = (
     'Benchmark calls may slow a live agent using the same endpoint, and competing traffic '
@@ -256,6 +258,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
             and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
         raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
+    if embedding is not None and payload.get('embedding') != EMBEDDING_PROTOCOL:
+        raise ValueError('An embedding endpoint requires an image whose worker serves semantic recall through it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)

@@ -131,9 +131,13 @@ instrument acceptance: `base_hermes` completes at least 95% of setup turns and p
 - Without `paired plan --embedding-config` the benchmark worker sets
   `PROTAGINE_EMBED_PROVIDER=skip` in every plugin arm, so `full-semantic_recall` cannot differ
   from `full`. With it, every case carries the same endpoint and every arm but
-  `full-semantic_recall` embeds, and a plugin arm waits (at most 300 s) until a seeded history
-  is embedded before the first turn (the drain is recorded with the history). The flag rule is
-  judged only from a run that has one.
+  `full-semantic_recall` embeds (the initiative-only arm's mind section keeps semantic recall
+  on): the served host opens the embedding pipeline and the vector store the way the sidecar's
+  lifespan does and embeds each turn on its own loop (worker capability `paired-embedding-1`; a
+  plan with an endpoint refuses an image without it), and the evidence's
+  `embedding_and_reranking` says what the host actually opened. A plugin arm waits (at most
+  300 s) until a seeded history is embedded before the first turn (the drain is recorded with the
+  history). The flag rule is judged only from a run that has one.
 - Which types can separate the nightly arms is known from the dev splits before any pilot
   (`sidecar/tests/test_m8_arm_contrasts.py` walks every dev scenario under each arm with a fake
   model and the harness clock). In `full` the night's tick runs the consolidation in every
