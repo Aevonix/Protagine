@@ -25,10 +25,12 @@ PROCESS_OPTIONS = frozenset({"clock", "interval", "backups", "persist", "heartbe
 
 def mind_routers() -> List[Any]:
     """The routes a mind serves next to the host routes: its own (``/v1/mind``, the narrative and the
-    nightly consolidation included) and the people routes an owner's ``protagine_people`` reaches."""
+    nightly consolidation included), the people routes an owner's ``protagine_people`` reaches and the
+    opinion routes (``/v1/mind/opinions``) ``protagine_self opinions|why|withdraw|reconsider`` reaches."""
     from protagine.api.routers import mind as mind_router
+    from protagine.api.routers import opinions
     from protagine.api.routers import people
-    return [mind_router.router, people.router]
+    return [mind_router.router, people.router, opinions.router]
 
 
 def mind_kwargs(host: Any, *, config: Mapping[str, Any] | None, store: Any, state_dir: Any, ledger: Any,

@@ -19,7 +19,8 @@ from protagine_hermes.tools import FORGET_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, 
 from protagine_memory.provider import _PROTAGINE_TOOL_SCHEMAS, _SYSTEM_PROMPT
 
 PLUGIN_SCHEMAS = (SELF_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, REMINDER_SCHEMA)
-TOOL_BUDGET_CHARS = 3_400       # 6 tools; the first cut sent 12 tools in 6,700 characters
+TOOL_BUDGET_CHARS = 3_400       # 6 tools (M7's opinions ride protagine_self); the first cut sent 12 tools in
+                                # 6,700 characters
 SYSTEM_BUDGET_CHARS = 800       # provider block + plugin section, measured 725; the first cut sent 1,004
 # The same system text at its largest, which a real install's owner session sends once the agent has a history:
 # a 1,500-character constitution (identity.yaml's cap) and an 800-character self-narrative (the sidecar's cap).

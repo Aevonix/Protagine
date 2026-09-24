@@ -560,8 +560,14 @@ class Consolidation:
         return lines[:SECTION_LINES["strengths"]]
 
     def _stance_rows(self) -> List[Dict[str, Any]]:
+        """The narrative's stances. With ``faculties.opinions`` off there are none (a flag hides its
+        faculty's output everywhere, integration map X15), and a view about a person never enters the
+        narrative, whoever it renders for (X7, defense in depth)."""
+        if not self.faculties.get("opinions"):
+            return []
         try:
-            return [row for row in (self.stances() or []) if isinstance(row, Mapping)]
+            return [row for row in (self.stances() or [])
+                    if isinstance(row, Mapping) and str(row.get("subject_kind") or "topic") != "person"]
         except Exception as error:
             logger.debug("stances unavailable (%s)", type(error).__name__)
             return []

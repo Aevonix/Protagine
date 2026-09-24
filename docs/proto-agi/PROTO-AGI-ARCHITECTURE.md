@@ -411,7 +411,8 @@ a verified correction bypasses. Owner withdraw and reconsider are kept
 flip it, and neither do fabricated or recycled citations; a new admitted premise does. The agent
 flags a flawed plan while carrying it out. Failed approaches are not repeated.
 
-Flag: `opinions`. The faculty failed its own earlier evaluation (`docs/SELF-JUDGMENTS.md`), so it
+Flag: `opinions`. The faculty failed its own earlier evaluation (the retired self-judgment opt-in;
+`docs/OPINIONS.md` describes the replacement), so it
 ships on only after the `opinions` family passes.
 
 ### 4.5 Desires (drives, concerns and goals)

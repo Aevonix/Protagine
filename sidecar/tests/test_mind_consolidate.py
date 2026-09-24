@@ -644,6 +644,7 @@ async def test_narrative_still_renders_computed_sections_with_consolidation_off(
 
 
 async def test_stances_come_from_the_stances_reader_and_cite_their_revision(fx):
+    fx.mind.faculties["opinions"] = True
     fx.mind.consolidation.stances = lambda: [{"id": 7, "topic": "checkpoints", "stance": "I favour explicit checkpoints.",
                                               "source_turn_id": "t-stance"},
                                              {"id": 8, "topic": "", "stance": "no topic"}]
@@ -651,6 +652,22 @@ async def test_stances_come_from_the_stances_reader_and_cite_their_revision(fx):
     assert narrative["sections"]["stances"] == "checkpoints: I favour explicit checkpoints. [judgment:7]"
     assert "judgment:7" in narrative["cites"] and fx.mind.consolidation._ref_exists("judgment:7")
     assert not fx.mind.consolidation._ref_exists("judgment:9")             # not a current revision of the store
+
+
+async def test_the_narrative_lists_no_stance_with_opinions_off_and_never_a_view_about_a_person(fx):
+    """Integration map X15 and X7: the opinions flag hides stances in the narrative too, and a person
+    stance (owner-audience by construction) never reaches it even with opinions on."""
+    fx.mind.consolidation.stances = lambda: [
+        {"id": 7, "topic": "checkpoints", "stance": "I favour explicit checkpoints.", "subject_kind": "topic"},
+        {"id": 8, "topic": "p-03 reliability", "stance": "p-03 misses deadlines amber-cobalt-42.",
+         "subject_kind": "person", "subject": "p-03"}]
+    fx.mind.faculties["opinions"] = False
+    narrative = fx.mind.narrative()
+    assert narrative["sections"]["stances"] == "" and not fx.mind.consolidation._ref_exists("judgment:7")
+    fx.mind.faculties["opinions"] = True
+    narrative = fx.mind.narrative()
+    assert narrative["sections"]["stances"] == "checkpoints: I favour explicit checkpoints. [judgment:7]"
+    assert "amber-cobalt-42" not in narrative["text"] and not fx.mind.consolidation._ref_exists("judgment:8")
 
 
 async def test_only_the_agents_own_actions_are_evidence_for_recent(fx):
@@ -728,6 +745,7 @@ def test_a_narrative_citation_is_one_of_five_kinds_that_exist(fx):
     ``judgment:``, ``turn:`` and ``claim:`` are record references. Nothing else resolves."""
     row = settled_task(fx)
     fx.mind.add_interest("local history")
+    fx.mind.faculties["opinions"] = True
     fx.mind.consolidation.stances = lambda: [{"id": 3, "topic": "t", "stance": "s"}]
     fx.turn("t-1", OWNER, "s-1", "hello")
     ref = fx.mind.consolidation._ref_exists
@@ -746,6 +764,7 @@ async def test_the_narrative_fits_its_budget_line_caps_per_section(fx):
     for type_ in ("research", "check", "upkeep", "fix", "report"):
         for copy in range(2):
             rows.append(settled_task(fx, title=f"{type_} {copy}", type_=type_, dedup=f"{type_}:{copy}"))
+    fx.mind.faculties["opinions"] = True
     fx.mind.consolidation.stances = lambda: [{"id": i, "topic": f"topic {i}", "stance": f"stance {i}"} for i in range(6)]
     fx.router.answers[TASK_NARRATIVE] = lambda messages, context: {"lines": [
         {"text": f"I finished {r.description}", "cites": [r.id]} for r in rows[:8]]}

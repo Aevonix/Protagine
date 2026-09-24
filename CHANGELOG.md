@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - people, memory and feelings, integrated
+## Unreleased - people, memory, feelings and opinions, integrated
 
 The people (M5) and memory and identity (M8) milestones merged onto one line
 (integration map steps 1 and 2). One Mind factory, `protagine.mind.factory`,
@@ -32,6 +32,105 @@ faculties' owner questions never overload or satiate the mind (X5). A task
 row keeps its deliberated plan as `plan_body`, which the identical-plan
 refusal hashes (X13). The novel-topic hook runs only on the owner's own turn
 by the viewer identity every other owner-only section uses (X6).
+
+The opinions milestone (M7) merged last (step 5). Its tool surface rides
+`protagine_self` instead of an eighth tool: `opinions [query]` and
+`why <opinion number>` answer in any session, the sidecar filtering them to the
+views meant for that session's participant, and `withdraw|reconsider <number>`
+with the owner's reason stay owner-only; the adapter still sends six tools in
+3,256 characters, under the 3,400 budget (X8). The opinion routes join the one
+router list both the sidecar and the benchmark arm mount (X4d). The stance
+section is built inside the one section assembly, audience-filtered by the
+viewer identity every other owner-only section uses, so a recipient packet
+carries only the views meant for that recipient (X6). A task row keeps its
+deliberated plan as `plan_body` before the recorded view is appended, so the
+identical-plan refusal still matches repeats (X13). A merge now moves views
+about the dropped contact to the kept one (`SelfJudgments.reattribute_subject`,
+one more merge hook), and an identity correction queues the moved turns'
+opinion jobs again under the new contact (X14). The self-narrative lists no
+stance with `faculties.opinions` off and never a view about a person (X15,
+X7). The appraisal kind `judgment` is gone and the appraisal version is
+`source-appraisals-v7`.
+
+## Unreleased - opinions
+
+The agent now holds opinions that change only on evidence (build plan M7,
+[docs/OPINIONS.md](docs/OPINIONS.md)). `self_model/judgments.py`
+(`SelfJudgments`) is the one opinion store: topic, person and approach views,
+each with a reason, a certainty, `revise_if` (what would change it) and
+explicit premises, which are admitted source claims of any contact's turns,
+settled mind task outcomes, mind findings, the agent's own reply in the same
+turn, or a quotation carried over from a migrated appraisal. The store, not
+the model, enforces the new-premise rule: a revision needs a current premise
+of a revising kind (a claim, an outcome or a finding) that the view does not
+already cite, by reference or by content, so the same record under a fresh id
+or cited again changes nothing, and the agent's own words never revise.
+Forming on a topic that already has a view is a revision. A view changes at
+most once per rolling day unless the new premise corrects one it cites, is a
+verified outcome, or answers the owner's reconsideration; a limited revision
+waits for the window. A revision rests first on its new evidence, and a
+replaced revision reads `superseded`. Topic views resting only on findings or
+outcomes are shown to everyone; every other view is the owner's alone.
+Forming, revising and withdrawing each write one owner-audience autobiography
+entry (`mind:opinion:<id>:<event>`), so "why did you change your mind?" is
+ordinary recall, and those entries are what relevance searches. Forgetting a
+source a view rests on tombstones the view and its entries.
+
+Views are formed by the opinion pass (`mind/opinions.py`), which the
+projection worker's `judgment` reflection runs one job at a time after a
+turn's claims, after a mind finding, or after an owner's reconsideration. A
+turn costs one `reasoning` call (task `self_judgment`) only when it has an
+admitted premise, or it is an owner turn asking for a judgment that the agent
+answered; "are you sure?" and small talk cost nothing. The model answers
+`none`, `form` or `revise`, validated to fixed codes, and a revision must
+name its new evidence. The queue is the lease-free `opinion_jobs` table;
+failures back off and stop after three attempts, and jobs older than 48 hours
+are dropped. Approach views need no call: three failures in a row at the same
+work within 30 days become an `avoid` view resting on those outcomes, and a
+success verified by a check or the owner turns it into `prefer`.
+
+Views are used in three places. Turn context gets a `protagine-stances`
+section ("Your recorded views", at most three views and 1,400 characters, no
+model call, filtered by the viewer's audience) with each view's id, reason,
+two premises cited by the source the agent can open and what would change it,
+a line when newer evidence from the viewer is still unweighed, and the
+standing rule: change a view only on new evidence, and disagree if need be
+while still doing what the owner authorizes, saying so. The next task at the
+same work carries its approach view in its body (`context.opinion_ids`); a
+view flags work and never holds it back, so when the three failures have
+tripped the breaker the owner's yes still dispatches it. The owner reads and
+controls views through `GET/POST /v1/mind/opinions` (list, show with the
+history, withdraw, reconsider), `protagine mind opinions`, and the
+opinion verbs of `protagine_self`, which the guard treats as read-only and which
+refuses the two controls to guests, kanban workers and cron runs. The
+owner-preference section that used to be titled "Current working judgments"
+is now "Owner priority corrections", which is all it renders.
+
+`mind.faculties.opinions` is the one switch (on in the defaults, the
+release-candidate value). Off, jobs finish without a call, nothing is formed
+or rendered, stored views are kept, and every context section and task body
+is what it was without the faculty. The running mind reads the flag, and the
+pass asks the running mind rather than `protagine.yaml`: the benchmark
+worker's instance file carries `digest_hour: 24`, which the config validator
+refuses, so a pass reading the file alone would have been off in `full` as
+well as in `full-opinions`. `mind.enabled` counts as configured; the runtime
+off switch stops effects, and forming views is memory. The SYCON-style
+pushback anchor (`benchmarks/paired/anchors/sycon_pushback.py`) renders
+twenty items under four kinds of pressure and reports Turn-of-Flip and
+Number-of-Flip per arm, descriptively; it was frozen before the faculty.
+
+Removed with what replaces it: the appraisal `judgment` kind (its current
+and withdrawn heads become person opinions with quotation premises at the
+first start after `protagine upgrade`, whose backup keeps the history), the
+`self_judgment_runs` lease queue (dropped by the upgrade),
+`PROTAGINE_SELF_JUDGMENTS_ENABLED` and
+`PROTAGINE_SELF_JUDGMENT_INTERVAL_SECONDS`, `POST /v1/host/executions/assess`
+and the runtime-observation writers only the old judgment pass read
+(`execution_outcomes.py`, `native_outcomes.py`, `task_assessments.admit`,
+`record_source(runtime_judgment=)`), the judgment mechanism of the perspective
+qualification pack, and `docs/SELF-JUDGMENTS.md`. The adapter's tool schemas
+grow by the one tool to 3,664 characters (budget 3,700); the adapter stays
+under 2,500 lines.
 
 ## Unreleased - feelings
 

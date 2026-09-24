@@ -86,7 +86,7 @@ def correct(ledger, *, operation_id, performed_by, old_contact_id, contact_id,
                              (sid, original, operation_id))
         from protagine.beliefs.source_projection import erase_removed as erase_claims, enqueue
         from protagine.self_model.perspective import erase_removed as erase_preferences
-        from protagine.self_model.judgments import erase_removed as erase_judgments
+        from protagine.self_model.judgments import enqueue as enqueue_opinions, erase_removed as erase_judgments
         from .source_vectors import enqueue as enqueue_vectors
         for row in rows:
             sid = row['turn_id']
@@ -104,6 +104,8 @@ def correct(ledger, *, operation_id, performed_by, old_contact_id, contact_id,
             # must not start learning merely because their identity was fixed.
             if prior_job:
                 enqueue(conn, sid, messages, scope=row['scope'], timezone_name=prior_job['timezone'])
+                # The opinion pass reads the moved turn again under its new contact (integration map X14).
+                enqueue_opinions(conn, sid, contact_id, messages, scope=row['scope'], derive_claims=True)
             enqueue_vectors(conn, sid)
         for sid in descendants:
             row = conn.execute('SELECT session_id FROM turn_sources WHERE turn_id=?', (sid,)).fetchone()

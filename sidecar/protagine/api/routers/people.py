@@ -123,9 +123,19 @@ def reattribute_hooks(*, reconcile: bool = True) -> List[Any]:
         hook = getattr(getattr(host, name, None), "reattribute", None)
         if callable(hook):
             hooks.append(hook)
+    hooks.append(_reattribute_opinions)
     if reconcile:
         hooks.append(reconcile_merge)
     return hooks
+
+
+def _reattribute_opinions(drop_id: str, keep_id: str) -> int:
+    """The running mind's views about the dropped contact become views about the kept one (integration
+    map X14): read when the merge runs, so a mind set up after the store is the one moved."""
+    from protagine.api.routers import mind as mind_router
+    store = getattr(getattr(mind_router.get_mind(), "opinions", None), "store", None)
+    move = getattr(store, "reattribute_subject", None)
+    return int(move(drop_id, keep_id) or 0) if callable(move) else 0
 
 
 async def reconcile_merge(drop_id: str, keep_id: str) -> None:

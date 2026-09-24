@@ -248,23 +248,18 @@ async def test_inherited_change_requires_observed_time(occurred, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('action', ['erase', 'reattribute', 'annotate'])
-async def test_actual_admitted_correction_judgment_retains_subject_source_dependency(action, tmp_path, monkeypatch):
+async def test_actual_admitted_correction_opinion_retains_subject_source_dependency(action, tmp_path):
     from protagine.self_model.judgments import SelfJudgments
-    from test_self_judgments import Clock, Processor, revise
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '0')
+    from test_self_judgments import Clock, proposal
     projection = await start(tmp_path)
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
     state = SelfJudgments(projection.ledger, owner_id='owner', clock=Clock())
     await add(projection, 'correction', CORRECTION, '17', operation='correct', match_prior=True,
         memory_kind='substantive_event')
-    processor = Processor(decide=lambda p: revise(p, stance='Check the cupboard inventory before scheduling a refill.'))
-    assert await state.process_one(processor)
-    assert len(processor.requests) == 1
-    basis = processor.requests[0]['evidence'][0]['admitted_premises'][0]['subject_basis']
-    assert basis['claim_id'] == rows(projection)['original']['id']
-    assert basis['disposition'] == 'subject_identity_only'
-    assert len(state.revisions()) == 1
+    premise, = state.admitted_premises('correction')
+    assert premise.corrects == (rows(projection)['original']['id'],)
+    result = state.form(proposal([premise], topic='cupboard refills', source_ref='turn:correction',
+        stance='Check the cupboard inventory before scheduling a refill.'))
+    assert result.disposition == 'formed' and len(state.revisions()) == 1
     with projection.ledger._connect() as conn:
         deps = json.loads(conn.execute('SELECT dependency_json FROM self_judgment_revisions').fetchone()[0])
     assert {r['turn_id'] for r in deps} == {'original', 'correction'}
@@ -297,13 +292,10 @@ async def test_appraisal_preference_reads_actual_inherited_claim_and_revokes_wit
 
 
 @pytest.mark.asyncio
-async def test_unselected_candidate_subject_does_not_erase_independent_judgment(tmp_path, monkeypatch):
+async def test_unselected_candidate_subject_does_not_erase_independent_opinion(tmp_path):
     from protagine.self_model.judgments import SelfJudgments
-    from test_self_judgments import Clock, Processor, revise
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '0')
+    from test_self_judgments import Clock, proposal
     projection = await start(tmp_path)
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
     state = SelfJudgments(projection.ledger, owner_id='owner', clock=Clock())
     independent = 'The intake pump completed 4 cycles.'
     projection.ledger.record_source('batch', contact_id='owner', session_id='batch-session', messages=[
@@ -313,12 +305,10 @@ async def test_unselected_candidate_subject_does_not_erase_independent_judgment(
             operation='correct', match_prior=True, memory_kind='substantive_event'),
         independent: claim(independent, '4', subject='intake pump', predicate='cycles', memory_kind='substantive_event')})
     assert await projection.process_one(model)
-    def decide(payload):
-        assert len(payload['evidence']) == 2
-        assert any(p.get('subject_basis') for p in payload['evidence'][0]['admitted_premises'])
-        return revise(payload) | {'support': [payload['evidence'][1]['handle']]}
-    assert await state.process_one(Processor(decide=decide))
-    assert len(state.revisions()) == 1
+    premises = state.admitted_premises('batch')
+    assert len(premises) == 2 and premises[0].corrects
+    pump = next(p for p in premises if p.text == independent)
+    assert state.form(proposal([pump], topic='intake pump cycles', source_ref='turn:batch')).disposition == 'formed'
     with projection.ledger._connect() as conn:
         deps = json.loads(conn.execute('SELECT dependency_json FROM self_judgment_revisions').fetchone()[0])
     assert {ref['turn_id'] for ref in deps} == {'batch'}
@@ -327,21 +317,18 @@ async def test_unselected_candidate_subject_does_not_erase_independent_judgment(
 
 
 @pytest.mark.asyncio
-async def test_judgment_cannot_commit_after_subject_root_erased_during_processing(tmp_path, monkeypatch):
+async def test_opinion_cannot_form_on_a_correction_whose_subject_root_was_erased(tmp_path):
     from protagine.self_model.judgments import SelfJudgments
-    from test_self_judgments import Clock, Processor
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '0')
+    from test_self_judgments import Clock, proposal
     projection = await start(tmp_path)
-    monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
     state = SelfJudgments(projection.ledger, owner_id='owner', clock=Clock())
     await add(projection, 'correction', CORRECTION, '17', operation='correct', match_prior=True,
         memory_kind='substantive_event')
-    async def erase(_payload):
-        remove_original(projection, 'erase')
-    processor = Processor(before_return=erase)
-    assert await state.process_one(processor)
-    assert len(processor.requests) == 1
+    premise, = state.admitted_premises('correction')
+    remove_original(projection, 'erase')
+    assert state.admitted_premises('correction') == []
+    result = state.form(proposal([premise], topic='cupboard refills', source_ref='turn:correction'))
+    assert result.disposition == 'invalid:premise_not_current'
     assert state.revisions(history=True) == []
 
 

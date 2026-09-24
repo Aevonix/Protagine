@@ -450,7 +450,32 @@ dispatched tasks with their ids, and the narrative text),
 yesterday?" is one call, and an action that is not in the log did not happen),
 `why <id>` (an unknown id answers "no intention `<id>` exists in the audit
 log"), `rate <id> <verdict>`, `yes|no <code>`. `rate`, `yes` and `no` stay
-owner-only.
+owner-only. The agent's opinions ride the same tool (integration map X8):
+`opinions [query]` and `why <opinion number>` answer in any session, the
+sidecar filtering them to the views meant for that session's participant, and
+`withdraw|reconsider <number>` with the owner's reason are owner-only.
+
+## Opinions
+
+With `faculties.opinions` on, the mind keeps the agent's opinions (docs/OPINIONS.md).
+Three failed attempts in a row at the same work (the failure signature `type:topic`; a
+done report whose success check failed is a failure) become an `avoid` approach opinion
+with no model call, and a success a check confirmed or the owner verified turns it into
+`prefer`; the next task at that work carries the view in its body
+("Your recorded view on this work [opinion N]: ...", with `context.opinion_ids`). A view
+flags work, it never holds it back: those three failures also trip the breaker, so the
+next attempt is usually an ask, and once the owner says yes it is dispatched with the
+view in its body. Turn context gets a `protagine-stances` section of at most three
+relevant views for any viewer, filtered by audience, with the standing rule that a view
+changes only on new evidence and that the agent may disagree and still do what the owner
+authorizes, saying so. `protagine mind opinions` and `/v1/mind/opinions` list and show
+them, and let the owner withdraw or reconsider one.
+
+The running mind reads the flag once at start, and the opinion pass in the projection
+worker asks the running mind rather than the file, so the pass, the section and task
+bodies never disagree; `mind.enabled` counts as configured, not the runtime off switch
+(forming views is memory, not an effect). Only a process that serves no mind reads
+`protagine.yaml` for it.
 
 ## Asks
 
@@ -521,6 +546,7 @@ mind:
     semantic_recall: true           # embeddings in recall when router.embed_url is set; off = lexical only
     consolidation: true             # the nightly consolidation (docs/CONSOLIDATION.md)
     self_narrative: true            # the self-narrative in the owner's prompt and protagine_self state
+    opinions: true                  # the opinion pass, approach views in task bodies, the stance section
 ```
 
 `identity.yaml` holds the constitution (`agent.name`, `agent.values`,
@@ -550,6 +576,7 @@ protagine mind goals               the agent-owned goals that are open
 protagine mind interest <topic>    seed an interest for the curiosity drive
 protagine mind consolidate         run the nightly consolidation now (docs/CONSOLIDATION.md)
 protagine mind narrative           the self-narrative as the owner's prompt section renders it
+protagine mind opinions [list|show <id>|withdraw <id>|reconsider <id>] [--query Q] [--history] [--reason R]
 ```
 
 ## The API (`/v1/mind`, one bearer key)
@@ -572,6 +599,7 @@ protagine mind narrative           the self-narrative as the owner's prompt sect
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
 | `POST /off {reason?}`, `POST /on`, `POST /tick`, `POST /rate {id, verdict}`, `POST /level {autonomy}`, `POST /reset {cls}` | | |
+| `GET /opinions?q=&contact_id=&by=&history=&limit=`, `GET /opinions/{id}`, `POST /opinions/{id}/withdraw`, `POST /opinions/{id}/reconsider` | `{reason, contact_id?, by?, correction_id?}` for the two controls | `{enabled, opinions}`, `{opinion, history}`, `{revision_id, status}`; audience-filtered, owner-only controls (docs/OPINIONS.md) |
 
 `GET /dispatch` and `GET /outbox` also record the body's last pull; when it is
 older than five minutes the tick stops forming intentions until the body is

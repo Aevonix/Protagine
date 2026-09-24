@@ -225,7 +225,6 @@ class TurnIdempotencyLedger:
         occurred_at: str | None = None,
         timezone_name: str | None = None,
         derive_claims: bool = True,
-        runtime_judgment: bool = False,
         channel_id: str | None = None,
     ) -> bool:
         """Atomically retain source JSON and its rebuildable lexical index.
@@ -238,8 +237,6 @@ class TurnIdempotencyLedger:
         Reviewed historical imports can set derive_claims=False to retain
         quotations without scheduling assertion learning. Text indexing still
         uses the same source ledger and semantic projection queue.
-        The internal runtime_judgment option queues server-observed execution
-        evidence without ordinary claim extraction; HTTP writers cannot set it.
         """
         missing = [name for name, value in (("turn_id", turn_id), ("contact_id", contact_id),
                                             ("session_id", session_id), ("messages", messages)) if not value]
@@ -318,13 +315,11 @@ class TurnIdempotencyLedger:
             from protagine.beliefs.source_projection import enqueue
             if derive_claims:
                 enqueue(conn, turn_id, messages, scope=scope, timezone_name=timezone_name)
-            if derive_claims or runtime_judgment:
-                from protagine.self_model.judgments import enqueue as enqueue_judgments
-                enqueue_judgments(conn, turn_id, contact_id, messages, scope=scope,
-                                  runtime_observation=runtime_judgment)
+            from protagine.self_model.judgments import enqueue as enqueue_opinions
+            enqueue_opinions(conn, turn_id, contact_id, messages, scope=scope, derive_claims=derive_claims)
+            if derive_claims:
                 from protagine.self_model.appraisals import enqueue as enqueue_appraisals
-                enqueue_appraisals(conn, turn_id, contact_id, messages, scope=scope,
-                                   runtime_observation=runtime_judgment)
+                enqueue_appraisals(conn, turn_id, contact_id, messages, scope=scope)
             if derive_claims:
                 from protagine.commitments.extract import enqueue as enqueue_commitments
                 enqueue_commitments(conn, turn_id, contact_id, messages, scope=scope)

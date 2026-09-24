@@ -18,7 +18,7 @@ PACKS = {
         'Real source formation, review, correction and lexical recollection; candidate extractor with fixed supporting review.',
         ('native_memory_writer', 'speech_recognition', 'semantic_retrieval')),
     'perspective': Pack('native_perspective_cases', 'native_perspective', 'perspective',
-        'Durable judgments/appraisals with a fixed native reader; candidate reasoning applies updates to canonical sources.',
+        'Durable appraisals with a fixed native reader; candidate reasoning applies updates to canonical sources.',
         ('automatic_opinion_projection', 'freeform_tone_grading', 'native_source_capture')),
     'planning': Pack('planning_effects', 'planning_effects', 'native',
         'Native tool planning checked against actual reservations in an owned offline inventory sandbox.',

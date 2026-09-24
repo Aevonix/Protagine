@@ -325,6 +325,23 @@ def _mind_note_novel(query_text: str) -> None:
         logger.debug("novel topic not noted", exc_info=True)
 
 
+def _mind_stances(query_text: str, *, viewer_contact_id: str, viewer_is_owner: bool, session_id: str) -> str:
+    """Recorded views for this turn (architecture 4.4), audience-filtered for the viewer; nothing when the
+    mind is off. Who the viewer is comes from ``_assemble_sections`` (the viewer identity every other
+    owner-only section uses), so a recipient packet gets only the views meant for that recipient."""
+    mind = _mind()
+    opinions = getattr(mind, "opinions", None) if mind is not None else None
+    if opinions is None or not mind.enabled or not viewer_contact_id:
+        return ""
+    try:
+        return str(opinions.context(query_text, viewer_contact_id=viewer_contact_id,
+                                    viewer_is_owner=bool(viewer_is_owner),
+                                    session_id=session_id or "") or "")
+    except Exception:
+        logger.debug("stance section unavailable", exc_info=True)
+        return ""
+
+
 def _mind_recall_query(query_text: str) -> str:
     """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
     mind = _mind()
@@ -1892,6 +1909,13 @@ async def _assemble_sections(
         except Exception:
             logger.debug('appraisal context unavailable', exc_info=True)
 
+    # --- Recorded views (opinions): any viewer, audience-filtered (architecture 4.4) ---
+    stance_text = _mind_stances(query_text, viewer_contact_id=viewer_person_id or contact_id or '',
+                                viewer_is_owner=_viewer_is_owner, session_id=body.context.session_id)
+    if stance_text:
+        sections.append(ContextSection(id='protagine-stances', title='Your recorded views',
+                                       body=stance_text, priority=87))
+
     if contact_id:
         try:
             from protagine.api.routers.executions import authorized_viewer
@@ -1986,7 +2010,7 @@ async def _assemble_sections(
                         source_ids=working_sources)
                     if working_brief:
                         sections.append(ContextSection(id='protagine-self-perspective',
-                            title='Current working judgments', body=working_brief, priority=87,
+                            title='Owner priority corrections', body=working_brief, priority=87,
                             citations=perspective.ledger.source_references(working_sources,
                                 contact_id=contact_id, session_id=body.context.session_id)))
         except Exception as exc:

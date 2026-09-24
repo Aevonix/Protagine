@@ -16,15 +16,17 @@ The owner can also correct an exact handle and selected source attribution
 receipt, invalidates dependent projections and reconciles surviving sources.
 A relationship update grants no permission.
 
-The existing source ledger holds preferences, temporary appraisals and narrow
-person/topic judgments with quotations, contrary evidence, source revisions,
-processor provenance and owner corrections. `protagine_judgments` inspects these
-records. Recollection selects relevant records for the current participant;
-private owner opinions are not disclosed to other contacts. Erasing or correcting
-supporting evidence removes its influence: the erasure or the attribution change
-deletes the records derived from that source version, with their heads and
-corrections, in the same transaction (no tombstones). Delayed extraction cannot
-resurrect invalidated evidence.
+The existing source ledger holds preferences and temporary appraisals; the
+agent's own person, topic and approach views live in the opinion store
+(docs/OPINIONS.md) with their premises, revisions, processor provenance and owner
+corrections, and `protagine_self opinions` inspects them. Recollection selects
+relevant records for the current participant; private owner opinions are not
+disclosed to other contacts. Erasing or correcting supporting evidence removes its
+influence: the erasure or the attribution change deletes the appraisal records
+derived from that source version, with their heads and corrections, in the same
+transaction (no tombstones), and an attribution change queues the moved sources'
+appraisals again under the new contact. Delayed extraction cannot resurrect
+invalidated evidence.
 
 Appraisals use low/moderate intensity and bounded decay, not a validated measure
 of feelings. Repeated evidence does not acquire extra votes. The same extraction

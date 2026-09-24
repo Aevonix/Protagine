@@ -1,4 +1,4 @@
-"""Actual durable opinions/appraisals followed by scoped native inspection."""
+"""Actual durable appraisals followed by scoped native inspection."""
 import asyncio
 from contextlib import closing
 from copy import deepcopy
@@ -16,22 +16,17 @@ from .records import digest
 
 
 def snapshot(ledger, owner, subject, clock=time.time):
-    from protagine.self_model.judgments import SelfJudgments
     from protagine.self_model.appraisals import AppraisalStore
-    judgments = SelfJudgments(ledger, owner_id=owner, clock=clock)
     appraisals = AppraisalStore(ledger, owner_id=owner, clock=clock)
     with closing(ledger._connect()) as db:
         appraisal_jobs = [dict(row) for row in db.execute('SELECT * FROM appraisal_runs')]
-    return {'judgments': judgments.revisions(), 'judgment_history': judgments.revisions(history=True),
-        'judgment_jobs': judgments.processing(), 'appraisals': appraisals.view(subject, viewer_contact_id=owner, history=True),
+    return {'appraisals': appraisals.view(subject, viewer_contact_id=owner, history=True),
         'appraisal_current': appraisals.view(subject, viewer_contact_id=owner), 'appraisal_jobs': appraisal_jobs}
 
 
 async def consume(inputs, context):
-    from protagine.beliefs.source_projection import SourceClaimProjection
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
-    from protagine.self_model.judgments import SelfJudgments
     from protagine.self_model.appraisals import AppraisalStore
     from protagine.turns import TurnIdempotencyLedger
     from .native_memory_batch import preflight_output
@@ -55,21 +50,15 @@ async def consume(inputs, context):
     now = [time.time() - inputs.get('clock_origin_age_seconds', 30)]
     clock = lambda: now[0]
     snapshots = []
-    with patch.dict(os.environ, {'PROTAGINE_SELF_JUDGMENTS_ENABLED': '1', 'PROTAGINE_OWNER_CONTACT_ID': owner}):
-        judgment = SelfJudgments(ledger, owner_id=owner, clock=clock)
+    with patch.dict(os.environ, {'PROTAGINE_OWNER_CONTACT_ID': owner}):
         appraisal = AppraisalStore(ledger, owner_id=owner, clock=clock)
-        projection = SourceClaimProjection(ledger)
         origin = now[0]
         for episode in inputs['episodes']:
             now[0] = origin + episode['after_seconds']
             ledger.record_source(episode['id'], contact_id=subject, session_id='history-'+episode['id'],
                 occurred_at=datetime.fromtimestamp(now[0], timezone.utc).isoformat(),
                 messages=[{'role': 'user', 'content': episode['text']}])
-            if inputs['mechanism'] == 'judgment':
-                await projection.process_one(context.router)
-                await judgment.process_one(context.router)
-            else:
-                await appraisal.process_one(context.router)
+            await appraisal.process_one(context.router)
             snapshots.append(snapshot(ledger, owner, subject, clock))
     native_inputs = {**deepcopy(inputs), 'role': 'chat', 'people': people,
         'turns': [{'session_id': 'history-'+episode['id']} for episode in inputs['episodes']]}
@@ -128,55 +117,23 @@ def assess(observed, oracle):
             row.get('truncated') is False for row in effects['request_observations']),
         'native_cleanup_confirmed': all(effects.get(key) is True for key in ('worker_stopped', 'process_exited', 'agent_close_returned'))}
     kind = oracle['check']
-    if kind in {'stable', 'revise', 'bounded', 'withdraw', 'portable'}:
-        initial, final = first.get('judgments', []), last.get('judgments', [])
-        checks['initial_evidence_backed_opinion'] = bool(initial) and all(row.get('support') for row in initial)
-        inspected = [item for response in _calls(effects, 'inspect') for item in response.get('judgments', [])]
-        checks['native_explicit_inspection'] = bool(final) and any(
-            item.get('id') == final[0]['id'] and item.get('stance') == final[0].get('stance') for item in inspected)
-        if kind in {'stable', 'bounded'}:
-            checks['existing_opinion_preserved'] = bool(initial) and final == initial
-        if kind == 'stable':
-            checks['flattery_supplied_no_new_premise'] = any(row.get('turn_id') == oracle['last_source']
-                and row.get('status') == 'complete' and row.get('disposition') == 'unsupported_source'
-                for row in last.get('judgment_jobs', []))
-        if kind == 'revise':
-            checks['new_revision_links_predecessor'] = bool(initial and final) and final[0].get('supersedes') == initial[0]['id']
-            checks['contrary_evidence_preserved'] = bool(final) and bool(final[0].get('contrary'))
-            checks['new_evidence_supports_revision'] = bool(final) and any(ref.get('turn_id') == oracle['last_source'] for ref in final[0]['support'])
-        if kind == 'bounded':
-            checks['default_rate_limit_observed'] = any(row.get('disposition') == 'topic_rate_limited' for row in last.get('judgment_jobs', []))
-        if kind == 'withdraw':
-            checks['native_owner_withdrawal_observed'] = any(row.get('accepted') is True for row in _calls(effects, 'withdraw'))
-            checks['withdrawal_survives_store_reopen'] = not after.get('judgments') and any(row.get('status') == 'withdrawn'
-                and row.get('owner_correction', {}).get('control_turn_id') for row in after.get('judgment_history', []))
-        if kind == 'portable':
-            producers = effects.get('producer_observations', [])
-            produced = {row.get('returned_model') for row in producers}
-            served = {model for request in effects.get('request_observations', []) for model in request.get('returned_models', [])}
-            normalize = lambda s: s.removeprefix('openai/') if isinstance(s, str) else s
-            checks['distinct_processor_identity_observed'] = bool(produced and served) and None not in produced and all(
-                row.get('outcome') == 'returned' and row.get('prior_attempts') == [] for row in producers
-            ) and all(not row.get('response_identity_truncated') for row in effects.get('request_observations', [])) and {
-                normalize(m) for m in produced}.isdisjoint({normalize(m) for m in served})
-    else:
-        initial = first.get('appraisal_current', {}).get('records', [])
-        checks['source_backed_appraisal_formed'] = bool(initial) and all(row.get('sources') for row in initial)
-        if kind == 'repair':
-            checks['incident_settled_with_receipt'] = any(row.get('status') == 'settled' and row.get('supersedes')
-                for row in last.get('appraisals', {}).get('records', []))
-            checks['settled_hint_removed'] = last.get('appraisal_current', {}).get('behavior_hints') == []
-            checks['settled_appraisal_not_injected'] = all(row.get('text', '') not in wire
-                for row in initial if row.get('text'))
-        if kind == 'separation':
-            checks['other_contact_appraisal_absent'] = all(row.get('text', '') not in wire for row in initial if row.get('text'))
-            checks['other_contact_sources_absent'] = all('turn:'+source not in wire for source in effects.get('source_ids', []))
-        if kind == 'appraisal-withdraw':
-            initial_wire = (effects.get('request_observations') or [{}])[0].get('text', '')
-            checks['active_appraisal_automatically_injected'] = bool(initial) and all(
-                row.get('text') and row['text'] in initial_wire for row in initial)
-            checks['native_appraisal_withdrawal_observed'] = any(row.get('accepted') is True for row in _calls(effects, 'withdraw'))
-            checks['appraisal_withdrawal_persisted'] = not after.get('appraisal_current', {}).get('records') and bool(after.get('appraisals', {}).get('corrections'))
+    initial = first.get('appraisal_current', {}).get('records', [])
+    checks['source_backed_appraisal_formed'] = bool(initial) and all(row.get('sources') for row in initial)
+    if kind == 'repair':
+        checks['incident_settled_with_receipt'] = any(row.get('status') == 'settled' and row.get('supersedes')
+            for row in last.get('appraisals', {}).get('records', []))
+        checks['settled_hint_removed'] = last.get('appraisal_current', {}).get('behavior_hints') == []
+        checks['settled_appraisal_not_injected'] = all(row.get('text', '') not in wire
+            for row in initial if row.get('text'))
+    if kind == 'separation':
+        checks['other_contact_appraisal_absent'] = all(row.get('text', '') not in wire for row in initial if row.get('text'))
+        checks['other_contact_sources_absent'] = all('turn:'+source not in wire for source in effects.get('source_ids', []))
+    if kind == 'appraisal-withdraw':
+        initial_wire = (effects.get('request_observations') or [{}])[0].get('text', '')
+        checks['active_appraisal_automatically_injected'] = bool(initial) and all(
+            row.get('text') and row['text'] in initial_wire for row in initial)
+        checks['native_appraisal_withdrawal_observed'] = any(row.get('accepted') is True for row in _calls(effects, 'withdraw'))
+        checks['appraisal_withdrawal_persisted'] = not after.get('appraisal_current', {}).get('records') and bool(after.get('appraisals', {}).get('corrections'))
     return checks
 
 

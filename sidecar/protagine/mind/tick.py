@@ -44,6 +44,7 @@ from .consolidate import Consolidation
 from .deliberate import Deliberation, refresh_context
 from .drives import CHECK_IN_TYPES, DRIVES, DriveInputs, slug, task_body
 from .goals import DEFAULT_MAX_TURNS, Goals, goal_lines
+from .opinions import Opinions
 from .outbox import Outbox
 from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
 from .rank import Candidate, DEFAULT_ACT_THRESHOLD, eligible
@@ -207,6 +208,11 @@ class Mind:
 
         self.authority = Authority(self.policy, store, owner_id=self.owner_id, clock=self.clock)
         self.autobiography = Autobiography(ledger, owner_id=self.owner_id, clock=self.clock)
+        self.opinions = None
+        if ledger is not None and self.owner_id:
+            from protagine.self_model.judgments import SelfJudgments
+            self.opinions = Opinions(SelfJudgments(ledger, owner_id=self.owner_id), store,
+                                     enabled=bool(self.faculties.get("opinions")), clock=self.clock)
         self.outbox = Outbox(store, owner_id=self.owner_id, clock=self.clock)
         self.outcomes = Outcomes(store, authority=self.authority, feedback=feedback, expectations=expectations,
                                  commitments=commitments, followups=followups, autobiography=self.autobiography,
@@ -1259,6 +1265,11 @@ class Mind:
             # The deliberated plan before any guidance is appended (affect's note, a recorded view): the
             # identical-plan refusal hashes this, so guidance never makes a repeat look new (map X13).
             context["plan_body"] = candidate.text
+            if candidate.kind == "task" and self.opinions is not None:
+                lines, ids = self.opinions.task_lines(candidate)
+                if lines:
+                    context["body"] = f"{context['body']}\n\n{lines}".strip()
+                    context["opinion_ids"] = ids
             context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
             context["max_retries"] = self.policy.budgets.task_max_retries
             if candidate.parent_goal_id:
@@ -1379,6 +1390,11 @@ class Mind:
     def _on_settled(self, row: StoredInitiative, outcome: str, check_result: Optional[bool]) -> None:
         """An outcome settles its concern and satiates its drive (architecture 3.1, 4.5); a finished
         commitment intention also closes the commitment it was raised for."""
+        if self.opinions is not None:
+            try:
+                self.opinions.observe_outcome(row, outcome, check_result)
+            except Exception as error:
+                logger.warning("approach opinion not updated for %s (%s)", row.id, type(error).__name__)
         concern = self.concerns.by_intention(row.id)
         now = self.clock()
         if outcome == "done":

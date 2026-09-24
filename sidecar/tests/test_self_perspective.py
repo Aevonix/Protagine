@@ -20,7 +20,6 @@ from onekey import KEY
 @pytest.fixture
 def perspective(source_app, tmp_path, monkeypatch):
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'contact-a')
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     perspective = SelfPerspective(ledger, owner_id='contact-a')
     learner = PreferenceLearner(db_path=str(tmp_path / 'old-preferences.db'), perspective=perspective)
@@ -149,3 +148,20 @@ def test_negative_emoji_directive_keeps_its_polarity(perspective):
     state, learner, _ = perspective
     state.ledger.record_source('emoji', contact_id='contact-a', session_id='s', messages=[{'role': 'user', 'content': "Don't use emoji."}])
     assert learner.learn_source('emoji') == [('communication_style.emoji', 'off')]
+
+
+def test_status_reports_opinions_and_the_brief_no_longer_carries_them(perspective):
+    from test_self_judgments import admit_source, proposal
+    state, _, _ = perspective
+    state.ledger.record_source('first', contact_id='contact-a', session_id='session-first',
+        messages=[{'role': 'user', 'content': 'Long local work lost progress after an interruption.'}])
+    admit_source(state.judgments, 'first')
+    stance = state.judgments.form(proposal(state.judgments.admitted_premises('first'))).stance_id
+    status = state.status()
+    assert 'judgments_enabled' not in status
+    assert [row['id'] for row in status['judgments']] == [stance]
+    assert [row['id'] for row in status['judgment_history']] == [stance]
+    assert [row['ref'] for row in status['judgment_processing']] == ['first']
+    source_ids = []
+    assert state.brief('What is your view on local work checkpoints?', source_ids=source_ids) == ''
+    assert source_ids == []

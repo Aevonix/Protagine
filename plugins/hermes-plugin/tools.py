@@ -38,17 +38,21 @@ OWNER_PERSON = PUBLIC_PERSON + ("may_contact", "cadence_minutes", "last_interact
 
 # Every schema is sent with every model request, so each says only what the model needs to pick
 # the tool and fill its arguments; the handlers validate and explain the rest.
+# M7's opinions ride this tool (integration map X8): opinions [query], why <opinion number>, and the owner's
+# withdraw|reconsider <number> with a reason; the sidecar filters every read by the session's participant.
+SELF_OPERATIONS = ("state", "log", "why", "rate", "yes", "no", "opinions", "withdraw", "reconsider")
 SELF_SCHEMA = {
     "name": "protagine_self",
     "description": "Your mind and record, the only source for what you did or decided: state (level, asks with "
                    "codes, working_on, narrative), log (newest first; since_hours, kind, recipient; cite ids; not in "
-                   "the log means it did not happen), why <id>, rate <id> <verdict>, yes|no <code> (owner only, "
-                   "code typed by the owner).",
+                   "the log means it did not happen), why <id or opinion number>, rate <id> <verdict>, opinions "
+                   "[query]; owner only: yes|no <code> (typed by the owner), withdraw|reconsider <opinion> <reason>.",
     "parameters": {"type": "object", "properties": {
-        "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
+        "operation": {"type": "string", "enum": list(SELF_OPERATIONS)},
         "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
         "code": {"type": "string"}, "limit": {"type": "integer"}, "since_hours": {"type": "number"},
-        "kind": {"type": "string"}, "recipient": {"type": "string"}},
+        "kind": {"type": "string"}, "recipient": {"type": "string"}, "query": {"type": "string"},
+        "reason": {"type": "string"}},
         "required": ["operation"]}}
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
@@ -87,6 +91,12 @@ def _json(value: Any) -> str:
 
 def _error(message: str) -> str:
     return _json({"error": message})
+
+
+def _opinion(value: Any) -> int | None:
+    """An opinion number (an intention id is a UUID, never all digits)."""
+    text = "" if isinstance(value, bool) or not isinstance(value, (int, str)) else str(value).strip()
+    return int(text) if text.isdigit() else None
 
 
 def _unavailable(reason: str) -> str:
@@ -155,6 +165,8 @@ class Tools:
                           # From the record, never free generation: the tasks in flight and the narrative.
                           "working_on": self._working_on(),
                           "narrative": str(narrative.get("text") or "") if narrative.get("enabled") is True else ""})
+        if operation in {"opinions", "withdraw", "reconsider"} or (operation == "why" and _opinion(args.get("id"))):
+            return self._opinions(operation, args, session_id)
         if operation in {"log", "why"} and not self._owners_own(session_id):
             return _error(RECORD_IS_OWNERS)
         if operation == "log":
@@ -179,6 +191,26 @@ class Tools:
         if operation in {"yes", "no"}:
             return self._answer_ask(operation, str(args.get("code") or ""), session_id)
         return _error("unknown operation")
+
+    def _opinions(self, operation: str, args: dict[str, Any], session_id: str) -> str:
+        """The agent's recorded opinions. Reads pass the session's participant, so the sidecar shows a guest,
+        a worker or a cron run only the views meant for them; withdraw and reconsider need the owner's own
+        interactive session and the owner's reason (the sidecar checks again)."""
+        viewer, number = self.sessions.contact_id(session_id) or "", _opinion(args.get("id"))
+        if operation == "opinions":
+            return self._mind("GET", "/v1/mind/opinions", params={
+                "contact_id": viewer, "limit": 10, "q": str(args.get("query") or "").strip()[:1000]})
+        if operation == "why":
+            return self._mind("GET", f"/v1/mind/opinions/{number}", params={"contact_id": viewer})
+        if number is None:
+            return _error("id is required (an opinion number from opinions)")
+        if not self._owner(session_id):
+            return _error(f"only the owner can {operation} an opinion")
+        if not str(args.get("reason") or "").strip():
+            return _error("reason is required: the owner's own words for why")
+        return self._mind("POST", f"/v1/mind/opinions/{number}/{operation}", json={
+            "reason": str(args["reason"]).strip()[:1500],
+            "contact_id": viewer or self.settings.owner_contact_id() or None})
 
     def _working_on(self) -> list[dict[str, Any]]:
         """The tasks the mind has in flight (approved or dispatched), with their audit ids."""

@@ -19,13 +19,12 @@ from protagine.turns.idempotency import canonical_turn_digest, source_message_ha
 from protagine.util.model_output import final_text
 
 logger = logging.getLogger(__name__)
-VERSION = 'source-appraisals-v6'
-KINDS = {'appraisal', 'behavior_hypothesis', 'assessment', 'judgment'}
+VERSION = 'source-appraisals-v7'
+KINDS = {'appraisal', 'behavior_hypothesis', 'assessment'}
 DIMENSIONS = {
     'appraisal': {'frustration', 'annoyance', 'interest', 'satisfaction'},
     'behavior_hypothesis': {'communication', 'working_style'},
     'assessment': {'self_report'},
-    'judgment': {'affinity', 'skepticism', 'reliability', 'like', 'dislike'},
 }
 HINTS = {'none', 'try_different_approach', 'verify_before_relying',
          'keep_concise', 'allow_more_detail', 'offer_relevant_topic', 'warmth'}
@@ -42,8 +41,7 @@ support, contrary, intensity, hint.
 Use only these exact kind:dimension combinations:
 appraisal: frustration, annoyance, interest, satisfaction;
 behavior_hypothesis: communication, working_style;
-assessment: self_report;
-judgment: affinity, skepticism, reliability, like, dislike.
+assessment: self_report.
 Standing preferences belong to the separate canonical source-claim admission
 path. Do not emit or paraphrase a preference as an appraisal, assessment or
 behavior hypothesis. "Make this one caption short" is a requirement of that
@@ -59,8 +57,6 @@ hypothesis useful for the next similar task, not only a temporary feeling.
 Keep it limited to that activity and acknowledge that the reports are fallible.
 assessment means an
 explicitly reported formal assessment, dimension self_report; never infer Big Five.
-judgment is YOUR fallible person/topic affinity, skepticism, domain-specific
-reliability, like or dislike. Reliability concerns the demonstrated activity only.
 Do not copy their preference into your own stance. Never generalize one incident
 into a person's character. No permission, trust grant, diagnosis or competence score.
 Routine greetings, facts, requests, flattery, legitimate corrections, clarification,
@@ -779,7 +775,7 @@ class AppraisalStore:
                 if previous and previous['status'] == 'current' and all(
                         json.loads(previous['payload_json']).get(field) == item[field] for field in ('support', 'contrary')):
                     continue
-                if previous and previous['status'] == 'current' and item['kind'] in {'judgment', 'behavior_hypothesis'} and self.clock() - previous['created_at'] < DURABLE_INTERVAL:
+                if previous and previous['status'] == 'current' and item['kind'] == 'behavior_hypothesis' and self.clock() - previous['created_at'] < DURABLE_INTERVAL:
                     reconsider_at = max(reconsider_at or 0, previous['created_at'] + DURABLE_INTERVAL)
                     continue
                 identifier = 'appraisal:' + canonical_turn_digest([source['turn_id'], source['version'], key])

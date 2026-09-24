@@ -55,8 +55,9 @@ Current assertion bundles, source opening, corrections and preference reads
 retain derived provenance. A typed correction can correct a recognition-derived
 claim; deleting that correction does not revive the old value. An attributed
 annotation can target the recognized words in their exact source revision.
-Ordinary appraisal and self-judgment extraction do not consume ASR blocks, and
-this path neither grants trust nor infers emotion from speech.
+Ordinary appraisal extraction does not consume ASR blocks, a transcript turn
+supplies an opinion premise only through an admitted claim, and this path neither
+grants trust nor infers emotion from speech.
 
 This is a bounded per-segment formation path, not a guarantee of transcription
 accuracy or useful model output. A dependent procedure split across segments,

@@ -3,7 +3,7 @@
 `protagine-hermes` is one wheel with two Hermes plugins:
 
 - `protagine` (general): turn capture, the guard, `/mind`, and the self, people,
-  memory and reminder tools
+  opinions, memory and reminder tools
 - `protagine-memory` (memory provider): per-turn recall through
   `/v1/host/context/assemble`, turn sync when the general plugin is absent, and
   the owner's commitment and affect writes
@@ -217,6 +217,16 @@ run) and are sent with the owner as `contact_id`, which the sidecar checks
 again (403 `not_owner`). `protagine people who|inspect|permit|cadence|merge|link|proposals`
 is the same interface from the CLI. `may_contact` is raised nowhere else; a
 contact's opt-out ("STOP", "don't text me", ...) only lowers it to `never`.
+
+`protagine_self` also carries the agent's recorded opinions (one tool, not a
+separate one, so the tool schemas stay within their budget): `opinions` with an
+optional `query` and `why <number>` read `GET /v1/mind/opinions` with the session's
+contact, so a guest sees only everyone-audience views (an intention id is never all
+digits, so `why` on any other id is still the owner's record); `withdraw` and
+`reconsider <number>` with the owner's `reason` post
+`POST /v1/mind/opinions/{id}/withdraw|reconsider` from the owner's own interactive
+session only, never a guest, a kanban worker or a cron run (docs/OPINIONS.md). The
+guard treats the tool as read-only.
 
 ## Memory provider
 
