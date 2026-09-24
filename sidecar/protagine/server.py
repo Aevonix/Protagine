@@ -31,8 +31,6 @@ from protagine.api.routers.host import (
     set_research_pipeline,
     set_search_orchestrator,
     set_insight_store,
-    set_skills_registry,
-    set_skill_executor,
     set_secrets_manager,
     set_session_store,
     set_commitment_store,
@@ -921,30 +919,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("InsightStore init failed: %s", exc)
 
-    # --- 16. Skills registry + executor ---
-    skills_registry = None
-    try:
-        from protagine.skills.registry import SkillRegistry
-        skills_registry = SkillRegistry()
-        set_skills_registry(skills_registry)
-        logger.info("SkillRegistry initialized (%d skills)", len(skills_registry.list_skills()))
-
-        try:
-            from protagine.skills.executor import SkillExecutor
-            from protagine.skills.security.guards import CapabilityGuard
-            from protagine.skills.security.scanner import ASTScanner
-            skill_executor = SkillExecutor(
-                registry=skills_registry,
-                guard=CapabilityGuard(),
-                scanner=ASTScanner(),
-            )
-            set_skill_executor(skill_executor)
-            logger.info("SkillExecutor initialized")
-        except Exception as sexc:
-            logger.warning("SkillExecutor init failed: %s", sexc)
-    except Exception as exc:
-        logger.warning("SkillRegistry init failed: %s", exc)
-
     # --- 18. Secrets ---
     try:
         from protagine.secrets.manager import SecretsManager
@@ -1138,11 +1112,6 @@ async def lifespan(app: FastAPI):
         _set_mind(None)
     except Exception:
         logger.warning("Mind shutdown failed")
-    if skills_registry is not None:
-        try:
-            skills_registry.close()
-        except Exception:
-            logger.debug("SkillRegistry close failed", exc_info=True)
     set_llm_router(None)
     set_embedder(None)
     set_goals_store(None)
@@ -1169,7 +1138,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("controlled learning shutdown failed", exc_info=True)
     set_research_pipeline(None)
-    set_skills_registry(None)
     set_commitment_store(None)
     set_affect_store(None)
     set_facts_store(None)

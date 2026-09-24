@@ -100,8 +100,6 @@ from protagine.api.schemas.host import (
     MigrateResponse,
     MultimodalSearchRequest,
     MultimodalSearchResponse,
-    SkillExecuteRequest,
-    SkillExecuteResponse,
     ResearchListResponse,
     ResearchRunResponse,
     ResearchStartRequest,
@@ -113,9 +111,6 @@ from protagine.api.schemas.host import (
     SecretListResponse,
     SecretSetRequest,
     SecretSetResponse,
-    SkillDetailResponse,
-    SkillSummary,
-    SkillsListResponse,
     SynthesisConnection,
     SynthesisDiscoverRequest,
     SynthesisDiscoverResponse,
@@ -418,8 +413,6 @@ def supported_capabilities() -> List[str]:
         caps.append("research")
     if _connection_discoverer is not None:
         caps.append("synthesis")
-    if _skills_registry is not None:
-        caps.append("skills")
     if _secrets_manager is not None:
         caps.append("secrets")
     if _mind() is not None:
@@ -450,8 +443,6 @@ def supported_capabilities() -> List[str]:
         caps.append("rerank")
     caps.append("context")
     caps.append("event_journal")
-    caps.append("skill_sandbox")
-    caps.append("security_scanner")
     return caps
 
 
@@ -725,8 +716,6 @@ async def health() -> HostHealthResponse:
             logger.warning("embedder health probe failed: %s", exc)
 
         notes["embed"] = embed_note
-    if _skills_registry is not None:
-        notes["skills"] = "SkillRegistry wired"
     if _secrets_manager is not None:
         notes["secrets"] = "SecretsManager wired"
     if _research_pipeline is not None:
@@ -907,14 +896,6 @@ async def llm_health() -> dict:
 # ---------------------------------------------------------------------------
 
 _NOT_WIRED = {"error": {"code": "not_wired", "message": "Backend not configured"}}
-
-# Skill identifiers must be safe for filesystem paths and registry keys.
-_SKILL_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
-
-
-def _validate_skill_id(skill_id: str) -> None:
-    if not _SKILL_ID_RE.match(skill_id):
-        raise HTTPException(status_code=400, detail="invalid skill_id")
 
 
 @router.post("/memory/read", response_model=MemoryReadResponse)
@@ -4255,11 +4236,6 @@ async def submit_correction(
     return {"accepted": True, "correction_id": correction.correction_id}
 
 
-# ---------------------------------------------------------------------------
-# Skills
-# ---------------------------------------------------------------------------
-
-_skills_registry = None
 _commitment_store = None
 
 
@@ -5229,170 +5205,6 @@ _pattern_store = None
 def set_pattern_store(store):
     global _pattern_store
     _pattern_store = store
-
-
-_skill_executor = None
-
-def set_skills_registry(registry) -> None:
-    global _skills_registry
-    _skills_registry = registry
-
-
-def set_skill_executor(executor) -> None:
-    global _skill_executor
-    _skill_executor = executor
-
-
-@router.get("/skills/registry", response_model=SkillsListResponse)
-async def list_skills() -> SkillsListResponse:
-    if _skills_registry is None:
-        return SkillsListResponse(skills=[])
-    try:
-        skills = await _skills_registry.list_all()
-        result = []
-        for s in skills:
-            d = _to_dict(s)
-            d.setdefault("id", d.pop("skill_id", ""))
-            for skip in ("created_at", "updated_at", "author_protagine_id", "status", "input_schema", "tags", "trigger_patterns"):
-                d.pop(skip, None)
-            result.append(SkillSummary(**{k: v for k, v in d.items() if k in SkillSummary.model_fields}))
-        return SkillsListResponse(skills=result)
-    except Exception as exc:
-        logger.warning("list_all failed: %s", exc)
-        return SkillsListResponse(skills=[])
-
-
-@router.get("/skills/drafts")
-async def list_skill_drafts() -> dict:
-    """List skills in DRAFT status awaiting approval."""
-    if _skills_registry is None:
-        return {"drafts": []}
-    try:
-        from protagine.skills.models import SkillStatus
-        drafts = await _skills_registry.list_all(status=SkillStatus.DRAFT)
-        return {
-            "drafts": [
-                {
-                    "id": getattr(d, "skill_id", ""),
-                    "name": getattr(d, "name", ""),
-                    "description": getattr(d, "description", ""),
-                    "created_at": (
-                        getattr(d, "created_at").isoformat()
-                        if getattr(d, "created_at", None) else None
-                    ),
-                }
-                for d in drafts
-            ]
-        }
-    except Exception as exc:
-        logger.warning("list_skill_drafts failed: %s", exc)
-        return {"drafts": []}
-
-
-@router.post("/skills/{skill_id}/approve")
-async def approve_skill(skill_id: str) -> dict:
-    """Move a DRAFT skill to ACTIVE."""
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=503, detail="skills_registry_not_initialized")
-    try:
-        existing = await _skills_registry.get(skill_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        await _skills_registry.activate(skill_id)
-        try:
-            from protagine.events.broadcaster import emit as _emit
-            _emit("skill_draft_approved", {
-                "skill_id": skill_id,
-                "name": getattr(existing, "name", ""),
-            })
-        except Exception:
-            pass
-        # v0.18.0 Hermes bridge: best-effort render of the approved skill
-        # as an instructional Hermes SKILL.md. Gated inside the exporter
-        # by PROTAGINE_EMIT_HERMES_SKILLS (off by default) and a procedural
-        # heuristic; a failure here must never block activation.
-        try:
-            from protagine.skills.hermes_export import export_approved_skill
-            exported = export_approved_skill(existing)
-            if exported is not None:
-                logger.info("Hermes SKILL.md exported for %s → %s", skill_id, exported)
-        except Exception as exc:
-            logger.warning("Hermes export failed for %s (non-fatal): %s", skill_id, exc)
-        return {"ok": True, "skill_id": skill_id, "status": "active"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("approve_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/skills/{skill_id}/execute", response_model=SkillExecuteResponse)
-async def execute_skill(
-    skill_id: str, body: SkillExecuteRequest,
-) -> SkillExecuteResponse:
-    """Invoke an ACTIVE skill in the sandboxed SkillExecutor."""
-    _validate_skill_id(skill_id)
-    if _skill_executor is None:
-        raise HTTPException(
-            status_code=503, detail="skill_executor_not_initialized",
-        )
-    try:
-        result = await _skill_executor.invoke(skill_id, body.arguments)
-        return SkillExecuteResponse(
-            status=result.status,
-            output=result.output,
-            error=result.error,
-            execution_id=result.execution_id,
-            duration_ms=result.duration_ms,
-        )
-    except Exception as exc:
-        logger.warning("execute_skill('%s') failed: %s", skill_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.post("/skills/{skill_id}/reject")
-async def reject_skill(skill_id: str) -> dict:
-    """Reject a DRAFT skill by archiving it."""
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=503, detail="skills_registry_not_initialized")
-    try:
-        existing = await _skills_registry.get(skill_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        await _skills_registry.archive(skill_id)
-        return {"ok": True, "skill_id": skill_id, "status": "archived"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("reject_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/skills/registry/{skill_id}", response_model=SkillDetailResponse)
-async def get_skill(skill_id: str) -> SkillDetailResponse:
-    _validate_skill_id(skill_id)
-    if _skills_registry is None:
-        raise HTTPException(status_code=404, detail="Skills not available")
-    try:
-        skill = await _skills_registry.get(skill_id)
-        if skill is None:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        return SkillDetailResponse(
-            id=_to_dict(skill).get("skill_id", _to_dict(skill).get("id", skill_id)),
-            name=_to_dict(skill).get("name", ""),
-            description=skill.get("description"),
-            version=skill.get("version"),
-            triggers=skill.get("triggers", []),
-            input_schema=skill.get("input_schema"),
-            permissions=skill.get("permissions"),
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("get_skill failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

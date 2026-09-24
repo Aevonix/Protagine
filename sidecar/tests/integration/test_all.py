@@ -121,7 +121,7 @@ class TestHealth:
             "memory", "embed",
             "goals", "contacts", "briefings",
             "research", "delivery",
-            "skills", "secrets", "autonomy",
+            "secrets", "autonomy",
             "sessions",
         }
         missing = expected - caps
@@ -430,29 +430,6 @@ class TestContextAssembly:
 
 
 # ===========================================================================
-# 10. SKILLS REGISTRY
-# ===========================================================================
-
-
-class TestSkills:
-    """Tool registry and skill metadata."""
-
-    def test_list_skills(self, client):
-        """Skills registry returns a list of skills."""
-        data = _get(client, "/skills/registry")
-        assert "skills" in data
-        skills = data["skills"]
-        assert isinstance(skills, list)
-        if skills:
-            assert "name" in skills[0], "Skill missing name"
-
-    def test_get_skill_not_found(self, client):
-        """Getting nonexistent skill returns 404."""
-        resp = client.get("/v1/host/skills/registry/nonexistent_skill")
-        assert resp.status_code == 404
-
-
-# ===========================================================================
 # 12. BRIEFINGS
 # ===========================================================================
 
@@ -704,13 +681,6 @@ class TestSystemHealthCheck:
             results["context"] = len(data.get("sections", [])) > 0
         except Exception:
             results["context"] = False
-
-        # Skills
-        try:
-            data = _get(client, "/skills/registry")
-            results["skills"] = len(data.get("skills", [])) > 0
-        except Exception:
-            results["skills"] = False
 
         # Autonomy
         try:

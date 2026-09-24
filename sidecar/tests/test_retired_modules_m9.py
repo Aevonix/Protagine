@@ -17,10 +17,11 @@ PACKAGE = ROOT / "protagine"
 
 RETIRED_MODULES = (
     "protagine.toolsmith",
+    "protagine.skills",          # the whole package: registry, executor, sandbox runner, synthesis, packager
 )
-RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools",)
+RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools", "/v1/host/skills/")
 RETIRED_ENV = ("PROTAGINE_TOOLSMITH",)
-RETIRED_CAPABILITIES: tuple = ()
+RETIRED_CAPABILITIES: tuple = ("skills", "skill_sandbox", "security_scanner")
 
 
 def absent(module: str) -> bool:
