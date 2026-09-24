@@ -176,7 +176,7 @@ async def test_pdf_backup_restore_shared_ownership_and_parse_erasure_race(tmp_pa
     for person in ('a', 'b'):
         ledger.record_source(person, contact_id=person, session_id='s', messages=[message(data)], derive_claims=False)
     media = SourceMedia(ledger); assert await media.process_one(None)
-    archive = backup.create_full_backup(state, tmp_path/'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path/'archives', include_vectors=False)
     destination = tmp_path/'restore'
     assert backup.restore_full_backup(archive, destination)['source_images'] == 1
     restored = SourceMedia(TurnIdempotencyLedger(destination/'turn-idempotency.db'))
@@ -204,7 +204,7 @@ async def test_pdf_source_memory_recovery_preserves_actual_pages_without_runtime
     ledger.record_source('pdf', contact_id='a', session_id='s', messages=[message(data)], derive_claims=False)
     media = SourceMedia(ledger); assert await media.process_one(None)
     (state/'protagine-id').write_text('fixture-pdf-protagine')
-    archive = backup.create_full_backup(state, tmp_path/'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path/'archives', include_vectors=False)
     media.store._original_path(asset, 'application/pdf').unlink()
     destination = tmp_path/'salvage'
     result = backup.restore_source_memory(archive, destination, current_state=state)

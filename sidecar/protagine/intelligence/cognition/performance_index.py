@@ -6,10 +6,9 @@ flattering values when evidence is absent and it never authorizes a write.
 """
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from protagine.intelligence.graph.client import ProtagineGraph
     from .metrics_collector import MetricsCollector
 from datetime import datetime
 
@@ -57,7 +56,7 @@ class PerformanceIndexComputer:
     IMPROVEMENT_THRESHOLD = 5.0  # 5-point improvement
     DECLINE_THRESHOLD = -5.0
 
-    def __init__(self, graph: "ProtagineGraph"):
+    def __init__(self, graph: Any):
         self.graph = graph
         self._prior_scores: dict[str, list[float]] = {}  # component → recent scores
 

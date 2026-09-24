@@ -127,7 +127,11 @@ class Fx:
         self.contacts = FakeContacts(records)
         self.affect = FakeAffect()
         self.comms = CommsLog(str(tmp_path / "protagine-comms.db"), source_ledger=self.ledger)
-        self.mind = Mind(config={"autonomy": "standard", **(config or {})}, store=self.store, state_dir=tmp_path,
+        # The nightly consolidation has its own suite; here it stays off unless a test turns it on, so a
+        # clock shifted past a night never starts a background run against these fakes (integration map X17).
+        config = dict(config or {})
+        config["faculties"] = {"consolidation": False, **(config.get("faculties") or {})}
+        self.mind = Mind(config={"autonomy": "standard", **config}, store=self.store, state_dir=tmp_path,
                          owner_id=OWNER, commitments=self.commitments, feedback=self.feedback,
                          contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
                          router=router, comms=self.comms, contact_affect=self.affect, packet_for=packet_for,

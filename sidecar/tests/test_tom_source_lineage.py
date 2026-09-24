@@ -24,7 +24,6 @@ def runtime(source_app, monkeypatch, tmp_path):
     facts = SharedFactsStore(str(tmp_path / "facts.db"), source_ledger=ledger)
     monkeypatch.setattr(host, "_facts_store", facts)
     monkeypatch.setattr(host, "_affect_store", SimpleNamespace())
-    monkeypatch.setattr(host, "_graph", None)
     # No cognition/network background jobs in this fixture.
     monkeypatch.setattr(host, "_spawn_task", lambda coro: coro.close())
     yield SimpleNamespace(app=source_app, ledger=ledger, facts=facts)

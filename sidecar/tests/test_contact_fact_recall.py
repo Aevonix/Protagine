@@ -12,7 +12,7 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
 from protagine.tom.facts import SharedFactsStore
 from protagine.turns import TurnIdempotencyLedger
-from test_recall_unified_context import Graph, Reranker, belief, calibrate
+from test_recall_unified_context import Reranker, calibrate
 from onekey import KEY, _principal, _write_keyring
 from test_turn_source_evidence import source_app
 
@@ -108,8 +108,6 @@ async def test_contact_estimates_share_real_selection_abstention_and_budget(cont
     for i in range(8):
         runtime.add(f'The hydrofoil departure desk has neutral marker {i}.')
     rejected = runtime.add('The hydrofoil hull has a cosmetic scratch.')
-    graph = Graph([belief('A hydrofoil departure was reported.')])
-    monkeypatch.setattr(host, '_graph', graph)
     runtime.ledger.record_source('quote', contact_id='contact-a', session_id='earlier',
         messages=[{'role':'user','content':'The hydrofoil departure time is being checked.'}], derive_claims=False)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
@@ -121,7 +119,6 @@ async def test_contact_estimates_share_real_selection_abstention_and_budget(cont
     estimate = next(line for line in text.splitlines() if '"kind": "contact_knowledge_estimate"' in line)
     assert '"state": "unverified"' in estimate and '"recorded_source": "inferred"' in estimate
     assert '"confidence"' not in estimate and '"source_message_hash"' not in estimate
-    assert all(not key.startswith('shared-fact:') for key in graph.used)
 
 
 @pytest.mark.asyncio

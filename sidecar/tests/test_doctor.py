@@ -47,6 +47,18 @@ def test_semantic_recall_is_skipped_without_an_embedding_endpoint(tmp_path, monk
     assert calls == []
 
 
+def test_semantic_recall_warns_when_an_endpoint_is_set_but_the_switch_is_off(tmp_path, monkeypatch):
+    """An install from before the switch was live may still carry ``semantic_recall: false``: recall is
+    lexical although an endpoint is recorded, and doctor says why."""
+    monkeypatch.setenv("PROTAGINE_HOME", str(tmp_path))
+    (tmp_path / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "m"},
+        "mind": {"faculties": {"semantic_recall": False}}}))
+    calls = _serve(monkeypatch, {})
+    result = check_semantic_recall("http://127.0.0.1:7777", "key", 5)
+    assert result.status == WARN and "mind.faculties.semantic_recall is false" in result.detail
+    assert "semantic_recall: true" in result.remedy and calls == []
+
 def test_semantic_recall_fails_when_the_configured_embedder_is_not_serving(tmp_path, monkeypatch):
     _instance(tmp_path, monkeypatch, {"embed_url": "http://127.0.0.1:8092", "embed_model": "m"})
     _serve(monkeypatch, {"/v1/host/embed/health": (200, {

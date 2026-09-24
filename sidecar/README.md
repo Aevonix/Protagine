@@ -6,7 +6,7 @@ and supplies the `protagine` command.
 
 Native Hermes attachment also requires the companion `protagine-hermes` package
 and an existing supported Hermes installation. The guided local setup uses one
-OpenAI-compatible chat endpoint and SQLite; graph and vector dependencies are
+OpenAI-compatible chat endpoint and SQLite; vector dependencies are
 optional.
 
 See the [install guide](https://github.com/Aevonix/Protagine/blob/main/docs/INSTALL.md)

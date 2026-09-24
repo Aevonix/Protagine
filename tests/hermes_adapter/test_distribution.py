@@ -39,7 +39,9 @@ def test_wheel_contains_the_adapter_modules_and_nothing_else(artifacts):
 
 
 def test_adapter_line_count_is_reported():
-    """Tracked, not gated (build plan section 5)."""
+    """Tracked, not gated (build plan section 5). The ceiling moved from 2,500 to 2,800 with the memory
+    milestone: the constitution render the adapter cannot import from the sidecar, the narrative fetch,
+    the completed ``protagine_self`` and the guard's protected-file rule (2,449 before, 2,606 after)."""
     total = sum(len((ROOT / f"plugins/hermes-plugin/{m}.py").read_text().splitlines()) for m in ADAPTER_MODULES)
     print(f"plugin lines: {total}")
-    assert total < 2500
+    assert total < 2800

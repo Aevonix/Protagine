@@ -39,10 +39,12 @@ def test_every_memory_response_schema_requires_every_property_at_every_level():
     an object whose properties are not all required: an optional block fails every call there
     (integration map X3). Optional content is a nullable type instead."""
     from protagine.commitments import extract
+    from protagine.mind import consolidate
     schemas = {'claims': source_claims.RESPONSE_SCHEMA, 'claims (per source)':
                source_claims.claim_response_schema('The kettle is on the second shelf.'),
                'commitments': extract.RESPONSE_SCHEMA, 'appraisals': appraisals.RESPONSE_SCHEMA,
-               'judgments': judgments.RESPONSE_SCHEMA}
+               'judgments': judgments.RESPONSE_SCHEMA, 'narrative': consolidate.NARRATIVE_SCHEMA, 'digest': consolidate.DIGEST_SCHEMA,
+               'episode': consolidate.EPISODE_SCHEMA}
     for name, schema in schemas.items():
         Draft202012Validator.check_schema(schema['schema'])
         assert _optional_properties(schema['schema']) == [], name

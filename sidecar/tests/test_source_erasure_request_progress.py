@@ -18,7 +18,7 @@ async def test_http_validation_progresses_during_real_canonical_erasure(tmp_path
                          messages=[{'role': 'user', 'content': 'A disposable diagnostic fact.'}])
     monkeypatch.setattr('protagine.turns.get_turn_idempotency_ledger', lambda _: ledger)
     monkeypatch.setattr('protagine.vector.get_store', lambda: None)
-    for name in ('_facts_store', '_affect_store', '_graph', '_world_store', '_comms_log'):
+    for name in ('_facts_store', '_affect_store', '_comms_log'):
         monkeypatch.setattr(host, name, None)
     monkeypatch.setenv('PROTAGINE_STATE_DIR', str(tmp_path))
     entered, release = threading.Event(), threading.Event()

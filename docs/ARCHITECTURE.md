@@ -139,19 +139,17 @@ several databases is not one atomic snapshot. Local adapters also use SQLite
 for durable delivery outboxes.
 
 Contacts, verified handles and owner corrections belong to the contact database.
-Startup does not create or prune contacts from Neo4j Person nodes, and contact
-updates do not mirror relationship scores into that graph. Removing an external
-graph node must not remove a person's canonical identity or permission history.
+Nothing outside it creates, prunes or mirrors contacts.
 
 Lance is an optional, replaceable semantic index. A deployment can start with
 lexical source recall and add embeddings later. Original image bytes retain
 content hashes and source-ledger ownership independently of generated captions.
-A separate optional Neo4j graph remains for other research and autonomy consumers,
-outside automatic context, explicit memory search and source opening. It is
-outside the supported lightweight setup and distinct from the canonical
-SQLite source ledger and typed world observations. Graph records without
-canonical provenance cannot be reconstructed from source memory; retiring
-their store requires an explicit disposition of those records.
+There is no graph database: the optional Neo4j graph, the SQLite world model and
+the belief engine were removed in M8, replaced by the source claims and the mind's
+nightly consolidation. Records that lived only in the graph had no canonical
+provenance and are not reconstructed; `protagine upgrade` moves the retired local
+state files (`protagine-beliefs.db`, `protagine_world_model.db`, the chain's
+identity files) into the upgrade backup.
 
 Do not make PostgreSQL a prerequisite or migrate databases to obtain a more
 impressive architecture. Revisit it when measured write contention, operations
@@ -173,8 +171,7 @@ and dimensions match.
 The source-memory backup captures consistent individual SQLite databases and
 the original images owned by their captured ledger. Restore verifies their
 bytes before writing. [Recovery coverage](SOURCE-MEMORY-RECOVERY.md) describes
-what remains outside that backup, including host transcripts and external
-graph state.
+what remains outside that backup, including host transcripts.
 
 Before returning restored state to service, recovery must establish an acknowledged authority/erasure watermark from a
 surviving source. A stale backup cannot certify itself. If current authority
@@ -225,4 +222,4 @@ Automatic context, explicit `/v1/host/memory/search` and `/v1/host/memory/read` 
 
 A complete recalled assistant quotation can travel with its exact user input, either from the same attributed turn or a recorded input reference. Each speaker retains separate text, message identity, source revision and reported/recorded times. This is conversational context: a question remains a question, and an acknowledgment does not independently verify the input. The pair uses the same relevance pass and total context budget as other evidence; an oversized pair offers source references without half of the conversation. Structured assertions, media and tool results keep their own representations. A supplied memory or tool-result dependency alone does not nominate its original content for injection. This representation is covered by scoped correction, erasure and selection tests; improved processor answers still require behavioral measurement.
 
-Hermes owns conversation compression and its durable memory-provider checkpoint. The sidecar has no parallel adaptive-compression package. Graph-only memory statistics, manual verification, conflict lists, distillation previews and the manual vector-vacuum route are removed. The remaining autonomy graph-pruning sweep and its orphan-vector cleanup still run according to their existing configuration; graph-backed research, synthesis and maintenance need separate migration.
+Hermes owns conversation compression and its durable memory-provider checkpoint. The sidecar has no parallel adaptive-compression package. Graph-only memory statistics, manual verification, conflict lists, distillation previews and the manual vector-vacuum route are removed, and M8 removed the graph memory itself with its pruning and maintenance. Research, synthesis and cognition components that only read the graph keep no graph branch and await the M10 audit.

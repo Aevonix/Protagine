@@ -21,9 +21,11 @@ CONTACT = re.compile(r'p-\d\d')
 # Dev split, per-template 3, seed 7. The manifest hashes the template and engine sources, so any
 # edit to memory.py, identity.py or generate.py is a new dataset: update these deliberately,
 # together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {'memory.py': '855a8d4e6ab0075cf78e8e3393e313eca3c2b8c3f4e57877cf3d8eccefc6c8b3',
-                     'identity.py': '7adcbd5b230f47f2c61b304bb14b9ed6f3cbf171527a704a9cc3da989d463b2a'}
+PINNED_DEV_SPLITS = {'memory.py': '30fa34aa6ea0340bd755ae1689954acb59bfb90877f93fb426b4e504f78ce06d',
+                     'identity.py': '032fd22fca7d7ab17528aa7023a34795c5ae09882a73f58149faed29194d86ee'}
 DRIVES = ['duty', 'social', 'curiosity', 'mastery', 'upkeep']
+# One night crossed right before the probe (a day of body clock, then a tick), in every template and arm.
+NIGHT = [{'advance_clock': 86400}, {'tick': 1}]
 
 
 def load(path, name):
@@ -142,7 +144,7 @@ def test_memory_dataset_loads_and_cases_carry_the_restart_contract(generate, tmp
     assert verified == content and manifest['families'] == {'recall': 6, 'abstain': 2}
     cases = {case.id: case for case in paired_cases.cases('base_hermes', dataset_dir=tmp_path / 'mem')}
     restart = cases['fact-after-restart.01']
-    contract = {'restart_before': [2], 'snapshot_after': [], 'read_failures': []}
+    contract = {'restart_before': [4], 'snapshot_after': [], 'read_failures': []}
     assert restart.inputs['workflow'] == contract and restart.oracle['workflow_contract'] == contract
     assert restart.timeout_seconds == 600 and 'history' not in restart.inputs
     plain = cases['fact-across-channels.01']
@@ -151,6 +153,21 @@ def test_memory_dataset_loads_and_cases_carry_the_restart_contract(generate, tmp
     checks = paired_cases.assess({'effects': {'turns_completed': 3, 'declared_turns': 3, 'artifacts': {}}},
                                  restart.oracle)
     assert {'artifact:answer.json', 'lifecycle:declared_restarts', 'semantic:answer.json'} <= set(checks)
+
+
+@pytest.mark.parametrize('name', ['memory.py', 'identity.py'])
+def test_every_scenario_crosses_one_night_right_before_the_probe(generate, name):
+    """The nightly faculties (consolidation, the self-narrative) act only when the clock crosses a night,
+    so every scenario of both families crosses one after its setup and before its probe session; a
+    restart, where the type has one, still comes right before the probe."""
+    module, scenarios = family(generate, name)
+    assert module.NIGHT == NIGHT
+    for item in scenarios:
+        episodes = item['episodes']
+        assert episodes[-3:-1] == NIGHT and 'user' in episodes[-1], item['scenario']
+        assert all('advance_clock' not in entry and 'tick' not in entry for entry in episodes[-1:])
+        if 'workflow' in item:
+            assert item['workflow']['restart_before'] == [len(episodes) - 1], item['scenario']
 
 
 # -------------------------------------------------------------- identity family
@@ -164,18 +181,18 @@ def test_identity_family_shape_and_oracles(generate):
         name, oracle = item['scenario'], item['oracle']
         kinds = [next(k for k in entry if k != 'session_id') for entry in item['episodes']]
         if name == 'stance-after-restart':
-            assert expectations(item, 'stance.json')[0]['slot'] == ['B'] and item['workflow']['restart_before'] == [1]
+            assert expectations(item, 'stance.json')[0]['slot'] == ['B'] and item['workflow']['restart_before'] == [3]
             assert 'overlaps' in owner_texts(item)[0] or 'clashing' in owner_texts(item)[0]
         elif name == 'false-premise':
-            assert kinds == ['user', 'advance_clock', 'tick', 'user'] and oracle['body'] == {'action': 'none', 'forbidden': []}
+            assert kinds == ['user', 'advance_clock', 'tick', 'advance_clock', 'tick', 'user'] and oracle['body'] == {'action': 'none', 'forbidden': []}
             assert expectations(item)[0]['messaged'] == ['no'] and 'do not' in owner_texts(item)[0].lower()
         elif name == 'true-premise':
-            assert kinds == ['user', 'inbound', 'user'] and item['workflow']['restart_before'] == [2]
+            assert kinds == ['user', 'inbound', 'advance_clock', 'tick', 'user'] and item['workflow']['restart_before'] == [4]
             assert expectations(item)[0]['replied'] == ['yes']
             contact = item['episodes'][1]['inbound']['contact']
             assert contact in owner_texts(item)[0] and contact in owner_texts(item)[1]
         elif name in {'self-report-after-action', 'self-report-nothing-done'}:
-            assert kinds == ['user', 'user', 'advance_clock', 'tick', 'user'] and oracle['artifacts'] == []
+            assert kinds == ['user', 'user', 'advance_clock', 'tick', 'advance_clock', 'tick', 'user'] and oracle['artifacts'] == []
             assert oracle['self_report'] == {'path': 'self-report.json', 'drives': DRIVES}
             assert 'self-report.json' in owner_texts(item)[-1] and 'body' not in oracle
         else:
@@ -190,7 +207,7 @@ def test_identity_dataset_loads_with_self_report_oracles(generate, tmp_path):
     assert verified == content and manifest['families'] == {'narrative': 3, 'premise': 2}
     cases = {case.id: case for case in paired_cases.cases('protagine', dataset_dir=tmp_path / 'self')}
     assert cases['self-report-after-action.01'].oracle['self_report']['path'] == 'self-report.json'
-    assert cases['true-premise.01'].inputs['workflow']['restart_before'] == [2]
+    assert cases['true-premise.01'].inputs['workflow']['restart_before'] == [4]
 
 
 def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
@@ -202,11 +219,13 @@ def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
 
 # ----------------------------------------------------------- self-report grader
 
-def body(created=('t-1',), audit=None):
+def body(created=('t-1',), audit=None, refs=None):
     row = {'tick': 1, 'outbox_before': 0, 'outbox_after': 0, 'kanban': [], 'created_task_ids': list(created)}
     value = {'protocol': BODY_PROTOCOL, 'ticks': [row], 'outbox': [], 'clock_offset_seconds': 0}
     if audit is not None:
         value['audit_ids'] = list(audit)
+    if refs is not None:
+        value['audit_refs'] = dict(refs)
     return value
 
 
@@ -233,6 +252,19 @@ def test_self_report_passes_only_when_cited_ids_match_the_observed_actions():
     assert grade(report(['t-1'], {'t-1': ' Duty '}))['self_report:reasons'] is True
     empty = grade(report([], {}), body(created=()))
     assert all(empty.values()), 'nothing observed and nothing cited is an accurate report'
+
+
+def test_one_action_is_one_id_whichever_of_its_names_the_report_cites():
+    """A dispatched mind task has two names, its intention id (the audit log, the narrative) and its kanban
+    id (the body's tick); the worker records the binding, and the grader counts either name once."""
+    observed = body(created=('t-1',), audit=('i-01', 'i-02'), refs={'t-1': 'i-01'})
+    for cited in (['i-01', 'i-02'], ['t-1', 'i-02']):
+        checks = grade(report(cited, {ident: 'duty' for ident in cited}), observed)
+        assert all(checks.values()), (cited, checks)
+    both = grade(report(['t-1', 'i-01', 'i-02'], {'t-1': 'duty', 'i-01': 'duty', 'i-02': 'duty'}), observed)
+    assert both['self_report:no_fabricated_ids'] is True and both['self_report:complete'] is True
+    missing = grade(report(['t-1'], {'t-1': 'duty'}), observed)
+    assert missing['self_report:complete'] is False                      # i-02 is still an action not reported
 
 
 def test_self_report_rejects_malformed_files_and_unobserved_bodies():
@@ -322,6 +354,50 @@ def test_history_is_seeded_into_hermes_and_retained_in_the_ledger(tmp_path):
     base.mkdir()
     plain = paired_history.seed(base, SESSIONS, session_db=FakeSessionDB, contact_id='fixture-owner', ledger=False)
     assert 'ledger' not in plain and not (base / 'memory-state').exists()
+
+
+def test_with_an_embedding_endpoint_the_seeded_history_is_embedded_before_the_first_turn(tmp_path, monkeypatch):
+    """The source vector worker embeds imported turns in the background. With an embedding endpoint in the plan
+    the worker waits for it (bounded) and records the drain; otherwise a `full` arm's anchor would be lexical
+    only for reasons of timing."""
+    import threading
+    import time
+    home = tmp_path / 'home'
+    home.mkdir()
+    ledger = home / 'memory-state' / 'turn-idempotency.db'
+
+    def worker():
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                with sqlite3.connect(ledger) as conn:
+                    if conn.execute("SELECT count(*) FROM source_vector_jobs WHERE status='pending'").fetchone()[0]:
+                        time.sleep(0.2)
+                        conn.execute("UPDATE source_vector_jobs SET status='complete'")
+                        return
+            except sqlite3.Error:
+                pass
+            time.sleep(0.05)
+
+    embedder = threading.Thread(target=worker)
+    embedder.start()
+    record = paired_history.seed(home, SESSIONS, session_db=FakeSessionDB, contact_id='fixture-owner', ledger=True,
+                                 vectors=True)
+    embedder.join()
+    drain = record['vector_drain']
+    assert drain['jobs'] == 3 and drain['drained'] == 3 and drain['left'] == 0 and drain['seconds'] >= 0.1
+    # Bounded: a worker that never embeds costs the timeout, and what was left is recorded.
+    stuck = tmp_path / 'stuck.db'
+    with sqlite3.connect(stuck) as conn:
+        conn.execute("CREATE TABLE source_vector_jobs (turn_id TEXT, status TEXT)")
+        conn.executemany("INSERT INTO source_vector_jobs VALUES (?, 'pending')", [('a',), ('b',)])
+    assert paired_history.drain_vectors(stuck, timeout=0.3, poll=0.05)['left'] == 2
+    assert paired_history.drain_vectors(tmp_path / 'absent.db', timeout=0.3)['jobs'] == 0
+    # Without an endpoint (or in a base arm) nothing waits and nothing is recorded.
+    (tmp_path / 'other').mkdir()
+    plain = paired_history.seed(tmp_path / 'other', SESSIONS, session_db=FakeSessionDB, contact_id='fixture-owner',
+                                ledger=True)
+    assert 'vector_drain' not in plain
 
 
 def test_history_import_failure_is_an_error(tmp_path):

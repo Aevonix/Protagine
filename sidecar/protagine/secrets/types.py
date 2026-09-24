@@ -16,9 +16,6 @@ ALL_SECRET_KEYS: frozenset[str] = frozenset({
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
     # Infrastructure
-    "NEO4J_URI",
-    "NEO4J_USERNAME",
-    "NEO4J_PASSWORD",
     "PROTAGINE_TOKEN_SECRET",
     # Messaging gateways
     "TELEGRAM_BOT_TOKEN",
@@ -51,7 +48,6 @@ ALL_SECRET_KEYS: frozenset[str] = frozenset({
 
 class SecretType(Enum):
     LLM_API_KEY = "llm_api_key"
-    NEO4J_CREDENTIAL = "neo4j_credential"
     GATEWAY_TOKEN = "gateway_token"
     MESH_PAIRING_KEY = "mesh_pairing_key"
     EMAIL_CREDENTIAL = "email_credential"
@@ -72,7 +68,6 @@ SECRET_TYPE_MAP: dict[str, SecretType] = {
     "GEMINI_": SecretType.LLM_API_KEY,
     "GROQ_": SecretType.LLM_API_KEY,
     "TOGETHER_": SecretType.LLM_API_KEY,
-    "NEO4J_": SecretType.NEO4J_CREDENTIAL,
     "PROTAGINE_TOKEN": SecretType.PROTAGINE_TOKEN,
     "TELEGRAM_": SecretType.GATEWAY_TOKEN,
     "DISCORD_": SecretType.GATEWAY_TOKEN,

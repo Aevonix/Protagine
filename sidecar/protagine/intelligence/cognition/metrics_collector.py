@@ -1,9 +1,6 @@
 """Metrics collection for cognitive performance tracking."""
 from dataclasses import dataclass
-from typing import Dict, List, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from protagine.intelligence.graph.client import ProtagineGraph
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 import statistics
 
@@ -21,7 +18,7 @@ class MetricObservation:
 class MetricsCollector:
     """Collect and aggregate metrics for CPI computation."""
 
-    def __init__(self, graph: "ProtagineGraph"):
+    def __init__(self, graph: Any):
         self.graph = graph
         self._buffer: List[MetricObservation] = []
 

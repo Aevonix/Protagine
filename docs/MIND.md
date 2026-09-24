@@ -270,6 +270,72 @@ goals) and "Waiting for your say on" (open asks with their codes). Guests
 never see it. With `faculties.broadcast` off the concerns are neither shown
 nor added to the recall query.
 
+## Identity: the constitution, the narrative and `protagine_self`
+
+Three layers (architecture 4.2). The **constitution** is `identity.yaml`
+`agent.{name, values, boundaries}`, owner-authored and written only by
+`protagine init` (`--agent-values`, `--agent-boundaries`; at most 12 items of
+160 characters each). It renders as one paragraph of at most 1,500 characters
+(`You are Agent. Your values: care; candour. Your boundaries: never send
+money.`); `init` refuses a longer one and says which list to shorten, and
+`protagine doctor` reports the rendered length. The plugin reads the file
+itself and renders the constitution into its `protagine` prompt section, which
+Hermes freezes per session, together with `Your owner is <name>.`, the
+**self-narrative** (`GET /v1/mind/narrative`: at most 800 characters, four
+computed or cited sections, every line ending in the ids it rests on: plain ids
+are the agent's own actions, which `protagine_self why` explains, and prefixed
+ids (`interest:`, `judgment:`, `turn:`, `claim:`) are record references;
+fetched with a 2 s timeout for every new session, a failed fetch not retried
+for 60 s, and left out when the sidecar or the `self_narrative` faculty is off)
+and two tool notes, 4,000 characters in all. Every model request of an owner
+session carries the section: at its largest (a 1,500-character constitution,
+an 800-character narrative) it is 3,185 characters with the memory provider's
+block (1,360 GLM-5.3-Flash tokens), a typical install with a history about
+1,745 (560 tokens), against 726 (148) for the benchmark's disposable identity
+and fresh store (`tests/hermes_adapter/test_overhead_budget.py`).
+The narrative is the owner's record (what the agent did for the owner, its
+working stances), so it is rendered only in a session that is the owner's
+alone: a direct chat from one of the owner's handles, or an internal lane with
+no chat (the CLI, the benchmark). Hermes renders the section before the
+session's first hook, so the plugin reads the sender the gateway bound for the
+turn, as the memory provider does. A guest, an unresolved sender, a group or
+channel the owner shares, and a chat with no sender get the constitution and
+the notes, and the sidecar is not asked for the narrative on their behalf.
+The same constitution reaches every appraisal prompt as `agent_constitution`
+(an input the response schema has no field for), so a contact's preferences
+are never confused with the agent's own. `PROTAGINE_AGENT_VALUES` is reserved
+and read by nothing: `init` moves an old unit's values into the file.
+
+The mind cannot rewrite its constitution. What guarantees it is the worker's
+tool surface: the default `mind.worker_toolsets` have no shell or code tool
+(a test holds this), and `write_file` and `patch` are confined to the task
+workspace. On top of that, in a mind run the plugin guard blocks every
+effectful tool that names `protagine.yaml`, `identity.yaml` or `api.key` (a
+write target, a V4A patch header, a shell command, code), in any case and
+through the quotes, backslashes, whitespace, backticks or `+` a literal name
+can be split with, before the workspace rule; reads stay allowed, and Hermes'
+own `protected_instruction_extra_patterns` (written by `init`) still asks a
+human for a write to any of them. A text rule cannot follow every spelling a
+shell or code can build (a glob, an escape, a computed string), so an owner
+who adds a `terminal` or `code_execution` toolset to the worker takes the
+constitution's protection into their own hands. No module under `mind/`, `self_model/`,
+`beliefs/`, `memory/` or `commitments/` writes either file; the owner's CLI
+and the mind's `persist` hook write `mind.enabled` and `mind.autonomy` only
+(a static test holds this).
+
+**`protagine_self`** is the only source for claims about the agent's own
+actions, and the record is the owner's: `state`, `log` and `why` answer in full
+only in the owner's own session (a direct chat from an owner handle, or the
+CLI); a guest, a group the owner shares and a mind worker get the switch state
+(`enabled`, `autonomy`, `sidecar_reachable`) and a refusal for `log` and `why`.
+`state` (level, budgets, open asks with codes, `working_on`: the approved and
+dispatched tasks with their ids, and the narrative text),
+`log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
+yesterday?" is one call, and an action that is not in the log did not happen),
+`why <id>` (an unknown id answers "no intention `<id>` exists in the audit
+log"), `rate <id> <verdict>`, `yes|no <code>`. `rate`, `yes` and `no` stay
+owner-only.
+
 ## Asks
 
 An ask lives only in the sidecar. Nothing is created in Hermes until the owner
@@ -334,12 +400,18 @@ mind:
     deliberation: true              # the one tool-less call per tick; off = templates only
     goals: true                     # agent-owned goals
     broadcast: true                 # the top-3 concerns in turn context and recall
+    semantic_recall: true           # embeddings in recall when router.embed_url is set; off = lexical only
+    consolidation: true             # the nightly consolidation (docs/CONSOLIDATION.md)
+    self_narrative: true            # the self-narrative in the owner's prompt and protagine_self state
 ```
 
-`identity.yaml` may list `agent.interests`; each becomes a seeded interest at
-startup. Learning writes `mind.db`, the feedback multipliers and the
-intention rows; nothing the mind learns writes `protagine.yaml` or
-`identity.yaml`.
+`identity.yaml` holds the constitution (`agent.name`, `agent.values`,
+`agent.boundaries`) and may list `agent.interests`; each interest becomes a
+seeded interest at startup. `faculties.semantic_recall` is a real switch:
+with it off the embedder stays off (`PROTAGINE_EMBED_PROVIDER=skip`) even
+when `router.embed_url` is set. Learning writes `mind.db`, the feedback
+multipliers and the intention rows; nothing the mind learns writes
+`protagine.yaml` or `identity.yaml`.
 
 ## The CLI
 
@@ -358,6 +430,8 @@ protagine mind stats               the in-vivo panel over the audit log
 protagine mind concerns            what is on the mind: drive levels, open concerns, the broadcast set
 protagine mind goals               the agent-owned goals that are open
 protagine mind interest <topic>    seed an interest for the curiosity drive
+protagine mind consolidate         run the nightly consolidation now (docs/CONSOLIDATION.md)
+protagine mind narrative           the self-narrative as the owner's prompt section renders it
 ```
 
 ## The API (`/v1/mind`, one bearer key)
@@ -373,7 +447,9 @@ protagine mind interest <topic>    seed an interest for the curiosity drive
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log`, `GET /why/{id}`, `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests` and `deliberation`), `GET /stats` | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests` and `deliberation`), `GET /stats` | | |
+| `GET /narrative` | | the self-narrative `{enabled, text, sections: {interests, strengths, recent, stances}, cites, updated_at}`; `enabled: false` and empty text until the mind keeps one or while `faculties.self_narrative` is off |
+| `POST /consolidate` | | runs the nightly consolidation now and returns the night's record (`protagine mind consolidate`); 501 `consolidation_not_available` on a sidecar without it |
 | `GET /concerns`, `GET /goals` | | the workspace (open concerns, the broadcast set, drive levels) and the open goals |
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
@@ -386,9 +462,11 @@ back (`POST /tick` forces one).
 Test seams: `PROTAGINE_MIND_CLOCK_OFFSET_SECONDS` shifts the mind's clock
 (the 72 h ask expiry is checked by restarting the sidecar three days ahead,
 `scripts/ci_mind_loop.sh`), and the paired benchmark passes its own shifted
-clock in (`protagine.qualification.native_memory_worker.serve_mind`), wires
-the same `CommitmentExtractor` the production sidecar does so a forced tick
-drains capture first, and writes an `identity.yaml` whose owner handle is
+clock in (`protagine.qualification.native_memory_worker.serve_mind`), builds
+its Mind with the sidecar's own factory (`protagine.mind.factory.build_mind`:
+the same `CommitmentExtractor`, so a forced tick drains capture first, and the
+same people, appraisal and router wiring) and mounts the same mind routes
+(`mind_routers()`), and writes an `identity.yaml` whose owner handle is
 the capture platform's home channel, so an owner reminder is a delivery the
 grader attributes to the mind rather than a board task. The drives family
 runs the `full`, `full-drives`, `full-broadcast` and per-drive arms

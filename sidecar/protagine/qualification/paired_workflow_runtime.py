@@ -323,6 +323,12 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
               'tool_evidence': effects}
     boundaries = [0, *workflow['restart_before'], len(episodes)]
     previous = None
+    # A pinned start is decided once, here, and carried by every phase: a restarted worker's
+    # clock continues the episode's, it never re-pins.
+    pinned = 0
+    if inputs.get('clock_start') is not None:
+        from .paired_body import start_offset
+        pinned = start_offset(inputs['clock_start'])
     try:
         for phase, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
             if stop.is_set():
@@ -334,9 +340,11 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
                 raise RuntimeError('Workflow state changed between closed phases')
             child_request = deepcopy(request)
             child_request['inputs']['episodes'] = episodes[start:end]
+            carried = body_before(episodes, start)
+            carried['clock_offset_seconds'] += pinned
             child_request['_workflow_phase'] = {'index': phase, 'start_turn': start,
                 'workflow': workflow, 'prior_read_failures': deepcopy(lifecycle['read_failures_consumed']),
-                'body_before': body_before(episodes, start)}
+                'body_before': carried}
             result['stage'] = 'running'
             observed = runner(child_request, stop, trace)
             child, code = observed['result'], observed['exit_code']

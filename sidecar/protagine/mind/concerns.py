@@ -7,10 +7,14 @@ a thought budget, and anti-rumination scales salience by 0.9 after progress
 and 0.6 without. The top 3 open concerns are the broadcast set: the only
 deliberation candidates, rendered in turn context and added to recall.
 
-``mind_state`` keeps decaying levels with cited causes: drive levels,
-satiation, seeded interests and open questions. Affect and the
-self-narrative sections arrive with their own milestones and share the
-table.
+``mind_state`` keeps decaying levels with cited causes. Its key prefixes, one
+owner each: ``drive.*`` and ``satiety.*`` (the drives), ``interest:*`` and
+``question:*`` (curiosity), ``self.*`` (the self-narrative sections),
+``consolidation.last`` (the nightly run) and ``people.digests.last`` (the
+template digests' day). A text-only key carries no half-life, so
+``MindState.decay`` never rewrites its ``updated_at``: ``consolidation.last``
+and ``people.digests.last`` read the last run's moment from it. Affect arrives
+with its own milestone and shares the table.
 """
 
 from __future__ import annotations

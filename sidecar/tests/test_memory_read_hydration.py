@@ -1,22 +1,15 @@
-"""Exact canonical source reads do not depend on graph hydration or its schemas."""
+"""Exact canonical source reads open the ledger's own record."""
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from protagine.api.routers import host
 from test_canonical_memory_search import memory_app
 from test_turn_source_evidence import source_app
 from onekey import KEY
 
 
-class NoGraph:
-    def __getattr__(self, name):
-        raise AssertionError('canonical read touched graph: ' + name)
-
-
 @pytest.mark.asyncio
-async def test_memory_read_opens_canonical_source_without_graph(memory_app, monkeypatch):
+async def test_memory_read_opens_canonical_source(memory_app, monkeypatch):
     app, ledger = memory_app
-    monkeypatch.setattr(host, '_graph', NoGraph())
     ref = ledger.source_references(['report'], contact_id='person', session_id='later')[0]
     body = {'identity': {'host_id': 'fixture'}, 'person_id': 'person', 'session_id': 'later', **ref}
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',

@@ -106,60 +106,6 @@ def test_skill_id_validator_rejects_unsafe_ids():
         assert exc.value.status_code == 400
 
 
-# ── B5: Neo4j property-name allowlist ─────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_update_person_rejects_unknown_properties():
-    from protagine.intelligence.graph.client import ProtagineGraph
-
-    # Build a client instance without a real driver; the allowlist check
-    # happens before any Cypher executes.
-    client = ProtagineGraph.__new__(ProtagineGraph)
-    client.driver = None
-    client.database = "neo4j"
-
-    with pytest.raises(ValueError) as exc:
-        await client.update_person(
-            "person-1",
-            score=1.0,
-            **{"name} SET p.admin = true; SET p.{": "x"},
-        )
-    assert "update_person rejected unknown" in str(exc.value)
-
-
-@pytest.mark.asyncio
-async def test_update_person_accepts_known_properties(monkeypatch):
-    from protagine.intelligence.graph import client as client_mod
-
-    executed = {}
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def run(self, cypher, **params):
-            executed["cypher"] = cypher
-            executed["params"] = params
-            return None
-
-    class _FakeDriver:
-        def session(self, database=None):
-            return _FakeSession()
-
-    client = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
-    client.driver = _FakeDriver()
-    client.database = "neo4j"
-
-    await client.update_person("p1", score=0.9, tier="bronze")
-    assert "p.score = $score" in executed["cypher"]
-    assert "p.tier = $tier" in executed["cypher"]
-    assert executed["params"]["score"] == 0.9
-
-
 # ── C1: AST scanner catches escape patterns ───────────────────────────────────
 
 

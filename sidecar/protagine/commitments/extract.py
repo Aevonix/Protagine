@@ -803,11 +803,17 @@ class CommitmentExtractor:
         return source
 
     def _recent_turns(self, source: Dict[str, Any]) -> str:
-        """The person's last few turns before this one, any session, within the hour."""
+        """The person's last few turns before this one, any session, within the hour.
+
+        The mind's own rows (the autobiography, the episode summaries: ``session_id='mind'``,
+        ``turn_id='mind:...'``) are the agent's record, not the person's conversation, and
+        must neither be quoted here nor take one of the few context slots.
+        """
         with closing(self.ledger._connect()) as conn:
             rows = conn.execute(
                 "SELECT s.turn_id, s.messages_json, s.occurred_at, s.ingested_at FROM turn_sources s "
                 "WHERE s.contact_id=? AND s.scope='person' AND s.turn_id<>? "
+                "AND s.session_id<>'mind' AND s.turn_id NOT LIKE 'mind:%' "
                 "AND s.rowid<(SELECT rowid FROM turn_sources WHERE turn_id=?) "
                 "AND NOT EXISTS (SELECT 1 FROM source_projection_erasures e WHERE e.turn_id=s.turn_id) "
                 "ORDER BY s.rowid DESC LIMIT ?",

@@ -123,7 +123,7 @@ def create_server() -> FastMCP:
         "protagine",
         instructions=(
             "Protagine provides a cognitive substrate for AI agents: commitments, facts, "
-            "affect tracking, world model, patterns, and surprises. Use these tools to "
+            "affect tracking, patterns, and surprises. Use these tools to "
             "give your agent memory, awareness, and continuity across sessions."
         ),
     )
@@ -195,22 +195,6 @@ def create_server() -> FastMCP:
         if err:
             return err
         return await _get(f"/v1/host/affect/state/{cid}")
-
-    @mcp.tool(annotations={"readOnlyHint": True, "idempotentHint": True})
-    async def protagine_search_world(
-        query: str,
-        entity_type: str | None = None,
-        limit: int = 5,
-    ) -> dict:
-        """Search the world model for entities or relationships. Call when exploring a codebase, understanding dependencies, or planning changes."""
-        data: dict[str, Any] = {
-            "identity": {"host_id": "mcp"},
-            "query": query,
-            "limit": limit,
-        }
-        if entity_type:
-            data["entity_type"] = entity_type
-        return await _post("/v1/host/world/entities/query", data)
 
     @mcp.tool(annotations={"readOnlyHint": True, "idempotentHint": True})
     async def protagine_get_patterns(
@@ -417,11 +401,6 @@ def create_server() -> FastMCP:
     async def facts_resource(contact_id: str) -> dict:
         """Known facts for a contact."""
         return await _get("/v1/host/mind/facts", params={"contact_id": contact_id})
-
-    @mcp.resource("protagine://world/entities")
-    async def world_resource() -> dict:
-        """Top entities in the world model."""
-        return await _post("/v1/host/world/entities/query", {"identity": {"host_id": "mcp"}, "query": "", "limit": 10})
 
     @mcp.resource("protagine://surprises/unresolved")
     async def surprises_resource() -> dict:

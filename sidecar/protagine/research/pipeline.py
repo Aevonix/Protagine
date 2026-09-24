@@ -2,7 +2,7 @@
 
 Stages:
   1. DECOMPOSE  — validate the research request
-  2. GATHER     — collect evidence from web, graph, documents, email
+  2. GATHER     — collect evidence from web, documents, email
   3. SYNTHESIZE — cross-reference evidence into insights
   4. OUTLINE    — build structured artifact outline
   5. PRODUCE    — render artifact in requested format
@@ -160,7 +160,6 @@ class PipelineConfig:
 
     # Delivery
     l7_cancel_window_seconds: float = 30.0
-    persist_to_graph: bool = True
 
     # Stage timeouts (seconds)
     timeout_decompose: float = 30.0
@@ -197,16 +196,9 @@ class ResearchPipeline:
     def __init__(
         self,
         config: Optional[PipelineConfig] = None,
-        *,
-        graph: Any = None,
-        allow_fallback_graph: bool = True,
     ) -> None:
         self.config = config or PipelineConfig()
-        self._gatherer = SourceGatherer(
-            self.config.gather,
-            graph=graph,
-            allow_fallback_graph=allow_fallback_graph,
-        )
+        self._gatherer = SourceGatherer(self.config.gather)
         self._synthesizer = ResearchSynthesizer(self.config.synthesis)
         self._renderer = ArtifactRenderer()
 

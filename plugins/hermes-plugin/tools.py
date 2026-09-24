@@ -6,7 +6,9 @@ from a kanban worker, and never from a cron run, whose prompt is a stored job
 anyone with the tool could have scheduled. ``yes``/``no`` also need the typed
 ask code inside the owner's own message for that turn, so neither a guest, a
 worker, a cron job nor an injected page can approve anything (architecture
-7.7, 7.10).
+7.7, 7.10). The mind's record (what it works on, its log, why it acted, the
+self-narrative) is the owner's too: shown only in the owner's own session,
+never to a guest, a group the owner shares or a worker.
 """
 
 from __future__ import annotations
@@ -18,9 +20,11 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from .body import mind_state
-from .capture import SessionMap
+from .capture import SessionMap, session_env
 from .client import ProtagineClient, Settings, SidecarUnavailable
 from .commands import ROUTES_MISSING
+
+RECORD_IS_OWNERS = "the mind's record is the owner's; ask in the owner's own chat"
 
 ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
@@ -36,13 +40,15 @@ OWNER_PERSON = PUBLIC_PERSON + ("may_contact", "cadence_minutes", "last_interact
 # the tool and fill its arguments; the handlers validate and explain the rest.
 SELF_SCHEMA = {
     "name": "protagine_self",
-    "description": "Your own mind: state (level, budgets, open asks with codes), log, why <id>, rate <id> with a "
-                   "verdict, or answer an ask yes/no by its code. rate, yes and no are owner only, and the code "
-                   "must appear in the owner's own message.",
+    "description": "Your mind and record, the only source for what you did or decided: state (level, asks with "
+                   "codes, working_on, narrative), log (newest first; since_hours, kind, recipient; cite ids; not in "
+                   "the log means it did not happen), why <id>, rate <id> <verdict>, yes|no <code> (owner only, "
+                   "code typed by the owner).",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
         "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
-        "code": {"type": "string"}, "limit": {"type": "integer"}},
+        "code": {"type": "string"}, "limit": {"type": "integer"}, "since_hours": {"type": "number"},
+        "kind": {"type": "string"}, "recipient": {"type": "string"}},
         "required": ["operation"]}}
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
@@ -110,6 +116,12 @@ class Tools:
             return False
         return self.sessions.is_owner(session_id) is True
 
+    def _owners_own(self, session_id: str) -> bool:
+        """The owner's session with no one else in it (a direct chat, the CLI): the mind's record (what it
+        works on, whom it messaged, what it knows about itself) is shown there only, never to a guest, in a
+        group the owner shares, or to a worker."""
+        return self._owner(session_id) and session_env()[3].lower() in {"", "dm"}
+
     def _mind(self, method: str, path: str, **kwargs: Any) -> str:
         if self.client.has_mind_routes() is not True:
             return _error(ROUTES_MISSING)
@@ -127,20 +139,35 @@ class Tools:
 
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
-        operation, owner = str(args.get("operation") or ""), self._owner(session_id)
-        if operation in {"state", "status"}:  # a guest learns only whether the mind is on: its log and asks
-            detail, mind = mind_state(self.client) or {}, self.settings.mind()  # hold the owner's words (X7)
-            state = {"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
-                     "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
-                     "sidecar_reachable": self.client.health() is not None}
-            return _json({**state, "mind_routes": self.client.has_mind_routes() is True, **detail} if owner else state)
-        if operation in {"log", "why"} and not owner:
-            return _error("only the owner can read the mind's log")
+        operation = str(args.get("operation") or "")
+        if operation in {"state", "status"}:
+            detail = mind_state(self.client) or {}
+            mind = self.settings.mind()
+            switches = {"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
+                        "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
+                        "sidecar_reachable": self.client.health() is not None}
+            if not self._owners_own(session_id):
+                return _json(switches)
+            narrative = self.client.narrative() or {}
+            return _json({"mind_routes": self.client.has_mind_routes() is True, **detail, **switches,
+                          # From the record, never free generation: the tasks in flight and the narrative.
+                          "working_on": self._working_on(),
+                          "narrative": str(narrative.get("text") or "") if narrative.get("enabled") is True else ""})
+        if operation in {"log", "why"} and not self._owners_own(session_id):
+            return _error(RECORD_IS_OWNERS)
         if operation == "log":
-            limit = max(1, min(int(args.get("limit") or 20), 100))
-            return self._mind("GET", "/v1/mind/log", params={"limit": limit})
+            params: dict[str, Any] = {"limit": max(1, min(int(args.get("limit") or 20), 100))}
+            if args.get("since_hours") is not None and str(args.get("since_hours")).strip():
+                try:
+                    params["since_hours"] = max(0.0, float(args["since_hours"]))
+                except (TypeError, ValueError):
+                    return _error("since_hours is a number of hours")
+            for name in ("kind", "recipient"):
+                if str(args.get(name) or "").strip():
+                    params[name] = str(args[name]).strip()
+            return self._mind("GET", "/v1/mind/log", params=params)
         if operation == "why":
-            return self._mind("GET", f"/v1/mind/why/{args.get('id')}") if args.get("id") else _error("id is required")
+            return self._why(str(args["id"])) if args.get("id") else _error("id is required")
         if operation == "rate":
             if not args.get("id") or args.get("verdict") not in VERDICTS:
                 return _error(f"id and verdict ({'|'.join(VERDICTS)}) are required")
@@ -150,6 +177,39 @@ class Tools:
         if operation in {"yes", "no"}:
             return self._answer_ask(operation, str(args.get("code") or ""), session_id)
         return _error("unknown operation")
+
+    def _working_on(self) -> list[dict[str, Any]]:
+        """The tasks the mind has in flight (approved or dispatched), with their audit ids."""
+        if self.client.has_mind_routes() is not True:
+            return []
+        try:
+            response = self.client.get("/v1/mind/log", timeout=5,
+                                       params={"status": "dispatched,approved", "kind": "task", "limit": 20})
+            entries = response.json().get("entries") if response.is_success else None
+        except (SidecarUnavailable, ValueError):
+            return []
+        return [{"id": item.get("id"), "title": item.get("title"), "status": item.get("status")}
+                for item in (entries or []) if isinstance(item, dict) and item.get("id")]
+
+    def _why(self, intention_id: str) -> str:
+        """``GET /v1/mind/why/{id}``; an id the audit log does not hold gets the sidecar's refusal sentence,
+        so a false premise about the agent's own actions is answered from the record."""
+        if self.client.has_mind_routes() is not True:
+            return _error(ROUTES_MISSING)
+        try:
+            response = self.client.get(f"/v1/mind/why/{quote(intention_id, safe='')}", timeout=5)
+        except SidecarUnavailable:
+            return _error("the sidecar is unreachable")
+        if response.status_code == 404:
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = None
+            message = detail.get("message") if isinstance(detail, dict) else None
+            return _error(str(message or f"no intention {intention_id} exists in the audit log"))
+        if not response.is_success:
+            return _error(f"sidecar HTTP {response.status_code}")
+        return response.text
 
     def _answer_ask(self, answer: str, code: str, session_id: str) -> str:
         """``POST /v1/mind/decide`` only for the owner's own turn whose message carries the typed code."""

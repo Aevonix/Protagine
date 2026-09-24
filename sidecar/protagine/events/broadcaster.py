@@ -64,7 +64,6 @@ def emit(event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
     Args:
         event_type: One of the canonical ``HostEventType`` values —
             ``briefing``, ``anomaly``, ``goal_update``,
-            ``memory_consolidated``, ``world_model_changed``,
             ``skill_draft_approved``, ``proactive_message``, etc.
         payload: Arbitrary event-specific payload. Keep it small —
             subscribers fetch full records via the REST API when they

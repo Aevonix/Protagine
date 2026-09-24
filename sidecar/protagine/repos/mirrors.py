@@ -150,29 +150,3 @@ class RepoMirrorManager:
                     "matches": lines}
         except Exception as exc:
             return {"error": str(exc)[:200], "status": "error"}
-
-    # -- world-model feed -----------------------------------------------------
-    async def register_entities(self, world_store: Any) -> int:
-        """Upsert each owner-designated repo as a Project entity (deterministic,
-        config-driven; not extraction guesswork)."""
-        if world_store is None:
-            return 0
-        n = 0
-        try:
-            from protagine.world_model.entities import ProjectEntity
-            from protagine.world_model.sqlite.backend import _generate_id
-            for name, info in self._config.items():
-                existing = await world_store.get_entity_by_external_id("repo_name", name)
-                if existing is not None:
-                    continue
-                ent = ProjectEntity(
-                    id=_generate_id("we"), name=name, entity_type="project",
-                    confidence=0.95,
-                    external_ids={"repo_name": name},
-                    properties={"kind": "repo", "url": info.get("url", "")},
-                )
-                await world_store.upsert_entity(ent)
-                n += 1
-        except Exception:
-            logger.debug("repo entity registration failed", exc_info=True)
-        return n

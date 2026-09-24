@@ -286,8 +286,7 @@ async def sync_host(tmp_path, monkeypatch):
     await store.connect()
     ledger = TurnIdempotencyLedger(tmp_path / 'turn-idempotency.db')
     comms = CommsLog(str(tmp_path / 'comms.db'), source_ledger=ledger)
-    for name, value in (('_contacts_store', store), ('_comms_log', comms), ('_graph', None),
-                        ('_telemetry', None)):
+    for name, value in (('_contacts_store', store), ('_comms_log', comms), ('_telemetry', None)):
         monkeypatch.setattr(host, name, value, raising=False)
     app = FastAPI()
     app.include_router(host.router)

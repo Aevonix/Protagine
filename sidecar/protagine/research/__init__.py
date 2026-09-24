@@ -5,7 +5,7 @@ a polished, gated deliverable with minimal human intervention.
 
 Six pipeline stages:
   1. DECOMPOSE  — break goal into sub-tasks
-  2. GATHER     — collect evidence from web, graph, documents, email
+  2. GATHER     — collect evidence from web, documents, email
   3. SYNTHESIZE — cross-reference and extract insights
   4. OUTLINE    — build structured artifact outline
   5. PRODUCE    — render artifact in requested format

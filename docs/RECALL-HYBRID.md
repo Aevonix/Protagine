@@ -7,9 +7,9 @@ text and corrections remain available while semantic projection is pending.
 
 An absent, incompatible or unavailable semantic index leaves lexical search
 available and reports the semantic limitation. A working empty search is distinct
-from an unavailable canonical store. Neither path uses Neo4j memory candidates.
-See [source semantic recall](SOURCE-SEMANTIC-RECALL.md) for projection identity,
-model swaps and the shared HTTP contract.
+from an unavailable canonical store. There is no other memory store: the Neo4j
+graph memory was removed in M8. See [source semantic recall](SOURCE-SEMANTIC-RECALL.md)
+for projection identity, model swaps and the shared HTTP contract.
 
 ## Returning no useful memory
 
@@ -25,8 +25,8 @@ The cutoff applies only when `PROTAGINE_RECALL_RERANK_CALIBRATION` matches the
 SHA-256 configuration fingerprint supplied by the active reranker registration.
 The fingerprint uses the provider, model, endpoint, prompt format, candidate
 input format, optional weight revision, embedding configuration and optional index generation. Changing
-those values invalidates the cutoff. Custom rerank functions can supply current
-metadata through `set_rerank_fn(..., calibration_metadata=...)`.
+those values invalidates the cutoff. A custom rerank function supplies current
+metadata through `RecallSelector(rerank_fn, calibration_metadata=...)`.
 
 An unmatched or absent fingerprint disables the cutoff and marks the returned
 rows `mismatch` or `unverified`, with a warning. A matching configuration whose
@@ -67,13 +67,12 @@ context; scoped misses staying scoped; and a changed reranker configuration
 invalidating its old cutoff. Existing consent and tool authority remain with
 their execution owners.
 
-An earlier development benchmark used actual LAN embedding and reranker models and a
-disposable Lance store with fixture-backed graph hydration. A subsequent isolated
-Neo4j Community 2026.01.4 run applied all 50 migration statements, reached an
-ONLINE full-text index and passed six real-query checks: person scopes, a scoped
-miss, global union, source/metadata exclusion, supersession/confidence/strength
-filtering and immediate recall before vector creation. Production stores were
-not used. Those graph results do not qualify the current canonical memory path.
+An earlier development benchmark used actual LAN embedding and reranker models, a
+disposable Lance store and a fixture-backed stand-in for the graph memory that has
+since been removed. The frozen comparison in `benchmarks/source_recall` now drives
+the production `collect_sources` and `select_memory` path directly (M8); its
+`reference-results.json` still records the earlier three-arm run, whose arms tied,
+until the next measured run replaces it (see that README).
 
 The initial implementation replay retrieved the expected sources but scored
 15 of 24 complete behavior cases against its original fixture. Review then found
@@ -90,7 +89,6 @@ not implement those remaining memory semantics.
 source-claim expansions, media descriptions and relevant contact estimates.
 Canonical source search independently enforces contact/session scope and
 source-message erasure. A partially redacted turn can retain unrelated quotations.
-No graph candidate or graph recall-strength update participates in this path.
 
 Canonical candidates feed one rank-fusion and reranking pass. The calibrated
 cutoff can reject every candidate. Context contains at most five total records
@@ -131,18 +129,16 @@ This is a character limit, not an asserted token count. Shortened excerpts carry
 `excerpt_truncated=true`, and source bytes remain intact in the source store.
 Records retain `kind=belief` or `kind=source_quote`, source/turn handles, speaker
 role, and occurrence/ingestion times when available. Quoted content is explicitly
-evidence rather than instructions or an accepted belief. Only selected graph
-records gain recall strength.
+evidence rather than instructions or an accepted belief.
 
 Reranker failure uses one shared bounded fallback and marks returned records
 `rerank_status=unavailable`; it does not promise calibrated abstention during an
-outage. Unconfigured reranking retains rank-fusion fallback. Existing graph-only
-recall clients retain their confidence/strength ranking behavior. This budget
+outage. Unconfigured reranking retains rank-fusion fallback. This budget
 covers the mixed memory packet, not other existing context sections.
 
-Eight integrated regressions cover mixed abstention, one budget/section,
-graph-unavailable selection, visibility before model input, reinforcement after
-selection, failure fallback, excerpt preservation and the shared result limit.
+Integrated regressions cover mixed abstention, one budget/section, selection
+without any graph import, visibility before model input, failure fallback,
+excerpt preservation and the shared result limit.
 Six neutral checks with the current LAN reranker also passed, including three
 no-answer queries; these are integration checks, not a fresh calibration fit or
 a representative holdout benchmark. A deployment must still qualify quotations

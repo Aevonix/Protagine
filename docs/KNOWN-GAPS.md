@@ -23,6 +23,19 @@ general self-improvement simply by recording a successful review.
   the measurement doctrine. Wire only when a real health/wearable source
   feeds the mind model.
 
+- **Memory consolidation in the benchmark**: the memory and self families cross
+  one night before the probe (amended 2026-09-24), so `full-consolidation` and
+  `full-self_narrative` can differ from `full`; no pilot has measured it yet. The
+  per-contact digest stage writes only into a contact store with the people
+  milestone's digest columns (`set_digest`), so on a store without them the
+  consolidation arm differs by the narrative, contradictions and episode
+  summaries alone. The `semantic_recall` arm differs from `full` only in a plan
+  given an embedding endpoint (`paired plan --embedding-config`).
+- **Recall reference numbers**: `benchmarks/source_recall/reference-results.json`
+  still holds the three-arm run made before the harness moved from the graph
+  shim to `collect_sources`/`select_memory`; re-freezing it needs one measured
+  run against real extraction, embedding and reranker endpoints.
+
 ## Retained code outside the baseline
 
 - The incompatible manual `plugins/hermes-context/` compressor has been removed.
@@ -38,10 +51,24 @@ general self-improvement simply by recording a successful review.
   function routing and configured fallback remain; explicit tier selection uses
   deterministic thresholds. Old `router_self_learning.db` files are neither read
   nor written and can be discarded.
-- SQLite is the supported typed world-observation store. The separate optional
-  Neo4j memory graph is a different subsystem; its records are not a substitute
-  for canonical source memory. Changing databases does not fix memory admission
-  quality or recover missing provenance.
+- SQLite holds canonical source memory and typed situation observations. The
+  Neo4j memory graph, the SQLite world model, the belief engine, the chain and
+  the continuous learner were removed in M8; `protagine upgrade` moves their
+  local state files into the upgrade backup. Changing databases does not fix
+  memory admission quality or recover missing provenance.
+- Graph consumers outside the deleted packages await the M10 audit. Those that
+  only optionally read the graph lost that branch (the insight validator's
+  data-age check, the relationship scorer's and cognition components' type
+  hints); the research pipeline's graph stage (`GraphGatherer`, its source type
+  and its web-versus-graph contradiction rule) is deleted. Those that cannot
+  work without a Neo4j driver (`CognitionPipeline`, whose MetaLearner and CPI
+  M9 deletes, `SignalCollector`, which M6 deletes with `mind_model`, and
+  `ConnectionDiscoverer` with the synthesis and insight routes) are no longer
+  constructed by the server; their routes report the subsystem as not wired.
+  The briefing `RelationshipAggregator` (Cypher only), `GraphBaselineStore`,
+  the session `SessionContextLoader`, the node-certificate signer and the
+  `extraction` extra had no other use and are deleted.
+
 ## Deliberate no-builds (division of responsibility with the host agent)
 
 Protagine is the cognitive substrate; the host agent framework (e.g. Hermes)
@@ -72,13 +99,12 @@ configured loaders in this repository. They are retained in Git history rather
 than offered as unfinished features:
 
 - Raft consensus and its isolated unit suite, plus the unregistered chain key,
-  sentinel and administrative CLIs. Existing chain identity, storage and
-  validation consumers remain intact.
+  sentinel and administrative CLIs. (The rest of the chain followed in M8.)
 - The federation skill marketplace and its unused protocol, plus the unused
   skill schema-version helper. Hermes owns the supported native skill review
   path; executable work uses the supported native task bindings.
 - The unused structured-world importer and email-header contact importer.
-  Existing connector/populator and supported contact import paths remain.
+  Supported contact import paths remain.
 
 The unused `gate/pending_dispatch.py` re-export, default cloud subtask handler,
 inert operations scripts, webhook examples and old patch inventory runner are
@@ -91,10 +117,10 @@ qualification uses the packaged patch set.
   when a tick exceeds `PROTAGINE_TICK_BUDGET_SECS` the whole-tick `wait_for`
   cancels whatever await is in flight; a cancellation landing inside an
   aiohttp request can interrupt the session unwind and the GC later logs the
-  unclosed session. Mitigated (v0.29.0): the world-LLM extraction timeout is
-  capped under the budget, per-recall touch tasks are strongly referenced,
-  and the research gatherer closes its per-call graph driver. Residual noise
-  right after a budget-exceeded tick is expected and harmless.
+  unclosed session. Mitigated (v0.29.0) by strongly referenced background
+  tasks; the world-LLM extraction and the per-call graph driver that also
+  produced it are gone (M8). Residual noise right after a budget-exceeded tick
+  is expected and harmless.
 
 ## Settlement semantics (by design, documented here so nobody "fixes" it)
 

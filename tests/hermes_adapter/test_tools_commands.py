@@ -82,27 +82,97 @@ def test_mind_off_in_chat_reaches_the_sidecar_without_a_model(home, sidecar):
 
 
 def test_self_tool_state_log_and_why(home, sidecar):
+    """The record is the only source for claims about the agent's own actions (architecture 4.2)."""
     sidecar.mind_routes = True
     sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "dispatched", "drive": "duty",
-                                       "title": "Check", "hermes_ref": "t_1"}
+                                       "title": "Check", "hermes_ref": "t_1", "decision": "act"}
+    sidecar.mind.intentions["i-02"] = {"id": "i-02", "kind": "task", "status": "approved", "title": "Research tides",
+                                       "decision": "act"}
+    sidecar.mind.intentions["i-03"] = {"id": "i-03", "kind": "task", "status": "done", "title": "Old", "decision": "act"}
+    sidecar.mind.intentions["m-01"] = {"id": "m-01", "kind": "message", "status": "done", "title": "Nudge p-07",
+                                       "decision": "act", "recipient": "p-07"}
+    sidecar.mind.narrative = {"enabled": True, "text": "I researched tides for the owner. [i-03]", "sections": {},
+                              "cites": ["i-03"], "updated_at": None}
     result = probe(TOOL_CODE + '''
 o = owner()
 emit(state=call("protagine_self", {"operation": "state"}, o),
      status_alias=call("protagine_self", {"operation": "status"}, o),
      log=call("protagine_self", {"operation": "log", "limit": 5}, o),
+     yesterday=call("protagine_self", {"operation": "log", "since_hours": 24, "recipient": "p-07", "kind": "message"}, o),
+     bad_hours=call("protagine_self", {"operation": "log", "since_hours": "soon"}, o),
      why=call("protagine_self", {"operation": "why", "id": "i-01"}, o),
      missing=call("protagine_self", {"operation": "why"}, o),
      unknown=call("protagine_self", {"operation": "why", "id": "nope"}, o))
 ''', home)
-    assert result["state"]["enabled"] is True and result["state"]["sidecar_reachable"] is True
-    assert result["state"]["mind_routes"] is True and result["state"]["autonomy"] == "standard"
-    assert result["status_alias"]["enabled"] is True
+    state = result["state"]
+    assert state["enabled"] is True and state["sidecar_reachable"] is True
+    assert state["mind_routes"] is True and state["autonomy"] == "standard"
+    # What the mind is working on and what it knows about itself come from the log and the narrative route.
+    assert state["working_on"] == [{"id": "i-01", "title": "Check", "status": "dispatched"},
+                                   {"id": "i-02", "title": "Research tides", "status": "approved"}]
+    assert state["narrative"] == "I researched tides for the owner. [i-03]"
+    assert result["status_alias"] == state
     assert result["log"]["entries"][0]["id"] == "i-01"
+    assert [e["id"] for e in result["yesterday"]["entries"]] == ["m-01"]
+    assert "since_hours" in result["bad_hours"]["error"]
     assert result["why"]["drive"] == "duty" and result["why"]["hermes_ref"] == "t_1"
     assert "id is required" in result["missing"]["error"]
-    assert "not found" in result["unknown"]["error"]
+    # A false premise about the agent's own actions gets the sidecar's refusal sentence, verbatim.
+    assert result["unknown"] == {"error": "no intention nope exists in the audit log"}
     logs = sidecar.calls("/v1/mind/log", "GET")
-    assert logs and logs[0]["query"] == {"limit": "5"}
+    assert {"limit": "5"} in [call["query"] for call in logs]
+    assert {"limit": "20", "since_hours": "24.0", "recipient": "p-07", "kind": "message"} in [call["query"] for call in logs]
+    assert {"status": "dispatched,approved", "kind": "task", "limit": "20"} in [call["query"] for call in logs]
+
+
+def test_self_tool_shows_the_record_only_in_the_owners_own_session(home, sidecar):
+    """The mind's record is the owner's: what it is working on, whom it messaged, what it asked the owner and
+    what it knows about itself. A guest, a group the owner shares and a mind worker get the switch state
+    (enabled, autonomy, whether the sidecar answers) and a refusal for log and why; the sidecar is not asked."""
+    sidecar.mind_routes = True
+    sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "dispatched", "title": "CANARY-task-7f3",
+                                       "decision": "act"}
+    sidecar.mind.intentions["m-01"] = {"id": "m-01", "kind": "message", "status": "done", "decision": "act",
+                                       "title": "CANARY-notice-2c9", "recipient": "p-07"}
+    sidecar.mind.narrative = {"enabled": True, "text": "CANARY-narrative-5d1 [i-01]", "sections": {}, "cites": ["i-01"]}
+    result = probe(TOOL_CODE + '''
+import os
+from gateway.session_context import clear_session_vars, set_session_vars
+def ask_all(session):
+    return {op: call("protagine_self", {"operation": op, **({"id": "i-01"} if op == "why" else {})}, session)
+            for op in ("state", "log", "why")}
+answers = {"guest": ask_all(guest())}
+tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="group-1", chat_type="group", session_id="grp-1")
+try:
+    answers["group"] = ask_all(guest("grp-1", "1001"))
+finally:
+    clear_session_vars(tokens)
+os.environ["HERMES_KANBAN_TASK"] = "t_9"
+answers["worker"] = ask_all(guest("wk-1", "", platform="worker"))
+del os.environ["HERMES_KANBAN_TASK"]
+emit(answers=answers)
+''', home)
+    for who, answer in result["answers"].items():
+        assert answer["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}, who
+        assert answer["log"] == {"error": "the mind's record is the owner's; ask in the owner's own chat"}, who
+        assert answer["why"] == answer["log"], who
+        assert "CANARY" not in json.dumps(answer), who
+    assert sidecar.calls("/v1/mind/log") == [] and sidecar.calls("/v1/mind/why/i-01") == []
+    assert sidecar.calls("/v1/mind/narrative") == []
+
+
+def test_self_tool_without_the_mind_routes_reports_no_work_and_no_narrative(home, sidecar):
+    result = probe(TOOL_CODE + '''
+g, o = guest(), owner()
+emit(state=call("protagine_self", {"operation": "state"}, g),
+     owner_state=call("protagine_self", {"operation": "state"}, o),
+     why=call("protagine_self", {"operation": "why", "id": "i-01"}, o))
+''', home)
+    assert result["state"] == {"enabled": True, "autonomy": "standard", "sidecar_reachable": True}
+    owner_state = result["owner_state"]
+    assert owner_state["working_on"] == [] and owner_state["narrative"] == "" and owner_state["mind_routes"] is False
+    assert "mind routes" in result["why"]["error"]
+    assert sidecar.calls("/v1/mind/narrative") == [] and sidecar.calls("/v1/mind/log") == []
 
 
 def test_a_guest_reads_only_whether_the_mind_is_on_never_its_log_or_asks(home, sidecar):
@@ -339,6 +409,7 @@ emit(sections=[(s.id, s.content) for s in sections if s.id == "protagine"])
     (section_id, content), = result["sections"]
     assert section_id == "protagine"
     assert "Your owner is Owner." in content and len(content) <= 4000
+    assert content.startswith("You are Agent. Your values: care. Your boundaries: never send money.")
     assert json.dumps(content)  # plain text
 
 

@@ -68,7 +68,6 @@ class SynthesisReport:
     evidence_count: int
     source_breakdown: Dict[str, int]      # SourceType.value -> count
     synthesis_confidence: float           # 0.0–1.0, aggregate
-    graph_entities_referenced: List[str]  # Neo4j node IDs
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -133,7 +132,8 @@ class ResearchSynthesizer:
             )
 
         insights = await self._extract_insights(safe_evidence, goal_text)
-        contradictions = self._detect_contradictions(safe_evidence)
+        # The only contradiction rule compared web evidence with graph evidence; there is no graph.
+        contradictions: List[Contradiction] = []
 
         # Enforce limits
         insights = insights[: self.config.max_insights]
@@ -142,13 +142,6 @@ class ResearchSynthesizer:
             sum(i.confidence for i in insights) / len(insights) if insights else 0.0
         )
 
-        graph_entities: List[str] = []
-        for item in safe_evidence:
-            if item.source_type == SourceType.GRAPH:
-                node_id = item.citation.replace("graph://", "")
-                if node_id and node_id not in graph_entities:
-                    graph_entities.append(node_id)
-
         return SynthesisReport(
             goal_id=goal_id,
             insights=insights,
@@ -156,7 +149,6 @@ class ResearchSynthesizer:
             evidence_count=len(safe_evidence),
             source_breakdown=source_breakdown,
             synthesis_confidence=aggregate_confidence,
-            graph_entities_referenced=graph_entities,
         )
 
     async def _extract_insights(
@@ -273,37 +265,3 @@ class ResearchSynthesizer:
 
         return sorted(insights, key=lambda x: x.novelty_score, reverse=True)
 
-    def _detect_contradictions(
-        self,
-        evidence: EvidencePackage,
-    ) -> List[Contradiction]:
-        """Detect pairs of evidence items with potentially conflicting claims.
-
-        Uses a heuristic: items from different sources with similar topics
-        but significantly different relevance scores are flagged.
-        """
-        import secrets as _secrets
-
-        contradictions: List[Contradiction] = []
-        # Simple heuristic — compare web vs graph items on same topic keywords
-        web_items = [e for e in evidence if e.source_type == SourceType.WEB]
-        graph_items = [e for e in evidence if e.source_type == SourceType.GRAPH]
-
-        for w in web_items[:5]:
-            for g in graph_items[:5]:
-                # If relevance scores differ significantly, flag as potential contradiction
-                if abs(w.relevance_score - g.relevance_score) > 0.4:
-                    contradictions.append(
-                        Contradiction(
-                            id=_secrets.token_hex(6),
-                            claim_a=w.content[:200],
-                            claim_b=g.content[:200],
-                            citation_a=w.citation,
-                            citation_b=g.citation,
-                            topic="relevance discrepancy",
-                            confidence_a=w.relevance_score,
-                            confidence_b=g.relevance_score,
-                        )
-                    )
-
-        return contradictions[:10]  # Cap at 10 contradictions

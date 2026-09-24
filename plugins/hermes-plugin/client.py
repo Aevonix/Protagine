@@ -24,6 +24,13 @@ PLUGIN_ID = "protagine"
 WORKER_PROFILE = "protagine-act"
 DEFAULT_URL = "http://127.0.0.1:7777"
 MIND_STATE_ROUTE = "/v1/mind/state"
+NARRATIVE_ROUTE = "/v1/mind/narrative"
+# The constitution (architecture 4.2): identity.yaml agent.{name, values, boundaries} rendered as one
+# paragraph of at most 1,500 characters. The same render as protagine.config.render_constitution,
+# repeated here because the adapter never imports the sidecar.
+CONSTITUTION_CHARS = 1500
+CONSTITUTION_ITEMS = 12
+CONSTITUTION_ITEM_CHARS = 160
 
 
 class SidecarUnavailable(RuntimeError):
@@ -82,6 +89,40 @@ def read_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
     return value
 
 
+def constitution_list(value: Any) -> list[str]:
+    """``agent.values`` or ``agent.boundaries``: at most 12 distinct one-line strings of 1 to 160 characters."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        if 1 <= len(text) <= CONSTITUTION_ITEM_CHARS and text not in items:
+            items.append(text)
+        if len(items) >= CONSTITUTION_ITEMS:
+            break
+    return items
+
+
+def render_constitution(identity: Any, *, limit: int | None = CONSTITUTION_CHARS) -> str:
+    """``You are <name>. Your values: a; b. Your boundaries: x; y.``, empty lists omitted, clipped at ``limit``."""
+    agent = identity.get("agent") if isinstance(identity, Mapping) else None
+    agent = agent if isinstance(agent, Mapping) else {}
+    parts: list[str] = []
+    name = " ".join(str(agent.get("name") or "").split())
+    if name:
+        parts.append(f"You are {name}.")
+    values = constitution_list(agent.get("values"))
+    if values:
+        parts.append("Your values: " + "; ".join(values) + ".")
+    boundaries = constitution_list(agent.get("boundaries"))
+    if boundaries:
+        parts.append("Your boundaries: " + "; ".join(boundaries) + ".")
+    text = " ".join(parts)
+    return text if limit is None or len(text) <= limit else text[:limit]
+
+
 @dataclass
 class Settings:
     sidecar_url: str
@@ -99,6 +140,10 @@ class Settings:
 
     def identity(self) -> dict[str, Any]:
         return read_yaml(self.home / "identity.yaml")
+
+    def constitution(self) -> str:
+        """The owner-authored constitution from ``identity.yaml``, at most 1,500 characters."""
+        return render_constitution(self.identity())
 
     def budget(self, name: str, default: int) -> int:
         """One ``mind.budgets`` value from ``protagine.yaml`` (architecture 7.1)."""
@@ -198,6 +243,7 @@ class ProtagineClient:
         self._failures = 0
         self._open_until = 0.0
         self._mind_routes: tuple[float, bool] | None = None
+        self._narrative_failed_at: float | None = None
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -262,6 +308,28 @@ class ProtagineClient:
             return None
         return value if isinstance(value, dict) else None
 
+    def narrative(self, *, timeout: float = 2.0, ttl: float = 60.0) -> dict[str, Any] | None:
+        """``GET /v1/mind/narrative`` (``{enabled, text, sections, cites, updated_at}``) when the mind routes
+        exist; None otherwise. Never raises: the prompt section falls back to the constitution alone.
+        Only a failure is remembered, for ``ttl`` seconds, so a slow or absent sidecar costs one bounded
+        wait per window; an answer is never kept (Hermes already freezes the section per session, and a
+        session right after a night must see what the night wrote)."""
+        with self._lock:
+            failed_at = self._narrative_failed_at
+        if failed_at is not None and time.monotonic() - failed_at < ttl:
+            return None
+        value: dict[str, Any] | None = None
+        try:
+            if self.has_mind_routes() is True:
+                response = self.get(NARRATIVE_ROUTE, timeout=timeout)
+                body = response.json() if response.is_success else None
+                value = body if isinstance(body, dict) else None
+        except (SidecarUnavailable, ValueError):
+            value = None
+        with self._lock:
+            self._narrative_failed_at = None if value is not None else time.monotonic()
+        return value
+
     def resolve_contact(self, platform: str, handle: str, *, create: bool = False,
                         timeout: float = 4.0) -> dict[str, Any] | None:
         """The contact behind a messaging handle, or None when there is none."""
@@ -285,5 +353,8 @@ class ProtagineClient:
             return None
 
 
-__all__ = ["DEFAULT_URL", "MIND_STATE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE", "ProtagineClient", "Settings",
-           "SidecarUnavailable", "hermes_config", "hermes_home", "load_settings", "plugin_section", "read_yaml"]
+__all__ = [
+    "CONSTITUTION_CHARS", "DEFAULT_URL", "MIND_STATE_ROUTE", "NARRATIVE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE",
+    "ProtagineClient", "Settings", "SidecarUnavailable", "constitution_list", "hermes_config", "hermes_home",
+    "load_settings", "plugin_section", "read_yaml", "render_constitution",
+]

@@ -89,8 +89,8 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setenv("PROTAGINE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     monkeypatch.delenv("PROTAGINE_OWNER_PERSON_ID", raising=False)
-    for name in ("_graph", "_telemetry", "_reranker", "_context_recall_selector",
-                 "_commitment_store", "_initiative_store", "_world_store", "_situation_store",
+    for name in ("_telemetry", "_reranker", "_context_recall_selector",
+                 "_commitment_store", "_initiative_store", "_situation_store",
                  "_comms_log", "_facts_store", "_affect_store", "_signal_collector"):
         monkeypatch.setattr(host, name, None)
     contacts = Contacts()

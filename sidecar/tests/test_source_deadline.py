@@ -162,7 +162,8 @@ async def test_deadline_does_not_certify_incomplete_or_invalid_chain(deadline_ap
         else:
             # Earlier malformed candidates must not let the bounded reader
             # overlook an independent value beyond its scan limit.
-            conn.executemany('''INSERT INTO source_claims SELECT ?,turn_id,'missing-message',subject_key,
+            conn.executemany('''INSERT INTO source_claims (id,turn_id,message_hash,subject_key,predicate,value_key,
+                data_json,valid_from,valid_to,superseded_by,retracted_by) SELECT ?,turn_id,'missing-message',subject_key,
                 predicate,value_key,data_json,valid_from,valid_to,NULL,NULL FROM source_claims WHERE id=?''',
                 [(f'overflow-{i}', original['claim_id']) for i in range(256)])
     result = SourceClaimProjection(ledger).deadline(**original)

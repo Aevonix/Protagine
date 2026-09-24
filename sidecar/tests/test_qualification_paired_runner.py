@@ -72,7 +72,9 @@ def fixture(tmp_path, monkeypatch):
                                   'message_timestamps': paired.MESSAGE_TIMESTAMPS_PROTOCOL,
                                   'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL,
                                   'outbound': paired.OUTBOUND_PROTOCOL,
-                                  'people_instrument': paired.PEOPLE_INSTRUMENT_PROTOCOL}}
+                                  'people_instrument': paired.PEOPLE_INSTRUMENT_PROTOCOL,
+                                  'clock_start': paired_body.CLOCK_START_PROTOCOL,
+                                  'embedding': paired.EMBEDDING_PROTOCOL}}
 
     def context(config, recipe):
         return SimpleNamespace(binding=recipe['binding'], trace=trace, modes=modes, usage=usage)

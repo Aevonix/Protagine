@@ -44,12 +44,16 @@ MIND_ADDITIONS = ('plus_skills',)
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS, *MIND_ADDITIONS)
 PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'
+# The plan's embedding endpoint is the served host's semantic recall (semantic_recall below): an image
+# whose worker lacks it would record the endpoint and recall lexically.
+EMBEDDING_PROTOCOL = 'paired-embedding-1'
 
 
 def mind_switches(profile):
     """The mind switches a profile turns on, or None when its mind is off."""
     switches = {name: True for name in MIND_SWITCHES if profile.get(name)}
     return switches or None
+
 # Plans written before arm profiles carried only the arm label.
 LEGACY_PROFILES = {'base_hermes': {'name': 'base_hermes', 'plugin': False, 'overlay': {}},
                    'protagine': {'name': 'protagine', 'plugin': True, 'overlay': {}}}
@@ -225,6 +229,7 @@ def inspect_payload():
             'arm_profiles': ARM_PROFILE_PROTOCOL,
             'heartbeat_prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
             'mind_tick': MIND_TICK_PROTOCOL,
+            'embedding': EMBEDDING_PROTOCOL,
             'tool_loading': TOOL_LOADING_PROTOCOL,
             'message_timestamps': MESSAGE_TIMESTAMPS_PROTOCOL,
             'environment_note': ENVIRONMENT_NOTE_PROTOCOL,
@@ -235,6 +240,7 @@ def inspect_payload():
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
             'body_protocol': paired_body.PROTOCOL,
+            'clock_start': paired_body.CLOCK_START_PROTOCOL,
             'history_protocol': paired_history.PROTOCOL,
             'capture_platform_sha256': hashlib.sha256(
                 (paired_body.plugin_source() / '__init__.py').read_bytes()).hexdigest()}
@@ -407,13 +413,76 @@ async def people_store(state):
         await store.close()
 
 
+@asynccontextmanager
+async def semantic_recall(state):
+    """The served host's semantic recall, opened the way the sidecar's lifespan opens it.
+
+    When this arm's environment names the plan's embedding endpoint (``PROTAGINE_EMBED_PROVIDER``
+    ``openai_api``, from ``native_memory_worker.embedding_environment``): one embedding pipeline and
+    one vector store over the arm's ledger, set for context assembly and erasure, and the
+    source-vector jobs processed by a task on this loop, the host's, as the sidecar runs them on
+    its own. The store and the pipeline are used from this loop only (the vector store's write lock
+    is an asyncio lock), so the claim worker on its own thread leaves vector jobs alone. An
+    endpoint that does not answer fails the episode rather than leave the arm lexical under an
+    ``endpoint`` label. Otherwise nothing opens and recall stays lexical.
+    """
+    if os.environ.get('PROTAGINE_EMBED_PROVIDER') != 'openai_api':
+        yield None
+        return
+    import protagine.vector as vector
+    from protagine.turns import get_turn_idempotency_ledger
+    from protagine.turns.source_vectors import SourceVectors
+    from protagine.vector.config import EmbeddingConfig
+    from protagine.vector.embedder import EmbeddingPipeline, make_provider
+    from protagine.vector.indexes import IndexCatalog
+    from protagine.vector.store import VectorStore
+    directory = state / 'memory-state'
+    ledger = get_turn_idempotency_ledger(directory)
+    provider = make_provider(EmbeddingConfig(provider='openai_api', model_id=os.environ['PROTAGINE_EMBED_MODEL'],
+                                             dimensions=int(os.environ['PROTAGINE_EMBED_DIMS'])))
+    provider.configure(os.environ['PROTAGINE_EMBED_BASE_URL'], os.environ.get('PROTAGINE_EMBED_API_KEY', ''))
+    pipeline = EmbeddingPipeline(provider)
+    await pipeline.warmup()
+    store = VectorStore(str(directory / 'lancedb'), identity=pipeline.index_identity, catalog=IndexCatalog(ledger))
+    await store.connect(pipeline.dimensions)
+    await store.ensure_collections(pipeline.dimensions)
+    vectors = SourceVectors(ledger, store, pipeline)
+    vectors.backfill()
+
+    async def work():
+        while True:
+            try:
+                worked = await vectors.process_one()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                worked = False
+            if not worked:
+                await asyncio.sleep(0.2)
+
+    prior = vector.get_store(), vector.get_pipeline()
+    vector.set_store(store)
+    vector.set_pipeline(pipeline)
+    task = asyncio.create_task(work())
+    try:
+        yield store
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        vector.set_store(prior[0])
+        vector.set_pipeline(prior[1])
+
+
 def provider_read_lifespan(state):
     @asynccontextmanager
     async def lifespan(app):
         # SQLite-backed facts/affect stores require construction and shutdown
         # on the same thread that serves their HTTP handlers.
         with provider_read_services(state):
-            async with people_store(state):
+            async with people_store(state), semantic_recall(state):
                 yield
     return lifespan
 
@@ -502,8 +571,9 @@ def source_worker(app, state, inputs, config, *, temperature=None):
 
     def run():
         asyncio.set_event_loop(loop)
+        # Vector jobs belong to the host's loop, which owns the vector store (semantic_recall).
         holder['task'] = loop.create_task(run_source_claim_worker(
-            get_turn_idempotency_ledger(state / 'memory-state'), lambda: router))
+            get_turn_idempotency_ledger(state / 'memory-state'), lambda: router, vectors=False))
         ready.set()
         try:
             loop.run_until_complete(holder['task'])
@@ -532,6 +602,42 @@ def source_worker(app, state, inputs, config, *, temperature=None):
                 raise RuntimeError('Source worker failed') from task.exception()
         finally:
             resources.close()
+
+
+def plugin_client():
+    """The loaded Protagine plugin's sidecar client (the adapter's body holds it); None in every other arm."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        loaded = get_plugin_manager()._plugins.get('protagine')
+    except Exception:
+        return None
+    if loaded is None or not loaded.enabled:
+        return None
+    return getattr(getattr(loaded.module, '_BODY', None), 'client', None)
+
+
+def mind_audit(client=None, *, limit=500):
+    """What the agent did, from ``GET /v1/mind/log``, read outside the agent after its last turn: the ids of
+    its actions (``protagine.mind.audit.is_action``: a task, goal or message it decided to act on or ask
+    about, never a note or a notice) and, for the ones bound to a kanban task, ``{kanban id: intention id}``,
+    so the grader counts one action once whichever name a report cites. The self family grades a
+    self-report against them (``paired_body_grading.observed_action_ids``). Nothing to read, an unreachable
+    sidecar or a sidecar without the mind routes all record nothing."""
+    from protagine.mind.audit import is_action
+    empty = {'audit_ids': [], 'audit_refs': {}}
+    client = plugin_client() if client is None else client
+    if client is None:
+        return empty
+    try:
+        response = client.get('/v1/mind/log', params={'limit': limit}, timeout=10)
+        entries = response.json().get('entries') if response.is_success else None
+    except Exception:
+        return empty
+    actions = [row for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
+               and is_action(row)]
+    return {'audit_ids': [row['id'] for row in actions],
+            'audit_refs': {row['hermes_ref']: row['id'] for row in actions
+                           if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']}}
 
 
 def main():
@@ -590,7 +696,12 @@ def main():
     # A restarted phase may hold events only; the dataset loader owns the whole-episode rules.
     kinds = [episode_kind(entry) for entry in inputs['episodes']]
     body_before = {'clock_offset_seconds': 0, 'ticks_completed': 0, **((phase or {}).get('body_before', {}))}
-    agents, histories, rows, ticks = {}, {}, [], []
+    if phase is None and inputs.get('clock_start') is not None:
+        # One process runs the whole episode: its pinned start is decided here (the supervisor
+        # decides it for a workflow and carries it in body_before).
+        body_before['clock_offset_seconds'] = paired_body.start_offset(inputs['clock_start'])
+    agents, histories, rows, ticks, audit = {}, {}, [], [], {}
+    mind = mind_switches(profile) if plugin else None
     tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
@@ -663,7 +774,11 @@ def main():
                 request['inputs']['turns'] = []
                 observer = resources.enter_context(prepare(request, home, arguments, config,
                     setup_host=partial(source_worker, temperature=temperature),
-                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind_switches(profile)))
+                    scopes=PAIRED_FIXTURE_SCOPES, overlay=overlay, mind=mind))
+                if mind:
+                    # Read after the agents close and before the served mind goes away (callbacks run
+                    # last-in first-out): the audit ids the self family grades a self-report against.
+                    resources.callback(lambda: audit.update(mind_audit()))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
@@ -680,8 +795,10 @@ def main():
             # before the first turn; a restarted phase finds it already there.
             history = inputs.get('history')
             if history and not resuming:
+                # With the plan's embedding endpoint in use, the history is embedded before the first turn.
                 result['tool_evidence']['history'] = paired_history.seed(
-                    home, history, session_db=SessionDB, contact_id=inputs['contact_id'], ledger=plugin)
+                    home, history, session_db=SessionDB, contact_id=inputs['contact_id'], ledger=plugin,
+                    vectors=plugin and os.environ.get('PROTAGINE_EMBED_PROVIDER') == 'openai_api')
                 trace.record('history', result['tool_evidence']['history'])
             resources.callback(close_agents)
             arguments.update(enabled_toolsets=toolsets, skip_background_review=False,
@@ -836,7 +953,8 @@ def main():
                 session_search_enabled=True,
                 treatment_loaded=treatment.get('memory_provider_loaded', False), turns=rows,
                 treatment_profile='text-native-memory-and-source-projections',
-                limitations=['no embedding/reranking', 'no channel transport',
+                limitations=['no reranking' if inputs.get('embedding') else 'no embedding/reranking',
+                    'no channel transport',
                     'no executed coding tests', 'no attested multi-user boundary',
                     'fixed settling window; background completion not guaranteed',
                     'no gateway: deliveries land in the capture outbox; kanban workers run in-process',
@@ -856,7 +974,9 @@ def main():
                                        arm_profile=profile, temperature=temperature,
             body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
                   'clock_offset_seconds': paired_body.clock_offset(),
-                  'outbox': paired_body.read_outbox(outbox)})
+                  'outbox': paired_body.read_outbox(outbox),
+                  **({'audit_ids': list(audit.get('audit_ids') or []),
+                      'audit_refs': dict(audit.get('audit_refs') or {})} if mind else {})})
         if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
                 home / 'memory-state' / 'turn-idempotency.db')

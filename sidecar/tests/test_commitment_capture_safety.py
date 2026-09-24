@@ -840,3 +840,22 @@ async def test_the_job_grants_only_on_the_owners_own_turn(tmp_path, monkeypatch)
     contacts, = _open(cstore, SAM)
     assert owners["metadata"]["grant"] == "owner" and owners["metadata"]["kind"] == "notice"
     assert "grant" not in contacts["metadata"] and contacts["metadata"]["content"] == "The booking lapses tonight."
+# --- 8. the mind's own self-turns are not the person's conversation ------------------------------
+
+
+def test_the_minds_self_turns_are_not_the_persons_recent_conversation(tmp_path):
+    """The autobiography (``session_id='mind'``, ``turn_id='mind:...'``) is the agent's record, not
+    something the person said: it must neither appear in the extractor's "Recent conversation" nor
+    push the person's real earlier turn out of the window."""
+    from protagine.commitments.extract import CONTEXT_TURNS
+    from protagine.mind.outcomes import Autobiography
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    autobiography = Autobiography(ledger, owner_id=PERSON)
+    for index in range(CONTEXT_TURNS):
+        assert autobiography.record(f"i-{index}", "decided_act",
+                                    f"I will act on 'thing {index}' (duty drive, owner class): a reason.")
+    _turn(ledger, "t-2", "Actually make that six.")
+    context = extractor._recent_turns(extractor._source("t-2"))
+    assert "send Sam the recap" in context
+    assert "I will act on" not in context and "decided_act" not in context

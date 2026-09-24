@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from protagine.intelligence.graph.client import ProtagineGraph
     from .gap_detector import Gap
 from datetime import datetime
 from enum import Enum
@@ -116,7 +115,7 @@ class StrategyAdjuster:
         },
     }
 
-    def __init__(self, graph: "ProtagineGraph", params: Any = None):
+    def __init__(self, graph: Any, params: Any = None):
         self.graph = graph
         # params remains a constructor compatibility argument. Only the
         # ExperimentEngine owns parameter writes; this detector proposes.

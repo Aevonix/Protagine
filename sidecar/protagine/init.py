@@ -39,14 +39,17 @@ from protagine import config as configuration
 from protagine.config import (
     AUTONOMY_LEVELS,
     CONFIG_FILE,
+    CONSTITUTION_CHARS,
     IDENTITY_FILE,
     KEY_FILE,
     LLM_CONFIG_FILE,
     Config,
     ConfigError,
+    constitution_length,
     load_config,
     load_identity,
     read_api_key,
+    render_constitution,
     save_config,
     save_identity,
     write_api_key,
@@ -761,12 +764,14 @@ def run_store_migrations(home: Path) -> list[str]:
 # directed tasks, the response guard's ledgers, the agent bridge poller's
 # seen-lists and (since the drives milestone) the cognitive workspace, the
 # cognition spine, its evidence and drive-governance ledgers, the external
-# event inbox and the surprise store, and (since the people milestone) the
+# event inbox and the surprise store, (since the people milestone) the
 # second-order theory-of-mind stores, the engagement profiles, the relationship
 # briefs the per-contact digest replaced, the P8 shadow stores, the conversation
-# presence census (its readers went with P8) and the identity bootstrap report. An upgrade
-# moves them into the backup instead of leaving orphans behind. A directory
-# entry names a whole tree.
+# presence census (its readers went with P8) and the identity bootstrap report,
+# and (since the memory milestone) the belief engine, the chain's identity files,
+# keys and manifests and the world model; the Neo4j graph and the continuous
+# learner kept nothing local. An upgrade moves them into the backup instead of
+# leaving orphans behind. A directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
@@ -797,6 +802,16 @@ RETIRED_STATE = (
     "protagine-presence.db",
     "bootstrap.db",
     "bridge",
+    "protagine-beliefs.db",
+    "chain.db",
+    "protagine-id",
+    "node-id",
+    "node-cert.json",
+    "genesis.json",
+    "protagine-manifest.json",
+    "protagine_world_model.db",
+    "protagine-keys",
+    "node-keys",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG
 # tables (agent goals are intention rows) and the legacy perspective tables (the
@@ -820,9 +835,16 @@ def retired_state_present(home: Path) -> list[str]:
 
 
 def retire_state(home: Path, backup_dir: Path) -> list[str]:
-    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``."""
+    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``.
+
+    The chain's ``protagine-id`` is adopted as ``instance-id`` before it moves, so
+    the agent registry rows that name this instance keep matching.
+    """
     notes: list[str] = []
     destination = backup_dir / "retired"
+    if (home / "protagine-id").exists():
+        from protagine.instance import instance_id
+        instance_id(home)
     for name in retired_state_present(home):
         destination.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (home / name).is_dir():
@@ -1057,7 +1079,6 @@ def migrate_legacy_instance(home: Path, *, backup_dir: Path | None = None) -> li
     if not data["router"]["base_url"]:
         data["router"]["base_url"] = str(manifest.get("endpoint") or "")
         data["router"]["model"] = str(manifest.get("model") or "")
-    data["mind"]["faculties"]["semantic_recall"] = env.get("PROTAGINE_EMBED_PROVIDER", "skip") != "skip"
     save_config(data, home)
     notes.append("protagine.yaml written; autonomy starts at 'suggest' (edit mind.autonomy to choose "
                  "'standard' or 'trusted')")
@@ -1109,7 +1130,14 @@ def _parse_handles(values: list[str] | None) -> list[dict[str, str]]:
     return handles
 
 
+def _comma_list(raw: Any) -> list[str]:
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+
 def _collect_identity(args, existing: dict[str, Any], non_interactive: bool) -> dict[str, Any]:
+    """The owner's answers for ``identity.yaml``: the owner, and the agent's constitution (name, values,
+    boundaries) plus its time zone and quiet hours. Keys init does not ask about (``owner.contact_id``,
+    ``agent.interests``) are kept as they are. The rendered constitution must fit ``CONSTITUTION_CHARS``."""
     owner = dict(existing.get("owner") or {})
     agent = dict(existing.get("agent") or {})
     owner_name = _ask("Your name", getattr(args, "owner_name", None) or owner.get("name") or os.environ.get("USER", "Owner"),
@@ -1119,19 +1147,32 @@ def _collect_identity(args, existing: dict[str, Any], non_interactive: bool) -> 
         raw = _ask("Your messaging handles, PLATFORM=ID separated by commas (optional)", "", non_interactive)
         handles = _parse_handles([part.strip() for part in raw.split(",") if part.strip()])
     agent_name = _ask("Agent name", getattr(args, "agent_name", None) or agent.get("name") or "Assistant", non_interactive)
-    values_default = ", ".join(agent.get("values") or [])
-    values_raw = getattr(args, "agent_values", None) or _ask("Guiding values, comma separated (optional)",
-                                                             values_default, non_interactive)
-    values = [part.strip() for part in str(values_raw).split(",") if part.strip()]
+    values_raw = getattr(args, "agent_values", None)
+    if values_raw is None:
+        values_raw = _ask("Guiding values, comma separated (optional)", ", ".join(agent.get("values") or []),
+                          non_interactive)
+    boundaries_raw = getattr(args, "agent_boundaries", None)
+    if boundaries_raw is None:
+        boundaries_raw = _ask("Boundaries the agent never crosses, comma separated (optional)",
+                              ", ".join(agent.get("boundaries") or []), non_interactive)
     timezone = _ask("Time zone (optional)", getattr(args, "timezone", None) or agent.get("timezone") or "", non_interactive)
     quiet = _ask("Quiet hours HH:MM-HH:MM (optional)", getattr(args, "quiet_hours", None) or agent.get("quiet_hours") or "",
                  non_interactive)
     if quiet and not re.fullmatch(r"\d{2}:\d{2}-\d{2}:\d{2}", quiet):
         raise InitError("quiet hours must look like 22:00-07:00")
-    return {
-        "owner": {"name": owner_name, "handles": handles},
-        "agent": {"name": agent_name, "values": values, "timezone": timezone, "quiet_hours": quiet},
+    identity = {
+        "owner": {**owner, "name": owner_name, "handles": handles},
+        "agent": {**agent, "name": agent_name, "values": _comma_list(values_raw),
+                  "boundaries": _comma_list(boundaries_raw), "timezone": timezone, "quiet_hours": quiet},
     }
+    length = constitution_length(identity)
+    if length > CONSTITUTION_CHARS:
+        sizes = {name: len(render_constitution({"agent": {name: identity["agent"][name]}}))
+                 for name in ("values", "boundaries")}
+        longest = max(sizes, key=sizes.get)
+        raise InitError(f"the constitution renders to {length} characters and must fit in {CONSTITUTION_CHARS}; "
+                        f"shorten the {longest} ({sizes[longest]} characters rendered)")
+    return identity
 
 
 def _collect_autonomy(args, current: str, non_interactive: bool, *, fresh: bool) -> str:
@@ -1220,14 +1261,18 @@ def run_init(args) -> int:
         data["router"]["model"] = model
         embed_url = getattr(args, "embed_url", None) or data["router"].get("embed_url") or ""
         data["router"]["embed_url"] = embed_url
+        if getattr(args, "embed_url", None):
+            # Giving init an endpoint is asking for semantic recall: it also clears the ``false`` the
+            # releases before the switch was live recorded whenever init found no endpoint.
+            data["mind"]["faculties"]["semantic_recall"] = True
         if getattr(args, "embed_model", None):
             data["router"]["embed_model"] = str(args.embed_model)
         if getattr(args, "embed_dims", None) is not None:
             data["router"]["embed_dims"] = int(args.embed_dims)
-        data["mind"]["faculties"]["semantic_recall"] = bool(embed_url)
 
         # 2. protagine.yaml, identity.yaml and api.key.
         save_identity(identity, home)
+        _say(f"  identity.yaml written; the constitution the agent is given: {render_constitution(identity)}")
         if read_api_key(home, environ={}) is None:
             write_api_key(secrets.token_urlsafe(32), home)
             _say(f"  api.key written ({home / KEY_FILE}, mode 600)")
@@ -1243,8 +1288,12 @@ def run_init(args) -> int:
             _say(f"  router pointed at {base_url} ({model or 'model chosen by Hermes'})")
         elif not base_url:
             _say("  no model endpoint found in Hermes' config; pass --model-url to point the router at one")
-        _say(f"  semantic recall {'on' if embed_url else 'off'} "
-             f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
+        if embed_url and cfg.get("mind.faculties.semantic_recall") is False:
+            _say("  semantic recall off (mind.faculties.semantic_recall is false; set it to true, or pass "
+                 f"--embed-url, to use the embedding endpoint {embed_url})")
+        else:
+            _say(f"  semantic recall {'on' if embed_url else 'off'} "
+                 f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
 
         # 4. The adapter in Hermes' environment.
         _say(f"  Hermes {hermes_version} at {python}")
@@ -1275,6 +1324,15 @@ def run_init(args) -> int:
     return 0
 
 
+def semantic_recall_note(cfg: Config) -> str | None:
+    """Releases before the switch was live wrote ``semantic_recall: false`` whenever init found no
+    endpoint; with an endpoint recorded since, recall stays keyword-only until the owner says otherwise."""
+    if cfg.get("router.embed_url") and cfg.get("mind.faculties.semantic_recall") is False:
+        return ("semantic recall is off although router.embed_url is set: set mind.faculties.semantic_recall: "
+                "true in protagine.yaml (or re-run 'protagine init --embed-url ...') to use the embedder")
+    return None
+
+
 def run_upgrade(args) -> int:
     """``protagine upgrade``: backup, migrations, adapter, config reconcile, service restart."""
     try:
@@ -1300,11 +1358,14 @@ def run_upgrade(args) -> int:
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
-                              + retired_state_present(home) + retired_tables_present(home)
-                              + pending_ingress_adoption(home))
+                              + retired_state_present(home)
+                              + retired_tables_present(home) + pending_ingress_adoption(home))
+        lexical = semantic_recall_note(cfg)
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
+            if lexical:
+                _say("  " + lexical)
             return 0
         if not any(note.startswith("backup taken") for note in notes):
             backup = backup_instance(home)
@@ -1328,6 +1389,8 @@ def run_upgrade(args) -> int:
                 f"    {python} -m pip uninstall protagine\n    pipx install protagine"
             )
         notes.append(restart_service(cfg))
+        if lexical:
+            notes.append(lexical)
     except (InitError, ConfigError) as exc:
         _say(f"protagine upgrade failed: {exc}")
         return 1
@@ -1404,6 +1467,7 @@ def add_parsers(sub) -> None:
                         help="One of your messaging handles; repeat per account")
     init_p.add_argument("--agent-name", help="The agent's name")
     init_p.add_argument("--agent-values", help="Comma-separated guiding values")
+    init_p.add_argument("--agent-boundaries", help="Comma-separated boundaries the agent never crosses")
     init_p.add_argument("--timezone", help="Named time zone, for example Europe/Paris")
     init_p.add_argument("--quiet-hours", help="Local quiet window, HH:MM-HH:MM")
     init_p.add_argument("--autonomy", choices=AUTONOMY_LEVELS, help="Autonomy level (default: suggest)")

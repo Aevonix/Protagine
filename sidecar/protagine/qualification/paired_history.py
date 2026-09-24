@@ -8,10 +8,12 @@ retains them in the Protagine ledger through the reviewed history importer
 (``protagine.turns.hermes_history``), bound to the fixture owner. No turn is
 replayed and nothing is fetched; the histories are fixture bytes.
 """
+from contextlib import closing
 import json
 from pathlib import Path
 import re
 import sqlite3
+import time
 
 PROTOCOL = 'paired-history-1'
 # The platform imported sessions are recorded on: a direct message on the capture
@@ -23,6 +25,8 @@ MAX_SESSIONS = 128
 MAX_MESSAGES = 1024
 MAX_BYTES = 8 * 1024 * 1024
 NAMESPACE = 'paired-history'
+# How long an arm with an embedding endpoint waits for the source vector worker to embed the history.
+VECTOR_DRAIN_S = 300
 _LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
 
 
@@ -108,8 +112,27 @@ def seed_ledger(db_path, sessions, *, state_dir, contact_id, user_id, chat_id):
     return {'counts': counts, 'models_called': outcome['models_called']}
 
 
-def seed(home, sessions, *, session_db, contact_id, ledger):
-    """Seed every arm's ``state.db``; plugin arms (``ledger``) also retain the sources in the ledger."""
+def drain_vectors(ledger_path, *, timeout=VECTOR_DRAIN_S, poll=0.25):
+    """Wait, at most ``timeout`` seconds, until the source vector worker has embedded every queued turn;
+    returns what was queued, what was embedded and what was left."""
+    def waiting():
+        try:
+            with closing(sqlite3.connect(Path(ledger_path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+                return int(conn.execute("SELECT count(*) FROM source_vector_jobs "
+                                        "WHERE status IN ('pending', 'running')").fetchone()[0])
+        except sqlite3.Error:
+            return 0
+    started = time.monotonic()
+    jobs = left = waiting()
+    while left and time.monotonic() - started < timeout:
+        time.sleep(poll)
+        left = waiting()
+    return {'jobs': jobs, 'drained': jobs - left, 'left': left, 'seconds': round(time.monotonic() - started, 1)}
+
+
+def seed(home, sessions, *, session_db, contact_id, ledger, vectors=False):
+    """Seed every arm's ``state.db``; plugin arms (``ledger``) also retain the sources in the ledger, and
+    with an embedding endpoint (``vectors``) wait, bounded, until the history is embedded."""
     sessions = validate_history(sessions)
     home = Path(home)
     user_id, chat_id = contact_id, contact_id
@@ -120,4 +143,6 @@ def seed(home, sessions, *, session_db, contact_id, ledger):
     if ledger:
         record['ledger'] = seed_ledger(home / 'state.db', sessions, state_dir=home / 'memory-state',
                                        contact_id=contact_id, user_id=user_id, chat_id=chat_id)
+        if vectors:
+            record['vector_drain'] = drain_vectors(home / 'memory-state' / 'turn-idempotency.db')
     return record

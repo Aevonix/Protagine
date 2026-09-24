@@ -48,7 +48,6 @@ class OnePasswordBackend(SecretsBackend):
     # 1Password item sections by SecretType
     SECTION_MAP: dict[SecretType, str] = {
         SecretType.LLM_API_KEY: "LLM Keys",
-        SecretType.NEO4J_CREDENTIAL: "Infrastructure",
         SecretType.GATEWAY_TOKEN: "Messaging Gateways",
         SecretType.MESH_PAIRING_KEY: "Mesh / Federation",
         SecretType.EMAIL_CREDENTIAL: "Email",

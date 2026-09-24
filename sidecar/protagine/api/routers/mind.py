@@ -21,7 +21,13 @@ text in docs/HERMES-ADAPTER.md):
   POST /guard                     {tool, args, session|session_id, run, task_id, recipients?}
                                                                                 -> {allow, action, reason}
   POST /decide                    {code, answer: yes|no, contact_id?, session_id?, message?} -> {ok, ...}
-  GET  /log, /log/{id}, /why/{id}, /asks, /state (/status), /stats
+  GET  /log?limit&status&kind&since_hours&recipient, /log/{id}, /why/{id}, /asks, /state (/status), /stats
+                                  each of /log, /log/{id}, /why/{id}, /asks and /state takes ``viewer``: a
+                                  contact id other than the owner's sees only its own messages' bare rows
+                                  (no title, concern, evidence or reason), no asks and only the switches
+  GET  /narrative                 the self-narrative {enabled, text, sections, cites, updated_at} (empty
+                                   until the mind exposes narrative())
+  POST /consolidate               run the nightly consolidation now (501 until the mind exposes it)
   GET  /concerns, /goals          the workspace (open concerns, the broadcast set) and the open goals
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
@@ -30,6 +36,7 @@ text in docs/HERMES-ADAPTER.md):
 
 from __future__ import annotations
 
+from datetime import timedelta
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -72,6 +79,9 @@ def _entry(row: Any) -> Dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_intention"})
     return audit.entry(row)
+
+
+EMPTY_NARRATIVE: Dict[str, Any] = {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
 
 
 class BoundBody(BaseModel):
@@ -185,17 +195,44 @@ class InterestBody(BaseModel):
     by: str = Field(default="owner", max_length=64)
 
 
+# -- who is asking (integration map X7) ----------------------------------------------------
+
+# What a non-owner viewer may read of a row addressed to them: that the message exists and where it
+# stands. Its title, concern, evidence and reason can carry the owner's words about that person.
+GUEST_FIELDS = ("id", "created_at", "kind", "type", "recipient", "status", "outcome")
+
+
+def _guest(mind: Any, viewer: Optional[str]) -> bool:
+    """A named viewer other than the owner (no owner configured: every named viewer). The record is the
+    owner's; the adapter already refuses a guest session, and these routes fail closed the same way."""
+    return bool(viewer) and str(viewer) != str(getattr(mind, "owner_id", None) or "")
+
+
+def _guest_entry(value: Dict[str, Any]) -> Dict[str, Any]:
+    row = {name: value.get(name) for name in GUEST_FIELDS}
+    row["text"] = f"a {row['type'] or row['kind']} message to you, {row['outcome'] or row['status']}"
+    return row
+
+
 # -- state --------------------------------------------------------------------------------
 
+def _state(viewer: Optional[str]) -> Dict[str, Any]:
+    mind = _require()
+    value = mind.state()
+    if _guest(mind, viewer):
+        return {"enabled": value.get("enabled"), "autonomy": value.get("autonomy")}
+    return value
+
+
 @router.get("/state")
-async def state() -> Dict[str, Any]:
-    return _require().state()
+async def state(viewer: Optional[str] = None) -> Dict[str, Any]:
+    return _state(viewer)
 
 
 @router.get("/status")
-async def status() -> Dict[str, Any]:
+async def status(viewer: Optional[str] = None) -> Dict[str, Any]:
     """The plugin's route probe and its status line (same as ``/state``)."""
-    return _require().state()
+    return _state(viewer)
 
 
 @router.get("/stats")
@@ -326,33 +363,76 @@ async def decide(body: DecideBody) -> Dict[str, Any]:
                          message=body.message)
 
 
+# -- the self-narrative and consolidation (architecture 4.1, 4.2) ------------------------
+
+@router.get("/narrative")
+async def narrative() -> Dict[str, Any]:
+    """The self-narrative the plugin renders into the session prompt and ``protagine_self state`` shows:
+    ``{enabled, text, sections, cites, updated_at}``, empty until the mind exposes ``narrative()``."""
+    render = getattr(_require(), "narrative", None)
+    value = render() if callable(render) else None
+    return {**EMPTY_NARRATIVE, **value} if isinstance(value, dict) else dict(EMPTY_NARRATIVE)
+
+
+@router.post("/consolidate")
+async def consolidate() -> Dict[str, Any]:
+    """Run the nightly consolidation now (the CLI, the benchmark); 501 until the mind can."""
+    run = getattr(_require(), "consolidate", None)
+    if not callable(run):
+        raise HTTPException(status_code=501, detail={"code": "consolidation_not_available",
+                                                     "message": "this sidecar has no consolidation"})
+    return await run(force=True)
+
+
 # -- the audit log (7.8) -----------------------------------------------------------------
 
 @router.get("/log")
-async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str] = None,
+              since_hours: Optional[float] = None, recipient: Optional[str] = None,
+              viewer: Optional[str] = None) -> Dict[str, Any]:
+    """Newest first. ``since_hours`` and ``recipient`` answer "did I message p-07 yesterday?" exactly.
+    A non-owner ``viewer`` gets only the rows addressed to them, bare (``GUEST_FIELDS``)."""
     mind = _require()
-    entries = audit.log(mind.store, limit=max(1, min(int(limit), 500)),
+    guest = _guest(mind, viewer)
+    if guest:
+        if recipient and recipient != viewer:
+            return {"entries": [], "text": audit.render_log([])}
+        recipient = viewer
+    since = None
+    if since_hours is not None:
+        since = mind.clock() - timedelta(hours=max(0.0, float(since_hours)))
+    entries = audit.log(mind.store, limit=max(1, min(int(limit), 500)), since=since,
                         status=[s for s in (status or "").split(",") if s] or None,
-                        kind=[k for k in (kind or "").split(",") if k] or None)
+                        kind=[k for k in (kind or "").split(",") if k] or None, recipient=recipient or None)
+    if guest:
+        entries = [_guest_entry(item) for item in entries if item.get("recipient") == viewer]
+        return {"entries": entries, "text": "\n".join(item["text"] for item in entries) or "(nothing addressed to you)"}
     return {"entries": entries, "text": audit.render_log(entries)}
 
 
 @router.get("/why/{intention_id}")
-async def why(intention_id: str) -> Dict[str, Any]:
-    value = audit.why(_require().store, intention_id)
-    if value is None:
-        raise HTTPException(status_code=404, detail={"code": "unknown_intention"})
-    return value
+async def why(intention_id: str, viewer: Optional[str] = None) -> Dict[str, Any]:
+    mind = _require()
+    value = audit.why(mind.store, intention_id)
+    guest = _guest(mind, viewer)
+    if value is None or (guest and value.get("recipient") != viewer):
+        # A guest asking about someone else's row hears exactly what an unknown id gets.
+        raise HTTPException(status_code=404, detail={
+            "code": "unknown_intention", "message": f"no intention {intention_id} exists in the audit log"})
+    return _guest_entry(value) if guest else value
 
 
 @router.get("/log/{intention_id}")
-async def log_entry(intention_id: str) -> Dict[str, Any]:
-    return await why(intention_id)
+async def log_entry(intention_id: str, viewer: Optional[str] = None) -> Dict[str, Any]:
+    return await why(intention_id, viewer=viewer)
 
 
 @router.get("/asks")
-async def asks() -> Dict[str, Any]:
-    entries = _require().asks()
+async def asks(viewer: Optional[str] = None) -> Dict[str, Any]:
+    mind = _require()
+    if _guest(mind, viewer):   # every ask is the owner's question
+        return {"asks": [], "text": "(no open asks)"}
+    entries = mind.asks()
     lines = [f"[{item['ask_code']}] {item['title']} ({item['decision_reason']}; expires {item['expires_at']})"
              for item in entries]
     return {"asks": entries, "text": "\n".join(lines) if lines else "(no open asks)"}

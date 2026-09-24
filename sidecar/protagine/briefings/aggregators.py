@@ -15,7 +15,7 @@ import threading
 import zoneinfo
 from dataclasses import dataclass, field
 from datetime import date as _date, datetime, timedelta as _timedelta, timezone
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, List, Optional, Protocol, runtime_checkable
 
 from .models import CalendarEvent
 
@@ -265,129 +265,6 @@ def _run_async(coro: Any) -> Any:
 # ---------------------------------------------------------------------------
 # Real implementations
 # ---------------------------------------------------------------------------
-
-
-class RelationshipAggregator:
-    """Real implementation: wraps RelationshipScorer and queries Neo4j graph data.
-
-    Score-change history is read from ``ScoreEvent`` nodes written by
-    ``RelationshipScorer.record_score_change()``.  Neglected contacts are
-    found via a direct graph query so that the aggregator is usable without
-    running a full scorer refresh cycle.
-    """
-
-    # Scores live on a 0-100 scale; min_delta is expressed as a 0-1 fraction,
-    # so we multiply by 100 to get the point-delta threshold.
-    _SCORE_CHANGES_CYPHER = """
-    MATCH (p:Person)-[:SCORE_CHANGED]->(se:ScoreEvent)
-    WHERE se.createdAt >= datetime($since_iso)
-    AND abs(se.delta) >= $delta_threshold
-    RETURN p.name AS name, p.tier AS current_tier,
-           se.delta AS delta, se.reason AS reason, se.tier AS new_tier
-    ORDER BY abs(se.delta) DESC
-    """
-
-    _NEGLECTED_CYPHER = """
-    MATCH (p:Person)
-    WHERE p.tier IN ['inner_circle', 'trusted', 'regular']
-    AND (
-        p.lastInteraction IS NULL
-        OR p.lastInteraction < datetime() - duration({days: $days_threshold})
-    )
-    RETURN p.name AS name
-    ORDER BY p.lastInteraction ASC
-    LIMIT $limit
-    """
-
-    def __init__(self, scorer: Any, graph: Any) -> None:
-        self._scorer = scorer
-        self._graph = graph
-
-    # ------------------------------------------------------------------
-    # Protocol methods
-    # ------------------------------------------------------------------
-
-    def get_notable_changes(
-        self, since: datetime, min_delta: float = 0.15
-    ) -> List[RelationshipChange]:
-        try:
-            return _run_async(self._notable_changes_async(since, min_delta))
-        except Exception:
-            logger.exception("RelationshipAggregator.get_notable_changes failed")
-            return []
-
-    def get_neglected_contacts(
-        self, days_since_contact: int = 14, limit: int = 5
-    ) -> List[str]:
-        try:
-            return _run_async(self._neglected_contacts_async(days_since_contact, limit))
-        except Exception:
-            logger.exception("RelationshipAggregator.get_neglected_contacts failed")
-            return []
-
-    # ------------------------------------------------------------------
-    # Async helpers (isolated for testability)
-    # ------------------------------------------------------------------
-
-    async def _notable_changes_async(
-        self, since: datetime, min_delta: float
-    ) -> List[RelationshipChange]:
-        delta_threshold = min_delta * 100.0
-        rows = await self._query_score_changes(since.isoformat(), delta_threshold)
-        result: List[RelationshipChange] = []
-        for row in rows:
-            name: str = row.get("name") or "Unknown"
-            tier: str = row.get("new_tier") or row.get("current_tier") or "peripheral"
-            delta: float = float(row.get("delta") or 0.0)
-            reason: str = row.get("reason") or ""
-
-            if reason == "new_contact":
-                change_type = "new"
-            elif delta < 0:
-                change_type = "dormant"
-            else:
-                change_type = "tier_change"
-
-            description = (
-                f"Score increased by {delta:.1f} points"
-                if delta >= 0
-                else f"Score decreased by {abs(delta):.1f} points"
-            )
-            result.append(RelationshipChange(
-                contact_name=name,
-                change_type=change_type,
-                description=description,
-                trust_tier=tier,
-            ))
-        return result
-
-    async def _neglected_contacts_async(
-        self, days_since_contact: int, limit: int
-    ) -> List[str]:
-        rows = await self._query_neglected(days_since_contact, limit)
-        return [r["name"] for r in rows if r.get("name")]
-
-    async def _query_score_changes(
-        self, since_iso: str, delta_threshold: float
-    ) -> List[Dict[str, Any]]:
-        async with self._graph.driver.session(database=self._graph.database) as session:
-            result = await session.run(
-                self._SCORE_CHANGES_CYPHER,
-                since_iso=since_iso,
-                delta_threshold=delta_threshold,
-            )
-            return [dict(r) async for r in result]
-
-    async def _query_neglected(
-        self, days_threshold: int, limit: int
-    ) -> List[Dict[str, Any]]:
-        async with self._graph.driver.session(database=self._graph.database) as session:
-            result = await session.run(
-                self._NEGLECTED_CYPHER,
-                days_threshold=days_threshold,
-                limit=limit,
-            )
-            return [dict(r) async for r in result]
 
 
 class AnomalyDetectorAggregator:

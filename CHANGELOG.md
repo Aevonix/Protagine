@@ -1,5 +1,179 @@
 # Changelog
 
+## Unreleased - people and memory, integrated
+
+The people (M5) and memory and identity (M8) milestones merged onto one line
+(integration map steps 1 and 2). One Mind factory, `protagine.mind.factory`,
+builds the sidecar's Mind and the benchmark arm's from the same host stores,
+and one router list serves the mind and people routes in both, so a faculty is
+wired once (X4d). A contact's digest has one home, the contact's own record:
+the tick's template digest and the night's generated digest write the same
+column from the same claims (that contact's own current sources), the template
+never replaces a generated digest, and the template's day is persisted in
+`mind_state` (`people.digests.last`) so a restart does not write it twice (X1,
+X4h). The mind's record is the owner's: `protagine_self` shows it only in the
+owner's own session, and the `/v1/mind` log, why, asks and state routes take a
+`viewer`; any other viewer gets only the bare rows addressed to them, no asks
+and the switches (X7). The adapter sends six tools in 3,088 characters (X8).
+
+## Unreleased - memory and identity
+
+The agent now keeps what it learns across sessions and channels and gives a
+true account of itself (build plan M8). Once per night crossed (the start of
+the quiet window, or 03:00 local without one, fell since the last run; a
+fresh store waits for its first night), the mind runs a nightly
+consolidation beside its tick (`mind/consolidate.py`,
+[docs/CONSOLIDATION.md](docs/CONSOLIDATION.md)), cheapest and most valuable
+stage first: the self-narrative delta, contradictions, per-contact digests
+and episode summaries. It may spend `learn_share` x `llm_tokens_per_day`
+(50,000 tokens by default), every call is also held to the shared day
+budget, and each call's real usage is charged at once to the run's
+`note/consolidation` audit row, so `protagine mind stats` and the day budget
+see it. Every run is its own row, written done when it starts and given its
+summary when it ends, so the audit log never shows a night still running; a
+night cut short (a restart, `mind off`) runs again at the next due tick, and
+a night over an empty store makes no call at all. Two live claims about the
+same subject and predicate with different values and overlapping validity
+(the rule recall already applies) become one question concern that carries a
+typed message to the owner; the tick forms it through rank and authority like
+any other concern, so the autonomy level, the owner-message budget and the
+ask codes apply, and its title names both values. At most one new question
+goes out a night, the newest conflict first, so the owner's three daily
+messages stay free for duty work; a question is asked once, and when one side
+is corrected a question not yet answered is withdrawn and the concern
+resolves. Claims are deduplicated where they are read, never in the store:
+the night's inputs and the commitment extractor's prior claims see the newest
+witness of each value, the rule recall already applies, and no column is
+added. A digest of what each recently active person other than the owner has
+told the agent (at most six a night, 600 characters, citing only claims it
+was shown) is written into that contact's own record through the contact
+store's `set_digest` (the people milestone's `digest` / `digest_sources`
+columns; a store without them gets none, and no digest is kept anywhere
+else), and each session of three turns or more gets an episode summary in
+the ledger under its own contact, as the agent's row and never a claim. The
+mind's own rows (`session_id` `mind`, turn ids `mind:...`) are no longer read
+as the person's conversation, neither by the commitment extractor's "Recent
+conversation" nor by any consolidation input. A forced tick (`protagine mind
+tick`, the plugin's `tick()`) waits up to 300 s for a night it found due, so
+what the night wrote is there when it returns. `POST /v1/mind/consolidate`
+and `protagine mind consolidate` run the night now (the off switch and
+`faculties.consolidation` still win). The mind's own model calls, the night's
+and the tick's deliberation, carry `workload: background`, which the router
+keeps in its call record and never sends. The flags `semantic_recall`,
+`consolidation` and `self_narrative` are now read, each a binary switch;
+`semantic_recall` off keeps the embedder off with `router.embed_url` still
+set, and `init` no longer copies whether an endpoint existed into the flag,
+so an endpoint added later turns semantic recall on as the install guide
+says.
+
+The agent's identity has three layers (architecture 4.2). The constitution
+is `identity.yaml` `agent.{name, values, boundaries}` (`protagine init
+--agent-boundaries`), rendered as one paragraph of at most 1,500 characters;
+`init` refuses a longer one and names the list to shorten, and `protagine
+doctor` reports its length. Every appraisal prompt carries it as
+`agent_constitution`, an input the response schema has no field for, so a
+contact's preferences are never confused with the agent's own;
+`PROTAGINE_AGENT_VALUES` is no longer exported or read (it stays reserved, and
+`init` moves an old unit's values into the file). The plugin's one prompt
+section renders the constitution, the owner, the self-narrative and the two
+tool notes. The narrative (`GET /v1/mind/narrative`, `protagine mind
+narrative`) is at most 800 characters: three interests and two strengths or
+limits computed from the stores, three stances from the judgments store, and
+at most four model-written "recent" lines drawn only from the agent's own
+actions (a task, goal or message it decided to act on or ask about, never an
+internal note or a notice). Every line cites what it rests on, and a citation
+is one of five kinds that must exist when the narrative is rendered: a plain
+intention id, which `protagine_self why` explains, or the record references
+`interest:`, `judgment:`, `turn:` and `claim:`; the section tells the model
+so. The plugin fetches the narrative for every new session (Hermes already
+freezes the section per session) and remembers only a failed fetch, for
+60 s, so a session that starts right after a night sees what it wrote. The
+narrative and the rest of the mind's record are the owner's: the narrative is
+rendered only in a session that is the owner's alone (a direct chat from an
+owner handle, or an internal lane with no chat), and `protagine_self` answers
+`state`, `log` and `why` in full only there; a guest, a group the owner
+shares and a mind worker get the switch state (`enabled`, `autonomy`,
+`sidecar_reachable`) and a refusal for `log` and `why`, and the sidecar is not
+asked. `state` adds `working_on`; `log` takes `since_hours`, `kind` and
+`recipient`; `why` on an unknown id says "no intention `<id>` exists in the
+audit log", as the route now does. The mind cannot rewrite its constitution:
+in a mind run the plugin guard blocks every effectful tool that names
+`protagine.yaml`, `identity.yaml` or `api.key`, in any case and however a
+shell or code quotes, escapes or concatenates the name, before the workspace
+rule and beside Hermes' own protected patterns (which cover `write_file` and
+`patch` only, while `mind.worker_toolsets` may add a terminal); reads stay
+allowed, and a static test holds that nothing under `mind/`, `self_model/`,
+`beliefs/`, `memory/` or `commitments/` writes either file. The system text an
+owner session sends with every model request is measured and pinned: 3,185
+characters (1,360 GLM-5.3-Flash tokens) at its largest, a full constitution
+and a full narrative, about 1,745 (560 tokens) on a typical install with a
+history, against 726 (148) for the benchmark's disposable identity and fresh
+store, which is why the benchmark's overhead row cannot see it.
+
+For the memory and self families, `protagine models paired plan
+--embedding-config {base_url, model, dimensions, api_key_env?}` records one
+embedding endpoint in `comparison.embedding` and writes it into every case of
+every arm; the benchmark worker uses it unless the arm turns
+`semantic_recall` off, waits (at most 300 s) until a seeded history is
+embedded before the first turn and records the drain, and with no endpoint in
+the plan every arm keeps the embedder off as before. Mind arms record what
+the agent did after the episode's last turn, read from `/v1/mind/log` with
+the same action predicate the narrative uses (`body.audit_ids`), and each
+bound task's kanban id with its intention id (`body.audit_refs`); the
+self-report grader counts the two names of one task as one action, and a
+correct "nothing done" report no longer fails on the night's own note row.
+Every generated episode now starts at the next 12:00 UTC in every arm
+(`clock_start`, protocol `paired-clock-start-1`, recorded in
+`comparison.clock_start`; an image without it cannot plan a generated
+family), so a nightly rule fires by the scenario's clock advances, never by
+the hour a container started; and every `mind-memory-1` and `mind-self-1`
+template crosses one night (`advance_clock: 86400`, `tick: 1`) before its
+probe. Both are dated amendments in the evals plan, and the two dev splits
+are re-rendered with new content hashes. Walking every dev scenario under
+each arm with a fake model and the harness clock shows the contrasts are
+real: in `full` the night runs in every episode and in `full-consolidation`
+in none, and the probe's view changes in `preference-after-distractors` (a
+long session's summary is recalled), `contradiction-ask` (the question put to
+the owner is in the probe's recall) and `self-report-after-action` (the
+agent's own reminder is narrated); the other types give a night nothing to
+consolidate yet. The paired dev pilots that set n run at the integration
+checkpoint, with a model endpoint.
+
+What the consolidation replaces is deleted with every caller rewired: the
+Neo4j graph memory (`intelligence/graph/`, its consolidator and
+`PROTAGINE_GRAPH_ENABLED`), the world model (`world_model/`, its populator,
+extraction pipeline and LLM extractor), the graph-bound belief engine
+(`beliefs/engine`, `contradictions`, `resolve`, `models`, `store`, `decay`),
+the chain with its cryptographic identity (`chain/`) and the continuous
+learner. The routes `/v1/host/world/*`, `/world-model/*`, `/beliefs`,
+`/beliefs/run`, `/beliefs/conflicts`, `/identity/status|info|init`,
+`/chain/verify`, `GET /learning/weights` and `POST /learning/engagement` are
+gone, and so are the MCP server's `protagine_search_world` tool and
+`protagine://world/entities` resource, which called one of them. So are
+`protagine key`, `protagine node`, the chain step of `init`, `backup
+--no-graph`, the identity-only backup, `restore --force-identity` and the
+capabilities `consolidate`, `world_model`, `world_model_api`, `identity` and
+`learning` (`context` is now always advertised). `HostIdentity` loses
+`protagine_id`, `node_id`, `node_cert_fingerprint` and `trust_tier`; the
+instance is named by `<state>/instance-id`, which adopts an existing
+`protagine-id`, and backups record `instance_id` (an older archive's
+`protagine_id` is still read). Node certificates are unsigned, and the
+unused signer goes with its key-manager parameter. `/learning/correction`
+answers `{accepted, correction_id}`, `forget` no longer reports graph or world
+cleanup, and a summary-only `turns/sync` is skipped as `no_source_messages`.
+The `graph` and `extraction` extras, `neo4j`, the briefings' Cypher-only
+relationship aggregator and the `NEO4J` secret entries are gone, and so is
+`docker-compose.yml`, which was the optional graph deployment (both of its
+services demanded `NEO4J_PASSWORD`); `sidecar/Dockerfile` still builds the
+sidecar image. `protagine upgrade` moves the retired state files (the belief,
+chain and world-model stores, the chain's identity files, keys and
+manifests) into `<backup>/retired`, and restoring an archive taken before
+this release leaves them out (`retired_skipped` in the summary). Graph-only
+code no route builds any more waits for the M10 audit, named in the known
+gaps, and `benchmarks/source_recall` now drives the production recall path;
+its reference numbers await one measured run. The sidecar package goes from
+137,540 to 120,648 lines of Python; outside this changelog the change deletes 26,903 lines and adds
+6,190.
 ## Unreleased - people
 
 The mind now knows who people are and reaches out to them itself (build plan

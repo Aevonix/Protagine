@@ -546,19 +546,16 @@ async def test_recall_probe_is_subject_scoped(tmp_path, monkeypatch):
                  "fact": "guest unrelated private phrase"},
             ]}
 
-    class Graph:
-        def __init__(self):
-            self.person_ids = []
+    person_ids = []
 
-        async def recall(self, query, **kwargs):
-            self.person_ids.append(kwargs.get("person_id"))
-            return [{"content": query}]
+    async def recall(query, *, person_id=None, limit=5):
+        person_ids.append(person_id)
+        return [{"content": query}]
 
-    graph = Graph()
     benchmark = SelfhoodBenchmark(
         BenchmarkStore(str(tmp_path / "benchmark.db")),
-        graph=graph, facts=Facts(), owner_contact_id="owner", probes=10)
+        recall=recall, facts=Facts(), owner_contact_id="owner", probes=10)
     result = await benchmark._m_recall(0, float("inf"))
     assert result["value"] == 1.0
     assert result["denominator"] == 1
-    assert graph.person_ids == ["owner"]
+    assert person_ids == ["owner"]

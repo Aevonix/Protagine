@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
 
 
+def session_env() -> tuple[str, str, str, str]:
+    """The platform, sender, chat and chat type the gateway bound for the current turn, or blanks."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return "", "", "", ""
+    return tuple(str(get_session_env(name, "") or "").strip() for name in (  # type: ignore[return-value]
+        "HERMES_SESSION_PLATFORM", "HERMES_SESSION_USER_ID", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_TYPE"))
+
+
 def text_of(content: Any) -> str:
     """Plain text of a message content value (string or content blocks)."""
     if isinstance(content, str):
@@ -104,6 +114,46 @@ class SessionMap:
             return False  # unresolved senders never gain owner authority
         info.owner = bool(owner_id) and contact == owner_id
         return info.owner
+
+    def sender_is_owner(self, platform: str, sender_id: str) -> bool:
+        """One of the owner's handles, or a handle the sidecar resolves to the owner's contact. Nothing is
+        recorded and no contact is created; an unresolvable sender is not the owner."""
+        platform, sender = str(platform or "").strip().lower(), str(sender_id or "").strip()
+        if not sender:
+            return False
+        if sender.lower() in self._owner_handles(platform):
+            return True
+        owner_id = self.settings.owner_contact_id()
+        if not owner_id:
+            return False
+        try:
+            contact = self.client.resolve_contact(platform, sender)
+        except Exception as error:
+            logger.debug("sender not resolved (%s)", type(error).__name__)
+            return False
+        return bool(contact) and str(contact.get("contact_id")) == owner_id
+
+    def owner_only(self, session_info: Mapping[str, Any]) -> bool:
+        """Whether the session whose prompt Hermes is rendering is the owner's alone.
+
+        Hermes renders a session's prompt before its first ``pre_llm_call``, so the
+        sender comes from the gateway's session variables, as the memory provider
+        reads it. The owner's own direct chat counts, and so does an internal lane
+        with no chat at all (the CLI, the benchmark). A guest, an unresolved
+        sender, a group or channel the owner shares, and a chat with no sender
+        never do. This map is only read here: a render in mid-turn must not reset
+        the message the tools check an ask code against.
+        """
+        platform, sender, chat, chat_type = session_env()
+        platform = (platform or str(session_info.get("platform") or "")).strip().lower()
+        if chat_type.lower() not in {"", "dm"}:
+            return False
+        if not sender:
+            return not chat and platform in INTERNAL_PLATFORMS
+        known = self.get(str(session_info.get("session_id") or ""))
+        if known is not None and known.sender_id == sender and known.owner is not None:
+            return known.owner
+        return self.sender_is_owner(platform, sender)
 
     def contact_id(self, session_id: str) -> str | None:
         """The sidecar contact for a session's sender; the owner for internal turns."""

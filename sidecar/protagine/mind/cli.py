@@ -20,10 +20,10 @@ from protagine.config import load_config, read_api_key, update_config
 from .audit import render_log, render_stats
 from .authority import CLASSES, LEVELS
 from .outcomes import VERDICTS
-from .tick import OFF_MARKER
+from .tick import CONSOLIDATION_WAIT_S, OFF_MARKER
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
-            "concerns", "goals", "interest")
+            "concerns", "goals", "interest", "consolidate", "narrative")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -61,6 +61,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     interest = commands.add_parser("interest", help="Seed an interest for the curiosity drive")
     interest.add_argument("topic")
     interest.add_argument("--why", default="")
+    commands.add_parser("consolidate", help="Run the nightly consolidation now: the self-narrative delta, "
+                                            "contradictions, per-contact digests, episode summaries")
+    commands.add_parser("narrative", help="The self-narrative as the prompt section renders it")
 
 
 class Sidecar:
@@ -175,7 +178,7 @@ def run(args: argparse.Namespace) -> int:
                 value = {"enabled": True, "note": f"sidecar unreachable ({exc}); marker removed"}
             _emit(value, as_json=as_json, text="mind on" + (f" ({value['note']})" if value.get("note") else ""))
         elif command == "tick":
-            value = sidecar.call("POST", "/v1/mind/tick", timeout=120)
+            value = sidecar.call("POST", "/v1/mind/tick", timeout=CONSOLIDATION_WAIT_S + 120)
             formed = ", ".join(f"{item['type']}={item['decision']}" for item in value.get("formed", [])) or "nothing"
             _emit(value, as_json=as_json, text=f"tick {value.get('tick')}: formed {formed}"
                   + (f"; skipped: {value['skipped']}" if value.get("skipped") else ""))
@@ -193,6 +196,20 @@ def run(args: argparse.Namespace) -> int:
         elif command == "interest":
             value = sidecar.call("POST", "/v1/mind/interests", json_body={"topic": args.topic, "why": args.why, "by": "cli"})
             _emit(value, as_json=as_json, text=f"interest: {value.get('topic')} (weight {value.get('weight')})")
+        elif command == "consolidate":
+            value = sidecar.call("POST", "/v1/mind/consolidate", timeout=960)
+            counts = ", ".join(f"{k}={v}" for k, v in sorted((value.get("counts") or {}).items())) or "nothing to consolidate"
+            text = (f"consolidation {value.get('local_date')}: {value.get('calls', 0)} call(s), "
+                    f"{value.get('tokens', 0)} tokens; {counts}")
+            if value.get("skipped"):
+                text = f"consolidation {value.get('local_date')}: skipped ({value['skipped']})"
+            elif value.get("errors"):
+                text += "; errors: " + ", ".join(str(item) for item in value["errors"])
+            _emit(value, as_json=as_json, text=text)
+        elif command == "narrative":
+            value = sidecar.call("GET", "/v1/mind/narrative")
+            text = value.get("text") or ("(self-narrative off)" if not value.get("enabled") else "(nothing recorded yet)")
+            _emit(value, as_json=as_json, text=text)
         else:
             print(f"unknown mind command {command}", file=sys.stderr)
             return 2

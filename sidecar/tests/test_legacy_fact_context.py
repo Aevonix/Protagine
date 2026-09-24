@@ -9,13 +9,12 @@ from protagine.tom.facts import SharedFactsStore
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.source_annotations import append as annotate_source
 from test_contact_fact_recall import contact_context, context
-from test_recall_unified_context import Graph, belief
 from test_turn_source_evidence import source_app
 from onekey import KEY
 
 
 @pytest.mark.asyncio
-async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_preserves_inspection(
+async def test_owner_context_excludes_unlinked_manual_facts_but_preserves_inspection(
         contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
@@ -27,14 +26,6 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
     keys['principals'][0]['scopes'].append('api:access')
     runtime.keyring.write_text(json.dumps(keys))
     old = runtime.add('Hydrofoil legacy queue status repeats forever.', source_linked=False)
-    # The graph contains both historical mirror formats, including one whose
-    # original SQLite fact is subsequently deleted. No graph deletion is done.
-    graph = Graph([
-        {**belief(old['fact']), 'id': 'old-mirror', 'source_uri': 'tom:shared_fact'},
-        {**belief('Hydrofoil marker-only old mirror.'), 'id': 'old-marker', 'metadata': "{'shared_fact': True}"},
-        belief('A separate hydrofoil memory remains inspectable.'),
-    ])
-    monkeypatch.setattr(host, '_graph', graph)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         created = await client.post('/v1/host/mind/facts', headers={'Authorization': 'Bearer ' + KEY}, json={
             'contact_id': 'contact-a', 'fact': 'Hydrofoil hand-entered note.',
@@ -45,13 +36,10 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
             read = await client.get('/v1/host/mind/facts/'+row['id'], headers={'Authorization': 'Bearer ' + KEY})
             assert read.status_code == 200 and read.json()['fact'] == row['fact']
         text = await context(client, 'hydrofoil')
-        assert 'separate hydrofoil memory' not in text
-        assert all(value not in text for value in (old['fact'], manual['fact'], 'marker-only'))
-        assert graph.calls == []
+        assert all(value not in text for value in (old['fact'], manual['fact']))
         runtime.facts.delete_fact(old['id'])
         assert old['fact'] not in await context(client, 'hydrofoil')
     assert runtime.facts.get_fact(manual['id'])['metadata']['curated'] is True
-    assert len(graph.rows) == 3  # Selection does not delete or migrate history.
 
 
 @pytest.mark.asyncio

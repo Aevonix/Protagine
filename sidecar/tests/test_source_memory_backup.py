@@ -31,7 +31,7 @@ def test_real_image_source_caption_scope_and_forgetting_survive_restore(evidence
     # This unrelated orphan is not owned by the captured ledger.
     (media.store._originals_dir / ('0' * 64 + '.png')).write_bytes(b'unowned')
     archive = backup.create_full_backup(state, tmp_path / 'archives',
-                                       include_graph=False, include_vectors=False)
+                                       include_vectors=False)
     destination = tmp_path / 'restored'
     result = backup.restore_full_backup(archive, destination)
     assert result['source_images'] == 1
@@ -56,14 +56,14 @@ def test_backup_never_publishes_missing_or_corrupt_original(evidence, tmp_path, 
     else:
         original.write_bytes(b'not-the-original')
     with pytest.raises((RuntimeError, ValueError), match='source image'):
-        backup.create_full_backup(state, tmp_path / 'archives', include_graph=False, include_vectors=False)
+        backup.create_full_backup(state, tmp_path / 'archives', include_vectors=False)
     assert not list((tmp_path / 'archives').iterdir())
 
 
 @pytest.mark.parametrize('archive_version', [1, backup.BACKUP_VERSION])
 def test_restore_preflights_originals_before_overwriting_destination(evidence, tmp_path, archive_version):
     state, _, _, asset = evidence
-    archive = backup.create_full_backup(state, tmp_path / 'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path / 'archives', include_vectors=False)
     unpacked = tmp_path / 'unpacked'; unpacked.mkdir()
     backup._extract_archive(archive, unpacked)
     root = backup._find_backup_root(unpacked)
@@ -114,7 +114,7 @@ def test_vacuum_failure_uses_consistent_backup_including_committed_wal(tmp_path,
 
 def test_restore_replaces_crashed_destination_wal_with_backed_up_state(evidence, tmp_path):
     state, _, _, asset = evidence
-    archive = backup.create_full_backup(state, tmp_path / 'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path / 'archives', include_vectors=False)
     destination = tmp_path / 'restored'; destination.mkdir()
     db = destination / 'turn-idempotency.db'
     subprocess.run([sys.executable, '-c', '''
@@ -137,8 +137,8 @@ os._exit(0)
 
 
 def _memory_archive(state, output):
-    (state / 'protagine-id').write_text('recovery-fixture-protagine')
-    return backup.create_full_backup(state, output, include_graph=False, include_vectors=False)
+    (state / 'instance-id').write_text('recovery-fixture-instance')
+    return backup.create_full_backup(state, output, include_vectors=False)
 
 
 @pytest.mark.parametrize('lost_original', ['missing', 'corrupt'])
@@ -196,13 +196,13 @@ def test_memory_salvage_recovers_owned_bytes_and_current_corrections_scope_only(
     assert recovered_ledger.erase_sources(contact_id='fixture-contact', turn_ids=['image-source'])['media_cleanup'] == 'complete'
 
 
-@pytest.mark.parametrize('missing', ['protagine-id', 'turn-idempotency.db'])
+@pytest.mark.parametrize('missing', ['instance-id', 'turn-idempotency.db'])
 def test_memory_salvage_requires_surviving_identity_and_history(evidence, tmp_path, missing):
     state, _, _, _ = evidence
     archive = _memory_archive(state, tmp_path / 'archives')
     (state / missing).unlink()
     destination = tmp_path / 'absent'
-    with pytest.raises(ValueError, match='surviving protagine identity and source ledger'):
+    with pytest.raises(ValueError, match='surviving instance id and source ledger'):
         backup.restore_source_memory(archive, destination, current_state=state)
     assert not destination.exists()
 
@@ -226,7 +226,7 @@ def test_memory_salvage_rejects_different_history_at_the_same_erasure_head(evide
     archive = _memory_archive(state, tmp_path / 'archives')
     other = tmp_path / 'different-current'
     alternate = TurnIdempotencyLedger(other / 'turn-idempotency.db')
-    (other / 'protagine-id').write_text('recovery-fixture-protagine')
+    (other / 'instance-id').write_text('recovery-fixture-instance')
     alternate.record_source('different-source', contact_id='fixture-contact', session_id='other',
         messages=[{'role': 'user', 'content': 'Different history.'}], derive_claims=False)
     alternate.erase_sources(contact_id='fixture-contact', turn_ids=['different-source'])
@@ -237,9 +237,9 @@ def test_memory_salvage_rejects_different_history_at_the_same_erasure_head(evide
 
 def test_memory_salvage_uses_existing_encrypted_archive_support(evidence, tmp_path):
     state, _, _, asset = evidence
-    (state / 'protagine-id').write_text('recovery-fixture-protagine')
+    (state / 'instance-id').write_text('recovery-fixture-instance')
     archive = backup.create_full_backup(state, tmp_path / 'archives',
-        passphrase=b'fixture-passphrase', include_graph=False, include_vectors=False)
+        passphrase=b'fixture-passphrase', include_vectors=False)
     destination = tmp_path / 'memory'
     with pytest.raises(ValueError, match='passphrase required'):
         backup.restore_source_memory(archive, destination, current_state=state)
@@ -254,11 +254,11 @@ def test_memory_salvage_rejects_identity_mismatch_and_existing_destination(evide
     state, _, _, _ = evidence
     archive = _memory_archive(state, tmp_path / 'archives')
     destination = tmp_path / 'absent'
-    (state / 'protagine-id').write_text('unrelated-protagine')
-    with pytest.raises(ValueError, match='different protagine identities'):
+    (state / 'instance-id').write_text('unrelated-instance')
+    with pytest.raises(ValueError, match='different instance ids'):
         backup.restore_source_memory(archive, destination, current_state=state)
     assert not destination.exists()
-    (state / 'protagine-id').write_text('recovery-fixture-protagine')
+    (state / 'instance-id').write_text('recovery-fixture-instance')
     with pytest.raises(ValueError, match='fresh destination'):
         backup.restore_source_memory(archive, state, current_state=state)
 
@@ -286,7 +286,7 @@ def test_restore_cli_reports_scope_and_requires_explicit_memory_destination(evid
     archive = _memory_archive(state, tmp_path / 'archives')
     monkeypatch.setattr(cli, '_load_dotenv', lambda: None)
     args = SimpleNamespace(full=False, memory_only=True, input=str(archive), passphrase=None,
-                           current_state=str(state), output=None, force_identity=False)
+                           current_state=str(state), output=None)
     with pytest.raises(SystemExit) as stopped:
         cli._cmd_restore(args)
     assert stopped.value.code == 2

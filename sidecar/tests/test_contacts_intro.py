@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 from protagine.api.routers import host as host_mod
 from protagine.contacts.config import ContactsConfig
 from protagine.contacts.store import SQLiteContactStore
-from protagine.world_model.constants import RELATIONSHIP_TYPES
 
 GUEST = "+15550000042"
 
@@ -37,11 +36,6 @@ async def _client(store):
             yield c
     finally:
         host_mod._contacts_store = orig
-
-
-def test_introduced_by_relationship_type_exists():
-    # Groundwork for Slice 2's world-model edge.
-    assert "WM_INTRODUCED_BY" in RELATIONSHIP_TYPES
 
 
 @pytest.mark.asyncio

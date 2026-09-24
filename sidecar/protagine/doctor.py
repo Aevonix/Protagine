@@ -117,7 +117,9 @@ def check_api_key() -> CheckResult:
 
 
 def check_identity() -> CheckResult:
-    from protagine.config import identity_path, load_identity
+    """``identity.yaml`` names the owner and the agent; the constitution (name, values, boundaries) fits
+    its 1,500-character budget, and the report says whether boundaries are declared."""
+    from protagine.config import CONSTITUTION_CHARS, constitution_length, constitution_list, identity_path, load_identity
     path = identity_path()
     if not path.is_file():
         return CheckResult("identity", WARN, detail=f"{path} is missing", remedy="run 'protagine init'")
@@ -125,7 +127,15 @@ def check_identity() -> CheckResult:
     if not identity.get("owner", {}).get("name") or not identity.get("agent", {}).get("name"):
         return CheckResult("identity", WARN, detail=f"{path} lacks the owner or agent name",
                            remedy="run 'protagine init'")
-    return CheckResult("identity", PASS, detail=f"{path} names the owner and the agent")
+    length = constitution_length(identity)
+    boundaries = constitution_list(identity.get("agent", {}).get("boundaries"))
+    summary = (f"constitution {length}/{CONSTITUTION_CHARS} characters, "
+               f"{len(boundaries)} boundar{'y' if len(boundaries) == 1 else 'ies'}")
+    if length > CONSTITUTION_CHARS:
+        return CheckResult("identity", WARN, detail=f"{path}: {summary}; the prompt clips it",
+                           remedy="shorten agent.values or agent.boundaries (protagine init --agent-values/--agent-boundaries)")
+    return CheckResult("identity", PASS, detail=f"{path} names the owner and the agent; {summary}"
+                       + ("" if boundaries else " (none declared: protagine init --agent-boundaries)"))
 
 
 def check_llm_config() -> CheckResult:
@@ -372,6 +382,13 @@ def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckR
     config = load_config()
     if not config.get("router.embed_url"):
         return CheckResult("semantic-recall", SKIP, detail="off: no router.embed_url in protagine.yaml")
+    if config.get("mind.faculties.semantic_recall") is False:
+        # Releases before the switch was live wrote false whenever init found no endpoint.
+        return CheckResult("semantic-recall", WARN,
+                           detail="router.embed_url is set but mind.faculties.semantic_recall is false: recall is "
+                                  "keyword-only",
+                           remedy="set mind.faculties.semantic_recall: true in protagine.yaml (or re-run 'protagine "
+                                  "init --embed-url ...'), then 'protagine service restart'")
     base_url = base_url.rstrip("/")
     try:
         status, body = _http_get(f"{base_url}/v1/host/embed/health", api_key, timeout)

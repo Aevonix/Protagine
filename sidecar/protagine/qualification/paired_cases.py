@@ -128,6 +128,9 @@ GENERATED_ENVIRONMENT_NOTE = 'messaging'
 # path (paired_worker.OUTBOUND_SCHEMA, families/mind-people-1.md 7.1); in every other family
 # no arm has a send tool, as their plans say.
 GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
+# Every episode of a generated family starts its body clock at this UTC time of day, in
+# every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
+GENERATED_CLOCK_START = '12:00'
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
 # A generated scenario may also declare a process-restart contract (``workflow``, the
@@ -259,6 +262,7 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
             if dataset_version in GENERATED_OUTBOUND:
                 inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
+            inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
                 # the probe and the workflow grader checks the lifecycle and the checkpoints.

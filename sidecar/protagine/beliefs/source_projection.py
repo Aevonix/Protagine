@@ -140,6 +140,26 @@ def subject_basis(conn, claim, *, contact_id):
     return result
 
 
+def one_witness_per_value(rows):
+    """Claim dedupe at read time: of the scalar claims repeating one ``(subject_key, predicate, value)``
+    over one period (the same validity and event time), only the newest witness, the rule
+    ``_rows(..., distinct_values=True)`` applies per key to the claims valid at one time. The same value
+    over two periods is two claims (a correction may name either). A quoted preference is a source
+    statement, never folded. The stored claims are never rewritten."""
+    kept, seen = [], set()
+    rows = {row['id']: row for row in rows}.values()
+    for row in sorted(rows, key=lambda row: (row.get('recorded_at') or '', row['id']), reverse=True):
+        if row.get('representation') != 'preference':
+            event = row.get('event_at') or (row.get('event_time') or {}).get('start')
+            value = (row['subject_key'], row['predicate'], norm_value(row.get('value')),
+                     row.get('valid_from'), row.get('valid_to'), event)
+            if value in seen:
+                continue
+            seen.add(value)
+        kept.append(row)
+    return kept
+
+
 class SourceClaimProjection:
     def __init__(self, ledger):
         self.ledger = ledger
@@ -399,8 +419,7 @@ class SourceClaimProjection:
             for key in keys:
                 rows.extend(self._rows(conn, source['contact_id'], source['session_id'],
                     key=key, limit=limit))
-        rows = list({row['id']: row for row in rows
-                     if not row['superseded_by'] and not row['retracted_by']}.values())
+        rows = one_witness_per_value(row for row in rows if not row['superseded_by'] and not row['retracted_by'])
         rows.sort(key=relevance, reverse=True)
         return rows[:limit]
 
@@ -1063,8 +1082,12 @@ class SourceClaimProjection:
                 bundles + pair_conversation_candidates(quotations, input_pairs, sources))
 
 
-async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None):
-    """One consumer, durable jobs and leases; process loss resumes from SQLite."""
+async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None,
+                                  vectors=True):
+    """One consumer, durable jobs and leases; process loss resumes from SQLite.
+
+    ``vectors=False`` leaves the source-vector jobs to a task on the loop that owns the vector store (the
+    paired harness runs this worker on its own thread)."""
     projection = SourceClaimProjection(ledger)
     from protagine.identity import get_owner_contact_id
     from protagine.self_model.judgments import SelfJudgments
@@ -1083,8 +1106,9 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors
     from protagine.vector import get_store, get_pipeline
-    vectors = SourceVectors(ledger, get_store(), get_pipeline())
-    vectors.backfill()
+    source_vectors = SourceVectors(ledger, get_store(), get_pipeline()) if vectors else None
+    if source_vectors is not None:
+        source_vectors.backfill()
     try:
         media.recover_unowned_files()
     except OSError:
@@ -1117,7 +1141,8 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
                         reflection_tasks[name] = asyncio.create_task(
                             projection_worker.process_one(router_provider()))
             try:
-                worked = await vectors.process_one() or worked
+                if source_vectors is not None:
+                    worked = await source_vectors.process_one() or worked
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

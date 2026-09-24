@@ -63,7 +63,7 @@ def test_audio_original_backup_and_shared_owner_erasure(tmp_path):
     state = tmp_path/'state'; ledger = TurnIdempotencyLedger(state/'turn-idempotency.db')
     for person in ('a', 'b'):
         ledger.record_source(person, contact_id=person, session_id='call', messages=[message()], derive_claims=False)
-    archive = backup.create_full_backup(state, tmp_path/'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path/'archives', include_vectors=False)
     destination = tmp_path/'restore'
     assert backup.restore_full_backup(archive, destination)['source_images'] == 1  # Legacy counter name.
     media = SourceMedia(TurnIdempotencyLedger(destination/'turn-idempotency.db'))
@@ -81,7 +81,7 @@ def test_audio_memory_salvage_recovers_only_current_owned_original(tmp_path):
     state = tmp_path/'state'; ledger = TurnIdempotencyLedger(state/'turn-idempotency.db')
     ledger.record_source('audio', contact_id='person', session_id='call', messages=[message()], derive_claims=False)
     (state/'protagine-id').write_text('fixture-audio-protagine')
-    archive = backup.create_full_backup(state, tmp_path/'archives', include_graph=False, include_vectors=False)
+    archive = backup.create_full_backup(state, tmp_path/'archives', include_vectors=False)
     asset = hashlib.sha256(wav_bytes()).hexdigest()
     SourceMedia(ledger).store._original_path(asset, 'audio/wav').unlink()
     destination = tmp_path/'salvage'

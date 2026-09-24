@@ -74,6 +74,13 @@ alike.
    ids are contacts listed in `contacts.json`, no terminal, clock, timer or
    scheduler tool, later things are handled when a later message arrives). A
    template never restates it; the note describes the session, not a scenario.
+7. **Every episode starts at the same time of day.** Generated families run
+   with `clock_start: '12:00'` (protocol `paired-clock-start-1`): the worker
+   moves the body clock forward to the next 12:00 UTC before the first turn,
+   in every arm, and a restarted phase continues that clock. Day-boundary rules
+   (the mind's nightly consolidation, at 03:00 local without quiet hours) then
+   fire by the scenario's own clock advances, never by the hour a container
+   happened to start. Frozen datasets keep the container's clock.
 
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
 selected by its stem (`--family initiative`, `--family drives`, `--family
@@ -168,13 +175,18 @@ renders its questions this way into an `anchor` split.
   stale value is forbidden, a scoped correction, a standing preference applied
   after distractors, the agent's own earlier result) and two `abstain`
   templates (never said, a contradiction answered with a question), each
-  graded on an `answer.json` the probe asks for. Its arms are `base_hermes`,
-  `full`, `full-semantic_recall` and `full-consolidation`.
+  graded on an `answer.json` the probe asks for. Every template crosses one
+  night (`advance_clock: 86400`, then `tick: 1`) right before the probe, and
+  any restart comes after it, so the nightly consolidation has run when the
+  probe starts (amended 2026-09-24). Its arms are `base_hermes`, `full`,
+  `full-semantic_recall` and `full-consolidation`.
 - `identity.py` is the `mind-self-1` dev family (evals section 6.7, the same
   plan): a stance asked for after a restart, a false and a true premise about
   the agent's own actions, and two self-report templates graded by the
-  `self_report` oracle against the action ids the harness observed. Its arms
-  are `full-self_narrative`, `full` and `base_hermes`.
+  `self_report` oracle against the action ids the harness observed. Every
+  template crosses one night before the probe, as in `memory.py`, so the
+  self-narrative has been written. Its arms are `full-self_narrative`, `full`
+  and `base_hermes`.
 - `improve.py` is the `mind-improve-1` dev family (evals plan 6.8, build plan
   M9; plan: `docs/proto-agi/families/mind-improve-1.md`): eight campaign
   designs, one scenario per campaign, rendered with `--per-template 1` for the
@@ -296,9 +308,9 @@ probes).
 | affect | 3 | 11 | `0f5a9c90fff6ca3965194272913b1f56c805dd3eee451adcf1b440acb26baf5e` | `2941da04abf76e885a7a75f5ec4590076898b84007ead932ca3024a14820601c` |
 | opinions | 3 | 7 | `8dca5fd169f109cd98d833f0207d01a0e0230671211c8190ca47cf0dbd8cbdc1` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
 | opinions | 3 | 11 | `adfd8420b3531fe7e919af7bb4c4804e201230768b98749c71d455a2c00f8794` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |
-| memory | 3 | 7 | `855a8d4e6ab0075cf78e8e3393e313eca3c2b8c3f4e57877cf3d8eccefc6c8b3` | `18b2ed5741dd0bbaa441d48d85083c099c1133bd74fd8a907b26a18264f267d7` |
-| memory | 3 | 11 | `7873b8a212af57364f74e162f75f8fb9550f1d59123b8e0a84ffd0f80aed3a9b` | `15595ff53f321be18125bcc91db852a42871c19fe83e197669d2de7ab383937b` |
-| identity | 3 | 7 | `7adcbd5b230f47f2c61b304bb14b9ed6f3cbf171527a704a9cc3da989d463b2a` | `b6e780c0b4cb69e2b3173ffb5e315ab9126f16f3569398a0bd595c3d3908080c` |
-| identity | 3 | 11 | `65a4248f58dc3247394715b09718b4627ba328c3a28fbf37c8d8e0dc7de06e99` | `80dde9c5b4936d863967809b5932d400b0bfc948d9d40f4bfabd0ad39297e1f3` |
+| memory | 3 | 7 | `30fa34aa6ea0340bd755ae1689954acb59bfb90877f93fb426b4e504f78ce06d` | `d352b2585a7eb15bf879122d201db411cd27aaa27abfc1542cc1ccf955d623a7` |
+| memory | 3 | 11 | `fe8e8b8d054351e6064ccd4ab61e61677d8e7838165403b1263f16367a7d655d` | `65d215608a0fb3980f25990d281541676d99f3646ff4467fbd8ba82928d4608b` |
+| identity | 3 | 7 | `032fd22fca7d7ab17528aa7023a34795c5ae09882a73f58149faed29194d86ee` | `92c39bc2dd5ba7d60a51c59bce0bb3b41fcdc4540f2f62de517fa4e492142da0` |
+| identity | 3 | 11 | `203a63ebe89697072109f02cc6c50ee5e55e77c65dbb2713088a021eebc132e5` | `586df060e0a507a5e07f882ecc59608679b53992025aabc255178e6a0134e0b5` |
 | improve | 1 | 7 | `378c76faeb7d15c418c286d5633aa74e23a2663a5e6eb70e8c0fe000d5f1911a` | `9807464b74ba319a42ac0c567aa0a0f8258c035bad90c9ca197859e3b14e5904` |
 | improve | 1 | 11 | `7c92290ef2b11a4aa8150d33ef2156e53279a93f10562aa987f3915cd931ada9` | `9b0650fdd7eac8dc1183e9f2af7f354b8e9bd2805a6daae4e3ee9b3c0586dcf4` |
