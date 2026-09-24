@@ -243,7 +243,7 @@ class ProtagineClient:
         self._failures = 0
         self._open_until = 0.0
         self._mind_routes: tuple[float, bool] | None = None
-        self._narrative: tuple[float, dict[str, Any] | None] | None = None
+        self._narrative_failed_at: float | None = None
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -311,12 +311,13 @@ class ProtagineClient:
     def narrative(self, *, timeout: float = 2.0, ttl: float = 60.0) -> dict[str, Any] | None:
         """``GET /v1/mind/narrative`` (``{enabled, text, sections, cites, updated_at}``) when the mind routes
         exist; None otherwise. Never raises: the prompt section falls back to the constitution alone.
-        The answer, hit or miss, is kept for ``ttl`` seconds so a slow or absent sidecar costs one
-        bounded wait per window, not one per render."""
+        Only a failure is remembered, for ``ttl`` seconds, so a slow or absent sidecar costs one bounded
+        wait per window; an answer is never kept (Hermes already freezes the section per session, and a
+        session right after a night must see what the night wrote)."""
         with self._lock:
-            cached = self._narrative
-        if cached is not None and time.monotonic() - cached[0] < ttl:
-            return cached[1]
+            failed_at = self._narrative_failed_at
+        if failed_at is not None and time.monotonic() - failed_at < ttl:
+            return None
         value: dict[str, Any] | None = None
         try:
             if self.has_mind_routes() is True:
@@ -326,7 +327,7 @@ class ProtagineClient:
         except (SidecarUnavailable, ValueError):
             value = None
         with self._lock:
-            self._narrative = (time.monotonic(), value)
+            self._narrative_failed_at = None if value is not None else time.monotonic()
         return value
 
     def resolve_contact(self, platform: str, handle: str, *, create: bool = False,

@@ -304,13 +304,14 @@ async def test_an_own_outcome_is_narrated_with_its_id_and_recalled_in_a_new_sess
     assert narrative["enabled"] is True and row.id in narrative["cites"]
     assert narrative["sections"]["recent"].endswith(f"[{row.id}]")
     assert set(narrative["sections"]) == {"interests", "strengths", "recent", "stances"}
-    assert narrative["updated_at"] and len(narrative["text"]) <= 2000
+    assert narrative["updated_at"] and len(narrative["text"]) <= 800
     # The autobiography row is what a later session recalls, lexically, in any session.
     hits = fx.ledger.search_sources("venue opens nine weekdays", contact_id=OWNER, session_id="brand-new-session")
     assert any(hit["session_id"] == "mind" and "opens at nine" in hit["content"] for hit in hits)
-    # The prompt's evidence carried the audit row and the finding as citable ids.
+    # The prompt's evidence carried the audit row and its finding, both under the intention's own id: an id
+    # protagine_self why explains.
     prompt = [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][0][-1]["content"]
-    assert row.id in prompt and f"turn:mind:{row.id}:finding" in prompt
+    assert f"{row.id} | task/research" in prompt and f"{row.id} | finding: " in prompt and "turn:mind:" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -542,25 +543,78 @@ async def test_narrative_still_renders_computed_sections_with_consolidation_off(
     assert narrative["enabled"] is True
     assert "research: 2 done, 0 failed, 0 verified of 2" in narrative["sections"]["strengths"]
     assert "local history" in narrative["sections"]["interests"] and narrative["sections"]["recent"] == ""
-    # An interest cites the work it led to (research intentions on that topic); none yet: no citation.
+    # An interest cites its own record (``interest:<slug>``), which _ref_exists resolves in mind_state.
     lines = dict(line.split(" (weight", 1) for line in narrative["sections"]["interests"].splitlines())
-    assert lines["local history"].endswith(")") and "[" not in lines["local history"]
-    worked = {fx.store.get_by_dedup_key(key).id for key in ("research:venue", "research:parking")}
-    assert set(CITE.search(lines["venue hours"]).group(1).split(", ")) == worked
-    assert worked <= set(narrative["cites"])
+    assert lines["local history"].endswith("[interest:local-history]")
+    assert lines["venue hours"].endswith("[interest:venue-hours]")
+    assert {"interest:local-history", "interest:venue-hours"} <= set(narrative["cites"])
+    assert all(fx.mind.consolidation._ref_exists(ref) for ref in narrative["cites"])
     fx.store.close()
 
 
-async def test_stances_come_from_the_stances_reader_and_cite_their_source_turn(fx):
-    fx.turn("t-stance", OWNER, "s-1", "Checkpoints saved the day again.")
+async def test_stances_come_from_the_stances_reader_and_cite_their_revision(fx):
     fx.mind.consolidation.stances = lambda: [{"id": 7, "topic": "checkpoints", "stance": "I favour explicit checkpoints.",
                                               "source_turn_id": "t-stance"},
-                                             {"id": 8, "topic": "ghosts", "stance": "unsupported", "source_turn_id": "no-such-turn"}]
+                                             {"id": 8, "topic": "", "stance": "no topic"}]
     narrative = fx.mind.narrative()
-    lines = narrative["sections"]["stances"].splitlines()
-    assert lines[0] == "checkpoints: I favour explicit checkpoints. [turn:t-stance]"
-    assert lines[1] == "ghosts: unsupported"                                # no citation it cannot back
-    assert "turn:t-stance" in narrative["cites"]
+    assert narrative["sections"]["stances"] == "checkpoints: I favour explicit checkpoints. [judgment:7]"
+    assert "judgment:7" in narrative["cites"] and fx.mind.consolidation._ref_exists("judgment:7")
+    assert not fx.mind.consolidation._ref_exists("judgment:9")             # not a current revision of the store
+
+
+async def test_only_the_agents_own_actions_are_evidence_for_recent(fx):
+    """``audit.is_action``: a task, goal or message it decided to act on or ask about. The nightly note, a
+    deliberation that formed nothing and the owner's switches are not actions, so a line cannot cite them."""
+    row = settled_task(fx)
+    fx.mind.set_level("suggest")
+    note, _ = fx.store.create_intention(kind="note", type="deliberation", title="thought about: the weather",
+                                        drive="curiosity", cls="internal", decision="act", decision_reason="r",
+                                        status="done", dedup_key=None, hermes_kind="none", created_at=fx.now)
+    fx.router.answers[TASK_NARRATIVE] = lambda messages, context: {"lines": [
+        {"text": "I changed my own autonomy", "cites": [level.id]},
+        {"text": "I thought about the weather", "cites": [note.id]},
+        {"text": "I researched the venue hours", "cites": [row.id]}]}
+    level, = [r for r in fx.store.intentions(kind=["note"], limit=10) if r.type == "level_change"]
+    night = await fx.mind.consolidate()
+    prompt = [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][0][-1]["content"]
+    assert row.id in prompt and note.id not in prompt and level.id not in prompt and "consolidation" not in prompt
+    assert night["rejected_lines"] == 2 and fx.mind.narrative()["sections"]["recent"].endswith(f"[{row.id}]")
+
+
+def test_a_narrative_citation_is_one_of_five_kinds_that_exist(fx):
+    """Plain ids are the agent's own actions (protagine_self why explains them); ``interest:``,
+    ``judgment:``, ``turn:`` and ``claim:`` are record references. Nothing else resolves."""
+    row = settled_task(fx)
+    fx.mind.add_interest("local history")
+    fx.mind.consolidation.stances = lambda: [{"id": 3, "topic": "t", "stance": "s"}]
+    fx.turn("t-1", OWNER, "s-1", "hello")
+    ref = fx.mind.consolidation._ref_exists
+    assert ref(row.id) and ref("interest:local-history") and ref("judgment:3") and ref("turn:t-1")
+    assert not ref("interest:unknown") and not ref("judgment:4") and not ref("turn:t-9") and not ref("deadbeef")
+    concern, _ = fx.mind.concerns.bump(drive="duty", kind="obligation", summary="s", dedup_key="k")
+    assert not ref(f"concern:{concern.id}") and not ref(f"intention:{row.id}") and not ref("claim:nope")
+
+
+async def test_the_narrative_fits_its_budget_line_caps_per_section(fx):
+    """The narrative rides in every owner session's prompt: at most 800 characters, 3 interests, 2 strengths,
+    4 recent lines and 3 stances."""
+    for index in range(6):
+        fx.mind.add_interest(f"topic number {index}")
+    rows = []
+    for type_ in ("research", "check", "upkeep", "fix", "report"):
+        for copy in range(2):
+            rows.append(settled_task(fx, title=f"{type_} {copy}", type_=type_, dedup=f"{type_}:{copy}"))
+    fx.mind.consolidation.stances = lambda: [{"id": i, "topic": f"topic {i}", "stance": f"stance {i}"} for i in range(6)]
+    fx.router.answers[TASK_NARRATIVE] = lambda messages, context: {"lines": [
+        {"text": f"I finished {r.description}", "cites": [r.id]} for r in rows[:8]]}
+    night = await fx.mind.consolidate()
+    assert night["counts"]["narrative"] == 4
+    narrative = fx.mind.narrative()
+    counts = {name: len(text.splitlines()) for name, text in narrative["sections"].items()}
+    assert counts == {"interests": 3, "strengths": 2, "recent": 4, "stances": 3}
+    assert len(narrative["text"]) <= 800
+    from protagine.mind.consolidate import NARRATIVE_CHARS
+    assert NARRATIVE_CHARS == 800
 
 
 # ---------------------------------------------------------------------------

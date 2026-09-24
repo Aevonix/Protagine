@@ -406,21 +406,28 @@ def plugin_client():
     return getattr(getattr(loaded.module, '_BODY', None), 'client', None)
 
 
-def mind_audit_ids(client=None, *, limit=500):
-    """The ids of the intentions the mind decided to act on or ask about, from ``GET /v1/mind/log``
-    (rows carry ``id`` and ``decision``), read outside the agent after its last turn.
-    The self family grades a self-report against them (``paired_body_grading.observed_action_ids``).
-    Nothing to read, an unreachable sidecar or a sidecar without the mind routes all record nothing."""
+def mind_audit(client=None, *, limit=500):
+    """What the agent did, from ``GET /v1/mind/log``, read outside the agent after its last turn: the ids of
+    its actions (``protagine.mind.audit.is_action``: a task, goal or message it decided to act on or ask
+    about, never a note or a notice) and, for the ones bound to a kanban task, ``{kanban id: intention id}``,
+    so the grader counts one action once whichever name a report cites. The self family grades a
+    self-report against them (``paired_body_grading.observed_action_ids``). Nothing to read, an unreachable
+    sidecar or a sidecar without the mind routes all record nothing."""
+    from protagine.mind.audit import is_action
+    empty = {'audit_ids': [], 'audit_refs': {}}
     client = plugin_client() if client is None else client
     if client is None:
-        return []
+        return empty
     try:
         response = client.get('/v1/mind/log', params={'limit': limit}, timeout=10)
         entries = response.json().get('entries') if response.is_success else None
     except Exception:
-        return []
-    return [row['id'] for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
-            and row.get('decision') in ('act', 'ask')]
+        return empty
+    actions = [row for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
+               and is_action(row)]
+    return {'audit_ids': [row['id'] for row in actions],
+            'audit_refs': {row['hermes_ref']: row['id'] for row in actions
+                           if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']}}
 
 
 def main():
@@ -482,7 +489,7 @@ def main():
         # One process runs the whole episode: its pinned start is decided here (the supervisor
         # decides it for a workflow and carries it in body_before).
         body_before['clock_offset_seconds'] = paired_body.start_offset(inputs['clock_start'])
-    agents, histories, rows, ticks, audit_ids = {}, {}, [], [], []
+    agents, histories, rows, ticks, audit = {}, {}, [], [], {}
     mind = mind_switches(profile) if plugin else None
     tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
@@ -558,7 +565,7 @@ def main():
                 if mind:
                     # Read after the agents close and before the served mind goes away (callbacks run
                     # last-in first-out): the audit ids the self family grades a self-report against.
-                    resources.callback(lambda: audit_ids.extend(mind_audit_ids()))
+                    resources.callback(lambda: audit.update(mind_audit()))
                 from toolsets import create_custom_toolset
                 create_custom_toolset('paired_protagine_memory', 'Protagine native memory tools',
                                       tools=MEMORY_TOOLS)
@@ -745,7 +752,8 @@ def main():
             body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
                   'clock_offset_seconds': paired_body.clock_offset(),
                   'outbox': paired_body.read_outbox(outbox),
-                  **({'audit_ids': list(audit_ids)} if mind else {})})
+                  **({'audit_ids': list(audit.get('audit_ids') or []),
+                      'audit_refs': dict(audit.get('audit_refs') or {})} if mind else {})})
         if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(
                 home / 'memory-state' / 'turn-idempotency.db')

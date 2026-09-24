@@ -74,7 +74,9 @@ def test_prompt_section_carries_the_constitution_without_the_mind_routes(home, s
     assert sidecar.calls("/v1/mind/narrative") == []
 
 
-def test_prompt_section_carries_the_narrative_the_sidecar_serves_and_caches_it(home, sidecar):
+def test_prompt_section_carries_the_narrative_fresh_for_every_session(home, sidecar):
+    """Hermes freezes a plugin section per session, so the plugin keeps no copy of a narrative it was served:
+    a session that starts right after a night (a benchmark's simulated clock) sees what the night wrote."""
     sidecar.mind_routes = True
     sidecar.mind.narrative = {"enabled": True, "text": "I researched tides for the owner. [i-01]",
                               "sections": {"recent": "I researched tides for the owner. [i-01]"},
@@ -82,10 +84,18 @@ def test_prompt_section_carries_the_narrative_the_sidecar_serves_and_caches_it(h
     result = probe(RENDER + "emit(first=section(), second=section())", home)
     content = result["first"]
     assert content.startswith(CONSTITUTION + "\n\nYour owner is Owner.\n\n" + NARRATIVE_LEAD)
-    assert "I researched tides for the owner. [i-01]" in content and "protagine_self why" in content
+    assert "I researched tides for the owner. [i-01]" in content and "protagine_self why explains them" in content
     assert content.index("[i-01]") < content.index("Protagine keeps your long-term memory")
     assert result["second"] == content
-    assert len(sidecar.calls("/v1/mind/narrative", "GET")) == 1  # 60 s cache
+    assert len(sidecar.calls("/v1/mind/narrative", "GET")) == 2  # a success is never cached
+
+
+def test_a_failed_narrative_fetch_is_not_retried_for_a_minute(home, sidecar):
+    sidecar.mind_routes = True
+    sidecar.mind.narrative = None                                           # the route answers 500
+    result = probe(RENDER + "emit(first=section(), second=section())", home)
+    assert NARRATIVE_LEAD not in result["first"] and result["first"] == result["second"]
+    assert len(sidecar.calls("/v1/mind/narrative", "GET")) == 1  # the failure is cached 60 s
 
 
 def test_prompt_section_omits_a_disabled_narrative(home, sidecar):
@@ -97,7 +107,7 @@ def test_prompt_section_omits_a_disabled_narrative(home, sidecar):
 
 
 def test_prompt_section_stays_within_bounds_and_fails_open(home, sidecar):
-    """A 1,500-character constitution plus a 2,000-character narrative render under 4,000 characters, and a
+    """A 1,500-character constitution plus an 800-character narrative render under 4,000 characters, and a
     client that raises leaves the constitution in place (Hermes would otherwise skip the whole section)."""
     (home.instance / "identity.yaml").write_text(yaml.safe_dump({
         "owner": {"name": "Owner", "contact_id": "p-01", "handles": {"telegram": ["1001"]}},
@@ -119,8 +129,8 @@ emit(full=full, degraded=section())
     constitution = full.split("\n\nYour owner is Owner.\n\n", 1)[0]
     assert len(constitution) == 1500 and "Your boundaries: b0" in constitution  # clipped, boundaries partly in
     assert NARRATIVE_LEAD in full and "Protagine keeps your long-term memory" in full
-    narrative = full.split("check with protagine_self why):\n", 1)[1].split("\n\nProtagine keeps", 1)[0]
-    assert len(narrative) == 2000
+    narrative = full.split("prefixed ids are record references:\n", 1)[1].split("\n\nProtagine keeps", 1)[0]
+    assert len(narrative) == 800
     assert degraded.startswith("You are Agent. Your values: v0") and NARRATIVE_LEAD not in degraded
     assert "Protagine keeps your long-term memory" in degraded
 

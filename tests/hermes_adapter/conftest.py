@@ -151,7 +151,7 @@ class FakeMind:
                                       "title": i.get("title"), "decision": i.get("decision"),
                                       "recipient": i.get("recipient")} for i in rows]}
         if head == "narrative" and method == "GET":
-            return 200, dict(self.narrative)
+            return (200, dict(self.narrative)) if self.narrative is not None else (500, {"detail": "narrative failed"})
         if head == "why" and len(parts) == 2 and method == "GET":
             intention = self.intentions.get(parts[1])
             return (200, dict(intention)) if intention else (404, {"detail": {

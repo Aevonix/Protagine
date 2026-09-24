@@ -21,6 +21,11 @@ from protagine_memory.provider import _PROTAGINE_TOOL_SCHEMAS, _SYSTEM_PROMPT
 PLUGIN_SCHEMAS = (SELF_SCHEMA, PEOPLE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, REMINDER_SCHEMA)
 TOOL_BUDGET_CHARS = 3_400       # 7 tools, measured 3,223; the first cut sent 12 tools in 6,700 characters
 SYSTEM_BUDGET_CHARS = 800       # provider block + plugin section, measured 725; the first cut sent 1,004
+# The same system text at its largest, which a real install's owner session sends once the agent has a history:
+# a 1,500-character constitution (identity.yaml's cap) and an 800-character self-narrative (the sidecar's cap).
+# The benchmark's disposable identity and fresh store render neither, so its overhead row cannot see this cost;
+# it is pinned here instead, measured 3,185 (1,360 GLM tokens; a typical owner install, 1,745 and 560).
+MAX_SYSTEM_CHARS = 3_200
 
 
 def rendered(schema) -> str:
@@ -48,3 +53,32 @@ def test_static_prompt_text_stays_within_the_budget(tmp_path):
     # The reading rules that used to ride in every turn's context are said once, here.
     assert "memory-context" in _SYSTEM_PROMPT and "Current Time" in _SYSTEM_PROMPT
     assert "protagine_memory_search" in section and "protagine_self" in section
+
+
+def test_the_system_text_at_its_largest_stays_within_its_budget(tmp_path):
+    """The owner's own session on an install with a full constitution and a full narrative: the steady-state
+    size real installs send, not the empty narrative the benchmark's guard runs measure."""
+    import yaml
+
+    from protagine_hermes import CONSTITUTION_CHARS, NARRATIVE_CHARS
+
+    settings = Settings(sidecar_url="http://127.0.0.1:7777", key_file=tmp_path / "api.key", api_key="k", home=tmp_path,
+                        hermes_home=tmp_path, outbox_path=tmp_path / "outbox.sqlite3")
+    (tmp_path / "identity.yaml").write_text(yaml.safe_dump({
+        "owner": {"name": "Owner"},
+        "agent": {"name": "Agent", "values": [f"v{i}".ljust(100, "v") for i in range(12)],
+                  "boundaries": [f"b{i}".ljust(160, "b") for i in range(12)]}}), encoding="utf-8")
+
+    class Client:
+        def narrative(self):
+            return {"enabled": True, "text": ("recent: I did a thing for the owner. [0f4c2a1e-9b7d-4e3a-8c5f-2d1b6a7e9f03]\n" * 20)}
+
+    class OwnersOwn:
+        def owner_only(self, session_info):
+            return True
+
+    section = prompt_section(settings, Client(), OwnersOwn())({"session_id": "s", "platform": "cli"})
+    assert CONSTITUTION_CHARS == 1500 and NARRATIVE_CHARS == 800
+    assert section.count("[0f4c2a1e") >= 9                               # the narrative is in, clipped at 800
+    total = len(_SYSTEM_PROMPT) + len(section)
+    assert total <= MAX_SYSTEM_CHARS, (len(_SYSTEM_PROMPT), len(section))

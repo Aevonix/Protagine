@@ -31,10 +31,12 @@ logger = logging.getLogger(__name__)
 HOOKS = ("pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick")
 TOOLSET = "protagine"
 # The one prompt section, frozen per session by Hermes (architecture 4.2, seam 2): the constitution
-# (<= 1,500 characters), the owner, the self-narrative (<= 2,000) and the two tool notes, <= 4,000 in all.
-SECTION_CHARS, CONSTITUTION_CHARS, NARRATIVE_CHARS = 4000, 1500, 2000
-NARRATIVE_LEAD = ("What you know about yourself, from your own record (ids in brackets are audit ids you can "
-                  "check with protagine_self why):")
+# (<= 1,500 characters), the owner, the self-narrative (<= 800, the sidecar's own cap) and the two tool
+# notes, <= 4,000 in all. Every model request of an owner session carries it (tests/hermes_adapter/
+# test_overhead_budget.py pins its largest render).
+SECTION_CHARS, CONSTITUTION_CHARS, NARRATIVE_CHARS = 4000, 1500, 800
+NARRATIVE_LEAD = ("What you know about yourself, from your own record. Plain ids are your own actions "
+                  "(protagine_self why explains them); prefixed ids are record references:")
 NOTES = ("Protagine keeps your long-term memory: recalled evidence arrives with each message and "
          "protagine_memory_search finds more. Answer a mind ask with protagine_self yes or no only when "
          "its code appears in the owner's own message.")
@@ -44,7 +46,7 @@ def prompt_section(settings: Settings, client: ProtagineClient | None = None,
                    sessions: SessionMap | None = None) -> Callable[[Mapping[str, Any]], str]:
     """The block the plugin adds to every session prompt: who the agent is (the owner-authored constitution
     read from ``identity.yaml``), who the owner is, what the agent knows about itself from its own record
-    (``GET /v1/mind/narrative``: 2 s, cached 60 s, fail open to the constitution alone) and the two things
+    (``GET /v1/mind/narrative``: 2 s, a failure cached 60 s, fail open to the constitution alone) and the two things
     the tool schemas cannot say. Hermes renders it once per session, so a nightly narrative change reaches
     the next session and the prompt cache holds within one. Recall guidance is the memory provider's block.
 

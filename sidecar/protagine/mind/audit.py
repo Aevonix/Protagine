@@ -17,6 +17,7 @@ from protagine.initiatives.models import StoredInitiative
 
 MAX_TEXT = 400
 NOTICE_TYPES = ("ask_notice", "digest", "breaker_notice", "health_notice")
+ACTION_KINDS = ("task", "goal", "message")
 
 
 def _clip(text: Any, limit: int = MAX_TEXT) -> str:
@@ -61,6 +62,15 @@ def entry(row: StoredInitiative) -> Dict[str, Any]:
         "due_at": _when(row.due_at),
         "expires_at": _when(row.expires_at),
     }
+
+
+def is_action(entry: Dict[str, Any]) -> bool:
+    """Whether an audit row is one of the agent's own actions: a task, goal or message it decided to act on
+    or ask about. Internal notes (the nightly consolidation, a deliberation that formed nothing, owner
+    switches) and notices (digest, ask notice, breaker and health notices) are not. The self-narrative's
+    evidence and the benchmark's record of what the agent did both use this one predicate."""
+    return (entry.get("kind") in ACTION_KINDS and entry.get("decision") in {"act", "ask"}
+            and entry.get("type") not in NOTICE_TYPES)
 
 
 def log(store: Any, *, limit: int = 20, since: Optional[datetime] = None,
@@ -156,4 +166,4 @@ def render_stats(value: Dict[str, Any]) -> str:
                      for key, item in value.items())
 
 
-__all__ = ["NOTICE_TYPES", "entry", "log", "render_log", "render_stats", "stats", "why"]
+__all__ = ["ACTION_KINDS", "NOTICE_TYPES", "entry", "is_action", "log", "render_log", "render_stats", "stats", "why"]
