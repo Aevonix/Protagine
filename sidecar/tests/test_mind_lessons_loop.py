@@ -15,7 +15,7 @@ import pytest
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import mind as mind_router
 from onekey import AUTH, KEY
-from test_mind_lessons_night import LESSONS_ONLY, REQUEST, RULE_QUOTE, VERDICT, add, label, make, training_day
+from test_mind_lessons_night import LESSONS_ONLY, REQUEST, RULE_QUOTE, VERDICT, add, label, make, ruled, training_day
 from test_turn_source_evidence import source_app  # noqa: F401  (pytest fixture)
 from test_mind_consolidate import OWNER
 
@@ -58,7 +58,7 @@ def served(source_app, tmp_path, monkeypatch):  # noqa: F811
     def answer(prompt):
         if "Verdict on train-01.json" not in prompt:
             return {"verdicts": [], "ops": []}
-        return {"verdicts": [], "ops": [add([label(prompt, "Verdict on train-01.json")], quote=RULE_QUOTE)]}
+        return {"verdicts": ruled(prompt), "ops": [add([label(prompt, "Verdict on train-01.json")], quote=RULE_QUOTE)]}
     fx = make(tmp_path, monkeypatch, answer)
     source_app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     mind_router.set_mind(fx.mind)
