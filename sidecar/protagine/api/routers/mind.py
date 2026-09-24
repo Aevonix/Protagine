@@ -99,7 +99,9 @@ class OutcomeBody(BaseModel):
     ``status`` is the kanban status; ``outcome`` (done, blocked, failed,
     cancelled, uncertain) and ``final`` are the body's reading of it. A report
     with ``final: false`` (a failed run that was requeued) is progress, not a
-    settlement.
+    settlement. ``verified`` may claim only ``hermes_failure``, and only for a
+    failure with a reason (``error`` or ``summary``); a claimed ``owner`` or
+    ``check`` is ignored and the mind computes the verifier (architecture 4.8).
     """
     model_config = ConfigDict(extra="ignore")
     id: str = Field(min_length=1, max_length=64)

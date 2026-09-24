@@ -5,7 +5,9 @@ Architecture 3.1 (outcome events), 3.3 (``success_check`` and ``verified``),
 every ``mind:*`` task from its run row; that report is the source of truth
 for ``outcome``. ``verified`` records which verifier ran: the owner, a
 deterministic check over mind-observable state, or a Hermes failure. Only a
-check that actually ran counts.
+check that actually ran counts, and only the mind grants ``owner`` or
+``check``: the body may report a Hermes failure (``BODY_VERIFIERS``), and only
+with a reason; a blocked task with a reason is a Hermes failure too.
 """
 
 from __future__ import annotations
@@ -38,6 +40,22 @@ VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step"})
 FINDING_CHARS = 800
 OWNER_EVIDENCE = ("appraisal:", "turn:", "claim:")   # evidence read from what the owner said
+VERIFIERS = frozenset({"owner", "check", "hermes_failure", "none"})
+# What a body report may claim (architecture 4.8): a Hermes failure with a reason. ``owner`` and
+# ``check`` are the mind's to grant; a claimed one is ignored and the verifier computed.
+BODY_VERIFIERS = frozenset({"hermes_failure"})
+
+
+def _reason(summary: Any, error: Any) -> str:
+    return str(error or summary or "").strip()
+
+
+def hermes_reason(row: StoredInitiative) -> str:
+    """The reason Hermes gave for a failed or blocked task it reported, or ``""`` when the row is not
+    a Hermes failure with a reason (what the nightly lesson packet quotes)."""
+    if row is None or row.verified != "hermes_failure" or row.outcome not in {"failed", "blocked"}:
+        return ""
+    return str(row.failed_reason or row.result or "").strip()
 
 
 class Autobiography:
@@ -229,6 +247,11 @@ class Outcomes:
                 self.store.update(intention_id, **updates)
             return self.store.get(intention_id)
         if resolved == "blocked":
+            # A block Hermes gives a reason for is a Hermes failure (a pitfall may be learned from it); the
+            # row stays open, and a later report settles it and recomputes the verifier.
+            reason = _reason(summary, error)
+            if reason:
+                updates.update(verified="hermes_failure", failed_reason=reason[:2000])
             return self.store.update(intention_id, outcome="blocked", result=summary or error or row.result, **updates)
         return self._settle(row, resolved, summary=summary, error=error, verified=verified, result=result, run=run,
                             by=by, updates=updates, implicit_verdict=implicit_verdict)
@@ -239,9 +262,14 @@ class Outcomes:
         now = self.clock()
         check_result = evaluate_check(row.success_check, commitments=self.commitments, followups=self.followups,
                                       summary=summary, result=result) if row.success_check else None
-        if verified in {"owner", "check", "hermes_failure", "none"}:
+        reason = _reason(summary, error)
+        # The mind's own callers name their verifier (an owner switch, a goal it closed); a body report
+        # may claim only a Hermes failure, which it is only with a reason.
+        claimed = verified in VERIFIERS and (by != "body" or (
+            verified in BODY_VERIFIERS and outcome == "failed" and bool(reason)))
+        if claimed:
             verifier = verified
-        elif outcome == "failed":
+        elif outcome == "failed" and reason:
             verifier = "hermes_failure"
         elif check_result is not None:
             verifier = "check"
@@ -259,7 +287,7 @@ class Outcomes:
         if error:
             metadata["error"] = str(error)[:500]
         stamps = {"done": {"completed_at": now},
-                  "failed": {"failed_at": now, "failed_reason": error or summary or outcome},
+                  "failed": {"failed_at": now, "failed_reason": reason or outcome},
                   "expired": {"cancelled_at": now, "cancelled_reason": "expired"},
                   "denied": {"cancelled_at": now, "cancelled_by": by, "cancelled_reason": "denied"},
                   "cancelled": {"cancelled_at": now, "cancelled_by": by, "cancelled_reason": summary or "cancelled"},
@@ -407,5 +435,5 @@ class Outcomes:
         return text
 
 
-__all__ = ["Autobiography", "FINDING_TYPES", "IMPLICIT_VERDICT", "Outcomes", "STATUS_TO_OUTCOME",
-           "TERMINAL_OUTCOMES", "VERDICTS", "evaluate_check", "invalidation_reason"]
+__all__ = ["Autobiography", "BODY_VERIFIERS", "FINDING_TYPES", "IMPLICIT_VERDICT", "Outcomes", "STATUS_TO_OUTCOME",
+           "TERMINAL_OUTCOMES", "VERDICTS", "VERIFIERS", "evaluate_check", "hermes_reason", "invalidation_reason"]
