@@ -14,9 +14,10 @@ a later edit cannot erase it.
 
 Three oracle kinds share those effects, and an oracle carries at most one.
 ``action`` (initiative): no action, or one action within a tick window.
-``selection`` (drives): the candidates the effects name must be exactly the
-oracle's expected set, each in one tick, and nothing may follow the satiating
-outcome or the off switch. ``goal`` (drives): the right goal's token is worked
+``selection`` (drives): candidates in priority order, the leading ones owed.
+Every owed candidate is dispatched, each candidate in one tick, a lower one
+never in an earlier tick than an owed one (the order of work, however many a
+tick takes on), and nothing follows the satiating outcome or the off switch. ``goal`` (drives): the right goal's token is worked
 on, at most the allowed number of candidate goals are, and the fixture's
 success check is a separate artifact oracle. Candidate tokens are fixture
 strings that never contain one another, so a substring match on one cannot
@@ -80,8 +81,8 @@ def _validate_selection(selection):
         raise ValueError('Invalid body oracle selection')
     candidates = _tokens(selection['candidates'])
     expected = _tokens(selection['expected'], allow_empty=True)
-    if not set(expected) <= set(candidates):
-        raise ValueError('Body oracle expected tokens are candidates')
+    if expected != candidates[:len(expected)]:
+        raise ValueError('Body oracle expected tokens are the leading candidates')
 
 
 def _validate_goal(goal):
@@ -270,11 +271,16 @@ def assess_body(effects, spec):
     if 'selection' in spec:
         selection = spec['selection']
         named = named_ticks(acted, selection['candidates'])
-        # Every effect dispatches a candidate, the dispatched set is the expected set, and no
-        # candidate is dispatched in two ticks (a task plus its report in one tick is one action).
+        owed = selection['expected']
+        # Every effect dispatches a candidate, every owed one is dispatched, no candidate in two ticks
+        # (a task plus its report in one tick is one action), and a lower candidate only once what is
+        # owed is under way: never in an earlier tick, and never when nothing is owed.
+        last_owed = max((named[token][0] for token in owed if token in named), default=None)
         checks['body:selection'] = (
             all(any(_contains(effect['text'], token) for token in selection['candidates']) for effect in acted)
-            and set(named) == set(selection['expected']) and all(len(rows) == 1 for rows in named.values()))
+            and all(token in named for token in owed) and all(len(rows) == 1 for rows in named.values())
+            and all(last_owed is not None and rows[0] >= last_owed
+                    for token, rows in named.items() if token not in owed))
         checks['body:stop'] = all(effect['tick'] <= selection['stop_after'] for effect in acted)
         return checks
     if 'goal' in spec:

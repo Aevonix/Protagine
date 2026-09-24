@@ -103,13 +103,16 @@ renders its questions this way into an `anchor` split.
   below. Its oracle is `body.action`.
 - `drives.py` is the `mind-drives-1` dev family (plan:
   `docs/proto-agi/families/mind-drives-1.md`). Four `selection` templates seed
-  N opportunities across the drives (an overdue promise, a due reply wait, a
-  repeated failure, a red check, an idle interest) and open K < N ticks; the
-  oracle `body.selection` expects the top K of the scenario's own priority
-  order and nothing after `stop_after` (a settling owner turn, or the owner's
-  `/mind off`); the control resolves every opportunity before the horizon.
-  Two `goal` templates seed an interest or a failure cluster whose answer sits
-  in a workspace file plus a distractor assigned elsewhere; the oracle
+  two or three opportunities the drives read from the owner's words (an
+  overdue promise, a due reply wait, an idle interest) and open a dispatch
+  window of one or two ticks; the oracle `body.selection` lists them in the
+  scenario's priority order, wants every owed one (the promise, the reply
+  wait) dispatched once and the interest never ahead of them, and nothing
+  after `stop_after` (a settling owner turn, or the owner's `/mind off`); the
+  control resolves every opportunity before the horizon. Failures and red
+  checks are not narrated: the mind reads its own. One `goal` template seeds
+  an interest whose answer sits in a workspace file plus a distractor assigned
+  elsewhere; the oracle
   `body.goal` wants the right goal worked on and the distractor never, and the
   success check is a JSON `artifacts` oracle over the report the goal writes.
   Its arms are `full`, `full-drives` (the flat-priority ablation),
@@ -275,7 +278,7 @@ and `sidecar/tests/test_qualification_improve_family.py` (improve).
 
 `initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
 per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
-18 episodes (12 selection, 6 goal). `people`, `--per-template 2`: 28 episodes
+15 episodes (12 selection, 3 goal). `people`, `--per-template 2`: 28 episodes
 (10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 39
 episodes (18 treatment, 21 control). `opinions`, `--per-template 3`: 36
 episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
@@ -288,8 +291,8 @@ probes).
 | --- | --- | --- | --- | --- |
 | initiative | 3 | 7 | `eff4ffb8d82a001c4ee66af040a255957150c633013c939e6133d46ee18daa93` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
 | initiative | 3 | 11 | `92c04d250399706b84770e51339967942a102b86b70164235e6fdfaf86d60c54` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
-| drives | 3 | 7 | `c7027b5c13ca8467eb7617792179990a11bddd77dca2a7a73445f4fc6effa439` | `90413dcff98ecaa3c80c8befe7dd51dfc9b4e1ac5d75bfd91b13831abede69e2` |
-| drives | 3 | 11 | `9095a0bb188a530875540e8a4e3b1f130d767058cb38a86487dafc821f9180d8` | `906e439b2c3d9c89273cafcbe564928a5187f9331ba6a0012d3d7f4a783f78e6` |
+| drives | 3 | 7 | `348f2d27687fdbfd3a6b4e08b1398978fe4706d0a1e269ff8f1ae93dfcc7c65e` | `2849a32685e7e3077460b41c80449e93c43f2cea24bdbb96562c79c68bf38996` |
+| drives | 3 | 11 | `12fdf2f045aaa197b7b56db253bbadb26f469923a229eda847cfe7cf4a6bbaa9` | `a23c87bbef5cc44ed328ec6eaaec4e697a1643da92f58b7d40fa627881cb8629` |
 | people | 2 | 7 | `34fba589d88ab54692264824664d3b93b267c868fba6fd5cf6a05ad28bdbc89a` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
 | people | 2 | 11 | `5a32be07f96e4292ded949756ddc88bba942c2cd20eedd1acc6e793ab0b0c73a` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
 | affect | 3 | 7 | `518b0dedaa8042de85118c609aeb5d7ff586421d0f2dc59008b08895e338dbdc` | `3349702498368fd36ecbd54d5a032c42e1e259a25aa577e39bd907a0f1c18703` |
