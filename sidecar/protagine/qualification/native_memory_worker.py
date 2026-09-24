@@ -178,7 +178,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
         PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_TURN_WRITER='disabled',
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
         PROTAGINE_OWNER_CONTACT_ID=person,
-        **embedding, PROTAGINE_GRAPH_ENABLED='false',
+        **embedding,
         # The body tick drives the adapter (tick() and flush()); its own thread stays parked
         # so no dispatch or send lands between two observed ticks.
         PROTAGINE_BODY_THREAD='0')

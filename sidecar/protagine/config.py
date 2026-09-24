@@ -131,7 +131,6 @@ RESERVED_ENVIRONMENT: dict[str, str] = {
     "PROTAGINE_RERANKER_PROVIDER": "router.rerank_url",
     "PROTAGINE_RERANKER_BASE_URL": "router.rerank_url",
     "PROTAGINE_RERANKER_MODEL": "router.rerank_model",
-    "PROTAGINE_GRAPH_ENABLED": "nothing: this line opens no graph database",
 }
 _SECRET_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
 
@@ -549,7 +548,6 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         "PROTAGINE_EMBED_PROVIDER": "openai_api" if (config.get("router.embed_url")
                                                     and config.get("mind.faculties.semantic_recall") is not False)
         else "skip",
-        "PROTAGINE_GRAPH_ENABLED": "false",
     }
     if key:
         values["PROTAGINE_API_KEY"] = key
