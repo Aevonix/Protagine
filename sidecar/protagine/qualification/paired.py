@@ -40,7 +40,11 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'full-curiosity': {'plugin': True, 'overlay': {}, 'full': True, 'minus_curiosity': True},
             'full-mastery': {'plugin': True, 'overlay': {}, 'full': True, 'minus_mastery': True},
             'full-upkeep': {'plugin': True, 'overlay': {}, 'full': True, 'minus_upkeep': True},
-            'full-social': {'plugin': True, 'overlay': {}, 'full': True, 'minus_social': True}}
+            'full-social': {'plugin': True, 'overlay': {}, 'full': True, 'minus_social': True},
+            # One ablation per later faculty, each ``full`` with that faculty's flag off (the
+            # faculty claim of its family's gate); the flag is served whether or not the
+            # faculty's code has landed, so the arm is a no-op contrast until its milestone.
+            'full-people': {'plugin': True, 'overlay': {}, 'full': True, 'minus_people': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,

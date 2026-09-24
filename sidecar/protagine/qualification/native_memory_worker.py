@@ -23,10 +23,12 @@ def mind_section(switches):
     (or ``True``) turns the mind on at autonomy ``standard`` with only the
     initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
     faculty flag and drive weight to its release-candidate value from the
-    shipped defaults; a ``minus_drives`` or ``minus_broadcast`` switch turns
-    that faculty off and a ``minus_<drive>`` switch sets that drive's weight
-    to 0 (evals section 3, the ``full-X`` arms). Quiet hours and the daily
-    digest are off in every mind arm because an episode's clock advance would
+    shipped defaults; a ``minus_<faculty>`` switch turns that faculty's flag
+    off and a ``minus_<drive>`` switch sets that drive's weight to 0 (evals
+    section 3, the ``full-X`` arms). The flag is written whether or not the
+    faculty's code has landed, so an ablation of a faculty nothing reads yet
+    is a no-op contrast until its milestone. Quiet hours and the daily digest
+    are off in every mind arm because an episode's clock advance would
     otherwise hold or add owner notices that have nothing to do with the
     scenario.
     """
@@ -43,7 +45,7 @@ def mind_section(switches):
     defaults = DEFAULTS['mind']
     faculties = {name: bool(defaults['faculties'].get(name, False)) for name in MIND_FACULTIES}
     drives = deepcopy(defaults['drives'])
-    for name in ('drives', 'broadcast'):
+    for name in MIND_FACULTIES:
         if switches.get(f'minus_{name}'):
             faculties[name] = False
     for name in drives:

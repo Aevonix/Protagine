@@ -82,7 +82,7 @@ def test_the_drives_family_arms_are_full_and_its_binary_ablations(fixture):
         assert paired_worker.arm_profile(pairs[0]['arms'][arm]['case']['inputs'])['full'] is True
         assert paired_worker.mind_switches(profiles[arm])
     assert paired_worker.mind_switches({'plugin': True, 'overlay': {}}) is None
-    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-3'
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-4'
     assert set(paired_worker.MIND_SWITCHES) <= set(paired_worker.PROFILE_SWITCHES)
 
     full = worker.mind_section(paired_worker.mind_switches(profiles['full']))
@@ -103,6 +103,22 @@ def test_the_drives_family_arms_are_full_and_its_binary_ablations(fixture):
     assert weights(flat['drives'], faculty_on=flat['faculties']['drives']) == {
         'duty': 1.0, 'social': 1.0, 'curiosity': 1.0, 'mastery': 1.0, 'upkeep': 1.0}
     assert weights(full['drives'], faculty_on=full['faculties']['drives']) == DEFAULTS['mind']['drives']
+
+
+def test_every_later_faculty_has_a_built_in_ablation_arm_that_flips_only_its_flag():
+    """Each family's faculty claim is full against full-<faculty>: one mind.faculties flag off,
+    served whether or not the faculty's code reads it yet."""
+    from protagine.config import DEFAULTS
+    full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))
+    for switch in paired_worker.MIND_FACULTY_ABLATIONS:
+        name = switch[len('minus_'):]
+        arm = paired.PROFILES[f'full-{name}']
+        assert arm == {'plugin': True, 'overlay': {}, 'full': True, switch: True}
+        assert DEFAULTS['mind']['faculties'][name] is True, 'an ablation turns off a flag that ships on'
+        section = worker.mind_section(paired_worker.mind_switches(arm))
+        assert section['faculties'] == {**full['faculties'], name: False}
+        assert section['drives'] == full['drives'] and section['budgets'] == full['budgets']
+    assert 'minus_people' in paired_worker.MIND_FACULTY_ABLATIONS
 
 
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):

@@ -72,11 +72,13 @@ alike.
    template never restates it; the note describes the session, not a scenario.
 
 Dev templates live here; every `*.py` module beside `generate.py` is a family,
-selected by its stem (`--family initiative`, `--family drives`). Held-out
-templates are a Python file **outside the repository**, named by
-`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the same
-`FAMILY`; the generator refuses a path inside the repository, and the file is
-never committed.
+selected by its stem (`--family initiative`, `--family drives`, `--family
+people`). Held-out templates are a Python file **outside the repository**,
+named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
+same `FAMILY`; the generator refuses a path inside the repository, and the
+file is never committed. Every family's arms are built-in profiles of the
+harness (`paired.PROFILES`, `docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and
+profiles"); no family ships a `--profiles` file.
 
 - `initiative.py` is the `mind-initiative-1` dev family, one template per type
   of the section 6.2 taxonomy (evals plan, plus the mechanisms the M2 held-out
@@ -93,9 +95,21 @@ never committed.
   in a workspace file plus a distractor assigned elsewhere; the oracle
   `body.goal` wants the right goal worked on and the distractor never, and the
   success check is a JSON `artifacts` oracle over the report the goal writes.
-  Its arms are built-in profiles (`paired.PROFILES`, no `--profiles` file):
-  `full`, `full-drives` (the flat-priority ablation), `full-broadcast` and the
-  per-drive `full-<drive>` diagnostics.
+  Its arms are `full`, `full-drives` (the flat-priority ablation),
+  `full-broadcast` and the per-drive `full-<drive>` diagnostics.
+- `people.py` is the `mind-people-1` dev family (plan:
+  `docs/proto-agi/families/mind-people-1.md`): five identity templates graded
+  on the reply to a contact's later message (a first contact, the same handle
+  on a second channel, a same-name pair that must not merge, an
+  owner-confirmed merge, a per-person naming preference), three warranted
+  check-ins graded on sends to the contact (a due cadence, a check-in under an
+  owner-only canary, backoff after two ignored check-ins) and six controls
+  (not due, satisfied by a conversation, a `never` contact, an opt-out,
+  permission not granted, a group of unknown members). Its `contacts.json`
+  records carry `channel`, `address` and `may_contact` (`auto`, `ask`,
+  `never`), plus `cadence_minutes` and a display `name` where the scenario
+  needs them. Its oracles are `body.sends` and `body.replies`; its arms are
+  `base-heartbeat`, `full` and `full-people`.
 
 Warranted (one action in tick 1 or 2, carrying the item):
 
@@ -137,19 +151,25 @@ Controls (no action):
 
 ## Dev split hashes
 
-`--per-template 3` renders 84 initiative episodes (39 warranted, 45 control;
-a per-PR check at `--per-template 2` renders 56) and 18 drives episodes (12
-selection, 6 goal). The loader content hash (`dataset.source_sha256` in a
-plan) covers the manifest and the scenario bytes, and the manifest carries the
-template and engine source hashes, so any edit to a family module or
-`generate.py` is a new dataset for that family (an engine edit re-pins every
-family). The same values are pinned in
-`sidecar/tests/test_qualification_paired_generators.py` and
-`sidecar/tests/test_qualification_paired_drives.py`.
+The loader content hash (`dataset.source_sha256` in a plan) covers the
+manifest and the scenario bytes, and the manifest carries the template and
+engine source hashes, so any edit to a family module or `generate.py` is a
+new dataset for that family (an engine edit re-pins every family). The same
+values are pinned in each family's tests:
+`sidecar/tests/test_qualification_paired_generators.py` (initiative),
+`sidecar/tests/test_qualification_paired_drives.py` (drives) and
+`sidecar/tests/test_qualification_people_family.py` (people).
 
-| Family | Seed | Content hash |
-| --- | --- | --- |
-| initiative | 7 | `fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0` |
-| initiative | 11 | `af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9` |
-| drives | 7 | `22667ffd5881f48678a1ebe9d654a43b24224d4529b8c1c93e733c1ef77da110` |
-| drives | 11 | `d34d80fa26b4e6f2bc2feb3ed307b73dbac0b3259ace9a4c25ab997a9b211e65` |
+`initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
+per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
+18 episodes (12 selection, 6 goal). `people`, `--per-template 2`: 28 episodes
+(10 identity, 6 warranted, 12 control).
+
+| Family | Per template | Seed | Content hash |
+| --- | --- | --- | --- |
+| initiative | 3 | 7 | `fc5c9247c8deb1839c226890b6ad5f4f76b00f66b4351b037a6e27c58f1a78c0` |
+| initiative | 3 | 11 | `af468891bd76abcf52a1e0c3dc0e4ca35c0a98ba796350c76ad82faa4da09cb9` |
+| drives | 3 | 7 | `22667ffd5881f48678a1ebe9d654a43b24224d4529b8c1c93e733c1ef77da110` |
+| drives | 3 | 11 | `d34d80fa26b4e6f2bc2feb3ed307b73dbac0b3259ace9a4c25ab997a9b211e65` |
+| people | 2 | 7 | `e2b31d4a9f8662de3ef491793d5d564f0f0eea0d408b181effee6ba6b71f8c28` |
+| people | 2 | 11 | `b9d904b7df7981db589a074db0b192b2321fcfb08196db53ea6eed97c26b0405` |

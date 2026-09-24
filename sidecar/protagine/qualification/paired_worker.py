@@ -23,16 +23,21 @@ from . import paired_arms, paired_body
 
 RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 # Version 2 added the binary comparator switches heartbeat and curator to a profile; version 3
-# adds the mind switches of the drives family (full and the minus_* ablations).
-ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-3'
+# added the mind switches of the drives family (full and the minus_* ablations); version 4 adds
+# one ablation per later faculty (the people, affect, opinions, memory, self and improve
+# families), so an image built before it cannot apply those arms.
+ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
 # The mind switches: the plugin arm with the mind on, served in-process next to the host
 # routes; the body tick calls the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox,
 # reconciliation and observations) before cron and kanban dispatch. ``initiative`` turns on
 # only the initiative faculty (mind-initiative-1); ``full`` sets every faculty flag and drive
-# weight to its release-candidate value (native_memory_worker.mind_section), and each
-# ``minus_*`` switch turns one faculty off or one drive weight to 0 (evals section 3).
-MIND_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_duty', 'minus_curiosity', 'minus_mastery',
-                  'minus_upkeep', 'minus_social')
+# weight to its release-candidate value (native_memory_worker.mind_section), each
+# ``minus_<faculty>`` switch turns that faculty's flag off and each ``minus_<drive>`` switch
+# sets that drive's weight to 0 (evals section 3, the full-X arms). A faculty whose code has
+# not landed yet still has its flag written, so its ablation is a no-op contrast until then.
+MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people')
+MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
+MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS)
 PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'

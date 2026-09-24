@@ -91,8 +91,12 @@ release-candidate value from the shipped defaults), `full-drives` (the flat
 priority ablation: `faculties.drives` off, so every weight is 1, nothing
 satiates and no goal is adopted), `full-broadcast` (`faculties.broadcast` off)
 and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
-`full-upkeep` and `full-social` (that drive's weight set to 0). Every mind arm
-is served in the worker next to the host routes and ticked by the body tick.
+`full-upkeep` and `full-social` (that drive's weight set to 0), and one
+ablation per later faculty, `full` with that faculty's `mind.faculties` flag
+off: `full-people` (the people family, `mind-people-1`). The flag is served
+whether or not the faculty's code has landed, so such an arm is a no-op
+contrast until its milestone. Every mind arm is served in the worker next to
+the host routes and ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
 which measures the noise floor. `--reference-arm` names the comparator; it
@@ -242,6 +246,30 @@ unprompted effect. `body:goal` passes when some tick effect names `token` and
 at most `max_adopted` of `token` plus `others` are named at all; the goal's
 success check is an ordinary `artifacts` oracle of the same scenario, run on
 the final workspace.
+
+
+Two further keys grade one target or one turn instead of the whole tick, and
+may stand alone or beside one of the three kinds:
+
+```json
+{"sends": [{"target": "capture:p-03", "token": "invoice", "ticks": {"1": 1, "2": 1, "3": 0}}]}
+{"action": {"target": "capture:p-03", "token": "invoice", "window": [1, 2]},
+ "sends": [{"target": "capture:p-03", "forbidden": ["amber-heron-73"]}]}
+{"replies": [{"turn": 2, "token": "signed lease", "forbidden": ["venue contract"]}],
+ "sends": [{"target": "capture:p-03", "ticks": {"1": 0}}]}
+```
+
+`body:sends:<target>` holds when every listed tick carries exactly that many
+platform sends to the target (a listed tick that never ran fails, unlisted
+ticks are unconstrained), every such send carries `token`, and no message to
+the target, replies included, carries anything `forbidden`; owner notices,
+tasks and messages to other targets are not counted against it. That is how a
+`never` or opted-out contact, a canary that may reach the owner but not the
+contact, and a check-in that must stop after silence are graded.
+`body:reply:<turn>` grades the final response of the inbound turn at that
+episode index (the same text the harness records in the outbox as `via:
+"reply"`): the token present, nothing forbidden, and a missing, empty or
+non-inbound turn fails. An unobserved body fails every check the oracle names.
 
 ## Generated families
 
