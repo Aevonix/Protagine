@@ -183,3 +183,207 @@ def test_a_campaign_plan_freezes_the_probe_unit_the_campaign_cluster_and_the_old
     write_dataset(tmp_path / 'data-plain', plain)
     other = campaign_plan(fixture, monkeypatch, plain, tmp_path, name='plain')
     assert 'campaign' not in other['comparison'] and other['comparison']['rule'] == paired.RULE
+
+
+# --- The campaign report -----------------------------------------------------------------------
+
+ARMS = ('full-lessons', 'full')
+
+
+@pytest.fixture(scope='module')
+def records(rendered, tmp_path_factory):
+    """Each arm's case records for the eight dev campaigns, as a frozen plan holds them."""
+    directory = write_dataset(tmp_path_factory.mktemp('report') / 'campaigns', rendered)
+    return {arm: [case.record() for case in CASES(arm, dataset_dir=directory,
+                                                   profile={'name': arm, **paired.PROFILES[arm]})]
+            for arm in ARMS}
+
+
+def specs(record, *kinds):
+    return [spec for spec in record['oracle']['artifacts'] if spec['probe']['kind'] in kinds]
+
+
+def attempt(record, passed=(), *, outcome='fail', turns=None, files=None, calls=10, tokens=(100, 10), lessons=None):
+    """A summarized attempt row: which artifact checks passed, how far the episode got, what it cost."""
+    from protagine.qualification import paired_report
+    declared = len(record['inputs']['episodes'])
+    checks = {'all_native_turns_completed': turns is None,
+              **{'artifact:' + spec['path']: spec['path'] in passed for spec in record['oracle']['artifacts']}}
+    effects = {'declared_turns': declared, 'turns': [{'completed': True}] * (declared if turns is None else turns),
+               'artifacts': dict(files or {}),
+               'resource_usage': {'coverage': 'complete', 'total_model_calls': calls, 'input_tokens': tokens[0],
+                                  'output_tokens': tokens[1], 'background_model_calls': 0}}
+    if lessons is not None:
+        effects['body'] = {'lessons': lessons}
+    row = {'outcome': outcome, 'primary_outcome': outcome if outcome in {'pass', 'fail'} else 'unverified',
+           'checks': checks if outcome in {'pass', 'fail'} else {}, 'effects': effects, 'elapsed_ms': 1.0}
+    assert paired_report._completion(row) is (None if outcome not in {'pass', 'fail'} else outcome == 'pass')
+    return row
+
+
+def cohort(records, rows):
+    """A frozen manifest and summarize()-shaped pairs; ``rows(index, arm, record)`` gives each attempt."""
+    from protagine.qualification import paired_report
+    manifest = {'pairs': [], 'sha256': '0' * 64,
+                'comparison': {'campaign': {'protocol': paired_cases.CAMPAIGN_PROTOCOL, **paired.CAMPAIGN},
+                               'rule': {**paired.RULE, 'unit': 'probe', 'cluster': 'campaign'}}}
+    pairs = []
+    for index in range(len(records[ARMS[0]])):
+        results = {arm: rows(index, arm, records[arm][index]) for arm in ARMS}
+        manifest['pairs'].append({'arms': {arm: {'case': records[arm][index]} for arm in ARMS}})
+        pairs.append({'scenario_id': records[ARMS[0]][index]['id'], 'results': results,
+                      'completion': {arm: paired_report._completion(results[arm]) for arm in ARMS}})
+    return manifest, pairs
+
+
+def paths(record, *kinds):
+    return {spec['path'] for spec in specs(record, *kinds)}
+
+
+def test_probe_units_exclude_training_old_family_and_unavailable_campaigns(records):
+    from protagine.qualification import paired_report
+
+    def rows(index, arm, record):
+        # full passes every warranted probe; the comparator passes only the training artifacts and the
+        # old-family probe; the last campaign's full attempt errored (unattributable).
+        if index == 7 and arm == 'full':
+            return attempt(record, outcome='error')
+        kinds = ('warranted',) if arm == 'full' else ('training', 'old_family')
+        return attempt(record, paths(record, *kinds))
+    manifest, pairs = cohort(records, rows)
+    units, clusters, unavailable = paired_report._probe_units(manifest, pairs, 'full', 'full-lessons')
+    first = records['full'][0]
+    assert unavailable == [records['full'][7]['id']]
+    assert len(units) == 7 * 8 and set(clusters.values()) == {record['id'] for record in records['full'][:7]}
+    assert {key.split(':', 1)[1] for key in units if key.startswith(first['id'] + ':')} == paths(
+        first, 'warranted', 'control')
+    for key, (treatment, comparator) in units.items():
+        scenario, path = key.split(':', 1)
+        record = next(item for item in records['full'] if item['id'] == scenario)
+        assert (treatment, comparator) == ((1.0 if path in paths(record, 'warranted') else 0.0), 0.0)
+        assert clusters[key] == scenario
+    # The plan's rule makes the probe the unit: one unavailable campaign leaves the contrast unavailable,
+    # a complete cohort is tested over probes with the campaigns as clusters.
+    statistics = paired_report._statistics(manifest, pairs, list(ARMS), 'full-lessons',
+                                           {arm: {'name': arm} for arm in ARMS}, manifest['comparison']['rule'])
+    [entry] = statistics['contrasts']
+    assert entry['unit'] == 'probe' and entry['verdict'] == 'unavailable'
+    assert entry['declared_units'] == 64 and entry['unavailable_units'] == 8 and entry['unavailable_campaigns'] == 1
+    manifest, pairs = cohort(records, lambda index, arm, record: attempt(
+        record, paths(record, 'warranted') if arm == 'full' else ()))
+    [entry] = paired_report._statistics(manifest, pairs, list(ARMS), 'full-lessons',
+                                        {arm: {'name': arm} for arm in ARMS},
+                                        manifest['comparison']['rule'])['contrasts']
+    assert entry['unit'] == 'probe' and entry['units'] == 64 and entry['clusters'] == 8
+    assert entry['wins'] == 48 and entry['ties'] == 16 and entry['verdict'] == 'demonstrated'
+
+
+def test_a_campaign_whose_episode_ended_early_is_unavailable_in_both_arms(records):
+    from protagine.qualification import paired_report
+    # A failed turn on day 9 ends the comparator's third campaign: its later probes were never asked.
+    manifest, pairs = cohort(records, lambda index, arm, record: attempt(
+        record, paths(record, 'warranted'), turns=30 if (index, arm) == (2, 'full-lessons') else None))
+    units, clusters, unavailable = paired_report._probe_units(manifest, pairs, 'full', 'full-lessons')
+    assert unavailable == [records['full'][2]['id']]
+    assert not any(key.startswith(records['full'][2]['id'] + ':') for key in units)
+    report = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')
+    assert report['unavailable_campaigns'] == {'full-lessons': [records['full'][2]['id']], 'full': []}
+
+
+def test_old_family_row_is_a_point_estimate_non_inferiority(records):
+    from protagine.qualification import paired_report
+
+    def rows(losing):
+        def row(index, arm, record):
+            kinds = ('warranted',) if arm == 'full' and index < losing else ('warranted', 'old_family')
+            return attempt(record, paths(record, *kinds))
+        return row
+    # One campaign of eight lost: -12.5 pp, inferior at -10 pp; none lost: non-inferior.
+    manifest, pairs = cohort(records, rows(1))
+    [row] = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')['old_family']
+    assert row['treatment'] == 'full' and row['comparator'] == 'full-lessons'
+    assert row['campaigns'] == 8 and row['treatment_pass_rate'] == 7 / 8 and row['comparator_pass_rate'] == 1
+    assert row['delta_pp'] == -12.5 and row['non_inferior_pp'] == -10 and row['verdict'] == 'inferior'
+    manifest, pairs = cohort(records, rows(0))
+    [row] = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')['old_family']
+    assert row['delta_pp'] == 0 and row['verdict'] == 'non_inferior'
+    # A campaign passes the old-family probe only when every one of its old-family artifacts passes.
+    multi = copy.deepcopy(records['full'][0])
+    [old] = specs(multi, 'old_family')
+    multi['oracle']['artifacts'].append({**copy.deepcopy(old), 'path': 'second-' + old['path']})
+    some = {old['path']}
+    assert not paired_report._old_family_pass(attempt(multi, some), multi)
+    assert paired_report._old_family_pass(attempt(multi, paths(multi, 'old_family')), multi)
+
+
+def test_forbidden_hits_are_counted_from_the_probe_files(records):
+    from protagine.qualification import paired_report
+
+    def rows(index, arm, record):
+        files = {}
+        for spec in specs(record, 'control'):
+            if spec.get('forbidden') and arm == 'full':
+                files[spec['path']] = json.dumps({'value': spec['forbidden'][0].lower()})
+        return attempt(record, files=files)
+    manifest, pairs = cohort(records, rows)
+    expected = sum(bool(spec.get('forbidden')) for record in records['full'] for spec in specs(record, 'control'))
+    assert expected >= 2
+    report = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')
+    assert report['forbidden_hits'] == {'full-lessons': 0, 'full': expected}
+
+
+def test_cost_per_success_compares_calls_and_tokens_per_passed_probe(records):
+    from protagine.qualification import paired_report
+
+    def rows(cost):
+        def row(index, arm, record):
+            # Both arms pass the same six warranted probes of every campaign; full spends ``cost`` times as much.
+            scale = cost if arm == 'full' else 1
+            return attempt(record, paths(record, 'warranted'), calls=10 * scale, tokens=(100 * scale, 10 * scale))
+        return row
+    manifest, pairs = cohort(records, rows(1.1))
+    cost = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')['cost_per_success']
+    assert cost['full-lessons']['passed_probes'] == cost['full']['passed_probes'] == 48
+    assert cost['full-lessons']['calls_per_success'] == pytest.approx(80 / 48)
+    assert cost['full']['calls_ratio'] == pytest.approx(1.1) and cost['full']['tokens_ratio'] == pytest.approx(1.1)
+    assert cost['full']['within_max_increase'] is True and cost['max_increase_pct'] == 20
+    manifest, pairs = cohort(records, rows(1.3))
+    cost = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')['cost_per_success']
+    assert cost['full']['within_max_increase'] is False
+
+
+def test_lesson_diagnostics_are_unavailable_without_lesson_evidence(records):
+    from protagine.qualification import paired_report
+    manifest, pairs = cohort(records, lambda index, arm, record: attempt(record, paths(record, 'warranted')))
+    report = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')
+    assert report['lessons'] == {'full-lessons': 'unavailable', 'full': 'unavailable'}
+    # The descriptive rows: per class, per probe kind and control, per block, training.
+    rows = report['descriptive']['full']
+    assert rows['kinds']['warranted'] == {'passed': 48, 'observed': 48}
+    assert rows['kinds']['control:scope'] == rows['kinds']['control:unverified'] == {'passed': 0, 'observed': 8}
+    assert rows['blocks'] == {'1': {'passed': 24, 'observed': 32}, '2': {'passed': 24, 'observed': 32}}
+    assert rows['classes']['procedure']['observed'] == 24 and rows['training'] == {'passed': 0, 'observed': 48}
+    assert 'Campaign probes' in paired_report._campaign_lines({'campaign': report})[1]
+
+
+def test_lesson_diagnostics_count_admissions_by_source_and_lesson_use_on_probe_days(records):
+    from protagine.qualification import paired_report
+
+    def rows(index, arm, record):
+        if arm == 'full-lessons':
+            return attempt(record, (), lessons={'lessons': [], 'uses': []})
+        probe = specs(record, 'warranted')[0]
+        lessons = [{'id': 'L-1', 'verified': 'owner', 'status': 'active', 'origin': 'night', 'correction': 'retrieval'},
+                   {'id': 'L-2', 'verified': 'check', 'status': 'candidate', 'origin': 'reflector', 'correction': None}]
+        uses = [{'lesson_id': 'L-1', 'session_id': f"day-{probe['probe']['day']:02d}", 'result': None},
+                {'lesson_id': 'L-1', 'session_id': 'day-02', 'result': 'win'}]
+        return attempt(record, {probe['path']}, lessons={'lessons': lessons, 'uses': uses})
+    manifest, pairs = cohort(records, rows)
+    lessons = paired_report._campaign(manifest, pairs, list(ARMS), 'full-lessons')['lessons']
+    assert lessons['full-lessons']['admitted'] == 0 and lessons['full-lessons']['campaigns'] == 8
+    full = lessons['full']
+    assert full['admitted'] == 16 and full['by_verified'] == {'owner': 8, 'check': 8}
+    assert full['by_status'] == {'active': 8, 'candidate': 8} and full['corrections'] == {'retrieval': 8}
+    assert full['uses'] == 16 and full['scored_uses'] == 8 and full['wins'] == 8
+    assert full['probes'] == {'eligible': 64, 'with_lesson': 8, 'with_lesson_passed': 8}
+    assert full['lesson_use_rate'] == 8 / 64

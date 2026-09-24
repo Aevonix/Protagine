@@ -122,3 +122,25 @@ def test_public_v3_projection_is_allowlisted_and_keeps_raw_attribution(planned, 
     report['completion_projection']['corrected_episodes'] = 0
     with pytest.raises(ValueError, match='projection count'):
         paired_public.export_record(directory, metadata)
+
+
+def test_public_export_keeps_the_probe_unit():
+    """A campaign contrast is exported with its probe unit and campaign clusters, not as scenarios."""
+    from protagine.qualification import paired_statistics
+    units = {f'c{index // 8}:p{index % 8}': (float(index % 2), 0.0) for index in range(64)}
+    clusters = {key: key.split(':')[0] for key in units}
+    result = paired_statistics.contrast(units, seed=3, clusters=clusters)
+    contrast = {'treatment': 'full', 'comparator': 'full-lessons', 'same_profile': False, 'unit': 'probe',
+                'cluster': 'campaign', 'declared_units': 64, 'unavailable_units': 0, 'unavailable_campaigns': 0,
+                **result}
+    rule = {**paired.RULE, 'unit': 'probe', 'cluster': 'campaign'}
+    exported = paired_public._statistics({'rule': rule, 'bootstrap_seed': 3, 'contrasts': [contrast]})
+    [entry] = exported['contrasts']
+    assert entry['unit'] == 'probe' and entry['cluster'] == 'campaign' and entry['clusters'] == 8
+    assert entry['units'] == 64 and exported['basis'] == paired_report.PROBE_STATISTICS_BASIS
+    # A scenario contrast keeps the scenario unit and the scenario basis.
+    scenario = {**contrast, 'unit': 'scenario', **paired_statistics.contrast(units, seed=3)}
+    del scenario['cluster']
+    exported = paired_public._statistics({'rule': paired.RULE, 'bootstrap_seed': 3, 'contrasts': [scenario]})
+    assert exported['contrasts'][0]['unit'] == 'scenario' and 'cluster' not in exported['contrasts'][0]
+    assert exported['basis'] == paired_report.STATISTICS_BASIS
