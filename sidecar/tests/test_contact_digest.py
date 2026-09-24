@@ -18,10 +18,13 @@ def test_the_digest_says_who_how_known_recency_open_items_and_claims_and_nothing
     text = render_digest(record, claims=["Sam prefers email in the mornings.", "Sam is handling the budget draft."],
                          counts={"inbound": 7, "outbound": 3, "open": 2}, last_interaction_at=record["last_interaction_at"],
                          now=T0)
-    assert text.startswith("Sam (regular)") and "email:sam@example.org" in text and "3 h ago" in text
+    assert text.startswith("Sam.") and "email:sam@example.org" in text and "3 h ago" in text
     assert "4 conversation" in text and "7 in / 3 out" in text and "2 open" in text
     assert "Sam prefers email in the mornings." in text and "budget draft" in text
-    for owner_only in ("never", "May be messaged", "cadence", "30 min", "p-07", "introduced"):
+    # Review F9: the tier is the owner's classification of the person, withheld from the guest
+    # context everywhere else (``protagine-relationship`` renders only for the owner).
+    for owner_only in ("never", "May be messaged", "cadence", "30 min", "p-07", "introduced", "regular", "Sam (",
+                       "peripheral"):
         assert owner_only not in text, owner_only
     assert len(text) <= MAX_CHARS
 

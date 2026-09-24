@@ -4,9 +4,9 @@ Who the person is, how they are reachable, when the agent last talked with
 them, what is open, and what they have said themselves (their own sources'
 claims), in at most ``MAX_CHARS`` characters. The digest is read in the
 contact's own context ("About this person") and composes messages to them, so
-it never carries what the owner set for them: permission, cadence and who
-introduced them stay in the owner's ``protagine_people inspect``, read from the
-columns. The mind writes it daily for contacts with a recent interaction
+it never carries what the owner set for them or thinks of them: permission,
+cadence, the tier and who introduced them stay in the owner's
+``protagine_people inspect``, read from the columns. The mind writes it daily for contacts with a recent interaction
 (``Mind._digests``), with sources ``["template"]``; the LLM digest that
 consolidates it arrives with the memory milestone.
 """
@@ -55,8 +55,7 @@ def render_digest(contact: Any, *, claims: Iterable[str], counts: Mapping[str, A
     """The digest text, at most ``MAX_CHARS`` characters (an ellipsis marks a cut)."""
     contact_id = str(_field(contact, "contact_id", "") or "")
     name = str(_field(contact, "display_name", None) or _field(contact, "given_name", None) or contact_id or "unknown")
-    tier = str(_field(contact, "trust_tier", None) or "unknown")
-    parts: List[str] = [f"{name} ({tier})."]
+    parts: List[str] = [f"{name}."]
     known: List[str] = []
     first_seen = _utc(_field(contact, "first_seen_at", None))
     if first_seen is not None:

@@ -12,22 +12,29 @@ import re
 from typing import Any, Optional
 
 _VERBS = r"(?:message|messaging|text|texting|contact|contacting|write to|writing to|dm|dming)"
+# The bracketed prefixes a gateway puts before the contact's own words (a timestamp, a sender header).
+_PREFIX = r"(?:\s*\[[^\[\]\n]{1,120}\])*\s*"
+# The start of a sentence: the message's own start behind its prefixes, or after a sentence end.
+_START = rf"(?:^{_PREFIX}|[.!?;]\s+)"
+# The end of the clause: punctuation, a courtesy word or the end of the message. A phrase followed
+# by more of the sentence ("remove me from the Thursday thread", "don't text me the file") says
+# how, when or about what to write, not that the person wants no messages at all.
+_END = r"(?=\s*(?:[.!,;]|please\b|thanks\b|thank you\b|$))"
+_LISTS = r"(?:list|mailing list|contacts|messages|texts|check-ins|check ins|reminders)"
 
 OPT_OUT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # A bare STOP is the whole message, behind any bracketed prefixes a gateway adds (a message
-    # timestamp, a sender header).
-    re.compile(r"^(?:\s*\[[^\[\]\n]{1,120}\])*\s*stop[.!]*\s*$", re.IGNORECASE),
-    re.compile(r"\bunsubscribe\b", re.IGNORECASE),
-    # Anchored at the end of the clause: "don't text me the file, email it" and "do not message me
-    # before 9" say how or when to write, not that the person wants no messages at all.
+    # A bare STOP is the whole message, behind any bracketed prefixes a gateway adds.
+    re.compile(rf"^{_PREFIX}stop[.!]*\s*$", re.IGNORECASE),
+    re.compile(rf"(?:{_START}(?:please\s+)?unsubscribe|\bunsubscribe me)"
+               rf"(?:\s+me)?(?:\s+from\s+(?:these|this|them|here|you|your\s+{_LISTS}))?{_END}", re.IGNORECASE),
     re.compile(rf"\b(?:don't|do not|please don't|please do not|stop) {_VERBS} me"
-               r"(?:\s+(?:again|anymore|any more|ever again))?(?=\s*(?:[.!,;]|$))", re.IGNORECASE),
+               rf"(?:\s+(?:again|anymore|any more|ever again))?{_END}", re.IGNORECASE),
     re.compile(r"\bno more (?:messages|check-ins|check ins|texts|reminders) from you\b", re.IGNORECASE),
-    re.compile(r"\bstop the (?:check-ins|check ins|messages|reminders|texts)\b", re.IGNORECASE),
+    re.compile(rf"\bstop the (?:check-ins|check ins|messages|reminders|texts){_END}", re.IGNORECASE),
     re.compile(r"\b(?:rather|prefer) (?:you|that you) (?:did not|didn't|do not|don't|not) "
                r"(?:message|text|contact|write to|write|dm) me\b", re.IGNORECASE),
-    re.compile(r"\bleave me alone\b", re.IGNORECASE),
-    re.compile(r"\bremove me\b", re.IGNORECASE),
+    re.compile(rf"(?:{_START}(?:(?:please|just|now)\s+)*|\byou\s+(?:to\s+)?)leave me alone{_END}", re.IGNORECASE),
+    re.compile(rf"\bremove me(?:\s+from\s+(?:your|this|these|the)\s+{_LISTS})?{_END}", re.IGNORECASE),
 )
 
 
@@ -38,7 +45,7 @@ def detects_opt_out(text: Optional[str]) -> Optional[str]:
     for pattern in OPT_OUT_PATTERNS:
         match = pattern.search(text)
         if match:
-            return match.group(0).strip()
+            return match.group(0).strip(" \t\n.!?;")
     return None
 
 

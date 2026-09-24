@@ -20,7 +20,9 @@ CLOSE_VARIANTS = [
     "don't text me again", "do not contact me", "stop messaging me", "please don't dm me", "stop writing to me",
     "No more texts from you.", "no more check-ins from you please", "stop the reminders",
     "I'd prefer that you didn't contact me", "I would prefer you not message me", "leave me alone",
-    "Remove me from your list.", "remove me",
+    "Remove me from your list.", "remove me", "Please leave me alone.", "Just leave me alone!",
+    "Please remove me from this list", "Unsubscribe.", "unsubscribe me please", "Remove me, thanks.",
+    "I need you to leave me alone.", "Stop the check-ins.",
 ]
 NEAR_MISSES = [
     "stop by later if you want",
@@ -39,6 +41,13 @@ NEAR_MISSES = [
     "don't text me the file, email it",
     "do not message me before 9",
     "please don't dm me the password, call instead",
+    # Review F5: these name the words of an opt-out inside an ordinary message.
+    "Can you remove me from the Thursday thread and add my work email instead?",
+    "The kids won't leave me alone today, can we move the call to 4?",
+    "How do I unsubscribe from that supplier newsletter you mentioned?",
+    "Please remove me as the second signer, the budget draft is attached.",
+    "Can you stop the reminders about the dentist, it is booked now?",
+    "Could you unsubscribe me from the supplier newsletter?",
 ]
 
 
