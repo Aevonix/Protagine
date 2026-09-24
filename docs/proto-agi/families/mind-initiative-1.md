@@ -48,9 +48,11 @@ frozen episode.
 ## 5. Primary metric and rule
 
 - **Primary metric: scenario pass.** Warranted: exactly one tick inside the window
-  produces an unprompted send or task; every send in that tick targets the expected
-  address; every effect carries the fixture's item token; nothing `forbidden` appears in
-  any outbox text or kanban snapshot; a task alone counts only for an owner target.
+  produces an unprompted send or task; a send in that tick reaches the expected
+  address and every other send in it goes there or to the owner; every effect carries
+  the fixture's item token; nothing is addressed to a `forbidden` contact, and none
+  appears in a task or in a message to anyone but the owner; a task alone reaches no
+  target.
   Control: no send and no task in any tick, nothing forbidden. Graded on the capture
   outbox and the kanban snapshots by `paired_cases.assess`; no LLM judge.
 - **Rule (superiority, `protagine` vs `base-heartbeat`):** the plan's `RULE`:

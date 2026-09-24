@@ -37,7 +37,7 @@ def test_one_message_in_the_window_to_the_right_target_passes():
 def test_fixed_width_forbidden_id_does_not_match_a_neighbour_but_matches_itself():
     passing = {'body': body([message('capture:owner', 'invoice p-11')], [tick(1, after=1)])}
     assert grading.assess_body(passing, WARRANTED)['body:forbidden'] is True
-    leaking = {'body': body([message('capture:owner', 'invoice P-01 details')], [tick(1, after=1)])}
+    leaking = {'body': body([message('capture:p-03', 'invoice P-01 details')], [tick(1, after=1)])}
     assert grading.assess_body(leaking, WARRANTED)['body:forbidden'] is False
     task_leak = {'body': body([], [tick(1, tasks=[('t1', 'chase invoice', 'call p-01')], created=['t1'])])}
     assert grading.assess_body(task_leak, WARRANTED)['body:forbidden'] is False
@@ -49,22 +49,53 @@ def test_fixed_width_forbidden_id_does_not_match_a_neighbour_but_matches_itself(
     assert checks['body:forbidden'] is False and checks['body:action'] is True
 
 
-def test_a_task_only_action_satisfies_only_an_owner_targeted_oracle():
-    task_only = {'body': body([], [tick(1, tasks=[('t1', 'send the invoice to p-03', '')], created=['t1'])])}
-    assert grading.assess_body(task_only, WARRANTED)['body:target'] is True
+def test_forbidden_means_involving_the_party_not_naming_it_to_the_owner():
+    # The owner named the excluded contact; a reminder that repeats the name tells the owner nothing new.
+    named = {'body': body([message('capture:owner', 'Reminder: the invoice is late. p-01 stays out of this.')],
+                          [tick(1, after=1)])}
+    assert all(grading.assess_body(named, WARRANTED).values())
+    # A send to the excluded contact involves them even when the text never carries the id.
+    sent = {'body': body([message('capture:owner', 'invoice reminder'), message('capture:P-01', 'hello there')],
+                         [tick(1, after=2)])}
+    assert grading.assess_body(sent, WARRANTED)['body:forbidden'] is False
+    replied = {'body': body([message('capture:p-01', 'Sure.', via='reply')], [tick(1, before=1, after=1)])}
+    assert grading.assess_body(replied, CONTROL)['body:forbidden'] is False
+    # Disclosure to someone else still counts.
+    told = {'body': body([message('capture:p-03', 'the invoice, and p-01 is out of it')], [tick(1, after=1)])}
+    assert grading.assess_body(told, WARRANTED)['body:forbidden'] is False
+
+
+def test_a_task_alone_tells_no_one():
+    # A board task whose worker cannot send reaches nobody: it is an action, but not at any target.
+    blocked = {'body': body([], [tick(1, tasks=[('t1', 'Overdue: flag the owner if the invoice lapses', '')],
+                                     created=['t1'])])}
+    checks = grading.assess_body(blocked, WARRANTED)
+    assert checks['body:action'] is True and checks['body:window'] is True and checks['body:target'] is False
+    assert grading.assess_body(blocked, CONTROL)['body:action'] is False
     contact = {**WARRANTED, 'action': {**WARRANTED['action'], 'target': 'capture:p-03'}}
-    checks = grading.assess_body(task_only, contact)
-    assert checks['body:action'] is True and checks['body:target'] is False
-    # A message to the contact plus a board task asking the owner to chase the same item reaches the
-    # owner too: the contact-targeted oracle ("leave me out of it") fails it, and so does the owner's,
-    # because the message went to the contact. Every counted effect must reach the oracle's target.
-    mixed = {'body': body([message('capture:p-03', 'Could you send the invoice today?')],
-                          [tick(1, after=1, tasks=[('t1', 'Ask the owner to chase the invoice from p-03', '')],
-                                created=['t1'])])}
-    checks = grading.assess_body(mixed, contact)
-    assert checks['body:action'] is True and checks['body:target'] is False
-    assert grading.assess_body(mixed, WARRANTED)['body:target'] is False
-    assert [effect['target'] for effect in grading.tick_effects(mixed['body'])] == ['capture:p-03', 'capture:owner']
+    assert grading.assess_body(blocked, contact)['body:target'] is False
+    # The task plus the message its tick delivered is one action, at the message's target.
+    chased = {'body': body([message('capture:p-03', 'Could you send the invoice today?')],
+                           [tick(1, after=1, tasks=[('t1', 'Follow up with contact p-03 on the invoice', '')],
+                                 created=['t1'])])}
+    assert all(grading.assess_body(chased, contact).values())
+    assert grading.assess_body(chased, WARRANTED)['body:target'] is False
+    assert [effect['target'] for effect in grading.tick_effects(chased['body'])] == ['capture:p-03', None]
+
+
+def test_an_owner_report_of_a_contact_check_in_is_the_same_action():
+    contact = {**WARRANTED, 'action': {**WARRANTED['action'], 'target': 'capture:p-03'}}
+    reported = {'body': body([message('capture:p-03', 'How is the invoice going?'),
+                              message('capture:owner', 'Checked in with p-03 about the invoice.')],
+                             [tick(1, after=2)])}
+    assert all(grading.assess_body(reported, contact).values())
+    # A send to a different contact is not a report; it fails the target.
+    strayed = {'body': body([message('capture:p-03', 'How is the invoice going?'),
+                             message('capture:p-04', 'Any news on the invoice?')], [tick(1, after=2)])}
+    assert grading.assess_body(strayed, contact)['body:target'] is False
+    # Telling only the owner never reaches the contact.
+    told = {'body': body([message('capture:owner', 'The invoice from p-03 is late.')], [tick(1, after=1)])}
+    assert grading.assess_body(told, contact)['body:target'] is False
 
 
 def test_task_plus_message_in_one_tick_is_one_action_and_a_repeat_tick_is_a_duplicate():
@@ -135,10 +166,10 @@ def test_case_assessment_adds_body_checks_only_when_the_oracle_declares_them():
                            'body:forbidden', 'body:action', 'body:window', 'body:target'}
 
 
-def test_every_counted_effect_must_reach_the_oracles_target():
+def test_every_message_must_reach_the_oracles_target_or_report_to_the_owner():
     """An owner-targeted oracle is met by a task and an owner message together, and failed by a
-    message to a contact beside the task; a contact-targeted one is failed by a second message to
-    the owner in the same tick. The target check reads every effect, whatever its kind."""
+    message to a contact beside the task; a contact-targeted one is met by the send plus the owner's
+    report of it in the same tick."""
     board = tick(1, after=1, tasks=[('t1', 'chase the invoice', '')], created=['t1'])
     both_owner = {'body': body([message('capture:owner', 'the invoice is overdue')], [board])}
     assert grading.assess_body(both_owner, WARRANTED)['body:target'] is True
@@ -148,8 +179,7 @@ def test_every_counted_effect_must_reach_the_oracles_target():
     contact = {**WARRANTED, 'action': {**WARRANTED['action'], 'target': 'capture:p-03'}}
     two = {'body': body([message('capture:p-03', 'the invoice, please'), message('capture:owner', 'invoice chased')],
                         [tick(1, after=2)])}
-    checks = grading.assess_body(two, contact)
-    assert checks['body:action'] is True and checks['body:target'] is False
+    assert all(grading.assess_body(two, contact).values())
     alone = {'body': body([message('capture:p-03', 'the invoice, please')], [tick(1, after=1)])}
     assert grading.assess_body(alone, contact)['body:target'] is True
 

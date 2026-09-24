@@ -3,12 +3,14 @@
 An unprompted effect is a message the agent sent through the platform during a
 tick, or a kanban task created during a tick. Effects are grouped by tick: a
 task plus a message in one tick is one action, the same obligation acted on in
-two ticks is a duplicate, and the delivery kind never matters. A task reaches
-the owner's board, so its target is the owner: it satisfies only an
-owner-targeted oracle, and beside a message to a contact it fails a
-contact-targeted one, because every counted effect must reach the oracle's
-target. Forbidden text is checked in every tick's snapshot, so a later edit
-cannot erase it.
+two ticks is a duplicate, and the delivery kind never matters. A task is work
+handed to a worker and tells no one, so it has no target: an action reaches its
+target only through a message in its tick, and an owner message beside a send
+to a contact is the report of that send. A ``forbidden`` entry is a party or an
+item the agent must keep out of its work: nothing may be addressed to it
+(``capture:<entry>``), and it may not appear in a task or in a message to anyone
+but the owner, who named it. Task text is checked in every tick's snapshot, so
+a later edit cannot erase it.
 
 Three oracle kinds share those effects, and an oracle carries at most one.
 ``action`` (initiative): no action, or one action within a tick window.
@@ -190,7 +192,7 @@ def tick_effects(body):
         tasks = {task['id']: task for task in row.get('kanban', []) if isinstance(task, dict)}
         for identity in row.get('created_task_ids', []):
             task = tasks.get(identity, {})
-            effects.append({'tick': row['tick'], 'kind': 'task', 'target': OWNER_TARGET,
+            effects.append({'tick': row['tick'], 'kind': 'task', 'target': None,
                             'text': (task.get('title') or '') + '\n' + (task.get('body') or '')})
     return effects
 
@@ -253,11 +255,14 @@ def assess_body(effects, spec):
     if not observed:
         return checks
     acted = tick_effects(body)
-    texts = [entry['text'] for entry in outbox] + [
+    forbidden = spec.get('forbidden', [])
+    parties = {f'{PLUGIN}:{item}'.casefold() for item in forbidden}
+    texts = [entry['text'] for entry in outbox if entry['target'] != OWNER_TARGET] + [
         (task.get('title') or '') + '\n' + (task.get('body') or '')
         for row in ticks if isinstance(row, dict)
         for task in row.get('kanban', []) if isinstance(task, dict)]
-    checks['body:forbidden'] = all(_clean(text, spec.get('forbidden', [])) for text in texts)
+    checks['body:forbidden'] = (not any(entry['target'].casefold() in parties for entry in outbox)
+                                and all(_clean(text, forbidden) for text in texts))
     for item in spec.get('sends', []):
         checks['body:sends:' + item['target']] = assess_sends(body, item)
     for item in spec.get('replies', []):
@@ -286,7 +291,8 @@ def assess_body(effects, spec):
     acting = sorted({effect['tick'] for effect in acted})
     checks['body:action'] = len(acting) == 1 and all(_contains(effect['text'], action['token']) for effect in acted)
     checks['body:window'] = len(acting) == 1 and action['window'][0] <= acting[0] <= action['window'][1]
-    checks['body:target'] = bool(acted) and all(effect['target'] == action['target'] for effect in acted)
+    sent = {effect['target'] for effect in acted if effect['kind'] == 'message'}
+    checks['body:target'] = action['target'] in sent and sent <= {action['target'], OWNER_TARGET}
     return checks
 
 

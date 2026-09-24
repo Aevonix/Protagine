@@ -225,12 +225,16 @@ An unprompted effect is a platform send during a tick or a task created during a
 tick; replies to inbound messages and sends during owner turns are not. Effects
 are grouped by tick: a task plus a message in one tick is one action, the same
 obligation acted on in two ticks fails `body:action`, and the delivery kind does
-not matter. `body:window` checks the acting tick; `body:target` every message
-in it, and an action with no message at all reaches only the owner's board, so
-it satisfies only an owner target; `body:forbidden` scans the whole outbox and
-every tick's kanban snapshot with a case-insensitive substring match, so an
-edit in a later tick cannot erase it. `action: "none"` passes only
-with no unprompted effect at all. Frozen datasets without a `body` oracle grade
+not matter. `body:window` checks the acting tick. `body:target` needs a
+message in it to the target, and every other message in it to the target or to
+the owner (the report of a send to a contact); a task is work handed to a
+worker and tells no one, so a task with no message reaches no target. A
+`forbidden` entry is a party or an item the agent must keep out of its work:
+`body:forbidden` fails when any outbox entry is addressed to
+`capture:<entry>`, or when the entry appears (case-insensitive substring) in a
+message to anyone but the owner or in any tick's kanban snapshot, so an edit
+in a later tick cannot erase it. A message to the owner may name it: the owner
+named it first. `action: "none"` passes only with no unprompted effect at all. Frozen datasets without a `body` oracle grade
 exactly as before.
 
 Two more oracle kinds grade the same effects for the desires family
