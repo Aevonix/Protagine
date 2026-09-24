@@ -48,6 +48,16 @@ def missing_mind_columns(conn: sqlite3.Connection) -> List[str]:
     return [name for name in MIND_COLUMNS if name not in present]
 
 
+#: SQLite's primary result codes for a damaged file; only these are recovered at open.
+_SQLITE_CORRUPT, _SQLITE_NOTADB = 11, 26
+
+
+def _damaged(exc: sqlite3.DatabaseError) -> bool:
+    """Whether SQLite reported the file itself as damaged (not locked, busy or unreadable)."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF in {_SQLITE_CORRUPT, _SQLITE_NOTADB}
+
+
 def get_state_dir() -> Path:
     """Get Protagine state directory."""
     import os
@@ -70,35 +80,55 @@ class InitiativeStore:
         self._db = self._init_db()
 
     def _init_db(self) -> sqlite3.Connection:
-        """Initialize database with recovery."""
+        """Open the store; recover only a damaged file, and never delete it.
+
+        A locked, busy or unreadable store (any other error) is raised as it is:
+        its rows are intact and the caller retries once the other process lets go.
+        A file SQLite reports as damaged (SQLITE_CORRUPT, SQLITE_NOTADB) is renamed
+        aside with its WAL and shared-memory files, then the backup is restored when
+        one exists, else the store starts empty (cutover data-5).
+        """
         try:
             return self._connect()
-        except sqlite3.DatabaseError:
-            logger.warning("initiatives.db corrupted, attempting recovery")
-
+        except sqlite3.DatabaseError as exc:
+            if not _damaged(exc):
+                raise
+            aside = self._rename_aside()
+            logger.warning("initiatives.db is damaged (%s); kept as %s", exc, aside.name)
             if self._backup_path.exists():
                 shutil.copy(self._backup_path, self._db_path)
-                logger.info("Restored initiatives.db from backup")
+                logger.warning("Restored initiatives.db from %s", self._backup_path.name)
             else:
-                self._db_path.unlink(missing_ok=True)
-                logger.warning("No backup available, starting fresh")
-
+                logger.warning("No initiatives.db backup available, starting empty")
             return self._connect()
+
+    def _rename_aside(self) -> Path:
+        """Move the damaged store and its -wal/-shm files to ``initiatives.db.corrupt-<UTC stamp>``."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        aside = self._db_path.with_name(f"{self._db_path.name}.corrupt-{stamp}")
+        for suffix in ("", "-wal", "-shm"):
+            source = self._db_path.with_name(self._db_path.name + suffix)
+            if source.exists():
+                source.rename(aside.with_name(aside.name + suffix))
+        return aside
 
     def _connect(self) -> sqlite3.Connection:
         """Connect to database with WAL mode."""
         # check_same_thread=False allows TestClient to access the DB from
         # a different thread (test thread vs event loop thread).
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
+        try:
+            conn.row_factory = sqlite3.Row
 
-        # WAL mode for better crash recovery
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+            # WAL mode for better crash recovery
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
 
-        self._create_tables(conn)
-
+            self._create_tables(conn)
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -181,7 +211,13 @@ class InitiativeStore:
                 conn.commit()
                 logger.info("Migrated initiatives table: added %s column", name)
         except Exception as exc:
-            logger.warning("Initiative migration check failed (non-fatal): %s", exc)
+            # Two processes opening at once race to the same ALTER; the loser's
+            # duplicate-column error is harmless. Anything else is caught below.
+            logger.warning("Initiative migration check failed: %s", exc)
+        missing = missing_mind_columns(conn)
+        if missing:
+            raise sqlite3.OperationalError(
+                f"initiatives.db still lacks {', '.join(missing)}; another process may hold its write lock")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_kind ON initiatives(kind, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_ask_code ON initiatives(ask_code)")
@@ -1266,8 +1302,10 @@ class InitiativeStore:
         return cursor.rowcount
 
     def backup(self) -> None:
-        """Create backup of database."""
-        shutil.copy2(self._db_path, self._backup_path)
+        """Copy the store to ``initiatives.db.backup`` through SQLite, WAL commits included
+        (a plain file copy of a WAL store misses whatever is not yet checkpointed)."""
+        with closing(sqlite3.connect(self._backup_path)) as target:
+            self._db.backup(target)
 
     def close(self) -> None:
         """Close connection and create backup."""

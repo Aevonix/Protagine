@@ -29,6 +29,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -977,14 +978,43 @@ def pending_initiative_columns(home: Path) -> list[str]:
         return [f"{INITIATIVES_DB}:{column}" for column in missing_mind_columns(connection)]
 
 
+def _initiative_rows(path: Path) -> int | None:
+    """The initiatives table's row count, read only; None when it cannot be read."""
+    try:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            return int(connection.execute("SELECT count(*) FROM initiatives").fetchone()[0])
+    except sqlite3.DatabaseError:
+        return None
+
+
 def migrate_initiatives(home: Path) -> list[str]:
-    """Add the intention and audit columns in place (architecture 5.2)."""
+    """Add the intention and audit columns in place (architecture 5.2).
+
+    The store is opened the way the sidecar opens it, then checked again: the
+    migration counts as applied only when every column is there and no row went
+    missing (cutover data-5). A store that cannot be opened (another process
+    holds its lock) is left as it is and the upgrade fails with the reason.
+    """
     pending = pending_initiative_columns(home)
     if not pending:
         return []
-    from protagine.initiatives.store import InitiativeStore
-    store = InitiativeStore(state_dir=home)
-    store.close()
+    from protagine.initiatives import store as initiative_store
+    path = home / INITIATIVES_DB
+    before = _initiative_rows(path)
+    try:
+        store = initiative_store.InitiativeStore(state_dir=home)
+        store.close()
+    except sqlite3.DatabaseError as exc:
+        raise InitError(f"{INITIATIVES_DB} could not be opened to add its columns ({exc}); it was left as it is. "
+                        "Stop every process that uses it ('protagine service stop') and run 'protagine upgrade' "
+                        "again") from None
+    still, after = pending_initiative_columns(home), _initiative_rows(path)
+    if still:
+        raise InitError(f"{INITIATIVES_DB} still lacks {', '.join(item.split(':', 1)[1] for item in still)} after "
+                        "the upgrade opened it; run 'protagine upgrade' again with the service stopped")
+    if after is None or (before is not None and after < before):
+        raise InitError(f"{INITIATIVES_DB} lost rows while it was opened ({before} rows before, {after} after); "
+                        f"restore it from the backup this upgrade took under {BACKUPS_DIR}/")
     return [f"migration applied: {item}" for item in pending]
 
 
