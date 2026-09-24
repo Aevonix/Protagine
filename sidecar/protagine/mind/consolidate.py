@@ -621,7 +621,8 @@ class Consolidation:
             "strengths: " + ((self.mind_state.get("self.strengths") or {}).get("text") or "(none)").replace("\n", "; "),
             "interests: " + ((self.mind_state.get("self.interests") or {}).get("text") or "(none)").replace("\n", "; "),
             "",
-            f"Evidence from the last {RECENT_DAYS} days (id | kind/type | decision | outcome | title, or id | finding):",
+            f"Your own actions of the last {RECENT_DAYS} days (id | kind/type | drive | decision | outcome | title), "
+            "and what they found (id | finding: text):",
             *[line for _, line in evidence],
         ])
         answer = await self._call(night, task=TASK_NARRATIVE, system=NARRATIVE_SYSTEM, user=prompt,
