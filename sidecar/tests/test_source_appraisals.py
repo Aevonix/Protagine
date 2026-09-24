@@ -621,3 +621,24 @@ async def test_the_writer_records_linked_affect_once_and_an_opt_out_only_lowers(
     assert affect.count_events(contact_id='person') == 1 and affect.count_events(contact_id='owner') == 0
     assert len(contacts.lowered) == 1
     affect.close()
+
+
+@pytest.mark.asyncio
+async def test_the_writer_reaches_an_affect_store_owned_by_another_thread(state, tmp_path):
+    """The benchmark's host routes own the affect store's connection on their thread; the source
+    worker runs on its own, so the writer uses a connection of its own to the same database."""
+    import threading
+    from protagine.contacts.affect_writer import contact_signal_writer
+    from protagine.tom.affect import AffectStore
+    holder = {}
+    thread = threading.Thread(target=lambda: holder.update(store=AffectStore(str(tmp_path / 'affect.db'),
+                                                                               source_ledger=state.ledger)))
+    thread.start()
+    thread.join()
+    state.on_contact = contact_signal_writer(lambda: holder['store'], lambda: None, owner_id_provider=lambda: 'owner')
+    source(state, 'glad', 'That worked out well, thank you.')
+    await state.process_one(Processor(with_contact({'their_valence': 0.6, 'opt_out': False})))
+    reader = AffectStore(str(tmp_path / 'affect.db'), source_ledger=state.ledger)
+    event, = reader.list_events(contact_id='person')
+    assert event['valence'] == 0.6 and event['source_lineage']['turn_id'] == 'glad'
+    reader.close()
