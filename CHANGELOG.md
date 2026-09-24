@@ -157,7 +157,7 @@ code no route builds any more waits for the M10 audit, named in the known
 gaps, and `benchmarks/source_recall` now drives the production recall path;
 its reference numbers await one measured run. The sidecar package goes from
 137,540 to 120,648 lines of Python; outside this changelog the change deletes 26,903 lines and adds
-6,189.
+6,190.
 
 ## Unreleased - evaluation families for the M4 to M9 gates
 
