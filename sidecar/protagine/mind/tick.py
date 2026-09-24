@@ -209,9 +209,6 @@ class Mind:
 
         self.authority = Authority(self.policy, store, owner_id=self.owner_id, clock=self.clock)
         self.autobiography = Autobiography(ledger, owner_id=self.owner_id, clock=self.clock)
-        # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
-        self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
-                               clock=self.clock, enabled=self.faculties["lessons"])
         self.opinions = None
         if ledger is not None and self.owner_id:
             from protagine.self_model.judgments import SelfJudgments
@@ -237,12 +234,15 @@ class Mind:
                                  enabled=self.faculties["people"])
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
-        # Nightly consolidation (architecture 3.1, 4.1, 4.2): once per night crossed since the last run.
+        # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
+        self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
+                               clock=self.clock, enabled=self.faculties["lessons"], mind_state=self.mind_state)
+        # Nightly consolidation (architecture 3.1, 4.1, 4.2) and the lesson stage (4.8): once per night crossed.
         self.consolidation = Consolidation(
             store=store, ledger=ledger, concerns=self.concerns, mind_state=self.mind_state, contacts=contacts,
             router=router, autobiography=self.autobiography, owner_id=self.owner_id, budgets=self.policy.budgets,
             tokens_allowed=self.authority.tokens_allowed, faculties=self.faculties, clock=self.clock, tz=self.tz,
-            quiet=self.quiet, cancel=self._cancel_stale)
+            quiet=self.quiet, cancel=self._cancel_stale, lessons=self.lessons)
         self._consolidation_task: Optional[asyncio.Task] = None
         if expectations is not None and hasattr(expectations, "register_resolver"):
             expectations.register_resolver("intention:", self._resolve_intention_expectation)
@@ -722,15 +722,16 @@ class Mind:
     async def consolidate(self, *, force: bool = True) -> Dict[str, Any]:
         """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness).
 
-        Forcing runs it whether or not a night was crossed, never past a switch: with the mind off or
-        ``faculties.consolidation`` false nothing runs.
+        Forcing runs it whether or not a night was crossed, never past a switch: with the mind off, or
+        with both ``faculties.consolidation`` and ``faculties.lessons`` false, nothing runs; with one of
+        them off its stages are skipped.
         """
         now = self.clock()
         local_date = self.consolidation.local_date(now, self.tz)
         if not self.enabled:
             return {"skipped": "off", "local_date": local_date}
-        if not self.faculties.get("consolidation", True):
-            return {"skipped": "consolidation off", "local_date": local_date}
+        if not self.consolidation.enabled():
+            return {"skipped": "consolidation and lessons off", "local_date": local_date}
         return await self.consolidation.run(now, force=force)
 
     def narrative(self) -> Dict[str, Any]:

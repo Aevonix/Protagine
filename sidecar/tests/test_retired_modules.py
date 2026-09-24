@@ -69,7 +69,9 @@ def test_research_gathers_from_no_graph():
 def test_the_consolidate_help_names_the_stages_that_run():
     from protagine.mind.consolidate import NIGHT_TASKS
     source = (PACKAGE / "mind" / "cli.py").read_text()
-    assert "dedupe" not in source and set(NIGHT_TASKS) == {"narrative", "contradictions", "digests", "episodes"}
+    assert "dedupe" not in source and set(NIGHT_TASKS) == {"narrative", "lessons", "contradictions", "digests",
+                                                           "episodes"}
+    assert "lessons" in source.split('"consolidate", help=', 1)[1].split(")", 1)[0]
 
 def test_no_retired_route_is_served():
     from protagine.server import create_app
