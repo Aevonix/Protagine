@@ -36,7 +36,8 @@ next night.
    reads them tonight rather than a day later: a claimable job is processed with the mind's router,
    one the projection worker holds is waited for, all within 120 s (`CLAIM_SETTLE_S`). This is the
    claim projection's own work, not the night's, so it is not charged to the night's share; a job
-   that fails goes back to its retry time and is not waited for. The night's record counts
+   that fails goes back to its retry time and is not waited for; with `PROTAGINE_SOURCE_CLAIMS`
+   off (no claim extraction on this sidecar) the step does nothing. The night's record counts
    `claims_settled`. A forced tick's wait (300 s) covers it, so the paired body's night tick sees a
    statement from the turn just before it whatever the model's latency.
 
