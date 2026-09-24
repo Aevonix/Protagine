@@ -1118,7 +1118,7 @@ class Mind:
                 steps_done = self.goals.summaries(goal)
             failing = self.feelings.failing(candidate.topic or concern.summary)
             pitfalls = list(failing.pitfalls) if failing else []
-            lesson_lines, lesson_ids = self.lessons.for_task(candidate) if candidate.kind == "task" else ([], [])
+            lesson_lines, lesson_ids = self._lessons_for(candidate) if candidate.kind == "task" else ([], [])
             candidate.lesson_ids = lesson_ids
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
                                                   may_adopt_goal=may_adopt, steps_done=steps_done,
@@ -1133,7 +1133,10 @@ class Mind:
                 else:
                     shaped = goal_candidate
             # A failure-class investigation asks for lesson operations (the reflector); a goal keeps M4's path.
-            self.lessons.reflector(shaped)
+            try:
+                self.lessons.reflector(shaped)
+            except Exception as error:
+                logger.warning("reflector request not added (%s)", type(error).__name__)
             row = await self._form(shaped, score, now)
             if row is None:
                 # A thought was spent and formed nothing: charge it (anti-rumination bounds the retries)
@@ -1341,16 +1344,28 @@ class Mind:
             await self._refuse_grant(candidate)
         return updated
 
+    def _lessons_for(self, candidate: Candidate) -> tuple[List[str], List[str]]:
+        """``lessons.for_task``; lessons are guidance, so a store that cannot be read gives none."""
+        try:
+            return self.lessons.for_task(candidate)
+        except Exception as error:
+            logger.warning("lessons unavailable for a task (%s)", type(error).__name__)
+            return [], []
+
     def _task_lessons(self, candidate: Candidate) -> tuple[List[str], List[str]]:
         """The lessons a task body carries: the ones deliberation was given (``candidate.lesson_ids``),
         or the lessons for the task when it did not pass through ``_act``; nothing with lessons off."""
         if not self.lessons.enabled:
             return [], []
-        if candidate.lesson_ids:
+        if not candidate.lesson_ids:
+            return self._lessons_for(candidate)
+        try:
             chosen = [lesson for lesson in (self.lessons.get(ident) for ident in candidate.lesson_ids)
                       if lesson is not None and lesson.status in {"active", "candidate"}]
-            return [lesson.line() for lesson in chosen], [lesson.id for lesson in chosen]
-        return self.lessons.for_task(candidate)
+        except Exception as error:
+            logger.warning("lessons unavailable for a task body (%s)", type(error).__name__)
+            return [], []
+        return [lesson.line() for lesson in chosen], [lesson.id for lesson in chosen]
 
     @staticmethod
     def _purpose(purpose: str | None) -> str:

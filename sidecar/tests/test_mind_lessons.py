@@ -395,3 +395,17 @@ def test_the_mind_state_and_stats_show_the_lessons(fx):
     stats = fx.mind.stats()
     assert stats["lessons"]["active"] == 1 and stats["lessons"]["uses"] == 1
     assert stats["lesson_use_rate"] == 1.0
+
+
+async def test_a_failing_lesson_store_never_stops_the_tick(fx):
+    """Lessons are guidance: when the store cannot be read, the task forms without them."""
+    def broken(*args, **kwargs):
+        raise RuntimeError("ledger locked")
+    fx.mind.lessons.for_task = broken
+    fx.mind.lessons.get = broken
+    fx.mind.lessons.reflector = broken
+    fx.mind.concerns.bump(drive="curiosity", kind="interest", summary=f"research {TOPIC}",
+                          dedup_key=candidate(1).dedup_key, salience=0.95, sources=[], detail=candidate(1).as_detail())
+    formed, _ = await fx.mind._act(fx.now)
+    [row] = [fx.store.get(item["id"]) for item in formed]
+    assert row.lesson_ids is None and "[lesson" not in row.context["body"]
