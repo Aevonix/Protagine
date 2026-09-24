@@ -129,7 +129,7 @@ class Fx:
         self.mind = Mind(config={"autonomy": "standard", **(config or {})}, store=self.store, state_dir=tmp_path,
                          owner_id=OWNER, commitments=self.commitments, feedback=self.feedback,
                          contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
-                         router=router, affect=self.affect, packet_for=packet_for, claims_for=claims_for)
+                         router=router, contact_affect=self.affect, packet_for=packet_for, claims_for=claims_for)
         self.mind.digest_hour = 25
 
     def shift(self, delta):

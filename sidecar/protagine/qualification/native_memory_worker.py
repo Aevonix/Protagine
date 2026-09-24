@@ -122,7 +122,7 @@ def serve_mind(app, state, person, section):
                     ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
                     router=getattr(host, '_llm_router', None),
                     # The people faculty's reads, as the sidecar wires them (served where the host has them).
-                    comms=getattr(host, '_comms_log', None), affect=getattr(host, '_affect_store', None),
+                    comms=getattr(host, '_comms_log', None), contact_affect=getattr(host, '_affect_store', None),
                     packet_for=getattr(host, 'assemble_packet', None), claims_for=getattr(host, 'claims_for', None),
                     capture=CommitmentExtractor(get_turn_idempotency_ledger(directory),
                                                 lambda: host._commitment_store,

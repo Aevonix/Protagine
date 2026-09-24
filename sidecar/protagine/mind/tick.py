@@ -133,7 +133,7 @@ class Mind:
                  persist: Callable[[Dict[str, Any]], None] | None = None, router: Any = None,
                  appraisals: Any = None, interests: Iterable[str] = (), concerns: Concerns | None = None,
                  backlog: Callable[[], Mapping[str, int]] | None = None, capture: Any = None,
-                 heartbeat: Callable[[], Any] | None = None, comms: Any = None, affect: Any = None,
+                 heartbeat: Callable[[], Any] | None = None, comms: Any = None, contact_affect: Any = None,
                  packet_for: Callable[[str], Awaitable[str]] | None = None,
                  claims_for: Callable[[str], Awaitable[List[str]]] | None = None) -> None:
         mind = dict(config or {})
@@ -155,10 +155,11 @@ class Mind:
         self.feedback = feedback
         self.expectations = expectations
         self.contacts = contacts
-        # The people faculty's reads: the comms ledger, contact affect (``trend``), the recipient-scoped
-        # packet a message to a contact is composed from, and the claims a contact digest lists.
+        # The people faculty's reads: the comms ledger, the contacts' affect (``trend``; not the
+        # agent's own feelings), the recipient-scoped packet a message to a contact is composed from,
+        # and the claims a contact digest lists.
         self.comms = comms
-        self.affect = affect
+        self.contact_affect = contact_affect
         self.packet_for = packet_for
         self.claims_for = claims_for
         self.ledger = ledger
@@ -1329,10 +1330,10 @@ class Mind:
                 if row.get("state") not in {"resolved", "cancelled", "expired"}]
 
     async def _affect_declining(self, contact_id: str) -> bool:
-        if self.affect is None or not hasattr(self.affect, "trend"):
+        if self.contact_affect is None or not hasattr(self.contact_affect, "trend"):
             return False
         try:
-            trend = self.affect.trend(contact_id)
+            trend = self.contact_affect.trend(contact_id)
             if inspect.isawaitable(trend):
                 trend = await trend
         except Exception as error:

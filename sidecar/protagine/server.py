@@ -1448,7 +1448,7 @@ async def lifespan(app: FastAPI):
             expectations=_host_for_mind._expectations, contacts=contacts_store,
             ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
             interests=_mind_interests, capture=_mind_capture,
-            comms=_host_for_mind._comms_log, affect=_host_for_mind._affect_store,
+            comms=_host_for_mind._comms_log, contact_affect=_host_for_mind._affect_store,
             packet_for=_host_for_mind.assemble_packet, claims_for=_host_for_mind.claims_for,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
             persist=_persist_mind_setting, heartbeat=lambda: telemetry.touch("last_tick_at"))
