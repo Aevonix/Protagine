@@ -574,8 +574,8 @@ of the night's lesson stage and when the mind starts; every change bumps
 `skills.generation` in `/v1/mind/state`, which the plugin reads to clear
 Hermes' skills prompt cache, so the next session lists the skill without a
 restart. Loads of Protagine's skills reach `POST /v1/mind/skills/used` and are
-counted in `/v1/mind/stats`. The flag stays off until the skills arm beats
-lessons alone.
+counted in `/v1/mind/stats` and `protagine mind lessons`. The flag stays off
+until the skills arm beats lessons alone.
 
 ## Asks
 
@@ -704,7 +704,7 @@ protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
 | `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
-| `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, text}`: each lesson with its verified tally, and with `uses=true` every use in the 90-day window; a guest viewer gets nothing |
+| `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, skills, text}`: each lesson with its verified tally, with `uses=true` every use in the 90-day window, and the skills Protagine keeps with their loads; a guest viewer gets nothing |
 | `POST /lessons/{id}/retire` | `{reason, by?}` | the retired lesson; 404 unknown, 409 already closed |
 | `POST /skills/used` | `{skill, session_id?, task_id?}` (the plugin's `on_skill_lifecycle` forwarding) | `{ok, counted, loads}`; only `protagine-*` skills are counted |
 | `GET /narrative` | | the self-narrative `{enabled, text, sections: {interests, strengths, recent, stances}, cites, updated_at}`; `enabled: false` and empty text until the mind keeps one or while `faculties.self_narrative` is off |

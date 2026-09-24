@@ -315,7 +315,11 @@ def _lessons(sidecar: Sidecar, args: argparse.Namespace, *, as_json: bool) -> in
     value = sidecar.call("GET", "/v1/mind/lessons", params=params)
     rows = value.get("lessons") or []
     if action == "list":
-        text = "\n".join(_lesson_line(row) for row in rows) or (
+        skills = value.get("skills") if isinstance(value.get("skills"), dict) else {}
+        loads = skills.get("loads") or {}
+        lines = [_lesson_line(row) for row in rows]
+        lines += [f"skill {name}: {int(loads.get(name, 0))} loads" for name in skills.get("owned") or []]
+        text = "\n".join(lines) or (
             "no lessons" if value.get("enabled") else "lessons: off (the stored lessons are kept)")
         _emit(value, as_json=as_json, text=text)
         return 0

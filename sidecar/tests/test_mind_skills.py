@@ -172,6 +172,14 @@ def test_skill_loads_are_counted(fx):
     assert fx.mind.skills.loads() == {"protagine-order-codes-by-channel": 2}
     assert fx.mind.stats()["skills"]["loads"] == {"protagine-order-codes-by-channel": 2}
 
+    async def listed():
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://mind") as client:
+            return (await client.get("/v1/mind/lessons")).json()
+    value = asyncio.run(listed())
+    assert value["skills"] == {"enabled": True, "generation": 1, "owned": ["protagine-order-codes-by-channel"],
+                               "loads": {"protagine-order-codes-by-channel": 2}}
+    assert "skill protagine-order-codes-by-channel: 2 loads" in value["text"]
+
 
 async def test_the_night_ends_by_syncing_the_skills(tmp_path, monkeypatch):
     from test_mind_lessons_night import LESSONS_ONLY, make as night_fixture

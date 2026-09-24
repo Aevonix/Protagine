@@ -427,7 +427,18 @@ async def lessons(status: Optional[str] = None, uses: bool = False, viewer: Opti
     rows = [{**lesson.as_dict(), "tally": tallies.get(lesson.id, {"uses": 0, "wins": 0, "losses": 0, "applied": 0})}
             for lesson in store.all(include_closed=True) if not wanted or lesson.status in wanted]
     value = {**empty, "lessons": rows, "uses": store.uses() if uses else []}
-    return {**value, "text": "\n".join(_lesson_line(row) for row in rows) or "(no lessons)"}
+    lines = [_lesson_line(row) for row in rows]
+    skills = getattr(mind, "skills", None)
+    if skills is not None:
+        value["skills"] = {**skills.state(), "loads": skills.loads()}
+        lines += _skill_lines(value["skills"])
+    return {**value, "text": "\n".join(lines) or "(no lessons)"}
+
+
+def _skill_lines(skills: Dict[str, Any]) -> List[str]:
+    """The promoted lessons Protagine keeps as skills, with how often Hermes loaded each."""
+    loads = skills.get("loads") or {}
+    return [f"skill {name}: {int(loads.get(name, 0))} loads" for name in skills.get("owned") or []]
 
 
 @router.post("/lessons/{lesson_id}/retire")
