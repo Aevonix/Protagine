@@ -52,7 +52,7 @@ stance with `faculties.opinions` off and never a view about a person (X15,
 X7). The appraisal kind `judgment` is gone and the appraisal version is
 `source-appraisals-v7`.
 
-The code-side items of the Aeva cutover runbook. `POST /v1/host/memory/search`
+Hardening from a live upgrade rehearsal. `POST /v1/host/memory/search`
 requires a non-blank `person_id` again: the owner default for a body that
 names nobody is gone, so a missing or blank person is a 422 and never the
 owner's search; the limit clamp and the optional `session_id` stay
