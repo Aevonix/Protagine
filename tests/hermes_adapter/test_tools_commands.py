@@ -82,27 +82,59 @@ def test_mind_off_in_chat_reaches_the_sidecar_without_a_model(home, sidecar):
 
 
 def test_self_tool_state_log_and_why(home, sidecar):
+    """The record is the only source for claims about the agent's own actions (architecture 4.2)."""
     sidecar.mind_routes = True
     sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "dispatched", "drive": "duty",
-                                       "title": "Check", "hermes_ref": "t_1"}
+                                       "title": "Check", "hermes_ref": "t_1", "decision": "act"}
+    sidecar.mind.intentions["i-02"] = {"id": "i-02", "kind": "task", "status": "approved", "title": "Research tides",
+                                       "decision": "act"}
+    sidecar.mind.intentions["i-03"] = {"id": "i-03", "kind": "task", "status": "done", "title": "Old", "decision": "act"}
+    sidecar.mind.intentions["m-01"] = {"id": "m-01", "kind": "message", "status": "done", "title": "Nudge p-07",
+                                       "decision": "act", "recipient": "p-07"}
+    sidecar.mind.narrative = {"enabled": True, "text": "I researched tides for the owner. [i-03]", "sections": {},
+                              "cites": ["i-03"], "updated_at": None}
     result = probe(TOOL_CODE + '''
 g, o = guest(), owner()
 emit(state=call("protagine_self", {"operation": "state"}, g),
      status_alias=call("protagine_self", {"operation": "status"}, o),
      log=call("protagine_self", {"operation": "log", "limit": 5}, g),
+     yesterday=call("protagine_self", {"operation": "log", "since_hours": 24, "recipient": "p-07", "kind": "message"}, g),
+     bad_hours=call("protagine_self", {"operation": "log", "since_hours": "soon"}, g),
      why=call("protagine_self", {"operation": "why", "id": "i-01"}, g),
      missing=call("protagine_self", {"operation": "why"}, g),
      unknown=call("protagine_self", {"operation": "why", "id": "nope"}, g))
 ''', home)
-    assert result["state"]["enabled"] is True and result["state"]["sidecar_reachable"] is True
-    assert result["state"]["mind_routes"] is True and result["state"]["autonomy"] == "standard"
+    state = result["state"]
+    assert state["enabled"] is True and state["sidecar_reachable"] is True
+    assert state["mind_routes"] is True and state["autonomy"] == "standard"
+    # What the mind is working on and what it knows about itself come from the log and the narrative route.
+    assert state["working_on"] == [{"id": "i-01", "title": "Check", "status": "dispatched"},
+                                   {"id": "i-02", "title": "Research tides", "status": "approved"}]
+    assert state["narrative"] == "I researched tides for the owner. [i-03]"
     assert result["status_alias"]["enabled"] is True
     assert result["log"]["entries"][0]["id"] == "i-01"
+    assert [e["id"] for e in result["yesterday"]["entries"]] == ["m-01"]
+    assert "since_hours" in result["bad_hours"]["error"]
     assert result["why"]["drive"] == "duty" and result["why"]["hermes_ref"] == "t_1"
     assert "id is required" in result["missing"]["error"]
-    assert "not found" in result["unknown"]["error"]
+    # A false premise about the agent's own actions gets the sidecar's refusal sentence, verbatim.
+    assert result["unknown"] == {"error": "no intention nope exists in the audit log"}
     logs = sidecar.calls("/v1/mind/log", "GET")
-    assert logs and logs[0]["query"] == {"limit": "5"}
+    assert {"limit": "5"} in [call["query"] for call in logs]
+    assert {"limit": "20", "since_hours": "24.0", "recipient": "p-07", "kind": "message"} in [call["query"] for call in logs]
+    assert {"status": "dispatched,approved", "kind": "task", "limit": "20"} in [call["query"] for call in logs]
+
+
+def test_self_tool_without_the_mind_routes_reports_no_work_and_no_narrative(home, sidecar):
+    result = probe(TOOL_CODE + '''
+g = guest()
+emit(state=call("protagine_self", {"operation": "state"}, g),
+     why=call("protagine_self", {"operation": "why", "id": "i-01"}, g))
+''', home)
+    assert result["state"]["working_on"] == [] and result["state"]["narrative"] == ""
+    assert result["state"]["mind_routes"] is False
+    assert "mind routes" in result["why"]["error"]
+    assert sidecar.calls("/v1/mind/narrative") == [] and sidecar.calls("/v1/mind/log") == []
 
 
 def test_self_tool_approval_needs_the_owner_and_the_typed_code(home, sidecar):
@@ -227,6 +259,7 @@ emit(sections=[(s.id, s.content) for s in sections if s.id == "protagine"])
     (section_id, content), = result["sections"]
     assert section_id == "protagine"
     assert "Your owner is Owner." in content and len(content) <= 4000
+    assert content.startswith("You are Agent. Your values: care. Your boundaries: never send money.")
     assert json.dumps(content)  # plain text
 
 

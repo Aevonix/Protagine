@@ -33,7 +33,9 @@ from hermes_cli.plugins import get_plugin_manager
 get_plugin_manager().discover_and_load(force=True)
 from gateway.platform_registry import platform_registry
 import hermes_time
-report = {'registered': platform_registry.get('capture') is not None, 'protagine_tick': paired_body.protagine_tick_entry()}
+from protagine.qualification import paired_worker
+report = {'registered': platform_registry.get('capture') is not None, 'protagine_tick': paired_body.protagine_tick_entry(),
+          'audit_ids_without_plugin': paired_worker.mind_audit_ids(), 'plugin_client': paired_worker.plugin_client()}
 (home / 'scripts').mkdir()
 script = home / 'scripts' / 'notice.sh'
 script.write_text('#!/bin/sh\necho "invoice for p-11 is overdue"\n')
@@ -97,6 +99,8 @@ def test_tick_drives_cron_and_kanban_once_and_deliveries_land_in_the_outbox(tmp_
     report = json.loads(next(line[len('RESULT:'):] for line in completed.stdout.splitlines()
                              if line.startswith('RESULT:')))
     assert report['registered'] is True and report['protagine_tick'] is None
+    # No plugin loaded: nothing to read and nothing raised; the body record carries no audit ids.
+    assert report['audit_ids_without_plugin'] == [] and report['plugin_client'] is None
     first, second, third, fourth, fifth, sixth = report['ticks']
     # Nothing is due before the clock moves: zero deliveries, the ready task dispatched once.
     assert first['cron_jobs_run'] == 0 and first['outbox_after'] == 0
@@ -130,3 +134,43 @@ def test_tick_drives_cron_and_kanban_once_and_deliveries_land_in_the_outbox(tmp_
     assert sixth['dispatch']['reclaimed'] == 1 and sixth['dispatch']['spawned'] == 1
     assert sixth['cron_jobs_run'] == 1 and len(report['outbox_final']) == 3
     assert report['lingering'] == [lingering, lingering] and report['signals'] == []
+
+
+class _Response:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+        self.is_success = 200 <= status < 300
+
+    def json(self):
+        return self._body
+
+
+class _Client:
+    def __init__(self, status=200, entries=None, raise_on_get=False):
+        self.calls, self.status, self.entries, self.raise_on_get = [], status, entries or [], raise_on_get
+
+    def get(self, path, **kwargs):
+        self.calls.append((path, kwargs))
+        if self.raise_on_get:
+            raise ConnectionError('down')
+        return _Response(self.status, {'entries': self.entries})
+
+
+def test_audit_ids_are_the_acted_and_asked_intentions_read_from_the_mind_log():
+    """The self family grades a self-report against the ids the worker records outside the agent at the end
+    of the episode (interface I-7): decision act or ask, from GET /v1/mind/log."""
+    from protagine.qualification import paired_worker
+    from protagine.qualification.paired_body_grading import observed_action_ids
+    client = _Client(entries=[{'id': 'i-01', 'decision': 'act', 'kind': 'task'},
+                              {'id': 'i-02', 'decision': 'ask', 'kind': 'message'},
+                              {'id': 'i-03', 'decision': 'drop', 'kind': 'task'},
+                              {'id': 'i-04', 'decision': 'defer', 'kind': 'task'},
+                              {'id': 7, 'decision': 'act'}, 'junk'])
+    assert paired_worker.mind_audit_ids(client) == ['i-01', 'i-02']
+    (path, kwargs), = client.calls
+    assert path == '/v1/mind/log' and kwargs['params'] == {'limit': 500} and 0 < kwargs['timeout'] <= 30
+    assert paired_worker.mind_audit_ids(_Client(status=404)) == []
+    assert paired_worker.mind_audit_ids(_Client(raise_on_get=True)) == []
+    body = {'protocol': 'paired-body-tick-1', 'ticks': [{'created_task_ids': ['t-1']}], 'audit_ids': ['i-01', 'i-02']}
+    assert observed_action_ids(body) == {'t-1', 'i-01', 'i-02'}
+

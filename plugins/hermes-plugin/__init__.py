@@ -2,10 +2,12 @@
 
 Registration wires four hooks (``pre_llm_call``, ``post_llm_call``,
 ``pre_tool_call``, ``on_kanban_dispatch_tick``), one command (``/mind``), the
-model tools and one system prompt section, then starts the body thread, which
-delivers captured turns and runs the mind loop (dispatch, outbox,
-reconciliation, observations) against ``/v1/mind``. Registration performs no
-network I/O and never changes the Hermes configuration.
+model tools and one system prompt section (the constitution from
+``identity.yaml``, the owner, the self-narrative the sidecar keeps and two tool
+notes), then starts the body thread, which delivers captured turns and runs the
+mind loop (dispatch, outbox, reconciliation, observations) against
+``/v1/mind``. Registration performs no network I/O and never changes the
+Hermes configuration.
 """
 
 from __future__ import annotations
@@ -28,22 +30,38 @@ logger = logging.getLogger(__name__)
 
 HOOKS = ("pre_llm_call", "post_llm_call", "pre_tool_call", "on_kanban_dispatch_tick")
 TOOLSET = "protagine"
+# The one prompt section, frozen per session by Hermes (architecture 4.2, seam 2): the constitution
+# (<= 1,500 characters), the owner, the self-narrative (<= 2,000) and the two tool notes, <= 4,000 in all.
+SECTION_CHARS, CONSTITUTION_CHARS, NARRATIVE_CHARS = 4000, 1500, 2000
+NARRATIVE_LEAD = ("What you know about yourself, from your own record (ids in brackets are audit ids you can "
+                  "check with protagine_self why):")
+NOTES = ("Protagine keeps your long-term memory: recalled evidence arrives with each message and "
+         "protagine_memory_search finds more. Answer a mind ask with protagine_self yes or no only when "
+         "its code appears in the owner's own message.")
 
 
-def prompt_section(settings: Settings) -> Callable[[Mapping[str, Any]], str]:
-    """The one static block the plugin adds to every request: who the owner is and the two things the tool
-    schemas cannot say. Recall guidance is the memory provider's system block."""
+def prompt_section(settings: Settings, client: ProtagineClient | None = None) -> Callable[[Mapping[str, Any]], str]:
+    """The block the plugin adds to every session prompt: who the agent is (the owner-authored constitution
+    read from ``identity.yaml``), who the owner is, what the agent knows about itself from its own record
+    (``GET /v1/mind/narrative``: 2 s, cached 60 s, fail open to the constitution alone) and the two things
+    the tool schemas cannot say. Hermes renders it once per session, so a nightly narrative change reaches
+    the next session and the prompt cache holds within one. Recall guidance is the memory provider's block."""
     def render(_session_info: Mapping[str, Any]) -> str:
         identity = settings.identity()
+        parts = [settings.constitution()[:CONSTITUTION_CHARS]]
         owner = identity.get("owner") if isinstance(identity.get("owner"), Mapping) else {}
-        lines = []
         if owner.get("name"):
-            lines.append(f"Your owner is {owner['name']}.")
-        lines.append(
-            "Protagine keeps your long-term memory: recalled evidence arrives with each message and "
-            "protagine_memory_search finds more. Answer a mind ask with protagine_self yes or no only when "
-            "its code appears in the owner's own message.")
-        return "\n".join(lines)[:4000]
+            parts.append(f"Your owner is {owner['name']}.")
+        narrative: Any = None
+        if client is not None:
+            try:
+                narrative = client.narrative()
+            except Exception:  # the record is optional; the constitution is not
+                logger.debug("narrative unavailable for the prompt section", exc_info=True)
+        if isinstance(narrative, Mapping) and narrative.get("enabled") is True and narrative.get("text"):
+            parts.append(NARRATIVE_LEAD + "\n" + str(narrative["text"])[:NARRATIVE_CHARS])
+        parts.append(NOTES)
+        return "\n\n".join(part for part in parts if part)[:SECTION_CHARS]
     return render
 
 
@@ -110,7 +128,7 @@ def register(ctx: Any) -> None:
     ctx.register_tool(name=REMINDER_SCHEMA["name"], toolset=TOOLSET, schema=REMINDER_SCHEMA,
                       handler=Reminders(client, sessions).handle)
 
-    ctx.register_system_prompt_section("protagine", prompt_section(settings))
+    ctx.register_system_prompt_section("protagine", prompt_section(settings, client))
 
     # Workers never run the body; a host that drives ticks itself (the paired benchmark) sets
     # PROTAGINE_BODY_THREAD=0 and calls tick() or flush() instead.
@@ -122,4 +140,4 @@ def register(ctx: Any) -> None:
     logger.info("Protagine adapter %s registered (sidecar %s)", __version__, settings.sidecar_url)
 
 
-__all__ = ["HOOKS", "TOOLSET", "__version__", "flush", "register", "tick"]
+__all__ = ["HOOKS", "NOTES", "TOOLSET", "__version__", "flush", "prompt_section", "register", "tick"]

@@ -212,3 +212,69 @@ def test_the_benchmark_identity_gives_the_body_an_owner_handle_to_send_to(tmp_pa
     assert target({'id': 'm-1', 'recipient': 'p-01', 'recipient_is_owner': True}) == paired_body.PLUGIN + ':' + paired_body.OWNER
     # A contact with no handle anywhere still gets nothing: the owner handle is not a fallback for others.
     assert target({'id': 'm-4', 'kind': 'message', 'recipient': 'p-02', 'recipient_is_owner': False}) == ''
+
+
+EMBEDDING = {'base_url': 'http://127.0.0.1:8092/v1', 'model': 'e5', 'dimensions': 8}
+
+
+def test_the_worker_honours_the_plans_embedding_endpoint_through_the_semantic_recall_flag(monkeypatch):
+    """Extra item 2 (D9): with no endpoint in the plan the embedder stays off in every arm (today's behaviour);
+    with one, ``full`` uses it and ``full-semantic_recall`` does not, so the two arms differ in exactly that."""
+    monkeypatch.setenv('EMBED_KEY', 'secret')
+    full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))
+    ablated = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full-semantic_recall']))
+    plain = worker.mind_section(None)
+    for section in (full, ablated, plain):
+        assert worker.embedding_environment({}, section) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+        assert worker.embedding_environment({'embedding': None}, section) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    with_key = {**EMBEDDING, 'api_key_env': 'EMBED_KEY'}
+    assert worker.embedding_environment({'embedding': with_key}, full) == {
+        'PROTAGINE_EMBED_PROVIDER': 'openai_api', 'PROTAGINE_EMBED_BASE_URL': 'http://127.0.0.1:8092/v1',
+        'PROTAGINE_EMBED_MODEL': 'e5', 'PROTAGINE_EMBED_DIMS': '8', 'PROTAGINE_EMBED_API_KEY': 'secret'}
+    assert 'PROTAGINE_EMBED_API_KEY' not in worker.embedding_environment({'embedding': EMBEDDING}, full)
+    assert worker.embedding_environment({'embedding': with_key}, ablated) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    # The plain plugin arm has no faculties: it uses the endpoint the plan gives, like full.
+    assert worker.embedding_environment({'embedding': EMBEDDING}, plain)['PROTAGINE_EMBED_PROVIDER'] == 'openai_api'
+    # The initiative-only arm turns every other faculty off, semantic_recall included.
+    assert worker.embedding_environment({'embedding': EMBEDDING}, worker.mind_section(True)) == {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+
+
+def test_a_plan_records_one_embedding_endpoint_identically_for_every_arm(fixture, monkeypatch):
+    import json
+    arms = ['base_hermes', 'full', 'full-semantic_recall']
+    fixture.output.mkdir(mode=0o700)  # plans below are private directories under a private parent
+    without = paired.plan(fixture.output / 'without', native_binding='candidate', evidence_mode='controlled',
+                          arms=arms, reference_arm='full', **fixture.resources)
+    assert 'embedding' not in without['comparison'] and without['options']['embedding'] is None
+    assert all('embedding' not in pair['arms'][arm]['case']['inputs'] for pair in without['pairs'] for arm in arms)
+    manifest = paired.plan(fixture.output / 'with', native_binding='candidate', evidence_mode='controlled',
+                           arms=arms, reference_arm='full', embedding=dict(EMBEDDING), **fixture.resources)
+    assert manifest['comparison']['embedding'] == EMBEDDING == manifest['options']['embedding']
+    assert manifest['comparison_key'] != without['comparison_key']
+    for pair in manifest['pairs']:
+        for arm in arms:
+            assert pair['arms'][arm]['case']['inputs']['embedding'] == EMBEDDING
+    # The plan-level block is not the task: the dataset identity and the task hashes are unchanged by it.
+    assert manifest['dataset']['sha256'] == without['dataset']['sha256']
+    assert [pair['task_sha256'] for pair in manifest['pairs']] == [pair['task_sha256'] for pair in without['pairs']]
+    # run() re-prepares the frozen plan from its options and finds it identical.
+    report = asyncio.run(paired.run(fixture.output / 'with', **fixture.resources))
+    assert report['paired_score'] is not None
+    # A credential name must be one the native config already declares (it is what the container receives).
+    with pytest.raises(ValueError, match='credential'):
+        paired.plan(fixture.output / 'bad-key', native_binding='candidate', evidence_mode='controlled', arms=arms,
+                    reference_arm='full', embedding={**EMBEDDING, 'api_key_env': 'EMBED_KEY'}, **fixture.resources)
+    declared = fixture.output.parent / 'config-with-key.json'
+    declared.write_text(json.dumps({'providers': {'candidate': {'key_env': 'EMBED_KEY'}}}))
+    monkeypatch.setenv('EMBED_KEY', 'secret')
+    keyed = paired.plan(fixture.output / 'keyed', native_binding='candidate', evidence_mode='controlled', arms=arms,
+                        reference_arm='full', embedding={**EMBEDDING, 'api_key_env': 'EMBED_KEY'},
+                        **{**fixture.resources, 'native_config': declared})
+    assert keyed['comparison']['embedding']['api_key_env'] == 'EMBED_KEY'
+    for bad in ({'base_url': 'http://127.0.0.1:8092/v1', 'model': 'e5'}, {**EMBEDDING, 'dimensions': 0},
+                {**EMBEDDING, 'dimensions': True}, {**EMBEDDING, 'model': ''}, {**EMBEDDING, 'extra': 1},
+                {**EMBEDDING, 'base_url': 'http://user:pw@127.0.0.1:8092/v1'}, 'http://127.0.0.1:8092/v1'):
+        with pytest.raises(ValueError):
+            paired.plan(fixture.output / 'invalid', native_binding='candidate', evidence_mode='controlled', arms=arms,
+                        reference_arm='full', embedding=bad, **fixture.resources)
+

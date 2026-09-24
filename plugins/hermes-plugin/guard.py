@@ -3,7 +3,10 @@
 A mind-originated run is a kanban worker spawned on the ``protagine-act``
 profile. A non-owner run is a session whose sender is not the owner. The
 guard fails closed for effectful tools: its own errors and a silent sidecar
-both block. Read-only tools never wait on the sidecar.
+both block. Read-only tools never wait on the sidecar. In a mind run the
+owner-authored files (``protagine.yaml``, ``identity.yaml``, ``api.key``) are
+off limits to every effectful tool, however the path is spelled (architecture
+4.2, 7.5): the mind cannot rewrite its own constitution.
 """
 
 from __future__ import annotations
@@ -32,6 +35,9 @@ MESSAGING_TOOLS = frozenset({
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 })
 WRITE_TOOLS = frozenset({"write_file", "patch"})
+# The owner-authored files of an instance. A mind run may read them and never change them, by any tool:
+# a write target, a patch header, a shell command or code that names one is blocked before anything else.
+PROTECTED_BASENAMES = ("protagine.yaml", "identity.yaml", "api.key")
 GUARD_ROUTE = "/v1/mind/guard"
 GUARD_TIMEOUT = 2.0
 # The V4A headers stock ``patch`` writes to (tools/file_tools.py checks the same two shapes).
@@ -105,6 +111,16 @@ def write_targets(tool: str, args: Mapping[str, Any]) -> list[Any]:
     return targets
 
 
+def names_protected_file(tool: str, args: Mapping[str, Any]) -> str | None:
+    """The protected basename an effectful call names: in its write targets (``write_file``, ``patch``,
+    including V4A headers), else anywhere in its serialized arguments (a command, code, a message)."""
+    if tool in WRITE_TOOLS:
+        haystack = [str(target) for target in write_targets(tool, args)]
+    else:
+        haystack = [json.dumps(args, ensure_ascii=False, sort_keys=True)]
+    return next((name for name in PROTECTED_BASENAMES for text in haystack if name in text), None)
+
+
 def floor_match(text: str) -> str | None:
     return next((name for name, pattern in FLOOR_PATTERNS.items() if pattern.search(text)), None)
 
@@ -157,6 +173,9 @@ class Guard:
         if mind:
             if not self.mind_enabled():
                 return block("the mind is off; no effects until it is turned on")
+            protected = names_protected_file(tool, args)
+            if protected:
+                return block(f"{protected} is owner-authored; a mind task cannot change it")
             verdict = self._deny(tool, text)
             if verdict is not None:
                 return verdict
@@ -318,5 +337,6 @@ class Guard:
         return None
 
 
-__all__ = ["FLOOR_PATTERNS", "Guard", "MESSAGING_TOOLS", "READ_ONLY_TOOLS", "WRITE_TOOLS", "ask",
-           "block", "floor_match", "mind_run", "parse_deliver", "path_inside", "workspace", "write_targets"]
+__all__ = ["FLOOR_PATTERNS", "Guard", "MESSAGING_TOOLS", "PROTECTED_BASENAMES", "READ_ONLY_TOOLS", "WRITE_TOOLS",
+           "ask", "block", "floor_match", "mind_run", "names_protected_file", "parse_deliver", "path_inside",
+           "workspace", "write_targets"]
