@@ -77,6 +77,7 @@ class NightRouter:
         schema = (context or {}).get("response_schema")
         assert isinstance(schema, dict) and set(schema) == {"name", "schema"}
         assert context.get("allow_fallback") is False
+        assert context.get("workload") == "background"                  # the mind's own call, not the agent's
         answer = self.answers.get(context["task"])
         payload = answer(messages, context) if callable(answer) else (answer or {})
         return SimpleNamespace(content=json.dumps(payload), usage={"total_tokens": self.tokens})

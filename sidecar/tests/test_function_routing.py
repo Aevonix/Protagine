@@ -837,3 +837,16 @@ async def test_inventory_provider_metadata_comes_from_retained_valid_snapshot(mo
         assert retained.models == original.models
         assert retained.routing['config_revision'] == original.routing['config_revision']
         assert retained.routing['reload_error'] == 'ValueError'
+
+
+@pytest.mark.asyncio
+async def test_a_callers_workload_label_is_recorded_with_the_call_and_never_sent():
+    """The mind's own calls (deliberation, the nightly consolidation) say they are background work; the router
+    keeps the label in its call record, which the overhead accounting reads, and never puts it on the wire."""
+    with endpoint() as (url, calls):
+        r = router(config(url, url, timeoutSeconds=10, deadlineSeconds=20))
+        await complete(r, workload='background')
+        await complete(r)
+        await complete(r, workload='sideways')
+        assert [row.get('workload') for row in r.routing_status()['recent_calls']] == ['background', None, None]
+        assert all('workload' not in json.dumps(call['payload']) for call in calls)

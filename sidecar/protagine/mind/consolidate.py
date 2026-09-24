@@ -383,7 +383,7 @@ class Consolidation:
             response = await asyncio.wait_for(self.router.complete(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 context={"task": task, "allow_fallback": False, "max_output_tokens": int(max_output_tokens),
-                         "response_schema": schema}), deadline + 5)
+                         "response_schema": schema, "workload": "background"}), deadline + 5)
         except asyncio.CancelledError:
             raise
         except Exception as error:

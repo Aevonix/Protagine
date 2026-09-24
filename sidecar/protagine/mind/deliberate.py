@@ -249,7 +249,7 @@ class Deliberation:
             response = await asyncio.wait_for(self.router.complete(
                 messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 context={"task": TASK, "allow_fallback": False, "max_output_tokens": 700,
-                         "response_schema": RESPONSE_SCHEMA}), deadline + 5)
+                         "response_schema": RESPONSE_SCHEMA, "workload": "background"}), deadline + 5)
         except asyncio.CancelledError:
             raise
         except Exception as error:

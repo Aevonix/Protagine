@@ -420,9 +420,13 @@ class LLMRouter:
                 # recording success.
                 _require_function_output(response, tools)
                 self._endpoints.success(snapshot, binding, response)
+                # A caller's own workload label (the mind's calls say ``background``) stays in this
+                # record, which the overhead accounting reads; it is never sent to the endpoint.
+                workload = context.get('workload') if context.get('workload') in {'foreground', 'background'} else None
                 self._recent_calls.append({'request_id': request_id, 'function_role': role_name,
                     'model_id': cfg.model_id, 'binding': binding.name, 'config_revision': snapshot.revision,
-                    'weight_revision': binding.weight_revision, 'latency_ms': response.latency_ms})
+                    'weight_revision': binding.weight_revision, 'latency_ms': response.latency_ms,
+                    **({'workload': workload} if workload else {})})
                 return response
             except Exception as exc:
                 if isinstance(exc, _IncompleteFunctionResponse):
