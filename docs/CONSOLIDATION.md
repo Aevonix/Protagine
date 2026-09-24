@@ -38,9 +38,9 @@ next night.
    or `weak at <type>` when failures outnumber successes) and `self.stances` (the judgments
    store's current revisions until M7's opinion store replaces the reader). Only `self.recent`
    ("the last 7 days") is model-written, by delta edits of at most 8 lines. The model sees the
-   last 7 days of audit rows and of the mind's own findings, each with an id (the narrative is
-   rendered in every conversation, a guest's included, so rows addressed to anyone but the owner,
-   findings of such rows and contradiction questions are left out of the evidence), and every line it
+   last 7 days of audit rows and of the mind's own findings, each with an id (rows addressed to
+   anyone but the owner, findings of such rows and contradiction questions are left out of the
+   evidence; the plugin renders the narrative only in the owner's own sessions), and every line it
    returns must cite ids from that evidence that also exist in their stores; a line that cites
    anything else is dropped and counted in `rejected_lines`. A line whose cited row is later
    pruned by retention disappears at the next render: the narrative moves only when the evidence

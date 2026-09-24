@@ -13,7 +13,7 @@ needs; nothing else is required.
 | `body.py` | The body thread: turn delivery, then the mind loop on `/v1/mind` (dispatch to kanban with `mind:<id>` keys, the outbox sent verbatim once, outcome reconciliation, orphan archiving, board observations, off-switch cleanup) with its own ledger in `<hermes_home>/state/protagine-body.sqlite3` |
 | `guard.py` | `pre_tool_call` rules for mind-originated and non-owner runs (architecture 7.5): in a mind run every effectful tool that names `protagine.yaml`, `identity.yaml` or `api.key` is blocked (the mind cannot rewrite its own constitution), writes stay inside the task workspace, then `POST /v1/mind/guard` → `{allow, reason}` |
 | `commands.py` | `/mind status|log|why <id>|asks|off` |
-| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`: the only source for claims about the agent's own actions; `state` carries `working_on` and the narrative, `log` filters by `since_hours`, `kind`, `recipient`, `why` on an unknown id answers "no intention `<id>` exists in the audit log"), `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
+| `tools.py` | `protagine_self` (`state|log|why|rate|yes|no`: the only source for claims about the agent's own actions; `state` carries `working_on` and, in the owner's own session, the narrative, `log` filters by `since_hours`, `kind`, `recipient`, `why` on an unknown id answers "no intention `<id>` exists in the audit log"), `protagine_people`, `protagine_memory_search`, `protagine_memory_forget` |
 | `reminders.py` | `protagine_reminder` on stock cron; the plugin keeps only the job id |
 
 Hermes config written by `protagine init`:
@@ -47,8 +47,11 @@ characters, owner-authored, written only by `protagine init`), `Your owner is
 most 2,000 characters, fetched with a 2 s timeout and cached for 60 s; a slow,
 absent or older sidecar leaves the constitution alone) and the two tool notes.
 A nightly narrative change reaches the next session, so the prompt cache holds
-within one. The worker profile loads the same plugin, so mind tasks carry the
-constitution too.
+within one. The narrative is rendered only in a session that is the owner's
+alone (a direct chat from an owner handle, or an internal lane with no chat),
+read from the sender the gateway bound for the turn; every other session gets
+the constitution and the notes. The worker profile loads the same plugin, so
+mind tasks carry the constitution too.
 
 Internal Hermes imports: `hermes_cli.kanban_db` and `kanban_db_connect`
 (dispatch, reconciliation, observations, off-switch cleanup),

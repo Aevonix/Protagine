@@ -150,7 +150,7 @@ def test_agent_values_are_an_input_of_the_appraisal_prompt_never_an_output(home,
 # -- the constitution has no writer among the learning paths ---------------------------------
 
 def test_no_learning_path_writes_the_constitution():
-    """D8: the only writers of identity.yaml are init and the owner's CLI; the mind's ``persist`` hook
+    """The only writers of identity.yaml are init and the owner's CLI; the mind's ``persist`` hook
     touches ``mind.enabled`` and ``mind.autonomy`` in protagine.yaml and nothing else."""
     identity_writers = {"save_identity", "identity_path", "IDENTITY_FILE"}
     config_writers = {"save_config", "update_config"}
@@ -208,3 +208,36 @@ def test_the_adapter_renders_the_same_constitution_as_the_sidecar():
                                outbox_path=Path("/nonexistent/outbox.sqlite3"))
     assert settings.constitution() == ""
 
+
+
+def _adapter_client():
+    """The adapter's client module, loaded from its source: the adapter never imports the sidecar, so it
+    carries its own copy of the render, and this is where the two are held to one output."""
+    import importlib.util
+    import sys
+    name = "protagine_adapter_client_under_test"
+    if name not in sys.modules:
+        path = SIDECAR.parents[1] / "plugins" / "hermes-plugin" / "client.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module          # dataclasses resolve their module through sys.modules
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+@pytest.mark.parametrize("identity", [
+    IDENTITY,
+    {"agent": {"name": " Sol\n the\tSecond ", "values": ["care", "care", " candour ", 7, "", "x" * 161],
+               "boundaries": [f"never {i}" for i in range(20)]}},
+    {"agent": {"name": "Sol", "values": ["v" * 160] * 1 + [f"{i}".ljust(150, "w") for i in range(12)],
+               "boundaries": [f"{i}".ljust(160, "b") for i in range(12)]}},
+    {"agent": {"values": "care"}},
+    {"agent": None},
+    {},
+    None,
+], ids=["plain", "messy", "over-long", "values-not-a-list", "no-agent", "empty", "none"])
+def test_the_adapter_renders_the_constitution_exactly_as_the_sidecar_does(identity):
+    adapter = _adapter_client()
+    assert adapter.CONSTITUTION_CHARS == CONSTITUTION_CHARS
+    assert adapter.render_constitution(identity) == render_constitution(identity)
+    assert adapter.render_constitution(identity, limit=None) == render_constitution(identity, limit=None)

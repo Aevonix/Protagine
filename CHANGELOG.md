@@ -1,5 +1,110 @@
 # Changelog
 
+## Unreleased - memory and identity
+
+The agent now keeps what it learns across sessions and channels and gives a
+true account of itself (build plan M8). Once per local date, in the quiet
+window or after 03:00 local without one, the mind runs a nightly
+consolidation beside its tick (`mind/consolidate.py`,
+[docs/CONSOLIDATION.md](docs/CONSOLIDATION.md)), cheapest and most valuable
+stage first: the self-narrative delta, contradictions, claim dedupe,
+per-contact digests and episode summaries. It may spend `learn_share` x
+`llm_tokens_per_day` (50,000 tokens by default), every call is also held to
+the shared day budget, and each call's real usage is charged at once to the
+night's `note/consolidation` audit row, so `protagine mind stats` and the day
+budget see it; a stage that runs out waits for the next night, and a night
+over an empty store makes no call at all. Two live claims about the same
+subject and predicate with different values and overlapping validity (the
+rule recall already applies) become one `question` concern in the broadcast
+set and exactly one question to the owner through the ordinary message path
+(`reach_out:contradiction`, so the autonomy level, the owner-message budget
+and the ask codes apply); when one side is corrected the concern resolves and
+a question not yet sent is withdrawn. Identical live claims fold into the
+earliest through one new nullable column, `source_claims.duplicate_of`, which
+the projection adds in place; erasing the canonical source brings the others
+back until the next night. A digest of what each recently active person has
+told the agent (at most six a night, 600 characters, citing only claims it
+was shown) reaches that person's own turns as the `protagine-person` context
+section and nobody else's, and each longer session gets an episode summary in
+the ledger under its own contact, as the agent's row and never a claim. The
+mind's own rows (`session_id` `mind`, turn ids `mind:...`) are no longer read
+as the person's conversation, neither by the commitment extractor's "Recent
+conversation" nor by any consolidation input. `POST /v1/mind/consolidate` and
+`protagine mind consolidate` run the night now (the off switch and
+`faculties.consolidation` still win); `mind off` and a stop cancel a night in
+flight, which resumes on the same row. The flags `semantic_recall`,
+`consolidation` and `self_narrative` are now read, each a binary switch;
+`semantic_recall` off keeps the embedder off with `router.embed_url` still
+set, and `init` no longer copies whether an endpoint existed into the flag, so
+an endpoint added later turns semantic recall on as the install guide says.
+
+The agent's identity has three layers (architecture 4.2). The constitution is
+`identity.yaml` `agent.{name, values, boundaries}` (`protagine init
+--agent-boundaries`), rendered as one paragraph of at most 1,500 characters;
+`init` refuses a longer one and names the list to shorten, `protagine doctor`
+reports its length, and the values reach every appraisal prompt as
+`agent_values`, read from the file (`PROTAGINE_AGENT_VALUES` is no longer
+exported and is read only when the file declares none). The plugin's one
+prompt section renders the constitution, the owner, the self-narrative and the
+two tool notes. The narrative (`GET /v1/mind/narrative`, `protagine mind
+narrative`, at most 2,000 characters) has four sections: interests and
+strengths and limits computed from the stores (outcome counts per task type),
+stances from the judgments store, and a model-written "recent" section whose
+every line must cite ids from its evidence that exist, re-checked at every
+render so a line goes when its evidence does. It is the owner's record, so it
+is rendered only in a session that is the owner's alone (a direct chat from an
+owner handle, or an internal lane with no chat) and never in a guest's, a
+group's or an unresolved sender's. `protagine_self` answers from the record:
+`state` adds `working_on` and, in the owner's session, the narrative; `log`
+takes `since_hours`, `kind` and `recipient`; `why` on an unknown id says "no
+intention `<id>` exists in the audit log", as the route now does. The mind
+cannot rewrite its constitution: in a mind run the plugin guard blocks every
+effectful tool that names `protagine.yaml`, `identity.yaml` or `api.key`, in
+any case and however a shell or code quotes, escapes or concatenates the
+name, before the workspace rule and beside Hermes' own protected patterns;
+reads stay allowed, and a static test holds that nothing under `mind/`,
+`self_model/`, `beliefs/`, `memory/` or `commitments/` writes either file.
+
+For the memory and self families, `protagine models paired plan
+--embedding-config {base_url, model, dimensions, api_key_env?}` records one
+embedding endpoint in `comparison.embedding` and writes it into every case of
+every arm; the benchmark worker uses it unless the arm turns
+`semantic_recall` off, and with none in the plan every arm keeps the embedder
+off as before. Mind arms record `body.audit_ids` (the act and ask ids of
+`/v1/mind/log`) after the episode's last turn, which the self-report grader
+reads. The memory family's `full-consolidation` arm still needs a family
+amendment (a clock advance and a tick before the probe) to differ from
+`full`; [docs/KNOWN-GAPS.md](docs/KNOWN-GAPS.md) records it.
+
+What the consolidation replaces is deleted with every caller rewired: the
+Neo4j graph memory (`intelligence/graph/`, its consolidator and
+`PROTAGINE_GRAPH_ENABLED`), the world model (`world_model/`, its populator,
+extraction pipeline and LLM extractor), the graph-bound belief engine
+(`beliefs/engine`, `contradictions`, `resolve`, `models`, `store`, `decay`),
+the chain with its cryptographic identity (`chain/`) and the continuous
+learner. The routes `/v1/host/world/*`, `/world-model/*`, `/beliefs`,
+`/beliefs/run`, `/beliefs/conflicts`, `/identity/status|info|init`,
+`/chain/verify`, `GET /learning/weights` and `POST /learning/engagement` are
+gone, as are `protagine key`, `protagine node`, the chain step of `init`,
+`backup --no-graph`, the identity-only backup, `restore --force-identity` and
+the capabilities `consolidate`, `world_model`, `world_model_api`, `identity`
+and `learning` (`context` is now always advertised). `HostIdentity` loses
+`protagine_id`, `node_id`, `node_cert_fingerprint` and `trust_tier`; the
+instance is named by `<state>/instance-id`, which adopts an existing
+`protagine-id`, and backups record `instance_id` (an older archive's
+`protagine_id` is still read). Node certificates are unsigned.
+`/learning/correction` answers `{accepted, correction_id}`, `forget` no longer
+reports graph or world cleanup, and a summary-only `turns/sync` is skipped as
+`no_source_messages`. The `graph` extra, `neo4j`, `docker-compose.yml` and the
+`NEO4J` secret entries are gone, and `protagine upgrade` moves the retired
+state files (the belief, chain and world-model stores, the chain's identity
+files, keys and manifests) into `<backup>/retired`. Graph-only code no route
+builds any more waits for the M10 audit, named in the known gaps, and
+`benchmarks/source_recall` now drives the production recall path; its
+reference numbers await one measured run. The sidecar goes from 137,540 to
+120,757 lines of Python; the change deletes 26,303 lines and adds
+4,987.
+
 ## Unreleased - evaluation families for the M4 to M9 gates
 
 The pre-registered evaluation families of the proto-AGI plan land as seeded

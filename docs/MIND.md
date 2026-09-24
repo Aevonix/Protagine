@@ -201,14 +201,23 @@ Hermes freezes per session, together with `Your owner is <name>.`, the
 computed or cited sections, every line ending in the audit ids it rests on;
 fetched with a 2 s timeout, cached 60 s, and left out when the sidecar or the
 `self_narrative` faculty is off) and two tool notes, 4,000 characters in all.
+The narrative is the owner's record (what the agent did for the owner, its
+working stances), so it is rendered only in a session that is the owner's
+alone: a direct chat from one of the owner's handles, or an internal lane with
+no chat (the CLI, the benchmark). Hermes renders the section before the
+session's first hook, so the plugin reads the sender the gateway bound for the
+turn, as the memory provider does. A guest, an unresolved sender, a group or
+channel the owner shares, and a chat with no sender get the constitution and
+the notes, and the sidecar is not asked for the narrative on their behalf.
 The same values reach every appraisal prompt as `agent_values` (an input the
 response schema has no field for), so a contact's preferences are never
 confused with the agent's own.
 
 The mind cannot rewrite its constitution. In a mind run the plugin guard
 blocks every effectful tool that names `protagine.yaml`, `identity.yaml` or
-`api.key` (a write target, a V4A patch header, a shell command, code) before
-the workspace rule, reads stay allowed, and Hermes' own
+`api.key` (a write target, a V4A patch header, a shell command, code), in any
+case and through the quotes, escapes, whitespace or string concatenation a
+shell or code can split a name with, before the workspace rule, reads stay allowed, and Hermes' own
 `protected_instruction_extra_patterns` (written by `init`) still asks a human
 for a write to any of them. No module under `mind/`, `self_model/`,
 `beliefs/`, `memory/` or `commitments/` writes either file; the owner's CLI
@@ -217,7 +226,8 @@ and the mind's `persist` hook write `mind.enabled` and `mind.autonomy` only
 
 **`protagine_self`** is the only source for claims about the agent's own
 actions: `state` (level, budgets, open asks with codes, `working_on`: the
-approved and dispatched tasks with their ids, and the narrative text),
+approved and dispatched tasks with their ids, and, in the owner's own session,
+the narrative text),
 `log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
 yesterday?" is one call, and an action that is not in the log did not happen),
 `why <id>` (an unknown id answers "no intention `<id>` exists in the audit
@@ -283,6 +293,9 @@ mind:
     deliberation: true              # the one tool-less call per tick; off = templates only
     goals: true                     # agent-owned goals
     broadcast: true                 # the top-3 concerns in turn context and recall
+    semantic_recall: true           # embeddings in recall when router.embed_url is set; off = lexical only
+    consolidation: true             # the nightly consolidation (docs/CONSOLIDATION.md)
+    self_narrative: true            # the self-narrative in the owner's prompt and protagine_self state
 ```
 
 `identity.yaml` holds the constitution (`agent.name`, `agent.values`,
@@ -310,6 +323,8 @@ protagine mind stats               the in-vivo panel over the audit log
 protagine mind concerns            what is on the mind: drive levels, open concerns, the broadcast set
 protagine mind goals               the agent-owned goals that are open
 protagine mind interest <topic>    seed an interest for the curiosity drive
+protagine mind consolidate         run the nightly consolidation now (docs/CONSOLIDATION.md)
+protagine mind narrative           the self-narrative as the owner's prompt section renders it
 ```
 
 ## The API (`/v1/mind`, one bearer key)

@@ -543,7 +543,7 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         # 1.9.0 instances hold contacts.db; new ones use the server's default name.
         "PROTAGINE_CONTACTS_DB": str(home / ("contacts.db" if (home / "contacts.db").exists()
                                              else "protagine-contacts.db")),
-        # Semantic recall is one binary switch: an embedding endpoint and the faculty flag on (D9);
+        # Semantic recall is one binary switch: an embedding endpoint and the faculty flag on;
         # the ``full-semantic_recall`` arm turns the flag off with the endpoint still recorded.
         "PROTAGINE_EMBED_PROVIDER": "openai_api" if (config.get("router.embed_url")
                                                     and config.get("mind.faculties.semantic_recall") is not False)

@@ -218,7 +218,7 @@ EMBEDDING = {'base_url': 'http://127.0.0.1:8092/v1', 'model': 'e5', 'dimensions'
 
 
 def test_the_worker_honours_the_plans_embedding_endpoint_through_the_semantic_recall_flag(monkeypatch):
-    """Extra item 2 (D9): with no endpoint in the plan the embedder stays off in every arm (today's behaviour);
+    """With no endpoint in the plan the embedder stays off in every arm (today's behaviour);
     with one, ``full`` uses it and ``full-semantic_recall`` does not, so the two arms differ in exactly that."""
     monkeypatch.setenv('EMBED_KEY', 'secret')
     full = worker.mind_section(paired_worker.mind_switches(paired.PROFILES['full']))

@@ -123,7 +123,8 @@ class Tools:
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
             mind = self.settings.mind()
-            narrative = self.client.narrative() or {}
+            # The narrative is the owner's record: only the owner's own session reads it.
+            narrative = (self.client.narrative() or {}) if self._owner(session_id) else {}
             return _json({"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
                           "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
                           "sidecar_reachable": self.client.health() is not None,

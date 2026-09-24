@@ -111,14 +111,22 @@ def write_targets(tool: str, args: Mapping[str, Any]) -> list[Any]:
     return targets
 
 
+# What a shell or code spelling can put between the letters of a name without changing the file it
+# reaches: quotes, escapes, whitespace, backticks and string concatenation.
+SPELLING = re.compile(r"[\s'\"\\`+]")
+
+
 def names_protected_file(tool: str, args: Mapping[str, Any]) -> str | None:
     """The protected basename an effectful call names: in its write targets (``write_file``, ``patch``,
-    including V4A headers), else anywhere in its serialized arguments (a command, code, a message)."""
+    including V4A headers), else anywhere in its serialized arguments (a command, code, a message).
+    The comparison ignores case (a case-insensitive file system writes ``IDENTITY.YAML`` to the same
+    file) and the quoting, escaping and concatenation a shell or code can split a name with."""
     if tool in WRITE_TOOLS:
         haystack = [str(target) for target in write_targets(tool, args)]
     else:
         haystack = [json.dumps(args, ensure_ascii=False, sort_keys=True)]
-    return next((name for name in PROTECTED_BASENAMES for text in haystack if name in text), None)
+    spelled = [SPELLING.sub("", text).casefold() for text in haystack]
+    return next((name for name in PROTECTED_BASENAMES for text in spelled if name in text), None)
 
 
 def floor_match(text: str) -> str | None:

@@ -27,8 +27,9 @@ RETIRED_ROUTE_PREFIXES = ("/v1/host/world", "/v1/host/world-model", "/v1/host/be
                           "/v1/host/identity", "/v1/host/chain")
 RETIRED_ROUTES = ("/v1/host/learning/weights", "/v1/host/learning/engagement")
 # The contact store still labels rows it once received from the world model; a
-# quoted "world_model" is that import_source value, never a module path.
-ALLOWED_LITERAL = re.compile(r"""["']world_model["']""")
+# quoted "world_model" is that import_source value, never a module path. The
+# upgrade's retired-state list names the world model's old file, quoted.
+ALLOWED_LITERAL = re.compile(r"""["'](?:world_model|protagine_world_model\.db)["']""")
 
 
 @pytest.mark.parametrize("module", RETIRED_MODULES)
@@ -62,8 +63,8 @@ def test_source_tree_has_no_retired_references():
     pattern = re.compile(r"world_model|intelligence\.graph|protagine\.chain|continuous_learner|NEO4J")
     hits = []
     for path in sorted(PACKAGE.rglob("*.py")):
-        if "identity_bootstrap" in path.parts or path.name == "retired.py":
-            continue  # M5 deletes the bootstrap package; retired.py names the retired files
+        if "identity_bootstrap" in path.parts:
+            continue  # M5 deletes the bootstrap package
         for number, line in enumerate(path.read_text().splitlines(), 1):
             if pattern.search(line) and not ALLOWED_LITERAL.search(line):
                 hits.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
@@ -106,9 +107,15 @@ def test_instance_id_is_created_once_and_adopts_the_chain_id(tmp_path):
     assert (upgraded / INSTANCE_ID_FILE).read_text().strip() == "11111111-2222-3333-4444-555555555555"
 
 
-def test_retire_state_moves_every_retired_file_and_keeps_the_instance_id(tmp_path):
-    from protagine.retired import RETIRED_STATE, retire_state, retired_state_present
+M8_RETIRED_STATE = ("protagine-beliefs.db", "chain.db", "protagine-id", "node-id", "node-cert.json", "genesis.json",
+                    "protagine-manifest.json", "protagine_world_model.db", "protagine-keys", "node-keys")
 
+
+def test_retire_state_moves_every_retired_file_and_keeps_the_instance_id(tmp_path):
+    from protagine.init import RETIRED_STATE as ALL_RETIRED, retire_state, retired_state_present
+
+    RETIRED_STATE = M8_RETIRED_STATE
+    assert set(RETIRED_STATE) <= set(ALL_RETIRED)          # the upgrade's one list of retired state
     home = tmp_path / "home"
     home.mkdir()
     for name in ("protagine-beliefs.db", "chain.db", "protagine_world_model.db"):

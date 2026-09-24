@@ -136,6 +136,11 @@ emit(outside=write(%r), inside=write("identity.yaml"), nested=write("sub/identit
      sed=check("terminal", {"command": "sed -i 's/care/obedience/' %s"}),
      echo=check("terminal", {"command": "echo 'mind: {enabled: false}' > protagine.yaml"}),
      key=check("execute_code", {"code": "open('api.key', 'w').write('x')"}),
+     upper=check("terminal", {"command": "cp /tmp/x ~/.protagine/IDENTITY.YAML"}),
+     quoted=check("terminal", {"command": "sed -i s/care/obedience/ ident''ity.yaml"}),
+     escaped=check("terminal", {"command": "cp /tmp/x protagine\\\\.yaml"}),
+     split=check("execute_code", {"code": "open('identity' '.yaml', 'w').write('x')"}),
+     plus=check("execute_code", {"code": "open('ident' + 'ity.yaml', 'w').write('x')"}),
      plain=check("terminal", {"command": "ls"}),
      read=check("read_file", {"path": %r}),
      read_tool=model_tools.handle_function_call("read_file", {"path": %r}, task_id="task-01", session_id="worker-session"))
@@ -144,7 +149,8 @@ emit(outside=write(%r), inside=write("identity.yaml"), nested=write("sub/identit
     for name in ("outside", "inside", "nested"):
         assert "BLOCKED by Protagine guard" in result[name] and "owner-authored" in result[name], name
     assert not result["inside_exists"] and identity.read_text() == before
-    for name in ("patch_header", "patch_inside", "replace", "sed", "echo", "key"):
+    for name in ("patch_header", "patch_inside", "replace", "sed", "echo", "key", "upper", "quoted", "escaped",
+                 "split", "plus"):
         assert result[name]["action"] == "block", name
         assert "owner-authored" in result[name]["message"] and "cannot change it" in result[name]["message"], name
     assert "identity.yaml" in result["patch_header"]["message"] and "protagine.yaml" in result["echo"]["message"]

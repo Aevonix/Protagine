@@ -40,20 +40,27 @@ NOTES = ("Protagine keeps your long-term memory: recalled evidence arrives with 
          "its code appears in the owner's own message.")
 
 
-def prompt_section(settings: Settings, client: ProtagineClient | None = None) -> Callable[[Mapping[str, Any]], str]:
+def prompt_section(settings: Settings, client: ProtagineClient | None = None,
+                   sessions: SessionMap | None = None) -> Callable[[Mapping[str, Any]], str]:
     """The block the plugin adds to every session prompt: who the agent is (the owner-authored constitution
     read from ``identity.yaml``), who the owner is, what the agent knows about itself from its own record
     (``GET /v1/mind/narrative``: 2 s, cached 60 s, fail open to the constitution alone) and the two things
     the tool schemas cannot say. Hermes renders it once per session, so a nightly narrative change reaches
-    the next session and the prompt cache holds within one. Recall guidance is the memory provider's block."""
-    def render(_session_info: Mapping[str, Any]) -> str:
+    the next session and the prompt cache holds within one. Recall guidance is the memory provider's block.
+
+    The narrative is the owner's record (what the agent did for the owner, its working stances), so it is
+    rendered only in a session that is the owner's alone (``SessionMap.owner_only``); every other session
+    gets the constitution and the notes, and the sidecar is not asked on its behalf."""
+    audience = sessions if sessions is not None or client is None else SessionMap(settings, client)
+
+    def render(session_info: Mapping[str, Any]) -> str:
         identity = settings.identity()
         parts = [settings.constitution()[:CONSTITUTION_CHARS]]
         owner = identity.get("owner") if isinstance(identity.get("owner"), Mapping) else {}
         if owner.get("name"):
             parts.append(f"Your owner is {owner['name']}.")
         narrative: Any = None
-        if client is not None:
+        if client is not None and audience is not None and owner_only(audience, session_info):
             try:
                 narrative = client.narrative()
             except Exception:  # the record is optional; the constitution is not
@@ -63,6 +70,15 @@ def prompt_section(settings: Settings, client: ProtagineClient | None = None) ->
         parts.append(NOTES)
         return "\n\n".join(part for part in parts if part)[:SECTION_CHARS]
     return render
+
+
+def owner_only(sessions: SessionMap, session_info: Mapping[str, Any]) -> bool:
+    """``SessionMap.owner_only`` for the session being rendered; never raises (a failure withholds)."""
+    try:
+        return sessions.owner_only(session_info or {})
+    except Exception:
+        logger.debug("session audience unknown; the narrative is withheld", exc_info=True)
+        return False
 
 
 _BODY: Body | None = None
@@ -128,7 +144,7 @@ def register(ctx: Any) -> None:
     ctx.register_tool(name=REMINDER_SCHEMA["name"], toolset=TOOLSET, schema=REMINDER_SCHEMA,
                       handler=Reminders(client, sessions).handle)
 
-    ctx.register_system_prompt_section("protagine", prompt_section(settings, client))
+    ctx.register_system_prompt_section("protagine", prompt_section(settings, client, sessions))
 
     # Workers never run the body; a host that drives ticks itself (the paired benchmark) sets
     # PROTAGINE_BODY_THREAD=0 and calls tick() or flush() instead.

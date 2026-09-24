@@ -764,8 +764,11 @@ def run_store_migrations(home: Path) -> list[str]:
 # directed tasks, the response guard's ledgers, the agent bridge poller's
 # seen-lists and (since the drives milestone) the cognitive workspace, the
 # cognition spine, its evidence and drive-governance ledgers, the external
-# event inbox and the surprise store. An upgrade moves them into the backup
-# instead of leaving orphans behind. A directory entry names a whole tree.
+# event inbox and the surprise store, and (since the memory milestone) the
+# belief engine, the chain's identity files, keys and manifests and the world
+# model; the Neo4j graph and the continuous learner kept nothing local. An
+# upgrade moves them into the backup instead of leaving orphans behind. A
+# directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
     "schedules.db",
@@ -787,6 +790,16 @@ RETIRED_STATE = (
     "protagine-context-provenance.db",
     "protagine-tom2-taint.db",
     "bridge",
+    "protagine-beliefs.db",
+    "chain.db",
+    "protagine-id",
+    "node-id",
+    "node-cert.json",
+    "genesis.json",
+    "protagine-manifest.json",
+    "protagine_world_model.db",
+    "protagine-keys",
+    "node-keys",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG
 # tables (agent goals are intention rows) and the legacy perspective tables (the
@@ -805,9 +818,16 @@ def retired_state_present(home: Path) -> list[str]:
 
 
 def retire_state(home: Path, backup_dir: Path) -> list[str]:
-    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``."""
+    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``.
+
+    The chain's ``protagine-id`` is adopted as ``instance-id`` before it moves, so
+    the agent registry rows that name this instance keep matching.
+    """
     notes: list[str] = []
     destination = backup_dir / "retired"
+    if (home / "protagine-id").exists():
+        from protagine.instance import instance_id
+        instance_id(home)
     for name in retired_state_present(home):
         destination.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (home / name).is_dir():
@@ -819,31 +839,6 @@ def retire_state(home: Path, backup_dir: Path) -> list[str]:
                     shutil.move(str(source), str(destination / (name + suffix)))
         notes.append(f"retired {name} (moved to {destination})")
     return notes
-
-
-def _m8_retired():
-    """``protagine.retired`` (the graph, world-model and chain state files retired by the memory milestone)
-    when that module exists in this build; None otherwise."""
-    try:
-        from protagine import retired
-    except ImportError:
-        return None
-    return retired
-
-
-def m8_retired_present(home: Path) -> list[str]:
-    module = _m8_retired()
-    if module is None:
-        return []
-    names = (*getattr(module, "RETIRED_FILES", ()), *getattr(module, "RETIRED_DIRS", ()))
-    return [name for name in names if (home / name).exists()]
-
-
-def retire_m8_state(home: Path, backup_dir: Path) -> list[str]:
-    module = _m8_retired()
-    if module is None or not m8_retired_present(home):
-        return []
-    return list(module.retire_state(home, backup_dir))
 
 
 def retired_tables_present(home: Path) -> list[str]:
@@ -1067,7 +1062,6 @@ def migrate_legacy_instance(home: Path, *, backup_dir: Path | None = None) -> li
     if not data["router"]["base_url"]:
         data["router"]["base_url"] = str(manifest.get("endpoint") or "")
         data["router"]["model"] = str(manifest.get("model") or "")
-    data["mind"]["faculties"]["semantic_recall"] = env.get("PROTAGINE_EMBED_PROVIDER", "skip") != "skip"
     save_config(data, home)
     notes.append("protagine.yaml written; autonomy starts at 'suggest' (edit mind.autonomy to choose "
                  "'standard' or 'trusted')")
@@ -1254,7 +1248,6 @@ def run_init(args) -> int:
             data["router"]["embed_model"] = str(args.embed_model)
         if getattr(args, "embed_dims", None) is not None:
             data["router"]["embed_dims"] = int(args.embed_dims)
-        data["mind"]["faculties"]["semantic_recall"] = bool(embed_url)
 
         # 2. protagine.yaml, identity.yaml and api.key.
         save_identity(identity, home)
@@ -1331,7 +1324,7 @@ def run_upgrade(args) -> int:
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
-                              + retired_state_present(home) + m8_retired_present(home)
+                              + retired_state_present(home)
                               + retired_tables_present(home) + pending_ingress_adoption(home))
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
@@ -1343,7 +1336,6 @@ def run_upgrade(args) -> int:
         notes.extend("migration applied: " + item for item in run_store_migrations(home))
         notes.extend(migrate_initiatives(home))
         notes.extend(retire_state(home, backup))
-        notes.extend(retire_m8_state(home, backup))
         notes.extend(retire_tables(home))
         notes.extend(adopt_ingress_producers(home))
         if binding_changed:

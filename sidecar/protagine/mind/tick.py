@@ -594,7 +594,7 @@ class Mind:
         return str(target)
 
     def _schedule_consolidation(self, now: datetime) -> Optional[str]:
-        """Start the night's consolidation as a background task when it is due (D1).
+        """Start the night's consolidation as a background task when it is due.
 
         Sleep-time compute needs no body, so it sits before the body-stale
         return; it sits after the off-switch return, so ``mind off`` stops it.
@@ -622,7 +622,7 @@ class Mind:
             logger.warning("consolidation failed (%s)", type(error).__name__)
 
     async def consolidate(self, *, force: bool = True) -> Dict[str, Any]:
-        """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness; I-2).
+        """The night's consolidation now, inline (the CLI, ``POST /v1/mind/consolidate``, the harness).
 
         Forcing skips the window and the once-a-night marker, never a switch: with the mind off or
         ``faculties.consolidation`` false nothing runs.
@@ -636,11 +636,11 @@ class Mind:
         return await self.consolidation.run(now, force=force)
 
     def narrative(self) -> Dict[str, Any]:
-        """The self-narrative the plugin renders once per session (I-1)."""
+        """The self-narrative the plugin renders once per session."""
         return self.consolidation.narrative(enabled=bool(self.enabled and self.faculties.get("self_narrative", True)))
 
     def person_section(self, contact_id: str) -> str:
-        """The person's digest for their own turn's context, ``""`` when there is none (I-3)."""
+        """The person's digest for their own turn's context, ``""`` when there is none."""
         if not self.enabled or not self.faculties.get("consolidation", True):
             return ""
         return self.consolidation.person_section(contact_id)

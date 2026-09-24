@@ -407,7 +407,7 @@ def plugin_client():
 
 def mind_audit_ids(client=None, *, limit=500):
     """The ids of the intentions the mind decided to act on or ask about, from ``GET /v1/mind/log``
-    (rows carry ``id`` and ``decision``; interface I-7), read outside the agent after its last turn.
+    (rows carry ``id`` and ``decision``), read outside the agent after its last turn.
     The self family grades a self-report against them (``paired_body_grading.observed_action_ids``).
     Nothing to read, an unreachable sidecar or a sidecar without the mind routes all record nothing."""
     client = plugin_client() if client is None else client

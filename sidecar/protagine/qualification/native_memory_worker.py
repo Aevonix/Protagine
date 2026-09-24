@@ -59,7 +59,7 @@ def mind_section(switches):
 
 
 def embedding_environment(inputs, section):
-    """The embedding provider for one arm, as a binary choice recorded in the plan (D9).
+    """The embedding provider for one arm, as a binary choice recorded in the plan.
 
     The plan may carry one embedding endpoint (``paired plan --embedding-config``), written
     identically into every case's ``inputs['embedding']``. An arm uses it unless its mind

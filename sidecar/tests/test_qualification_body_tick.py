@@ -158,7 +158,7 @@ class _Client:
 
 def test_audit_ids_are_the_acted_and_asked_intentions_read_from_the_mind_log():
     """The self family grades a self-report against the ids the worker records outside the agent at the end
-    of the episode (interface I-7): decision act or ask, from GET /v1/mind/log."""
+    of the episode : decision act or ask, from GET /v1/mind/log."""
     from protagine.qualification import paired_worker
     from protagine.qualification.paired_body_grading import observed_action_ids
     client = _Client(entries=[{'id': 'i-01', 'decision': 'act', 'kind': 'task'},

@@ -1,7 +1,7 @@
 """``/v1/mind``: the narrative and consolidation routes and the audit-log filters ``protagine_self`` answers from.
 
 The mind behind the router is a stand-in with a real initiative store, so the routes are checked
-with and without the memory milestone's ``narrative()`` / ``consolidate()`` (interfaces I-1, I-2)."""
+with and without the memory milestone's ``narrative()`` / ``consolidate()`` ."""
 
 from __future__ import annotations
 

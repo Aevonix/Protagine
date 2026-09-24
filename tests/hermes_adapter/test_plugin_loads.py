@@ -124,3 +124,43 @@ emit(full=full, degraded=section())
     assert degraded.startswith("You are Agent. Your values: v0") and NARRATIVE_LEAD not in degraded
     assert "Protagine keeps your long-term memory" in degraded
 
+
+
+GATEWAY_RENDER = '''
+from gateway.session_context import clear_session_vars, set_session_vars
+from hermes_cli.plugins import render_system_prompt_sections
+def rendered(platform, user_id, *, chat_type="dm", session="gw-1"):
+    """The section as Hermes renders it at the start of a gateway session, before the first hook ran."""
+    tokens = set_session_vars(platform=platform, user_id=user_id, chat_id="chat-" + (user_id or "shared"),
+                              chat_type=chat_type, session_id=session)
+    try:
+        sections = render_system_prompt_sections({"session_id": session, "platform": platform})
+        return next(s.content for s in sections if s.id == "protagine")
+    finally:
+        clear_session_vars(tokens)
+'''
+
+
+def test_the_narrative_reaches_only_the_owners_own_sessions(home, sidecar):
+    """The narrative is the owner's record (what the agent did for the owner, its working stances), so it is
+    rendered only where the session is the owner's alone: a direct chat from the owner's handle or an internal
+    lane. A guest, an unresolved sender, a group the owner is in and a channel with no sender get the
+    constitution and the notes, and the sidecar is not even asked for the narrative on their behalf."""
+    sidecar.mind_routes = True
+    sidecar.mind.narrative = {"enabled": True, "text": "stance: the venue contract: renegotiate [t-9]",
+                              "sections": {}, "cites": ["t-9"], "updated_at": None}
+    strangers = probe(GATEWAY_RENDER + '''
+emit(guest=rendered("telegram", "2003", session="gw-guest"), unknown=rendered("telegram", "9999", session="gw-unknown"),
+     group=rendered("telegram", "1001", chat_type="group", session="gw-group"),
+     nobody=rendered("telegram", "", session="gw-nobody"))
+''', home)
+    for name, content in strangers.items():
+        assert content.startswith(CONSTITUTION), name
+        assert NARRATIVE_LEAD not in content and "renegotiate" not in content, name
+        assert "Protagine keeps your long-term memory" in content, name
+    assert sidecar.calls("/v1/mind/narrative") == []
+    owners = probe(GATEWAY_RENDER + RENDER + '''
+emit(direct=rendered("telegram", "1001", session="gw-owner"), cli=section())
+''', home)
+    for name, content in owners.items():
+        assert NARRATIVE_LEAD in content and "renegotiate [t-9]" in content, name

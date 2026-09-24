@@ -171,12 +171,13 @@ mind:
   digest_hour: 8                     # local hour after which the daily digest goes out
   stale_task_hours: 72               # open board tasks idle longer are reported to the mind
   faculties: {initiative: true, people: true, affect: true, opinions: true, broadcast: true,
-              semantic_recall: false, consolidation: true, self_narrative: true, lessons: true,
+              semantic_recall: true, consolidation: true, self_narrative: true, lessons: true,
               skills: false}
 ```
 
 `router.embed_url` (an OpenAI-compatible embeddings endpoint, with
-`embed_model`) turns semantic recall on. `router.embed_dims` is the model's
+`embed_model`) turns semantic recall on; `mind.faculties.semantic_recall:
+false` keeps it off with the endpoint still recorded. `router.embed_dims` is the model's
 vector width; left at 0, the sidecar learns it from the endpoint's first
 embedding, and a declared width is validated against every vector (a mismatch
 is a startup failure named after the setting, never a silent switch to
@@ -196,7 +197,9 @@ keywords.
 
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in
-[docs/MIND.md](MIND.md).
+[docs/MIND.md](MIND.md), and its nightly consolidation (digests, contradictions,
+dedupe, episode summaries and the self-narrative) in
+[docs/CONSOLIDATION.md](CONSOLIDATION.md).
 
 The sidecar reads a number of tuning settings from its process environment
 that have no key of their own: a reranker prompt style, recall thresholds and

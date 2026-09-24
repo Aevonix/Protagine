@@ -198,7 +198,7 @@ async def test_a_fact_crosses_sessions_and_the_owner_digest_cites_its_claim(fx):
 
 
 async def test_digests_are_written_through_the_sink_and_read_back_for_the_person(fx):
-    """I-5: the contact model of M5 passes its own writer; consolidation itself only calls the sink."""
+    """A contact store (M5's contact model) passes its own writer; consolidation itself only calls the sink."""
     written = []
     fx.mind.consolidation.digest_sink = lambda cid, text, sources: written.append((cid, text, list(sources)))
     claim_id = await fx.fact("turn-a", OWNER, "s-1", "My office is room 4.", "room 4")
@@ -209,7 +209,7 @@ async def test_digests_are_written_through_the_sink_and_read_back_for_the_person
 
 
 async def test_an_async_digest_sink_and_source_are_awaited(fx):
-    """I-5: M5's contact store is async; its writer and reader are awaited, never left as coroutines."""
+    """A contact store may be async; its writer and reader are awaited, never left as coroutines."""
     stored = {}
 
     async def sink(cid, text, sources):
@@ -436,8 +436,8 @@ async def test_narrative_lines_must_cite_evidence_ids_that_exist(fx):
 
 
 async def test_the_narrative_is_never_shown_other_peoples_business(fx):
-    """The narrative is rendered in every session, a guest's included: its evidence holds the agent's own
-    work and what it told the owner, never a message to someone else or a question quoting what people said."""
+    """The narrative's evidence holds the agent's own work and what it told the owner, never a message to
+    someone else or a question quoting what people said (the plugin shows it only in the owner's sessions)."""
     row = settled_task(fx)
     assert await fx.mind.request_message({"id": "m-1", "message": "Your parcel for the Harbour St flat arrived.",
                                           "title": "Parcel for the Harbour St flat", "recipient": CONTACT,
@@ -456,7 +456,7 @@ async def test_the_narrative_is_never_shown_other_peoples_business(fx):
     prompts = [m[-1]["content"] for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE]
     assert prompts and row.id in prompts[-1] and "Call moved to 4pm" in prompts[-1]
     assert "Harbour St" not in prompts[-1] and "Which is right" not in prompts[-1]
-    assert "every conversation" in [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][-1][0]["content"]
+    assert "never name other people" in [m for m, c in fx.router.calls if c["task"] == TASK_NARRATIVE][-1][0]["content"]
 
 
 async def test_narrative_flag_off_renders_nothing_and_skips_the_delta_call(tmp_path, monkeypatch):
@@ -471,7 +471,7 @@ async def test_narrative_flag_off_renders_nothing_and_skips_the_delta_call(tmp_p
 
 
 async def test_narrative_still_renders_computed_sections_with_consolidation_off(tmp_path, monkeypatch):
-    """``full-consolidation`` keeps a (computed) narrative; ``full-self_narrative`` has none (D6)."""
+    """``full-consolidation`` keeps a (computed) narrative; ``full-self_narrative`` has none."""
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
     fx = Fixture(tmp_path, config={"faculties": {"consolidation": False}})
     settled_task(fx)
@@ -745,7 +745,7 @@ async def test_a_contact_session_is_summarised_under_that_contact_once(fx):
 
 
 async def test_self_turns_are_not_consolidation_inputs(fx):
-    """A.6: with only the mind's own rows in the last 24 h, episodes and digests select nothing."""
+    """With only the mind's own rows in the last 24 h, episodes and digests select nothing."""
     autobiography = Autobiography(fx.ledger, owner_id=OWNER, clock=lambda: fx.now)
     for index in range(4):
         assert autobiography.record(f"i-{index}", "decided_act", f"I will act on 'thing {index}' (duty drive).")

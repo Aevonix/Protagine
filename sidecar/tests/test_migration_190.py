@@ -123,7 +123,7 @@ def test_upgrade_converts_a_190_instance_and_keeps_its_rows(legacy, capsys):
     assert cfg.get("router.model") == "legacy-model"
     assert cfg.get("hermes.home") == str(hermes_home)
     assert cfg.get("hermes.python") == HERMES_PYTHON
-    assert cfg.get("mind.faculties.semantic_recall") is False
+    assert cfg.get("mind.faculties.semantic_recall") is True           # the switch; no endpoint was carried
     identity = load_identity(home)
     assert identity["owner"]["name"] == "Ada"
     assert identity["agent"] == {"name": "Orion", "values": ["care"], "timezone": "UTC", "quiet_hours": ""}

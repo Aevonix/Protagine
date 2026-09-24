@@ -131,7 +131,7 @@ def test_init_performs_the_seven_steps_and_is_idempotent(homes, capsys):
     assert llm["baseUrl"] == "http://127.0.0.1:9/v1"
     assert llm["apiKey"] == "model-secret"
     assert llm["models"]["medium"] == "test-model"
-    assert cfg.get("mind.faculties.semantic_recall") is False
+    assert cfg.get("mind.faculties.semantic_recall") is True           # the switch; the endpoint decides
 
     # Steps 5 and 6: the Hermes keys and the worker profile.
     hermes = yaml.safe_load((hermes_home / "config.yaml").read_text())
@@ -328,36 +328,52 @@ def test_upgrade_refuses_an_environment_without_the_vector_store(homes, monkeypa
     assert not any(path.is_dir() for path in (home / "backups").glob("*")), "no upgrade backup was taken"
 
 
-def test_upgrade_retires_the_m8_state_files_when_the_retired_module_exists(homes, monkeypatch, capsys):
-    """I-4: ``protagine.retired.retire_state`` (the graph, world-model and chain files) runs right after
-    the backup when the module is importable; without it the upgrade is unchanged."""
-    import sys
-    import types
+def test_upgrade_retires_the_m8_state_files_and_keeps_the_instance_id(homes, capsys):
+    """The belief engine, chain and world-model files move into the upgrade backup right after it is
+    taken; the chain's instance id carries over as ``instance-id``; a second upgrade has nothing to do."""
+    import sqlite3
     home, hermes_home = homes
     assert init.run_init(_args(home, hermes_home)) == 0
     upgrade = SimpleNamespace(home=str(home), hermes_home=None, hermes_python=HERMES_PYTHON, adapter_source=None)
-    monkeypatch.setitem(sys.modules, "protagine.retired", None)  # ImportError: nothing to call
     assert init.run_upgrade(upgrade) == 0
     assert "nothing to do" in capsys.readouterr().out
-    import sqlite3
     with sqlite3.connect(home / "protagine_world_model.db") as connection:
         connection.execute("CREATE TABLE entities (id TEXT)")
-    moved = []
-
-    def retire_state(instance, backup_dir):
-        assert instance == home and backup_dir.is_dir() and backup_dir.parent == home / "backups"
-        target = backup_dir / "retired"
-        target.mkdir()
-        (instance / "protagine_world_model.db").rename(target / "protagine_world_model.db")
-        moved.append(str(target))
-        return ["retired protagine_world_model.db"]
-    fake = types.ModuleType("protagine.retired")
-    fake.RETIRED_FILES, fake.RETIRED_DIRS, fake.retire_state = ("protagine_world_model.db",), (), retire_state
-    monkeypatch.setitem(sys.modules, "protagine.retired", fake)
+    (home / "protagine-id").write_text("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n")
+    (home / "instance-id").unlink(missing_ok=True)
+    (home / "protagine-keys").mkdir()
+    (home / "protagine-keys" / "private.pem").write_text("key")
     assert init.run_upgrade(upgrade) == 0
     output = capsys.readouterr().out
     assert "retired protagine_world_model.db" in output and "backup taken" in output
-    assert moved and not (home / "protagine_world_model.db").exists()
+    retired, = (home / "backups").glob("*/retired")
+    assert {path.name for path in retired.iterdir()} == {"protagine_world_model.db", "protagine-id", "protagine-keys"}
+    assert (home / "instance-id").read_text().strip() == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert not any((home / name).exists() for name in ("protagine_world_model.db", "protagine-id", "protagine-keys"))
     assert init.run_upgrade(upgrade) == 0
     assert "nothing to do" in capsys.readouterr().out
 
+
+def test_an_embedding_endpoint_added_after_init_turns_semantic_recall_on(homes):
+    """``mind.faculties.semantic_recall`` is the owner's (or an arm's) off switch, not a copy of whether an
+    endpoint existed at init: an instance set up without one and given ``router.embed_url`` later recalls
+    semantically, as the install guide says; turning the flag off still keeps the embedder off."""
+    from protagine.config import apply_environment, save_config
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home)) == 0
+    cfg = load_config(home, environ={})
+    assert cfg.get("mind.faculties.semantic_recall") is True
+    environ: dict[str, str] = {}
+    apply_environment(cfg, environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"            # no endpoint yet: lexical recall
+    data = yaml.safe_load((home / "protagine.yaml").read_text())
+    data["router"]["embed_url"] = "http://127.0.0.1:9/v1"
+    save_config(data, home)
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
+    data["mind"]["faculties"]["semantic_recall"] = False
+    save_config(data, home)
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"

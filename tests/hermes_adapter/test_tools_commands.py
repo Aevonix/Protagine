@@ -110,7 +110,9 @@ emit(state=call("protagine_self", {"operation": "state"}, g),
     # What the mind is working on and what it knows about itself come from the log and the narrative route.
     assert state["working_on"] == [{"id": "i-01", "title": "Check", "status": "dispatched"},
                                    {"id": "i-02", "title": "Research tides", "status": "approved"}]
-    assert state["narrative"] == "I researched tides for the owner. [i-03]"
+    # The narrative is the owner's record: a guest's state carries none, the owner's carries it.
+    assert state["narrative"] == ""
+    assert result["status_alias"]["narrative"] == "I researched tides for the owner. [i-03]"
     assert result["status_alias"]["enabled"] is True
     assert result["log"]["entries"][0]["id"] == "i-01"
     assert [e["id"] for e in result["yesterday"]["entries"]] == ["m-01"]
