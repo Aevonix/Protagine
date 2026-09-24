@@ -344,6 +344,18 @@ def _mind_section() -> str:
         return ""
 
 
+def _mind_note_novel(query_text: str) -> None:
+    """An owner turn memory recalled nothing for: a new topic, a little curiosity for the agent's own
+    affect at the next tick (architecture 4.3). A no-op without a mind; never breaks the turn."""
+    feelings = getattr(_mind(), "feelings", None)
+    if feelings is None:
+        return
+    try:
+        feelings.note_novel_topic(query_text)
+    except Exception:
+        logger.debug("novel topic not noted", exc_info=True)
+
+
 def _mind_recall_query(query_text: str) -> str:
     """The recall query plus the broadcast concerns (the workspace expands recall; broadcast flag)."""
     mind = _mind()
@@ -2047,6 +2059,8 @@ async def context_assemble(
                 sections.append(ContextSection(
                     id="protagine-memory", title="Relevant Memories", body=packet.content,
                     priority=90, citations=packet.source_refs or None))
+            elif _owner_turn:
+                _mind_note_novel(query_text)
         except Exception as exc:
             logger.warning("combined memory selection failed (%s)", type(exc).__name__)
 
