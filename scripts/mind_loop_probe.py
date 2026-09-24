@@ -406,14 +406,14 @@ def off_switch_without_model() -> None:
 
 
 def dismissal_lowers_the_multiplier(intention_id: str | None) -> None:
-    """The owner's dismissals lower the type multiplier; with the type turned down, a single new
-    candidate of it drops below the act threshold before authority sees it."""
+    """The owner's dismissals lower the multiplier of the initiative the mind picks for itself: with
+    research turned down, a single new topic drops below the act threshold before authority sees it.
+    The multiplier never weighs what is owed: after the owner dismissed every overdue-commitment
+    intention, a new promise past its time still forms its task (docs/MIND.md)."""
     if not intention_id:
         check("a dismissal lowers the multiplier", False, "no completed intention to rate")
         return
-    # The multiplier is one contribution per intention and key: a repeated verdict on the same
-    # intention replaces the earlier one, and every approval above nudged the type up. The owner
-    # dismissing each overdue-commitment intention this run formed is what turns the type down.
+    # The owner dismisses each overdue-commitment intention this run formed.
     rated = [row["id"] for row in intentions(type="commitment_overdue")] or [intention_id]
     codes = [cli("rate", row_id, "dismissed")[0] for row_id in rated]
     # A new obligation of the same type (the first report is still an open item, and a repeated
@@ -427,11 +427,37 @@ def dismissal_lowers_the_multiplier(intention_id: str | None) -> None:
     time.sleep(float(os.environ.get("FAKE_MODEL_DUE_SECONDS") or 90) + 3)
     summary = tick()
     formed = [item for item in summary["formed"] if item["type"] == "commitment_overdue"]
-    check("a dismissal drops the single candidate below the act threshold",
-          all(code == 0 for code in codes) and formed == [] and summary.get("below_threshold", 0) >= 1,
+    # It passes the ranking whatever the verdicts; authority may still defer it on this run's task
+    # budget (tasks per hour), which is a budget, not the owner's verdict.
+    reason = (intentions(id=formed[0]["id"]) or [{}])[0].get("decision_reason") or "" if formed else ""
+    check("what is owed still forms after the owner dismissed its type",
+          all(code == 0 for code in codes) and len(formed) == 1
+          and (formed[0]["decision"] == "act" or (formed[0]["decision"] == "defer" and reason.startswith("budget"))),
           f"{len(rated)} intention(s) rated dismissed (rc={codes}), "
-          f"formed={[(i['type'], i['decision']) for i in summary['formed']]}, "
-          f"below_threshold={summary.get('below_threshold')}")
+          f"formed={[(i['type'], i['decision']) for i in summary['formed']]}, reason={reason!r}")
+    # The owner settles every open item, so no load postpones curiosity: the multiplier is the
+    # only thing between a research topic and the act threshold.
+    for row in commitments():
+        if row.get("status") in {"pending", "overdue"}:
+            api("PATCH", f"/v1/host/commitments/{row['id']}", {"outcome": "done", "resolved_by": "owner"})
+    first_topic, second_topic = "kilns " + secrets.token_hex(3), "tides " + secrets.token_hex(3)
+    cli("interest", first_topic)
+    first = tick()
+    research = [item for item in first["formed"] if item["type"] == "research"]
+    if not research:
+        check("a dismissal drops the single candidate below the act threshold", False,
+              f"no research formed for a fresh interest: formed={[(i['type'], i['decision']) for i in first['formed']]}, "
+              f"affect={json.dumps(first.get('affect'))[:200]}")
+        return
+    code, _ = cli("rate", research[0]["id"], "dismissed")
+    cli("interest", second_topic)
+    second = tick()
+    affect = second.get("affect") if isinstance(second.get("affect"), dict) else {}
+    check("a dismissal drops the single candidate below the act threshold",
+          code == 0 and not [i for i in second["formed"] if i["type"] == "research"]
+          and second.get("below_threshold", 0) >= 1 and not affect.get("overloaded"),
+          f"research rated dismissed (rc={code}), formed={[(i['type'], i['decision']) for i in second['formed']]}, "
+          f"below_threshold={second.get('below_threshold')}, load={affect.get('load')}")
 
 
 def main() -> int:
