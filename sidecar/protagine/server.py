@@ -26,7 +26,6 @@ from protagine.api.routers.host import (
     set_chain_manager,
     set_graph,
     set_consolidator,
-    set_signal_collector,
     set_embedder,
     set_reranker,
     set_goals_store,
@@ -441,21 +440,6 @@ async def lifespan(app: FastAPI):
     else:
         set_graph(None)
         logger.info("Graph disabled; canonical source memory and SQLite state remain available")
-
-    # --- 5. Signal Collector ---
-    signal_collector = None
-    if graph is not None:
-        try:
-            from protagine.intelligence.mind_model.graph_baseline import GraphBaselineStore
-            from protagine.intelligence.mind_model.signal_collector import SignalCollector
-            baseline_store = GraphBaselineStore(graph)
-            signal_collector = SignalCollector(baseline_store=baseline_store, graph=graph)
-            set_signal_collector(signal_collector)
-            logger.info("SignalCollector initialized (GraphBaselineStore backed by Neo4j)")
-        except Exception as exc:
-            logger.warning("SignalCollector init failed: %s", exc)
-    else:
-        logger.warning("SignalCollector skipped — ProtagineGraph not available")
 
     # --- 6. Embedding pipeline ---
     embed_provider = os.environ.get("PROTAGINE_EMBED_PROVIDER", "")
@@ -1740,7 +1724,6 @@ async def lifespan(app: FastAPI):
             logger.debug("SkillRegistry close failed", exc_info=True)
     set_llm_router(None)
     set_graph(None)
-    set_signal_collector(None)
     set_embedder(None)
     set_goals_store(None)
     if contacts_store is not None:

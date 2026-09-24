@@ -51,7 +51,7 @@ async def test_reopened_state_and_swapped_role_preserve_distinct_repair_receipt(
 
 
 @pytest.mark.asyncio
-async def test_slow_revision_keeps_lease_recall_and_other_contact_progress(state):
+async def test_slow_revision_keeps_its_claim_recall_and_other_contact_progress(state):
     source(state, 'incident', 'The export failed after its validation step.')
     await state.process_one(Processor())
     identifier = view(state)['records'][0]['id']
@@ -62,11 +62,11 @@ async def test_slow_revision_keeps_lease_recall_and_other_contact_progress(state
         active = asyncio.create_task(state.process_one(selected))
         try:
             assert await asyncio.to_thread(started.wait, 2)
-            # Beyond the extraction lease, inside the selected reasoning lease.
+            # A running job is never reclaimed by elapsed time; only a new process resets it.
             state.test_clock.value += 80
             competitor = AppraisalStore(TurnIdempotencyLedger(state.ledger.db_path),
                                          owner_id='owner', clock=state.clock)
-            assert competitor._claim(0) is None
+            assert competitor._claim() is None
             retained = await collect_sources(state.ledger, query='export',
                 contact_id='person', session_id='separate-owner-session')
             assert retained.hits and not active.done()
@@ -114,22 +114,21 @@ async def test_revision_failure_keeps_incident_and_does_not_block_other_sources(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['erasure', 'lease_reclaimed', 'invalid_deadline'])
-async def test_prepared_revision_cannot_dispatch_without_its_owned_role_lease(state, change):
+@pytest.mark.parametrize('change', ['erasure', 'attribution', 'invalid_deadline'])
+async def test_prepared_revision_cannot_dispatch_once_its_job_stopped_running(state, change):
     source(state, 'incident', 'The export failed after its validation step.')
     await state.process_one(Processor())
     source(state, 'repair', 'The new diagnostic fixed the export and its output opened.')
-    competitor = AppraisalStore(TurnIdempotencyLedger(state.ledger.db_path),
-                                 owner_id='owner', clock=state.clock)
 
     class Changed(Processor):
         def function_deadline_seconds(self, *, context):
             assert context['task'] == 'source_appraisal_revision'
             if change == 'erasure':
                 state.ledger.erase_sources(contact_id='person', turn_ids=['repair'])
-            elif change == 'lease_reclaimed':
-                state.test_clock.value += 31
-                assert competitor._claim(0)
+            elif change == 'attribution':
+                from protagine.self_model.appraisals import invalidate_source_attribution
+                with state.ledger._connect() as conn, conn:
+                    invalidate_source_attribution(conn, ['repair'], 'person', 'other')
             else:
                 return float('nan')
             return 180

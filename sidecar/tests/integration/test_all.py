@@ -118,7 +118,7 @@ class TestHealth:
         data = _get(client, "/health")
         caps = set(data["capabilities"])
         expected = {
-            "memory", "consolidate", "signals", "embed",
+            "memory", "consolidate", "embed",
             "goals", "contacts", "briefings",
             "world_model", "cognition", "research", "delivery", "synthesis",
             "learning", "skills", "identity", "secrets", "autonomy",
@@ -515,37 +515,6 @@ class TestSkills:
         """Getting nonexistent skill returns 404."""
         resp = client.get("/v1/host/skills/registry/nonexistent_skill")
         assert resp.status_code == 404
-
-
-# ===========================================================================
-# 11. SIGNALS
-# ===========================================================================
-
-
-class TestSignals:
-    """Behavioral signal ingestion."""
-
-    def test_signal_ingest_from_messages(self, client):
-        """Signal ingestion from message pairs."""
-        data = _post(client, "/signals/ingest", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "incoming_message": {"content": "Hello there", "role": "user"},
-            "outgoing_message": {"content": "Hi! How can I help?", "role": "assistant"},
-        })
-        assert data.get("accepted") is True
-
-    def test_signal_ingest_raw(self, client):
-        """Raw signal ingestion from external sources."""
-        data = _post(client, "/signals/ingest", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "signals": [
-                {"type": "engagement_depth", "source": "integration_test", "value": 0.8},
-            ],
-        })
-        assert data.get("accepted") is True
-        assert data.get("signals_recorded", 0) >= 1, "Raw signals should be recorded"
 
 
 # ===========================================================================

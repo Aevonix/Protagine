@@ -17,6 +17,7 @@ without the model endpoint: it is a marker file and an in-memory flag.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -30,6 +31,7 @@ from zoneinfo import ZoneInfo
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
+from .affect import WAIT_FORCED_S, WAIT_TIMER_S, Affect
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, ask_expiry, in_quiet_hours, may_contact_of, new_ask_code,
     parse_quiet_hours,
@@ -60,7 +62,8 @@ MESSAGING_TOOLS = frozenset({"send_message", "react_to_message", "discord", "dis
 # Stock ``send_message`` targets: ``platform:chat_id``, and on these platforms ``platform:chat_id:thread_id``.
 THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
-DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True}
+DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
+                     "affect": True, "affect_rules": False}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
@@ -166,6 +169,11 @@ class Mind:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.concerns = concerns if concerns is not None else Concerns(self.state_dir / MIND_DB, clock=self.clock)
         self.mind_state = self.concerns.state
+        # The agent's own feelings (architecture 4.3); ``self.feelings`` so ``affect`` stays free for contacts'.
+        self.feelings = Affect(self.mind_state, store=store, commitments=commitments, appraisals=appraisals,
+                               expectations=expectations, budgets=self.policy.budgets, owner_id=self.owner_id,
+                               state_on=self.faculties["affect"], rules_on=self.faculties["affect_rules"],
+                               tz=self.tz, clock=self.clock)
         self.deliberation = Deliberation(router, clock=self.clock, tokens_allowed=self.authority.tokens_allowed,
                                          enabled=self.faculties["deliberation"], budgets=self.policy.budgets)
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
@@ -364,11 +372,14 @@ class Mind:
                 return summary
             self.deliberation.begin_tick()
             summary["reconsidered"] = await self._reconsider(now)
-            summary["capture_drained"] = await self._drain_capture(force)
+            # The owner's statements seconds before a decision point reach affect in this tick.
+            summary["capture_drained"], summary["affect_wait"] = await asyncio.gather(
+                self._drain_capture(force), self.feelings.wait(WAIT_FORCED_S if force else WAIT_TIMER_S))
             summary["overdue_flipped"] = self._flip_overdue(now)
             self.mind_state.decay(now)
             summary["decay"] = self.concerns.decay(now)
             inputs = self._gather(now)
+            summary["affect"] = self.feelings.update(now)
             summary["drives"], events = self._raise_concerns(inputs, now)
             summary["revised"] = self._bdi(now, events)
             summary["goals"] = self._tend_goals(now)
@@ -859,9 +870,10 @@ class Mind:
             pairs.append((concern, Candidate.from_detail(concern.detail)))
         by_key = {candidate.dedup_key: concern for concern, candidate in pairs}
         weights = self.effective_weights()
+        view = self.feelings.view()
         # The configured weight is factored out of the threshold; satiation is not, for self-chosen work (rank.py).
         ranked = eligible([candidate for _, candidate in pairs], threshold=self.act_threshold, drives=weights,
-                          base=self.drive_weights, feedback=self.feedback)
+                          base=self.drive_weights, feedback=self.feedback, affect=view)
         formed: List[Dict[str, Any]] = []
         for candidate, score in ranked:
             concern = by_key.get(candidate.dedup_key)
@@ -876,8 +888,10 @@ class Mind:
                     self.concerns.drop(concern.id, note="goal not open", now=now)
                     continue
                 steps_done = self.goals.summaries(goal)
+            failing = self.feelings.failing(candidate.topic or concern.summary)
             shaped = await self.deliberation.form(concern, candidate, open_goals=len(self.goals.open()),
-                                                  may_adopt_goal=may_adopt, steps_done=steps_done)
+                                                  may_adopt_goal=may_adopt, steps_done=steps_done,
+                                                  lessons=failing.pitfalls if failing else (), failing=failing)
             if shaped.open_ended and not shaped.text:
                 continue  # the tick's one call is spent; the concern waits for the next tick
             if shaped.kind == "goal":
@@ -954,6 +968,10 @@ class Mind:
         verdict = self.authority.decide(kind=candidate.kind, recipient=candidate.recipient,
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
                                         may_contact=may_contact, toolsets=self.policy.worker_toolsets, now=now)
+        if candidate.affect_ask and verdict.decision == "act":
+            # The strategy switch asks the owner instead of acting; it never grants what authority withheld.
+            verdict = dataclasses.replace(verdict, decision="ask",
+                                          reason=f"{verdict.reason}; {candidate.affect_ask}"[:300])
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         context: Dict[str, Any] = {
             "concern": candidate.concern, "evidence": list(candidate.evidence), "score": round(score, 3),
@@ -1149,10 +1167,15 @@ class Mind:
             if self._invalidated(row):
                 continue
             context = row.context if isinstance(row.context, dict) else {}
+            # The worker reads the strategy-switch note as it stands at dispatch (PL/body.py sends the body verbatim).
+            note = self.feelings.note_for(str(context.get("topic") or context.get("concern") or row.description))
+            body = context.get("body") or row.description
+            if note and note not in body:
+                body = body + "\n\n" + note
             payloads.append({
                 "id": row.id, "kind": row.kind, "type": row.type, "drive": row.drive,
                 "dedup_key": f"mind:{row.id}", "idempotency_key": f"mind:{row.id}",
-                "title": row.description, "body": context.get("body") or row.description,
+                "title": row.description, "body": body,
                 "assignee": WORKER_PROFILE, "recipient": row.entity_id, "reason": row.decision_reason,
                 "max_runtime_seconds": int(context.get("max_runtime_seconds") or self.policy.budgets.task_max_runtime_s),
                 "max_retries": int(context.get("max_retries") or self.policy.budgets.task_max_retries),
@@ -1324,11 +1347,12 @@ class Mind:
     def section(self, *, limit: int = MIND_SECTION_CHARS) -> str:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
-        The affect line, stances and lessons join it with their milestones.
+        Affect's notes and its calm tone line come first (at most 360 characters); stances and
+        lessons join it with their milestones.
         """
         if not self.enabled:
             return ""
-        lines: List[str] = []
+        lines: List[str] = list(self.feelings.section_lines())
         broadcast = self.broadcast()
         if broadcast:
             lines.append("On my mind: " + "; ".join(f"{c.summary}"[:120] for c in broadcast) + ".")
@@ -1382,6 +1406,7 @@ class Mind:
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "body": self.body_heartbeat or None,
             "running": self._running,
+            "affect": self.feelings.state(),
         }
 
     def stats(self) -> Dict[str, Any]:

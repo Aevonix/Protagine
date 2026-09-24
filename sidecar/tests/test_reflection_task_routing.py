@@ -1,4 +1,4 @@
-"""Actual reflection jobs use one task selection for dispatch and lease budgets."""
+"""Actual reflection jobs use one task selection for dispatch and their budgets."""
 import asyncio
 import json
 
@@ -44,8 +44,10 @@ async def test_reflection_task_override_drives_actual_operator_budget_and_dispat
 
     def respond(payload):
         with worker.ledger._connect() as db:
-            row = db.execute(f'SELECT status,lease_until FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
-        observed_leases.append((row['status'], row['lease_until'] - worker.clock()))
+            row = db.execute(f'SELECT * FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
+        # Appraisal jobs hold a plain claim status; judgment jobs still carry a lease.
+        observed_leases.append((row['status'], row['lease_until'] - worker.clock())
+                               if table == 'self_judgment_runs' else (row['status'],))
         return json.dumps(answer)
 
     monkeypatch.setattr(asyncio, 'wait_for', observed_wait_for)
@@ -64,7 +66,8 @@ async def test_reflection_task_override_drives_actual_operator_budget_and_dispat
         assert len(requests) == 1
         assert requests[0]['payload']['model'] == expected_model
         assert observed_timeouts[0] == expected_deadline + 5
-        assert observed_leases == [('running', expected_deadline + 35)]
+        assert observed_leases == ([('running', expected_deadline + 35)] if table == 'self_judgment_runs'
+                                   else [('running',)])
         with worker.ledger._connect() as db:
             row = db.execute(f'SELECT status,attempts,disposition FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
         assert dict(row) == {'status': 'complete', 'attempts': 1, 'disposition': 'abstained'}
