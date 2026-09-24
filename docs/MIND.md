@@ -149,7 +149,9 @@ audit log, the outbox, outcomes and the off switch. The design is in
    The multiplier orders due check-ins and never gates one: eligibility uses
    the score without feedback, so the backoff above is the only brake.
    A message to a contact with no text is composed (`P/mind/compose.py`,
-   task `mind_compose`, one tool-less call, no fallback, 300 tokens) from
+   task `mind_compose`, one tool-less call, no fallback, 300 tokens) when
+   the budgets would let it go now (one they defer is composed when it goes),
+   from
    an enumerated purpose (`check_in`, `follow_up:<id>`, `reply_wait:<id>`),
    the contact's name, the topic and
    that contact's own recipient-scoped packet, never the concern, its

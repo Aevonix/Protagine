@@ -220,7 +220,9 @@ contact's opt-out ("STOP", "don't text me", ...) only lowers it to `never`.
 
 `prefetch` assembles context for the turn's participant. A guest request sets
 `audience: viewer`, and the sidecar returns a guest only that contact's scoped
-sections, never an owner-only one. The request also says
+sections, never an owner-only one. The scoping fails closed: anyone the
+sidecar cannot show to be the owner, a caller without the key included, gets
+the contact-scoped set. The request also says
 whether Hermes still shows this session's earlier turns (`session_history:
 intact`, `compressed` after a checkpoint), so recall never quotes back what the
 model is already reading. The provider's direct tools are offered on the

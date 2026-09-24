@@ -161,9 +161,11 @@ One interface, three doors: the router `/v1/mind/people`
 `protagine people`. `<who>` is a contact id, a phone number, an email,
 `gateway:address` or a unique name (`store.resolve_reference`: a handle
 address only one contact holds comes before any name, and an ambiguous name
-resolves to nobody; with `exact=True` names are refused, which is how an
-owner's grant to message a third party is kept to someone the owner
-identified).
+resolves to nobody: the 404 lists the candidates, who they are and nothing
+more; with `exact=True` names are refused, which is how an owner's grant to
+message a third party is kept to someone the owner identified). The owner
+reads as `auto` by identity in `who` and `inspect`, whatever an older row's
+column says.
 
 | Router | Tool | CLI | Who |
 |---|---|---|---|
@@ -190,12 +192,18 @@ interactive session before asking the sidecar.
   immediately for a merge through the router and otherwise on the source
   worker's next pass
 - the other stores keyed by contact re-attribute through the
-  `reattribute(old_id, new_id)` hooks (the comms log and the affect store)
-- in one commit: `last_interaction_at` is the later of the two,
-  `first_seen_at` the earlier, `interaction_count` the sum, the keeper's
-  cadence else the dropped one's, `may_contact` `never` if either was (an
-  opt-out survives a merge), the keeper's tier, the digests joined, tags
-  and notes appended, identity candidates moved, `drop` soft-deleted
+  `reattribute(old_id, new_id)` hooks (the comms log, the affect store and
+  the commitment store, which also readdresses every owner's message granted
+  to `drop`), before the sources move: a row whose contact and source
+  disagree is purged as erased, so moving the rows first keeps them
+- in one write guarded on `drop` still being live (a merge of the same pair
+  that finished meanwhile folds nothing twice): `last_interaction_at` is the
+  later of the two, `first_seen_at` the earlier, `interaction_count` the sum,
+  the keeper's cadence else the dropped one's, `may_contact` `never` if
+  either was (an opt-out survives a merge), the keeper's tier, the keeper's
+  digest (the dropped one's when the keeper has none; never two joined), tags
+  and notes appended, group memberships and identity candidates moved,
+  `drop` soft-deleted
 - both records are audited (`merged_in`, `merged_into`). A merge that stopped
   half way can simply be run again.
 
@@ -212,8 +220,8 @@ SQLite >= 3.35 and says so at connect).
   path, in any direction, audited `may_contact_set`.
 - `store.lower_may_contact(contact_id, *, reason, source_ref)` goes to
   `never` only, audited `opt_out`. Two detectors end there: the phrase match
-  in `contacts/optout.py` on the contact's own words (a bare `STOP`,
-  `unsubscribe`, "don't message/text/contact me", "no more messages from
+  in `contacts/optout.py` on the contact's own words (a bare `STOP`, also
+  behind a gateway's bracketed timestamp or sender header, `unsubscribe`, "don't message/text/contact me", "no more messages from
   you", "stop the check-ins", "I'd rather you didn't message me", "leave me
   alone", "remove me" and close variants; never for the owner) and the
   appraisal call's `opt_out` flag.
@@ -227,9 +235,11 @@ audited `cadence_set`; null clears it). `compute_cadence_overdue` honours it
 exactly when set and otherwise estimates the contact's rhythm from their
 conversations (active span / conversations), so a chatty contact no longer
 collapses to the floor. `store.social_candidates()` lists what the social
-drive may consider: `may_contact` is not `never` and the owner set a cadence
-or the tier is `regular` or above. Shadow and group-only contacts are never
-listed.
+drive may consider: not the owner, `may_contact` is not `never` and the owner
+set a cadence or the tier is `regular` or above. Shadow and group-only
+contacts are never listed, so a group of strangers raises no check-in and no
+ask (`test_people_acceptance.py` runs ten through the real sender resolution
+and a real tick).
 
 ### 9. Per-contact digest
 
@@ -240,8 +250,12 @@ owner set for them (permission, cadence, who introduced them): the digest is
 shown as "About this person" when that person is the viewer and composes the
 messages sent to them, so those stay in the owner's `inspect`, read from the
 columns. The mind writes it daily for contacts with a conversation in the last
-day (`store.set_digest`, sources `["template"]`). With the people faculty off
-there is no digest section. It replaces the old relationship briefs.
+day (`store.set_digest`, sources `["template"]`). While a generated digest can
+be written (the memory faculty's, with consolidation on and a router), the
+template fills only an empty digest or its own earlier template. The section
+is cut at the template's 600 characters whoever wrote the column. With the
+people faculty off there is no digest section. It replaces the old
+relationship briefs.
 
 ### 10. Remediation of poisoned history (deployment runbook)
 
@@ -269,7 +283,13 @@ there is no digest section. It replaces the old relationship briefs.
   calls the hooks and can run again after stopping half way; link proposals.
 - `test_people_router.py`: every route; the owner check (403 for anyone
   else, accepted for the owner and `by: cli`); a guest sees only who someone
-  is; a merge re-attributes ledger sources; evals 7.2 test 4.
+  is; a merge re-attributes ledger sources, commitments and sourced affect;
+  evals 7.2 test 4. `tests/hermes_adapter/test_people_contract.py` runs
+  evals 7.2 tests 4 and 8 through the real plugin against these routes.
+- `test_people_acceptance.py`: a group of ten strangers and invariant
+  episode 2 on the real stores; `test_people_family_walk.py`: the
+  `mind-people-1` dev split and the delegated chase walked through the
+  plugin arm's code with a scripted model, graded by the family's oracles.
 - `test_optout.py`: the family's phrasings, close variants and near misses.
 - `test_people_cli.py`, `tests/hermes_adapter/test_tools_commands.py` and
   `test_guard.py`: the CLI and the tool, owner-only mutations refused in a

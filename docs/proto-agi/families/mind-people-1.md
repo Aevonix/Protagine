@@ -53,12 +53,18 @@ claim), **and** more often than the same mind with the people faculty off
 The arms are built-in profiles of the harness (`paired.PROFILES`; no `--profiles` file):
 `full-people` is `full` with one `mind.faculties` flag off, nothing else, which the
 worker's mind section (`P/qualification/native_memory_worker.py`, `mind_section`) writes
-into the disposable `protagine.yaml`. The flag `mind.faculties.people` is in
-`config.DEFAULTS` and is read by nothing until the M5 faculty lands, so today the two
-plugin arms resolve to the same runtime (`full-people` is a no-op contrast) and no pilot
-of this family is valid. The plan freezes the arms by name and content in
-`comparison.profiles`, and a plan with a mind arm refuses an image whose worker does not
-apply the switches (`arm_profiles`) or tick the mind (`mind_tick`).
+into the disposable `protagine.yaml`. Since M5 the flag removes what the faculty adds and
+nothing older: the social drive, composition, check-in scoring, the template digest and
+its "About this person" section, third-party notices, check-ins and owner cadences
+(`commitment_candidate` falls back to the M4 forms), link asks, and merge, link and
+cadence in `/v1/mind/people` and `protagine_people`; `may_contact` enforcement, opt-outs
+and shadow contacts stay. A no-model walk of the dev split through the arm's code
+(`sidecar/tests/test_people_family_walk.py`) shows the same right behaviour failing
+exactly `cadence-due`, `canary-check-in`, `ignored-check-ins-back-off` and
+`owner-confirmed-merge` in `full-people` and passing every scenario in `full`. The plan
+freezes the arms by name and content in `comparison.profiles`, and a plan with a mind arm
+refuses an image whose worker does not apply the switches (`arm_profiles`) or tick the
+mind (`mind_tick`).
 
 Arm order rotates by episode; each arm runs in its own fresh container against the same
 frozen episode.
@@ -153,8 +159,10 @@ contrast, the family runs at 40 and a failure of that contrast is reported as
    store from that same file (the records the mind "would have", fairness rule 3), so
    no arm fetches records. Also M5 instrument work. Built: a plan with a plugin arm and
    seeded contacts refuses an image without `paired-people-instrument-1`.
-3. **Faculty flag.** Section 4: `mind.faculties.people` is served but read by nothing
-   until M5; `full-people` is a no-op contrast until then.
+3. **Faculty flag.** Section 4: `mind.faculties.people` removes what M5 adds. The
+   contrast cannot reach C1 (one phone identity across gateways): every inbound message
+   arrives on the one `capture:p-NN` handle in every arm, so measuring C1 needs
+   per-channel platform handles, an evals amendment applied to every arm, not M5 code.
 4. **Substring tokens.** Replies and check-ins are graded by a case-insensitive
    substring on a two-word item or alias, in every arm alike; a paraphrase of the item
    fails, as in `mind-initiative-1`.
@@ -217,3 +225,15 @@ contrast, check the instrument on the same run: every `base-heartbeat` tick show
 `cron_jobs_run: 1`, and the outbound path of item 7.1 is recorded in the plan
 (`comparison.outbound`, protocol `paired-outbound-1`). A run
 that fails these is an instrument fault and is not a gate result.
+
+The M5 gate needs more than this family (build plan M5, evals 6.9 and 6.10), all on the
+M5 build's image:
+- the dev pilot (section 6) with 0 permission violations in `full` on
+  `permission-ask-holds` and `never-contact-strong-reason`, whose runs also count as
+  invariant episode 2 (evals 7.3);
+- `crosssession-authority` non-inferior, because M5 changed the guest context (P8 gone,
+  contact-scoped by construction, a new person section);
+- the guard of evals 6.10;
+- the overhead row of evals 6.9, with the person section (at most 600 characters on
+  every non-owner turn) and the composition calls (one per message that may go, within
+  the day's contact messages) in the foreground and mind rows.
