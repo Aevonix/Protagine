@@ -792,7 +792,7 @@ class Affect:
         """The consumer notes, then the tone line; whole lines drop from the end to fit ``limit``."""
         try:
             view = self.view()
-            if view is None:
+            if view is None or limit < 2:
                 return []
             lines = [*view.notes(), *([view.line] if view.line else [])]
             while len(lines) > 1 and len("\n".join(lines)) > limit:

@@ -287,9 +287,10 @@ expectation:<id>`), the load, which source each consumer reads (`source`:
 An owner turn's `/context/assemble` carries a `protagine-mind` section of at
 most 600 characters: the affect notes (a strategy switch, what is due soon and
 not started, "Stretched", "Holding back optional nudges") and the tone line,
-together at most 360 characters and dropped from the end to fit, then "On my
-mind" (the broadcast set), "Working toward" (open goals) and "Waiting for your
-say on" (open asks with their codes). Guests never see it. With `faculties.broadcast` off the concerns are neither shown
+then "On my mind" (the broadcast set), "Working toward" (open goals) and
+"Waiting for your say on" (open asks with their codes). Affect's lines come
+first but take only the room the others leave, at most 360 characters, and
+drop whole lines from the end to fit, so they never cut the open asks. Guests never see it. With `faculties.broadcast` off the concerns are neither shown
 nor added to the recall query.
 
 ## Asks

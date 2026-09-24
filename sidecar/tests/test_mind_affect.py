@@ -716,6 +716,7 @@ def test_the_section_drops_whole_lines_from_the_end_and_keeps_the_switch_notes_l
     bounded = world.affect.section_lines()
     assert len("\n".join(bounded)) <= SECTION_CHARS and bounded == full[:len(bounded)]
     assert world.affect.section_lines(limit=len(NOTE) + 5) == [NOTE]
+    assert world.affect.section_lines(limit=0) == [] and world.affect.section_lines(limit=-40) == []
 
 
 # -- 11. self-report -----------------------------------------------------------------------------------

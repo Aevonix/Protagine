@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
-from .affect import Affect
+from .affect import SECTION_CHARS, Affect
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, ask_expiry, in_quiet_hours, may_contact_of, new_ask_code,
     parse_quiet_hours,
@@ -1388,12 +1388,13 @@ class Mind:
     def section(self, *, limit: int = MIND_SECTION_CHARS) -> str:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
-        Affect's notes and its calm tone line come first (at most 360 characters); stances and
-        lessons join it with their milestones.
+        Affect's notes and its calm tone line come first but take only the room the rest leaves
+        (at most 360 characters), so they never cut the open asks; stances and lessons join it
+        with their milestones.
         """
         if not self.enabled:
             return ""
-        lines: List[str] = list(self.feelings.section_lines())
+        lines: List[str] = []
         broadcast = self.broadcast()
         if broadcast:
             lines.append("On my mind: " + "; ".join(f"{c.summary}"[:120] for c in broadcast) + ".")
@@ -1404,7 +1405,8 @@ class Mind:
         if asks:
             lines.append("Waiting for your say on: " + "; ".join(
                 f"[{row.ask_code}] {row.description}"[:100] for row in asks if row.ask_code) + ".")
-        text = "\n".join(lines)
+        room = limit - len("\n".join(lines)) - (1 if lines else 0)
+        text = "\n".join([*self.feelings.section_lines(min(SECTION_CHARS, room)), *lines])
         if len(text) > limit:
             text = text[: limit - 1].rstrip() + "…"
         return text

@@ -748,6 +748,33 @@ async def test_the_wait_stops_at_the_budget_when_nothing_runs_and_on_errors(tmp_
     fx.store.close()
 
 
+LONG = " about migrating the family photo archive from the old laptop drives onto the new NAS volume"
+
+
+@pytest.mark.parametrize("faculties", [{}, {"affect": False}], ids=["full", "full-affect"])
+async def test_affect_lines_take_only_the_room_the_section_has_left(tmp_path, monkeypatch, faculties):
+    """The open asks line (the owner's view of the codes, including the asks the switch creates) is never
+    cut to make room for affect: affect's lines come first but get only what the rest leaves."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = arm(tmp_path, "a", **faculties)
+    await fx.say("owner-1", "the archive export gave stale quarterly figures; "
+                            "the archive export gave stale quarterly figures.")
+    for n, hours in enumerate((0.5, 6, 7)):
+        fx.owe(f"Prepare the board pack part {n}", hours=hours)
+    for n in range(3):
+        fx.mind.add_interest(f"question {n}{LONG}")
+    fx.store.create_intention(kind="task", type="research", title="Re-run the archive export for the board figures",
+                              drive="duty", cls="internal", decision="ask", decision_reason="test", status="asked",
+                              dedup_key="ask-1", ask_code="K7F", context={"body": "x"})
+    await fx.mind.tick(force=True)
+    section = fx.mind.section()
+    assert len(section) <= 600
+    assert section.splitlines()[-1] == "Waiting for your say on: [K7F] Re-run the archive export for the board figures."
+    if not faculties:
+        assert section.startswith("Prior attempts at quarterly figures failed 2 times")
+    fx.store.close()
+
+
 async def test_form_demotes_act_to_ask_and_never_promotes(ax, monkeypatch):
     from protagine.mind.authority import Verdict
     question = f"{TOPIC} failed 2 times with this same plan; run it again anyway?"
