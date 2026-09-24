@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from protagine.initiatives.models import StoredInitiative
 
@@ -48,16 +48,30 @@ class Autobiography:
     """
 
     SESSION = "mind"
+    # Intentions built from what people said (a contradiction question quotes two statements): the record
+    # names them without those words.
+    QUOTING_TYPES = frozenset({"contradiction"})
 
     def __init__(self, ledger: Any, *, owner_id: str | None, clock=None) -> None:
         self.ledger = ledger
         self.owner_id = owner_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    @classmethod
+    def name(cls, row: StoredInitiative) -> str:
+        """How the record names an intention: its title, except for one that quotes people's statements.
+        Erasure follows source lineage only inside one contact's sources, so an owner-side entry that
+        repeated another person's words would outlive that person's erasure."""
+        if row.type in cls.QUOTING_TYPES:
+            return "a question about two recorded statements that disagree"
+        return row.description
+
     def record(self, intention_id: str, event: str, text: str, *, contact_id: str | None = None,
-               **metadata: Any) -> bool:
+               lineage: Sequence[str] = (), **metadata: Any) -> bool:
         """One entry under the owner, or under ``contact_id`` (an episode summary lands with its own
-        contact, so that person's later sessions recall it); never a claim."""
+        contact, so that person's later sessions recall it); never a claim. ``lineage``: the audience's
+        own source turns the text was made from, recorded as the entry's supplied sources, so erasing any
+        of them erases the entry too (the ledger's erasure closure)."""
         audience = contact_id or self.owner_id
         if self.ledger is None or not audience or not text.strip():
             return False
@@ -65,6 +79,9 @@ class Autobiography:
         message = {"role": "assistant", "content": text.strip(),
                    "metadata": {"origin": "mind", "intention_id": intention_id, "event": event, **metadata}}
         try:
+            if lineage:
+                message["_supplied_sources"] = self.ledger.source_references(
+                    list(lineage), contact_id=audience, session_id=self.SESSION)
             return bool(self.ledger.record_source(
                 f"mind:{intention_id}:{event}", contact_id=audience, session_id=self.SESSION,
                 messages=[message], scope="person", occurred_at=now.isoformat(), derive_claims=False))
@@ -291,7 +308,7 @@ class Outcomes:
                                         at=self.clock(), **updates)
         self._feedback(updated, verdict)
         if self.autobiography is not None and updated is not None:
-            self.autobiography.record(updated.id, "rated", f"The owner rated '{updated.description}' as {verdict}.",
+            self.autobiography.record(updated.id, "rated", f"The owner rated '{Autobiography.name(updated)}' as {verdict}.",
                                       verdict=verdict)
         return updated
 
@@ -356,7 +373,7 @@ class Outcomes:
     @staticmethod
     def _narrate(row: StoredInitiative, check_result: Optional[bool]) -> str:
         what = {"task": "task", "message": "message", "goal": "goal", "note": "note"}.get(row.kind or "", "intention")
-        text = f"My {what} '{row.description}' ended {row.outcome}"
+        text = f"My {what} '{Autobiography.name(row)}' ended {row.outcome}"
         if row.hermes_ref:
             text += f" ({row.hermes_ref})"
         if row.result:

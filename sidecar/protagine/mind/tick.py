@@ -1114,7 +1114,7 @@ class Mind:
             self._register_expectation(updated, now)
         verb = {"act": "will act on", "ask": "asked the owner about", "drop": "dropped", "defer": "deferred"}[decision]
         self.autobiography.record(updated.id, f"decided_{decision}",
-                                  f"I {verb} '{updated.description}' ({updated.drive} drive, {updated.cls} class): "
+                                  f"I {verb} '{Autobiography.name(updated)}' ({updated.drive} drive, {updated.cls} class): "
                                   f"{updated.decision_reason}." + (f" Ask code {code}." if decision == "ask" else ""),
                                   decision=decision)
         return updated
@@ -1351,7 +1351,7 @@ class Mind:
                 self.feedback.record(f"{row.type}:{row.drive}", "actioned", source=row.id)
             except Exception:
                 pass
-        self.autobiography.record(row.id, "approved", f"The owner approved '{row.description}' (code {code}).")
+        self.autobiography.record(row.id, "approved", f"The owner approved '{Autobiography.name(row)}' (code {code}).")
         return updated
 
     def rate(self, intention_id: str, verdict: str, *, by: str = "owner") -> Optional[StoredInitiative]:

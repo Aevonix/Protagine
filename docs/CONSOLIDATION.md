@@ -64,7 +64,11 @@ next night.
    is refreshed. When the claims agree again (a correction retracted or superseded one side) a
    question not yet answered (deferred, asked or queued) is withdrawn by the check
    (`verified: check`, no verdict) and the concern resolves: the owner is never asked something
-   already settled.
+   already settled. The agent's own recallable record of the question (the autobiography's
+   `decided_*`, `outcome_*`, `rated` and `approved` rows under the owner) names it without the two
+   values ("a question about two recorded statements that disagree"): erasure follows lineage only
+   inside one contact's sources, so an owner-side copy of a person's words would outlive their
+   erasure.
 3. **Per-contact digests** (`mind.faculties.people`; at most 6 calls). A digest has one home, the
    contact's own record (`digest`, `digest_sources`, the people milestone's columns), and one
    writer path, the contact store's `set_digest(contact_id, text, sources)` (awaited when it is a
@@ -84,7 +88,9 @@ next night.
    `Autobiography.record(contact_id=...)` as the ledger row
    `mind:episode:<session>:<date>:episode_summary` under **that contact** (`session_id="mind"`,
    `scope="person"`, `derive_claims=False`): the person's later sessions recall it, and it never
-   becomes a claim.
+   becomes a claim. The summary carries the session's turns as its source lineage (the ledger's
+   supplied sources), so when the person has any of those turns forgotten, the ledger's erasure
+   closure erases the summary with it; a later night may summarise what is left.
 
 Every input query excludes the mind's own rows (`SELF_TURN_SQL`: `session_id<>'mind' AND turn_id
 NOT LIKE 'mind:%'`). The same exclusion applies to the commitment extractor's "Recent conversation":

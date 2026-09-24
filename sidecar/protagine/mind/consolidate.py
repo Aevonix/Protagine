@@ -897,8 +897,9 @@ class Consolidation:
             if not summary:
                 night.count("episodes_rejected")
                 continue
+            # The turns are the summary's lineage: forgetting any of them forgets the summary too.
             if self.autobiography.record(f"episode:{session_id}:{night.local_date}", "episode_summary", summary,
-                                         contact_id=cid, session=session_id, sources=turn_ids):
+                                         contact_id=cid, lineage=turn_ids, session=session_id, sources=turn_ids):
                 written += 1
         night.counts["episodes"] = written
 

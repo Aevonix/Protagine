@@ -1007,6 +1007,58 @@ async def test_self_turns_are_not_consolidation_inputs(fx):
     assert "session_id<>'mind'" in SELF_TURN_SQL and "NOT LIKE 'mind:%'" in SELF_TURN_SQL
 
 
+
+def quote_them(messages, context):
+    """An episode answer that repeats what the person said, as a real summary may."""
+    said = [line[len("They said: "):] for line in messages[-1]["content"].splitlines() if line.startswith("They said: ")]
+    return {"summary": "They said: " + " ".join(said)}
+
+
+async def test_forgetting_a_turn_forgets_the_episode_summary_built_from_it(fx):
+    """The summary carries its turns as source lineage, so the ledger's erasure closure takes it with any of
+    them; a later night may summarise what is left, never the forgotten turn."""
+    fx.router.answers[TASK_EPISODE] = quote_them
+    fx.turn("t-1", CONTACT, "s-9", "My diagnosis is lupus, keep it private.")
+    fx.turn("t-2", CONTACT, "s-9", "Also book the dentist.")
+    fx.turn("t-3", CONTACT, "s-9", "And the pharmacy.")
+    fx.turn("t-4", CONTACT, "s-9", "Thanks.")
+    assert (await fx.mind.consolidate())["counts"]["episodes"] == 1
+    assert any("lupus" in hit["content"] for hit in fx.ledger.search_sources(
+        "diagnosis lupus", contact_id=CONTACT, session_id="later-session"))
+    result = fx.ledger.erase_sources(contact_id=CONTACT, turn_ids=["t-1"])
+    summary_id = f"mind:episode:s-9:{fx.now.date().isoformat()}:episode_summary"
+    assert summary_id in result["affected_source_ids"]
+    assert episode_rows(fx) == []
+    assert not any("lupus" in hit["content"] for hit in fx.ledger.search_sources(
+        "diagnosis lupus", contact_id=CONTACT, session_id="later-session"))
+    # Three turns remain: summarised again, from them alone.
+    assert (await fx.mind.consolidate())["counts"]["episodes"] == 1
+    row, = episode_rows(fx)
+    assert "dentist" in row["messages_json"] and "lupus" not in row["messages_json"]
+
+
+async def test_the_agents_record_of_a_contradiction_question_never_quotes_the_statements(fx):
+    """The question to the owner carries both values; the agent's own recallable record of it does not, so
+    erasing a person's statement leaves no copy of it under the owner (the ledger follows lineage only
+    inside one contact's sources)."""
+    fx.router.answers[TASK_DIGEST] = None
+    await fx.fact("c-1", CONTACT, "sms-1", "My office is room 4.", "room 4")
+    fx.shift(hours=1)
+    await fx.fact("c-2", CONTACT, "sms-2", "My office is room 7.", "room 7")
+    await fx.mind.consolidate()
+    await fx.mind.tick(force=True)
+    ask, = fx.messages("contradiction")
+    assert "room 4" in ask.description and "room 7" in ask.context["text"]      # the question itself
+    fx.mind.outcomes.record(ask.id, status="done", hermes_ref="message:1", summary="sent")
+    fx.mind.outcomes.rate(ask.id, "useful")
+    with closing(fx.ledger._connect()) as conn:
+        record = [row[0] for row in conn.execute(
+            "SELECT messages_json FROM turn_sources WHERE contact_id=? AND turn_id LIKE ?", (OWNER, f"mind:{ask.id}:%"))]
+    assert len(record) >= 3                                          # decided, outcome, rated
+    assert not any("room" in text for text in record), record
+    fx.ledger.erase_sources(contact_id=CONTACT, turn_ids=["c-1", "c-2"])
+    assert not fx.ledger.search_sources("office room", contact_id=OWNER, session_id="later-session")
+
 async def test_the_whole_night_is_bounded_and_a_failing_stage_does_not_stop_the_rest(fx, monkeypatch):
     monkeypatch.setattr("protagine.mind.consolidate.RUN_DEADLINE_S", 0.2)
 
