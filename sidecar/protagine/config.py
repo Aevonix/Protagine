@@ -10,13 +10,17 @@ exports the values the sidecar process reads through ``os.environ``.
 from __future__ import annotations
 
 import copy
+import logging
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "protagine.yaml"
 KEY_FILE = "api.key"
@@ -31,6 +35,10 @@ DEFAULTS: dict[str, Any] = {
     "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": "", "embed_dims": 0,
                "rerank_url": "", "rerank_model": ""},
     "owner": {"contact_id": ""},
+    # PROTAGINE_* settings the sidecar reads that no key above covers (a reranker prompt
+    # style, recall thresholds, oversampling, an endpoint credential): exported after the
+    # keys above; a value already in the process environment still wins.
+    "environment": {},
     "mind": {
         "enabled": True,
         "autonomy": "suggest",
@@ -88,6 +96,71 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"0", "false", "no", "off"})
+
+ENVIRONMENT_NAME = re.compile(r"^PROTAGINE_[A-Z][A-Z0-9_]*$")
+
+#: Names the other keys of protagine.yaml (or identity.yaml) already define. The
+#: ``environment`` mapping refuses them and names the key, so each setting has one place.
+RESERVED_ENVIRONMENT: dict[str, str] = {
+    "PROTAGINE_HOME": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_STATE_DIR": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_CONTACTS_DB": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_SIDECAR_HOST": "sidecar.host",
+    "PROTAGINE_SIDECAR_PORT": "sidecar.port",
+    "PROTAGINE_API_KEY": "api.key",
+    "PROTAGINE_MIND_ENABLED": "mind.enabled",
+    "PROTAGINE_AUTONOMY": "mind.autonomy",
+    "PROTAGINE_OWNER_CONTACT_ID": "owner.contact_id",
+    "PROTAGINE_OWNER_NAME": "identity.yaml owner.name",
+    "PROTAGINE_PERSONA_NAME": "identity.yaml agent.name",
+    "PROTAGINE_AGENT_VALUES": "identity.yaml agent.values",
+    "PROTAGINE_AGENT_TIMEZONE": "identity.yaml agent.timezone",
+    "PROTAGINE_TIMEZONE": "identity.yaml agent.timezone",
+    "PROTAGINE_AGENT_QUIET_HOURS": "identity.yaml agent.quiet_hours",
+    "PROTAGINE_EMBED_PROVIDER": "router.embed_url",
+    "PROTAGINE_EMBED_BASE_URL": "router.embed_url",
+    "PROTAGINE_EMBED_MODEL": "router.embed_model",
+    "PROTAGINE_EMBED_DIMS": "router.embed_dims",
+    "PROTAGINE_RERANKER_PROVIDER": "router.rerank_url",
+    "PROTAGINE_RERANKER_BASE_URL": "router.rerank_url",
+    "PROTAGINE_RERANKER_MODEL": "router.rerank_model",
+    "PROTAGINE_GRAPH_ENABLED": "nothing: this line opens no graph database",
+}
+_SECRET_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+
+
+def looks_secret(name: str) -> bool:
+    """A variable whose name says it holds a credential; its value never reaches a log."""
+    return any(marker in name.upper() for marker in _SECRET_MARKERS)
+
+
+def _validate_environment(mapping: Any) -> dict[str, str]:
+    if mapping is None:
+        return {}
+    if not isinstance(mapping, dict):
+        raise ConfigError("environment must be a mapping of PROTAGINE_* names to values")
+    result: dict[str, str] = {}
+    for raw_name, value in mapping.items():
+        name = str(raw_name)
+        if name == "HERMES_HOME":
+            raise ConfigError("environment.HERMES_HOME has its own key: set hermes.home instead")
+        if not ENVIRONMENT_NAME.match(name):
+            raise ConfigError(f"environment.{name}: names must be PROTAGINE_ followed by capitals, digits "
+                              "and underscores")
+        if name in RESERVED_ENVIRONMENT:
+            raise ConfigError(f"environment.{name} has its own key: set {RESERVED_ENVIRONMENT[name]} instead")
+        if isinstance(value, bool):
+            raise ConfigError(f"environment.{name}: YAML read the value as a boolean; quote it "
+                              f"(\"{'on' if value else 'off'}\") so the sidecar receives the word")
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            raise ConfigError(f"environment.{name} must be a string or a number")
+        text = str(value)
+        if not text.strip():
+            raise ConfigError(f"environment.{name} is empty; remove the entry")
+        if any(ord(char) < 32 for char in text):
+            raise ConfigError(f"environment.{name} must not contain control characters")
+        result[name] = text
+    return result
 
 
 class ConfigError(ValueError):
@@ -148,6 +221,7 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     for section in ("sidecar", "hermes", "router", "owner", "mind"):
         if not isinstance(data.get(section), dict):
             raise ConfigError(f"{section} must be a mapping")
+    data["environment"] = _validate_environment(data.get("environment"))
     sidecar = data["sidecar"]
     sidecar["host"] = str(sidecar.get("host") or "127.0.0.1").strip()
     try:
@@ -454,12 +528,25 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_RERANKER_BASE_URL"] = str(config.get("router.rerank_url"))
         values["PROTAGINE_RERANKER_MODEL"] = str(config.get("router.rerank_model"))
         values["PROTAGINE_RECALL_RERANK"] = "on"
+    # The mapping says explicitly what the keys above only imply (validated: PROTAGINE_
+    # names, none that a key already owns), so it lands over the derived values and under
+    # the process environment.
+    mapping = config.get("environment") or {}
+    values.update(mapping)
     applied: dict[str, str] = {}
     for name, value in values.items():
         if name in target and str(target[name]).strip():
             continue
         target[name] = value
         applied[name] = value
+    exported = [name for name in mapping if name in applied]
+    if exported:
+        # Names only; a credential's value never reaches a log, and neither does its name.
+        named = [name for name in exported if not looks_secret(name)]
+        withheld = len(exported) - len(named)
+        logger.info("environment from protagine.yaml: %s%s", ", ".join(named) or "(none named)",
+                    f" and {withheld} credential entr{'y' if withheld == 1 else 'ies'} (names withheld)"
+                    if withheld else "")
     return applied
 
 

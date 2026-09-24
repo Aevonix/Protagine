@@ -89,10 +89,14 @@ def check_config() -> CheckResult:
         return CheckResult("config", FAIL, detail=f"{path} is missing",
                            remedy="run 'protagine init'")
     try:
-        load_config(required=True)
+        config = load_config(required=True)
     except ConfigError as exc:
         return CheckResult("config", FAIL, detail=str(exc), remedy=f"fix {path} and re-run 'protagine doctor'")
-    return CheckResult("config", PASS, detail=f"{path} valid")
+    environment = config.get("environment") or {}
+    detail = f"{path} valid"
+    if environment:
+        detail += f" (environment: {len(environment)} entr{'y' if len(environment) == 1 else 'ies'})"
+    return CheckResult("config", PASS, detail=detail)
 
 
 def check_api_key() -> CheckResult:

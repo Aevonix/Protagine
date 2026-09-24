@@ -109,6 +109,7 @@ hermes: {home: ~/.hermes, python: /path/to/hermes/python}
 router: {base_url: http://127.0.0.1:8000/v1, model: my-model,
          embed_url: "", embed_model: "", embed_dims: 0, rerank_url: "", rerank_model: ""}
 owner: {contact_id: "<created by init>"}
+environment: {}                      # PROTAGINE_* settings no key above covers (see below)
 mind:
   enabled: true                      # the off switch
   autonomy: suggest                  # off | suggest | standard | trusted
@@ -153,6 +154,32 @@ keywords.
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in
 [docs/MIND.md](MIND.md).
+
+The sidecar reads a number of tuning settings from its process environment
+that have no key of their own: a reranker prompt style, recall thresholds and
+oversampling, an endpoint credential. `environment` carries any of them in the
+one configuration file, so a calibration survives an upgrade without a
+hand-maintained service unit:
+
+```yaml
+environment:
+  PROTAGINE_RERANKER_PROMPT_STYLE: qwen3
+  PROTAGINE_RECALL_RERANK_MIN_SCORE: "0.74"
+  PROTAGINE_RECALL_OVERSAMPLE: 5
+  PROTAGINE_EMBED_API_KEY: "<the embedding endpoint's key, if it needs one>"
+```
+
+Names must be `PROTAGINE_` followed by capitals, digits and underscores. A
+name that another key already defines (the instance directory, `sidecar.*`,
+`api.key`, `mind.enabled`, `mind.autonomy`, `owner.contact_id`, the identity
+fields, `router.embed_*` and `router.rerank_*`) is refused with the key to use
+instead. Values are strings or numbers; quote words YAML would read as
+booleans (`"on"`, `"off"`, `"yes"`). Entries are exported when the sidecar
+starts, after the values the keys above derive (so `PROTAGINE_RECALL_RERANK:
+shadow` here measures a configured reranker before it changes what recall
+returns), and a value already in the process environment still wins. The
+sidecar log names the entries it exported; a credential's value never reaches
+a log, and neither does its name.
 
 A few environment variables override the file for one process:
 `PROTAGINE_HOME` (the instance directory), `PROTAGINE_SIDECAR_HOST`,

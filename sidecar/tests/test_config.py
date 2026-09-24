@@ -257,3 +257,80 @@ def test_embed_dims_must_be_a_whole_number(home, value, message):
     assert message in str(info.value)
     (home / "protagine.yaml").write_text(yaml.safe_dump({"router": {"embed_dims": "2048"}}))
     assert load_config(home, environ={}).get("router.embed_dims") == 2048
+
+
+def test_environment_mapping_lands_over_derived_values_and_under_the_process_environment(home, caplog):
+    """Any PROTAGINE_* tuning the sidecar reads travels in the file; the process still wins."""
+    import logging
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"rerank_url": "http://127.0.0.1:8093", "rerank_model": "a-reranker"},
+        "environment": {
+            "PROTAGINE_RERANKER_PROMPT_STYLE": "qwen3",
+            "PROTAGINE_RECALL_RERANK_MIN_SCORE": 0.7362908869981766,
+            "PROTAGINE_RECALL_OVERSAMPLE": 5,
+            "PROTAGINE_RECALL_STRENGTH_RANKING": "on",
+            "PROTAGINE_RECALL_RERANK": "shadow",
+            "PROTAGINE_EMBED_API_KEY": "s3cret-value",
+        },
+    }))
+    cfg = load_config(home, environ={})
+    assert cfg.get("environment.PROTAGINE_RECALL_OVERSAMPLE") == "5"
+    environ = {"PROTAGINE_RECALL_OVERSAMPLE": "2"}
+    with caplog.at_level(logging.INFO, logger="protagine.config"):
+        applied = apply_environment(cfg, environ=environ)
+    assert environ["PROTAGINE_RERANKER_PROMPT_STYLE"] == "qwen3"
+    assert environ["PROTAGINE_RECALL_RERANK_MIN_SCORE"] == "0.7362908869981766"
+    assert environ["PROTAGINE_RECALL_STRENGTH_RANKING"] == "on"
+    assert environ["PROTAGINE_RECALL_RERANK"] == "shadow"          # the mapping over the derived "on"
+    assert environ["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8093"
+    assert environ["PROTAGINE_RECALL_OVERSAMPLE"] == "2"           # the process environment over the mapping
+    assert environ["PROTAGINE_EMBED_API_KEY"] == "s3cret-value"
+    assert "PROTAGINE_RECALL_OVERSAMPLE" not in applied
+    # The log names what was exported and keeps a credential's value and name out of it.
+    assert "PROTAGINE_RERANKER_PROMPT_STYLE" in caplog.text
+    assert "s3cret-value" not in caplog.text and "PROTAGINE_EMBED_API_KEY" not in caplog.text
+    assert "1 credential entry (names withheld)" in caplog.text
+
+
+@pytest.mark.parametrize("entry, message", [
+    ({"OPENAI_API_KEY": "x"}, "PROTAGINE_ followed by"),
+    ({"protagine_recall_oversample": "5"}, "PROTAGINE_ followed by"),
+    ({"PROTAGINE_": "5"}, "PROTAGINE_ followed by"),
+    ({"HERMES_HOME": "/elsewhere"}, "hermes.home"),
+    ({"PROTAGINE_SIDECAR_PORT": "8000"}, "sidecar.port"),
+    ({"PROTAGINE_EMBED_DIMS": "4096"}, "router.embed_dims"),
+    ({"PROTAGINE_API_KEY": "k"}, "api.key"),
+    ({"PROTAGINE_OWNER_NAME": "Ada"}, "identity.yaml"),
+    ({"PROTAGINE_RECALL_STRENGTH_RANKING": True}, 'quote it ("on")'),
+    ({"PROTAGINE_RECALL_STRENGTH_RANKING": False}, 'quote it ("off")'),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": None}, "string or a number"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": [5]}, "string or a number"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": ""}, "empty"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": "5\n"}, "control characters"),
+])
+def test_environment_entries_are_validated(home, entry, message):
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"environment": entry}))
+    with pytest.raises(ConfigError) as info:
+        load_config(home, environ={})
+    assert message in str(info.value)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"environment": "PROTAGINE_X=1"}))
+    with pytest.raises(ConfigError, match="mapping"):
+        load_config(home, environ={})
+
+
+def test_reserved_names_cover_every_export_the_keys_derive(home):
+    """The refusal list and apply_environment cannot drift apart; PROTAGINE_RECALL_RERANK is the one
+    derived export the mapping may restate (to measure a reranker as ``shadow``)."""
+    save_identity({"owner": {"name": "Ada"}, "agent": {"name": "Sol", "values": ["care"], "timezone": "UTC",
+                                                       "quiet_hours": "22:00-07:00"}}, home)
+    write_api_key("private-secret", home)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "m", "embed_dims": 8,
+                   "rerank_url": "http://127.0.0.1:8093", "rerank_model": "r"},
+        "owner": {"contact_id": "cid-1"},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    derived = set(environ) - {"HERMES_HOME", "PROTAGINE_RECALL_RERANK"}
+    assert derived <= set(config.RESERVED_ENVIRONMENT), derived - set(config.RESERVED_ENVIRONMENT)
+    assert "PROTAGINE_HOME" in derived and "PROTAGINE_EMBED_DIMS" in derived
