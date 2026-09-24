@@ -542,8 +542,8 @@ erases it together with its evidence.
   at most 420 characters), which says where it came from and that the owner's
   word in the conversation comes first, and logs one `lesson_use` note for that
   owner message (named by a key of its words, not the words). A guest, a
-  kanban worker's run (its body carries its own lessons), a recipient packet, the mind switched off or the faculty
-  off gets none.
+  kanban worker's run (its body carries its own lessons), a recipient packet,
+  the mind switched off or the faculty off gets none.
 - **Scoring and retirement.** A use counts when a verifier scored it: a task
   that carried the lesson and was verified by the owner (`useful`, `actioned`
   or `wrong`, `not_useful`), by an external check, or failed with Hermes'
@@ -564,7 +564,10 @@ erases it together with its evidence.
   retire only on a candidate of the investigated class, never on an active
   lesson) and admits what passes as `candidate` lessons of that class, tried
   only in task bodies of that class until a verified win activates them. The
-  row's `result_metadata.lesson_ops` says what was applied and refused.
+  row's `result_metadata.lesson_ops` says what was applied and refused. Its
+  body shows the class's current lessons, but it is no use of them: it records
+  no `lesson_ids`, so its own outcome (an investigation that timed out, say)
+  never scores them.
 
 With the faculty off nothing new is admitted or used and investigations are
 the plain ones; stored lessons are kept and come back when it is turned on.

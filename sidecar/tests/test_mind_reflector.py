@@ -35,20 +35,20 @@ def fx(tmp_path, monkeypatch):
     fixture.store.close()
 
 
-def fail_twice(fx):
+def fail_twice(fx, tag="w"):
     failures = []
     for index in range(2):
         row, _ = fx.store.create_intention(kind="task", type="research", title="Research: tide tables", drive="curiosity",
                                            cls="internal", decision="act", decision_reason="r", status="dispatched",
-                                           dedup_key=f"research:tide-tables:w{index}", hermes_kind="kanban",
+                                           dedup_key=f"research:tide-tables:{tag}{index}", hermes_kind="kanban",
                                            context={"topic": "tide tables"}, created_at=fx.now - timedelta(days=1))
         fx.mind.outcomes.record(row.id, status="failed", summary="no sources reachable", error="timeout")
         failures.append(row.id)
     return failures
 
 
-async def reflector(fx):
-    fail_twice(fx)
+async def reflector(fx, tag="w"):
+    fail_twice(fx, tag)
     summary, = await idle(fx)
     [formed] = [item for item in summary["formed"] if item["type"] == "mastery_investigation"]
     row = fx.store.get(formed["id"])
@@ -174,6 +174,21 @@ async def test_a_candidate_from_a_reflector_activates_after_a_verified_win_in_it
     fx.mind.rate(task.id, "useful")
     assert fx.mind.lessons.review(fx.now) == {"activated": [lesson.id], "retired": []}
     assert fx.mind.lessons.get(lesson.id).status == "active"
+
+
+async def test_a_reflector_shows_its_class_lessons_but_is_no_use_of_them(fx):
+    """A reflector investigates the lessons of its class; it does not apply them. Its body shows them, but it
+    logs no ``lesson_ids``, so its own failure (an investigation that timed out) is no loss for them."""
+    first = await reflector(fx)
+    report(fx, first, [add()])
+    [lesson] = fx.mind.lessons.all()
+    fx.shift(days=8)                                                 # the class fails again the next week
+    second = await reflector(fx, tag="v")
+    assert second.id != first.id and f"[lesson {lesson.id}, strategy]" in second.context["body"]
+    assert second.lesson_ids is None and "lesson_ids" not in second.context
+    fx.mind.outcomes.record(second.id, status="failed", hermes_ref="kanban:r-1", error="worker timed out")
+    assert fx.store.get(second.id).verified == "hermes_failure"
+    assert lesson.id not in fx.mind.lessons.tally() and fx.mind.lessons.get(lesson.id).status == "candidate"
 
 
 async def test_with_lessons_off_the_investigation_is_the_m8_one(tmp_path, monkeypatch):

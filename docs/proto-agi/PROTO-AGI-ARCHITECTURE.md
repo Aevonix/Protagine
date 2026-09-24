@@ -617,7 +617,8 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    - The reflector returns ACE-style delta operations (add, supersede or retire a lesson) as JSON
      in its completion summary. The mind validates them and applies them to lesson claims. A
      reflector lesson starts as `candidate`: it is used in task bodies, but it becomes `active`
-     only after a verified win in its class.
+     only after a verified win in its class. The reflector's own body shows the lessons of its
+     class but records no use of them, so its outcome never scores them.
    - The mastery drive's level decides which failure class goes next. As built, the reflector is
      an internal task under the ordinary task budgets (`tasks_per_hour`, `concurrent_tasks`) and
      the weekly per-signature re-arm; `budgets.learn_share` bounds the sidecar's own learning

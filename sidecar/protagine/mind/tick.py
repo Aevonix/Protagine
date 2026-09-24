@@ -1304,7 +1304,10 @@ class Mind:
                 if lesson_ids:
                     context["body"] = (f"{context['body']}\n\nLessons from verified results:\n"
                                        + "\n".join(lesson_lines)).strip()
-                    context["lesson_ids"] = lesson_ids
+                    # A reflector investigates its class's lessons and does not apply them: its outcome
+                    # (a timed-out investigation, say) is no evidence for or against them, so no use.
+                    if not candidate.reflector:
+                        context["lesson_ids"] = lesson_ids
             if candidate.reflector:
                 reflector = dict(candidate.reflector)
                 request = str(reflector.pop("request", "") or "")
