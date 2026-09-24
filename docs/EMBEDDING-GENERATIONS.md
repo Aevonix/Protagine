@@ -73,6 +73,26 @@ and a failed pass is retried by the next forget. Unlinked historical vectors can
 invented source ownership from matching text. Their source provenance remains
 unknown.
 
+Compaction is also routine, because every append writes a manifest that lists
+every fragment of its table: a table nothing compacts grows its version history
+quadratically (one upgraded store held 74.7 GB of manifests around 1.67 GB of
+data). One background task per store, never a request, compacts one table at a
+time and deletes its older versions:
+
+- after a forget, every table (above);
+- once per night crossed (the consolidation's boundary), scheduled by the mind's
+  tick whether or not the mind is on: every table with an older version;
+- every five minutes, a table holding `PROTAGINE_VECTOR_COMPACT_VERSIONS` (1000)
+  versions or more.
+
+A pass reads every retained manifest, about 130 MB/s whatever it prunes, so a
+table whose manifests exceed `PROTAGINE_VECTOR_COMPACT_DAY_BYTES` (1 GiB) is
+not compacted by the threshold: it waits for the nightly pass, and for at most
+a day. Between two tables the task pauses as long as the previous one took (at
+most 30 s). Each table's pass is logged at info with its reason, versions and
+size before and after, and its duration; a failure is logged as a warning and
+the pass goes on.
+
 Rebuilding image embeddings requires a qualified model that can reproduce that
 image embedding space. The text rebuild refuses retained image-vector rows
 instead of replacing them with caption vectors and claiming compatibility.

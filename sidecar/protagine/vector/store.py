@@ -21,6 +21,7 @@ from typing import Any, Optional
 import pyarrow as pa
 
 from protagine.vector.collections import Collection
+from protagine.vector.compaction import Compaction
 from protagine.vector.query import VectorItem, VectorResult
 
 logger = logging.getLogger(__name__)
@@ -128,10 +129,9 @@ class VectorStore:
         # table rewrite after erasure snapshots and replaces a whole table, and
         # would drop any row another writer commits in between.
         self.write_lock = asyncio.Lock()
-        # The compaction after an erasure runs as one background task; a request
-        # while it runs asks for one more pass (``schedule_purge``).
-        self._purge_task: asyncio.Task | None = None
-        self._purge_wanted = False
+        # Compaction after an erasure, each night and past a version threshold:
+        # one background task, one table at a time (``compaction.py``).
+        self.compaction = Compaction(self)
 
     async def connect(self, dimensions: int) -> None:
         """Open (or create) the LanceDB database directory."""
@@ -552,16 +552,18 @@ class VectorStore:
 
     async def close(self) -> None:
         """Release database resources."""
+        await self.compaction.close()
         self._db = None
         self._generation_dbs.clear()
 
     async def erase_source_projections(self, turn_ids, *, purge=True):
         """Remove exact linked rows even when the old graph row is already gone.
 
-        With ``purge`` every table is compacted afterwards, so the erased text
-        also leaves the Lance data files and version history rather than only
-        the current view. The forget route passes ``purge=False`` and calls
-        ``schedule_purge``: a first compaction of a large store takes minutes.
+        With ``purge`` this waits for an erasure compaction of every table, so
+        the erased text also leaves the Lance data files and version history
+        rather than only the current view. The forget route passes
+        ``purge=False`` and schedules that compaction after it answers: a first
+        compaction of a large store takes minutes.
         """
         if self.catalog is None:
             return 0
@@ -600,44 +602,11 @@ class VectorStore:
                         async with self.write_lock:
                             await table.delete('id IN (' + ','.join(self._quoted(value) for value in matched) + ')')
                         deleted.update((collection.value, value) for value in matched)
-                if purge:
-                    # Unconditional, so a retry after a failed compaction still
-                    # finishes the job and earlier soft deletes are purged as well.
-                    await self._purge_deleted(db, collection.value)
+        if purge:
+            # Every table, unconditionally, so a retry after a failed compaction
+            # still finishes the job and earlier soft deletes are purged as well.
+            await self.compaction.schedule('erasure')
         return len(deleted)
-
-    async def purge_deleted(self):
-        """Compact every collection of every generation (``_purge_deleted``)."""
-        if self.catalog is None:
-            return
-        for generation in await asyncio.to_thread(self.catalog.generations):
-            db = await self._generation_db(generation)
-            names = await db.table_names()
-            for collection in Collection:
-                if collection.value in names:
-                    await self._purge_deleted(db, collection.value)
-
-    def schedule_purge(self) -> asyncio.Task:
-        """Run ``purge_deleted`` in the background, off the request that erased.
-
-        One task at a time: a request while it runs asks for one more pass, so
-        rows deleted after the pass began are purged too. A failed pass is
-        logged; the next erasure's pass purges what it left, since compaction
-        takes every soft delete in the table.
-        """
-        self._purge_wanted = True
-        if self._purge_task is None or self._purge_task.done():
-            self._purge_task = asyncio.get_running_loop().create_task(self._purge_while_wanted())
-        return self._purge_task
-
-    async def _purge_while_wanted(self):
-        while self._purge_wanted:
-            self._purge_wanted = False
-            try:
-                await self.purge_deleted()
-            except Exception:
-                logger.warning('vector purge after source erasure failed; the next erasure retries it',
-                               exc_info=True)
 
     async def _purge_deleted(self, db, name):
         """Rewrite a table so soft-deleted rows leave its data files and history.
@@ -653,12 +622,13 @@ class VectorStore:
         table = await db.open_table(name)
         if not hasattr(table, 'optimize'):
             logger.warning('LanceDB cannot compact %s; deleted rows stay on disk until a reindex', name)
-            return
-        await table.optimize(cleanup_older_than=timedelta(0))
+            return None
+        stats = await table.optimize(cleanup_older_than=timedelta(0))
         pending = Path(db.uri) / (name + '.lance') / '_deletions'
         if pending.is_dir() and any(pending.iterdir()):
             logger.info('Rewriting vector table %s to purge deleted rows', name)
             async with self.write_lock:
                 table = await db.open_table(name)
                 await db.create_table(name, data=await table.to_arrow(), mode='overwrite')
-                await (await db.open_table(name)).optimize(cleanup_older_than=timedelta(0))
+                stats = await (await db.open_table(name)).optimize(cleanup_older_than=timedelta(0))
+        return stats

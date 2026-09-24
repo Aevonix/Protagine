@@ -521,7 +521,7 @@ async def test_forget_answers_before_the_compaction_which_then_purges_the_text(t
     hits, _ = await projection.search('hydrofoil', contact_id='c', session_id='s', limit=20)
     assert not {hit['turn_id'] for hit in hits} & set(secrets)
     release.set()
-    await asyncio.wait_for(store._purge_task, timeout=30)
+    await asyncio.wait_for(store.compaction.task, timeout=30)
     assert purged and set(purged) <= {collection.value for collection in Collection}
     for secret in secrets.values():
         assert files_containing(tmp_path / 'lancedb', secret) == []

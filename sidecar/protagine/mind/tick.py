@@ -1,7 +1,8 @@
 """The mind tick: one ranked producer of self-initiated work (architecture 3.2).
 
 Every tick: the timers (ask expiry, deferred intentions, expectations,
-retention, the nightly backup), a bounded drain of the capture jobs still
+retention, the nightly backup, the nightly vector compaction, which also
+runs with the mind off), a bounded drain of the capture jobs still
 pending (a promise made seconds ago must be a row before the drives look),
 then decay, the drives over a snapshot of stored state, the concerns they
 raise, reconsideration of active intentions on matching events, the goals,
@@ -248,6 +249,7 @@ class Mind:
 
         self.started_at = self.clock()
         self.consolidation.last_run(self.started_at)       # a fresh store is watched from its first start
+        self._vector_night = self.started_at              # the nightly vector compaction's last night
         self.last_pull_at: Optional[datetime] = None
         self.last_tick_at: Optional[datetime] = None
         self.ticks = 0
@@ -434,6 +436,8 @@ class Mind:
             await self._beat()
             summary: Dict[str, Any] = {"tick": self.ticks, "at": now.isoformat(), "formed": [], "skipped": None,
                                        "model_calls": 0}
+            # Store upkeep, not initiative: it runs with the mind off too.
+            summary["vector_compaction"] = self._vector_compaction(now)
             if not self.enabled:
                 summary["skipped"] = "off"
                 summary["expired_asks"] = self._expire_asks(now)
@@ -668,6 +672,25 @@ class Mind:
                 item.unlink(missing_ok=True)
             old.rmdir()
         return str(target)
+
+    def _vector_compaction(self, now: datetime) -> Optional[str]:
+        """Once per night crossed (the consolidation's boundary), the vector store's nightly compaction:
+        every table's old versions go, including a table too large to compact by day. It runs in the
+        store's own background task, one table at a time, and needs neither a model nor the body.
+        A process started during the day waits for its first night."""
+        if not boundary_crossed(self._vector_night, now, tz=self.tz, minute=self.consolidation.boundary_minute()):
+            return None
+        self._vector_night = now
+        try:
+            from protagine.vector import get_store
+            compaction = getattr(get_store(), "compaction", None)
+            if compaction is None:
+                return None
+            compaction.schedule("nightly")
+        except Exception as error:
+            logger.warning("nightly vector compaction was not scheduled (%s)", type(error).__name__)
+            return None
+        return "scheduled"
 
     def _schedule_consolidation(self, now: datetime) -> Optional[str]:
         """Start the night's consolidation as a background task when it is due.

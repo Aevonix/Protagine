@@ -475,6 +475,7 @@ async def semantic_recall(state):
             await task
         except asyncio.CancelledError:
             pass
+        await store.compaction.close()      # a nightly pass the mind's tick started
         vector.set_store(prior[0])
         vector.set_pipeline(prior[1])
 

@@ -2374,7 +2374,7 @@ async def forget_turn_sources(body: SourceForgetRequest, request: Request = None
             # The rows are out of the served view now. Compacting the tables, which takes
             # the text out of the data files and old versions, runs after the answer: on a
             # large store never compacted before it takes minutes (operability-11).
-            vector_store.schedule_purge()
+            vector_store.compaction.schedule('erasure')
             vector_purge = 'scheduled'
         except Exception:
             logger.warning('source erasure vector generation cleanup is pending', exc_info=True)

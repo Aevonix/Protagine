@@ -400,6 +400,8 @@ async def lifespan(app: FastAPI):
                 await vs.ensure_collections(dimensions=embed_dims)
                 set_store(vs)
                 set_pipeline(pipeline)
+                # Old versions go past a threshold and each night, never inside a request.
+                vs.compaction.start()
                 logger.info("Vector store wired for semantic recall (path=%s)", vector_db_path)
             except Exception as vexc:
                 logger.warning("Vector store wiring failed (recall will use keyword fallback): %s", vexc)
@@ -1146,6 +1148,9 @@ async def lifespan(app: FastAPI):
             await source_claim_task
         except asyncio.CancelledError:
             pass
+    open_vector_store = source_vector_store()
+    if open_vector_store is not None and getattr(open_vector_store, 'compaction', None) is not None:
+        await open_vector_store.compaction.close()
 
     # Shutdown — close connections
     # Stop the mind tick before any store it uses is closed: its in-flight

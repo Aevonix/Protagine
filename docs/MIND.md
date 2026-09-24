@@ -86,7 +86,9 @@ The design is in
    records one, and it never carries a grant: permission stays the contact's
    `may_contact`.
 2. **Tick.** Every 60 s the sidecar runs the timers (ask expiry, deferred
-   intentions, expectation resolution, retention, the nightly backup), then
+   intentions, expectation resolution, retention, the nightly backup, and,
+   with the mind on or off, the nightly vector compaction of
+   [EMBEDDING-GENERATIONS.md](EMBEDDING-GENERATIONS.md)), then
    **drains the capture jobs still pending** (`CommitmentExtractor.drain`
    over the same ledger the projection worker uses: claimable jobs are run,
    a job the worker holds is waited for), bounded to 5 s on the timer and
