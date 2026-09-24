@@ -25,8 +25,9 @@ RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 # Version 2 added the binary comparator switches heartbeat and curator to a profile; version 3
 # added the mind switches of the drives family (full and the minus_* ablations); version 4 adds
 # one ablation per later faculty (the people, affect, opinions, memory, self and improve
-# families), so an image built before it cannot apply those arms.
-ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
+# families), so an image built before it cannot apply those arms; version 5 adds the affect
+# mechanism arm (plus_affect_rules).
+ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-5'
 # The mind switches: the plugin arm with the mind on, served in-process next to the host
 # routes; the body tick calls the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox,
 # reconciliation and observations) before cron and kanban dispatch. ``initiative`` turns on
@@ -34,13 +35,14 @@ ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-4'
 # weight to its release-candidate value (native_memory_worker.mind_section), each
 # ``minus_<faculty>`` switch turns that faculty's flag off and each ``minus_<drive>`` switch
 # sets that drive's weight to 0 (evals section 3, the full-X arms); a ``plus_<faculty>`` switch
-# turns on a faculty that ships off (skills, the full-plus-skills arm). A faculty whose code has
+# turns on a faculty that ships off (skills, the full-plus-skills arm; affect_rules, the stateless
+# affect rules of the full-affect-plus-rules mechanism arm). A faculty whose code has
 # not landed yet still has its flag written, so its ablation is a no-op contrast until then.
 MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect', 'minus_opinions',
                           'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative', 'minus_lessons')
 MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
 MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
-MIND_ADDITIONS = ('plus_skills',)
+MIND_ADDITIONS = ('plus_skills', 'plus_affect_rules')
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS, *MIND_ADDITIONS)
 PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'

@@ -80,7 +80,8 @@ An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
 flags, before the plugin loads, and the binary switches that are on
 (`heartbeat`, `curator`, and the mind switches `initiative`, `full`, the
-`minus_*` ablations and `plus_skills`; a switch is listed only when it is on). The built-in
+`minus_*` ablations and the additions `plus_skills` and `plus_affect_rules`; a switch is listed
+only when it is on). The built-in
 profiles are `base_hermes` (plugin off) and `protagine` (plugin on, the mind
 off), the default arm set, the two comparators `base-heartbeat` and
 `base-curator` described below, `protagine-initiative`, the treatment arm of
@@ -98,8 +99,11 @@ feelings family, `mind-affect-1`), `full-opinions` (the opinions family,
 `mind-opinions-1`), `full-semantic_recall` and `full-consolidation` (the
 memory family, `mind-memory-1`), `full-self_narrative` (the identity family,
 `mind-self-1`) and `full-lessons` (the self-improvement family,
-`mind-improve-1`), plus `full-plus-skills`, `full` with the one faculty that
-ships off (`faculties.skills`) turned on. The flag is served whether or not
+`mind-improve-1`), plus two arms that turn on a faculty that ships off:
+`full-plus-skills` (`faculties.skills` on) and `full-affect-plus-rules`, the
+feelings family's mechanism arm (`full-affect` with `faculties.affect_rules`
+on, so every affect consumer reads its frozen stateless rule instead of the
+decaying state). The flag is served whether or not
 the faculty's code has landed, so such an arm is a no-op contrast until its
 milestone. Every mind arm is served in the worker next to the host routes and
 ticked by the body tick.
@@ -119,8 +123,9 @@ A profile cannot redefine a built-in one, and an overlay cannot name a model,
 endpoint, credential, contact, path or database setting: those are shared by
 every arm, never arm differences. The same body runs in every arm, so the image,
 model, budgets, tools and oracle are identical; only the profile differs. Arm
-profiles beyond the built-in pair require an image whose worker declares
-`arm_profiles`; older images run only the default pair.
+profiles beyond the built-in pair require an image whose worker declares the
+current arm-profile protocol (`arm_profiles`, `paired-arm-profiles-5` since the
+affect mechanism arm); older images run only the default pair.
 
 ### Comparator arms
 
@@ -305,7 +310,8 @@ advance (past the deadline that counts, or short of one that does not) and body
 ticks with no user turn. The dev family `mind-affect-1` (`affect.py`) adds
 decision-turn episodes: the history, a clock advance and one tick, then a turn
 in a fresh session that writes a small JSON file graded by the existing
-artifact checks, next to tick-graded satiation scenarios. Held-out templates are a Python file outside the
+artifact checks, next to tick-graded satiation scenarios; its three arms
+(`full`, `full-affect`, `full-affect-plus-rules`) are built in. Held-out templates are a Python file outside the
 repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the

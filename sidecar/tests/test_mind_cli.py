@@ -92,6 +92,32 @@ def test_status_log_and_yes_go_to_the_sidecar(home, monkeypatch, capsys):
     assert all(call[1].startswith("/v1/mind") for call in transport.calls)
 
 
+def test_status_prints_the_affect_line(home, monkeypatch, capsys):
+    base = {"enabled": True, "autonomy": "standard", "queued": 0, "outbox": 0, "asks": [], "dispatched": 0,
+            "ticks": 1, "last_tick": None, "last_pull": None, "body_stale": False, "breaker": []}
+    affect = {"enabled": True, "source": "state", "route": {}, "levels": {}, "satiated": True, "boost": 0.5,
+              "load": {"level": 0.6, "overloaded": True, "obligations": 3, "running": 0, "cap": 2,
+                       "failures_last_hour": 0, "asks": 0},
+              "switch": ["quarterly figures"], "notes": [], "due_soon": [],
+              "line": "Mood: somewhat frustrated about quarterly figures.", "updated_at": None}
+    transport = _Transport({("GET", "/v1/mind/state"): {**base, "affect": affect}})
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert ("affect: Mood: somewhat frustrated about quarterly figures.; load 0.6, overloaded, satiated; "
+            "switch: quarterly figures [state]") in capsys.readouterr().out
+    calm = {**affect, "line": "", "satiated": False, "switch": [], "source": "rules",
+            "load": {**affect["load"], "level": 0.2, "overloaded": False}}
+    transport.routes[("GET", "/v1/mind/state")] = {**base, "affect": calm}
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect: calm; load 0.2; switch: none [rules]" in capsys.readouterr().out
+    transport.routes[("GET", "/v1/mind/state")] = {**base, "affect": {**affect, "enabled": False, "source": "off"}}
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect: off" in capsys.readouterr().out
+    transport.routes[("GET", "/v1/mind/state")] = base          # a sidecar before the feelings landed
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect:" not in capsys.readouterr().out
+
+
 def test_off_writes_the_marker_when_the_sidecar_is_down(home, monkeypatch, capsys):
     transport = _Transport(None)
     monkeypatch.setattr(httpx, "Client", transport.client)

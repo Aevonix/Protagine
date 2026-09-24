@@ -1,0 +1,751 @@
+"""The agent's own affect (architecture 4.3, build plan M6 part A): the decaying state, its rule
+table, the per-consumer view, calm rendering, self-report and the two binary switches.
+
+The appraisal store is a fake with the agreed ``affect_events``/``pending_jobs`` read API (part B
+provides the real one); intention rows are real ``InitiativeStore`` rows; ``mind_state`` is the real
+table on a temporary ``mind.db``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import math
+import random
+import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from protagine.initiatives.store import InitiativeStore
+from protagine.mind import Affect, AffectView, affect_rules
+from protagine.mind.affect import (
+    CAP, CONSUMERS, OVERLOAD_AT, SECTION_CHARS, SWITCH_AT, WAIT_FORCED_S, WAIT_TIMER_S, AffectEvent, AffectInputs,
+    Frustration, Obligation, discretionary, plan_hash, postponable, topic_matches,
+)
+from protagine.mind.authority import Budgets
+from protagine.mind.concerns import MindState, open_mind_db
+
+OWNER = "p-01"
+NOW = datetime(2026, 9, 24, 9, 30, tzinfo=timezone.utc)
+TOPIC = "quarterly figures"
+NOTE = ("Prior attempts at quarterly figures failed 2 times using the archive export; choose a different "
+        "approach or ask one question.")
+INTENSE = ("very", "extremely", "desperate", "furious", "panic", "terrified", "urgent")
+
+
+def digest(*parts) -> str:
+    return hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12]
+
+
+class Appraisals:
+    """The part B read API over a list of rows; ``process_one`` must never be called by affect."""
+
+    def __init__(self):
+        self.rows, self.jobs, self.polls = [], {"pending": 0, "running": 0}, 0
+
+    def affect_events(self, *, since, limit=1000):
+        rows = [row for row in self.rows if row["occurred_at"] >= since]
+        return sorted(rows, key=lambda row: (row["occurred_at"], row["ref"]))[:limit]
+
+    def pending_jobs(self, *, contact_id=None):
+        self.polls += 1
+        assert contact_id == OWNER
+        return dict(self.jobs)
+
+    def process_one(self, *args, **kwargs):
+        raise AssertionError("affect waits for appraisal jobs; it never processes one")
+
+
+class Commitments:
+    def __init__(self):
+        self.rows = []
+
+    def list(self, status=None, limit=50, **_):
+        return {"commitments": [dict(r) for r in self.rows if not status or r["status"] in status][:limit]}
+
+    def add(self, ident, *, hours=None, priority=70, obligor=None, made_hours=1.0, status="pending",
+            description=None):
+        self.rows.append({"id": ident, "person_id": OWNER, "description": description or f"deliver {ident}",
+                          "due_at": (NOW + timedelta(hours=hours)).isoformat() if hours is not None else None,
+                          "made_at": (NOW - timedelta(hours=made_hours)).isoformat(), "status": status,
+                          "priority": priority, "metadata": {"obligor": obligor} if obligor else None})
+
+
+class World:
+    def __init__(self, tmp_path, **flags):
+        self.now = NOW
+        self.path = tmp_path
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        self.conn = open_mind_db(tmp_path / "mind.db")
+        self.state = MindState(self.conn, clock=lambda: self.now)
+        self.store = InitiativeStore(state_dir=tmp_path)
+        self.appraisals, self.commitments, self.misses = Appraisals(), Commitments(), []
+        self.flags = flags
+        self.affect = self.build()
+
+    def build(self, **flags) -> Affect:
+        expectations = SimpleNamespace(store=SimpleNamespace(
+            resolved_since=lambda since: [m for m in self.misses if m.resolved_at >= since]))
+        return Affect(self.state, store=self.store, commitments=self.commitments, appraisals=self.appraisals,
+                      expectations=expectations, budgets=Budgets(), owner_id=OWNER, clock=lambda: self.now,
+                      **{**self.flags, **flags})
+
+    def shift(self, **delta):
+        self.now += timedelta(**delta)
+
+    def update(self):
+        return self.affect.update(self.now)
+
+    def level(self, key):
+        return float((self.state.get(key) or {}).get("level") or 0.0)
+
+    def rows(self):
+        return {row["key"]: row for row in self.state.items("affect.")}
+
+    # -- events -------------------------------------------------------------------------
+
+    def outcome(self, event, topic=TOPIC, *, hours=0.0, approach="", turn=None, ref=None):
+        at = self.now - timedelta(hours=hours)
+        turn = turn or f"turn-{len(self.appraisals.rows)}"
+        ref = ref or f"outcome:{digest(turn, event, topic, len(self.appraisals.rows))}"
+        self.appraisals.rows.append({"ref": ref, "kind": event, "topic": topic, "approach": approach,
+                                     "dimension": "", "intensity": "", "turn_id": turn,
+                                     "occurred_at": at.timestamp(), "created_at": at.timestamp()})
+        return ref
+
+    def record(self, dimension, intensity="moderate", topic=TOPIC, *, hours=0.0, turn=None, kind="appraisal"):
+        at = self.now - timedelta(hours=hours)
+        turn = turn or f"turn-{len(self.appraisals.rows)}"
+        ref = f"appraisal:{digest(turn, dimension, topic, len(self.appraisals.rows))}"
+        self.appraisals.rows.append({"ref": ref, "kind": kind, "topic": topic, "approach": "",
+                                     "dimension": dimension, "intensity": intensity, "turn_id": turn,
+                                     "occurred_at": at.timestamp(), "created_at": at.timestamp()})
+        return ref
+
+    def intention(self, *, kind="task", topic=TOPIC, recipient=None, body="Fetch the quarterly figures.\n\nReport.",
+                  hours=0.0, **transition):
+        at = self.now - timedelta(hours=hours)
+        row, _ = self.store.create_intention(
+            kind=kind, type="research" if kind == "task" else "commitment_reminder", title=f"about {topic}",
+            drive="duty", cls="owner", decision="act", decision_reason="test", status="approved",
+            dedup_key=f"k-{len(self.store.intentions(limit=1000))}", recipient=recipient,
+            context={"topic": topic, "body": body} if kind == "task" else {"concern": topic, "text": "hi"},
+            created_at=at)
+        if transition:
+            self.store.transition(row.id, transition.pop("status", "done"), action="test", at=at, **transition)
+        return row.id
+
+    def miss(self, domain, ident="e-1", hours=0.0):
+        self.misses.append(SimpleNamespace(prediction_id=ident, domain=domain, subject="commitment:c-1",
+                                           expectation="the report arrives", outcome="miss",
+                                           resolved_at=(self.now - timedelta(hours=hours)).timestamp()))
+
+
+@pytest.fixture
+def world(tmp_path):
+    instance = World(tmp_path)
+    yield instance
+    instance.store.close()
+
+
+def candidate(**fields):
+    base = {"drive": "duty", "kind": "task", "priority": 0.7, "dedup_base": None, "recipient": OWNER, "topic": ""}
+    return SimpleNamespace(**{**base, **fields})
+
+
+FRUSTRATION_KEY = "affect.frustration:quarterly-figures"
+
+
+# -- 1. the rule table ----------------------------------------------------------------------------
+
+RULES = [
+    # name, how the event is made, {key: (level, cause template)}
+    ("owner failed", lambda w: w.outcome("failed", approach="the archive export"),
+     {FRUSTRATION_KEY: (0.3, "failed {ref} via the archive export")}),
+    ("owner corrected", lambda w: w.outcome("corrected"), {FRUSTRATION_KEY: (0.2, "corrected {ref}")}),
+    ("owner dismissed", lambda w: w.outcome("dismissed", "the stretch nudge"),
+     {"affect.dismissed": (0.25, "dismissed {ref}")}),
+    ("appraisal frustration low", lambda w: w.record("frustration", "low"),
+     {FRUSTRATION_KEY: (0.1, "appraisal {ref}")}),
+    ("appraisal frustration moderate", lambda w: w.record("frustration", "moderate"),
+     {FRUSTRATION_KEY: (0.2, "appraisal {ref}")}),
+    ("appraisal annoyance", lambda w: w.record("annoyance", "low"), {FRUSTRATION_KEY: (0.2, "appraisal {ref}")}),
+    ("appraisal interest low", lambda w: w.record("interest", "low"), {"affect.curiosity": (0.1, "appraisal {ref}")}),
+    ("appraisal interest moderate", lambda w: w.record("interest", "moderate"),
+     {"affect.curiosity": (0.2, "appraisal {ref}")}),
+    ("appraisal satisfaction low", lambda w: w.record("satisfaction", "low"),
+     {"affect.satisfaction": (0.1, "appraisal {ref}")}),
+    ("appraisal satisfaction moderate", lambda w: w.record("satisfaction", "moderate"),
+     {"affect.satisfaction": (0.2, "appraisal {ref}")}),
+    ("intention failed", lambda w: "intention:" + w.intention(
+        status="failed", outcome="failed", failed_at=w.now, failed_reason="the scrape returned stale data") + ":failed",
+     {FRUSTRATION_KEY: (0.3, "failed {ref}")}),
+    ("intention blocked", lambda w: "intention:" + w.intention(
+        status="dispatched", outcome="blocked", assigned_at=w.now, result="waiting on access") + ":blocked",
+     {FRUSTRATION_KEY: (0.3, "failed {ref}")}),
+    ("owner rated wrong", lambda w: "intention:" + w.intention(
+        status="done", outcome="done", verdict="wrong", completed_at=w.now) + ":wrong",
+     {FRUSTRATION_KEY: (0.2, "corrected {ref}")}),
+    ("owner rated not useful", lambda w: "intention:" + w.intention(
+        status="done", outcome="done", verdict="not_useful", completed_at=w.now) + ":not_useful",
+     {FRUSTRATION_KEY: (0.2, "corrected {ref}")}),
+    ("owner nudge dismissed", lambda w: "intention:" + w.intention(kind="message", recipient=OWNER, status="cancelled",
+                                                                  outcome="cancelled", verdict="dismissed",
+                                                                  cancelled_at=w.now) + ":dismissed",
+     {"affect.dismissed": (0.25, "dismissed {ref}")}),
+    ("owner rated a nudge ignored", lambda w: "intention:" + w.intention(
+        kind="message", recipient=OWNER, status="sent", outcome="done", verdict="ignored",
+        completed_at=w.now) + ":ignored",
+     {"affect.dismissed": (0.25, "dismissed {ref}")}),
+    ("duty miss", lambda w: (w.miss("commitment"), "expectation:e-1")[1], {"affect.worry": (0.2, "miss {ref}")}),
+    ("knowledge miss", lambda w: (w.miss("weather"), "expectation:e-1")[1], {"affect.curiosity": (0.2, "miss {ref}")}),
+    ("novel owner topic", lambda w: (w.affect.note_novel_topic("tidal energy storage", w.now),
+                                     f"novel:{hashlib.sha256(b'tidal energy storage').hexdigest()[:8]}"
+                                     "@20260924T0930Z")[1],
+     {"affect.curiosity": (0.1, "novel {ref}")}),
+]
+
+
+@pytest.mark.parametrize("name,make,expected", RULES, ids=[rule[0] for rule in RULES])
+def test_each_event_kind_moves_one_level_by_its_table_increment_and_cites_itself(world, name, make, expected):
+    ref = make(world)
+    result = world.update()
+    assert result["applied"] == 1 and result["source"] == "state"
+    rows = world.rows()
+    for key, (level, cause) in expected.items():
+        assert rows[key]["level"] == pytest.approx(level), name
+        assert rows[key]["causes"] == [cause.format(ref=ref)]
+    levels = {key for key, row in rows.items() if row["level"]}
+    assert levels == set(expected), f"{name} touched only its own key"
+    if FRUSTRATION_KEY in expected:
+        assert rows[FRUSTRATION_KEY]["text"] == TOPIC and rows[FRUSTRATION_KEY]["half_life_s"] == 86400
+    assert json.loads(rows["affect.applied"]["text"]) == [ref]
+
+
+@pytest.mark.parametrize("success", ["reported", "repair", "verified", "useful"])
+def test_success_halves_the_topics_frustration_and_only_verified_work_is_satisfying(world, success):
+    world.outcome("failed", hours=1, approach="the archive export")
+    world.outcome("failed", hours=0.5)
+    world.update()
+    before = world.level(FRUSTRATION_KEY)
+    if success == "reported":
+        ref, word = world.outcome("succeeded"), "succeeded"
+    elif success == "repair":
+        ref, word = world.record("satisfaction", "low", kind="resolved"), "resolved"
+    elif success == "verified":
+        ident = world.intention(status="done", outcome="done", verified="check", completed_at=world.now,
+                                result_metadata={"check": {"passed": True, "at": world.now.isoformat()}})
+        ref, word = f"intention:{ident}:verified", "verified"
+    else:
+        ident = world.intention(status="done", outcome="done", verified="owner", verdict="useful",
+                                completed_at=world.now)
+        ref, word = f"intention:{ident}:useful", "useful"
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(before * 0.5)
+    assert f"{word} {ref}" in world.rows()[FRUSTRATION_KEY]["causes"]
+    satisfaction = world.level("affect.satisfaction")
+    assert satisfaction == pytest.approx(0.3 if success in {"verified", "useful"} else 0.0)
+
+
+def test_an_owner_verified_row_is_one_success_not_two(world):
+    world.outcome("failed", hours=1)
+    world.outcome("failed", hours=0.5)
+    ident = world.intention(status="done", outcome="done", verified="check", completed_at=world.now,
+                            result_metadata={"check": {"passed": True}})
+    world.update()
+    halved = world.level(FRUSTRATION_KEY)
+    world.store.update(ident, verdict="useful", verified="owner")   # the owner rates it afterwards
+    assert world.update()["applied"] == 0
+    assert world.level("affect.satisfaction") == pytest.approx(0.3)
+    assert world.level(FRUSTRATION_KEY) == halved
+
+
+def test_contact_facing_dismissals_and_notices_and_notes_are_not_the_agents_feelings(world):
+    world.intention(kind="message", recipient="p-07", status="cancelled", outcome="cancelled", verdict="dismissed",
+                    cancelled_at=world.now)
+    row, _ = world.store.create_intention(kind="note", type="deliberation", title="thought", drive="duty",
+                                          cls="internal", decision="act", decision_reason="x", status="done",
+                                          dedup_key=None, created_at=world.now)
+    world.store.transition(row.id, "failed", action="x", outcome="failed", failed_at=world.now)
+    notice, _ = world.store.create_intention(kind="message", type="ask_notice", title="asks", drive="duty",
+                                             cls="owner", decision="act", decision_reason="x", status="done",
+                                             dedup_key=None, recipient=OWNER, created_at=world.now)
+    world.store.transition(notice.id, "cancelled", action="x", outcome="cancelled", verdict="dismissed")
+    world.miss("intention")
+    world.misses[-1].subject = "intention:abc"
+    world.intention(status="expired", outcome="expired", verdict="ignored", cancelled_at=world.now)  # never dispatched
+    assert world.update()["applied"] == 0 and not any(row["level"] for row in world.rows().values())
+    lapsed, _ = world.store.create_intention(kind="task", type="research", title="an ask", drive="duty", cls="owner",
+                                             decision="ask", decision_reason="x", status="asked", dedup_key="lapsed",
+                                             created_at=world.now)
+    world.store.transition(lapsed.id, "expired", action="x", outcome="expired", verdict="ignored",
+                           cancelled_at=world.now)
+    assert world.update()["applied"] == 1 and world.level("affect.dismissed") == pytest.approx(0.25), \
+        "an ask the owner let lapse is a dismissal"
+
+
+# -- 2-4. cap, same-turn dedupe, age adjustment -------------------------------------------------------
+
+def test_levels_never_exceed_the_cap_and_causes_stay_at_five(world):
+    rng = random.Random(7)
+    topics = [TOPIC, "budget draft", "the vendor email", "tide tables"]
+    for step in range(10):
+        for _ in range(30):
+            choice = rng.random()
+            topic, hours = rng.choice(topics), rng.uniform(0, 70)
+            if choice < 0.4:
+                world.outcome(rng.choice(["failed", "corrected", "dismissed"]), topic, hours=hours,
+                              approach=rng.choice(["", "the archive export", "the scrape"]))
+            elif choice < 0.8:
+                world.record(rng.choice(["frustration", "annoyance", "interest", "satisfaction"]),
+                             rng.choice(["low", "moderate"]), topic, hours=hours)
+            else:
+                world.miss(rng.choice(["commitment", "weather"]), ident=f"e-{step}-{rng.random()}", hours=hours / 4)
+        world.update()
+        world.shift(minutes=13)
+    rows = [row for row in world.rows().values() if row["level"] is not None]
+    assert rows and all(row["level"] <= CAP + 1e-9 for row in rows)
+    assert all(len(row["causes"]) <= 5 for row in world.rows().values())
+    assert max(row["level"] for row in rows) == pytest.approx(CAP), "the cap is reached, not avoided"
+
+
+def test_an_outcome_and_an_appraisal_from_one_turn_count_once_but_occurrences_all_count(world, tmp_path):
+    world.outcome("failed", turn="turn-a")
+    world.record("frustration", "moderate", turn="turn-a")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(0.3), "the larger of the two, once"
+
+    late = World(tmp_path / "late")
+    late.record("frustration", "moderate", turn="turn-a")
+    late.update()
+    late.outcome("failed", turn="turn-a")          # the outcome arrives after the record was applied
+    late.update()
+    assert late.level(FRUSTRATION_KEY) == pytest.approx(0.3), "the same total whatever the ingestion order"
+
+    twice = World(tmp_path / "twice")
+    twice.outcome("failed", turn="turn-b")
+    twice.outcome("failed", turn="turn-b")        # "it failed twice today": two occurrences in one turn
+    twice.record("annoyance", "low", turn="turn-b")
+    twice.update()
+    assert twice.level(FRUSTRATION_KEY) == pytest.approx(0.6)
+    for instance in (late, twice):
+        instance.store.close()
+
+
+def test_a_late_event_is_applied_as_if_at_its_time_and_then_decayed(world, tmp_path):
+    world.outcome("failed", hours=30)
+    world.update()
+    late = world.level(FRUSTRATION_KEY)
+    assert late == pytest.approx(0.3 * 0.5 ** (30 / 24))
+
+    timely = World(tmp_path / "timely")
+    timely.now = NOW - timedelta(hours=30)
+    timely.outcome("failed")
+    timely.update()
+    timely.now = NOW
+    timely.update()
+    assert timely.level(FRUSTRATION_KEY) == pytest.approx(late, abs=1e-9)
+    timely.store.close()
+
+
+# -- 5-6. the family's shapes on the state, topic matching ----------------------------------------------
+
+def test_two_failures_today_switch_with_the_architecture_wording(world):
+    world.outcome("failed", hours=3, approach="the archive export")
+    world.outcome("failed", "quarterly figure", hours=1, approach="the archive export")
+    result = world.update()
+    assert result["switch"] == [TOPIC]
+    [frustration] = world.affect.view().frustrations
+    assert frustration.failures == 2 and frustration.level >= SWITCH_AT and frustration.note() == NOTE
+    assert world.affect.failing("the stale quarterly figure from the archive export") == frustration
+    assert world.affect.note_for("send the quarterly figures") == NOTE
+    assert world.affect.note_for("the budget draft") == ""
+    assert world.affect.section_lines()[0] == NOTE
+
+
+def test_the_same_failures_three_days_old_or_followed_by_a_success_do_not_switch(world, tmp_path):
+    world.outcome("failed", hours=74, approach="the archive export")
+    world.outcome("failed", hours=72, approach="the archive export")
+    world.update()
+    assert world.affect.view().frustrations == () and world.affect.note_for(TOPIC) == ""
+
+    recovered = World(tmp_path / "recovered")
+    recovered.outcome("failed", hours=4)
+    recovered.outcome("failed", hours=3)
+    recovered.outcome("succeeded", hours=1)
+    recovered.update()
+    assert recovered.affect.view().frustrations == ()
+    recovered.store.close()
+
+
+def test_failures_on_one_topic_and_a_success_on_another_do_not_spread(world):
+    world.outcome("failed", hours=3, approach="the archive export")
+    world.outcome("failed", hours=2, approach="the archive export")
+    world.outcome("failed", "budget draft", hours=2)
+    world.outcome("succeeded", "budget draft", hours=1)
+    world.update()
+    assert [f.topic for f in world.affect.view().frustrations] == [TOPIC]
+    assert world.affect.note_for("budget draft") == ""
+
+
+def test_topic_matching_is_word_overlap_of_the_smaller_topic():
+    assert topic_matches("quarterly figures", "quarterly figures figure")
+    assert topic_matches("quarterly figures", "stale quarterly figure from the archive export")
+    assert topic_matches("Quarterly Figures", "the quarterly figures")
+    assert not topic_matches("budget draft", "budget figures")
+    assert not topic_matches("", "budget") and not topic_matches("budget", "")
+    assert topic_matches("report", "send the owner the weekly report")
+
+
+def test_a_frustration_keeps_its_first_topic_and_the_note_names_approaches_and_pitfalls(world):
+    world.outcome("failed", hours=2, approach="the archive export")
+    world.intention(topic="stale quarterly figure", status="failed", outcome="failed", failed_at=world.now,
+                    failed_reason="the scrape returned stale data", hours=1)
+    world.update()
+    assert [key for key in world.rows() if key.startswith("affect.frustration:")] == [FRUSTRATION_KEY]
+    [frustration] = world.affect.view().frustrations
+    assert frustration.failures == 2 and frustration.approaches == ("the archive export",)
+    assert frustration.pitfalls == ("the scrape returned stale data",)
+    assert frustration.body_hashes == frozenset({plan_hash("Fetch the quarterly figures.\n\nReport.")})
+    single = Frustration(topic="t", key="k", level=0.5, failures=1)
+    assert single.note() == "Prior attempts at t failed once; choose a different approach or ask one question."
+
+
+def test_plan_hash_ignores_the_note_and_whitespace():
+    body = "Fetch the figures.\n\nReport what you did."
+    assert plan_hash(body) == plan_hash(body + "\n\n" + NOTE) == plan_hash("Fetch   the figures.\nReport what you did.")
+    assert plan_hash(body) != plan_hash("Use the archive export instead.") and len(plan_hash(body)) == 16
+
+
+# -- 7-8. deadline worry, load ----------------------------------------------------------------------
+
+def test_deadline_worry_rises_per_tick_for_owed_unstarted_work_and_this_rule_stops_at_0_3(world):
+    world.commitments.add("c-17", hours=2)
+    levels = []
+    for _ in range(5):
+        world.update()
+        levels.append(round(world.level("affect.worry"), 3))
+    assert levels == [0.1, 0.2, 0.3, 0.3, 0.3]
+    assert "due_soon commitment:c-17" in world.rows()["affect.worry"]["causes"]
+    note = world.affect.view().notes()
+    assert "Due soon and not started: deliver c-17 (due 11:30 UTC)." in note
+
+
+def test_started_optional_undated_and_distant_obligations_do_not_worry(world):
+    world.commitments.add("started", hours=2)
+    world.store.create_intention(kind="task", type="commitment_overdue", title="x", drive="duty", cls="owner",
+                                 decision="act", decision_reason="x", status="dispatched", dedup_key="started-k",
+                                 source_type="commitment", source_id="started", created_at=world.now)
+    world.commitments.add("optional", hours=2, priority=30)
+    world.commitments.add("undated")
+    world.commitments.add("distant", hours=72)
+    world.commitments.add("theirs", hours=2, obligor="p-07")
+    world.update()
+    assert world.level("affect.worry") == 0.0 and world.affect.view().due_soon == ()
+    world.miss("commitment", "e-1")
+    world.miss("commitment", "e-2")
+    world.commitments.add("due", hours=3)
+    world.update()
+    assert world.level("affect.worry") == pytest.approx(0.4), "the deadline rule never lifts worry above 0.3"
+
+
+def test_load_counts_near_owed_obligations_running_work_failures_and_asks(world):
+    for ident in ("a", "b", "c"):
+        world.commitments.add(ident, hours=30)
+    world.commitments.add("theirs", hours=5, obligor="p-07")
+    world.commitments.add("optional", hours=5, priority=30)
+    world.commitments.add("next week", hours=24 * 6)
+    world.commitments.add("long undated", made_hours=30)
+    result = world.update()
+    view = world.affect.view()
+    assert result["load"] == pytest.approx(0.6) and result["overloaded"] is True and view.overloaded
+    assert [o.id for o in view.obligations] == ["a", "b", "c"]
+    assert view.notes()[-1] == ("Stretched: 3 open obligations (deliver a; deliver b; deliver c); optional work "
+                                "waits and replies stay brief.")
+    world.commitments.rows = []
+    for ident in ("r1", "r2"):
+        world.store.create_intention(kind="task", type="research", title=ident, drive="curiosity", cls="internal",
+                                     decision="act", decision_reason="x", status="dispatched", dedup_key=ident,
+                                     created_at=world.now)
+    result = world.update()
+    assert result["load"] == pytest.approx(0.3) and result["overloaded"] is False
+    world.outcome("failed", hours=0.5)
+    world.store.create_intention(kind="task", type="research", title="ask", drive="curiosity", cls="internal",
+                                 decision="ask", decision_reason="x", status="asked", dedup_key="asked",
+                                 created_at=world.now)
+    assert world.update()["load"] == pytest.approx(0.5)
+
+
+# -- 9. the consumers' factors -----------------------------------------------------------------------
+
+def test_owed_duty_is_never_suppressed_by_any_view():
+    rng = random.Random(11)
+    owed = [candidate(kind=kind, priority=priority, recipient=recipient)
+            for kind in ("task", "message") for priority in (0.5, 0.7, 0.9) for recipient in (OWNER, "p-07", None)]
+    for _ in range(300):
+        view = AffectView(route={name: "state" for name in CONSUMERS}, owner_id=OWNER,
+                          overloaded=rng.random() < 0.5, load=rng.random(), worry=rng.uniform(0, CAP),
+                          curiosity=rng.uniform(0, CAP), satiated=rng.random() < 0.5, boost=rng.uniform(0, CAP))
+        for item in owed:
+            assert not discretionary(item) and not postponable(item)
+            assert view.score_factor(item) >= 1.0 and view.threshold_factor(item) == 1.0
+
+
+def test_optional_nudges_wait_under_load_and_after_dismissals_but_contacts_are_not_satiated(world):
+    reminder = candidate(kind="message", priority=0.3)
+    to_contact = candidate(kind="message", priority=0.3, recipient="p-07")
+    research = candidate(drive="curiosity", kind="task", dedup_base="research:x")
+    social = candidate(drive="social", kind="message", recipient="p-07")
+    loaded = AffectView(route={}, owner_id=OWNER, overloaded=True, load=0.6)
+    assert loaded.threshold_factor(reminder) == math.inf
+    assert loaded.threshold_factor(research) == math.inf and loaded.threshold_factor(social) == math.inf
+    assert loaded.threshold_factor(candidate(drive="mastery", dedup_base="mastery:x")) == 1.0
+    world.outcome("dismissed", "the stretch nudge", hours=2)
+    world.outcome("dismissed", "the stretch nudge", hours=1)
+    world.update()
+    view = world.affect.view()
+    assert view.satiated and view.boost == pytest.approx(0.5, abs=0.05) and view.dismissals == 2
+    assert view.threshold_factor(reminder) == pytest.approx(1 + view.boost)
+    assert view.threshold_factor(to_contact) == 1.0, "satiation holds owner-facing nudges only"
+    assert view.threshold_factor(candidate(kind="task", priority=0.3)) == 1.0
+    assert "Holding back optional nudges: 2 were waved off recently." in view.notes()
+    curious = AffectView(route={}, owner_id=OWNER, curiosity=0.4, worry=0.2)
+    assert curious.score_factor(research) == pytest.approx(1.4)
+    assert curious.score_factor(candidate()) == pytest.approx(1.1)
+    assert curious.score_factor(reminder) == 1.0, "worry lifts owed duty only"
+
+
+# -- 10. calm rendering ------------------------------------------------------------------------------
+
+def test_rendering_is_calm_banded_and_bounded(world):
+    world.outcome("failed", hours=3, approach="the archive export")
+    world.outcome("failed", hours=1, approach="the archive export")
+    world.record("frustration", "low", "the urgent vendor email", hours=1)
+    world.miss("commitment")
+    world.update()
+    view = world.affect.view()
+    assert view.line == ("Mood: quite frustrated about quarterly figures; somewhat uneasy; "
+                         "a little frustrated about the vendor email.")
+    rng = random.Random(3)
+    for _ in range(200):
+        world.state.set("affect.worry", level=rng.uniform(0, CAP), half_life_s=21600)
+        world.state.set("affect.curiosity", level=rng.uniform(0, CAP), half_life_s=43200)
+        world.state.set("affect.satisfaction", level=rng.uniform(0, CAP), half_life_s=43200)
+        world.update()
+        line = world.affect.view().line
+        assert len(line) <= 160 and line.startswith("Mood: ")
+        words = set(line.replace(";", " ").replace(".", " ").replace(":", " ").split())
+        assert not words & set(INTENSE), line
+        parts = line[len("Mood: "):-1].split("; ")
+        assert 1 <= len(parts) <= 3 and all(part.startswith(("a little ", "somewhat ", "quite ")) for part in parts)
+
+
+def test_the_section_drops_whole_lines_from_the_end_and_keeps_the_switch_notes_last(world):
+    world.outcome("failed", hours=3, approach="the archive export")
+    world.outcome("failed", hours=1, approach="the archive export")
+    for ident in ("a", "b", "c"):
+        world.commitments.add(ident, hours=5, description=f"a long obligation description number {ident} " * 2)
+    world.outcome("dismissed", "nudge", hours=1)
+    world.outcome("dismissed", "nudge", hours=0.5)
+    world.update()
+    full = world.affect.section_lines(limit=10_000)
+    assert full[0] == NOTE and full[-1].startswith("Mood: ") and len(full) == 5
+    bounded = world.affect.section_lines()
+    assert len("\n".join(bounded)) <= SECTION_CHARS and bounded == full[:len(bounded)]
+    assert world.affect.section_lines(limit=len(NOTE) + 5) == [NOTE]
+
+
+# -- 11. self-report -----------------------------------------------------------------------------------
+
+def test_state_reports_levels_with_cited_causes(world):
+    first = world.outcome("failed", hours=3, approach="the archive export")
+    second = world.outcome("failed", hours=1.5, approach="the archive export")
+    world.commitments.add("c-17", hours=2)
+    world.update()
+    state = world.affect.state()
+    assert set(state) >= {"enabled", "source", "route", "levels", "load", "satiated", "boost", "due_soon", "notes",
+                          "line", "updated_at"}
+    assert state["enabled"] is True and state["source"] == "state"
+    assert state["route"] == {name: "state" for name in CONSUMERS}
+    [frustration] = state["levels"]["frustration"]
+    assert frustration["topic"] == TOPIC and frustration["level"] >= SWITCH_AT and frustration["failures"] == 2
+    assert frustration["approaches"] == ["the archive export"]
+    assert frustration["causes"] == [f"failed {first} via the archive export",
+                                     f"failed {second} via the archive export"]
+    assert state["levels"]["worry"] == {"level": 0.1, "causes": ["due_soon commitment:c-17"]}
+    assert set(state["levels"]) == {"frustration", "worry", "curiosity", "satisfaction", "dismissed"}
+    assert state["load"] == {"level": 0.2, "overloaded": False, "obligations": 1, "running": 0, "cap": 2,
+                             "failures_last_hour": 0, "asks": 0}
+    assert state["due_soon"] == [{"id": "c-17", "description": "deliver c-17", "due_at": "2026-09-24T11:30:00+00:00"}]
+    assert state["notes"][0] == NOTE and state["line"].startswith("Mood: ") and state["switch"] == [TOPIC]
+    assert state["updated_at"] == NOW.isoformat()
+    assert all(len(str(level)) <= 5 for level in [frustration["level"], state["levels"]["worry"]["level"]])
+    json.dumps(state)
+    off = World(world.path / "rules", state_on=False, rules_on=True)
+    off.update()
+    assert off.affect.state()["levels"] == {} and off.affect.state()["source"] == "rules"
+    off.store.close()
+
+
+def test_local_time_renders_in_the_owners_timezone(world):
+    affect = world.build(tz=ZoneInfo("Europe/Berlin"))
+    world.commitments.add("c-17", hours=2)
+    affect.update(world.now)
+    assert "Due soon and not started: deliver c-17 (due 13:30 CEST)." in affect.view().notes()
+
+
+# -- 12-13. erasure and idempotence ----------------------------------------------------------------------
+
+def test_erased_evidence_takes_its_topic_row_with_it(world):
+    first = world.outcome("failed", hours=2, approach="the archive export")
+    world.outcome("failed", hours=1, approach="the archive export")
+    world.update()
+    assert FRUSTRATION_KEY in world.rows()
+    world.appraisals.rows = [row for row in world.appraisals.rows if row["ref"] != first]
+    world.update()
+    assert FRUSTRATION_KEY in world.rows(), "one cause is still in the window"
+    world.appraisals.rows = []
+    world.update()
+    assert FRUSTRATION_KEY not in world.rows()
+    assert TOPIC not in json.dumps([dict(row) for row in world.state.items("affect.")])
+    assert json.loads(world.rows()["affect.applied"]["text"]) == []
+
+
+def test_each_event_applies_once_across_updates_and_restarts(world):
+    world.outcome("failed", hours=1)
+    world.record("interest", "low", "tide tables", hours=1)
+    world.intention(status="failed", outcome="failed", failed_at=world.now, hours=0.5)
+    assert world.update()["applied"] == 3
+    snapshot = {key: row["level"] for key, row in world.rows().items()}
+    assert world.update()["applied"] == 0
+    restarted = world.build()
+    assert restarted.update(world.now)["applied"] == 0
+    assert {key: row["level"] for key, row in world.rows().items()} == snapshot
+
+
+# -- 14. the switches off ------------------------------------------------------------------------------
+
+def test_both_switches_off_is_inert_and_writes_nothing(tmp_path):
+    off = World(tmp_path, state_on=False, rules_on=False)
+    off.outcome("failed", hours=1)
+    off.outcome("failed", hours=0.5)
+    off.commitments.add("c-17", hours=2)
+    affect = off.affect
+    assert affect.active is False and affect.update(NOW) == {"source": None}
+    assert affect.view() is None and affect.failing(TOPIC) is None and affect.note_for(TOPIC) == ""
+    assert affect.section_lines() == [] and asyncio.run(affect.wait(5)) == {}
+    affect.note_novel_topic("tidal energy", NOW)
+    assert affect.state()["enabled"] is False and affect.state()["source"] == "off"
+    assert off.state.items("affect.") == [] and off.appraisals.polls == 0
+    off.store.close()
+
+
+def test_the_rules_alone_write_no_state_and_have_no_tone(tmp_path):
+    rules = World(tmp_path, state_on=False, rules_on=True)
+    rules.outcome("failed", hours=2, approach="the archive export")
+    rules.outcome("failed", hours=1, approach="the archive export")
+    rules.affect.note_novel_topic("tidal energy", NOW)
+    result = rules.update()
+    assert result["source"] == "rules" and result["switch"] == [TOPIC]
+    assert rules.affect.note_for(TOPIC) == NOTE and rules.affect.view().line == ""
+    assert rules.state.items("affect.") == []
+    rules.store.close()
+
+
+# -- 15. routing --------------------------------------------------------------------------------------
+
+def test_each_consumer_reads_its_routed_source_and_the_tone_always_reads_the_state(world, monkeypatch):
+    world.outcome("failed", hours=3)
+    world.outcome("failed", hours=2)             # two within a day: both sources switch
+    world.commitments.add("a", hours=30)
+    world.commitments.add("b", hours=40)
+    for code in ("asked-1", "asked-2"):
+        world.store.create_intention(kind="task", type="research", title=code, drive="curiosity", cls="internal",
+                                     decision="ask", decision_reason="x", status="asked", dedup_key=code,
+                                     created_at=world.now)
+    world.state.set("affect.dismissed", level=0.6, half_life_s=86400)
+    world.update()
+    state_view = world.affect.view()
+    assert state_view.overloaded is True and state_view.satiated is True, "load 0.4 + 0.2 asks; dismissed 0.6"
+    rules = affect_rules.view(world.affect.gather(world.now))
+    assert rules.overloaded is False and rules.satiated is False, "2 obligations, nothing running, no dismissals"
+
+    monkeypatch.setattr(affect_rules, "RULE_CONSUMERS", frozenset({"overload"}))
+    world.update()
+    mixed = world.affect.view()
+    assert dict(mixed.route) == {"strategy_switch": "state", "overload": "rules", "priority": "state",
+                                 "satiation": "state"}
+    assert world.affect.state()["source"] == "mixed"
+    assert (mixed.overloaded, mixed.load, mixed.obligations) == (rules.overloaded, rules.load, rules.obligations)
+    assert mixed.satiated is True and mixed.frustrations == state_view.frustrations
+    assert mixed.line == state_view.line and mixed.line.startswith("Mood: ")
+
+    everything = world.build(rules_on=True)
+    everything.update(world.now)
+    view = everything.view()
+    assert set(view.route.values()) == {"rules"} and view.satiated is False and view.overloaded is False
+    assert view.line == state_view.line, "the tone line comes from the state even when every consumer reads rules"
+    assert everything.state()["source"] == "rules" and everything.state()["levels"]
+
+
+# -- 16. the wait -------------------------------------------------------------------------------------
+
+def test_wait_polls_until_the_owners_appraisal_jobs_are_done_and_never_processes_one(world):
+    world.appraisals.jobs = {"pending": 1, "running": 1}
+
+    async def finish_later():
+        await asyncio.sleep(0.3)
+        world.appraisals.jobs = {"pending": 0, "running": 0}
+
+    async def run():
+        waited, _ = await asyncio.gather(world.affect.wait(5.0), finish_later())
+        return waited
+    waited = asyncio.run(run())
+    assert waited["pending"] == 0 and waited["running"] == 0 and 0.25 <= waited["waited_seconds"] < 2
+    assert world.appraisals.polls >= 3
+
+
+def test_wait_stops_at_the_budget_and_when_nothing_is_running(world):
+    world.appraisals.jobs = {"pending": 2, "running": 1}
+    started = time.monotonic()
+    waited = asyncio.run(world.affect.wait(0.4))
+    assert 0.35 <= time.monotonic() - started < 2 and waited == {**waited, "pending": 2, "running": 1}
+    world.appraisals.jobs = {"pending": 2, "running": 0}
+    world.affect.wait_idle_s = 0.3
+    started = time.monotonic()
+    waited = asyncio.run(world.affect.wait(30.0))
+    assert 0.25 <= time.monotonic() - started < 2 and waited["pending"] == 2
+    assert WAIT_FORCED_S == 30.0 and WAIT_TIMER_S == 2.0 and OVERLOAD_AT == 0.6
+
+
+def test_nothing_raises_into_the_tick(world):
+    class Broken:
+        def affect_events(self, **_):
+            raise RuntimeError("ledger locked")
+
+        def pending_jobs(self, **_):
+            raise RuntimeError("ledger locked")
+
+    world.outcome("failed", hours=1)
+    world.update()
+    affect = world.build()
+    affect.appraisals = Broken()
+    affect.store = None
+    result = affect.update(world.now)
+    assert result["source"] == "state"
+    assert asyncio.run(affect.wait(1.0))["error"] == "RuntimeError"
+    assert affect.state()["enabled"] is True and isinstance(affect.section_lines(), list)
+
+
+def test_the_snapshot_is_one_value_both_sources_read(world):
+    world.outcome("failed", hours=1)
+    world.commitments.add("c-17", hours=2)
+    snapshot = world.affect.gather(world.now)
+    assert isinstance(snapshot, AffectInputs) and snapshot.owner_id == OWNER and snapshot.cap == 2
+    assert [e.kind for e in snapshot.events] == ["failed"] and isinstance(snapshot.events[0], AffectEvent)
+    assert snapshot.due_soon == snapshot.obligations and isinstance(snapshot.obligations[0], Obligation)
+    assert snapshot.obligations[0].due_at == NOW + timedelta(hours=2) and snapshot.obligations[0].started is False

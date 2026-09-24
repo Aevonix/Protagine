@@ -46,6 +46,10 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             # faculty's code has landed, so the arm is a no-op contrast until its milestone.
             'full-people': {'plugin': True, 'overlay': {}, 'full': True, 'minus_people': True},
             'full-affect': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True},
+            # The affect family's mechanism arm: full-affect with the frozen stateless rules on, so
+            # every affect consumer reads its rule (mind.faculties.affect_rules, evals 6.4).
+            'full-affect-plus-rules': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True,
+                                       'plus_affect_rules': True},
             'full-opinions': {'plugin': True, 'overlay': {}, 'full': True, 'minus_opinions': True},
             'full-semantic_recall': {'plugin': True, 'overlay': {}, 'full': True, 'minus_semantic_recall': True},
             'full-consolidation': {'plugin': True, 'overlay': {}, 'full': True, 'minus_consolidation': True},
