@@ -22,7 +22,6 @@ is rendered calmly from the state alone. Contacts' turns do not move the agent's
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -46,8 +45,6 @@ OVERLOAD_AT = 0.6              # load at which optional work waits
 RENDER_FLOOR = 0.05            # below this a level is not rendered and a frustration row is pruned
 SATIATED_DISMISSED, SATIATED_SATISFACTION = 0.4, 0.5
 SECTION_CHARS, TONE_CHARS = 360, 160
-WAIT_FORCED_S, WAIT_TIMER_S = 30.0, 2.0    # how long a forced / timer tick waits for the owner's appraisals
-WAIT_IDLE_S, WAIT_POLL_S = 3.0, 0.1
 CONSUMERS = ("strategy_switch", "overload", "priority", "satiation")
 DISCRETIONARY_PRIORITY = 0.5   # a candidate below this priority is optional (the extractor's "nice to have")
 OWED_PRIORITY = 50             # the same line on the commitment store's 0-100 scale
@@ -371,7 +368,6 @@ class Affect:
         self.state_on, self.rules_on = bool(state_on), bool(rules_on)
         self.tz = tz or timezone.utc
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.wait_idle_s, self.wait_poll_s = WAIT_IDLE_S, WAIT_POLL_S
         self._novel: Deque[AffectEvent] = deque(maxlen=NOVEL_MAX)
         self._inputs: Optional[AffectInputs] = None
         self._view: Optional[AffectView] = None
@@ -535,38 +531,6 @@ class Affect:
         return sorted(found, key=lambda item: (item.due_at or far, item.id))
 
     # -- the tick ---------------------------------------------------------------------------------
-
-    async def wait(self, budget_s: float) -> Dict[str, Any]:
-        """Wait (never process) for the owner's appraisal jobs, so a statement made seconds before the
-        tick reaches affect in this tick: until none is pending or running, until jobs have waited
-        ``wait_idle_s`` with nothing running (no consumer is working), or until the budget."""
-        reader = getattr(self.appraisals, "pending_jobs", None)
-        if not self.active or reader is None or not self.owner_id:
-            return {}
-        loop = asyncio.get_running_loop()
-        started, idle_since = loop.time(), None
-        pending = running = 0
-        try:
-            while True:
-                counts = await asyncio.to_thread(reader, contact_id=self.owner_id)
-                pending, running = int(counts.get("pending") or 0), int(counts.get("running") or 0)
-                elapsed = loop.time() - started
-                if pending == 0 and running == 0:
-                    break
-                if running:
-                    idle_since = None
-                elif idle_since is None:
-                    idle_since = elapsed
-                elif elapsed - idle_since >= self.wait_idle_s:
-                    break
-                if elapsed >= budget_s:
-                    break
-                await asyncio.sleep(min(self.wait_poll_s, max(0.0, budget_s - elapsed)))
-        except Exception as error:
-            logger.warning("affect wait failed (%s)", type(error).__name__)
-            return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running,
-                    "error": type(error).__name__}
-        return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running}
 
     def update(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         """Gather, fold new events into the state, apply the deadline rule, prune, compose the view."""
@@ -846,6 +810,5 @@ class Affect:
 
 
 __all__ = ["Affect", "AffectEvent", "AffectInputs", "AffectView", "CAP", "CONSUMERS", "DISCRETIONARY_PRIORITY",
-           "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "WAIT_FORCED_S",
-           "WAIT_TIMER_S", "compose", "discretionary", "effects", "frustration", "load_of", "plan_hash", "postponable",
+           "Frustration", "OVERLOAD_AT", "Obligation", "RENDER_FLOOR", "SECTION_CHARS", "SWITCH_AT", "compose", "discretionary", "effects", "frustration", "load_of", "plan_hash", "postponable",
            "recent_failures", "topic_matches"]

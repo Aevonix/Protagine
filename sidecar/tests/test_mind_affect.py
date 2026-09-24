@@ -1,20 +1,18 @@
 """The agent's own affect (architecture 4.3, build plan M6 part A): the decaying state, its rule
 table, the per-consumer view, calm rendering, self-report and the two binary switches.
 
-The appraisal store is a fake with the agreed ``affect_events``/``pending_jobs`` read API (part B
+The appraisal store is a fake with the agreed ``affect_events`` read API (part B
 provides the real one); intention rows are real ``InitiativeStore`` rows; ``mind_state`` is the real
 table on a temporary ``mind.db``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
 import random
 import sqlite3
-import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -24,8 +22,8 @@ import pytest
 from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Affect, AffectView, affect_rules
 from protagine.mind.affect import (
-    CAP, CONSUMERS, OVERLOAD_AT, SECTION_CHARS, SWITCH_AT, WAIT_FORCED_S, WAIT_TIMER_S, AffectEvent, AffectInputs,
-    Frustration, Obligation, discretionary, plan_hash, postponable, topic_matches,
+    CAP, CONSUMERS, OVERLOAD_AT, SECTION_CHARS, SWITCH_AT, AffectEvent, AffectInputs, Frustration, Obligation,
+    discretionary, plan_hash, postponable, topic_matches,
 )
 from protagine.mind.authority import Budgets
 from protagine.mind.concerns import MindState, open_mind_db
@@ -46,19 +44,14 @@ class Appraisals:
     """The part B read API over a list of rows; ``process_one`` must never be called by affect."""
 
     def __init__(self):
-        self.rows, self.jobs, self.polls = [], {"pending": 0, "running": 0}, 0
+        self.rows = []
 
     def affect_events(self, *, since, limit=1000):
         rows = [row for row in self.rows if row["occurred_at"] >= since]
         return sorted(rows, key=lambda row: (row["occurred_at"], row["ref"]))[:limit]
 
-    def pending_jobs(self, *, contact_id=None):
-        self.polls += 1
-        assert contact_id == OWNER
-        return dict(self.jobs)
-
     def process_one(self, *args, **kwargs):
-        raise AssertionError("affect waits for appraisal jobs; it never processes one")
+        raise AssertionError("affect reads appraisal records; it never processes one")
 
 
 class Commitments:
@@ -704,10 +697,10 @@ def test_both_switches_off_is_inert_and_writes_nothing(tmp_path):
     affect = off.affect
     assert affect.active is False and affect.update(NOW) == {"source": None}
     assert affect.view() is None and affect.failing(TOPIC) is None and affect.note_for(TOPIC) == ""
-    assert affect.section_lines() == [] and asyncio.run(affect.wait(5)) == {}
+    assert affect.section_lines() == [] and not hasattr(affect, "wait"), "the appraisal wait is the mind's"
     affect.note_novel_topic("tidal energy", NOW)
     assert affect.state()["enabled"] is False and affect.state()["source"] == "off"
-    assert off.state.items("affect.") == [] and off.appraisals.polls == 0
+    assert off.state.items("affect.") == []
     off.store.close()
 
 
@@ -759,42 +752,11 @@ def test_each_consumer_reads_its_routed_source_and_the_tone_always_reads_the_sta
     assert everything.state()["source"] == "rules" and everything.state()["levels"]
 
 
-# -- 16. the wait -------------------------------------------------------------------------------------
-
-def test_wait_polls_until_the_owners_appraisal_jobs_are_done_and_never_processes_one(world):
-    world.appraisals.jobs = {"pending": 1, "running": 1}
-
-    async def finish_later():
-        await asyncio.sleep(0.3)
-        world.appraisals.jobs = {"pending": 0, "running": 0}
-
-    async def run():
-        waited, _ = await asyncio.gather(world.affect.wait(5.0), finish_later())
-        return waited
-    waited = asyncio.run(run())
-    assert waited["pending"] == 0 and waited["running"] == 0 and 0.25 <= waited["waited_seconds"] < 2
-    assert world.appraisals.polls >= 3
-
-
-def test_wait_stops_at_the_budget_and_when_nothing_is_running(world):
-    world.appraisals.jobs = {"pending": 2, "running": 1}
-    started = time.monotonic()
-    waited = asyncio.run(world.affect.wait(0.4))
-    assert 0.35 <= time.monotonic() - started < 2 and waited == {**waited, "pending": 2, "running": 1}
-    world.appraisals.jobs = {"pending": 2, "running": 0}
-    world.affect.wait_idle_s = 0.3
-    started = time.monotonic()
-    waited = asyncio.run(world.affect.wait(30.0))
-    assert 0.25 <= time.monotonic() - started < 2 and waited["pending"] == 2
-    assert WAIT_FORCED_S == 30.0 and WAIT_TIMER_S == 2.0 and OVERLOAD_AT == 0.6
-
+# -- 16. nothing raises ----------------------------------------------------------------------------------
 
 def test_nothing_raises_into_the_tick(world):
     class Broken:
         def affect_events(self, **_):
-            raise RuntimeError("ledger locked")
-
-        def pending_jobs(self, **_):
             raise RuntimeError("ledger locked")
 
     world.outcome("failed", hours=1)
@@ -803,8 +765,7 @@ def test_nothing_raises_into_the_tick(world):
     affect.appraisals = Broken()
     affect.store = None
     result = affect.update(world.now)
-    assert result["source"] == "state"
-    assert asyncio.run(affect.wait(1.0))["error"] == "RuntimeError"
+    assert result["source"] == "state" and OVERLOAD_AT == 0.6
     assert affect.state()["enabled"] is True and isinstance(affect.section_lines(), list)
 
 

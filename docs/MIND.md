@@ -69,8 +69,12 @@ The design is in
    30 s on a forced tick (`POST /tick`, the CLI, the benchmark), so a promise
    made seconds ago is a row before the drives look; the tick summary's
    `capture_drained` records what landed and how long it waited. Alongside
-   the drain it waits for the owner's pending appraisal jobs (`affect_wait`,
-   see Feelings). Then decay, the agent's feelings (`affect`), the drives, the
+   the drain it waits (never processes) for the owner's appraisal jobs in
+   flight, up to 30 s on a forced tick and 2 s on the timer, and not for a
+   queue nothing is working on (`appraisal_wait`): their outcomes reach the
+   agent's feelings and their interests the curiosity drive in this tick, so
+   the wait runs whatever the faculties. Then decay, the agent's feelings
+   (`affect`), the drives, the
    concerns they raise, reconsideration, the goals and the one ranked producer
    below. An intention still waiting (deferred, asked or approved) whose
    source has resolved in the meantime
@@ -217,9 +221,9 @@ the projection worker already makes for every turn: its `outcomes` list
 (failed, succeeded, dismissed or corrected, with the topic and the approach
 used; [SOCIAL-STATE.md](SOCIAL-STATE.md)) is stored per owner turn in the
 ledger's `appraisal_outcomes` table, so "the export failed twice" is two
-failures and a restatement adds none. A forced tick waits up to 30 s (a
-timer tick 2 s) for the owner's pending appraisal jobs, so a statement made
-just before the tick counts in it.
+failures and a restatement adds none. The tick's wait for the owner's
+appraisal jobs (Tick, above) lets a statement made just before a forced tick
+count in it.
 
 Four consumers read the feeling. Affect only ever holds or lowers
 discretionary work (recurring self-chosen work, curiosity and social outreach,

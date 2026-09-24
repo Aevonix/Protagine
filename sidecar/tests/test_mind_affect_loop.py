@@ -290,8 +290,8 @@ async def test_owner_reported_failures_switch_strategy_and_a_verified_success_ca
     await ax.say("owner-2", "Checked again: the archive export gave stale quarterly figures.")
     promise = ax.owe("Send the owner the quarterly figures", hours=-1, obligor="assistant")
     summary = await ax.mind.tick(force=True)
-    assert summary["affect"]["switch"] == [TOPIC] and summary["affect_wait"] == {
-        "waited_seconds": summary["affect_wait"]["waited_seconds"], "pending": 0, "running": 0}
+    assert summary["affect"]["switch"] == [TOPIC] and summary["appraisal_wait"] == {
+        "waited_seconds": summary["appraisal_wait"]["waited_seconds"], "pending": 0, "running": 0}
     assert NOTE in ax.mind.section().splitlines()
     async with AsyncClient(transport=ASGITransport(app=ax.app()), base_url="http://mind") as client:
         state = (await client.get("/v1/mind/state", headers=AUTH)).json()["affect"]
@@ -532,7 +532,8 @@ async def test_full_affect_changes_no_decision_and_writes_nothing(ax, tmp_path):
     await seed_every_consumer(off)
     summary = await off.mind.tick(force=True)
     assert sorted(item["type"] for item in summary["formed"]) == ["commitment_reminder", "research"]
-    assert summary["affect"] == {"source": None} and summary["affect_wait"] == {}
+    assert summary["affect"] == {"source": None}
+    assert (summary["appraisal_wait"]["pending"], summary["appraisal_wait"]["running"]) == (0, 0)
     assert off.affect_rows() == []
     state = off.mind.state()["affect"]
     assert state["enabled"] is False and state["levels"] == {} and state["notes"] == []
@@ -573,9 +574,95 @@ async def test_a_forced_tick_waits_for_the_owners_appraisal_in_flight(ax):
     concurrent = asyncio.create_task(worker())
     summary = await ax.mind.tick(force=True)
     await concurrent
-    assert summary["affect_wait"]["pending"] == 0 and summary["affect_wait"]["running"] == 0
-    assert 0.2 <= summary["affect_wait"]["waited_seconds"] < 3
+    assert summary["appraisal_wait"]["pending"] == 0 and summary["appraisal_wait"]["running"] == 0
+    assert 0.2 <= summary["appraisal_wait"]["waited_seconds"] < 3
     assert summary["affect"]["switch"] == [TOPIC] and NOTE in ax.mind.section()
+
+
+class SlowAppraisals:
+    """The owner's appraisal job is in flight at tick time and lands 0.3 s later with an interest record;
+    ``process_one`` must never be called by the mind."""
+
+    def __init__(self, jobs=None):
+        self.done, self.polls, self.jobs = False, 0, jobs
+
+    def pending_jobs(self, *, contact_id=None):
+        assert contact_id == OWNER
+        self.polls += 1
+        if self.jobs is not None:
+            if isinstance(self.jobs, Exception):
+                raise self.jobs
+            return dict(self.jobs)
+        return {"pending": 0, "running": 0} if self.done else {"pending": 0, "running": 1}
+
+    def affect_events(self, *, since, limit=1000):
+        return []
+
+    def view(self, subject_id, *, viewer_contact_id, limit=4, **_):
+        return {"records": [{"id": "appraisal:1", "kind": "appraisal", "dimension": "interest",
+                             "topic": "tidal energy", "intensity": "moderate"}] if self.done else []}
+
+    def process_one(self, *args, **kwargs):
+        raise AssertionError("the mind waits for appraisal jobs; it never processes one")
+
+
+class SlowFixture(Fixture):
+    def __init__(self, tmp_path, appraisals, **faculties):
+        self.appraisals = appraisals
+        super().__init__(tmp_path, config={"faculties": faculties} if faculties else None)
+
+    def build(self) -> Mind:
+        mind = Mind(config=self.config, store=self.store, state_dir=self.state, owner_id=OWNER,
+                    commitments=self.commitments, feedback=self.feedback, expectations=self.expectations,
+                    contacts=self.contacts, ledger=self.ledger, clock=lambda: self.now, backups=False,
+                    persist=self.persisted.append, router=None, appraisals=self.appraisals)
+        mind.digest_hour = 25
+        return mind
+
+
+@pytest.mark.parametrize("faculties", [{}, {"affect": False}, {"affect": False, "affect_rules": True}],
+                         ids=["full", "full-affect", "full-affect-plus-rules"])
+async def test_every_arm_waits_for_the_owners_appraisal_so_arms_differ_only_by_affect(tmp_path, monkeypatch,
+                                                                                    faculties):
+    """The wait decides what the curiosity drive reads in the same tick (the owner's interest appraisals),
+    so it is the mind's, whatever the affect switches: the same statement raises research in every arm."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    appraisals = SlowAppraisals()
+    fx = SlowFixture(tmp_path, appraisals, **faculties)
+
+    async def worker():
+        await asyncio.sleep(0.3)
+        appraisals.done = True
+    concurrent = asyncio.create_task(worker())
+    summary = await fx.mind.tick(force=True)
+    await concurrent
+    assert summary["appraisal_wait"]["running"] == 0 and 0.25 <= summary["appraisal_wait"]["waited_seconds"] < 3
+    assert [item["type"] for item in summary["formed"]] == ["research"]
+    fx.store.close()
+
+
+async def test_the_wait_stops_at_the_budget_when_nothing_runs_and_on_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    fx = SlowFixture(tmp_path, SlowAppraisals(jobs={"pending": 2, "running": 1}))
+    fx.mind.appraisal_forced_s, fx.mind.appraisal_timer_s = 0.4, 0.2
+    assert (fx.mind.appraisal_idle_s, fx.mind.appraisal_poll_s) == (3.0, 0.1)
+    for force, budget in ((True, 0.4), (False, 0.2)):
+        started = asyncio.get_running_loop().time()
+        waited = await fx.mind._await_appraisals(force)
+        assert budget - 0.05 <= asyncio.get_running_loop().time() - started < budget + 1
+        assert (waited["pending"], waited["running"]) == (2, 1)
+    fx.mind.appraisals.jobs = {"pending": 2, "running": 0}            # queued, and no consumer is working
+    fx.mind.appraisal_forced_s, fx.mind.appraisal_idle_s = 30.0, 0.3
+    started = asyncio.get_running_loop().time()
+    waited = await fx.mind._await_appraisals(True)
+    assert 0.25 <= asyncio.get_running_loop().time() - started < 2 and waited["pending"] == 2
+    fx.mind.appraisals.jobs = RuntimeError("ledger locked")
+    assert (await fx.mind._await_appraisals(True))["error"] == "RuntimeError"
+    fx.mind.appraisals = None
+    assert await fx.mind._await_appraisals(True) is None
+    from protagine.mind import tick as tick_module
+    assert (tick_module.APPRAISAL_FORCED_S, tick_module.APPRAISAL_TIMER_S) == (30.0, 2.0)
+    fx.store.close()
 
 
 async def test_form_demotes_act_to_ask_and_never_promotes(ax, monkeypatch):

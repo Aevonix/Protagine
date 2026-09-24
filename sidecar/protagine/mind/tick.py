@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions
-from .affect import WAIT_FORCED_S, WAIT_TIMER_S, Affect
+from .affect import Affect
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, ask_expiry, in_quiet_hours, may_contact_of, new_ask_code,
     parse_quiet_hours,
@@ -67,6 +67,12 @@ DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
+# How long a tick waits (never processes) for the owner's appraisal jobs in flight, alongside the drain:
+# their outcomes reach affect and their interests the curiosity drive in the same tick. It runs whatever
+# the faculties, so an arm differs only by what it switches off. A queue nobody works (nothing running
+# for APPRAISAL_IDLE_S) is not waited for.
+APPRAISAL_FORCED_S, APPRAISAL_TIMER_S = 30.0, 2.0
+APPRAISAL_IDLE_S, APPRAISAL_POLL_S = 3.0, 0.1
 # Intention types formed because a commitment row was due; a deadline that moves back into the
 # future, or away, makes them stale.
 DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable"})
@@ -133,6 +139,8 @@ class Mind:
         self.commitments = commitments
         self.capture = capture      # the CommitmentExtractor over the same ledger, drained before each decision
         self.drain_forced_s, self.drain_timer_s = DRAIN_FORCED_S, DRAIN_TIMER_S
+        self.appraisal_forced_s, self.appraisal_timer_s = APPRAISAL_FORCED_S, APPRAISAL_TIMER_S
+        self.appraisal_idle_s, self.appraisal_poll_s = APPRAISAL_IDLE_S, APPRAISAL_POLL_S
         try:
             grace = float(mind.get("heads_up_grace_minutes", drive_functions.HEADS_UP_GRACE.total_seconds() / 60))
         except (TypeError, ValueError):
@@ -372,9 +380,9 @@ class Mind:
                 return summary
             self.deliberation.begin_tick()
             summary["reconsidered"] = await self._reconsider(now)
-            # The owner's statements seconds before a decision point reach affect in this tick.
-            summary["capture_drained"], summary["affect_wait"] = await asyncio.gather(
-                self._drain_capture(force), self.feelings.wait(WAIT_FORCED_S if force else WAIT_TIMER_S))
+            # The owner's statements seconds before a decision point reach this tick.
+            summary["capture_drained"], summary["appraisal_wait"] = await asyncio.gather(
+                self._drain_capture(force), self._await_appraisals(force))
             summary["overdue_flipped"] = self._flip_overdue(now)
             self.mind_state.decay(now)
             summary["decay"] = self.concerns.decay(now)
@@ -636,6 +644,38 @@ class Mind:
             logger.warning("capture drain failed (%s)", type(error).__name__)
             return {"error": type(error).__name__, "budget_seconds": budget}
         return {**dict(result or {}), "budget_seconds": budget}
+
+    async def _await_appraisals(self, force: bool) -> Optional[Dict[str, Any]]:
+        """Wait, never process, for the owner's appraisal jobs: until none is pending or running,
+        until jobs have waited ``appraisal_idle_s`` with nothing running, or until the budget."""
+        reader = getattr(self.appraisals, "pending_jobs", None)
+        if reader is None or not self.owner_id:
+            return None
+        budget = self.appraisal_forced_s if force else self.appraisal_timer_s
+        loop = asyncio.get_running_loop()
+        started, idle_since = loop.time(), None
+        pending = running = 0
+        try:
+            while True:
+                counts = await asyncio.to_thread(reader, contact_id=self.owner_id)
+                pending, running = int(counts.get("pending") or 0), int(counts.get("running") or 0)
+                elapsed = loop.time() - started
+                if pending == 0 and running == 0:
+                    break
+                if running:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = elapsed
+                elif elapsed - idle_since >= self.appraisal_idle_s:
+                    break
+                if elapsed >= budget:
+                    break
+                await asyncio.sleep(min(self.appraisal_poll_s, max(0.0, budget - elapsed)))
+        except Exception as error:
+            logger.warning("appraisal wait failed (%s)", type(error).__name__)
+            return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running,
+                    "error": type(error).__name__}
+        return {"waited_seconds": round(loop.time() - started, 3), "pending": pending, "running": running}
 
     # -- the drives: a snapshot of stored state, then concerns -------------------------------
 
@@ -1413,6 +1453,6 @@ class Mind:
         return audit.stats(self.store, now=self.clock())
 
 
-__all__ = ["DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",
+__all__ = ["APPRAISAL_FORCED_S", "APPRAISAL_TIMER_S", "DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",
            "OFF_MARKER", "STALE_AFTER", "TASK_WINDOW", "THREADED_PLATFORMS", "WORKER_PROFILE", "faculties_of",
            "split_target", "task_body"]
