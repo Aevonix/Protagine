@@ -382,6 +382,13 @@ def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckR
     config = load_config()
     if not config.get("router.embed_url"):
         return CheckResult("semantic-recall", SKIP, detail="off: no router.embed_url in protagine.yaml")
+    if config.get("mind.faculties.semantic_recall") is False:
+        # Releases before the switch was live wrote false whenever init found no endpoint.
+        return CheckResult("semantic-recall", WARN,
+                           detail="router.embed_url is set but mind.faculties.semantic_recall is false: recall is "
+                                  "keyword-only",
+                           remedy="set mind.faculties.semantic_recall: true in protagine.yaml (or re-run 'protagine "
+                                  "init --embed-url ...'), then 'protagine service restart'")
     base_url = base_url.rstrip("/")
     try:
         status, body = _http_get(f"{base_url}/v1/host/embed/health", api_key, timeout)

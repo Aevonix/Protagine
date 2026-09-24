@@ -1244,6 +1244,10 @@ def run_init(args) -> int:
         data["router"]["model"] = model
         embed_url = getattr(args, "embed_url", None) or data["router"].get("embed_url") or ""
         data["router"]["embed_url"] = embed_url
+        if getattr(args, "embed_url", None):
+            # Giving init an endpoint is asking for semantic recall: it also clears the ``false`` the
+            # releases before the switch was live recorded whenever init found no endpoint.
+            data["mind"]["faculties"]["semantic_recall"] = True
         if getattr(args, "embed_model", None):
             data["router"]["embed_model"] = str(args.embed_model)
         if getattr(args, "embed_dims", None) is not None:
@@ -1267,8 +1271,12 @@ def run_init(args) -> int:
             _say(f"  router pointed at {base_url} ({model or 'model chosen by Hermes'})")
         elif not base_url:
             _say("  no model endpoint found in Hermes' config; pass --model-url to point the router at one")
-        _say(f"  semantic recall {'on' if embed_url else 'off'} "
-             f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
+        if embed_url and cfg.get("mind.faculties.semantic_recall") is False:
+            _say("  semantic recall off (mind.faculties.semantic_recall is false; set it to true, or pass "
+                 f"--embed-url, to use the embedding endpoint {embed_url})")
+        else:
+            _say(f"  semantic recall {'on' if embed_url else 'off'} "
+                 f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
 
         # 4. The adapter in Hermes' environment.
         _say(f"  Hermes {hermes_version} at {python}")

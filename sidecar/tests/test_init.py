@@ -377,3 +377,27 @@ def test_an_embedding_endpoint_added_after_init_turns_semantic_recall_on(homes):
     environ = {}
     apply_environment(load_config(home, environ={}), environ=environ)
     assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"
+
+
+def test_the_base_releases_recorded_off_does_not_silently_keep_recall_lexical(homes, capsys):
+    """Before this release init wrote ``mind.faculties.semantic_recall: false`` whenever it found no
+    embedding endpoint, as an inert record. The flag is a live switch now, so: giving init an endpoint
+    turns semantic recall on; a plain re-run keeps the owner's value and says so; doctor names it."""
+    from protagine.config import apply_environment, save_config
+    home, hermes_home = homes
+    assert init.run_init(_args(home, hermes_home)) == 0
+    data = yaml.safe_load((home / "protagine.yaml").read_text())
+    data["mind"]["faculties"]["semantic_recall"] = False                 # what the base release wrote
+    data["router"]["embed_url"] = "http://127.0.0.1:9/v1"                # the owner adds an endpoint later
+    save_config(data, home)
+    capsys.readouterr()
+    assert init.run_init(_args(home, hermes_home)) == 0
+    assert load_config(home, environ={}).get("mind.faculties.semantic_recall") is False
+    assert "semantic recall off (mind.faculties.semantic_recall is false" in capsys.readouterr().out
+    assert init.run_init(_args(home, hermes_home, embed_url="http://127.0.0.1:9/v1")) == 0
+    cfg = load_config(home, environ={})
+    assert cfg.get("mind.faculties.semantic_recall") is True
+    assert "semantic recall on (embedding endpoint http://127.0.0.1:9/v1)" in capsys.readouterr().out
+    environ: dict[str, str] = {}
+    apply_environment(cfg, environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
