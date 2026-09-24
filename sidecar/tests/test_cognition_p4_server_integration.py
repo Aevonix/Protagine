@@ -21,7 +21,6 @@ from onekey import KEY
 HOST_GLOBALS = (
     "_benchmark",
     "_learning_feedback_store",
-    "_metalearner",
 )
 
 

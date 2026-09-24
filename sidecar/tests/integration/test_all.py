@@ -473,30 +473,6 @@ class TestAutonomy:
 
 
 # ===========================================================================
-# 15. COGNITION & LEARNING
-# ===========================================================================
-
-
-class TestCognition:
-    """MetaLearner and cognitive performance tracking."""
-
-    def test_cognition_cycle(self, client):
-        """Cognition cycle endpoint responds."""
-        data = _post(client, "/cognition/cycle", {
-            "identity": {"host_id": "test"},
-        })
-        assert "cpi" in data
-
-    def test_cpi(self, client):
-        """Deprecated CPI endpoint returns the canonical benchmark payload."""
-        data = _get(client, "/cognition/cpi")
-        assert data["deprecated"] is True
-        assert data["canonical_endpoint"] == "/v1/host/self/benchmark"
-        assert "memory" not in data
-
-
-
-# ===========================================================================
 # 16. RESEARCH & SYNTHESIS
 # ===========================================================================
 

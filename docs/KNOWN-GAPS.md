@@ -61,10 +61,11 @@ general self-improvement simply by recording a successful review.
   data-age check, the relationship scorer's and cognition components' type
   hints); the research pipeline's graph stage (`GraphGatherer`, its source type
   and its web-versus-graph contradiction rule) is deleted. Those that cannot
-  work without a Neo4j driver (`CognitionPipeline`, whose MetaLearner and CPI
-  M9 deletes, `SignalCollector`, which M6 deletes with `mind_model`, and
-  `ConnectionDiscoverer` with the synthesis and insight routes) are no longer
-  constructed by the server; their routes report the subsystem as not wired.
+  work without a Neo4j driver (`SignalCollector`, which M6 deleted with
+  `mind_model`, and `ConnectionDiscoverer` with the synthesis and insight
+  routes) are no longer constructed by the server; their routes report the
+  subsystem as not wired. The cognition pipeline (the MetaLearner, the CPI and
+  the strategy adjuster) was deleted in M9.
   The briefing `RelationshipAggregator` (Cypher only), `GraphBaselineStore`,
   the session `SessionContextLoader`, the node-certificate signer and the
   `extraction` extra had no other use and are deleted.
@@ -81,7 +82,7 @@ unbuilt HERE by design:
   the dead EmailHandler was removed in v0.30.0. `JobType.DESKTOP`/`BROWSER`
   remain enum values with no handler.
 - **ScheduleAdapter**: removed in v0.30.0. Its contracts were
-  unimplementable (the real MetaLearner has no pattern API; the
+  unimplementable (the MetaLearner, deleted in M9, had no pattern API; the
   AutonomyScheduler is interval-based, not a cron store) and mutating host
   cron jobs would cross into the host framework's domain.
 - **Initiative execution requires Hermes**: registered evidence reviews and

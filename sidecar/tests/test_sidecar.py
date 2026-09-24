@@ -32,7 +32,6 @@ async def client(app):
 # ---------------------------------------------------------------------------
 
 SUBSYSTEMS = [
-    ("protagine.intelligence.cognition.metalearner", "MetaLearner"),
     ("protagine.intelligence.synthesis.connection_discoverer", "ConnectionDiscoverer"),
     ("protagine.goals.store", "GoalStore"),
     ("protagine.briefings.engine", "BriefingEngine"),

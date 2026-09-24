@@ -405,8 +405,6 @@ def supported_capabilities() -> List[str]:
         caps.append("contacts")
     if _briefings_engine is not None:
         caps.append("briefings")
-    if _metalearner is not None:
-        caps.append("cognition")
     if _situation_store is not None and _situation_reducer is not None:
         caps.append("situation")
     if _research_pipeline is not None:
@@ -665,8 +663,6 @@ async def health() -> HostHealthResponse:
         notes["contacts"] = "ContactsStore wired"
     if _briefings_engine is not None:
         notes["briefings"] = "BriefingEngine wired"
-    if _metalearner is not None:
-        notes["cognition"] = "MetaLearner wired"
     embed_degraded = False
     if _embed_failure:
         # Semantic recall was configured and is not running: say so in words, so the
@@ -4027,16 +4023,6 @@ async def list_briefings(limit: int = 10) -> BriefingListResponse:
             detail=f"list_briefings failed: {type(exc).__name__}: {exc}",
         )
 
-
-# ---------------------------------------------------------------------------
-# Cognition
-# ---------------------------------------------------------------------------
-
-_metalearner = None
-
-def set_metalearner(learner) -> None:
-    global _metalearner
-    _metalearner = learner
 
 
 # ---------------------------------------------------------------------------

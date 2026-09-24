@@ -738,21 +738,6 @@ class BriefingListResponse(BaseModel):
 
 # --- Cognition --------------------------------------------------------------
 
-class CognitivePerformanceIndex(BaseModel):
-    overall: float = 0.0
-    memory: float = 0.0
-    reasoning: float = 0.0
-    social: float = 0.0
-    autonomy: float = 0.0
-    domains: Optional[Dict[str, float]] = None
-
-
-class CognitionGap(BaseModel):
-    gap_id: str
-    domain: str
-    severity: float
-    description: Optional[str] = None
-
 
 # --- Research ---------------------------------------------------------------
 
