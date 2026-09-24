@@ -271,3 +271,14 @@ def test_existing_service_keeps_its_identity_during_environment_upgrade(service_
     assert original.link.resolve() == definition
     assert b'protagine' in definition.read_bytes()
     assert old.name == original.name
+
+
+def test_generated_units_ask_for_the_open_files_the_vector_store_needs(service_factory):
+    from protagine.resources import OPEN_FILES
+    make, _ = service_factory
+    payload = plistlib.loads(make('files', 'darwin').render())
+    assert payload['SoftResourceLimits'] == {'NumberOfFiles': OPEN_FILES}
+    assert payload['HardResourceLimits'] == {'NumberOfFiles': OPEN_FILES}
+    assert OPEN_FILES >= 4096
+    unit = make('files', 'linux').render().decode()
+    assert f'\nLimitNOFILE={OPEN_FILES}\n' in unit

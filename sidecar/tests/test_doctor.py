@@ -36,7 +36,7 @@ def test_sidecar_check_repeats_the_problems_in_words(monkeypatch):
     results = check_sidecar("http://127.0.0.1:7777", "key", 5)
     assert results[0].status == WARN
     assert "status=degraded: semantic recall is off: the embedder did not initialise: boom" in results[0].detail
-    assert results[1].name == "sidecar-auth" and results[1].status == PASS
+    assert [r.name for r in results] == ["sidecar", "open-files", "sidecar-auth"] and results[2].status == PASS
 
 
 def test_semantic_recall_is_skipped_without_an_embedding_endpoint(tmp_path, monkeypatch):
@@ -73,10 +73,25 @@ def test_run_doctor_asks_about_recall_only_when_the_sidecar_answers(tmp_path, mo
                          "/v1/mind/state": (200, {}),
                          "/v1/host/embed/health": (200, {"status": "error", "error": "embedder not initialized"})})
     names = {r.name: r.status for r in doctor.run_doctor("http://127.0.0.1:7777", "key", 5)}
-    assert names == {"sidecar": PASS, "sidecar-auth": PASS, "semantic-recall": FAIL}
+    assert names == {"sidecar": PASS, "open-files": SKIP, "sidecar-auth": PASS, "semantic-recall": FAIL}
 
     def down(url, api_key="", timeout=10.0):
         raise OSError("connection refused")
     monkeypatch.setattr(doctor, "_http_get", down)
     names = {r.name: r.status for r in doctor.run_doctor("http://127.0.0.1:7777", "key", 5)}
     assert names == {"sidecar": FAIL}
+
+
+def test_sidecar_check_warns_when_the_running_sidecar_has_few_open_files(monkeypatch):
+    _serve(monkeypatch, {"/v1/host/health": (200, {"status": "ok", "notes": {"fd_limit": "256"}}),
+                         "/v1/mind/state": (200, {})})
+    results = {r.name: r for r in check_sidecar("http://127.0.0.1:7777", "key", 5)}
+    assert results["open-files"].status == WARN
+    assert "256 open files" in results["open-files"].detail and "service restart" in results["open-files"].remedy
+    _serve(monkeypatch, {"/v1/host/health": (200, {"status": "ok", "notes": {"fd_limit": "16384"}}),
+                         "/v1/mind/state": (200, {})})
+    results = {r.name: r for r in check_sidecar("http://127.0.0.1:7777", "key", 5)}
+    assert results["open-files"].status == PASS
+    _serve(monkeypatch, {"/v1/host/health": (200, {"status": "ok"}), "/v1/mind/state": (200, {})})
+    results = {r.name: r for r in check_sidecar("http://127.0.0.1:7777", "key", 5)}
+    assert results["open-files"].status == SKIP

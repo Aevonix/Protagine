@@ -38,7 +38,11 @@ default `standard`). Then it:
    `approvals.deny` from `mind.deny.commands`;
 7. installs and starts the sidecar user service (systemd `--user` on Linux,
    launchd on macOS; skipped with a message elsewhere, then start it with
-   `protagine start`).
+   `protagine start`). The unit asks for 16,384 open files (the vector store
+   holds a descriptor per data file; macOS starts a user process at 256), and
+   the server raises its own soft limit to the same figure at startup where
+   the hard limit allows, so `protagine start` from a shell is covered too.
+   `protagine doctor` warns when the running sidecar has less.
 
 It writes no Hermes admin lists and never restarts a running gateway. Every
 step is idempotent: run it again to change an answer, or pass the flags

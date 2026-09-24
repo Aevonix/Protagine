@@ -310,6 +310,7 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
     if problems:
         detail += ": " + "; ".join(problems)
     results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN, detail=detail)]
+    results.append(_check_open_files((body.get("notes") or {}).get("fd_limit")))
     try:
         status, _ = _http_get(f"{base_url}/v1/mind/state", api_key, timeout)
     except Exception as exc:  # noqa: BLE001
@@ -325,6 +326,28 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
         results.append(CheckResult("sidecar-auth", PASS,
                                    detail="authenticated request accepted" + ("" if api_key else " (no key: dev mode)")))
     return results
+
+
+def _check_open_files(reported: Any) -> CheckResult:
+    """The running sidecar's open-file limit, as its health reports it."""
+    from protagine.resources import OPEN_FILES
+    text = str(reported or "").strip()
+    if not text:
+        return CheckResult("open-files", SKIP, detail="the sidecar did not report its open file limit")
+    if text == "unlimited":
+        return CheckResult("open-files", PASS, detail="open file limit unlimited")
+    try:
+        limit = int(text)
+    except ValueError:
+        return CheckResult("open-files", SKIP, detail=f"unreadable open file limit {text!r}")
+    if limit < OPEN_FILES:
+        return CheckResult("open-files", WARN,
+                           detail=f"the sidecar runs with {limit} open files; the vector store wants {OPEN_FILES} "
+                                  "under load",
+                           remedy="raise the hard limit of the session the sidecar starts from (the generated "
+                                  "service unit asks for it; 'protagine service install' then 'protagine "
+                                  "service restart' apply it)")
+    return CheckResult("open-files", PASS, detail=f"open file limit {limit}")
 
 
 def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckResult:

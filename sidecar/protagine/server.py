@@ -329,6 +329,10 @@ async def _initialize_contacts_store():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
+    # Before any store opens: the vector store needs more open files than a user
+    # process starts with on macOS, whether or not a service unit asked for them.
+    from protagine.resources import raise_open_file_limit
+    raise_open_file_limit()
     state_dir = _state_dir()
     _p8_wiring = None
 

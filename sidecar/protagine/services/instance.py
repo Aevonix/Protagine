@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from protagine.resources import OPEN_FILES
+
 
 class ServiceError(RuntimeError):
     pass
@@ -117,10 +119,14 @@ class InstanceService:
         environment = {'PROTAGINE_HOME': str(self.state), 'HERMES_HOME': str(self.hermes_home),
                        'PROTAGINE_INSTANCE_SERVICE': self.label, 'PYTHONUNBUFFERED': '1'}
         if self.platform == 'darwin':
+            # The vector store holds a descriptor per data file; macOS starts a user
+            # process at 256. Both limits, so the server's own raise has room.
+            limits = {'NumberOfFiles': OPEN_FILES}
             return plistlib.dumps({'Label': self.label, 'ProgramArguments': arguments,
                 'WorkingDirectory': str(self.state), 'EnvironmentVariables': environment,
                 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
                 'ExitTimeOut': 20, 'Umask': 0o077,
+                'SoftResourceLimits': limits, 'HardResourceLimits': dict(limits),
                 'StandardOutPath': str(self.log), 'StandardErrorPath': str(self.log)}, sort_keys=True)
         quote = _systemd_quote
         return ('[Unit]\nDescription=Protagine private instance ' + self.label + '\n\n[Service]\nType=exec\n'
@@ -129,6 +135,7 @@ class InstanceService:
                 'ExecStart=:' + ' '.join(quote(arg) for arg in arguments) + '\n'
                 'Environment=' + ' '.join(quote(key + '=' + value) for key, value in environment.items()) + '\n'
                 'Restart=always\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n'
+                'LimitNOFILE=' + str(OPEN_FILES) + '\n'
                 'StandardOutput=append:' + _systemd_path(self.log) + '\n'
                 'StandardError=append:' + _systemd_path(self.log) + '\n\n[Install]\nWantedBy=default.target\n').encode()
 
