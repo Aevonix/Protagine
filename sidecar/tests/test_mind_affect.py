@@ -245,6 +245,32 @@ def test_success_halves_the_topics_frustration_and_only_verified_work_is_satisfy
     assert satisfaction == pytest.approx(0.3 if success in {"verified", "useful"} else 0.0)
 
 
+def test_one_success_calms_once_however_many_reports_carry_it(world):
+    """A success halves what the failures since the last success built up. One statement that is both a
+    reported success and a repair receipt halves once; so do a verified task and the owner's "it worked"
+    about it; a new failure re-arms the halving."""
+    world.outcome("failed", hours=1, approach="the archive export")
+    world.outcome("failed", hours=0.5, approach="the archive export")
+    world.update()
+    before = world.level(FRUSTRATION_KEY)
+    world.outcome("succeeded", turn="turn-fix")
+    world.record("frustration", "moderate", turn="turn-fix", kind="resolved")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(before / 2)
+    world.intention(status="done", outcome="done", verified="check", completed_at=world.now,
+                    result_metadata={"check": {"passed": True}})
+    world.outcome("succeeded", turn="turn-owner")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(before / 2), "the same success, reported twice"
+    assert world.level("affect.satisfaction") == pytest.approx(0.3), "the verified task still satisfies"
+    world.outcome("failed", approach="the archive export")
+    world.update()
+    raised = world.level(FRUSTRATION_KEY)
+    world.outcome("succeeded", turn="turn-later")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(raised / 2)
+
+
 def test_an_owner_verified_row_is_one_success_not_two(world):
     world.outcome("failed", hours=1)
     world.outcome("failed", hours=0.5)

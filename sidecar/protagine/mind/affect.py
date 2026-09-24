@@ -687,8 +687,13 @@ class Affect:
             age = max(0.0, (now - event.at).total_seconds())
             for dimension, op, amount in effects(event):
                 if op == "halve":
+                    # A success calms what the failures since the last success built up, once: a second
+                    # report of it (the repair receipt of the same statement, the owner's "it worked" about
+                    # a verified task) finds the row's latest cause already a success and changes nothing.
                     for row in self.mind_state.items(FRUSTRATION):
-                        if event.topic and topic_matches(row.get("text") or "", event.topic):
+                        causes = row.get("causes") or []
+                        calmed = bool(causes) and str(causes[-1]).split(" ")[0] in SUCCESS_KINDS
+                        if event.topic and not calmed and topic_matches(row.get("text") or "", event.topic):
                             self.mind_state.set(row["key"], level=float(row.get("level") or 0.0) * amount,
                                                 causes=[event.cause()], now=now)
                     continue
