@@ -455,11 +455,13 @@ class Affect:
             base, created = f"intention:{row.id}", _utc(row.created_at) or now
             approach = " ".join(str(context.get("approach") or "").split())[:80]
             body_hash = plan_hash(context["body"]) if row.kind == "task" and context.get("body") else ""
+            # One failed attempt per task: ``blocked`` is not terminal and the same row can fail later,
+            # so both reports share one reference and a blocked-then-failed task is applied once.
             if row.outcome == "failed":
                 events.append(AffectEvent("failed", f"{base}:failed", _utc(row.failed_at) or created, topic,
                                           approach, reason=str(row.failed_reason or "")[:160], body_hash=body_hash))
             elif row.outcome == "blocked":
-                events.append(AffectEvent("failed", f"{base}:blocked", _utc(row.assigned_at) or created, topic,
+                events.append(AffectEvent("failed", f"{base}:failed", _utc(row.assigned_at) or created, topic,
                                           approach, reason=str(row.result or "")[:160], body_hash=body_hash))
             metadata = row.result_metadata if isinstance(row.result_metadata, dict) else {}
             check = metadata.get("check") if isinstance(metadata.get("check"), dict) else {}

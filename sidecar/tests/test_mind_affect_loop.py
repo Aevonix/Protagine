@@ -444,6 +444,29 @@ async def test_an_identical_plan_that_failed_twice_is_asked_never_redispatched(a
         assert ax.mind.dispatch() == []
 
 
+async def test_a_step_reported_blocked_then_failed_is_one_failure_and_no_switch(ax):
+    """The body reports a step ``blocked`` and later ``failed``: one failed task, so no strategy switch
+    and the next step (the same template plan) is approved, not asked."""
+    no_mastery(ax)
+    await adopted_goal(ax, GoalRouter())
+    ax.mind.router = None
+    step, = [item for item in (await ax.mind.tick(force=True))["formed"] if item["type"] == "goal_step"]
+    item, = [queued for queued in ax.mind.dispatch() if queued["id"] == step["id"]]
+    ax.mind.bound(item["id"], "kanban:s1")
+    ax.mind.outcomes.record(item["id"], status="blocked", hermes_ref="kanban:s1", summary="waiting on access")
+    ax.shift(minutes=5)
+    await ax.mind.tick(force=True)
+    ax.mind.outcomes.record(item["id"], status="failed", hermes_ref="kanban:s1", summary="stale",
+                            error="the archive scrape returned stale data")
+    ax.shift(minutes=10)
+    summary = await ax.mind.tick(force=True)
+    assert summary["affect"]["switch"] == []
+    frustration, = ax.mind.state()["affect"]["levels"]["frustration"]
+    assert frustration["failures"] == 1 and frustration["level"] < 0.35
+    following, = [entry for entry in summary["formed"] if entry["type"] == "goal_step"]
+    assert (following["decision"], following["status"]) == ("act", "approved")
+
+
 async def test_satiation_holds_an_optional_nudge_but_never_a_promise(ax, tmp_path):
     await ax.say("owner-1", "I waved off your stretching nudge, and I waved off your stretching nudge again.")
     optional = ax.owe("Stretch (a nice-to-have)", hours=-1, priority=30)

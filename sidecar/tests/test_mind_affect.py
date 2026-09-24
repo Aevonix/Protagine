@@ -185,7 +185,7 @@ RULES = [
         status="failed", outcome="failed", failed_at=w.now, failed_reason="the scrape returned stale data") + ":failed",
      {FRUSTRATION_KEY: (0.3, "failed {ref}")}),
     ("intention blocked", lambda w: "intention:" + w.intention(
-        status="dispatched", outcome="blocked", assigned_at=w.now, result="waiting on access") + ":blocked",
+        status="dispatched", outcome="blocked", assigned_at=w.now, result="waiting on access") + ":failed",
      {FRUSTRATION_KEY: (0.3, "failed {ref}")}),
     ("owner rated wrong", lambda w: "intention:" + w.intention(
         status="done", outcome="done", verdict="wrong", completed_at=w.now) + ":wrong",
@@ -262,6 +262,26 @@ def test_an_owner_verified_row_is_one_success_not_two(world):
     assert world.update()["applied"] == 0
     assert world.level("affect.satisfaction") == pytest.approx(0.3)
     assert world.level(FRUSTRATION_KEY) == halved
+
+
+def test_a_task_blocked_then_failed_is_one_failed_attempt(world):
+    """``blocked`` is not terminal: the same task can later fail. One task is one failure, whichever
+    of its reports arrives first, in the state and in the rules."""
+    ident = world.intention(status="dispatched", outcome="blocked", assigned_at=world.now, result="waiting on access")
+    world.update()
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(0.3)
+    world.shift(minutes=5)
+    world.store.transition(ident, "failed", action="outcome_failed", at=world.now, outcome="failed",
+                           failed_at=world.now, failed_reason="still no access")
+    assert world.update()["applied"] == 0
+    assert world.level(FRUSTRATION_KEY) == pytest.approx(0.3, abs=0.01)
+    [failed] = [event for event in world.affect.gather(world.now).events if event.kind == "failed"]
+    assert failed.ref == f"intention:{ident}:failed" and failed.reason == "still no access"
+    assert world.affect.view().frustrations == ()
+    world.intention(status="failed", outcome="failed", failed_at=world.now, failed_reason="stale again")
+    world.update()
+    [frustration] = world.affect.view().frustrations
+    assert frustration.failures == 2, "a second task is a second failure"
 
 
 def test_contact_facing_dismissals_and_notices_and_notes_are_not_the_agents_feelings(world):
