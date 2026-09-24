@@ -36,6 +36,9 @@ class Contacts:
         record = self.records.get(contact_id)
         return SimpleNamespace(to_dict=lambda: record) if record else None
 
+    async def update_interaction_allowed(self, contact_id, allowed, performed_by="operator"):
+        self.records[contact_id]["interaction_allowed"] = allowed
+
     async def get_handles(self, contact_id):
         if contact_id == "p-03":
             return [SimpleNamespace(gateway="telegram", address="2003", is_primary=True, verified=True)]
@@ -291,3 +294,19 @@ emit(tick=result, sends=SENDS)
     assert [item["type"] for item in second["tick"]["mind_tick"]["formed"]] == ["stale_task"]
     notice, = second["sends"]
     assert notice["target"] == "telegram:1001" and "owner task from long ago" in notice["message"]
+
+
+def test_the_owner_can_tell_the_mind_never_to_contact_someone(real_home, real_sidecar):
+    """``protagine_people set_permission`` reaches the real route, and the mind then holds that contact at
+    ``never``; a guest cannot change it and ``auto`` waits for the ``may_contact`` column."""
+    import asyncio
+    result = probe(PRELUDE + '''
+o, g = owner(), guest()
+emit(guest_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "ask"}, g),
+     owner_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "never"}, o),
+     unknown=call("protagine_people", {"operation": "set_permission", "contact_id": "p-99", "permission": "never"}, o))
+''', real_home)
+    assert "owner" in result["guest_set"]["error"]
+    assert result["owner_set"]["contact_id"] == "p-03" and result["owner_set"]["may_contact"] == "never"
+    assert "not found" in result["unknown"]["error"]
+    assert asyncio.run(real_sidecar.mind._may_contact("p-03")) == "never"

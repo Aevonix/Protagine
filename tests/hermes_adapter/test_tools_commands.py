@@ -178,13 +178,13 @@ def test_people_tool_mutation_is_owner_only(home, sidecar):
 g, o = guest(), owner()
 emit(listing=call("protagine_people", {"operation": "list"}, g),
      show=call("protagine_people", {"operation": "show", "contact_id": "p-03"}, g),
-     guest_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, g),
-     owner_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, o))
+     guest_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "never"}, g),
+     owner_set=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "never"}, o))
 ''', home)
     assert {item["contact_id"] for item in result["listing"]} >= {OWNER, "p-02", "p-03"}
     assert result["show"][0]["contact_id"] == "p-03"
     assert "owner" in result["guest_set"]["error"]
-    assert result["owner_set"] == {"ok": True, "may_contact": "auto"}
+    assert result["owner_set"] == {"ok": True, "may_contact": "never"}
 
 
 def test_memory_tools_bind_to_the_sessions_contact(home, sidecar):
@@ -239,7 +239,7 @@ def test_a_cron_run_cannot_answer_an_ask_or_mutate(home, sidecar):
 c = guest("cron-1", sender="", message="yes K7F", platform="cron")
 emit(yes=call("protagine_self", {"operation": "yes", "code": "K7F"}, c),
      rate=call("protagine_self", {"operation": "rate", "id": "i-01", "verdict": "useful"}, c),
-     permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "auto"}, c),
+     permission=call("protagine_people", {"operation": "set_permission", "contact_id": "p-03", "permission": "never"}, c),
      forget=call("protagine_memory_forget", {"source_ids": ["src-1"]}, c),
      state=call("protagine_self", {"operation": "state"}, c),
      search=call("protagine_memory_search", {"query": "report"}, c))

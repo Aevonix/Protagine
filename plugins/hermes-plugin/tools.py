@@ -42,10 +42,10 @@ SELF_SCHEMA = {
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
     "description": "Known contacts: list, show one, or set_permission (owner only) for whether the agent may "
-                   "reach out to them: never, ask or auto.",
+                   "reach out to them: never, or ask first.",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["list", "show", "set_permission"]},
-        "contact_id": {"type": "string"}, "permission": {"type": "string", "enum": ["never", "ask", "auto"]},
+        "contact_id": {"type": "string"}, "permission": {"type": "string", "enum": ["never", "ask"]},
         "limit": {"type": "integer"}},
         "required": ["operation"]},
 }
@@ -170,8 +170,8 @@ class Tools:
             elif operation == "set_permission":
                 if not self._owner(session_id):
                     return _error("only the owner can change who may be contacted")
-                if not args.get("contact_id") or args.get("permission") not in {"never", "ask", "auto"}:
-                    return _error("contact_id and permission (never|ask|auto) are required")
+                if not args.get("contact_id") or args.get("permission") not in {"never", "ask"}:
+                    return _error("contact_id and permission (never|ask) are required")
                 return self._mind("POST", f"/v1/mind/people/{args['contact_id']}/permission",
                                   json={"may_contact": args["permission"]})
             else:

@@ -289,6 +289,7 @@ protagine mind interest <topic>    seed an interest for the curiosity drive
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
 | `POST /off {reason?}`, `POST /on`, `POST /tick`, `POST /rate {id, verdict}`, `POST /level {autonomy}`, `POST /reset {cls}` | | |
+| `POST /people/{contact_id}/permission` | `{may_contact: never | ask}` (the plugin's owner-only `protagine_people set_permission`; stored as `interaction_allowed` until the `may_contact` column exists) | `{contact_id, may_contact}`; 404 unknown contact, 422 anything else or the owner |
 
 `GET /dispatch` and `GET /outbox` also record the body's last pull; when it is
 older than five minutes the tick stops forming intentions until the body is

@@ -26,6 +26,7 @@ text in docs/HERMES-ADAPTER.md):
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
   POST /asks/{code}/yes|no        {contact_id?, message?}
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
+  POST /people/{contact_id}/permission  {may_contact: never|ask} -> {contact_id, may_contact}; 404 unknown contact
 """
 
 from __future__ import annotations
@@ -170,6 +171,12 @@ class LevelBody(BaseModel):
 class ResetBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cls: str = Field(min_length=1, max_length=16)
+
+
+class PermissionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    may_contact: str = Field(min_length=1, max_length=16)
+    by: str = Field(default="owner", max_length=64)
 
 
 class InterestBody(BaseModel):
@@ -390,6 +397,18 @@ async def level(body: LevelBody) -> Dict[str, Any]:
     if body.autonomy.lower() not in LEVELS:
         raise HTTPException(status_code=422, detail={"code": "unknown_level", "message": ", ".join(LEVELS)})
     return _require().set_level(body.autonomy.lower())
+
+
+@router.post("/people/{contact_id}/permission")
+async def permission(contact_id: str, body: PermissionBody) -> Dict[str, Any]:
+    """The plugin's owner-only ``protagine_people set_permission``: may the mind reach this contact."""
+    try:
+        value = await _require().set_permission(contact_id, body.may_contact.strip().lower(), by=body.by)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={"code": "bad_permission", "message": str(error)}) from None
+    if value is None:
+        raise HTTPException(status_code=404, detail={"code": "unknown_contact"})
+    return value
 
 
 @router.post("/reset")

@@ -279,6 +279,18 @@ class Mind:
             result["cancelled_messages"] = self.outbox.cancel_unsent("autonomy off")
         return result
 
+    async def set_permission(self, contact_id: str, may_contact: str, *, by: str = "owner") -> Optional[Dict[str, Any]]:
+        """The owner's standing word on reaching *contact_id*, None for an unknown contact. It is stored as
+        ``interaction_allowed`` until the ``may_contact`` column exists, so it is ``never`` or ``ask``."""
+        if may_contact not in ("never", "ask"):
+            raise ValueError("permission is never or ask")
+        if self.owner_id and contact_id == self.owner_id:
+            raise ValueError("the owner is always auto")
+        if self.contacts is None or await self.contacts.get(contact_id) is None:
+            return None
+        await self.contacts.update_interaction_allowed(contact_id, may_contact == "ask", performed_by=by)
+        return {"contact_id": contact_id, "may_contact": await self._may_contact(contact_id)}
+
     def reset(self, cls: str, *, by: str = "owner") -> Dict[str, Any]:
         return self.authority.reset_breaker(cls, by=by)
 
