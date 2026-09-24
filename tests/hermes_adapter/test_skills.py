@@ -57,6 +57,28 @@ emit(before={SKILL!r} in before, cached={SKILL!r} in cached, after={SKILL!r} in 
     assert result == {"before": False, "cached": False, "after": True}
 
 
+def test_a_process_without_the_dispatcher_also_sees_a_promoted_skill(home, sidecar):
+    """Hermes caches the skills index per process, and only one process owns the kanban dispatcher: a CLI
+    session or a gateway without the dispatcher lock reads the generation on its own body tick too."""
+    skills, state = configure(home, sidecar)
+    result = probe(f'''
+from pathlib import Path
+from agent.prompt_builder import build_skills_system_prompt
+TOOLS = {{"skills_list", "skill_view"}}
+index = lambda: build_skills_system_prompt(available_tools=TOOLS)
+first = body.run_once()                  # no dispatcher tick seen here: capture only, never the board
+before = index()
+folder = Path({str(skills)!r}) / {SKILL!r}
+folder.mkdir()
+(folder / "SKILL.md").write_text({TEXT!r})
+Path({str(state)!r}).write_text(json.dumps({{"generation": 1}}))
+second = body.run_once()
+emit(before={SKILL!r} in before, after={SKILL!r} in index(), mind=[first["mind"], second["mind"]])
+''', home, prelude=MIND_PRELUDE)
+    assert result == {"before": False, "after": True, "mind": [False, False]}
+    assert sidecar.calls("/v1/mind/dispatch") == []
+
+
 def test_loads_of_protagine_skills_reach_the_sidecar_and_others_do_not(home, sidecar):
     skills, _ = configure(home, sidecar)
     folder = skills / SKILL

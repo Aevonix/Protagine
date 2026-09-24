@@ -105,7 +105,9 @@ The body thread runs in every Hermes process, but only the one that owns the
 kanban dispatcher writes to the board: stock fires `on_kanban_dispatch_tick`
 from `dispatch_once` in the process holding the singleton dispatcher lock, and
 the body runs steps 2 to 5 only after it has seen that tick. A CLI session, a
-gateway that lost the lock and a kanban worker drain the turn outbox only. While
+gateway that lost the lock and a kanban worker drain the turn outbox only; the
+first two also read `GET /v1/mind/state` on every tick for the skills
+generation (step 1), since Hermes caches the skills index per process. While
 `hermes pause` holds (the stock ESTOP sentinel) steps 2 and 3 wait as well. Once
 the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
 60 s, and at once when the dispatch tick or a captured turn wakes it):

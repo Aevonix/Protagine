@@ -373,7 +373,8 @@ class Body:
         ``mind`` forces the decision (``tick()`` passes True: the caller drives
         the dispatcher itself); by default the mind part runs only after the
         dispatcher tick has been observed here, so a CLI session or a gateway
-        without the dispatcher lock never becomes a second writer.
+        without the dispatcher lock never becomes a second writer. Such a
+        process only reads the mind state, to clear its own skills cache.
         """
         self._ticks += 1
         self._last_tick_at = time.time()
@@ -387,7 +388,10 @@ class Body:
         if os.environ.get("HERMES_KANBAN_TASK"):
             return result  # workers never dispatch; one writer per gateway
         if not (self._dispatcher if mind is None else mind):
-            return result  # not the dispatcher owner: capture only
+            # Not the dispatcher owner: capture only, never the board. Hermes caches the skills index per
+            # process, so this process still follows the sidecar's skills generation.
+            self.skills_changed(self.client.mind_state() or {})
+            return result
         if self.client.has_mind_routes():
             result["mind"] = True
             result.update(self.mind_tick())
