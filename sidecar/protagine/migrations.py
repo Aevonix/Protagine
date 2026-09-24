@@ -19,12 +19,13 @@ Usage (async)::
 
 Migration filenames must match ``NNN_description.sql`` (e.g.
 ``001_initial_schema.sql``).  The numeric prefix determines order.
-Each file is executed as a single ``executescript`` call -- if it fails,
-the open transaction is rolled back, the version is NOT recorded and
-startup aborts with a clear error. ``executescript`` commits statement by
-statement, so a file that must apply all or nothing wraps itself in
-``BEGIN; ... COMMIT;``. A file that drops a column needs SQLite >= 3.35;
-both runners check that before applying anything.
+Each file runs as one transaction together with its ``schema_version``
+row (``_script``): either both land or neither does, so a failure, a
+kill or a locked database part way leaves the store at the previous
+version for a rerun, never with a migration applied and unrecorded. A
+file therefore holds no ``BEGIN``/``COMMIT`` of its own. A file that
+drops a column needs SQLite >= 3.35; both runners check that before
+applying anything.
 """
 
 from __future__ import annotations
@@ -64,6 +65,14 @@ def _check_sqlite(pending: list[tuple[str, Path]]) -> None:
             raise RuntimeError(
                 f"migration {version} ({path.name}) needs SQLite >= 3.35 (ALTER TABLE DROP COLUMN); "
                 f"this Python links SQLite {sqlite3.sqlite_version}")
+
+
+def _script(sql: str, *, table: str, version: str, filename: str) -> str:
+    """One migration file and its version row as a single transaction for ``executescript``."""
+    def quoted(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+    return (f"BEGIN;\n{sql}\n;\nINSERT INTO {table}(version, filename) "
+            f"VALUES ({quoted(version)}, {quoted(filename)});\nCOMMIT;\n")
 
 
 def _discover(migrations_dir: Path) -> list[tuple[str, Path]]:
@@ -107,13 +116,8 @@ def run_migrations_sync(
         sql = path.read_text()
         logger.info("Applying migration %s (%s)", version, path.name)
         try:
-            conn.executescript(sql)
-            conn.execute(
-                f"INSERT INTO {table}(version, filename) VALUES (?, ?)",  # noqa: S608
-                (version, path.name),
-            )
-            conn.commit()
-        except Exception:
+            conn.executescript(_script(sql, table=table, version=version, filename=path.name))
+        except BaseException:
             logger.error("Migration %s failed (%s)", version, path.name)
             conn.rollback()
             raise
@@ -157,13 +161,8 @@ async def run_migrations(
         sql = path.read_text()
         logger.info("Applying migration %s (%s)", version, path.name)
         try:
-            await db.executescript(sql)
-            await db.execute(
-                f"INSERT INTO {table}(version, filename) VALUES (?, ?)",  # noqa: S608
-                (version, path.name),
-            )
-            await db.commit()
-        except Exception:
+            await db.executescript(_script(sql, table=table, version=version, filename=path.name))
+        except BaseException:
             logger.error("Migration %s failed (%s)", version, path.name)
             await db.rollback()
             raise

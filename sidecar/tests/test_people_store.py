@@ -745,3 +745,116 @@ async def test_confirm_link_for_a_free_handle_creates_it_verified(store):
     assert result["contact_id"] == contact.contact_id and result["old_contact_id"] is None
     handle, = await store.get_handles(contact.contact_id)
     assert handle.address == "casey@example.test" and handle.verified
+
+
+# -- review fixes: the phone key, exact references, link confirmation, the version row -------------
+
+@pytest.mark.asyncio
+async def test_a_ten_digit_phone_jid_carries_its_country_code_and_never_gains_a_nanp_one(store):
+    """Review F3: a phone JID always carries its country code, so ``6591234567@s.whatsapp.net`` is
+    +65 9123 4567. Reading its ten digits as a NANP number handed that sender the contact holding
+    +1 659 123 4567, and kept them from the contact holding their own number."""
+    assert canonical_handle("whatsapp", "6591234567@s.whatsapp.net") == ("phone", "+6591234567")
+    assert canonical_handle("whatsapp", "4791234567@c.us") == ("phone", "+4791234567")
+    us = await store.create(display_name="p-11", trust_tier="regular", may_contact="auto")
+    await store.add_handle(us.contact_id, "sms", "+16591234567", verified=True, source="manual")
+    sg = await store.create(display_name="p-12", trust_tier="regular")
+    await store.add_handle(sg.contact_id, "signal", "+6591234567", verified=True, source="manual")
+    jid = "6591234567@s.whatsapp.net"
+    assert (await store.resolve_messaging_handle("whatsapp", jid)).contact_id == sg.contact_id
+    assert (await ParticipantResolver(store).resolve(platform="whatsapp", user_id=jid)).contact_id == sg.contact_id
+    # The same digits on a gateway where nobody holds +65: a stranger, never the US contact.
+    norway = "4791234567@s.whatsapp.net"
+    await store.add_handle(us.contact_id, "voice", "+14791234567", verified=True, source="manual")
+    assert await store.resolve_messaging_handle("whatsapp", norway) is None
+    stranger = await ParticipantResolver(store).resolve(platform="whatsapp", user_id=norway)
+    assert stranger.created and stranger.contact_id not in {us.contact_id, sg.contact_id}
+    # An eleven-digit JID with the 1 is the US number, as before.
+    assert (await store.resolve_messaging_handle("whatsapp", "16591234567@s.whatsapp.net")).contact_id == us.contact_id
+
+
+@pytest.mark.asyncio
+async def test_a_username_a_stranger_chose_is_never_an_exact_reference(store):
+    """Review F10: on a gateway whose sender ids are names, a stranger writing as "Sam" gets a shadow
+    whose handle is "Sam". That handle is the stranger's own choice, not the owner's identification:
+    it neither counts as exact (the owner's grant would send the owner's words to them) nor
+    outranks the contact the owner knows as Sam."""
+    sam = await store.create(display_name="Sam", trust_tier="regular", may_contact="ask")
+    await store.add_handle(sam.contact_id, "sms", "+15550001111", verified=True, source="manual")
+    resolver = ParticipantResolver(store)
+    stranger = await resolver.resolve(platform="webhook", user_id="Sam", display_name="Sam")
+    assert stranger.created and stranger.contact_id != sam.contact_id
+    assert await store.resolve_reference("Sam", exact=True) is None
+    assert await store.resolve_reference("Sam") is None            # two people answer to Sam: never a guess
+    lone = await resolver.resolve(platform="webhook", user_id="drifter-9")
+    assert await store.resolve_reference("drifter-9", exact=True) is None
+    assert (await store.resolve_reference("drifter-9")).contact_id == lone.contact_id   # a guess the owner confirms
+    assert (await store.resolve_reference("webhook:drifter-9", exact=True)).contact_id == lone.contact_id
+    # Once the owner files the person (a tier), the handle is one the owner knows them by.
+    await store.update_tier(lone.contact_id, "regular", performed_by="owner")
+    assert (await store.resolve_reference("drifter-9", exact=True)).contact_id == lone.contact_id
+
+
+@pytest.mark.asyncio
+async def test_confirming_a_link_never_folds_an_established_contact_that_holds_the_handle(store):
+    """Review F12: a yes to "is this number p-22's?" folded whoever held the number into p-22, so a
+    reassigned number (or a proposal anyone may file) soft-deleted an established, different person
+    and moved their history. Only a shadow folds; an established holder is the owner's to merge."""
+    a = await store.create(display_name="p-21", trust_tier="trusted", may_contact="auto")
+    await store.add_handle(a.contact_id, "sms", "+15550002121", verified=True, source="manual")
+    await store.set_cadence(a.contact_id, 10080, by="owner")
+    b = await store.create(display_name="p-22", trust_tier="regular", may_contact="ask")
+    candidate = await store.propose_handle_link(b.contact_id, "sms", "+15550002121", source="proposal")
+    with pytest.raises(ValueError, match="identity_handle_held"):
+        await store.confirm_link(candidate["candidate_id"], performed_by="owner", reattribute=[], sources_of=None)
+    kept = await store.get(a.contact_id)
+    assert kept is not None and kept.cadence_minutes == 10080 and kept.may_contact == "auto"
+    assert (await store.resolve_messaging_handle("sms", "+15550002121")).contact_id == a.contact_id
+    assert (await store.get(b.contact_id)).cadence_minutes is None
+    assert await store.list_handle_proposals() == []            # closed, not asked again
+    refused = [row["action"] for row in await store.get_audit_log(b.contact_id)]
+    assert "link_refused" in refused and "merged_into" not in {r["action"] for r in await store.get_audit_log(a.contact_id)}
+
+
+def test_a_failure_writing_the_version_row_leaves_the_store_at_005_and_a_rerun_completes(tmp_path):
+    """Review F13: 006 committed its own transaction and the runner wrote the version row in a
+    second one, so a kill or a locked database between the two left the columns without the row,
+    and every later start failed on ``duplicate column name: may_contact``. The runner writes the
+    row inside the migration's own transaction."""
+    path = tmp_path / "legacy.db"
+    _pre_006(path, tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TRIGGER version_fails BEFORE INSERT ON schema_version WHEN NEW.version = '006' "
+                 "BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END")
+    conn.commit()
+    with pytest.raises(sqlite3.DatabaseError):
+        run_migrations_sync(conn, store_mod._MIGRATIONS_DIR)
+    conn.execute("DROP TRIGGER version_fails")
+    conn.commit()
+    conn.close()
+    assert "may_contact" not in _columns(path) and "006" not in _versions(path)
+    conn = sqlite3.connect(path)
+    assert run_migrations_sync(conn, store_mod._MIGRATIONS_DIR) == ["006"]
+    conn.close()
+    assert "may_contact" in _columns(path) and "006" in _versions(path)
+
+
+@pytest.mark.asyncio
+async def test_the_async_runner_writes_the_version_row_in_the_migrations_transaction(tmp_path):
+    import aiosqlite
+    from protagine.migrations import run_migrations
+    path = tmp_path / "legacy.db"
+    _pre_006(path, tmp_path)
+    db = await aiosqlite.connect(path)
+    try:
+        await db.execute("CREATE TRIGGER version_fails BEFORE INSERT ON schema_version WHEN NEW.version = '006' "
+                         "BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END")
+        await db.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            await run_migrations(db, store_mod._MIGRATIONS_DIR)
+        await db.execute("DROP TRIGGER version_fails")
+        await db.commit()
+        assert await run_migrations(db, store_mod._MIGRATIONS_DIR) == ["006"]
+    finally:
+        await db.close()
+    assert "may_contact" in _columns(path) and "006" in _versions(path)

@@ -64,10 +64,14 @@ def _normalize_email(email: str) -> str:
 
 
 def _phone_key(address: str) -> str:
-    """Canonical phone digits, retaining international country codes."""
-    digits = _PHONE_DIGITS.sub("", (address or "").split('@', 1)[0])
-    # The supported bare NANP form may omit +1; other country codes stay intact.
-    return '1' + digits if len(digits) == 10 and not (address or '').strip().startswith('+') else digits
+    """Canonical phone digits, retaining international country codes.
+
+    Only a bare ten-digit string (a legacy row stored without its ``+1``) is read as NANP. A phone
+    JID (``<number>@s.whatsapp.net``) always carries its country code, so ``6591234567@...`` is
+    +65 9123 4567, never +1 659 123 4567; an E.164 address carries its own."""
+    text = (address or "").strip()
+    digits = _PHONE_DIGITS.sub("", text.split('@', 1)[0])
+    return '1' + digits if len(digits) == 10 and not text.startswith('+') and '@' not in text else digits
 
 
 # C1: a phone number is ONE identity on every gateway. The rule is derived from the handle's
@@ -1068,6 +1072,8 @@ class SQLiteContactStore(ContactStore):
         contact holds, an E.164 number, an email, ``gateway:address``, and then (unless ``exact``) a
         unique display or given name, or a unique first word of a display name. A name is a guess:
         ``exact`` refuses it, so an owner's grant never sends to someone matched by name alone.
+        A shadow's handle address is a guess too: the sender chose it (a username can be anyone's
+        name), so only ``gateway:address``, a number or an email identifies a shadow exactly.
         Ambiguity or an unknown reference is None."""
         ref = (reference or "").strip()
         if not ref:
@@ -1080,9 +1086,9 @@ class SQLiteContactStore(ContactStore):
             "WHERE h.address = ? AND c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name')",
             (ref,),
         ) as cur:
-            rows = await cur.fetchall()
-        if len(rows) == 1:
-            return Contact.from_row(dict(rows[0]))
+            holders = [Contact.from_row(dict(row)) for row in await cur.fetchall()]
+        if len(holders) == 1 and not holders[0].is_shadow:
+            return holders[0]
         if is_e164(ref):
             return await self._match_canonical("", ref)
         if "@" in ref and ":" not in ref:
@@ -1093,7 +1099,7 @@ class SQLiteContactStore(ContactStore):
                 found = await self.resolve_messaging_handle(gateway, address)
                 if found is not None:
                     return found
-        if exact or rows:
+        if exact or len(holders) > 1:
             return None
         wanted = ref.lower()
         async with db.execute(
@@ -1101,11 +1107,13 @@ class SQLiteContactStore(ContactStore):
             (wanted, wanted),
         ) as cur:
             rows = await cur.fetchall()
-        if not rows:
+        if not rows and not holders:
             async with db.execute("SELECT * FROM contacts WHERE deleted_at IS NULL AND display_name IS NOT NULL") as cur:
                 rows = [r for r in await cur.fetchall()
                         if str(r["display_name"] or "").strip().lower().split(" ")[0] == wanted]
-        return Contact.from_row(dict(rows[0])) if len(rows) == 1 else None
+        # A guess answers only when everyone the reference could mean is one person.
+        guesses = {c.contact_id: c for c in [*holders, *(Contact.from_row(dict(r)) for r in rows)]}
+        return next(iter(guesses.values())) if len(guesses) == 1 else None
 
     async def set_timezone(
         self, contact_id: str, timezone: Optional[str], performed_by: str = "operator"
@@ -1284,7 +1292,8 @@ class SQLiteContactStore(ContactStore):
         The handle nobody holds is attached, verified, through ``identity_links.correct``. When a
         shadow contact holds it (the sender kept a separate identity while the name only suggested
         the link), confirming the identity folds that shadow into the proposed contact through
-        ``merge``, so its history follows the person.
+        ``merge``, so its history follows the person. When an established contact holds it, nothing
+        moves: the proposal is closed and ``identity_handle_held`` raised.
         """
         from .identity_links import correct
         candidate = await self._candidate(candidate_id)
@@ -1293,7 +1302,19 @@ class SQLiteContactStore(ContactStore):
             raise ValueError("identity_contact_not_found")
         holder = await self._handle_holder(gateway, address)
         evidence = list(candidate["evidence_refs"]) or [f"candidate:{candidate_id}"]
-        if holder is not None and holder != target and await self.get(holder) is not None:
+        held_by = await self.get(holder) if holder is not None and holder != target else None
+        if held_by is not None and not held_by.is_shadow:
+            # An established, different person holds the handle (a number reassigned, a proposal
+            # anyone may file): a yes to the link never deletes them. The proposal is closed and the
+            # owner merges the two explicitly if they are one person.
+            db = self._require_db()
+            await db.execute("UPDATE contact_identity_candidates SET status = 'rejected', resolved_at = ? "
+                             "WHERE candidate_id = ? AND status = 'pending'", (_now_iso(), candidate_id))
+            await db.commit()
+            await self.record_audit(target, "link_refused", {"candidate_id": candidate_id, "gateway": gateway,
+                                                             "held_by": holder}, performed_by=performed_by)
+            raise ValueError("identity_handle_held")
+        if held_by is not None:
             await self.merge(target, holder, performed_by=performed_by, reattribute=reattribute, sources_of=sources_of)
             receipt = {"operation_id": f"merge:{holder}", "old_contact_id": holder, "contact_id": target, "merged": True}
         else:

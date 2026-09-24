@@ -79,6 +79,14 @@ class Contact:
     digest: Optional[str] = None
     digest_sources: List[str] = field(default_factory=list)
 
+    @property
+    def is_shadow(self) -> bool:
+        """A sender the agent remembered on its own (``auto:*``) that the owner has not filed yet
+        (the tier is still ``unknown``). Its handles are the sender's own choosing, so they identify
+        nobody for the owner: they are never an exact reference, and a confirmed link folds a shadow
+        but never an established contact."""
+        return str(self.import_source or "").startswith("auto:") and self.trust_tier == "unknown"
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "contact_id": self.contact_id,
