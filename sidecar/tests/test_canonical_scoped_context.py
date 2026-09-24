@@ -103,7 +103,7 @@ async def test_guest_http_capture_claim_media_commitment_and_digest_recall(
         monkeypatch.setattr(host, "_commitment_store", commitments)
         private = PrivateProducer()
         for name in ("_facts_store", "_goals_store", "_initiative_store",
-                     "_briefings_engine", "_skills_registry", "_affect_store",
+                     "_briefings_engine", "_affect_store",
                      "_preference_learner", "_comms_log"):
             monkeypatch.setattr(host, name, private)
         contacts = GuestContacts()
@@ -166,7 +166,7 @@ async def test_a_guest_is_contact_scoped_without_the_key_and_without_a_configure
         monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", "owner")
     private = PrivateProducer()
     for name in ("_facts_store", "_goals_store", "_initiative_store", "_briefings_engine",
-                 "_skills_registry", "_affect_store", "_preference_learner", "_comms_log"):
+                 "_affect_store", "_preference_learner", "_comms_log"):
         monkeypatch.setattr(host, name, private)
     monkeypatch.setattr(host, "_commitment_store", None)
     contacts = GuestContacts()
