@@ -77,11 +77,13 @@ Resolution ladder, first hit wins:
    on the same number as a separate alias, takes precedence over
    cross-gateway phone inference.
 2. **Canonical identity (C1)**: `canonical_handle(gateway, address)` in
-   `contacts/store.py`. An address that parses as an E.164 number
-   (`is_e164`: `^\+?[1-9]\d{6,14}$` after stripping spaces, dashes, dots and
-   parentheses; the numeric local part of a `number@host` id counts; a bare
-   10-digit number is NANP) is the phone identity on **any** gateway and
-   matches on `phone_key` whatever gateway stored it. Nothing names a channel:
+   `contacts/store.py`. An address written as a phone number (`is_e164`:
+   `^\+[1-9]\d{6,14}$` after stripping spaces, dashes, dots and parentheses,
+   or a phone JID `<number>@s.whatsapp.net` / `<number>@c.us`, whose digits
+   always carry the country code) is the phone identity on **any** gateway
+   and matches on `phone_key` whatever gateway stored it. A bare digit string
+   is a user id as often as a number: it matches exactly on its own gateway,
+   where a legacy bare 10-digit row is read as NANP. Nothing names a channel:
    a phone channel nobody listed resolves like `sms`. An email matches on its
    lower-cased form; anything else matches only its exact gateway and
    address. Two contacts sharing one number is ambiguous and resolves to
@@ -91,10 +93,16 @@ Resolution ladder, first hit wins:
    the sender keeps a separate shadow identity. The candidate becomes an
    owner ask (`link_proposal`); `store.confirm_link` attaches the handle
    (folding the shadow into the person through `merge`) and
-   `store.reject_link` closes it.
+   `store.reject_link` closes it. A handle an established contact holds is
+   never folded: `confirm_link` refuses (`identity_handle_held`, audited
+   `link_refused`) and closes the proposal; the owner merges the two
+   explicitly if they are one person.
 4. **Shadow contact**: tier `unknown`, `may_contact='ask'`,
-   `import_source=auto:sender`, the handle attached. Stored handles keep the
-   transport gateway they arrived on (it is needed to send).
+   `import_source=auto:sender`, the handle attached (`Contact.is_shadow` until
+   the owner files the person with a tier). Stored handles keep the transport
+   gateway they arrived on (it is needed to send). A shadow's handle is the
+   sender's own choice, so an owner's reference that equals it is a guess the
+   owner confirms, never an exact identification (`resolve_reference`).
 
 The resolver also OWNS the machine gate: senderless turns on machine
 channels (`cron:`, `api:` prefixes, `PROTAGINE_IDENTITY_MACHINE_CHANNELS`) or
@@ -224,7 +232,9 @@ SQLite >= 3.35 and says so at connect).
   behind a gateway's bracketed timestamp or sender header, `unsubscribe`, "don't message/text/contact me", "no more messages from
   you", "stop the check-ins", "I'd rather you didn't message me", "leave me
   alone", "remove me" and close variants; never for the owner) and the
-  appraisal call's `opt_out` flag.
+  appraisal call's `opt_out` flag. A phrase counts only as a request of its
+  own, at the start of a sentence or ending its clause: "remove me from the
+  Thursday thread" or "the kids won't leave me alone today" is not one.
 - Nothing else writes the column: `update()` refuses it, a tier promotion
   leaves it alone, and learning never touches it.
 

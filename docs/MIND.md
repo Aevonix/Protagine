@@ -60,18 +60,20 @@ audit log, the outbox, outcomes and the off switch. The design is in
    `metadata.lead_minutes`; the heads-up is part of that item, never a second
    one. A moved deadline moves an absolute heads-up by the same delta (a hold
    drops it); a turn that states a new warning time replaces it.
-   A message to a third party ("if Kim has not sent the draft by 3, ask her
-   for it"; "if the venue is not confirmed by 5, tell them the booking
-   lapses"; "tell Kim the meeting moved") is one item due at that time
-   (about two minutes out when it is to go now, since stock Hermes gives the
-   reply no send tool), obligor `assistant`, with `metadata.kind` `notice`
+   A message to a third party later or on a condition ("if Kim has not sent
+   the draft by 3, ask her for it"; "if the venue is not confirmed by 5, tell
+   them the booking lapses") is one item due at that time, obligor
+   `assistant`, with `metadata.kind` `notice`
    (the owner's own words, sent verbatim) or `check_in` (a topic of at most
    six words, never a figure, amount or code, composed at send time), the
    `recipient` as named and `grant: owner`. Only the owner's own turn keeps
-   the grant; the same shape from a contact is an ordinary item. A
-   deliverable goes only to the turn's own person: one the model records for
-   a named third party is read as a notice to that party, so the words never
-   go back to whoever asked.
+   the grant; the same shape from a contact is an ordinary item. A message to
+   pass on now ("tell Kim the meeting moved") is the reply's own job: nothing
+   is recorded, and capture drops a third-party message due within three
+   minutes of the turn, so the mind never sends a second copy of what the
+   turn already sent. A deliverable goes only to the turn's own person: one
+   the model records for a named third party is read as a notice to that
+   party, so the words never go back to whoever asked.
    A recurring check-in the owner sets for a contact ("check on Kim every
    week about the kitchen quote") is one undated item, obligor `assistant`,
    with `metadata.kind` `cadence`, the `recipient` as named, a `topic` under
@@ -137,7 +139,11 @@ audit log, the outbox, outcomes and the off switch. The design is in
    between conversations (a week before two, never under a day). Silence
    backs off: after a send the cooldown is `cadence x 2^streak`, capped at
    four cadences, where the streak counts sent check-ins the contact has not
-   talked since; declining contact affect holds outreach. The cooldown
+   talked since. The sends are read from the comms ledger, where every
+   message the mind sent a contact is logged (`external_ref`
+   `mind:<type>:<intention id>`): they outlive the 90-day intention
+   retention and follow the person through a merge. Declining contact
+   affect holds outreach. The cooldown
    replaces the flat per-contact cooldown for that message only. A due
    check-in is owed (satiation does not hold it) and exists only while it is
    due: one the contact answered first is cancelled. A sent check-in is
@@ -160,15 +166,25 @@ audit log, the outbox, outcomes and the off switch. The design is in
    `commitment_notice` or `commitment_check_in` at its time; the grant counts
    as `may_contact: auto` for that recipient only, never over `never` (the
    owner hears `grant_refused`), and only for a recipient the owner named
-   exactly (an id, a handle, a number or an email): one the store matched by
-   name is an owner ask showing the name given and the contact matched, and
-   a notice whose words are not in the owner's turn is stored as a check-in
-   around its matter. A name the contact store cannot resolve becomes a
-   `recipient_unknown` ask; a sent one settles its commitment. An owner's
-   `cadence` item for an exactly named contact sets its cadence once (audited as
-   `cadence_set` by `owner-turn:commitment:<id>`; a cadence the owner later
-   sets by hand stands), and while it stays open every check-in to that
-   contact carries its topic.
+   exactly (an id, a handle a contact the owner filed holds, a number or an
+   email; a shadow's username is the sender's own choice and never exact):
+   one the store matched by name is an owner ask showing the name given and
+   the contact's name and handle, whatever would otherwise have let it act or
+   wait (the rule is stored on the row and applied again to a deferred one),
+   and a notice whose words are not in the owner's turn is stored as a
+   check-in around its matter. A name the contact store cannot resolve
+   becomes a `recipient_unknown` ask; a sent one settles its commitment. An
+   owner's `cadence` item for an exactly named contact sets its cadence once
+   (audited as `cadence_set` by `owner-turn:commitment:<id>`; a cadence the
+   owner later sets by hand stands), and while it stays open every check-in
+   to that contact carries its topic; one matched by name only is a
+   `cadence_confirm` owner question (a yes sets it, a no withdraws the item),
+   and one naming someone unknown a `recipient_unknown` ask.
+   Permission is read again whenever a message to a contact may leave: at
+   every tick, at every outbox pull and on the owner's `yes`. A contact now
+   `never` (an opt-out or the owner's revocation while the message waited
+   for quiet hours or the body) cancels it; one lowered to `ask` turns a
+   message approved on `auto` into the owner's question.
    Daily, each contact talked with in the last 24 h gets a template digest
    (`P/contacts/digest.py`). With the faculty off (the `full-people`
    ablation) what M5 adds goes and nothing older: the social weight is 0,
@@ -268,7 +284,9 @@ code is in the owner's own message. Silence expires an ask after
 notice; a floor ask is noticed at once at every level. A name-only identity
 link ("Is sam@example.org on email Sam?") is always an ask; the answer links
 or rejects the handle in the contact store, and a `no` is not a verdict on
-asking.
+asking. A yes folds a shadow that held the handle into the contact, and
+never an established contact: that link is refused and the owner merges the
+two explicitly if they are one person.
 
 ## The off switch
 
