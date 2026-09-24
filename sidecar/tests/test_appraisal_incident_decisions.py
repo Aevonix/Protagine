@@ -38,7 +38,7 @@ async def test_incomplete_or_unsupported_decisions_do_not_partially_settle(state
     await two_incidents(state)
     source(state, 'repair', 'The first export now passes. After another diagnostic, the second export also passes.')
     before = snapshot(state)
-    _, payload, _ = state._prepare(state._claim(20))
+    _, payload, _ = state._prepare(state._claim())
     answer = decisions(payload)
     first = answer['incident_decisions'][0]
     if failure == 'omitted_array':

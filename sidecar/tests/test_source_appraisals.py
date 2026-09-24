@@ -382,20 +382,20 @@ async def test_old_view_alone_cannot_reinforce_itself_on_a_new_turn(state):
 
 
 @pytest.mark.asyncio
-async def test_identity_invalidated_view_stays_a_tombstone_but_new_evidence_can_rebuild(state):
+async def test_identity_invalidated_record_is_deleted_and_new_evidence_rebuilds(state):
     source(state, 'first', 'The export has failed again.')
     await state.process_one(Processor())
     old_id = view(state)['records'][0]['id']
     with state.ledger._connect() as conn, conn:
         module.invalidate_source_attribution(conn, ['first'], 'person', 'other')
     assert view(state, history=True)['records'] == []
+    with state.ledger._connect() as conn:
+        assert conn.execute('SELECT count(*) FROM appraisal_records WHERE id=?', (old_id,)).fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM appraisal_heads WHERE record_id=?', (old_id,)).fetchone()[0] == 0
     source(state, 'later', 'My own separate export attempt failed after the retry.')
     await state.process_one(Processor(name='processor-b'))
     current = view(state)['records'][0]
-    assert current['sources'][0]['source_id'] == 'later'
-    with state.ledger._connect() as conn:
-        old = conn.execute('SELECT status,payload_json FROM appraisal_records WHERE id=?', (old_id,)).fetchone()
-        assert tuple(old) == ('invalidated', '{}')
+    assert current['sources'][0]['source_id'] == 'later' and current['supersedes'] is None
 
 
 @pytest.mark.asyncio
@@ -430,10 +430,11 @@ async def test_machine_formatted_topic_remains_relevant_and_repair_has_no_residu
 @pytest.mark.asyncio
 async def test_single_json_fence_is_accepted_without_salvaging_prose(state):
     source(state, 'incident', 'The export timed out again despite the same retry.')
-    job = state._claim(20)
+    job = state._claim()
     _, payload, _ = state._prepare(job)
     raw = json.dumps({'observations': [observation(payload)], 'incident_decisions': []})
-    assert len(state._validate('```json\n' + raw + '\n```', payload)) == 1
+    items, outcomes = state._validate('```json\n' + raw + '\n```', payload)
+    assert len(items) == 1 and outcomes == []
     with pytest.raises(ValueError):
         state._validate('Here is an observation: ' + raw, payload)
 

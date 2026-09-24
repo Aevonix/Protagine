@@ -102,7 +102,7 @@ def test_judgment_schema_has_exact_abstain_retain_revise_shapes():
 
 def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims():
     check = validator(appraisals)
-    empty = {'observations': [], 'incident_decisions': []}
+    empty = {'observations': [], 'incident_decisions': [], 'outcomes': []}
     check.validate(empty)
     item = {'kind': 'preference', 'dimension': 'communication', 'topic': 'review order',
             'text': 'The contact requests risk, edit, then links in reviews.',
@@ -118,7 +118,18 @@ def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims()
     check.validate({**empty, 'incident_decisions': [repair]})
     for outcome in ('unchanged', 'uncertain'):
         check.validate({**empty, 'incident_decisions': [{'record_id': 'previous-incident', 'outcome': outcome}]})
+    reported = {'event': 'failed', 'topic': 'quarterly figures', 'approach': '',
+                'support': [{'handle': 'current-handle', 'quote': 'the export was stale again'}]}
+    for event in appraisals.OUTCOME_EVENTS:
+        check.validate({**empty, 'outcomes': [{**reported, 'event': event}] * 4})
     for bad in [{'observations': []},
+                {'observations': [], 'incident_decisions': []},
+                {**empty, 'outcomes': [reported] * 5},
+                {**empty, 'outcomes': [{**reported, 'event': 'annoyed'}]},
+                {**empty, 'outcomes': [{**reported, 'support': []}]},
+                {**empty, 'outcomes': [{**reported, 'support': reported['support'] * 3}]},
+                {**empty, 'outcomes': [{**reported, 'topic': ''}]},
+                {**empty, 'outcomes': [{**reported, 'reason': 'extra'}]},
                 {**empty, 'observations': [item] * 5},
                 {**empty, 'observations': [{**item, 'dimension': 'format'}]},
                 {**empty, 'observations': [{**item, 'intensity': 'strong'}]},
