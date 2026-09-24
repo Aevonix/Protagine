@@ -609,49 +609,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Expectation engine init failed: %s", exc)
 
-    # --- Skills memory (procedure memory, item 3) ---
-    _skills_mem_store = None
-    try:
-        from protagine.skills_memory import SkillStore, skills_distill_mode
-        from protagine.api.routers.host import set_skill_store
-        _skills_mem_store = SkillStore(
-            db_path=str(state_dir / "protagine-skills.db"))
-        set_skill_store(_skills_mem_store)
-        logger.info("SkillStore initialized (db=%s, %d skill(s), distill=%s)",
-                    state_dir / "protagine-skills.db",
-                    _skills_mem_store.count(), skills_distill_mode())
-    except Exception as exc:
-        logger.warning("SkillStore init failed: %s", exc)
-
-    # --- Mining: escalation miner + verbatim turn capture (corpus source) ---
-    try:
-        from protagine.mining import EscalationMiner, MiningStore, mining_mode
-        from protagine.api.routers.mining import set_mining
-
-        if mining_mode() != "off":
-            _mining_store_obj = MiningStore(
-                db_path=str(state_dir / "protagine-mining.db"))
-
-            def _mining_router_getter():
-                try:
-                    from protagine.api.routers.host import _llm_router
-                    return _llm_router
-                except Exception:
-                    return None
-
-            _mining_engine_obj = EscalationMiner(
-                _mining_store_obj,
-                skill_store=_skills_mem_store,
-                router_getter=_mining_router_getter,
-            )
-            set_mining(_mining_store_obj, _mining_engine_obj, state_dir)
-            logger.info("EscalationMiner initialized (db=%s, mode=%s)",
-                        state_dir / "protagine-mining.db", mining_mode())
-        else:
-            logger.info("Mining disabled (PROTAGINE_ESCALATION_MINING=off)")
-    except Exception as exc:
-        logger.warning("Mining init failed: %s", exc)
-
     # --- Read-only repo mirrors ---
     try:
         from protagine.repos import RepoMirrorManager
@@ -952,17 +909,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Situation spine attachment failed closed: %s", exc)
 
-    # --- 22d. Exploration sandbox (gated isolated execution, item 6) ---
-    try:
-        from protagine.sandbox import SandboxManager, sandbox_mode
-        from protagine.api.routers.host import set_sandbox
-        _sandbox_mgr = SandboxManager(self_model=_sm_for_directed)
-        set_sandbox(_sandbox_mgr)
-        logger.info("SandboxManager initialized (mode=%s, backend=%s)",
-                    sandbox_mode(), _sandbox_mgr.backend_name())
-    except Exception as exc:
-        logger.warning("SandboxManager init failed: %s", exc)
-
     # --- 22e. Connector framework (read-only pull senses, item 2) ---
     try:
         from protagine.connectors import (
@@ -1135,8 +1081,6 @@ def create_app() -> FastAPI:
     # Observations router (v0.16.0) — agent-as-sensor ingestion
     from protagine.api.routers import observations as observations_router
     app.include_router(observations_router.router)
-    from protagine.api.routers import mining as mining_router
-    app.include_router(mining_router.router)
 
     # MCP streamable HTTP endpoint
     try:

@@ -482,6 +482,8 @@ class TurnSyncRequest(BaseModel):
     # Model that produced the assistant side of this turn (optional, additive).
     # Lets the mining layer detect provider escalations / cloud failovers from
     # real per-turn metadata instead of guessing from text.
+    # Sent by the adapter; nothing reads it since the escalation miner went (M9). Kept so an older
+    # adapter against this sidecar never gets a 422.
     model: Optional[str] = None
     # Evidence-only checkpoints never trigger ordinary turn/relationship effects.
     checkpoint_messages: Optional[List[CheckpointMessage]] = Field(

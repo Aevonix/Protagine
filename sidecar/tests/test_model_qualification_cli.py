@@ -69,12 +69,12 @@ async def test_task_routed_memory_uses_candidate_and_preserves_judging(tmp_path)
         cfg['functionRoles']['judging'] = ['deliberate']
         # Production-shaped task remapping previously bypassed the case's
         # extraction candidate and silently dispatched to the reasoning model.
-        cfg['taskRoles'] = {'source_claim_extraction': 'reasoning', 'skill_distillation': 'judging'}
+        cfg['taskRoles'] = {'source_claim_extraction': 'reasoning', 'source_claim_review': 'judging'}
         original = deepcopy(cfg)
         case = CASES[0]
         selected = router_for(cfg, 'interactive', [case])
         status = selected.routing_status()
-        assert status['task_roles'] == {'source_claim_extraction': 'extraction', 'skill_distillation': 'judging'}
+        assert status['task_roles'] == {'source_claim_extraction': 'extraction', 'source_claim_review': 'judging'}
         assert status['roles']['reasoning'] == ['deliberate', 'interactive']
         assert status['roles']['judging'] == ['deliberate']
         await evaluate(tmp_path/'run', inspect_binding(cfg, 'interactive'), [case], CONSUMERS, EVALUATORS,

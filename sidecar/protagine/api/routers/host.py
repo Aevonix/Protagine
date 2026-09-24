@@ -2933,26 +2933,6 @@ async def _process_turn_sync(
             append_event("conversation.turn", turn_event_data)
         except Exception:
             logger.debug("journal conversation.turn failed", exc_info=True)
-    # Mining: verbatim turn capture + escalation detection (best-effort; the
-    # miner mode gates everything internally, see protagine/mining/).
-    try:
-        from protagine.api.routers.mining import get_mining_engine as _get_miner
-        _miner = _get_miner()
-        if _miner is not None:
-            _miner.observe_turn(
-                session_id=body.context.session_id,
-                contact_id=body.context.contact_id,
-                channel_id=body.context.channel_id or "",
-                user_text=(getattr(body.user_message, "content", "") or "")
-                          if body.user_message else "",
-                assistant_text=(getattr(body.assistant_message, "content", "") or "")
-                               if body.assistant_message else "",
-                summary=body.summary or "",
-                tools_used=body.tools_used,
-                model=body.model or "",
-            )
-    except Exception:
-        logger.debug("mining observe_turn failed", exc_info=True)
     # Opt-out: a contact who asks not to be messaged lowers their own may_contact
     # to never (only the owner ever raises it). Runs on the resolved sender.
     if (_contacts_store is not None and body.context.contact_id and not _is_system_turn
@@ -4024,7 +4004,6 @@ async def list_briefings(limit: int = 10) -> BriefingListResponse:
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Research
 # ---------------------------------------------------------------------------
@@ -4436,24 +4415,12 @@ async def repos_refresh() -> dict:
 
 # --- Cognition program (items 1/3/4/7 + Amendment 1) ---
 _self_model = None
-_skill_store = None
-_sandbox = None
 _connector_manager = None
 
 
 def set_self_model(sm) -> None:
     global _self_model
     _self_model = sm
-
-
-def set_skill_store(store) -> None:
-    global _skill_store
-    _skill_store = store
-
-
-def set_sandbox(s) -> None:
-    global _sandbox
-    _sandbox = s
 
 
 def set_connector_manager(m) -> None:
@@ -4721,10 +4688,7 @@ async def get_autonomy_posture(request: Request) -> dict:
         posture = {}
         for name, valid, fallback in (
             ("PROTAGINE_INTROSPECT_ENABLED", ("true", "false"), "false"),
-            ("PROTAGINE_SKILLS_DISTILL", ("off", "shadow", "live"), "shadow"),
-            ("PROTAGINE_ESCALATION_MINING", ("off", "shadow", "live"), "shadow"),
             ("PROTAGINE_CONNECTORS_MODE", ("off", "shadow", "live"), "off"),
-            ("PROTAGINE_SANDBOX_MODE", ("off", "dry_run", "live"), "off"),
             ("PROTAGINE_EXPECTATIONS", ("off", "on", "shadow", "live"), "on"),
         ):
             if valid == ("true", "false"):
@@ -4752,61 +4716,6 @@ async def get_action_journal(limit: int = 50, domain: str = "",
         return {"available": True, "count": len(entries), "entries": entries}
     except Exception as exc:
         return {"available": True, "error": str(exc), "entries": []}
-
-
-@router.get("/skills-memory")
-async def get_skills_memory() -> dict:
-    """Procedure-memory skills (item 3) observability."""
-    if _skill_store is None:
-        return {"available": False}
-    try:
-        return {"available": True, **_skill_store.snapshot()}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.get("/sandbox/status")
-async def get_sandbox_status() -> dict:
-    """Exploration sandbox (item 6): mode, backend, containment limits."""
-    if _sandbox is None:
-        return {"available": False}
-    try:
-        return {"available": True, **_sandbox.status()}
-    except Exception as exc:
-        return {"available": True, "error": str(exc)}
-
-
-@router.post("/sandbox/run")
-async def run_sandbox(
-    request: Request,
-    body: dict = Body(default={}),
-) -> dict:
-    """Owner surface: run a script in the sandbox. Owner-directed runs auto-run
-    within default limits; still boundary-checked and journaled. The caller
-    cannot widen containment (limits are server-side)."""
-    if _sandbox is None:
-        return {"ran": False, "reason": "sandbox_not_wired"}
-    b = body or {}
-    authority = request_authority(request)
-    owner_person_id = (
-        os.environ.get("PROTAGINE_OWNER_PERSON_ID", "").strip()
-        or os.environ.get("PROTAGINE_OWNER_CONTACT_ID", "").strip()
-        or "owner"
-    )
-    # Owner direction is derived from authenticated transport authority;
-    # request JSON cannot assert either owner direction or approval.
-    owner_directed = bool(
-        authority.authenticated
-        and not authority.anonymous
-        and "owner" in authority.audiences
-        and owner_person_id in authority.person_ids
-    )
-    return _sandbox.run(
-        b.get("script", ""),
-        lang=b.get("lang", "python"),
-        purpose=b.get("purpose", ""),
-        owner_directed=owner_directed,
-        approved=owner_directed)
 
 
 @router.get("/connectors/status")

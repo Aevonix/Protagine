@@ -21,10 +21,16 @@ RETIRED_MODULES = (
     "protagine.self_model.experiments",
     "protagine.self_model.params",
     "protagine.intelligence.cognition",     # MetaLearner, CPI, StrategyAdjuster, gap detector
+    "protagine.skills_memory",
+    "protagine.mining",
+    "protagine.sandbox",                    # the exploration sandbox; the qualification coding sandbox stays
+    "protagine.api.routers.mining",
 )
 RETIRED_ROUTE_PREFIXES = ("/v1/host/self/tools", "/v1/host/skills/", "/v1/host/self/experiments",
-                          "/v1/host/self/params")
-RETIRED_ENV = ("PROTAGINE_TOOLSMITH", "PROTAGINE_EXPERIMENTS_", "PROTAGINE_EXPERIMENT_PREGRANTS_JSON")
+                          "/v1/host/self/params", "/v1/host/skills-memory", "/v1/host/sandbox", "/v1/host/mining")
+RETIRED_ENV = ("PROTAGINE_TOOLSMITH", "PROTAGINE_EXPERIMENTS_", "PROTAGINE_EXPERIMENT_PREGRANTS_JSON",
+               "PROTAGINE_SKILLS_DISTILL", "PROTAGINE_ESCALATION_MINING", "PROTAGINE_CORPUS_EXPORT_ENABLED",
+               "PROTAGINE_SANDBOX_")
 RETIRED_CAPABILITIES: tuple = ("skills", "skill_sandbox", "security_scanner", "cognition")
 
 
