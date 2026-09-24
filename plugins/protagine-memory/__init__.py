@@ -30,8 +30,7 @@ def register(ctx):
 
     - resolve the real contact from the sender → per-contact memory/affect/facts
       engage instead of 'default'
-    - attach a clock scoped to this user turn, so retained clocks are not
-      mistaken for the present time on later turns
+    - attach a one-line clock to the turns whose recalled context carries none
     """
     provider = ProtagineMemoryProvider()
     ctx.register_memory_provider(provider)
@@ -46,16 +45,14 @@ def register(ctx):
             )
         except Exception:
             pass
-        # 2) Scope the clock to its owning turn: native api_content is replayed.
+        # 2) A clock only for the turns whose recalled context will not carry one (a trivial
+        #    prompt, where Hermes skips recall, or a turn with no bound participant). Hermes
+        #    replays this text as history on every later turn, so it is one line and rare.
         try:
-            from agent.memory_provider import is_trivial_prompt
-
             message = kwargs.get("user_message")
-            # Hermes deliberately skips memory prefetch on these turns. Keep
-            # its optimization while supplying the same bounded clock frames.
-            context = provider._turn_clock_context(
+            context = provider.turn_clock(
                 session_id=str(kwargs.get("session_id", "") or ""),
-                include_temporal=is_trivial_prompt(message if isinstance(message, str) else ""),
+                message=message if isinstance(message, str) else "",
             )
             if context:
                 return {"context": context}

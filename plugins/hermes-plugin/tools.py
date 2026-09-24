@@ -26,47 +26,43 @@ VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 # Turns nobody typed: stock cron runs its agents with ``platform="cron"`` and no sender.
 AUTOMATED_PLATFORMS = frozenset({"cron"})
 
+# Every schema is sent with every model request, so each says only what the model needs to pick
+# the tool and fill its arguments; the handlers validate and explain the rest.
 SELF_SCHEMA = {
     "name": "protagine_self",
-    "description": "The agent's own mind: its state (level, budgets, open asks with their codes), the audit "
-                   "log, why an intention was decided, rating an intention's usefulness, and answering an "
-                   "ask (yes/no with its code) for the owner. Mutations are refused for anyone but the owner, "
-                   "and an answer is accepted only when the owner's own message contains the code.",
+    "description": "Your own mind: state (level, budgets, open asks with codes), log, why <id>, rate <id> with a "
+                   "verdict, or answer an ask yes/no by its code. rate, yes and no are owner only, and the code "
+                   "must appear in the owner's own message.",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["state", "log", "why", "rate", "yes", "no"]},
-        "id": {"type": "string", "description": "Intention id for why and rate"},
-        "verdict": {"type": "string", "enum": list(VERDICTS), "description": "Rating for rate"},
-        "code": {"type": "string", "description": "Ask code for yes/no, as the owner typed it"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Log entries"}},
-        "required": ["operation"], "additionalProperties": False},
+        "id": {"type": "string"}, "verdict": {"type": "string", "enum": list(VERDICTS)},
+        "code": {"type": "string"}, "limit": {"type": "integer"}},
+        "required": ["operation"]},
 }
 PEOPLE_SCHEMA = {
     "name": "protagine_people",
-    "description": "Known contacts: list them, show one, or (owner only) set whether the agent may reach "
-                   "out to someone: never, ask or auto.",
+    "description": "Known contacts: list, show one, or set_permission (owner only) for whether the agent may "
+                   "reach out to them: never, ask or auto.",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["list", "show", "set_permission"]},
-        "contact_id": {"type": "string"},
-        "permission": {"type": "string", "enum": ["never", "ask", "auto"]},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
-        "required": ["operation"], "additionalProperties": False},
+        "contact_id": {"type": "string"}, "permission": {"type": "string", "enum": ["never", "ask", "auto"]},
+        "limit": {"type": "integer"}},
+        "required": ["operation"]},
 }
 SEARCH_SCHEMA = {
     "name": "protagine_memory_search",
-    "description": "Search retained evidence for the current participant. Returns excerpts with their "
-                   "source references; keep speaker, time and corrections as given.",
-    "parameters": {"type": "object", "properties": {
-        "query": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
-        "required": ["query"], "additionalProperties": False},
+    "description": "Search retained evidence about the current participant beyond this turn's recall; returns "
+                   "excerpts with speaker, time and source references.",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                   "required": ["query"]},
 }
 FORGET_SCHEMA = {
     "name": "protagine_memory_forget",
-    "description": "Owner only: forget retained sources by their exact source_id values, when the owner "
-                   "asks for something to be removed from memory.",
+    "description": "Owner only: forget retained sources by exact source_id when the owner asks to remove "
+                   "something from memory.",
     "parameters": {"type": "object", "properties": {
-        "source_ids": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "string"}}},
-        "required": ["source_ids"], "additionalProperties": False},
+        "source_ids": {"type": "array", "items": {"type": "string"}}},
+        "required": ["source_ids"]},
 }
 
 
@@ -76,6 +72,11 @@ def _json(value: Any) -> str:
 
 def _error(message: str) -> str:
     return _json({"error": message})
+
+
+def _unavailable(reason: str) -> str:
+    """One final answer: the tool cannot work on this lane and a retry would only repeat it."""
+    return _json({"unavailable": True, "retry": False, "reason": reason})
 
 
 class Tools:
@@ -193,7 +194,7 @@ class Tools:
             return _error("query is required")
         contact = self.sessions.contact_id(session_id)
         if not contact:
-            return _error("this turn has no resolved participant")
+            return _unavailable("this turn has no resolved participant; answer from the message")
         try:
             response = self.client.post("/v1/host/memory/search", timeout=10, json={
                 "identity": {"host_id": "hermes"}, "person_id": contact, "session_id": session_id,

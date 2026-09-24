@@ -69,7 +69,6 @@ class LLMRouter:
         tiers: dict[ModelTier, TierConfig] | None = None,
         scorer: ComplexityScorer | None = None,
         fallback_handler: FallbackHandler | None = None,
-        event_bus: Any | None = None,
     ) -> None:
         self._tiers = DEFAULT_TIERS if tiers is None else tiers
         self._snapshot = None
@@ -82,7 +81,6 @@ class LLMRouter:
         self._endpoints = EndpointRuntime()
         self._scorer = scorer or ComplexityScorer()
         self._fallback = fallback_handler or FallbackHandler()
-        self._bus = event_bus
 
     @property
     def supports_function_routing(self):
@@ -418,9 +416,8 @@ class LLMRouter:
                 response.model_revision = binding.weight_revision
                 response.binding = binding.name
                 response.prior_attempts = list(prior_attempts)
-                # Even an unusable completion consumed inference. Validate it
-                # inside the finite fallback loop, before recording success.
-                self._emit_cost_event(response)
+                # Validate the output inside the finite fallback loop, before
+                # recording success.
                 _require_function_output(response, tools)
                 self._endpoints.success(snapshot, binding, response)
                 self._recent_calls.append({'request_id': request_id, 'function_role': role_name,
@@ -493,7 +490,6 @@ class LLMRouter:
                     stream=stream,
                     max_output_tokens=max_output_tokens,
                 )
-                self._emit_cost_event(response)
                 return response
 
             except Exception as exc:
@@ -601,28 +597,6 @@ class LLMRouter:
             raw=raw,
             client_max_tokens=client_limit,
         )
-
-    def _emit_cost_event(self, response: LLMResponse) -> None:
-        if self._bus is None:
-            return
-        try:
-            self._bus.emit(
-                "llm_router.cost",
-                {
-                    "request_id": response.request_id,
-                    "tier": response.tier_used.value,
-                    "model": response.model_id,
-                    "function_role": response.function_role,
-                    "config_revision": response.config_revision,
-                    "model_revision": response.model_revision,
-                    "binding": response.binding,
-                    "cost_usd": response.cost_usd,
-                    "latency_ms": response.latency_ms,
-                    "tokens": response.usage,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("LLMRouter: failed to emit cost event: %s", exc)
 
 
 # ---------------------------------------------------------------------------

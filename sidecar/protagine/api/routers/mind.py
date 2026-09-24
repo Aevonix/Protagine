@@ -13,7 +13,8 @@ text in docs/HERMES-ADAPTER.md):
                                    run?, ...}                                    -> audit entry
   GET  /outbox                    -> [ {id, kind: message|notice, recipient, recipient_is_owner,
                                          recipient_handles, text, ...} ]
-  POST /outbox/{id}/sending       {target?, at?} -> audit entry; 409 unless the message was ready
+  POST /outbox/{id}/sending       {target?, at?} -> audit entry; 409 unless the message was ready and the
+                                   claim names a target (no_target: it stays ready, handles re-read per pull)
   POST /outbox/{id}/sent          {result: sent|failed|uncertain, error?, hermes_ref?, summary?} -> audit entry
   POST /observations              {observed_at, board, body, counts, stale_tasks, blocked_tasks, goals,
                                    mind_tasks} (or the flat {observations: [{kind, ...}]})
@@ -251,7 +252,7 @@ async def outcome(body: OutcomeBody) -> Dict[str, Any]:
 
 @router.get("/outbox")
 async def outbox() -> List[Dict[str, Any]]:
-    return _require().outbox_ready()
+    return await _require().outbox_ready()
 
 
 @router.post("/outbox/{intention_id}/sending")
@@ -264,7 +265,11 @@ async def outbox_sending(intention_id: str, body: SendingBody | None = None) -> 
     if row.status != "approved":
         raise HTTPException(status_code=409, detail={"code": "not_ready", "status": row.status})
     body = body or SendingBody()
-    return _entry(mind.outbox.sending(intention_id, target=body.target))
+    claimed = mind.outbox.sending(intention_id, target=body.target)
+    if claimed is None:
+        raise HTTPException(status_code=409, detail={"code": "no_target" if not body.target else "not_ready",
+                                                     "status": row.status})
+    return _entry(claimed)
 
 
 @router.post("/outbox/{intention_id}/sent")

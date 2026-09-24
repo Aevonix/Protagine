@@ -59,6 +59,19 @@ def mind_clock():
     return datetime.fromtimestamp(time.time(), timezone.utc)
 
 
+def benchmark_identity(person):
+    """The disposable ``identity.yaml``: the owner, and the one handle a mind message can reach.
+
+    The body resolves an owner message through ``owner.handles`` first, so
+    without one no mind message goes out: the body finds no target and the
+    sidecar leaves the message waiting unclaimed. The handle is the capture
+    platform's home channel, where the heartbeat arm already delivers.
+    """
+    from protagine.qualification.paired_body import OWNER, PLUGIN
+    return {'owner': {'name': 'Owner', 'contact_id': person, 'handles': {PLUGIN: [OWNER]}},
+            'agent': {'name': 'Agent'}}
+
+
 @contextmanager
 def serve_mind(app, state, person, section):
     """A real Mind over this arm's stores, on ``/v1/mind`` next to the host routes.
@@ -71,6 +84,7 @@ def serve_mind(app, state, person, section):
     """
     from protagine.api.routers import host
     from protagine.api.routers import mind as mind_router
+    from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     from protagine.feedback import TypeFeedbackStore
     from protagine.initiatives.store import InitiativeStore
     from protagine.mind import Mind
@@ -80,14 +94,19 @@ def serve_mind(app, state, person, section):
     directory.mkdir(parents=True, exist_ok=True)
     store = InitiativeStore(state_dir=directory)
     try:
-        # The arm's own router (the endpoint the plan pinned) serves the one deliberation call per tick.
+        # The arm's own router (the endpoint the plan pinned) serves the one deliberation call per tick
+        # and the capture jobs a tick drains first; the extractor shares the source worker's ledger,
+        # so a job the worker holds is waited for, never run twice.
         mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
                     commitments=host._commitment_store,
                     feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
                     expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
                     contacts=getattr(host, '_contacts_store', None),
                     ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
-                    router=getattr(host, '_llm_router', None))
+                    router=getattr(host, '_llm_router', None),
+                    capture=CommitmentExtractor(get_turn_idempotency_ledger(directory),
+                                                lambda: host._commitment_store,
+                                                aliases=contact_aliases(lambda: getattr(host, '_contacts_store', None))))
         mind_router.set_mind(mind)
         yield mind
     finally:
@@ -158,9 +177,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     key_file = instance / 'api.key'
     key_file.write_text(secret + '\n')
     key_file.chmod(0o600)
-    (instance / 'identity.yaml').write_text(json.dumps({
-        'owner': {'name': 'Owner', 'contact_id': person, 'handles': {}},
-        'agent': {'name': 'Agent'}}))
+    (instance / 'identity.yaml').write_text(json.dumps(benchmark_identity(person)))
     section = mind_section(mind)
     (instance / 'protagine.yaml').write_text(json.dumps({'owner': {'contact_id': person}, 'mind': section}))
     os.environ.update(PROTAGINE_HOME=str(instance), PROTAGINE_API_KEY=secret)

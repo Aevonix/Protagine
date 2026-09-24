@@ -138,25 +138,31 @@ def test_describe_now_labels_frames_across_date_boundary(monkeypatch):
     captured = datetime(2030, 7, 11, 23, 30, tzinfo=timezone.utc)
     monkeypatch.setattr(T, "now_utc", lambda: captured)
     out = T.describe_now("America/New_York", "Asia/Tokyo", "Robin")
-    assert "Captured UTC: 2030-07-11T23:30:00+00:00" in out
-    assert "Agent reference (America/New_York): 2030-07-11T19:30:00-04:00" in out
-    assert "Recorded timezone for Robin (Asia/Tokyo): 2030-07-12T08:30:00+09:00" in out
-    assert "not evidence of the contact's current location" in out
+    assert "Now: 2030-07-11T23:30:00+00:00 UTC" in out
+    assert "agent zone America/New_York: 2030-07-11T19:30:00-04:00" in out
+    assert "Robin's recorded zone Asia/Tokyo: 2030-07-12T08:30:00+09:00" in out
+    assert "not evidence of current location" in out
     assert "your local time" not in out
+    assert out.count("\n") == 0  # one line: it rides in every turn and is replayed as history
 
 
 def test_describe_now_same_zone_keeps_contact_provenance():
     out = T.describe_now("America/New_York", "America/New_York", "Robin")
-    assert "Agent reference (America/New_York)" in out
-    assert "Recorded timezone for Robin (America/New_York)" in out
+    assert "agent zone America/New_York" in out
+    assert "Robin's recorded zone America/New_York" in out
 
 
 def test_describe_now_unknown_contact_stays_unknown_with_default_and_override():
     T.set_default_contact_timezone("Asia/Tokyo")
     out = T.describe_now("America/New_York", override_tz="Europe/Berlin")
-    assert "Contact timezone: not recorded. Current location: unknown." in out
-    assert "Communication override (Europe/Berlin)" in out
-    assert "Recorded timezone" not in out and "Asia/Tokyo" not in out
+    assert "the contact's zone and location unknown" in out
+    assert "communication override Europe/Berlin" in out
+    assert "recorded zone" not in out and "Asia/Tokyo" not in out
+
+
+def test_describe_now_omits_a_utc_agent_frame_that_repeats_the_instant():
+    out = T.describe_now("UTC")
+    assert out.startswith("Now: ") and "agent zone" not in out
 
 
 @pytest.mark.asyncio
@@ -174,8 +180,9 @@ async def test_context_builder_does_not_present_fallback_as_contact_record(monke
     T.set_agent_timezone("America/New_York")
     T.set_default_contact_timezone("Europe/Berlin")
     section = await host._build_temporal_section("robin", include_global_heads_up=False)
-    assert "Agent reference (America/New_York)" in section.body
-    assert ("Recorded timezone for Robin" in section.body) is bool(recorded)
+    assert "agent zone America/New_York" in section.body
+    assert ("Robin's recorded zone" in section.body) is bool(recorded)
     assert "Europe/Berlin" not in section.body
-    assert "retained copy is historical" in section.body
+    # The reading rule (a retained clock is history) is the host's system-prompt text, not per turn.
+    assert "historical" not in section.body
     assert "your local time" not in section.body and "this is NOW" not in section.body

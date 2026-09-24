@@ -118,7 +118,14 @@ awaits claim processing. It does not guarantee primary-source coverage when
 many distinct assistant retellings compete, or recover sources missed during
 candidate retrieval. The five-record limit and character budget are unchanged.
 
-The default combined rendered budget is 6,000 characters, adjustable through
+A host that still shows the session's earlier turns verbatim says so with
+`session_history: intact` on `/v1/host/context/assemble`; selection then leaves
+out that session's own quotations and conversation pairs, the one recall that
+can add nothing, and keeps derived claims, media and other sessions' evidence.
+`compressed` (the host has summarised those turns) or no value includes them as
+before.
+
+The default combined rendered budget is 4,000 characters, adjustable through
 `PROTAGINE_RECALL_CONTEXT_MAX_CHARS` up to 24,000; zero suppresses this packet.
 This is a character limit, not an asserted token count. Shortened excerpts carry
 `excerpt_truncated=true`, and source bytes remain intact in the source store.

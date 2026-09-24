@@ -450,9 +450,16 @@ def test_shutdown_backlog_is_read_only_and_missing_is_not_empty(tmp_path):
         conn.execute('CREATE TABLE source_claim_jobs (status TEXT,lease_until REAL)')
         conn.executemany('INSERT INTO source_claim_jobs VALUES (?,?)',
                          [('running', 1234), ('pending', 0), ('complete', 0), ('complete', 0)])
+    # The capture queue is its own table in the same ledger; without it nothing is observed.
+    assert worker.source_job_counts(path) == {'status': 'unavailable'}
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE commitment_runs (turn_id TEXT PRIMARY KEY, status TEXT, lease_until REAL)')
+        conn.executemany('INSERT INTO commitment_runs VALUES (?,?,?)',
+                         [('t1', 'complete', 0), ('t2', 'running', 1234), ('t3', 'pending', 0), ('t4', 'pending', 0)])
     before = path.read_bytes()
     assert worker.source_job_counts(path) == {'status': 'observed',
-        'counts': {'complete': 2, 'pending': 1, 'running': 1}}
+        'counts': {'complete': 2, 'pending': 1, 'running': 1},
+        'commitment_runs': {'complete': 1, 'pending': 2, 'running': 1}}
     assert path.read_bytes() == before
 
 

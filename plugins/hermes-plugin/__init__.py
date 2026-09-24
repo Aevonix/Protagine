@@ -31,6 +31,8 @@ TOOLSET = "protagine"
 
 
 def prompt_section(settings: Settings) -> Callable[[Mapping[str, Any]], str]:
+    """The one static block the plugin adds to every request: who the owner is and the two things the tool
+    schemas cannot say. Recall guidance is the memory provider's system block."""
     def render(_session_info: Mapping[str, Any]) -> str:
         identity = settings.identity()
         owner = identity.get("owner") if isinstance(identity.get("owner"), Mapping) else {}
@@ -38,11 +40,9 @@ def prompt_section(settings: Settings) -> Callable[[Mapping[str, Any]], str]:
         if owner.get("name"):
             lines.append(f"Your owner is {owner['name']}.")
         lines.append(
-            "Protagine keeps your long-term memory; recalled evidence for this turn arrives with the "
-            "message. Use protagine_memory_search for more, protagine_self for your own mind's state, "
-            "log and open asks (the owner answers an ask by typing yes or no with its code; call "
-            "protagine_self yes/no with that code only when the owner's own message contains it), "
-            "protagine_people for contacts, and protagine_reminder for recalled deadlines.")
+            "Protagine keeps your long-term memory: recalled evidence arrives with each message and "
+            "protagine_memory_search finds more. Answer a mind ask with protagine_self yes or no only when "
+            "its code appears in the owner's own message.")
         return "\n".join(lines)[:4000]
     return render
 

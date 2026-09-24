@@ -1578,13 +1578,19 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.warning("mind setting not written to protagine.yaml", exc_info=True)
 
+        # The tick drains pending capture jobs before it decides; the extractor shares the
+        # projection worker's ledger, so a job the worker holds is waited for, never run twice.
+        from protagine.commitments.extract import CommitmentExtractor, contact_aliases
+        _mind_capture = CommitmentExtractor(get_turn_idempotency_ledger(state_dir),
+                                            lambda: _host_for_mind._commitment_store,
+                                            aliases=contact_aliases(lambda: contacts_store))
         mind = Mind(
             config=_mind_cfg.get("mind") or {}, store=_mind_store, state_dir=state_dir,
             owner_id=_mind_owner, commitments=_host_for_mind._commitment_store,
             followups=_mind_followups, feedback=_host_for_mind._feedback_store,
             expectations=_host_for_mind._expectations, contacts=contacts_store,
             ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
-            interests=_mind_interests,
+            interests=_mind_interests, capture=_mind_capture,
             timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
             persist=_persist_mind_setting)
         set_mind(mind)

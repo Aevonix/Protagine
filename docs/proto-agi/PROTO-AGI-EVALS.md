@@ -600,3 +600,32 @@ image: <digest>
 ```
 
 A result that does not match its plan's hash is not reported.
+
+### Amendments to the pre-registered instrument
+
+An amendment changes what every arm is measured with, never one arm's odds. Each is dated, applied
+identically to every arm from that date, and results measured before it are read under the old rule.
+
+**2026-09-23: an iteration-capped agent turn no longer ends the episode.** Before, the harness
+ended an episode at the first agent turn that did not complete, so a turn that spent its iteration
+budget left every later turn, clock advance and tick unrun: `body:observed` was false and every
+body check failed, in warranted and control episodes alike, whichever arm's tools had burned the
+budget. From this date a turn that produced a final response (Hermes returns its budget summary as
+the final response) is recorded as incomplete and the episode goes on; a turn that failed, was
+interrupted or produced no response still ends it. `all_native_turns_completed` is unchanged and
+still fails the episode on its own, and the report shows per arm how many agent turns ended short
+(`arms.<arm>.native_turns`). Reason: an episode that dies because one turn spent its iterations
+measures that arm's tool surface, not its initiative. The M2 held-out gate was measured under the
+old rule (8 treatment and 5 comparator episodes ended this way); the re-gate is measured under this
+one, in every arm. Reporting only, same date: each episode's `source_job_counts` also shows the
+capture queue (`commitment_runs` by status) at shutdown, so an extraction still pending or running
+when the ticks ran is visible next to the mind's decision; it changes no rule and no arm's odds.
+
+**2026-09-23: the `mind-initiative-1` dev split covers the section 6.2 taxonomy.** The dev
+templates (`benchmarks/paired/generators/initiative.py`) grew from three warranted and four control
+shapes to thirteen and fifteen, one per warranted type and per control type of the taxonomy, with
+the clock advance chosen per template (past the deadline that counts, before one that does not).
+The dev split is development data; this changes what the family can diagnose, not the held-out
+templates or the rule. Two 6.2 dev types (a stale owner board task, a failing health check) and the
+restart-duplicate control still need harness extensions (an initial board state, a restart event)
+and are not in the split.

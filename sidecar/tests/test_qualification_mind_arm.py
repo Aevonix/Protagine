@@ -146,3 +146,46 @@ def test_served_mind_follows_the_shifted_body_clock_and_forms_from_the_host_comm
         assert mind.clock() - datetime.now(timezone.utc) > timedelta(minutes=59)
     assert mind_router.get_mind() is None
     assert (state / 'memory-state' / 'initiatives.db').is_file()
+
+
+def _hermes_plugin(name):
+    """One module of the Hermes adapter, loaded from its directory without executing the plugin's
+    ``__init__`` (which registers hooks with a running Hermes); ``body``, ``capture`` and ``client``
+    import only the standard library, httpx and each other."""
+    import importlib
+    import importlib.util
+    import sys
+    from pathlib import Path
+    package = 'hermes_plugin_under_test'
+    if package not in sys.modules:
+        location = Path(__file__).resolve().parents[2] / 'plugins' / 'hermes-plugin'
+        spec = importlib.util.spec_from_loader(package, loader=None, is_package=True)
+        module = importlib.util.module_from_spec(spec)
+        module.__path__ = [str(location)]
+        sys.modules[package] = module
+    return importlib.import_module(f'{package}.{name}')
+
+
+def test_the_benchmark_identity_gives_the_body_an_owner_handle_to_send_to(tmp_path):
+    """An owner message from the mind is sent through ``Body.message_target``, which needs an owner
+    handle from ``identity.yaml``; with none the body finds no target and the message waits unclaimed.
+    The disposable identity names the capture platform's home channel, the target the grader expects."""
+    import json
+    from protagine.qualification import paired_body
+    client, body = _hermes_plugin('client'), _hermes_plugin('body')
+    instance = tmp_path / 'protagine-instance'
+    instance.mkdir()
+    identity = worker.benchmark_identity('p-01')
+    assert identity['owner']['contact_id'] == 'p-01' and identity['owner']['handles'] == {'capture': ['owner']}
+    (instance / 'identity.yaml').write_text(json.dumps(identity))
+    settings = client.Settings(sidecar_url='http://127.0.0.1:1', key_file=instance / 'api.key', api_key='k',
+                               home=instance, hermes_home=tmp_path, outbox_path=tmp_path / 'outbox.sqlite3')
+    assert settings.owner_handle() == ('capture', 'owner') and settings.owner_contact_id() == 'p-01'
+    target = body.Body(client.ProtagineClient(settings), None, None, settings).message_target
+    # The shapes the outbox lists an owner reminder in: flagged, named as the owner contact, unnamed.
+    assert target({'id': 'm-1', 'kind': 'notice', 'recipient': 'p-01', 'recipient_is_owner': True}) == 'capture:owner'
+    assert target({'id': 'm-2', 'kind': 'notice', 'recipient': 'p-01'}) == 'capture:owner'
+    assert target({'id': 'm-3', 'kind': 'notice'}) == 'capture:owner'
+    assert target({'id': 'm-1', 'recipient': 'p-01', 'recipient_is_owner': True}) == paired_body.PLUGIN + ':' + paired_body.OWNER
+    # A contact with no handle anywhere still gets nothing: the owner handle is not a fallback for others.
+    assert target({'id': 'm-4', 'kind': 'message', 'recipient': 'p-02', 'recipient_is_owner': False}) == ''

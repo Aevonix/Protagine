@@ -8,8 +8,8 @@ engine that actually ran: follow-ups ``0.5 + days/14``, overdue commitments
 
 | drive     | rises with                                                      | satisfied by                    |
 |-----------|-----------------------------------------------------------------|---------------------------------|
-| duty      | overdue commitments, due reply waits, stale owner tasks, stalled | fulfilled commitments; done     |
-|           | Hermes goals, duty-domain expectation misses                     | tasks                           |
+| duty      | overdue and due-soon commitments, due reply waits, stale owner   | fulfilled commitments; done     |
+|           | tasks, stalled Hermes goals, duty-domain expectation misses      | tasks                           |
 | curiosity | interests (seeded, declared, appraised), open questions,         | a research task whose finding   |
 |           | contradictions, knowledge-domain misses                          | is stored                       |
 | mastery   | the same signature failing twice in 7 days, repeated corrections | a later verified success        |
@@ -39,6 +39,9 @@ FAILURE_WINDOW = timedelta(days=7)
 FAILURE_CLUSTER = 2
 DUTY_DOMAINS = frozenset({"commitment", "intention", "expected_reply", "task_outcome", "task_duration"})
 SATIETY_DAMPING = 0.5   # effective weight = w x (1 - 0.5 x satiety)
+# After a heads-up went out, the overdue reminder for the same row waits this long
+# (``mind.heads_up_grace_minutes``): the owner heard about it minutes ago.
+HEADS_UP_GRACE = timedelta(minutes=30)
 
 
 def task_body(*, description: str, drive: str, concern: str, evidence: Iterable[str], context: str = "") -> str:
@@ -71,6 +74,48 @@ def _utc(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def span(delta: timedelta) -> str:
+    """A duration as the owner would say it: ``5 min``, ``2 h``, ``3 d``."""
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)} min"
+    if seconds < 86400:
+        return f"{seconds // 3600} h"
+    return f"{seconds // 86400} d"
+
+
+def schedule_key(row_id: Any, event: str, due: datetime) -> str:
+    """The dedup key of a due-driven intention: ``commitment:<id>:<event>:<deadline>``.
+
+    The deadline is part of the key so an obligation is reported at most once
+    per schedule: the same deadline never earns two words, and a deadline the
+    owner moves after the word went out ("remind me again tomorrow") is a new
+    schedule that earns one new reminder and one new heads-up.
+    """
+    return f"commitment:{row_id}:{event}:{due.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def heads_up_at(row: Dict[str, Any], due: Optional[datetime] = None) -> Optional[datetime]:
+    """When the person asked to be warned about a commitment, or None.
+
+    The extractor records it as ``metadata.heads_up_at`` (ISO) or
+    ``metadata.lead_minutes`` (before the deadline); a row with no deadline
+    has no heads-up.
+    """
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    due = due or _utc(row.get("due_at"))
+    if due is None:
+        return None
+    at = _utc(metadata.get("heads_up_at"))
+    if at is None and not isinstance(metadata.get("lead_minutes"), bool):
+        try:
+            lead = float(metadata.get("lead_minutes"))
+        except (TypeError, ValueError):
+            return None
+        at = due - timedelta(minutes=lead) if lead > 0 else None
+    return at if at is not None and at < due else None
+
+
 @dataclass
 class DriveInputs:
     """A read-only snapshot of what the drives look at, gathered once per tick."""
@@ -90,6 +135,8 @@ class DriveInputs:
     health: Dict[str, int] = field(default_factory=dict)                 # probe -> consecutive failures
     backlog: Dict[str, int] = field(default_factory=dict)                # consolidation, projection_lag, link_proposals
     settled: set = field(default_factory=set)                            # keys and bases satisfied or under way
+    heads_ups: Dict[str, datetime] = field(default_factory=dict)         # commitment id -> when its heads-up went out
+    heads_up_grace: timedelta = HEADS_UP_GRACE
     worker_profile: str = "protagine-act"
 
     def is_settled(self, dedup_key: str, dedup_base: str | None = None) -> bool:
@@ -126,17 +173,51 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             evidence=evidence, concern=f"owed: {description}", invalidates_if=f"commitment:{row['id']}:resolved",
             success_check=check, due_at=due, source_type="commitment", source_id=row["id"],
             priority=priority / 100.0, concern_kind="obligation")
+    key = schedule_key(row["id"], "overdue", due)
+    # Who owes the work: capture records ``metadata.obligor`` (``owner``, ``assistant`` or a contact id);
+    # a row without it is the owner's own, as every conversational row read before the field existed.
+    obligor = str(metadata.get("obligor") or "owner").strip().lower()
+    if person and person == owner_id and row.get("source_type") == "cognition" and obligor != "assistant":
+        # A promise the owner spoke, or a third party's promise the owner is tracking, is owed back to
+        # the owner as words, not to a worker as work: the reminder is the effect. The assistant's own
+        # promise ("I'll send you the report by 3pm") is work and keeps the task form below.
+        text = (f"Reminder: {description}. It was due at {due.strftime('%Y-%m-%d %H:%M UTC')}, "
+                f"{span(now - due)} ago.")
+        rationale = ("a commitment the owner made is past due" if obligor == "owner"
+                     else f"a commitment {obligor} made to the owner is past due")
+        return Candidate(
+            type="commitment_reminder", drive="duty", kind="message", title=f"Overdue: {description}"[:160],
+            dedup_key=key, salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
+            cost=0.05, recipient=person, text=text, rationale=rationale,
+            evidence=evidence, concern=f"overdue commitment: {description}",
+            invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
+            source_type="commitment", source_id=row["id"], priority=priority / 100.0, concern_kind="obligation")
     who = "the owner" if person and person == owner_id else (f"contact {person}" if person else "someone")
     body = task_body(description=f"Fulfil the overdue commitment to {who}: {description}", drive="duty",
                      concern=f"overdue commitment: {description}", evidence=evidence,
                      context=str(row.get("source_context") or ""))
     return Candidate(
         type="commitment_overdue", drive="duty", kind="task", title=f"Overdue: {description}"[:160],
-        dedup_key=f"commitment:{row['id']}:overdue", salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
+        dedup_key=key, salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
         cost=0.15, recipient=person, text=body, rationale="a commitment is past due", evidence=evidence,
         concern=f"overdue commitment: {description}", invalidates_if=f"commitment:{row['id']}:resolved",
         success_check=check, due_at=due, source_type="commitment", source_id=row["id"], priority=priority / 100.0,
         concern_kind="obligation")
+
+
+def heads_up_candidate(row: Dict[str, Any], warn_at: datetime, due: datetime, now: datetime) -> Candidate:
+    """The word the person asked for before a deadline; the overdue reminder follows on its own key."""
+    person = str(row.get("person_id") or "") or None
+    description = str(row.get("description") or "").strip()
+    priority = int(row.get("priority") or 50)
+    text = f"Heads-up: {description} is due at {due.strftime('%H:%M UTC')}, {span(due - now)} from now."
+    return Candidate(
+        type="commitment_due_soon", drive="duty", kind="message", title=f"Due soon: {description}"[:160],
+        dedup_key=schedule_key(row["id"], "heads_up", due), salience=0.8, cost=0.05, recipient=person, text=text,
+        rationale="the person asked for a word before this deadline",
+        evidence=[f"commitment:{row['id']}", f"due {due.isoformat()}", f"heads-up asked for {warn_at.isoformat()}"],
+        concern=f"due soon: {description}", invalidates_if=f"commitment:{row['id']}:resolved", due_at=due,
+        source_type="commitment", source_id=row["id"], priority=priority / 100.0, concern_kind="obligation")
 
 
 def reply_wait_candidate(wait: Dict[str, Any], now: datetime) -> Candidate:
@@ -188,8 +269,16 @@ def duty(inputs: DriveInputs) -> DriveResult:
     now, candidates = inputs.now, []
     for row in inputs.commitments:
         due = _utc(row.get("due_at"))
-        if due is None or due > now or str(row.get("status") or "pending") not in {"pending", "overdue"}:
+        if due is None or str(row.get("status") or "pending") not in {"pending", "overdue"}:
             continue
+        if due > now:
+            warn_at = heads_up_at(row, due)
+            if warn_at is not None and warn_at <= now:
+                candidates.append(heads_up_candidate(row, warn_at, due, now))
+            continue
+        went_out = inputs.heads_ups.get(str(row["id"]))
+        if went_out is not None and now - went_out < inputs.heads_up_grace:
+            continue   # the heads-up reached the owner minutes ago; one word at a time
         candidates.append(commitment_candidate(row, due, now, owner_id=inputs.owner_id))
     for wait in inputs.reply_waits:
         if wait.get("eligibility") not in {None, "due"} or wait.get("native_task_id"):
@@ -403,7 +492,8 @@ def run(inputs: DriveInputs, weights_map: Mapping[str, float]) -> Dict[str, Driv
 
 
 __all__ = ["DEFAULT_WEIGHTS", "DRIVES", "DRIVE_FUNCTIONS", "DUTY_DOMAINS", "DriveInputs", "FAILURE_CLUSTER",
-           "FAILURE_WINDOW", "HEALTH_STRIKES", "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "commitment_candidate",
-           "curiosity", "duty", "effective_weights", "enabled", "failure_signature", "mastery", "period",
-           "reply_wait_candidate", "research_candidate", "run", "slug", "social", "stale_task_candidate",
-           "stalled_goal_candidate", "task_body", "upkeep", "weights"]
+           "FAILURE_WINDOW", "HEADS_UP_GRACE", "HEALTH_STRIKES", "STALE_TASK_HOURS", "STALLED_GOAL_HOURS",
+           "commitment_candidate", "curiosity", "duty", "effective_weights", "enabled", "failure_signature",
+           "heads_up_at", "heads_up_candidate", "mastery", "period", "reply_wait_candidate", "research_candidate",
+           "run", "schedule_key", "slug", "social", "span", "stale_task_candidate", "stalled_goal_candidate", "task_body",
+           "upkeep", "weights"]

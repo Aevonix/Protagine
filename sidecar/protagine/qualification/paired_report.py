@@ -465,6 +465,25 @@ def _statistics(manifest, pairs, arms, reference, profiles, rule):
             'basis': STATISTICS_BASIS, 'contrasts': contrasts}
 
 
+def _native_turns(rows):
+    """Agent turns that ended short of completion, per arm.
+
+    Since the pre-registration amendment of 2026-09-23 (evals section 11) such a
+    turn no longer ends the episode, so its count is the only place the iteration
+    cap remains visible once the body checks are graded.
+    """
+    agent_turns = incomplete = episodes = 0
+    for row in rows:
+        turns = (row.get('effects') or {}).get('turns') or []
+        short = [turn for turn in turns if isinstance(turn, dict) and 'session_id' in turn
+                 and turn.get('completed') is not True]
+        agent_turns += sum(isinstance(turn, dict) and 'session_id' in turn for turn in turns)
+        incomplete += len(short)
+        episodes += bool(short)
+    return {'agent_turns': agent_turns, 'incomplete_agent_turns': incomplete,
+            'episodes_with_incomplete_turn': episodes}
+
+
 def _resources(rows):
     per_arm = {}
     for arm, items in rows.items():
@@ -530,6 +549,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'observed_completed': observed_completed, 'attributed_completed': completed,
             'completion_percent': 100 * completed / declared_count if full else None,
             'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm]),
+            'native_turns': _native_turns(rows[arm]),
             'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
@@ -608,7 +628,8 @@ def markdown(report):
         f"Comparable pairs: {report['comparable_pairs']}/{report['declared_episodes']}. "
         f"Arms: {', '.join(arms)}; comparator: {reference}. "
         f"Temperature: {'provider default' if report.get('temperature') is None else report['temperature']}.", '',
-        '| Arm | Profile | Attributed completions | Recorded outcomes |', '| --- | --- | --- | --- |']
+        '| Arm | Profile | Attributed completions | Recorded outcomes | Incomplete agent turns |',
+        '| --- | --- | --- | --- | --- |']
     profiles = report.get('profiles') or {}
     for arm in arms:
         row = report['arms'][arm]
@@ -616,7 +637,10 @@ def markdown(report):
         shown = f"{profile.get('name', arm)} plugin={'on' if profile.get('plugin') else 'off'}"
         if profile.get('overlay'):
             shown += ' ' + ' '.join(f'{key}={value}' for key, value in sorted(profile['overlay'].items()))
-        lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} |")
+        turns = row.get('native_turns') or _native_turns([])
+        lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} | "
+                     f"{turns['incomplete_agent_turns']}/{turns['agent_turns']} "
+                     f"in {turns['episodes_with_incomplete_turn']} episodes |")
     score = report['paired_score']
     lines.extend(['', (f"Completion delta ({score.get('treatment', arms[1])} minus {score.get('comparator', reference)}): "
         f"{score['delta_percentage_points']:+.1f} percentage points. "

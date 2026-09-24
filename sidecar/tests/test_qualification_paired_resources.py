@@ -134,3 +134,33 @@ def test_workload_summary_preserves_scores_rows_and_existing_aggregate_keys(tmp_
     assert 'Usage missing' in rendered and 'workload attribution: 1/1' in rendered
     assert 'PRIVATE_BODY' not in rendered
     assert row == original and path.read_bytes() == raw_trace
+
+
+def test_incomplete_agent_turns_are_counted_per_arm_without_touching_the_score(tmp_path, monkeypatch):
+    member, _ = trace(tmp_path, [(1, 'paired-source-worker')])
+    turns = [{'session_id': 'owner-1', 'kind': 'user', 'completed': False, 'final_response': 'Summary.'},
+             {'event': 'advance_clock', 'completed': True},
+             {'session_id': 'contact-1', 'kind': 'inbound', 'completed': True, 'final_response': 'Noted.'},
+             {'event': 'tick', 'completed': True}]
+    row = {'outcome': 'pass', 'primary_outcome': 'pass', 'elapsed_ms': 4000,
+        'effects': {'model_requests': [request(1)], 'turns': turns, 'declared_turns': 4, 'turns_completed': 3}}
+    original = deepcopy(row)
+    manifest = {'recipe': {}, 'pairs': [{'episode_id': 'paired.test', 'order': list(paired_report.ARMS),
+        'task_sha256': 'b' * 64, 'oracle_sha256': 'c' * 64,
+        'arms': dict.fromkeys(paired_report.ARMS, member)}], 'sha256': 'd' * 64,
+        'comparison_key': 'e' * 64, 'label': 'test', 'evidence_mode': 'controlled',
+        'dataset': {'version': 'test', 'split': 'development'},
+        'comparison': {'policy': {'environment': {'endpoint_usage': 'unknown'}}}}
+    monkeypatch.setattr(paired_report, 'load_manifest', lambda _: manifest)
+    monkeypatch.setattr(paired_report, '_row', lambda *args: row)
+    report = paired_report.summarize(tmp_path)
+    for arm in paired_report.ARMS:
+        # Events are not agent turns; one of the two agent turns ended short, in the one episode.
+        assert report['arms'][arm]['native_turns'] == {
+            'agent_turns': 2, 'incomplete_agent_turns': 1, 'episodes_with_incomplete_turn': 1}
+    assert report['paired_score']['ties'] == 1
+    assert '| Incomplete agent turns |' in paired_report.markdown(report)
+    assert '1/2 in 1 episodes' in paired_report.markdown(report)
+    assert row == original
+    assert paired_report._native_turns([{'effects': {}}]) == {
+        'agent_turns': 0, 'incomplete_agent_turns': 0, 'episodes_with_incomplete_turn': 0}

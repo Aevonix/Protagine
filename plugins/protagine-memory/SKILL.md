@@ -32,18 +32,16 @@ If any step fails, use no Protagine context. Never substitute owner context.
 
 ## Model tools
 
-When the general Protagine plugin is active, the only model-visible provider tools
-are:
-
-- `protagine_check_commitments`
-- `protagine_get_affect`
-- `protagine_get_facts`
-- `protagine_timeline`
-
-Their person selectors are server/provider-bound, not model arguments. Direct
-legacy tool endpoints are owner/system-only until scoped P8 tool projections
-exist; guest conversations rely on atomic assembled context. Do not advertise
-memory writes, goals, search, queue mutation, or approval tools from this
+The provider's tools exist only on the owner's own lane: the two writes
+`protagine_resolve_commitment` and `protagine_record_affect`. Their person
+selectors are server/provider-bound, not model arguments. Commitments, facts,
+affect and recent history are read from the assembled per-turn context, and
+`protagine_memory_search` (the general adapter's tool) finds more. A guest
+session, or a real channel with no sender binding, is offered none of them
+(Hermes collects the list when it builds the session's agent); a call that
+still arrives gets one final answer
+`{"unavailable": true, "retry": false, "reason": ...}`. Do not advertise memory
+writes, goals, patterns, search, queue mutation, or approval tools from this
 provider.
 
 ## Lifecycle

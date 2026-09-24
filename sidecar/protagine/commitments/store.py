@@ -141,6 +141,10 @@ class CommitmentResolutionConflict(ValueError):
     settlement_error_code = "operation_conflict"
 
 
+class CommitmentConflict(ValueError):
+    """The row is no longer what the writer listed (``expect``); nothing was written."""
+
+
 def _canonical_json(value: Dict[str, Any]) -> str:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -196,6 +200,21 @@ def _operation_material(
             _canonical_json(payload).encode("utf-8")
         ).hexdigest(),
     }
+
+
+def _parse_due_at(due_at: str) -> tuple[datetime, str]:
+    """A deadline as an aware UTC datetime and its canonical stored string.
+
+    ``get_overdue`` compares ``due_at`` as a STRING against a ``+00:00`` now,
+    so every writer must persist this exact form: a naive value means UTC,
+    an offset value is converted, and the caller's raw string is never
+    stored.
+    """
+    due_dt = datetime.fromisoformat(due_at)
+    if due_dt.tzinfo is None:
+        due_dt = due_dt.replace(tzinfo=timezone.utc)
+    due_dt = due_dt.astimezone(timezone.utc)
+    return due_dt, due_dt.isoformat()
 
 
 def _normalize_desc(text: str) -> str:
@@ -427,6 +446,23 @@ class CommitmentStore:
         return d
 
     @staticmethod
+    def _check_expectation(current: sqlite3.Row, expect: Optional[Dict[str, Any]]) -> None:
+        """A writer that acted on a listing must still be looking at that row.
+
+        ``expect`` carries the description and canonical ``due_at`` the writer
+        listed; the row must also still be open. Checked inside the write
+        transaction, so an edit or a resolution that landed in between (the
+        owner correcting a deadline while an extraction was still thinking)
+        is never overwritten by the older reading.
+        """
+        if expect is None:
+            return
+        if (current["status"] not in OPEN_STATUSES
+                or current["description"] != expect.get("description")
+                or current["due_at"] != expect.get("due_at")):
+            raise CommitmentConflict("commitment changed since it was listed")
+
+    @staticmethod
     def _operation_receipt(row: sqlite3.Row) -> Dict[str, Any]:
         receipt = {
             "schema": "ProtagineCommitmentResolutionOperationV1",
@@ -508,24 +544,14 @@ class CommitmentStore:
         now = datetime.now(timezone.utc).isoformat()
         status = "pending"
 
-        # Validate due_at is in the future AND normalize it to canonical UTC ISO.
-        # get_overdue() compares due_at as a STRING against a +00:00 `now`, so a
-        # naive or non-UTC-offset stored value sorts wrong — overdue commitments
-        # then surface late or never (a forgotten promise). Persist the
-        # normalized value, not the caller's raw string.
+        # Validate due_at is in the future AND normalize it to canonical UTC ISO
+        # (see _parse_due_at: a raw string sorts wrong and a promise is forgotten).
         if due_at:
-            try:
-                due_dt = datetime.fromisoformat(due_at)
-                if due_dt.tzinfo is None:
-                    due_dt = due_dt.replace(tzinfo=timezone.utc)
-                due_dt = due_dt.astimezone(timezone.utc)
-                if due_dt < datetime.now(timezone.utc):
-                    if not allow_overdue:
-                        raise ValueError("due_at must be in the future")
-                    status = "overdue"
-                due_at = due_dt.isoformat()
-            except ValueError:
-                raise
+            due_dt, due_at = _parse_due_at(due_at)
+            if due_dt < datetime.now(timezone.utc):
+                if not allow_overdue:
+                    raise ValueError("due_at must be in the future")
+                status = "overdue"
 
         meta_json = json.dumps(metadata) if metadata else None
 
@@ -624,8 +650,21 @@ class CommitmentStore:
         due_at: Optional[str] = None,
         priority: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *, clear_due_at: bool = False, expect: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Update a commitment. Returns updated record or None if not found.
+
+        ``due_at`` is normalized exactly as ``create`` normalizes it and is
+        not rejected for being past: a deadline pulled into the past is the
+        overdue flip's business on the next tick. ``clear_due_at`` removes the
+        deadline (a hold: the item stays open, nothing is due). A row already
+        flipped ``overdue`` whose deadline moves into the future, or away, is
+        ``pending`` again so the overdue event fires once more at the new
+        time. ``metadata`` is merged over what is stored, so a snooze or a
+        reschedule note never drops a deliverable's content or a resolution.
+        ``expect`` makes the write a compare-and-set against the description
+        and deadline the caller listed (``_check_expectation``): a row that
+        changed since raises ``CommitmentConflict`` and is left alone.
 
         Validates status transitions:
           pending → fulfilled, overdue, cancelled
@@ -636,6 +675,11 @@ class CommitmentStore:
             "pending": {"fulfilled", "overdue", "cancelled"},
             "overdue": {"fulfilled", "cancelled"},
         }
+        if clear_due_at and due_at:
+            raise ValueError("due_at and clear_due_at are exclusive")
+        due_dt = None
+        if due_at:
+            due_dt, due_at = _parse_due_at(due_at)
 
         with self._lock:
             conn = self._connect()
@@ -648,6 +692,7 @@ class CommitmentStore:
                 if not current:
                     conn.commit()
                     return None
+                self._check_expectation(current, expect)
 
                 current_status = current["status"]
 
@@ -675,15 +720,20 @@ class CommitmentStore:
                 if description is not None:
                     updates.append("description = ?")
                     params.append(description)
-                if due_at is not None:
+                if due_at or clear_due_at:
                     updates.append("due_at = ?")
-                    params.append(due_at)
+                    params.append(due_at if due_at else None)
+                    reopened = clear_due_at or due_dt > datetime.now(timezone.utc)
+                    if status is None and current_status == "overdue" and reopened:
+                        updates.append("status = ?")
+                        params.append("pending")
                 if priority is not None:
                     updates.append("priority = ?")
                     params.append(priority)
                 if metadata is not None:
+                    stored = self._row_to_dict(current).get("metadata") or {}
                     updates.append("metadata = ?")
-                    params.append(json.dumps(metadata))
+                    params.append(json.dumps({**stored, **metadata}))
 
                 if not updates:
                     conn.commit()
@@ -786,6 +836,40 @@ class CommitmentStore:
             finally:
                 conn.close()
 
+    def get_open_for_counterpart(self, aliases: List[str]) -> List[Dict[str, Any]]:
+        """Open items, anyone's, whose recorded counterpart is one of ``aliases``.
+
+        The extractor records the other party of an obligation as
+        ``metadata.counterpart`` (the contact as the conversation named them);
+        a turn attributed to that contact lists these next to the contact's
+        own items, so the person an item is owed to, or owed by, can move or
+        close it. Names compare in the normalized form used for wording, so
+        ``Sam`` and ``sam.`` are one person. Rows without a counterpart (every
+        row that predates the field) match nobody.
+        """
+        wanted = {_normalize_desc(str(alias)) for alias in aliases if str(alias or "").strip()}
+        wanted.discard("")
+        if not wanted:
+            return []
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """SELECT * FROM commitments
+                       WHERE status IN ('pending', 'overdue')
+                         AND json_extract(metadata, '$.counterpart') IS NOT NULL
+                       ORDER BY priority DESC, due_at ASC""",
+                ).fetchall()
+            finally:
+                conn.close()
+        out = []
+        for row in rows:
+            item = self._row_to_dict(row)
+            counterpart = (item.get("metadata") or {}).get("counterpart")
+            if isinstance(counterpart, str) and _normalize_desc(counterpart) in wanted:
+                out.append(item)
+        return out
+
     def _find_open_duplicate(self, conn, person_id, description):
         norm = _normalize_desc(description)
         if not norm:
@@ -824,13 +908,16 @@ class CommitmentStore:
         note: Optional[str] = None,
         resolved_by: str = "owner",
         operation_id: Optional[str] = None,
+        expect: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Settle a commitment with an outcome (done | invalid | duplicate |
         wont_do | obsolete). Legacy calls remain state-idempotent.  A caller
         supplying ``operation_id`` gets exact idempotency: an existing terminal
         row is accepted only when its stored operation, outcome, note, resolver,
-        and resulting status all match. Emits the matching commitment.* event
-        on an actual transition."""
+        and resulting status all match. ``expect`` is the compare-and-set of
+        ``update``: the row must still be the open row the caller listed, or
+        ``CommitmentConflict`` is raised and nothing is written. Emits the
+        matching commitment.* event on an actual transition."""
         status = OUTCOME_TO_STATUS.get(outcome)
         if status is None:
             raise ValueError(
@@ -881,6 +968,7 @@ class CommitmentStore:
                         )
                     conn.commit()
                     return None
+                self._check_expectation(stored, expect)
                 current = self._row_to_dict(stored)
                 if current["status"] in ("fulfilled", "cancelled"):
                     if operation_id is not None:
@@ -1029,9 +1117,9 @@ class CommitmentStore:
         self, limit: int = 6,
         source_types: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Most recently cancelled items judged invalid or duplicate — the
-        negative examples the extraction side injects into its prompt so the
-        same bad item is not recorded again."""
+        """Most recently cancelled items judged invalid, duplicate or obsolete
+        (dismissed as stale) — the negative examples the extraction side
+        injects into its prompt so the same item is not recorded again."""
         with self._lock:
             conn = self._connect()
             try:
@@ -1047,7 +1135,7 @@ class CommitmentStore:
             if source_types and (d.get("source_type") or "manual") not in source_types:
                 continue
             res = (d.get("metadata") or {}).get("resolution") or {}
-            if res.get("outcome") not in ("invalid", "duplicate"):
+            if res.get("outcome") not in ("invalid", "duplicate", "obsolete"):
                 continue
             out.append({
                 "description": d.get("description") or "",

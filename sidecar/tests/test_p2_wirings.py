@@ -99,7 +99,7 @@ async def test_context_assemble_omits_static_architecture_preserves_identity():
         assert r.status_code == 200
         sections = {s["id"]: s["body"] for s in r.json()["sections"]}
         assert "protagine-self-knowledge" not in sections
-        assert sections["protagine-identity"]
+        assert "protagine-identity" not in sections  # chain ids are /health data, not turn context
 
         r2 = await c.post("/v1/host/context/assemble", json={
             "identity": {"host_id": "test"}, "context": ctx,
@@ -108,8 +108,7 @@ async def test_context_assemble_omits_static_architecture_preserves_identity():
         })
         assert r2.status_code == 200
         later = {s["id"]: s["body"] for s in r2.json()["sections"]}
-        assert "protagine-self-knowledge" not in later
-        assert later["protagine-identity"] == sections["protagine-identity"]
+        assert "protagine-self-knowledge" not in later and "protagine-identity" not in later
         assert (await c.get("/v1/host/health")).json()["capabilities"] == health.json()["capabilities"]
 
 

@@ -83,7 +83,7 @@ def test_generated_family_directory_is_frozen_into_the_plan(fixture, monkeypatch
                            arms=['base-heartbeat', 'protagine'], dataset_dir=directory, **fixture.resources)
     dataset = manifest['dataset']
     assert dataset['version'] == 'mind-initiative-1' and dataset['source_sha256'] == content
-    assert dataset['split'] == 'dev' and len(dataset['episode_ids']) == 7
+    assert dataset['split'] == 'dev' and len(dataset['episode_ids']) == 28
     assert manifest['options']['dataset_dir'] == str(directory.resolve())
     assert manifest['options']['dataset_version'] is None
     assert 'Generated family' in manifest['coverage']

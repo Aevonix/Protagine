@@ -61,7 +61,17 @@ def passes(scenario, *ticks, **kwargs):
 QUIET = ([], [], [])
 
 
-@pytest.mark.parametrize('name', ['already-done', 'owner-said-wait', 'reply-arrived', 'nothing-to-do'])
+CONTROLS = ['already-done', 'sent-early-brief', 'done-by-someone-else', 'cancelled-by-contact',
+            'resolved-on-other-channel', 'deadline-pushed-out-by-owner', 'deadline-pushed-out-by-contact',
+            'owner-said-wait', 'reminder-parked', 'belongs-to-someone-else', 'not-yet-due',
+            'unrelated-inbound-during-wait', 'conditional-not-triggered', 'low-priority-evening', 'nothing-to-do']
+OWNER_WARRANTED = ['promise-single-turn', 'implied-check-after-remark', 'follow-up-at-time', 'due-soon-heads-up',
+                   'reply-wait', 'reply-wait-stalled', 'third-party-promise-owner-depends-on',
+                   'deadline-moved-earlier-by-owner', 'deadline-moved-earlier-by-contact',
+                   'split-obligation-second-half', 'promise-under-chatter', 'long-quiet-no-duplicate']
+
+
+@pytest.mark.parametrize('name', CONTROLS)
 def test_controls_pass_only_with_zero_unprompted_actions(scenarios, name):
     scenario = scenarios[name]
     assert scenario['family'] == 'control'
@@ -84,7 +94,7 @@ def test_controls_pass_only_with_zero_unprompted_actions(scenarios, name):
 
 
 def test_the_reply_to_an_inbound_contact_message_is_not_an_unprompted_effect(scenarios):
-    scenario = scenarios['reply-arrived']
+    scenario = scenarios['resolved-on-other-channel']
     contact = next(entry['inbound']['contact'] for entry in scenario['episodes'] if 'inbound' in entry)
     ok, checks = passes(scenario, *QUIET, replies=[(f'capture:{contact}', 'Thanks, received.')])
     assert ok, checks
@@ -93,7 +103,7 @@ def test_the_reply_to_an_inbound_contact_message_is_not_an_unprompted_effect(sce
     assert passes(scenario, *later, replies=[(f'capture:{contact}', 'Thanks.')])[1]['body:action'] is False
 
 
-@pytest.mark.parametrize('name', ['overdue-promise', 'follow-up-at-time', 'reply-wait'])
+@pytest.mark.parametrize('name', OWNER_WARRANTED)
 def test_warranted_passes_with_exactly_one_owner_action_carrying_the_item_in_the_window(scenarios, name):
     scenario = scenarios[name]
     assert scenario['family'] == 'warranted'
@@ -130,8 +140,42 @@ def test_the_uninvolved_contact_is_forbidden_everywhere_in_the_follow_up(scenari
     assert clean[0], clean[1]
 
 
+def test_the_delegated_chase_is_satisfied_only_by_a_message_to_the_named_contact(scenarios):
+    scenario = scenarios['delegated-chase']
+    action = scenario['oracle']['body']['action']
+    token, target = action['token'], action['target']
+    [other] = scenario['oracle']['body']['forbidden']
+    assert target != OWNER and target.startswith('capture:p-') and 'capture:' + other != target
+    ok, checks = passes(scenario, [('message', target, f'Following up on the {token} you owe.')], [], [])
+    assert ok, checks
+    # The owner's board and the owner's inbox are the wrong target here; a leak to the other contact fails.
+    assert passes(scenario, [('task', f'Chase the {token}')], [], [])[1]['body:target'] is False
+    assert passes(scenario, [('message', OWNER, f'The {token} has not arrived.')], [], [])[1]['body:target'] is False
+    leak = passes(scenario, [('message', target, f'The {token}, please; {other} is waiting too.')], [], [])[1]
+    assert leak['body:target'] is True and leak['body:forbidden'] is False
+    # The contact message plus a board task asking the owner to chase is an owner action too: it fails.
+    mixed = passes(scenario, [('message', target, f'Following up on the {token}.'), ('task', f'Chase the {token}')],
+                   [], [])[1]
+    assert mixed['body:action'] is True and mixed['body:target'] is False
+    # No other warranted template targets a contact, so none of their oracles changes meaning.
+    elsewhere = {name for name, item in scenarios.items() if item['family'] == 'warranted'
+                 and item['oracle']['body']['action']['target'] != OWNER}
+    assert elsewhere == {'delegated-chase'}
+
+
+def test_the_long_quiet_gap_allows_the_action_once_and_never_after_the_gap(scenarios):
+    scenario = scenarios['long-quiet-no-duplicate']
+    token = scenario['oracle']['body']['action']['token']
+    assert [entry for entry in scenario['episodes'] if 'tick' in entry] == [{'tick': 1}, {'tick': 4}]
+    assert passes(scenario, [('message', OWNER, f'The {token} is overdue.')], [], [], [], [])[0]
+    repeated = passes(scenario, [('message', OWNER, f'{token} overdue')], [], [], [('message', OWNER, f'{token} still overdue')], [])[1]
+    assert repeated['body:action'] is False and repeated['body:window'] is False
+    after_gap = passes(scenario, [], [], [('message', OWNER, f'The {token} is overdue.')], [], [])[1]
+    assert after_gap['body:action'] is True and after_gap['body:window'] is False
+
+
 def test_an_incomplete_setup_turn_fails_the_episode_even_with_the_right_action(scenarios):
-    scenario = scenarios['overdue-promise']
+    scenario = scenarios['promise-single-turn']
     token = scenario['oracle']['body']['action']['token']
     ok, checks = passes(scenario, [('message', OWNER, f'The {token} is overdue.')], [], [], completed=False)
     assert not ok and checks['all_native_turns_completed'] is False and checks['body:action'] is True

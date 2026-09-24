@@ -206,6 +206,18 @@ emit(guest_search=call("protagine_memory_search", {"query": "plans"}, g),
     assert all(c["json"]["session_id"] in {"guest-1", "owner-1"} for c in searches)
 
 
+def test_memory_search_without_a_participant_answers_once(home, sidecar):
+    """A channel turn with no sender binding cannot be searched: one terminal answer, no sidecar call,
+    the same shape the memory provider's lane refusals use."""
+    result = probe(TOOL_CODE + '''
+u = guest("unbound-1", sender="", platform="telegram")
+emit(search=call("protagine_memory_search", {"query": "plans"}, u))
+''', home)
+    assert result["search"] == {"unavailable": True, "retry": False, "reason": result["search"]["reason"]}
+    assert "no resolved participant" in result["search"]["reason"]
+    assert sidecar.calls("/v1/host/memory/search", "POST") == []
+
+
 def test_prompt_section_renders_within_bounds(home, sidecar):
     result = probe('''
 from hermes_cli.plugins import render_system_prompt_sections

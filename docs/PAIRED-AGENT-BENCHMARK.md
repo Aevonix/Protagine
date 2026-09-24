@@ -244,10 +244,10 @@ split and episode ids are frozen into the plan, and a run refuses a directory
 whose bytes changed. Generated scenarios may hold body events and `body`
 oracles, so they need an image whose worker runs the body tick. Their `family`
 field groups scenarios (`warranted`, `control`) in reports. The dev family
-`mind-initiative-1` has three warranted templates (overdue promise,
-owner-requested follow-up, an awaited reply that never comes) and four
-controls (already done, the owner said not to, the reply arrived, nothing to
-do); every episode is history turns, a clock advance past the horizon and three
+`mind-initiative-1` has thirteen warranted templates and fifteen controls, one
+per type of the evals taxonomy (section 6.2 of `docs/proto-agi/PROTO-AGI-EVALS.md`;
+the generator README lists them); every episode is history turns, a clock
+advance (past the deadline that counts, or short of one that does not) and body
 ticks with no user turn. Held-out templates are a Python file outside the
 repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated

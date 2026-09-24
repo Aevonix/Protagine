@@ -354,7 +354,8 @@ def test_proof_related_mutations_hold_schema_write_lock(
         assert result["status"] == "fulfilled"
     elif operation == "update":
         result = store.update(commitment["id"], metadata={"replacement": True})
-        assert result["metadata"] == {"replacement": True}
+        assert result["metadata"]["replacement"] is True
+        assert result["metadata"]["resolution"]["outcome"] == "done"
     else:
         assert store.delete(commitment["id"]) is False
 

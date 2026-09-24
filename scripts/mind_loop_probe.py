@@ -9,6 +9,12 @@ the sidecar's API, the ``protagine mind`` CLI and stock ``kanban_db``,
 reporting each item as PASS or FAIL with what it saw. It exits non-zero when
 any item fails.
 
+Every commitment in the list is the assistant's own: the owner asks for
+something by 3pm and the scripted assistant promises it ("I'll send you the
+report rep-1234 by 3pm."), so capture records it with ``metadata.obligor``
+``assistant`` and the duty drive forms a task for the body rather than a
+reminder to the owner (docs/MIND.md).
+
 Mind ticks are forced with ``POST /v1/mind/tick`` so "within 2 ticks" is
 counted exactly; the body (the plugin's thread inside the gateway) runs on
 its own clock, so every body-side effect is awaited with a bound.
@@ -193,8 +199,8 @@ def sidecar_restart(**env) -> None:
 def loop_end_to_end() -> str | None:
     """Commitment -> one task within 2 ticks -> no duplicate after a restart -> outcome with verified -> recalled."""
     token = "rep-" + secrets.token_hex(4)
-    log(f"owner turn: the report {token}")
-    chat(f"I'll send you the report {token} by 3pm. Just acknowledge.")
+    log(f"owner turn: asks for the report {token}; the assistant promises it by 3pm")
+    chat(f"Send me the report {token} by 3pm.")
     captured = wait_for("commitment capture", lambda: [c for c in commitments() if token in (c.get("description") or "")],
                         timeout=120)
     check("commitment captured on a default install", bool(captured),
@@ -246,8 +252,8 @@ def loop_end_to_end() -> str | None:
 def ask_path() -> None:
     """A floor match becomes an ask: one notice with a code, no Hermes object; yes creates the task."""
     inv = "inv-" + secrets.token_hex(4)
-    log(f"owner turn: a payment promise {inv}")
-    chat(f"I'll wire $500 to the vendor for invoice {inv} by 3pm. Just acknowledge.")
+    log(f"owner turn: asks for a payment {inv}; the assistant promises to wire it")
+    chat(f"Wire $500 to the vendor for invoice {inv} by 3pm.")
     captured = wait_for("the payment commitment", lambda: [c for c in commitments() if inv in (c.get("description") or "")],
                         timeout=120)
     check("floor commitment captured", bool(captured))
@@ -297,7 +303,7 @@ def ask_path() -> None:
 
     # The chat path: a second ask answered by the owner typing the code.
     inv2 = "inv-" + secrets.token_hex(4)
-    chat(f"I'll wire $900 to the landlord for invoice {inv2} by 3pm. Just acknowledge.")
+    chat(f"Wire $900 to the landlord for invoice {inv2} by 3pm.")
     if not wait_for("the second payment commitment", lambda: [c for c in commitments() if inv2 in (c.get("description") or "")],
                     timeout=120):
         check("second floor commitment captured", False)
@@ -321,8 +327,8 @@ def expiry_and_unrelated_work() -> None:
     """Silence expires an ask at 72 h (clock shifted on the sidecar) while an unrelated duty proceeds."""
     inv = "inv-" + secrets.token_hex(4)
     minutes = "min-" + secrets.token_hex(4)
-    chat(f"I'll wire $700 to the accountant for invoice {inv} by 3pm. Just acknowledge.")
-    chat(f"I'll send you the minutes {minutes} by 3pm. Just acknowledge.")
+    chat(f"Wire $700 to the accountant for invoice {inv} by 3pm.")
+    chat(f"Send me the minutes {minutes} by 3pm.")
     ok = wait_for("both commitments", lambda: len([c for c in commitments()
                                                   if inv in (c.get("description") or "") or minutes in (c.get("description") or "")]) == 2,
                   timeout=120)
@@ -366,7 +372,7 @@ def digest_verbatim() -> None:
 def off_switch_without_model() -> None:
     """The off switch works with the model endpoint stopped; unstarted mind tasks are archived."""
     minutes = "agn-" + secrets.token_hex(4)
-    chat(f"I'll send you the agenda {minutes} by 3pm. Just acknowledge.")
+    chat(f"Send me the agenda {minutes} by 3pm.")
     if not wait_for("the agenda commitment", lambda: [c for c in commitments() if minutes in (c.get("description") or "")],
                     timeout=120):
         check("agenda commitment captured", False)
@@ -400,16 +406,20 @@ def off_switch_without_model() -> None:
 
 
 def dismissal_lowers_the_multiplier(intention_id: str | None) -> None:
-    """A dismissal lowers the type multiplier; with a single candidate it drops below the act threshold."""
+    """The owner's dismissals lower the type multiplier; with the type turned down, a single new
+    candidate of it drops below the act threshold before authority sees it."""
     if not intention_id:
         check("a dismissal lowers the multiplier", False, "no completed intention to rate")
         return
-    code, out = cli("rate", intention_id, "dismissed")
-    code2, out2 = cli("rate", intention_id, "dismissed")
+    # The multiplier is one contribution per intention and key: a repeated verdict on the same
+    # intention replaces the earlier one, and every approval above nudged the type up. The owner
+    # dismissing each overdue-commitment intention this run formed is what turns the type down.
+    rated = [row["id"] for row in intentions(type="commitment_overdue")] or [intention_id]
+    codes = [cli("rate", row_id, "dismissed")[0] for row_id in rated]
     # A new obligation of the same type (the first report is still an open item, and a repeated
     # mention of an open item is never a second commitment).
     token = "sld-" + secrets.token_hex(4)
-    chat(f"I'll send you the slides {token} by 3pm. Just acknowledge.")
+    chat(f"Send me the slides {token} by 3pm.")
     if not wait_for("the slides commitment", lambda: [c for c in commitments() if token in (c.get("description") or "")],
                     timeout=120):
         check("slides commitment captured", False)
@@ -418,8 +428,9 @@ def dismissal_lowers_the_multiplier(intention_id: str | None) -> None:
     summary = tick()
     formed = [item for item in summary["formed"] if item["type"] == "commitment_overdue"]
     check("a dismissal drops the single candidate below the act threshold",
-          code == 0 and formed == [] and summary.get("below_threshold", 0) >= 1,
-          f"rate rc={code}/{code2}, formed={[(i['type'], i['decision']) for i in summary['formed']]}, "
+          all(code == 0 for code in codes) and formed == [] and summary.get("below_threshold", 0) >= 1,
+          f"{len(rated)} intention(s) rated dismissed (rc={codes}), "
+          f"formed={[(i['type'], i['decision']) for i in summary['formed']]}, "
           f"below_threshold={summary.get('below_threshold')}")
 
 

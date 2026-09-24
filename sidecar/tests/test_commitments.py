@@ -214,3 +214,59 @@ class TestCommitmentDueAtNormalization:
         stored = datetime.fromisoformat(store.get(res["id"])["due_at"])
         assert stored.utcoffset() == timedelta(0)
         assert abs((stored - dt).total_seconds()) < 1
+
+
+class TestCommitmentStoreUpdateDueAtAndMetadata:
+    """update() is the reschedule path: it must store due_at in the same canonical form as
+    create() (get_overdue compares strings), be able to clear it (a hold), and merge metadata so a
+    snooze or reschedule note never drops a deliverable's content or a resolution."""
+
+    def test_update_due_at_is_normalized_like_create(self, store):
+        c = store.create(person_id="owner", description="x")
+        target = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)
+        naive = store.update(c["id"], due_at=target.replace(tzinfo=None).isoformat())
+        assert naive["due_at"] == target.isoformat() and naive["due_at"].endswith("+00:00")
+        plus5 = store.update(c["id"], due_at=target.astimezone(timezone(timedelta(hours=5))).isoformat())
+        assert plus5["due_at"] == target.isoformat()
+
+    def test_update_malformed_due_at_rejected(self, store):
+        c = store.create(person_id="owner", description="x")
+        with pytest.raises(ValueError):
+            store.update(c["id"], due_at="tomorrow-ish")
+        assert store.get(c["id"])["due_at"] is None
+
+    def test_update_past_due_at_is_allowed_and_left_to_the_flip(self, store):
+        c = store.create(person_id="owner", description="x", due_at=_future_dt())
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        moved = store.update(c["id"], due_at=past)
+        assert moved["due_at"] == past and moved["status"] == "pending"
+        assert [r["id"] for r in store.get_overdue()] == [c["id"]]
+
+    def test_clear_due_at_removes_the_deadline(self, store):
+        c = store.create(person_id="owner", description="x", due_at=_future_dt())
+        held = store.update(c["id"], clear_due_at=True)
+        assert held["due_at"] is None and held["status"] == "pending"
+        with pytest.raises(ValueError, match="exclusive"):
+            store.update(c["id"], due_at=_future_dt(), clear_due_at=True)
+
+    def test_moving_or_clearing_the_deadline_reopens_an_overdue_row(self, store):
+        c = store.create(person_id="owner", description="x", due_at=_future_dt())
+        store.update(c["id"], status="overdue")
+        assert store.update(c["id"], due_at=_future_dt())["status"] == "pending"
+        store.update(c["id"], status="overdue")
+        assert store.update(c["id"], clear_due_at=True)["status"] == "pending"
+        # A past deadline keeps an overdue row overdue; an explicit status wins over the reopen.
+        store.update(c["id"], status="overdue")
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        assert store.update(c["id"], due_at=past)["status"] == "overdue"
+        assert store.update(c["id"], due_at=_future_dt(), status="fulfilled")["status"] == "fulfilled"
+
+    def test_update_merges_metadata(self, store):
+        c = store.create(person_id="owner", description="x",
+                         metadata={"kind": "deliverable", "content": "the text", "channel_hint": "sms"})
+        snoozed = store.update(c["id"], due_at=_future_dt(), metadata={"snoozed_by": "agent", "note": "later"})
+        assert snoozed["metadata"] == {"kind": "deliverable", "content": "the text", "channel_hint": "sms",
+                                       "snoozed_by": "agent", "note": "later"}
+        # A repeated key is overwritten, everything else stays.
+        assert store.update(c["id"], metadata={"note": "even later"})["metadata"]["note"] == "even later"
+        assert store.get(c["id"])["metadata"]["content"] == "the text"

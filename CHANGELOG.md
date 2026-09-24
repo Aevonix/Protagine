@@ -1,5 +1,155 @@
 # Changelog
 
+## Unreleased - initiative quality: capture that lands before the mind decides
+
+The self-initiative gate (`docs/proto-agi/PROTO-AGI-EVALS.md` 6.2) came out
+level with a plain heartbeat, and the diagnosis found that most of what it
+counted against the mind never reached the mind's judgement: the last turn's
+commitment extraction was still in flight when the ticks ran, a later message
+that re-timed or closed an item could not touch the row, and a contact turn
+spent its whole iteration budget on tools that could only refuse. This entry
+closes those holes. The tick now drains the capture jobs still pending before
+the drives read the store (`CommitmentExtractor.drain`, bounded to 30 s on a
+forced tick and 5 s on the timer, reported as `capture_drained`), the
+extraction call gets an output budget of 1500 tokens and retries a cut-off or
+unparsable answer at once, and the extractor may act on the person's open
+items as well as create them: the prompt lists them by number with the
+person's previous turns of the last hour as context, and the model answers
+`reschedule` (earlier, later, or with no time as a hold), `complete` or
+`cancel` against that number, applied through `store.update` and
+`store.resolve` with a pointer and wording check. The prompt also states the
+restraint the controls need (a stall changes nothing, a hold is never a
+reminder or a cancel, an event-conditioned item or one with no clear time has
+no deadline, an obligation between other people is not an item) and records a
+heads-up the person asked for as `metadata.heads_up_at`. `store.update`
+normalizes `due_at` the way `create` does, merges metadata instead of
+replacing it, takes `clear_due_at`, and returns an overdue row to `pending`
+when its deadline moves into the future; `PATCH /v1/host/commitments/{id}`
+inherits the normalization (a malformed time is 422) and the merge, so the
+plugin's snooze keeps a deliverable's content.
+
+On the acting side a commitment the owner owes that comes due is a
+`commitment_reminder` message to the owner (the description, the due time,
+how overdue), not a board task, while one the assistant took on ("I'll send
+you the report by 3pm") stays a task the agent performs; the benchmark identity now carries an
+owner handle so the body can address it. A row with a heads-up time raises a
+`commitment_due_soon` message before the deadline, and once that went out the
+overdue reminder for the same row waits `mind.heads_up_grace_minutes` (30).
+An approved intention whose commitment row was removed, put on hold or pushed
+into the future is cancelled as the check's verdict, on the tick and on the
+body's pulls, and while the row stays open its key is given back so the
+obligation is raised again at its new time. The dispatched worker can no
+longer certify its own delivery: the guard blocks
+`protagine_resolve_commitment(fulfilled)` in mind runs, the body's outcome
+report closes the row as `resolved_by: body`, and `evaluate_check` reads an
+open row as "cannot verify" rather than "not achieved". The agent's
+"dismissed" resolves as `obsolete` and appears in the extractor's list of
+closed items, shown as withdrawn rather than as a bad extraction, so a clear
+fresh commitment to the same thing can be recorded again.
+
+The `protagine-memory` provider offers its direct tools on the owner's own
+lane only; a guest session or a channel with no sender binding is offered
+none of them, a call that still arrives is answered once with
+`{"unavailable": true, "retry": false, ...}` (as is `protagine_memory_search`
+with no resolved participant), an empty read on fresh state answers once with
+`{"empty": true, "retry": false, ...}`, `protagine_list_goals` and
+`protagine_get_patterns` are gone from every lane until their host routes
+exist, and `protagine_record_affect` sends a `source` the route accepts
+(it answered 422 on every call). See [docs/HERMES-ADAPTER.md](docs/HERMES-ADAPTER.md).
+
+Instrument, as dated amendments to the pre-registered plan and applied to every
+arm alike: an agent turn that spent its iteration budget but answered no longer
+ends the episode (the report shows `native_turns` per arm), each episode's
+`source_job_counts` also reports the capture queue at shutdown, and the
+`mind-initiative-1` dev family grows to thirteen warranted and fifteen control
+templates covering the 6.2 taxonomy, with the clock advance chosen per
+template. Unprompted messages to a third party the owner named are deferred to
+the people milestone, which builds the contact records and consent they need;
+the dev template for them is expected to fail until then. See
+[docs/MIND.md](docs/MIND.md).
+
+Two measurements from the same campaign are applied here as well. The per-type
+priority feedback counted an intention every time something reported on it: an
+owner rating on top of the implicit verdict compounded, rating twice compounded
+again, and the model's own claim that the owner had approved or acted on an
+initiative boosted the type exactly like an owner verdict.
+`TypeFeedbackStore.record` now takes the intention or initiative the outcome is
+about (`source`) and keeps one contribution per `(type, source)`: the same
+outcome again changes nothing, a different one replaces the earlier
+contribution, and the multiplier is derived by replaying the type's current
+contributions in first-recorded order under the existing 0.5-1.5 clamp, so
+`multiplier()` and the `GET /v1/host/feedback` snapshot keep their shape; a
+store written before contributions were keyed carries its learned multiplier
+over as one baseline contribution the first time it opens.
+`POST /v1/host/initiatives/{id}/respond` records only the disposal it just
+stored (dismissed, snoozed, acknowledged), keyed by the initiative; `approved`
+and `actioned` from the model still update the initiative and its history but
+no longer touch the multiplier, since a boost comes only from the owner
+(`answer yes`, `rate useful`). The router's `llm_router.cost` event never
+reached anything (the call did not match `EventBus.emit`, the error was logged
+at debug, and no router was built with a bus), so the method, the `event_bus`
+parameter and the sentence in `docs/FUNCTION-ROUTING.md` are gone; usage and
+cost stay on `LLMResponse`. The fixed cost the adapter adds to every model
+request, counted with the served model's own tokenizer on the recorded
+benchmark payloads, was 1,870 tokens on the first request of a turn (+33% over
+plain Hermes against a +15% gate): 1,144 of tool schemas, 242 of system text
+and 483 of per-turn context before any recall, with each turn's injection
+replayed as history on every later turn. The `protagine-memory` provider now
+offers only the owner's two writes (`protagine_resolve_commitment`,
+`protagine_record_affect`); its four reads and `protagine_initiative_feedback`
+are removed, because across 244 recorded episodes no read returned anything the
+assembled context did not already carry, and all seven remaining schemas say
+only what the model needs to pick the tool and fill it (12 tools in 1,754
+tokens become 7 in 880). The static reading rules are said once in the
+provider's system block rather than inside every turn's context, the
+`pre_llm_call` hook adds its one-line clock only on turns whose prefetch
+carries none, the "Who I Am" section, the per-turn preamble, the `[priority]`
+tags and an all-idle "Work observed" section are gone, and the temporal brief
+is one `describe_now` line. The provider tells `/v1/host/context/assemble`
+whether Hermes still shows this session's earlier turns (`session_history:
+intact`, `compressed` after a checkpoint), and selection then leaves out that
+session's own quotations and conversation pairs, the one recall that can add
+nothing; the packet default is 4,000 characters (was 6,000) and rendered items
+drop the `display_id` digest. Projected on the same traces the first-request
+delta is +677 tokens (+12 to +13%) under the benchmark's tool exposure and +20
+to +22% with all seven tools registered; the gate itself needs a fresh run.
+`tests/hermes_adapter/test_overhead_budget.py` pins the schemas at 3,400
+characters and the two prompt blocks at 800 so the fixed part cannot regrow
+unnoticed. See [docs/RECALL-HYBRID.md](docs/RECALL-HYBRID.md) and
+[plugins/protagine-memory/README.md](plugins/protagine-memory/README.md).
+
+An independent review of this work found nine defects, each reproduced and each
+now pinned by a test that failed first. An update now has to name the row it
+acts on exactly: its listed wording, and its listed deadline when two open items
+share wording; an ambiguous or empty pointer is ignored and counted rather than
+guessed, for reschedules as well as cancels. Every update is a compare-and-set
+inside the store's write transaction, so an extraction that listed a row which
+the owner or the body changed meanwhile leaves it alone and reruns once against
+the fresh state. A created item records its counterpart, so a turn from that
+contact sees and can move or close the owner's obligation to them, and the
+reverse. Capture jobs run in order per person (an earlier job, including one
+waiting in backoff, holds the person's later ones, in the worker and in the
+tick's drain alike), so a cancellation can no longer finish before the creation
+it cancels; the order is bounded so it cannot become a stall: a job backing off
+after a transport failure holds the person's later jobs for at most 15 s at a
+time, after which the worker retries it early and uncharged (only the scheduled
+attempts spend its three tries), so one failed call costs a person's captures
+seconds rather than its whole backoff. Each item records who owes the work
+(`metadata.obligor`), and only what the owner owes becomes a reminder. The CI
+probes follow the contract: the scripted model answers `commitment_extract` in
+the current shape (`action`, `target`, `listed_due`, `counterpart`, `obligor`)
+for the audited turn only, and the M2 acceptance list has the owner ask for each
+deliverable and the scripted assistant promise it, so what is captured is the
+assistant's own commitment and forms a task. The `protagine-memory` provider's
+standalone fallback for Hermes' recall-skip rule (`is_trivial_prompt`) mirrors
+the host's, and a test checks the two agree against the qualified Hermes. Reminder, overdue and heads-up keys
+carry the schedule they belong to, so a moved deadline earns one new reminder
+and a repeated move earns nothing at the abandoned time; a reschedule shifts an
+absolute heads-up by the same amount. A reminder with no resolvable owner
+handle is refused before it is claimed (`409 no_target`) and goes out once the
+handle resolves, and a message that expires unsent frees its obligation instead
+of losing it. The body grader checks the target of every counted effect.
+
 ## Unreleased - drives, concerns, deliberation and agent-owned goals
 
 One ranked producer replaces the parallel producers of self-initiated work.

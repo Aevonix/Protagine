@@ -305,13 +305,19 @@ def pinned_runtime(runtime, temperature):
 
 
 def source_job_counts(path):
-    """Observe the stopped fixture worker's backlog without altering its leases."""
+    """Observe the stopped fixture worker's backlog without altering its leases.
+
+    Commitment capture is its own queue in the same ledger, one job per turn; a
+    turn whose extraction was still pending or running when the ticks ran is the
+    difference between "the mind declined" and "the mind never saw the item".
+    """
     if not path.is_file():
         return {'status': 'unavailable'}
     try:
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
             counts = dict(conn.execute('SELECT status,count(*) FROM source_claim_jobs GROUP BY status'))
-        return {'status': 'observed', 'counts': counts}
+            capture = dict(conn.execute('SELECT status,count(*) FROM commitment_runs GROUP BY status'))
+        return {'status': 'observed', 'counts': counts, 'commitment_runs': capture}
     except sqlite3.Error:
         return {'status': 'unavailable'}
 
@@ -596,6 +602,7 @@ def main():
                             ticks.append({'index': global_index, 'tick': tick_number, **observed})
                             trace.record('body_tick', ticks[-1])
                     row['completed'] = complete = True
+                    ended = False
                     rows.append(row)
                 else:
                     session_id = entry['session_id']
@@ -612,12 +619,20 @@ def main():
                         trace.record('capture_flush', {'index': global_index, **protagine_flush()})
                     complete = response.get('completed') is True and not any(
                         response.get(k) for k in ('failed', 'partial', 'interrupted'))
+                    # A turn that spent its iteration budget still answers (Hermes hands back
+                    # its summary as the final response). Ending the episode there measured
+                    # the arm's tool surface, not what the body did next, so such a turn is
+                    # recorded as incomplete and the episode goes on; all_native_turns_completed
+                    # stays its own check. A failed, interrupted or silent turn still ends it.
+                    answered = bool(response.get('final_response')) and not any(
+                        response.get(k) for k in ('failed', 'interrupted'))
                     trace.record('native_turn', {'index': global_index, 'session_id': session_id, 'kind': kind,
                         'completed': response.get('completed'), 'failed': response.get('failed'),
                         'partial': response.get('partial'), 'interrupted': response.get('interrupted'),
                         'messages': response.get('messages'), 'final_response': response.get('final_response')})
                     rows.append({'session_id': session_id, 'kind': kind, 'completed': complete,
                                  'final_response': response.get('final_response')})
+                    ended = not complete and not answered
                     if kind == 'inbound' and response.get('final_response'):
                         # A reply to a contact is an outbound message, kept apart from unprompted sends.
                         capture.record(f"{paired_body.PLUGIN}:{entry['inbound']['contact']}",
@@ -630,7 +645,7 @@ def main():
                 result['tool_evidence']['turns_completed'] += int(complete)
                 if workflow_observations is not None:
                     workflow_observations.after_turn(workspace, snapshot_workspace)
-                if not complete:
+                if ended:
                     break
             treatment = observer(agent, response) if observer and agents else {}
             if observer:

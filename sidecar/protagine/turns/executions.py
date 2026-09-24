@@ -255,6 +255,11 @@ def _work_groups(view):
             ('execution', view), ('native_cron', view.get('native_cron', {}))]
 
 
+def has_work_records(view) -> bool:
+    """Whether any reader returned a work record; idle and unavailable readers alone are not context."""
+    return any(group.get('items') or group.get('recent') for _source, group in _work_groups(view) if group)
+
+
 def work_source_coverage(view):
     """Coverage of selected readers, never a count of distinct undertakings.
 

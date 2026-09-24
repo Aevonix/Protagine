@@ -129,7 +129,7 @@ class TestStoreResolve:
                 operation_id="concern-source-operation:" + "b" * 64,
             )
 
-    def test_operation_proof_survives_metadata_replacement_and_blocks_delete(
+    def test_operation_proof_survives_a_metadata_write_and_blocks_delete(
         self, store,
     ):
         c = store.create(person_id="owner", description="x")
@@ -139,14 +139,16 @@ class TestStoreResolve:
             operation_id=operation_id,
         )
         proof = store.get_resolution_operation(c["id"])
-        replaced = store.update(c["id"], metadata={"replacement": True})
-        assert replaced["metadata"] == {"replacement": True}
+        written = store.update(c["id"], metadata={"replacement": True})
+        # A metadata write merges: the resolution record stays next to the new key.
+        assert written["metadata"]["replacement"] is True
+        assert written["metadata"]["resolution"]["outcome"] == "done"
         assert store.get_resolution_operation(c["id"]) == proof
         replay = store.resolve(
             c["id"], outcome="done", note="bound", resolved_by="operator",
             operation_id=operation_id,
         )
-        assert replay["metadata"] == {"replacement": True}
+        assert replay["metadata"] == written["metadata"]
         assert store.delete(c["id"]) is False
         assert store.get(c["id"]) is not None
 
@@ -238,17 +240,20 @@ class TestLearningSignals:
         assert s["introspection"]["outcomes"]["invalid"] == 1
         assert s["cognition"]["open"] == 1
 
-    def test_recent_rejections_only_invalid_and_duplicate(self, store):
+    def test_recent_rejections_are_the_invalid_duplicate_and_obsolete_items(self, store):
         a = store.create(person_id="o", description="bogus item")
         b = store.create(person_id="o", description="twin item")
         c = store.create(person_id="o", description="dropped item")
+        d = store.create(person_id="o", description="stale item")
         store.resolve(a["id"], outcome="invalid", note="never promised")
         store.resolve(b["id"], outcome="duplicate")
         store.resolve(c["id"], outcome="wont_do")
+        # The agent's "dismissed" lands here as obsolete, so a re-mention is not recorded again.
+        store.resolve(d["id"], outcome="obsolete", note="no longer relevant", resolved_by="agent")
         rej = store.recent_rejections(limit=10)
         descs = {r["description"] for r in rej}
-        assert descs == {"bogus item", "twin item"}
-        assert all(r["outcome"] in ("invalid", "duplicate") for r in rej)
+        assert descs == {"bogus item", "twin item", "stale item"}
+        assert all(r["outcome"] in ("invalid", "duplicate", "obsolete") for r in rej)
 
 
 # --- settlement registry ----------------------------------------------------

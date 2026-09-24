@@ -171,11 +171,15 @@ emit(after=after, again=again, why=body.client.get("/v1/mind/why/%s").json())
     assert third["after"]["reconciled"] == 1 and third["again"]["reconciled"] == 0
     row = real.store.get(intention_id)
     assert row.status == "done" and row.outcome == "done" and row.result.startswith("Sent the report")
-    assert row.verified == "check"  # the commitment is still open: the check ran and said not achieved
-    assert row.result_metadata["check"]["passed"] is False and row.result_metadata["run"]["outcome"] == "completed"
+    # Nothing outside the intention verified it (the worker cannot mark the row fulfilled itself), so
+    # the outcome is unverified and the body's report is what closes the commitment.
+    assert row.verified == "none" and "check" not in row.result_metadata
+    assert row.result_metadata["run"]["outcome"] == "completed"
+    commitment, = real.commitments.list(person_id=OWNER, status=["fulfilled"])["commitments"]
+    assert commitment["metadata"]["resolution"]["by"] == "body" and intention_id in commitment["metadata"]["resolution"]["note"]
     why = third["why"]
     assert why["drive"] == "duty" and why["decision"] == "act" and why["hermes_ref"] == task["id"]
-    assert why["outcome"] == "done" and why["verified"] == "check" and why["evidence"]
+    assert why["outcome"] == "done" and why["verified"] == "none" and why["evidence"]
     assert any(item["action"] == "outcome_done" for item in why["history"])
     # The autobiography entry a later session recalls (architecture 4.1).
     references = real.ledger.source_references([f"mind:{intention_id}:outcome_done"], contact_id=OWNER,

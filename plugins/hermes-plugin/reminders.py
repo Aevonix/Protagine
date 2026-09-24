@@ -24,15 +24,14 @@ ENDPOINT = "/v1/host/memory/sources/deadline"
 JOB_NAME = "Remembered deadline"
 SCHEMA = {
     "name": "protagine_reminder",
-    "description": "Remind the owner about a recalled deadline. Schedule uses an exact recalled source "
-                   "revision and claim id; lead_seconds schedules before the deadline. Inspect or cancel "
-                   "by the returned job_id. Use cronjob_manage for schedules unrelated to memory.",
+    "description": "Remind the owner of a recalled deadline: schedule by its exact source_id, source_version and "
+                   "claim_id, lead_seconds ahead; inspect or cancel by job_id. Unrelated schedules use "
+                   "cronjob_manage.",
     "parameters": {"type": "object", "properties": {
         "operation": {"type": "string", "enum": ["schedule", "inspect", "cancel"]},
-        "source_id": {"type": "string"}, "source_version": {"type": "string"},
-        "claim_id": {"type": "string"}, "job_id": {"type": "string"},
-        "lead_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000}},
-        "required": ["operation"], "additionalProperties": False},
+        "source_id": {"type": "string"}, "source_version": {"type": "string"}, "claim_id": {"type": "string"},
+        "job_id": {"type": "string"}, "lead_seconds": {"type": "integer"}},
+        "required": ["operation"]},
 }
 
 

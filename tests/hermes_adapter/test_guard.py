@@ -171,6 +171,24 @@ emit(spaced=check("cronjob_manage", {"action": " CREATE ", **create, "deliver": 
         assert result[name]["action"] is None, name
 
 
+def test_a_mind_run_cannot_certify_its_own_commitment(home, sidecar):
+    """The dispatched worker may dismiss or snooze a commitment with a reason, never mark it fulfilled:
+    the body's outcome report closes the row. The owner's own session keeps the tool."""
+    call = 'check("protagine_resolve_commitment", {"commitment_id": "c-01", "action": %r, "reason": "x", "new_due_at": "2030-01-01T00:00:00+00:00"}%s)'
+    result = probe(GUARD_CODE + '''
+emit(fulfilled=%s, spaced=%s, dismissed=%s, snoozed=%s)
+''' % (call % ("fulfilled", ""), call % (" Fulfilled ", ""), call % ("dismissed", ""), call % ("snoozed", "")),
+                   home, env=worker_env(home))
+    assert result["fulfilled"]["action"] == "block" and "own commitment" in result["fulfilled"]["message"]
+    assert result["spaced"]["action"] == "block"
+    assert result["dismissed"]["action"] is None and result["snoozed"]["action"] is None
+    owner = probe(GUARD_CODE + '''
+o = owner()
+emit(fulfilled=%s)
+''' % (call % ("fulfilled", ", o")), home)
+    assert owner["fulfilled"]["action"] is None
+
+
 def test_effects_block_when_the_sidecar_goes_away_after_a_warm_cache(home, sidecar):
     """Evals test 9 with a warm cache: the first effect learnt that this sidecar has no mind routes;
     the sidecar then disappears and the next effect must still be refused, reads still run."""

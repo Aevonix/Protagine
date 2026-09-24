@@ -54,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
         "breaker": {"failures": 3, "window_hours": 24, "demotion_hours": 72},
         "act_threshold": 0.6,   # the ranker's effective-score floor (architecture 3.2)
         "digest_hour": 8,       # local hour after which the daily digest goes out
+        "heads_up_grace_minutes": 30,   # after a heads-up went out, the overdue reminder for that row waits this long
         # Drive weights: 0 turns a drive off (architecture 4.5).
         "drives": {"duty": 1.0, "social": 0.5, "curiosity": 0.5, "mastery": 1.0, "upkeep": 1.0},
         # One binary flag per faculty; each is one benchmark arm (architecture 4, evals section 3).
@@ -203,6 +204,10 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
         raise ConfigError("mind.digest_hour must be an hour of the day") from None
     if not 0 <= mind["digest_hour"] <= 23:
         raise ConfigError("mind.digest_hour must be between 0 and 23")
+    grace = mind.get("heads_up_grace_minutes", 30)
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)) or grace < 0:
+        raise ConfigError("mind.heads_up_grace_minutes must be a non-negative number of minutes")
+    mind["heads_up_grace_minutes"] = float(grace)
     return data
 
 

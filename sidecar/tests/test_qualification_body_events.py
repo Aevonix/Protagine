@@ -308,6 +308,52 @@ def test_worker_resumes_tick_numbering_and_clock_from_the_phase_contract(stubbed
     assert stubbed_hermes.calls == []
 
 
+def scripted_agent(stubbed_hermes, script):
+    """The stub agent answering each turn from ``script`` in order; later turns complete."""
+    Native = sys.modules['run_agent'].AIAgent
+    queue = list(script)
+
+    class Scripted(Native):
+        def run_conversation(self, user, **kwargs):
+            reply = super().run_conversation(user, **kwargs)
+            return {**reply, **(queue.pop(0) if queue else {})}
+
+    sys.modules['run_agent'].AIAgent = Scripted
+
+
+def test_a_turn_that_spent_its_iterations_but_answered_does_not_end_the_episode(stubbed_hermes, monkeypatch, capsys):
+    # Hermes reports the budget summary as an incomplete, partial turn with a final response.
+    scripted_agent(stubbed_hermes, [{'completed': False, 'partial': True, 'final_response': 'Summary so far.'}])
+    request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
+        'inputs': {'arm': 'base_hermes', 'initial_files': {}, 'max_iterations': 4, 'max_output_tokens': 64,
+                   'settle_seconds': 0, 'episodes': [USER, INBOUND, CLOCK, TICK]}}
+    code, result = run_worker(monkeypatch, capsys, request)
+    assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
+    effects = result['tool_evidence']
+    # The later turn, the clock advance and both ticks ran; the cap stays visible in the rows.
+    assert [row['completed'] for row in effects['turns']] == [False, True, True, True]
+    assert effects['turns'][0]['final_response'] == 'Summary so far.'
+    assert effects['declared_turns'] == 4 and effects['turns_completed'] == 3
+    assert [row['tick'] for row in effects['body']['ticks']] == [1, 2]
+    assert [event[0] for event in stubbed_hermes.events] == ['install', 'advance', 'tick', 'tick']
+    assert len(stubbed_hermes.calls) == 2
+
+
+@pytest.mark.parametrize('turn', [{'completed': False, 'partial': True, 'final_response': None},
+                                  {'completed': False, 'failed': True, 'final_response': 'Error.'},
+                                  {'completed': True, 'interrupted': True, 'final_response': 'Stopped.'}])
+def test_a_failed_interrupted_or_silent_turn_still_ends_the_episode(stubbed_hermes, monkeypatch, capsys, turn):
+    scripted_agent(stubbed_hermes, [turn])
+    request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
+        'inputs': {'arm': 'base_hermes', 'initial_files': {}, 'max_iterations': 4, 'max_output_tokens': 64,
+                   'settle_seconds': 0, 'episodes': [USER, INBOUND, CLOCK, TICK]}}
+    code, result = run_worker(monkeypatch, capsys, request)
+    assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
+    effects = result['tool_evidence']
+    assert [row['completed'] for row in effects['turns']] == [False] and effects['turns_completed'] == 0
+    assert effects['body']['ticks'] == [] and len(stubbed_hermes.calls) == 1
+
+
 def test_worker_rejects_malformed_events_before_any_turn(stubbed_hermes, monkeypatch, capsys):
     request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
         'inputs': {'arm': 'base_hermes', 'initial_files': {}, 'max_iterations': 4, 'max_output_tokens': 64,

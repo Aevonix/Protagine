@@ -92,12 +92,10 @@ def evaluate_check(check: Any, *, commitments: Any = None, followups: Any = None
         row = commitments.get(str(check["commitment_id"]))
         if row is None:
             return None
-        status = row.get("status")
-        if status == "fulfilled":
-            return True
-        if status in {"pending", "overdue"}:
-            return False
-        return None
+        # Only a resolution from outside the intention (the owner, the conversation) verifies it:
+        # the worker cannot close the row itself, and the body's report closes it after this check
+        # runs, so an open row says nothing about whether the work was done.
+        return True if row.get("status") == "fulfilled" else None
     if kind == "reply_recorded":
         if followups is None or not check.get("wait_id"):
             return None
@@ -296,6 +294,8 @@ class Outcomes:
     # -- helpers -------------------------------------------------------------------------
 
     def _feedback(self, row: Optional[StoredInitiative], verdict: str) -> None:
+        """One contribution per intention and key: a later verdict on the same intention replaces
+        the earlier one (an owner rating after an implicit verdict), it never adds to it."""
         if row is None or self.feedback is None:
             return
         outcome = {"useful": "actioned", "not_useful": "dismissed", "wrong": "dismissed"}.get(verdict, verdict)
@@ -304,7 +304,7 @@ class Outcomes:
             keys.append(f"reach_out:{row.entity_id}")
         for key in keys:
             try:
-                self.feedback.record(key, outcome)
+                self.feedback.record(key, outcome, source=row.id)
             except Exception as error:
                 logger.warning("feedback not recorded for %s (%s)", key, type(error).__name__)
 

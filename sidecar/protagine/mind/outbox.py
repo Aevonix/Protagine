@@ -60,7 +60,9 @@ class Outbox:
         """Messages the body may send now; nothing while the mind is off.
 
         During quiet hours only the digest goes out (it is scheduled outside
-        them anyway); everything else waits for the next tick.
+        them anyway); everything else waits for the next tick. A message
+        unsent past its window is the mind's to expire (``Mind._expire_messages``,
+        before every pull and tick), through the same settle path as a task.
         """
         if not enabled:
             return []
@@ -76,24 +78,32 @@ class Outbox:
         rows = self.store.intentions(status=["approved"], kind=["message"], limit=200)
         ready = []
         for row in sorted(rows, key=lambda item: item.created_at):
-            if row.expires_at and row.expires_at < now:
-                self.store.transition(row.id, "expired", action="expired", outcome="expired",
-                                      details={"reason": "unsent before expiry"}, at=now)
-                continue
             if quiet and row.type != "digest":
                 continue
             ready.append(message_payload(row, owner_id=self.owner_id))
         return ready
 
     def sending(self, intention_id: str, *, target: str | None = None) -> Optional[StoredInitiative]:
-        """The body's claim before it sends; only a ready (``approved``) message can be claimed."""
+        """The body's claim before it sends: only a ready (``approved``) message, and only for a
+        target the body resolved. A claim that names no target is not a claim: the body found no
+        handle to send to, so the message stays ready (noted once as ``unroutable``) and is offered
+        again at the next pull with the recipient's handles read afresh. Only a delivery the body
+        attempted can end ``failed``."""
         row = self.store.get(intention_id)
         if row is None or row.kind != "message" or row.status not in {"approved", "sending"}:
             return None
         if row.status == "sending":
             return row
+        now = self.clock()
+        if not str(target or "").strip():
+            # Noted once per row, not once per pull: a message that gains a target moves on to
+            # ``sending`` and never comes back here.
+            if not any(item.action == "unroutable" for item in self.store.get_history(intention_id, limit=100)):
+                self.store.transition(intention_id, "approved", action="unroutable", at=now,
+                                      details={"reason": "the body has no handle to send this to; it stays ready"})
+            return None
         return self.store.transition(intention_id, "sending", action="sending", hermes_kind="message",
-                                     details={"target": target} if target else None, at=self.clock())
+                                     details={"target": target}, at=now)
 
     def sent(self, intention_id: str, *, result: str = "sent", hermes_ref: str | None = None,
              summary: str = "", error: str | None = None) -> Optional[StoredInitiative]:

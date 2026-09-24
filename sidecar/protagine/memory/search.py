@@ -11,6 +11,10 @@ from .recall import source_candidates, contact_fact_candidates, pack_memory_cont
 
 logger = logging.getLogger(__name__)
 
+# The packet rides in the user turn and Hermes replays it as history on every later turn, so the
+# default budget is what a few excerpts need, not the 6,000 characters the first cut allowed.
+DEFAULT_RECALL_CHARS = 4000
+
 
 @dataclass
 class CollectedSources:
@@ -67,11 +71,16 @@ async def collect_sources(ledger, *, query: str, contact_id: str, session_id: st
 
 async def select_memory(collected: CollectedSources, *, query: str, selector,
                         contact_facts=None, contact_facts_allowed=False,
-                        timezone_name=None, current_work_available=False, limit=5) -> MemoryPacket:
+                        timezone_name=None, current_work_available=False, limit=5,
+                        session_history=None) -> MemoryPacket:
     """Apply the existing projections, corrections, ranking and shared budget once.
 
     The caller supplies an authenticated audience and an optional projected
     contact fact view. All source candidates come from the canonical ledger.
+    ``session_history="intact"`` says the host still shows this session's own
+    turns verbatim: quoting them back is the one recall that can add nothing,
+    so those quotations and conversation pairs are left out (derived claims,
+    media and other sessions' evidence stay).
     """
     from protagine.beliefs.source_time import interpret_time_query, filter_unstructured
     from protagine.util import temporal
@@ -96,6 +105,10 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
         quotations.extend(filter_unstructured(list(media_by_id.values()), time_query))
     else:
         beliefs = filter_unstructured(beliefs, time_query)
+    if session_history == 'intact' and collected.session_id:
+        quotations = [row for row in quotations
+                      if not (row.get('session_id') == collected.session_id
+                              and row.get('kind') in ('source_quote', 'conversation_pair'))]
     facts_status = 'not_in_scope' if not contact_facts_allowed else 'unavailable'
     if contact_facts_allowed and contact_facts is not None:
         try:
@@ -106,9 +119,9 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
         except Exception as exc:
             logger.warning('Contact fact candidates unavailable (%s)', type(exc).__name__)
     try:
-        max_chars = int(os.environ.get('PROTAGINE_RECALL_CONTEXT_MAX_CHARS', '6000'))
+        max_chars = int(os.environ.get('PROTAGINE_RECALL_CONTEXT_MAX_CHARS', str(DEFAULT_RECALL_CHARS)))
     except (TypeError, ValueError):
-        max_chars = 6000
+        max_chars = DEFAULT_RECALL_CHARS
     max_chars = max(0, min(max_chars, 24000))
     if ledger is not None:
         from protagine.turns.source_annotations import expand, current_candidates

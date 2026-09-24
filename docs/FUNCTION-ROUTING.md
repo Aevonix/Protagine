@@ -163,10 +163,9 @@ Function routing validates final text before accepting a completion. Empty,
 reasoning-only and truncated responses can use the next eligible candidate
 within the same request budget. A requested tool turn remains valid; it does
 not count as final text for a consumer that needs an answer to persist. Failed
-output validation does not put the endpoint into a shared cooldown, and cost
-events still account for its completed inference. This adds neither a retry
-of the same candidate nor another time allowance. The direct legacy tier API
-retains its existing compatibility behavior.
+output validation does not put the endpoint into a shared cooldown. This adds
+neither a retry of the same candidate nor another time allowance. The direct
+legacy tier API retains its existing compatibility behavior.
 
 Calls and metadata reads check the configuration file's inode, size and mtime.
 A changed file is parsed and validated into a separate snapshot, then published

@@ -333,18 +333,23 @@ def describe_now(agent_tz: Optional[str] = None,
                  contact_tz: Optional[str] = None,
                  contact_label: str = "the contact", *,
                  override_tz: Optional[str] = None) -> str:
-    """One instant in explicitly labeled frames, without inferring location."""
+    """One instant in explicitly labeled frames, without inferring location.
+
+    Sent with every turn and replayed as history, so it is as short as the
+    frames allow: the UTC instant, the agent's zone when it differs, the
+    contact's recorded zone when there is one, an override when given."""
     atz = agent_tz or agent_timezone()
     captured = now_utc()
     def clock(tz):
         return to_zone(captured, tz).isoformat(timespec="seconds")
-    lines = [f"Captured UTC: {clock('UTC')}.",
-             f"Agent reference ({atz}): {clock(atz)}."]
+    parts = [f"Now: {clock('UTC')} UTC"]
+    if atz and atz not in ("UTC", "Etc/UTC"):
+        parts.append(f"agent zone {atz}: {clock(atz)}")
     if is_valid_timezone(contact_tz):
-        lines.append(f"Recorded timezone for {contact_label} ({contact_tz}): {clock(contact_tz)}.")
-        lines.append("A recorded timezone is not evidence of the contact's current location.")
+        parts.append(f"{contact_label}'s recorded zone {contact_tz}: {clock(contact_tz)} (a recorded zone is not "
+                     "evidence of current location)")
     else:
-        lines.append("Contact timezone: not recorded. Current location: unknown.")
+        parts.append(f"{contact_label}'s zone and location unknown")
     if is_valid_timezone(override_tz):
-        lines.append(f"Communication override ({override_tz}): {clock(override_tz)}.")
-    return "\n".join(lines)
+        parts.append(f"communication override {override_tz}: {clock(override_tz)}")
+    return "; ".join(parts) + "."

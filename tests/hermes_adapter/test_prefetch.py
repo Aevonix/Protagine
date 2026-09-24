@@ -25,7 +25,8 @@ emit(name=provider.name, url=provider.sidecar_url, key=provider._api_key, contex
     assert CANARY in result["context"] and "shared facts" in result["context"]
     assert "## Current Time" in result["context"]
     assert result["writer"] is False  # the general plugin owns capture
-    assert "protagine_claim_task" not in result["tools"] and "protagine_check_commitments" in result["tools"]
+    assert "protagine_claim_task" not in result["tools"] and "protagine_resolve_commitment" in result["tools"]
+    assert "Persistent state" not in result["context"] and "[priority" not in result["context"]  # no per-turn preamble
     call, = sidecar.calls("/v1/host/context/assemble", "POST")
     assert call["authorization"] == f"Bearer {API_KEY}"
     assert call["json"]["context"]["contact_id"] == OWNER and "audience" not in call["json"]
@@ -71,11 +72,37 @@ emit(writer=provider._turn_writer_enabled())
     assert call["json"]["user_message"]["content"] == "remember X"
 
 
-def test_guest_direct_read_tools_are_withheld(home, sidecar):
+def test_guest_direct_tools_are_withheld(home, sidecar):
+    """A guest turn is offered no direct tool; a call that still arrives is refused once, terminally."""
     result = probe('''
 tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_id="session-1")
-guest = json.loads(provider.handle_tool_call("protagine_get_facts", {}))
+guest = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.1, "arousal": 0.1}))
+guest_tools = [s["name"] for s in provider.get_tool_schemas()]
 clear_session_vars(tokens)
-emit(guest=guest)
+tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="1001", session_id="session-2")
+owner_tools = [s["name"] for s in provider.get_tool_schemas()]
+clear_session_vars(tokens)
+emit(guest=guest, guest_tools=guest_tools, owner_tools=owner_tools)
 ''', home, prelude=PROVIDER_PRELUDE)
-    assert "owner-only" in result["guest"]["error"]
+    assert result["guest"] == {"unavailable": True, "retry": False, "reason": result["guest"]["reason"]}
+    assert "owner-only" in result["guest"]["reason"]
+    assert result["guest_tools"] == []
+    assert set(result["owner_tools"]) == {"protagine_record_affect", "protagine_resolve_commitment"}
+    assert not any(call["path"].startswith("/v1/host/affect") for call in sidecar.requests)
+
+
+def test_unbound_channel_session_is_built_without_direct_tools(home, sidecar):
+    """A provider initialised for a real channel with no sender (an inbound the gateway could not
+    bind) hands Hermes no direct tool at agent build time, so none can burn the turn's iterations."""
+    result = probe('''
+from plugins.memory import load_memory_provider
+unbound = load_memory_provider("protagine-memory")
+unbound.initialize("session-9", hermes_home=os.environ["HERMES_HOME"], platform="capture")
+emit(tools=[s["name"] for s in unbound.get_tool_schemas()],
+     call=json.loads(unbound.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c", "action": "fulfilled"})),
+     cli_tools=[s["name"] for s in provider.get_tool_schemas()])
+''', home, prelude=PROVIDER_PRELUDE)
+    assert result["tools"] == []
+    assert result["call"]["unavailable"] is True and result["call"]["retry"] is False
+    assert "protagine_resolve_commitment" in result["cli_tools"]
+    assert "protagine_list_goals" not in result["cli_tools"] and "protagine_get_patterns" not in result["cli_tools"]

@@ -220,7 +220,7 @@ async def test_turning_a_drive_off_cancels_its_waiting_work_including_goal_steps
     assert summary["formed"] == [] and summary["drives"]["levels"]["curiosity"] == 0.0
     assert fx.store.get(goal_row.id).status == "cancelled"
     assert fx.store.get(notice.id).status == "approved"                     # reporting is not drive work
-    assert [item["id"] for item in fx.mind.outbox_ready()] == [notice.id]
+    assert [item["id"] for item in await fx.mind.outbox_ready()] == [notice.id]
 
 
 async def test_without_a_router_the_research_task_is_a_template_and_deliberation_off_never_calls(fx):
@@ -524,13 +524,13 @@ async def test_off_switch_mid_episode_leaves_no_new_effects(fx):
     calls = len(router.calls)
 
     fx.mind.off(reason="mid-episode")
-    assert fx.mind.dispatch() == [] and fx.mind.outbox_ready() == []
+    assert fx.mind.dispatch() == [] and await fx.mind.outbox_ready() == []
     fx.shift(hours=1)
     fx.commitments.create(person_id=OWNER, description="another obligation",
                           due_at=(fx.now - timedelta(minutes=1)).isoformat())
     for summary in await idle(fx, 3):
         assert summary["skipped"] == "off" and summary["formed"] == [] and summary["model_calls"] == 0
-    assert len(router.calls) == calls and fx.mind.dispatch() == [] and fx.mind.outbox_ready() == []
+    assert len(router.calls) == calls and fx.mind.dispatch() == [] and await fx.mind.outbox_ready() == []
     assert fx.store.count() == before + 1                                   # only the off-switch audit row
     assert fx.mind.concerns.count("open") == 1                              # the waiting concern is untouched
     guard = await fx.mind.guard(tool="kanban_create", args={"assignee": "protagine-act"}, run="mind")
@@ -578,7 +578,7 @@ async def test_duty_reads_hermes_goals_and_stale_tasks_from_the_board_observatio
     summary, = await idle(fx)
     assert sorted(item["type"] for item in summary["formed"]) == ["goal_stalled", "stale_task"]
     assert all(item["drive"] == "duty" and item["kind"] == "message" for item in summary["formed"])
-    ready = fx.mind.outbox_ready()
+    ready = await fx.mind.outbox_ready()
     assert {item["recipient"] for item in ready} == {OWNER}
     assert any("finish the site" in item["text"] for item in ready)
 

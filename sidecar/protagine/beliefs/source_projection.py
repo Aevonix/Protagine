@@ -1071,11 +1071,12 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     judgments = SelfJudgments(ledger, owner_id=get_owner_contact_id())
     from protagine.self_model.appraisals import AppraisalStore
     appraisals = AppraisalStore(ledger, owner_id=get_owner_contact_id())
-    from protagine.commitments.extract import CommitmentExtractor
+    from protagine.commitments.extract import CommitmentExtractor, contact_aliases
+    from protagine.api.routers import host as _host
     if commitments_provider is None:
-        from protagine.api.routers import host as _host
         commitments_provider = lambda: _host._commitment_store  # noqa: E731
-    commitment_extractor = CommitmentExtractor(ledger, commitments_provider)
+    commitment_extractor = CommitmentExtractor(ledger, commitments_provider,
+                                               aliases=contact_aliases(lambda: _host._contacts_store))
     from protagine.turns.media import SourceMedia
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors

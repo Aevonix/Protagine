@@ -1,11 +1,12 @@
 """The mind tick: one ranked producer of self-initiated work (architecture 3.2).
 
 Every tick: the timers (ask expiry, deferred intentions, expectations,
-retention, the nightly backup), then decay, the drives over a snapshot of
-stored state, the concerns they raise, reconsideration of active intentions
-on matching events, the goals, and the top concerns ranked into
-intentions: a template, or one tool-less deliberation call per tick, then
-the authority decision and the intention row.
+retention, the nightly backup), a bounded drain of the capture jobs still
+pending (a promise made seconds ago must be a row before the drives look),
+then decay, the drives over a snapshot of stored state, the concerns they
+raise, reconsideration of active intentions on matching events, the goals,
+and the top concerns ranked into intentions: a template, or one tool-less
+deliberation call per tick, then the authority decision and the intention row.
 
 The body pulls the dispatch queue and the outbox from the router in
 ``P/api/routers/mind.py``; when its last pull is older than five minutes the
@@ -16,6 +17,7 @@ without the model endpoint: it is a marker file and an in-memory flag.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -58,6 +60,12 @@ MESSAGING_TOOLS = frozenset({"send_message", "react_to_message", "discord", "dis
 THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
 DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True}
+# How long a tick waits for capture jobs still pending before the drives read the store: a
+# forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
+DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
+# Intention types formed because a commitment row was due; a deadline that moves back into the
+# future, or away, makes them stale.
+DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable"})
 
 
 def split_target(target: str) -> tuple[str, str]:
@@ -109,7 +117,7 @@ class Mind:
                  interval: float = 60.0, backups: bool = True, timezone_name: str | None = None,
                  persist: Callable[[Dict[str, Any]], None] | None = None, router: Any = None,
                  appraisals: Any = None, interests: Iterable[str] = (), concerns: Concerns | None = None,
-                 backlog: Callable[[], Mapping[str, int]] | None = None) -> None:
+                 backlog: Callable[[], Mapping[str, int]] | None = None, capture: Any = None) -> None:
         mind = dict(config or {})
         self.config = mind
         self.policy = Policy.from_config(mind)
@@ -117,6 +125,13 @@ class Mind:
         self.state_dir = Path(state_dir)
         self.owner_id = owner_id or None
         self.commitments = commitments
+        self.capture = capture      # the CommitmentExtractor over the same ledger, drained before each decision
+        self.drain_forced_s, self.drain_timer_s = DRAIN_FORCED_S, DRAIN_TIMER_S
+        try:
+            grace = float(mind.get("heads_up_grace_minutes", drive_functions.HEADS_UP_GRACE.total_seconds() / 60))
+        except (TypeError, ValueError):
+            grace = drive_functions.HEADS_UP_GRACE.total_seconds() / 60
+        self.heads_up_grace = timedelta(minutes=max(0.0, grace))
         self.followups = followups
         self.feedback = feedback
         self.expectations = expectations
@@ -335,7 +350,7 @@ class Mind:
                 summary["skipped"] = "off"
                 summary["expired_asks"] = self._expire_asks(now)
                 return summary
-            summary["expired_asks"] = self._expire_asks(now)
+            summary["expired_asks"] = self._expire_asks(now) + self._expire_messages(now)
             summary["invalidated"] = self._invalidate(now)
             summary["expectations"] = self._resolve_expectations(now)
             summary["retention"] = self._retention(now)
@@ -345,6 +360,7 @@ class Mind:
                 return summary
             self.deliberation.begin_tick()
             summary["reconsidered"] = await self._reconsider(now)
+            summary["capture_drained"] = await self._drain_capture(force)
             summary["overdue_flipped"] = self._flip_overdue(now)
             self.mind_state.decay(now)
             summary["decay"] = self.concerns.decay(now)
@@ -373,12 +389,28 @@ class Mind:
                 count += 1
         return count
 
+    def _expire_messages(self, now: datetime) -> int:
+        """A message unsent past its window (the body never pulled, no handle ever resolved) expires
+        through the same settle path as a task, so its concern is dropped rather than left intended,
+        and an open obligation it never reported gets its key back: the reminder forms again at the
+        next tick instead of being lost until the deadline moves. Not the owner's verdict on anything."""
+        count = 0
+        for row in self.store.intentions(status=["approved"], kind=["message"], limit=500):
+            if row.expires_at and row.expires_at < now:
+                self.outcomes.record(row.id, status="expired", summary="unsent before expiry", by="mind",
+                                     implicit_verdict=False)
+                self._free_open_obligation(row)
+                count += 1
+        return count
+
     def _stale_reason(self, row: StoredInitiative) -> Optional[str]:
         """Why an intention still waiting should not act: its obligation resolved itself
         (``invalidates_if``), the owner turned its drive off (weight 0), or the goal it is a
         step of is no longer open. Notices, the digest and messages other subsystems asked
         for are the mind's reporting, not a drive's work: a weight of 0 does not cancel them."""
         reason = invalidation_reason(row.invalidates_if, commitments=self.commitments, followups=self.followups)
+        if reason is None and row.source_type == "commitment" and row.source_id and self.commitments is not None:
+            reason = self._commitment_stale_reason(row)
         drive_work = row.type not in audit.NOTICE_TYPES and not str(row.type or "").startswith("reach_out:")
         if reason is None and drive_work and row.drive in DRIVES and float(self.drive_weights.get(row.drive, 1.0)) <= 0:
             reason = f"the {row.drive} drive is off"
@@ -388,14 +420,63 @@ class Mind:
                 reason = f"goal {row.parent_goal_id} is {goal.status if goal is not None else 'gone'}"
         return reason
 
+    def _commitment_stale_reason(self, row: StoredInitiative) -> Optional[str]:
+        """Why an intention about a commitment row no longer fits the row: the row is gone, a
+        conversation pushed its deadline out (or put it on hold) after the intention was approved,
+        or a heads-up came due before it went out. ``dispatch`` and the outbox check this too, so
+        a push-out is safe across ticks."""
+        ident = str(row.source_id)
+        try:
+            record = self.commitments.get(ident)
+        except Exception as error:
+            logger.debug("commitment %s unavailable (%s)", ident, type(error).__name__)
+            return None
+        if not isinstance(record, dict):
+            return f"commitment {ident} was removed"
+        now = self.clock()
+        due = _utc(record.get("due_at"))
+        if row.type in DUE_TYPES:
+            if due is None:
+                return f"commitment {ident} no longer has a deadline"
+            if due > now:
+                return f"commitment {ident} is no longer due (now due {due.isoformat()})"
+        elif row.type == "commitment_due_soon":
+            if due is None or due <= now:
+                return f"commitment {ident} is already due"
+            warn_at = drive_functions.heads_up_at(record, due)
+            if warn_at is None or warn_at > now:
+                return f"commitment {ident} no longer wants a heads-up now"
+        return None
+
     def _invalidated(self, row: StoredInitiative) -> bool:
         """Cancel an intention whose justification is gone (the check's cancellation, not a dismissal)."""
         reason = self._stale_reason(row)
         if reason is None:
             return False
+        self._cancel_stale(row, reason)
+        return True
+
+    def _cancel_stale(self, row: StoredInitiative, reason: str) -> None:
         self.outcomes.record(row.id, status="cancelled", summary=f"invalidated: {reason}", verified="check",
                              by="mind", implicit_verdict=False)
-        return True
+        self._free_open_obligation(row)
+
+    def _free_open_obligation(self, row: StoredInitiative) -> None:
+        """An intention about a commitment that is still open and was never reported (a push-out, a
+        hold, a heads-up that came due, a message that expired unsent) gives its key back, so the
+        obligation competes again at its time. A resolved obligation keeps its key: reported once
+        (architecture 3.3)."""
+        if row.dedup_key and row.source_type == "commitment" and self._commitment_open(row.source_id):
+            self.store.update(row.id, dedup_key=None)
+
+    def _commitment_open(self, ident: Any) -> bool:
+        if self.commitments is None or not ident:
+            return False
+        try:
+            record = self.commitments.get(str(ident))
+        except Exception:
+            return False
+        return isinstance(record, dict) and record.get("status") in {"pending", "overdue"}
 
     def _invalidate(self, now: datetime) -> int:
         """Every tick: an intention still waiting (deferred, asked or approved) whose source is
@@ -510,6 +591,24 @@ class Mind:
                     logger.debug("overdue flip skipped for %s (%s)", row.get("id"), type(error).__name__)
         return flipped
 
+    async def _drain_capture(self, force: bool) -> Optional[Dict[str, Any]]:
+        """Land the capture jobs still pending before the drives read the store.
+
+        Capture is asynchronous (one router call per turn on the projection
+        worker), so a promise made seconds before a tick may not be a row yet;
+        deciding over the store then means deciding without it. The drain is
+        bounded, and a job leased elsewhere is only waited for.
+        """
+        if self.capture is None:
+            return None
+        budget = self.drain_forced_s if force else self.drain_timer_s
+        try:
+            result = await self.capture.drain(self.router, budget_seconds=budget)
+        except Exception as error:
+            logger.warning("capture drain failed (%s)", type(error).__name__)
+            return {"error": type(error).__name__, "budget_seconds": budget}
+        return {**dict(result or {}), "budget_seconds": budget}
+
     # -- the drives: a snapshot of stored state, then concerns -------------------------------
 
     def _gather(self, now: datetime) -> DriveInputs:
@@ -521,6 +620,17 @@ class Mind:
                                           .get("commitments", []))
             except Exception as error:
                 logger.warning("commitments unavailable (%s)", type(error).__name__)
+        inputs.heads_up_grace = self.heads_up_grace
+        for row in inputs.commitments:
+            # A heads-up that went out holds the overdue reminder for the grace (one word at a time).
+            due = _utc(row.get("due_at"))
+            if due is None or drive_functions.heads_up_at(row, due) is None:
+                continue
+            sent = self.store.get_by_dedup_key(drive_functions.schedule_key(row["id"], "heads_up", due))
+            if sent is not None and sent.status in {"sent", "sending", "uncertain"}:
+                went_out = _utc(sent.completed_at) or _utc(sent.created_at)
+                if went_out is not None:
+                    inputs.heads_ups[str(row["id"])] = went_out
         if self.followups is not None:
             try:
                 inputs.reply_waits = list(self.followups.due(now=now.timestamp(), limit=100))
@@ -658,8 +768,7 @@ class Mind:
             reason = self._stale_reason(row)
             decision = Deliberation.reconsider(row, concern, invalidated=reason)
             if decision == "cancel":
-                self.outcomes.record(row.id, status="cancelled", summary=f"invalidated: {reason}", verified="check",
-                                     by="mind", implicit_verdict=False)
+                self._cancel_stale(row, str(reason))
             elif decision == "refresh" and concern is not None:
                 self.store.transition(row.id, row.status, action="reconsidered", at=now,
                                       details={"event": row.dedup_key, "decision": decision},
@@ -920,10 +1029,12 @@ class Mind:
             self.store.update(row.id, expectation_id=prediction.prediction_id)
 
     def _on_settled(self, row: StoredInitiative, outcome: str, check_result: Optional[bool]) -> None:
-        """An outcome settles its concern and satiates its drive (architecture 3.1, 4.5)."""
+        """An outcome settles its concern and satiates its drive (architecture 3.1, 4.5); a finished
+        commitment intention also closes the commitment it was raised for."""
         concern = self.concerns.by_intention(row.id)
         now = self.clock()
         if outcome == "done":
+            self._close_commitment(row)
             if concern is not None:
                 self.concerns.resolve(concern.id, note=f"{row.kind} done", now=now)
             if self.faculties["drives"] and row.drive in DRIVES and row.type not in audit.NOTICE_TYPES:
@@ -934,6 +1045,30 @@ class Mind:
                 self.concerns.progress(concern.id, progressed=False, note=str(row.failed_reason or "failed"), now=now)
         elif concern is not None:
             self.concerns.drop(concern.id, note=outcome, now=now)
+
+    def _close_commitment(self, row: StoredInitiative) -> None:
+        """The body's report of a done intention is what settles its commitment. The dispatched
+        worker cannot mark the row fulfilled itself (the plugin guard blocks that), so the
+        resolution names the body and the intention, never the worker's own word."""
+        check = row.success_check
+        if isinstance(check, str):
+            try:
+                check = json.loads(check)
+            except ValueError:
+                return
+        if not isinstance(check, dict) or check.get("kind") != "commitment_resolved" or not check.get("commitment_id"):
+            return
+        resolve = getattr(self.commitments, "resolve", None)
+        if not callable(resolve):
+            return
+        ident = str(check["commitment_id"])
+        try:
+            current = self.commitments.get(ident)
+            if not isinstance(current, dict) or current.get("status") not in {"pending", "overdue"}:
+                return
+            resolve(ident, "done", note=f"intention {row.id}: {row.result or 'done'}", resolved_by="body")
+        except Exception as error:
+            logger.warning("commitment %s not closed for %s (%s)", ident, row.id, type(error).__name__)
 
     # -- digest ----------------------------------------------------------------------------
 
@@ -1025,13 +1160,22 @@ class Mind:
             return self.store.update(intention_id, hermes_ref=str(hermes_ref), hermes_kind=kind)
         return row
 
-    def outbox_ready(self) -> List[Dict[str, Any]]:
+    async def outbox_ready(self) -> List[Dict[str, Any]]:
+        """The messages the body may send now, each re-checked against its source, carrying the
+        recipient's handles as they are at this pull rather than as they were when it formed: a
+        handle added after a message waited unroutable lets it go out on the next pull."""
         self.last_pull_at = self.clock()
+        self._expire_messages(self.last_pull_at)
         ready = []
         for payload in self.outbox.ready(enabled=self.enabled, quiet=self.in_quiet_hours()):
             row = self.store.get(str(payload["id"]))
-            if row is not None and self._invalidated(row):
+            if row is None or self._invalidated(row):
                 continue
+            handles = await self._handles(payload["recipient"])
+            if handles != payload["recipient_handles"]:
+                context = dict(row.context) if isinstance(row.context, dict) else {}
+                self.store.update(row.id, context={**context, "recipient_handles": handles})
+                payload["recipient_handles"] = handles
             ready.append(payload)
         return ready
 
@@ -1097,7 +1241,7 @@ class Mind:
                                         expires_at=now + TASK_WINDOW, details={"by": by, "code": code})
         if self.feedback is not None:
             try:
-                self.feedback.record(f"{row.type}:{row.drive}", "actioned")
+                self.feedback.record(f"{row.type}:{row.drive}", "actioned", source=row.id)
             except Exception:
                 pass
         self.autobiography.record(row.id, "approved", f"The owner approved '{row.description}' (code {code}).")
@@ -1227,5 +1371,6 @@ class Mind:
         return audit.stats(self.store, now=self.clock())
 
 
-__all__ = ["DEFAULT_FACULTIES", "MIND_SECTION_CHARS", "Mind", "OFF_MARKER", "STALE_AFTER", "TASK_WINDOW",
-           "THREADED_PLATFORMS", "WORKER_PROFILE", "faculties_of", "split_target", "task_body"]
+__all__ = ["DEFAULT_FACULTIES", "DRAIN_FORCED_S", "DRAIN_TIMER_S", "DUE_TYPES", "MIND_SECTION_CHARS", "Mind",
+           "OFF_MARKER", "STALE_AFTER", "TASK_WINDOW", "THREADED_PLATFORMS", "WORKER_PROFILE", "faculties_of",
+           "split_target", "task_body"]

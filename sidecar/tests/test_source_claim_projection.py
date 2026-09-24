@@ -171,7 +171,9 @@ async def test_newer_report_does_not_win_and_conflict_is_atomic(source_app, tmp_
     _, rows = projection.prepare_context([], hits, contact_id="contact-a", session_id="s",
         time_query=interpret_time_query("workshop", now=datetime.now(timezone.utc)))
     from protagine.memory.recall import pack_memory_context
-    assert pack_memory_context(rows, max_chars=500) == ([], "")
+    # A budget that fits neither the conflict bundle nor its atomic "open the history" notice shows nothing
+    # of it (the one-line header leaves about 200 characters here; the notice row needs about 400).
+    assert pack_memory_context(rows, max_chars=300) == ([], "")
 
 
 @pytest.mark.asyncio

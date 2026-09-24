@@ -88,7 +88,7 @@ async def test_supersession_pointer_excludes_old_fact_even_before_state_catches_
 def test_source_handles_survive_context_rendering():
     rendered = render_memory_context([dict(id="memory-1", content="Two rooms are reported.",
         source_uri="voice:synthetic:4#t=3,7", epistemic_state="observed", contradiction_count=1)])
-    assert '"display_id": "memory-1"' in rendered
+    assert "display_id" not in rendered and "memory-1" not in rendered  # internal id, no consumer
     assert '"source": "voice:synthetic:4#t=3,7"' in rendered
     assert '"contradictions": 1' in rendered
     assert "Two rooms are reported." in rendered

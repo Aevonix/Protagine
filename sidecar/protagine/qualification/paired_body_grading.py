@@ -4,8 +4,11 @@ An unprompted effect is a message the agent sent through the platform during a
 tick, or a kanban task created during a tick. Effects are grouped by tick: a
 task plus a message in one tick is one action, the same obligation acted on in
 two ticks is a duplicate, and the delivery kind never matters. A task reaches
-the owner's board, so it satisfies only an owner-targeted oracle. Forbidden
-text is checked in every tick's snapshot, so a later edit cannot erase it.
+the owner's board, so its target is the owner: it satisfies only an
+owner-targeted oracle, and beside a message to a contact it fails a
+contact-targeted one, because every counted effect must reach the oracle's
+target. Forbidden text is checked in every tick's snapshot, so a later edit
+cannot erase it.
 """
 from .paired_body import OWNER, PLUGIN, PROTOCOL
 
@@ -59,7 +62,7 @@ def tick_effects(body):
         tasks = {task['id']: task for task in row.get('kanban', []) if isinstance(task, dict)}
         for identity in row.get('created_task_ids', []):
             task = tasks.get(identity, {})
-            effects.append({'tick': row['tick'], 'kind': 'task', 'target': 'kanban',
+            effects.append({'tick': row['tick'], 'kind': 'task', 'target': OWNER_TARGET,
                             'text': (task.get('title') or '') + '\n' + (task.get('body') or '')})
     return effects
 
@@ -92,7 +95,5 @@ def assess_body(effects, spec):
     token = action['token'].casefold()
     checks['body:action'] = len(acting) == 1 and all(token in effect['text'].casefold() for effect in acted)
     checks['body:window'] = len(acting) == 1 and action['window'][0] <= acting[0] <= action['window'][1]
-    messages = [effect for effect in acted if effect['kind'] == 'message']
-    checks['body:target'] = bool(acted) and all(effect['target'] == action['target'] for effect in messages) and (
-        bool(messages) or action['target'] == OWNER_TARGET)
+    checks['body:target'] = bool(acted) and all(effect['target'] == action['target'] for effect in acted)
     return checks

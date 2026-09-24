@@ -82,18 +82,27 @@ reserved by the protocol but is not wired by the present shared integration.
 ## General-plugin coexistence
 
 With `PROTAGINE_GENERAL_PLUGIN_ACTIVE=1`, this provider is read/context-only. Its
-model-visible catalog is exactly:
+model-visible catalog is exactly the owner's two writes:
 
-- `protagine_check_commitments`
-- `protagine_get_affect`
-- `protagine_get_facts`
-- `protagine_timeline`
+- `protagine_resolve_commitment`
+- `protagine_record_affect`
 
-Person selectors are removed from the schemas. Direct calls are available only
-for the explicitly configured owner/system lane until scoped versions of those
-tool endpoints exist. Queue tools, approvals and pre-compression signal writes
-remain disabled. Standalone installs may use the fallback turn writer; it still
-requires an exact per-turn participant.
+Person selectors are not model arguments: the provider binds the turn's
+participant. What the model used to read through tools here (commitments,
+facts, affect, the timeline) arrives in the per-turn context instead, where
+it costs nothing extra to look at; across every recorded benchmark episode those
+reads returned nothing the context did not already carry. Direct calls are
+available only on the owner's own lane. Queue tools, approvals and
+pre-compression signal writes remain disabled. Standalone installs may use the
+fallback turn writer; it still requires an exact per-turn participant.
+
+Every schema and the provider's one system block are sent with every model
+request, so both say only what the model needs; the static reading rules
+(quotations are evidence, each turn's clock is that turn's) live in the system
+block once rather than inside every turn's injected context. Recall tells the
+sidecar whether Hermes still shows this session's earlier turns
+(`session_history: intact`) so it never quotes them back; after a compression
+checkpoint they become recallable again.
 
 Explicit memory search belongs to the general adapter's `protagine_memory_search`
 tool, which searches canonical evidence and supplies references for opening the

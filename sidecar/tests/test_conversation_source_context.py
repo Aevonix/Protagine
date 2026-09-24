@@ -259,3 +259,31 @@ async def test_actual_scoped_search_and_automatic_context_share_the_pair(memory_
         automatic = '\n'.join(row['body'] for row in response.json()['sections'] if row['id'] == 'protagine-memory')
         assert explicit['content'] == automatic
         assert INPUT in automatic and REPLY in automatic and 'conversation_pair' in automatic
+
+
+@pytest.mark.asyncio
+async def test_intact_session_history_leaves_this_sessions_own_turns_to_the_host(tmp_path, monkeypatch):
+    """The host still shows this session's earlier turns verbatim: quoting them back adds nothing, so
+    an ``intact`` history drops this session's quotations and pairs and keeps every other session's."""
+    monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
+    ledger = TurnIdempotencyLedger(tmp_path/'source.db')
+    seed(ledger)  # recorded under session 'original'
+    ledger.record_source('current-turn', contact_id='person', session_id='later',
+        messages=[{'role': 'user', 'content': 'The prototype laboratory move is confirmed for May 14.'}],
+        derive_claims=False)
+    hits = ledger.search_sources('prototype laboratory', **SCOPE, limit=20)
+    assert {hit['session_id'] for hit in hits} == {'original', 'later'}
+
+    async def select(history):
+        return await select_memory(CollectedSources(ledger, **SCOPE,
+            watermark=ledger.erasure_watermark('person'), hits=list(hits)),
+            query='Where is the prototype laboratory now?', selector=RecallSelector(), limit=5,
+            timezone_name='UTC', session_history=history)
+
+    everything = await select(None)
+    assert {row['session_id'] for row in everything.selected} == {'original', 'later'}
+    intact = await select('intact')
+    assert intact.selected and {row['session_id'] for row in intact.selected} == {'original'}
+    assert 'move is confirmed' not in intact.content and REPLY in intact.content
+    compressed = await select('compressed')
+    assert {row['session_id'] for row in compressed.selected} == {'original', 'later'}

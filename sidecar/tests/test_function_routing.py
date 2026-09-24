@@ -156,19 +156,15 @@ async def test_routing_does_not_open_a_learning_database(monkeypatch):
 ])
 async def test_incomplete_http_completion_uses_fallback_without_endpoint_cooldown(message, finish, reason):
     from protagine.util.model_output import final_text
-    events = []
     with endpoint(choice={'index': 0, 'message': message, 'finish_reason': finish}) as (first, a), endpoint() as (second, b):
         r = router(config(first, second))
-        r._bus = SimpleNamespace(emit=lambda name, payload: events.append((name, payload)))
         result = await complete(r)
         assert result.binding == 'deliberate'
         assert final_text(result) == 'strong-neutral'
         assert result.prior_attempts == [{'binding': 'interactive', 'model': 'openai/fast-neutral',
             'status': 'failed', 'reason': reason}]
-        assert len(a) == len(b) == 1
+        assert len(a) == len(b) == 1  # Both endpoints completed one inference.
         assert r.routing_status()['completion_observations']['interactive']['state'] != 'cooldown'
-        assert len(events) == 2  # Both completed inferences consumed tokens.
-        assert [payload['tokens']['total_tokens'] for _, payload in events] == [12, 12]
         assert [row['binding'] for row in r.routing_status()['recent_calls']] == ['deliberate']
         with pytest.raises(RuntimeError, match=reason):
             await complete(r, allow_fallback=False)

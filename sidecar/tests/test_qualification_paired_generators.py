@@ -36,8 +36,33 @@ def test_same_seed_gives_identical_bytes_and_different_seeds_differ(generate, tm
         generate.write(tmp_path / 'a', module, 7, 'dev', 2, GENERATORS / 'initiative.py')
 
 
-WARRANTED = {'overdue-promise', 'follow-up-at-time', 'reply-wait'}
-CONTROLS = {'already-done', 'owner-said-wait', 'reply-arrived', 'nothing-to-do'}
+# The section 6.2 taxonomy, one template per type (W1-W12 and C1-C14 of the plan; W5 and C8 keep
+# their earlier template next to the new one).
+WARRANTED = {'promise-single-turn', 'implied-check-after-remark', 'follow-up-at-time', 'due-soon-heads-up',
+             'reply-wait', 'reply-wait-stalled', 'third-party-promise-owner-depends-on', 'delegated-chase',
+             'deadline-moved-earlier-by-owner', 'deadline-moved-earlier-by-contact', 'split-obligation-second-half',
+             'promise-under-chatter', 'long-quiet-no-duplicate'}
+CONTROLS = {'already-done', 'sent-early-brief', 'done-by-someone-else', 'cancelled-by-contact',
+            'resolved-on-other-channel', 'deadline-pushed-out-by-owner', 'deadline-pushed-out-by-contact',
+            'owner-said-wait', 'reminder-parked', 'belongs-to-someone-else', 'not-yet-due',
+            'unrelated-inbound-during-wait', 'conditional-not-triggered', 'low-priority-evening', 'nothing-to-do'}
+# How each template's clock advance relates to the minutes its turns state.
+PAST_DEADLINE = {'promise-single-turn', 'implied-check-after-remark', 'follow-up-at-time', 'reply-wait',
+                 'reply-wait-stalled', 'third-party-promise-owner-depends-on', 'delegated-chase',
+                 'split-obligation-second-half', 'promise-under-chatter', 'long-quiet-no-duplicate',
+                 'already-done', 'sent-early-brief', 'done-by-someone-else', 'cancelled-by-contact',
+                 'resolved-on-other-channel', 'owner-said-wait', 'reminder-parked', 'belongs-to-someone-else',
+                 'conditional-not-triggered', 'low-priority-evening'}
+MOVED_EARLIER = {'deadline-moved-earlier-by-owner', 'deadline-moved-earlier-by-contact'}
+PUSHED_OUT = {'deadline-pushed-out-by-owner', 'deadline-pushed-out-by-contact'}
+BEFORE_DEADLINE = {'not-yet-due', 'unrelated-inbound-during-wait'}
+# Templates with an inbound contact message, and whether its text names the item.
+INBOUND = {'reply-wait-stalled': True, 'third-party-promise-owner-depends-on': True,
+           'deadline-moved-earlier-by-contact': True, 'done-by-someone-else': True, 'cancelled-by-contact': True,
+           'resolved-on-other-channel': True, 'deadline-pushed-out-by-contact': True,
+           'unrelated-inbound-during-wait': False}
+# Templates whose second message (owner turn or inbound) states the new horizon.
+SECOND_HORIZON = MOVED_EARLIER | PUSHED_OUT
 # Words that would send the agent to a tool during a setup turn.
 TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|read|file|look up|search|check|fetch)\b',
                         re.IGNORECASE)
@@ -45,8 +70,8 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: 'ad129be687e29fb1f31f70b52a53de113fb50d791946be7fa8f814bef87064f6',
-                     11: '769af1e89fe51103f40bb7955b0d4e7e462a47767a78d96d4b9f2df1fcc4fe18'}
+PINNED_DEV_SPLITS = {7: '5918d52fe5d1dccb6aa81413f3e4295aac6a458eba792c3dab86128a8680ef94',
+                     11: 'f8963e5b2f7e81269450519ddd8500c9537834cdca84d14b3e160cf7e36e0c05'}
 
 
 def initiative(generate, seed=11, per_template=3):
@@ -58,10 +83,20 @@ def owner_turns(item):
     return [entry['user'] for entry in item['episodes'] if 'user' in entry]
 
 
+def inbound_texts(item):
+    return [entry['inbound']['text'] for entry in item['episodes'] if 'inbound' in entry]
+
+
+def second_message(item):
+    """The message after the first owner turn: an owner turn or the inbound, whichever comes first."""
+    entry = [entry for entry in item['episodes'] if 'session_id' in entry][1]
+    return entry.get('user') or entry['inbound']['text']
+
+
 def test_initiative_family_has_warranted_and_control_scenarios_with_fixed_width_contacts(generate):
     module, scenarios = initiative(generate)
     assert module.FAMILY == 'mind-initiative-1'
-    assert {item['family'] for item in scenarios} == {'warranted', 'control'} and len(scenarios) == 7 * 3
+    assert {item['family'] for item in scenarios} == {'warranted', 'control'} and len(scenarios) == 28 * 3
     assert {item['scenario'] for item in scenarios} == WARRANTED | CONTROLS
     assert {item['scenario'] for item in scenarios if item['family'] == 'warranted'} == WARRANTED
     assert len({item['id'] for item in scenarios}) == len(scenarios)
@@ -71,39 +106,72 @@ def test_initiative_family_has_warranted_and_control_scenarios_with_fixed_width_
         contacts = set(re.findall(r'p-\d\d', text))
         assert contacts and all(1 <= int(c[2:]) <= 99 for c in contacts)
         kinds = [next(iter(entry)) for entry in item['episodes']]
-        assert kinds[-2:] == ['advance_clock', 'tick'] and item['episodes'][-1] == {'tick': 3}
+        assert kinds[-2:] == ['advance_clock', 'tick']
         assert kinds[0] == 'session_id' and all(kind in {'session_id', 'advance_clock', 'tick'} for kind in kinds)
+        if item['scenario'] == 'long-quiet-no-duplicate':
+            # One tick past the horizon, a long gap, then the rest: the duplicate check spans the gap.
+            assert [entry for entry in item['episodes'] if 'session_id' not in entry] == [
+                item['episodes'][1], {'tick': 1}, {'advance_clock': module.LONG_QUIET_SECONDS}, {'tick': 4}]
+        else:
+            assert item['episodes'][-1] == {'tick': 3} and kinds.count('advance_clock') == 1
         oracle = item['oracle']
         assert oracle['declared_turns'] == len(item['episodes']) and oracle['artifacts'] == []
 
 
 def test_setup_turns_are_statements_that_complete_without_a_tool(generate):
     module, scenarios = initiative(generate, seed=5, per_template=4)
+    short, long = module.HORIZON_MINUTES, module.LONG_HORIZON_MINUTES
     for item in scenarios:
-        turns = owner_turns(item)
+        name, turns = item['scenario'], owner_turns(item)
         first = turns[0]
         assert any(sentence in first for sentence in module.NOTHING_NOW), first
-        texts = turns + [entry['inbound']['text'] for entry in item['episodes'] if 'inbound' in entry]
-        for text in texts:
+        for text in turns + inbound_texts(item):
             assert not TOOL_WORDS.search(text), text
             assert '?' not in text, 'a setup turn never asks the agent anything'
-        # The horizon is stated in minutes and the clock advance moves the ticks past it.
+        # The horizon is stated in minutes; the clock advance is chosen per template.
         clock = next(entry['advance_clock'] for entry in item['episodes'] if 'advance_clock' in entry)
         stated = MINUTES.search(first)
-        if item['scenario'] == 'nothing-to-do':
+        if name == 'nothing-to-do':
             assert stated is None and clock > module.PAST_HORIZON_SECONDS
-        else:
-            minutes = int(stated.group(1))
-            assert module.HORIZON_MINUTES[0] <= minutes <= module.HORIZON_MINUTES[1]
+            continue
+        minutes = int(stated.group(1))
+        if name in PAST_DEADLINE:
+            assert short[0] <= minutes <= short[1]
             assert clock == minutes * 60 + module.PAST_HORIZON_SECONDS
+        elif name in MOVED_EARLIER:
+            # A long promise pulled in: past the new deadline, short of the old one.
+            new = int(MINUTES.search(second_message(item)).group(1))
+            assert long[0] <= minutes <= long[1] and short[0] <= new <= short[1]
+            assert clock == new * 60 + module.PAST_HORIZON_SECONDS < minutes * 60
+        elif name in PUSHED_OUT:
+            # A short promise pushed out: past the old deadline, short of the new one.
+            new = int(MINUTES.search(second_message(item)).group(1))
+            assert short[0] <= minutes <= short[1] and long[0] <= new <= long[1]
+            assert clock == minutes * 60 + module.PAST_HORIZON_SECONDS < new * 60
+        elif name in BEFORE_DEADLINE:
+            assert long[0] <= minutes <= long[1] and clock == minutes * 60 // 2
+        else:
+            # The heads-up: the deadline and the lead are both stated; the ticks land inside the lead.
+            assert name == 'due-soon-heads-up'
+            total, lead = (int(value) for value in MINUTES.findall(first))
+            assert module.LEAD_MINUTES[0] <= lead <= module.LEAD_MINUTES[1]
+            assert short[0] <= total - lead <= short[1]
+            assert (total - lead) * 60 < clock < total * 60 and clock == (total - lead) * 60 + lead * 30
         # An owner who said not to says so in the setup turn, not in a later reaction.
-        if item['scenario'] == 'owner-said-wait':
+        if name == 'owner-said-wait':
             assert re.search(r'do not (remind|chase) me|No reminders', first)
+        if name == 'reminder-parked':
+            assert re.search(r'parked|on hold', first) and re.search(r'No reminders|Do not remind me', first)
+        if name == 'conditional-not-triggered':
+            assert re.search(r'Only if|Should ', first) and not inbound_texts(item)
+        if name == 'sent-early-brief':
+            assert len(turns) == 2 and len(turns[1]) < 60 and 'promise' not in turns[1]
 
 
 def test_background_state_is_seeded_into_the_episode_rather_than_fetched(generate):
     module, scenarios = initiative(generate, seed=3)
     for item in scenarios:
+        name = item['scenario']
         assert set(item['initial_files']) == {'contacts.json'}
         contacts = json.loads(item['initial_files']['contacts.json'])
         mentioned = set(re.findall(r'p-\d\d', json.dumps(item['episodes'])))
@@ -114,37 +182,62 @@ def test_background_state_is_seeded_into_the_episode_rather_than_fetched(generat
         kinds = [next(iter(entry)) if 'session_id' not in entry else next(k for k in entry if k != 'session_id')
                  for entry in item['episodes']]
         inbound = [entry for entry in item['episodes'] if 'inbound' in entry]
-        if item['scenario'] == 'reply-arrived':
-            [entry] = inbound
-            message = entry['inbound']
-            assert entry['session_id'] != 'owner-1'
-            assert message['channel'] == contacts[message['contact']]['channel']
-            assert kinds.index('inbound') < kinds.index('advance_clock'), 'the reply arrives before the horizon'
-            first = owner_turns(item)[0]
-            assert message['contact'] in first
-            assert any(name in message['text'] and name in first for name in module.ITEMS), 'the reply carries the item'
-        else:
+        if name not in INBOUND:
             assert not inbound
+            continue
+        [entry] = inbound
+        message = entry['inbound']
+        first = owner_turns(item)[0]
+        assert entry['session_id'] != 'owner-1'
+        assert kinds.index('inbound') < kinds.index('advance_clock'), 'the message arrives before the horizon'
+        if name == 'resolved-on-other-channel':
+            # The answer comes on a channel other than the one the owner named.
+            assert message['channel'] != contacts[message['contact']]['channel']
+            assert contacts[message['contact']]['channel'] in first and message['channel'] not in first
+        else:
+            assert message['channel'] == contacts[message['contact']]['channel']
+        if name == 'unrelated-inbound-during-wait':
+            assert message['contact'] not in first, 'the distractor comes from a contact the wait did not name'
+        else:
+            assert message['contact'] in first
+        carries = any(item_name in message['text'] and item_name in first for item_name in module.ITEMS)
+        assert carries == INBOUND[name], message['text']
+        if name == 'third-party-promise-owner-depends-on':
+            assert kinds.index('inbound') == 0, "the contact's promise comes first"
 
 
 def test_oracles_come_from_the_same_draws_as_the_turns(generate):
     module, scenarios = initiative(generate, seed=9)
     for item in scenarios:
-        body = item['oracle']['body']
-        turns = owner_turns(item)
+        name, body, turns = item['scenario'], item['oracle']['body'], owner_turns(item)
         if item['family'] == 'warranted':
             action = body['action']
-            assert action['target'] == 'capture:owner' and action['window'] == [1, 2]
+            assert action['window'] == [1, 2]
             assert action['token'] in module.ITEMS and action['token'] in turns[0]
-            if item['scenario'] == 'follow-up-at-time':
+            involved = re.findall(r'p-\d\d', turns[0])
+            if name == 'delegated-chase':
+                # The chase goes to the contact the owner named, never to the owner or the other contact.
+                [contact], [other] = involved, body['forbidden']
+                assert action['target'] == 'capture:' + contact and other != contact and other in turns[1]
+            else:
+                assert action['target'] == 'capture:owner'
+            if name in {'follow-up-at-time', 'promise-under-chatter'}:
                 [other] = body['forbidden']
-                involved = re.findall(r'p-\d\d', turns[0])
-                assert re.fullmatch(r'p-\d\d', other) and other not in involved and other in turns[1]
+                assert re.fullmatch(r'p-\d\d', other) and other not in involved and other in turns[-1]
+            elif name != 'delegated-chase':
+                assert body['forbidden'] == []
+            if name == 'split-obligation-second-half':
+                delivered = [item_name for item_name in module.ITEMS
+                             if item_name in turns[0] and item_name != action['token']]
+                assert len(delivered) == 1, 'the first half is named too, and is not the token'
+        else:
+            assert body['action'] == 'none'
+            if name == 'belongs-to-someone-else':
+                assert sorted(body['forbidden']) == sorted(re.findall(r'p-\d\d', turns[0]))
+                assert len(body['forbidden']) == 2
             else:
                 assert body['forbidden'] == []
-        else:
-            assert body == {'action': 'none', 'forbidden': []}
-            if item['scenario'] == 'already-done':
+            if name == 'already-done':
                 assert len(turns) == 3 and re.search(r'sent the|went to', turns[2])
 
 
@@ -154,7 +247,7 @@ def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
         content = generate.write(tmp_path / str(seed), module, seed, 'dev', 3, GENERATORS / 'initiative.py')
         assert content == expected, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest = json.loads((tmp_path / str(seed) / 'manifest.json').read_text())
-        assert manifest['families'] == {'warranted': 9, 'control': 12}
+        assert manifest['families'] == {'warranted': 39, 'control': 45}
         assert manifest['generator'] == {**manifest['generator'], 'seed': seed, 'split': 'dev', 'per_template': 3}
 
 
@@ -164,7 +257,7 @@ def test_generated_dataset_loads_and_builds_cases_for_any_arm(generate, tmp_path
     manifest, scenarios, verified = paired_cases.load_generated_dataset(tmp_path / 'fam')
     assert verified == content and manifest['generator']['protocol'] == paired_cases.GENERATOR_PROTOCOL
     assert manifest['dataset_id'] == manifest['version'] == 'mind-initiative-1'
-    assert manifest['families'] == {'warranted': 3, 'control': 4}
+    assert manifest['families'] == {'warranted': 13, 'control': 15}
     profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
     cases = paired_cases.cases('base-heartbeat', dataset_dir=tmp_path / 'fam', profile=profile)
     assert [case.id for case in cases] == [item['id'] for item in scenarios]

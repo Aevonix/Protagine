@@ -6,7 +6,7 @@
   memory and reminder tools
 - `protagine-memory` (memory provider): per-turn recall through
   `/v1/host/context/assemble`, turn sync when the general plugin is absent, and
-  the commitment, affect, fact, goal and timeline tools
+  the owner's commitment and affect writes
 
 Both run on stock Hermes (`hermes-agent >= 0.21.3, < 0.22`) with no patches.
 
@@ -123,8 +123,8 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    with `send_message_tool`; record the result; `POST
    /v1/mind/outbox/{id}/sent {result: sent|failed|uncertain, error, hermes_ref,
    at}`. `success` from the tool is `sent`; an error raised before the platform
-   call (unknown target, unconfigured platform, no home channel, no recipient
-   handle) is `failed`; `Send failed: ...` or an exception is `uncertain`. A
+   call (unknown target, unconfigured platform, no home channel) is `failed`;
+   `Send failed: ...` or an exception is `uncertain`. A
    process that stops between `sending` and `sent` reports that message
    `uncertain` at the next start and never sends it, whatever the sidecar
    lists. The target is the message's `target` (`platform:chat_id`), else
@@ -137,7 +137,11 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    target is the DM session stock has recorded with that user, and the handle
    itself when none has been seen yet.
    The sidecar answers `sending` with 409 for a message it already handed
-   out, and marks a claim nobody settled `uncertain` after ten minutes.
+   out, and marks a claim nobody settled `uncertain` after ten minutes. A
+   claim that names no target (`target: null`, the body resolved no handle)
+   is also 409 (`no_target`) and is not a claim: the message stays ready,
+   never `failed`, and the next pull offers it again with `recipient_handles`
+   read afresh, so a handle added later lets it go out.
 4. Reconciliation: for every `mind:*` task, `GET /v1/mind/why/{id}`. A 404, or
    a lifecycle `status` in `proposed | asked | denied | expired | cancelled |
    dropped`, means no dispatched intention owns the task and it is archived
@@ -190,7 +194,15 @@ owner session cannot approve. `protagine_self rate {id, verdict}` posts
 
 `prefetch` assembles context for the turn's participant. A guest request sets
 `audience: viewer` and `projection_policy: scoped_viewer_required`, so the
-sidecar never returns owner-only sections to a guest. `sync_turn` is active
+sidecar never returns owner-only sections to a guest. The request also says
+whether Hermes still shows this session's earlier turns (`session_history:
+intact`, `compressed` after a checkpoint), so recall never quotes back what the
+model is already reading. The provider's direct tools are offered on the
+owner's own lane only: a guest session or a channel
+with no sender binding gets none of them, and a call that still arrives, like
+`protagine_memory_search` for a turn with no resolved participant, is answered
+once with `{"unavailable": true, "retry": false, "reason": ...}` rather than
+an error the model retries. `sync_turn` is active
 only when the general plugin is not enabled; otherwise the outbox owns
 capture. `on_pre_compress` writes a checkpoint through the same outbox before
 Hermes compresses a session.

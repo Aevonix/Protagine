@@ -25,8 +25,7 @@ READ_ONLY_TOOLS = frozenset({
     "read_file", "search_files", "web_search", "web_extract", "x_search", "vision_analyze",
     "session_search", "kanban_get", "kanban_list", "kanban_attachments", "skills_list", "skill_view",
     "todo_list", "tool_search", "tool_describe", "protagine_memory_search", "protagine_self",
-    "protagine_people", "protagine_check_commitments", "protagine_get_affect", "protagine_get_facts",
-    "protagine_get_patterns", "protagine_list_goals", "protagine_timeline",
+    "protagine_people",
 })
 MESSAGING_TOOLS = frozenset({
     "send_message", "react_to_message", "discord", "discord_admin", "yb_send_dm", "yb_send_sticker",
@@ -161,6 +160,11 @@ class Guard:
             verdict = self._deny(tool, text)
             if verdict is not None:
                 return verdict
+            # The worker was dispatched for this commitment; its own word that it is done proves
+            # nothing. The body's outcome report closes the row once the task itself is done.
+            if tool == "protagine_resolve_commitment" and str(args.get("action") or "").strip().lower() == "fulfilled":
+                return block("a mind task cannot mark its own commitment fulfilled; finish the task and report "
+                             "what you did, the outcome settles the commitment")
             if tool == "kanban_create":
                 if str(args.get("assignee") or "") != self.settings.worker_profile:
                     return block(f"mind tasks may only create tasks assigned to {self.settings.worker_profile}")

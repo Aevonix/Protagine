@@ -1754,9 +1754,9 @@ async def _build_temporal_section(
         try:
             from protagine.util.session_safety import load_last_user_message_at
             last_owner = load_last_user_message_at()
-            if last_owner:
-                t_lines.append(
-                    f"Owner last messaged {_temporal.humanize_delta(last_owner)}.")
+            since = _temporal.humanize_delta(last_owner) if last_owner else ""
+            if since and since != "just now":  # in a live exchange this line says nothing
+                t_lines.append(f"Owner last messaged {since}.")
         except Exception:
             pass
     # Heads-up: time-sensitive items (overdue commitments + cadence-overdue contacts)
@@ -1787,11 +1787,6 @@ async def _build_temporal_section(
     if heads:
         t_lines.append("Heads-up:")
         t_lines.extend("  " + h for h in heads)
-    t_lines.append(
-        "This clock was captured for this context; a retained copy is historical. "
-        "Use the latest turn's clock for relative dates, not the conversation-start date. "
-        "Calculate elapsed or remaining time only when needed to answer the request."
-    )
     return ContextSection(
         id="temporal-context",
         title="Current Time",
@@ -1930,7 +1925,7 @@ async def context_assemble(
     # --- Scoped execution observations (not a commitment lock) ---
     try:
         from protagine.api.routers.executions import authorized_viewer, with_queue_work
-        from protagine.turns.executions import registry, request_work_context
+        from protagine.turns.executions import has_work_records, registry, request_work_context
         person, owner = authorized_viewer(request, body.context.contact_id, scope="context:read")
         # Public/guest turns do not get cross-session activity. The owner view
         # is sealed from existing exact person grants, never a body owner flag.
@@ -1942,7 +1937,7 @@ async def context_assemble(
                                    include_ancestors=True, include_inputs=False)
             work = await with_queue_work(work, owner=True, limit=8)
             current_work_available = True
-            if work["items"] or work.get('native_cron') or work.get('reported_worker'):
+            if has_work_records(work):  # an all-idle or all-unavailable view is not worth a section
                 observed = request_work_context(work, session_id=body.context.session_id,
                                                 limit=8, max_chars=4000)
                 sections.append(ContextSection(id="protagine-executions", title="Work observed at turn start", body=observed['text'], priority=73))
@@ -1971,32 +1966,6 @@ async def context_assemble(
     except Exception as exc:
         logger.debug("context_assemble temporal section failed: %s", exc)
 
-    if not _canonical_only:
-        # --- Protagine Identity ---
-        identity_lines = []
-        try:
-            from protagine.chain.identity import get_or_create_protagine_id, get_genesis_manifest
-            from protagine.chain.node import get_or_create_node_id
-            state_dir = Path(os.environ.get("PROTAGINE_STATE_DIR", os.path.expanduser("~/.protagine")))
-            protagine_id = get_or_create_protagine_id(state_dir)
-            identity_lines.append(f"Protagine ID: {protagine_id}")
-            manifest = get_genesis_manifest()
-            if manifest:
-                identity_lines.append("Genesis: yes (trust anchor)")
-            else:
-                identity_lines.append("Genesis: no")
-            node_id = get_or_create_node_id(state_dir)
-            identity_lines.append(f"Node ID: {node_id}")
-        except Exception as exc:
-            logger.debug("context_assemble identity section failed: %s", exc)
-        if identity_lines:
-            sections.append(ContextSection(
-                id="protagine-identity",
-                title="Who I Am",
-                body="\n".join(identity_lines),
-                priority=100,
-            ))
-
     # --- Memory: authorized candidates, one selection and one budget ---
     if _canonical_person_allowed and query_text:
         from protagine.memory.search import collect_sources, select_memory
@@ -2024,7 +1993,7 @@ async def context_assemble(
                 contact_facts_allowed=not _canonical_only,
                 timezone_name=resolve_communication_timezone(
                     contact_tz, body.context.timezone or ("UTC" if _canonical_only else None)),
-                current_work_available=current_work_available)
+                current_work_available=current_work_available, session_history=body.session_history)
             if packet.content:
                 sections.append(ContextSection(
                     id="protagine-memory", title="Relevant Memories", body=packet.content,
@@ -2151,7 +2120,7 @@ async def context_assemble(
                 except Exception:
                     reservations_available = False
                     logger.debug('commitment reservation view unavailable', exc_info=True)
-                lines = ["Claim the commitment ID with protagine_commitment_work before undertaking it. Another session's live reservation means do not duplicate its work. Claims authorize no external effect."]
+                lines = ["Open commitments (a live reservation held by another session is that session's work):"]
                 for c in all_comms:
                     status_tag = "[OVERDUE]" if c.get("status") == "overdue" or c['id'] in {item['id'] for item in overdue} else "[pending]"
                     due = f" (due: {c.get('due_at', '')})" if c.get('due_at') else ""
@@ -9802,13 +9771,13 @@ async def respond_to_initiative(
     if new_status:
         _initiative_store.update(initiative_id, status=new_status)
 
-    # Close the loop into TypeFeedbackStore: the owner's response to an
-    # initiative is exactly the outcome signal the per-type priority
-    # multiplier learns from. Best-effort — feedback recording must never
-    # fail the respond itself.
+    # Close the loop into TypeFeedbackStore. The caller is the model reporting what
+    # became of an initiative it was shown. A disposal (dismissed, snoozed,
+    # acknowledged) is the outcome this store just recorded and counts, keyed by
+    # the initiative so repeating it changes nothing; a claim that the owner
+    # approved or acted on it is unverified and is not the owner's verdict, so it
+    # does not boost the type. Best-effort: recording never fails the respond.
     _FEEDBACK_OUTCOME_MAP = {
-        "approved": "actioned",
-        "actioned": "actioned",
         "dismissed": "dismissed",
         "snoozed": "snoozed",
         "acknowledged": "acknowledged",
@@ -9817,7 +9786,7 @@ async def respond_to_initiative(
         outcome = _FEEDBACK_OUTCOME_MAP.get(action)
         itype = getattr(initiative, "type", None)
         if _feedback_store is not None and outcome is not None and itype:
-            _feedback_store.record(itype, outcome)
+            _feedback_store.record(itype, outcome, source=initiative_id)
     except Exception as exc:
         logger.warning(
             "Failed to record type feedback for initiative %s (action=%s): %s",

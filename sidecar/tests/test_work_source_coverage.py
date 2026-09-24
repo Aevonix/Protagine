@@ -9,7 +9,7 @@ import pytest
 from onekey import RequestAuthority
 from protagine.api.routers import executions
 from protagine.turns import TurnIdempotencyLedger
-from protagine.turns.executions import ExecutionRegistry, request_work_context
+from protagine.turns.executions import ExecutionRegistry, has_work_records, request_work_context
 
 
 def records(source, count=1):
@@ -118,3 +118,11 @@ async def test_reader_failure_is_isolated(tmp_path, monkeypatch):
         assert 'cron0' not in guest.text and 'draft0' not in guest.text
 
 
+def test_idle_or_unavailable_readers_are_not_work_records():
+    """An all-idle or all-unavailable view earns no turn-context section; one record from any reader does."""
+    idle = {'items': [], 'recent': [], 'native_kanban': {'available': False, 'reason': 'native_board_absent'},
+            'native_cron': {'available': False}, 'reported_worker': {'items': [], 'recent': []}, 'local_work': {}}
+    assert has_work_records(idle) is False
+    assert has_work_records({**idle, 'reported_worker': {'items': [{'task_id': 't-1', 'state': 'running'}]}}) is True
+    assert has_work_records({**idle, 'recent': [{'execution_id': 'x-1'}]}) is True
+    assert has_work_records({**idle, 'native_cron': {'available': True, 'items': [{'native_job_id': 'j'}]}}) is True

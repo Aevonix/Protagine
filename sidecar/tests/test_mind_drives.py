@@ -14,8 +14,8 @@ import pytest
 from protagine.mind import concerns as concerns_module
 from protagine.mind.concerns import CAPACITY, Concerns, MindState, decayed, salience_after
 from protagine.mind.drives import (
-    DRIVES, DriveInputs, curiosity, duty, effective_weights, enabled, failure_signature, mastery, period, run,
-    social, upkeep, weights,
+    DRIVES, HEADS_UP_GRACE, DriveInputs, commitment_candidate, curiosity, duty, effective_weights, enabled,
+    failure_signature, heads_up_at, mastery, period, run, schedule_key, social, upkeep, weights,
 )
 from protagine.mind.rank import Candidate, eligible, pick, satiable
 
@@ -52,7 +52,8 @@ def test_duty_rises_with_overdue_commitments_reply_waits_stale_tasks_and_stalled
     by_type = {c.type: c for c in candidates}
     assert set(by_type) == {"commitment_overdue", "commitment_deliverable", "reply_wait", "stale_task", "goal_stalled"}
     overdue = by_type["commitment_overdue"]
-    assert overdue.kind == "task" and overdue.salience == pytest.approx(0.9) and overdue.dedup_key == "commitment:c-1:overdue"
+    assert overdue.kind == "task" and overdue.salience == pytest.approx(0.9)
+    assert overdue.dedup_key == schedule_key("c-1", "overdue", NOW - timedelta(hours=3))
     assert overdue.success_check == {"kind": "commitment_resolved", "commitment_id": "c-1"}
     assert overdue.invalidates_if == "commitment:c-1:resolved" and "Report what you did" in overdue.text
     deliverable = by_type["commitment_deliverable"]
@@ -69,7 +70,7 @@ def test_duty_skips_settled_keys_and_counts_duty_misses_in_its_level():
     state = inputs(commitments=[{"id": "c-1", "person_id": OWNER, "description": "x", "priority": 50,
                                  "due_at": (NOW - timedelta(hours=1)).isoformat(), "status": "overdue"}],
                    expectation_misses=[{"domain": "commitment", "subject": "commitment:c-7", "expectation": "kept"}],
-                   settled={"commitment:c-1:overdue"})
+                   settled={schedule_key("c-1", "overdue", NOW - timedelta(hours=1))})
     level, candidates = duty(state)
     assert candidates == [] and level == pytest.approx(min(1.0, 0.8 / 2 + 0.1))
 
@@ -320,3 +321,122 @@ def test_mind_state_levels_relax_toward_their_baseline_with_cited_causes(tmp_pat
     state.set("interest:tides", level=1.0, text="tide tables")
     assert state.items("interest:")[0]["text"] == "tide tables" and state.get("interest:tides")["half_life_s"] is None
     assert state.delete("interest:tides") and state.items("interest:") == []
+
+
+# ---------------------------------------------------------------------------
+# duty: owner reminders are messages, heads-ups before a deadline, the grace after one
+# ---------------------------------------------------------------------------
+
+def _owner_row(**fields):
+    return {"id": "c-7", "person_id": OWNER, "description": "send the report", "priority": 50,
+            "due_at": (NOW - timedelta(hours=2, minutes=5)).isoformat(), "status": "overdue",
+            "source_type": "cognition", **fields}
+
+
+def test_an_owner_commitment_from_conversation_is_a_reminder_message_not_a_worker_task():
+    due = NOW - timedelta(hours=2, minutes=5)
+    reminder = commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER)
+    assert reminder.kind == "message" and reminder.type == "commitment_reminder" and reminder.recipient == OWNER
+    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)          # the same key as the task form has
+    assert "send the report" in reminder.text and due.strftime("%Y-%m-%d %H:%M UTC") in reminder.text
+    assert reminder.text.endswith("2 h ago.") and "Report what you did" not in reminder.text
+    assert reminder.invalidates_if == "commitment:c-7:resolved" and reminder.source_id == "c-7"
+    assert reminder.success_check == {"kind": "commitment_resolved", "commitment_id": "c-7"}
+    assert reminder.salience == pytest.approx(0.8) and reminder.cost == pytest.approx(0.05)
+    assert commitment_candidate(_owner_row(priority=90), due, NOW, owner_id=OWNER).salience == pytest.approx(0.9)
+    # Work the agent itself must do (a row not spoken by the owner) and a contact's row stay tasks.
+    assert commitment_candidate(_owner_row(source_type="manual"), due, NOW, owner_id=OWNER).kind == "task"
+    contact = commitment_candidate(_owner_row(person_id="p-02"), due, NOW, owner_id=OWNER)
+    assert contact.kind == "task" and contact.type == "commitment_overdue" and contact.recipient == "p-02"
+    # A deliverable keeps its own message form.
+    deliverable = commitment_candidate(_owner_row(metadata={"kind": "deliverable", "content": "Here."}), due, NOW,
+                                       owner_id=OWNER)
+    assert deliverable.type == "commitment_deliverable" and deliverable.text == "Here."
+    _, candidates = duty(inputs(commitments=[_owner_row()]))
+    assert [c.type for c in candidates] == ["commitment_reminder"]
+
+
+def test_who_owes_the_work_decides_between_a_reminder_and_a_task():
+    """``metadata.obligor`` says who owes the work. The owner's own promise, and a third party's
+    promise the owner is tracking, come back to the owner as a reminder; the assistant's own
+    promise ("I'll send you the report by 3pm") is work the body performs, as it was before
+    reminders existed. A row without the field (an extractor that does not record it) reads as
+    the owner's, exactly as before."""
+    due = NOW - timedelta(hours=2, minutes=5)
+    for metadata in (None, {}, {"obligor": "owner"}, {"obligor": "p-02"}):
+        candidate = commitment_candidate(_owner_row(metadata=metadata), due, NOW, owner_id=OWNER)
+        assert candidate.type == "commitment_reminder" and candidate.recipient == OWNER, metadata
+    promised = commitment_candidate(_owner_row(metadata={"obligor": "assistant"}), due, NOW, owner_id=OWNER)
+    assert promised.kind == "task" and promised.type == "commitment_overdue" and promised.recipient == OWNER
+    assert "Fulfil the overdue commitment to the owner: send the report" in promised.text
+    assert promised.dedup_key == commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key
+    _, candidates = duty(inputs(commitments=[_owner_row(metadata={"obligor": "assistant"})]))
+    assert [c.type for c in candidates] == ["commitment_overdue"]
+
+
+def test_due_intentions_are_keyed_by_the_schedule_so_a_moved_deadline_earns_one_more():
+    """The dedup key of a reminder, an overdue task or a heads-up carries the deadline it was raised
+    for: the same deadline is reported once; a deadline the owner moves after the report went out
+    ("remind me again tomorrow") is a new schedule with its own key."""
+    due = NOW - timedelta(hours=2, minutes=5)
+    reminder = commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER)
+    assert reminder.dedup_key == f"commitment:c-7:overdue:{due.strftime('%Y%m%dT%H%M%SZ')}"
+    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)
+    moved = due + timedelta(days=1)
+    again = commitment_candidate(_owner_row(due_at=moved.isoformat()), moved, NOW + timedelta(days=1), owner_id=OWNER)
+    assert again.dedup_key == schedule_key("c-7", "overdue", moved) != reminder.dedup_key
+    # The stamp is UTC whatever zone the deadline was stated in; the heads-up has its own event.
+    local = due.astimezone(timezone(timedelta(hours=2)))
+    assert schedule_key("c-7", "overdue", local) == reminder.dedup_key
+    assert schedule_key("c-7", "heads_up", due) == f"commitment:c-7:heads_up:{due.strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def test_heads_up_at_reads_an_iso_time_or_a_lead_and_needs_a_deadline():
+    due = NOW + timedelta(minutes=20)
+    row = {"id": "c-8", "due_at": due.isoformat(),
+           "metadata": {"heads_up_at": (due - timedelta(minutes=5)).isoformat()}}
+    assert heads_up_at(row) == due - timedelta(minutes=5)
+    assert heads_up_at({**row, "metadata": {"lead_minutes": 8}}) == due - timedelta(minutes=8)
+    assert heads_up_at({**row, "metadata": {"lead_minutes": "8"}}) == due - timedelta(minutes=8)
+    for metadata in (None, {}, {"lead_minutes": 0}, {"lead_minutes": "soon"}, {"lead_minutes": True},
+                     {"heads_up_at": "not a time"}, {"heads_up_at": (due + timedelta(minutes=1)).isoformat()}):
+        assert heads_up_at({**row, "metadata": metadata}) is None, metadata
+    assert heads_up_at({**row, "due_at": None}) is None
+
+
+def test_duty_raises_a_heads_up_between_the_asked_time_and_the_deadline_and_the_reminder_after():
+    due = NOW + timedelta(minutes=10)
+    row = {"id": "c-9", "person_id": OWNER, "description": "file the return", "priority": 60, "status": "pending",
+           "due_at": due.isoformat(), "source_type": "cognition", "metadata": {"lead_minutes": 15}}
+    _, candidates = duty(inputs(commitments=[row]))
+    heads_up, = candidates
+    assert heads_up.type == "commitment_due_soon" and heads_up.kind == "message" and heads_up.recipient == OWNER
+    assert heads_up.dedup_key == schedule_key("c-9", "heads_up", due)
+    assert heads_up.invalidates_if == "commitment:c-9:resolved"
+    assert heads_up.success_check is None and heads_up.source_id == "c-9"
+    assert "file the return" in heads_up.text and due.strftime("%H:%M UTC") in heads_up.text
+    assert heads_up.text.endswith("10 min from now.")
+    # Before the asked time: nothing. A row that was never asked for a heads-up: nothing until due.
+    early = DriveInputs(now=NOW - timedelta(minutes=6), owner_id=OWNER, commitments=[row])
+    assert duty(early)[1] == []
+    assert duty(inputs(commitments=[{**row, "metadata": None}]))[1] == []
+    # Past the deadline the reminder takes over on its own key; the heads-up is not raised again.
+    late = DriveInputs(now=due + timedelta(minutes=1), owner_id=OWNER, commitments=[row])
+    assert [c.type for c in duty(late)[1]] == ["commitment_reminder"]
+
+
+def test_a_delivered_heads_up_holds_the_overdue_reminder_for_the_grace_and_no_longer():
+    due = NOW - timedelta(minutes=5)
+    row = {"id": "c-10", "person_id": OWNER, "description": "call the bank", "priority": 60, "status": "overdue",
+           "due_at": due.isoformat(), "source_type": "cognition", "metadata": {"lead_minutes": 15}}
+    assert HEADS_UP_GRACE == timedelta(minutes=30)
+    held = inputs(commitments=[row], heads_ups={"c-10": NOW - timedelta(minutes=20)})
+    assert duty(held)[1] == []
+    lapsed = inputs(commitments=[row], heads_ups={"c-10": NOW - timedelta(minutes=31)})
+    assert [c.type for c in duty(lapsed)[1]] == ["commitment_reminder"]
+    shorter = inputs(commitments=[row], heads_ups={"c-10": NOW - timedelta(minutes=20)},
+                     heads_up_grace=timedelta(minutes=10))
+    assert [c.type for c in duty(shorter)[1]] == ["commitment_reminder"]
+    # The grace is per row: another row's heads-up holds nothing here.
+    other = inputs(commitments=[row], heads_ups={"c-11": NOW - timedelta(minutes=1)})
+    assert [c.type for c in duty(other)[1]] == ["commitment_reminder"]
