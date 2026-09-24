@@ -6,7 +6,9 @@ from a kanban worker, and never from a cron run, whose prompt is a stored job
 anyone with the tool could have scheduled. ``yes``/``no`` also need the typed
 ask code inside the owner's own message for that turn, so neither a guest, a
 worker, a cron job nor an injected page can approve anything (architecture
-7.7, 7.10).
+7.7, 7.10). The mind's record (what it works on, its log, why it acted, the
+self-narrative) is the owner's too: shown only in the owner's own session,
+never to a guest, a group the owner shares or a worker.
 """
 
 from __future__ import annotations
@@ -18,9 +20,11 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from .body import mind_state
-from .capture import SessionMap
+from .capture import SessionMap, session_env
 from .client import ProtagineClient, Settings, SidecarUnavailable
 from .commands import ROUTES_MISSING
+
+RECORD_IS_OWNERS = "the mind's record is the owner's; ask in the owner's own chat"
 
 ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
@@ -102,6 +106,12 @@ class Tools:
             return False
         return self.sessions.is_owner(session_id) is True
 
+    def _owners_own(self, session_id: str) -> bool:
+        """The owner's session with no one else in it (a direct chat, the CLI): the mind's record (what it
+        works on, whom it messaged, what it knows about itself) is shown there only, never to a guest, in a
+        group the owner shares, or to a worker."""
+        return self._owner(session_id) and session_env()[3].lower() in {"", "dm"}
+
     def _mind(self, method: str, path: str, **kwargs: Any) -> str:
         if self.client.has_mind_routes() is not True:
             return _error(ROUTES_MISSING)
@@ -123,15 +133,18 @@ class Tools:
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
             mind = self.settings.mind()
-            # The narrative is the owner's record: only the owner's own session reads it.
-            narrative = (self.client.narrative() or {}) if self._owner(session_id) else {}
-            return _json({"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
-                          "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
-                          "sidecar_reachable": self.client.health() is not None,
-                          "mind_routes": self.client.has_mind_routes() is True, **detail,
+            switches = {"enabled": mind.get("enabled", True) is not False and detail.get("enabled") is not False,
+                        "autonomy": detail.get("autonomy") or mind.get("autonomy", "standard"),
+                        "sidecar_reachable": self.client.health() is not None}
+            if not self._owners_own(session_id):
+                return _json(switches)
+            narrative = self.client.narrative() or {}
+            return _json({**switches, "mind_routes": self.client.has_mind_routes() is True, **detail, **switches,
                           # From the record, never free generation: the tasks in flight and the narrative.
                           "working_on": self._working_on(),
                           "narrative": str(narrative.get("text") or "") if narrative.get("enabled") is True else ""})
+        if operation in {"log", "why"} and not self._owners_own(session_id):
+            return _error(RECORD_IS_OWNERS)
         if operation == "log":
             params: dict[str, Any] = {"limit": max(1, min(int(args.get("limit") or 20), 100))}
             if args.get("since_hours") is not None and str(args.get("since_hours")).strip():
