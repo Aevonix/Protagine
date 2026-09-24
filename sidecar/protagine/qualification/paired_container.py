@@ -98,9 +98,10 @@ def context(config, recipe):
 
 
 def _result_from_log(path):
-    # Worker limits its artifact snapshot; logs are private diagnostics only.
+    # Worker limits its artifact snapshot; logs are private diagnostics only. The tail holds a
+    # campaign's one result line (records.MAX_CAMPAIGN_OUTPUT_BYTES) with room to spare.
     with path.open('rb') as stream:
-        stream.seek(max(0, path.stat().st_size - 4 * 1024 * 1024))
+        stream.seek(max(0, path.stat().st_size - 16 * 1024 * 1024))
         lines = stream.read().splitlines()
     rows = [line[len(RESULT_MARKER):] for line in lines if line.startswith(RESULT_MARKER.encode())]
     if len(rows) != 1:

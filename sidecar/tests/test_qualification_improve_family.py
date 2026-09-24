@@ -236,6 +236,21 @@ def test_dev_split_hash_is_pinned_and_the_loader_builds_cases_for_a_gate_arm(gen
     assert case.oracle['artifacts'] == scenarios[0]['oracle']['artifacts']
 
 
+def test_the_loader_builds_campaign_cases_with_the_campaign_deadline(generate, tmp_path):
+    """Campaign mode (build plan M9): a deadline from the day count and the campaign output bound;
+    the dataset bytes, and with them the pinned dev split hash, are unchanged."""
+    from protagine.qualification.records import MAX_CAMPAIGN_OUTPUT_BYTES
+    module = generate.load_templates(GENERATORS / 'improve.py')
+    content = generate.write(tmp_path / '7', module, 7, 'dev', 1, GENERATORS / 'improve.py')
+    assert content == PINNED_DEV_SPLIT[7]
+    cases = paired_cases.cases('full-lessons', dataset_dir=tmp_path / '7',
+                               profile={'name': 'full-lessons', **paired.PROFILES['full-lessons']})
+    for case in cases:
+        assert case.inputs['campaign'] == {'protocol': paired_cases.CAMPAIGN_PROTOCOL, 'days': 15}
+        assert case.timeout_seconds == 11400 and case.max_output_bytes == MAX_CAMPAIGN_OUTPUT_BYTES
+        assert case.inputs['dataset']['sha256'] == PINNED_DEV_SPLIT[7]
+
+
 def test_probes_are_graded_by_their_files_and_nothing_else(family):
     module, scenarios = family
     for item in scenarios:

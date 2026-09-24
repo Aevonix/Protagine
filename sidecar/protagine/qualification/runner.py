@@ -246,7 +246,9 @@ async def evaluate(directory, recipe, cases, consumers, evaluators, router_facto
     records = [case.record() for case in cases]
     if not records or len(records) > 128 or len({c['id'] for c in records}) != len(records):
         raise ValueError('Select 1..128 unique cases')
-    if sum(c['timeout_seconds'] for c in records) > 3600:
+    # A run is at most an hour, except one campaign (paired_cases), whose own record bounds it.
+    campaign = len(records) == 1 and isinstance(records[0]['inputs'].get('campaign'), dict)
+    if not campaign and sum(c['timeout_seconds'] for c in records) > 3600:
         raise ValueError('Declared run exceeds one hour')
     if evidence_mode not in {'controlled', 'actual_inference'}:
         raise ValueError('Invalid evidence mode')
