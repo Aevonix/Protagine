@@ -144,10 +144,11 @@ audit log, the outbox, outcomes and the off switch. The design is in
    turns the newest ignored check-in `actioned`, and an ask for a check-in
    that expired teaches nothing (the owner's silence is not the contact's).
    The multiplier orders due check-ins and never gates one: eligibility uses
-   the score without feedback, so the backoff above is the only brake. A message to a contact with no text is composed
-   (`P/mind/compose.py`, task `mind_compose`, one tool-less call, no
-   fallback, 300 tokens) from an enumerated purpose (`check_in`,
-   `follow_up:<id>`, `reply_wait:<id>`), the contact's name, the topic and
+   the score without feedback, so the backoff above is the only brake.
+   A message to a contact with no text is composed (`P/mind/compose.py`,
+   task `mind_compose`, one tool-less call, no fallback, 300 tokens) from
+   an enumerated purpose (`check_in`, `follow_up:<id>`, `reply_wait:<id>`),
+   the contact's name, the topic and
    that contact's own recipient-scoped packet, never the concern, its
    evidence or an owner turn; the text then passes the floor and the deny
    list. The owner's granted message to a third party is a
