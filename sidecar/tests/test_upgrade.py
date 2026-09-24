@@ -265,3 +265,20 @@ def test_upgrade_adopts_the_ingress_rows_of_retired_producers(installed, capsys)
     assert init.pending_ingress_adoption(home) == []
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_says_when_a_recorded_endpoint_is_switched_off(installed, capsys):
+    """Releases before the switch was live wrote ``semantic_recall: false`` whenever init found no endpoint;
+    upgrading such an install with an endpoint recorded says recall is keyword-only and how to turn it on,
+    and leaves the owner's value as it is."""
+    from protagine.config import load_config, save_config
+    home, _ = installed
+    data = yaml.safe_load((home / "protagine.yaml").read_text())
+    data["router"]["embed_url"] = "http://127.0.0.1:9/v1"
+    data["mind"]["faculties"]["semantic_recall"] = False
+    save_config(data, home)
+    capsys.readouterr()
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    output = capsys.readouterr().out
+    assert "semantic recall is off" in output and "mind.faculties.semantic_recall: true" in output
+    assert load_config(home, environ={}).get("mind.faculties.semantic_recall") is False

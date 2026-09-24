@@ -1307,6 +1307,15 @@ def run_init(args) -> int:
     return 0
 
 
+def semantic_recall_note(cfg: Config) -> str | None:
+    """Releases before the switch was live wrote ``semantic_recall: false`` whenever init found no
+    endpoint; with an endpoint recorded since, recall stays keyword-only until the owner says otherwise."""
+    if cfg.get("router.embed_url") and cfg.get("mind.faculties.semantic_recall") is False:
+        return ("semantic recall is off although router.embed_url is set: set mind.faculties.semantic_recall: "
+                "true in protagine.yaml (or re-run 'protagine init --embed-url ...') to use the embedder")
+    return None
+
+
 def run_upgrade(args) -> int:
     """``protagine upgrade``: backup, migrations, adapter, config reconcile, service restart."""
     try:
@@ -1334,9 +1343,12 @@ def run_upgrade(args) -> int:
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
                               + retired_state_present(home)
                               + retired_tables_present(home) + pending_ingress_adoption(home))
+        lexical = semantic_recall_note(cfg)
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
+            if lexical:
+                _say("  " + lexical)
             return 0
         if not any(note.startswith("backup taken") for note in notes):
             backup = backup_instance(home)
@@ -1360,6 +1372,8 @@ def run_upgrade(args) -> int:
                 f"    {python} -m pip uninstall protagine\n    pipx install protagine"
             )
         notes.append(restart_service(cfg))
+        if lexical:
+            notes.append(lexical)
     except (InitError, ConfigError) as exc:
         _say(f"protagine upgrade failed: {exc}")
         return 1
