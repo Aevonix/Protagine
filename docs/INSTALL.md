@@ -132,6 +132,15 @@ the SQLite migrations, upgrades the adapter in Hermes' environment, reconciles
 the Hermes keys and the worker profile, and restarts the sidecar service. When
 nothing changed it says so and stops. Run it as often as you like.
 
+A migration counts as applied only when it is. If another process holds a
+store's write lock (a sidecar still running from an earlier install, for
+example), the initiatives store is left as it is and the upgrade fails with
+the reason; stop that process (`protagine service stop`) and run it again.
+After adding the intention columns the upgrade checks them and the row count
+again. Only a file SQLite reports as damaged is recovered: it is kept as
+`initiatives.db.corrupt-<stamp>` beside the store, never deleted, and the
+store's own backup (`initiatives.db.backup`) is restored when there is one.
+
 To roll back, install the previous version and copy the files in
 `<instance>/backups/<stamp>/` back into the instance directory.
 
