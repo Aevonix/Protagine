@@ -665,7 +665,9 @@ def _with_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
     null, priority 70, source_type "introspection" for a deliverable and "cognition" otherwise."""
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     priority = item.get("priority")
-    if isinstance(priority, bool) or not isinstance(priority, (int, float)):
+    try:
+        priority = 70 if isinstance(priority, bool) or priority is None else int(float(priority))
+    except (TypeError, ValueError):
         priority = 70
     source = item.get("source_type") or ("introspection" if metadata.get("kind") == "deliverable" else "cognition")
     return {"target": None, "listed_due": None, "counterpart": None, "obligor": None, "due_text": None, **item,

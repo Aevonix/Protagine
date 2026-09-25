@@ -120,5 +120,9 @@ def test_a_field_the_examples_leave_out_takes_the_default_they_state(tmp_path):
                           owner_text="Remind me to call the dentist. Email me the Q3 revenue number.")
     reminder, deliverable = (store.get(ident) for ident in result["created"])
     assert reminder["source_type"] == "cognition" and reminder["priority"] == 70
+    quoted = record_items([{"action": "create", "description": "Water the plants", "due_at": due, "priority": "85",
+                            "obligor": "owner"}], person_id=OWNER, commitment_store=store, existing=[],
+                          rejections=[], owner_id=OWNER, owner_text="Remind me to water the plants.")
+    assert store.get(quoted["created"][0])["priority"] == 85
     assert deliverable["source_type"] == "introspection"
     assert "Every element has every field" in " ".join(extract.SYSTEM.split())
