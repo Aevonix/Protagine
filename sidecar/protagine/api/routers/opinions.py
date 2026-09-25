@@ -52,11 +52,11 @@ def _visible(row: Optional[Dict[str, Any]], owner: bool) -> bool:
 
 
 def _shown(row: Dict[str, Any], owner: bool) -> Dict[str, Any]:
-    """The row as this viewer may read it: anyone but the owner gets no owner correction, no
+    """The row as this viewer may read it: anyone but the owner gets no owner correction or decision, no
     premise text or ledger reference (only each premise's kind and role) and no model provenance."""
     if owner:
         return row
-    return {**row, "owner_correction": None, "processor": {},
+    return {**row, "owner_correction": None, "owner_decision": None, "processor": {},
             "premises": [{"kind": p.get("kind"), "role": p.get("role", "support")} for p in row.get("premises") or []]}
 
 

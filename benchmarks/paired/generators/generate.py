@@ -18,6 +18,11 @@ A template may also render ``workflow`` (``restart_before``, ``snapshot_after``)
 the frozen workflow contract, for a family whose probe follows a restart, with
 ``checkpoints`` (artifact checks on a snapshot), and ``history`` (seeded
 conversation sessions the worker imports before the first turn).
+
+A turn after the body clock crossed midnight (``advance_clock`` from the pinned
+start) never says "today" or "yesterday": the words name a different day from
+the one the earlier turns happened on, so the answer the oracle wants depends
+on the reading. The generator refuses such a scenario rather than render it.
 """
 import argparse
 import hashlib
@@ -42,6 +47,40 @@ MAX_PER_TEMPLATE = 16
 RENDERED_KEYS = {'initial_files', 'episodes', 'body', 'artifacts', 'self_report', 'workflow', 'checkpoints',
                  'history'}
 _LEAF = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}')
+RELATIVE_DAY = re.compile(r'\b(?:today|yesterday)\b', re.IGNORECASE)
+
+
+def clock_start_seconds():
+    """Seconds after UTC midnight at which every episode of a generated family starts its body clock."""
+    try:
+        from protagine.qualification.paired_cases import GENERATED_CLOCK_START as start
+    except ImportError:
+        start = '12:00'
+    hour, minute = (int(part) for part in start.split(':'))
+    return hour * 3600 + minute * 60
+
+
+def _said(episode):
+    """What a turn says: the owner's words, an inbound message or a reaction."""
+    if not isinstance(episode, dict):
+        return ''
+    parts = [episode.get('user')] + [(episode.get(key) or {}).get('text') for key in ('inbound', 'owner_reaction')
+                                     if isinstance(episode.get(key), dict)]
+    return ' '.join(part for part in parts if isinstance(part, str))
+
+
+def relative_day_after_midnight(episodes, start=None):
+    """The index of the first turn that says "today" or "yesterday" after an ``advance_clock`` crossed
+    midnight, or None."""
+    clock, crossed = float(clock_start_seconds() if start is None else start), False
+    for index, episode in enumerate(episodes):
+        if isinstance(episode, dict) and 'advance_clock' in episode:
+            before = clock // 86400
+            clock += float(episode['advance_clock'])
+            crossed = crossed or clock // 86400 > before
+        elif crossed and RELATIVE_DAY.search(_said(episode)):
+            return index
+    return None
 
 
 class Draw:
@@ -117,6 +156,10 @@ def render(module, seed, per_template):
                     or ('checkpoints' in rendered and 'workflow' not in rendered)):
                 raise ValueError('A template renders initial_files, episodes and a body, self_report '
                                  'or artifacts oracle')
+            late = relative_day_after_midnight(rendered['episodes'])
+            if late is not None:
+                raise ValueError(f'{name}: turn {late} says "today" or "yesterday" after the clock crossed '
+                                 'midnight; name the day, or leave the word out')
             oracle = {'declared_turns': len(rendered['episodes']), 'artifacts': list(rendered.get('artifacts', []))}
             for key in ('body', 'self_report'):
                 if key in rendered:

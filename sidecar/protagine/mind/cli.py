@@ -298,8 +298,10 @@ def _opinions(sidecar: Sidecar, args: argparse.Namespace, *, as_json: bool) -> i
         value = sidecar.call("GET", f"/v1/mind/opinions/{args.id}", params={"by": "cli"})
         row = value.get("opinion") or {}
         premises = [f"  rests on: {p.get('text')} ({p.get('ref')})" for p in row.get("premises") or []]
+        decision = row.get("owner_decision") if isinstance(row.get("owner_decision"), dict) else {}
+        decided = [f"  you decided: {decision.get('text')} (turn:{decision.get('turn_id')})"] if decision else []
         lines = [_opinion_line(row), f"  because: {row.get('reason') or ''}",
-                 f"  would change if: {row.get('revise_if') or '(not stated)'}", *premises,
+                 f"  would change if: {row.get('revise_if') or '(not stated)'}", *premises, *decided,
                  "  history: " + " <- ".join(str(item.get("id")) for item in value.get("history") or [])]
         _emit(value, as_json=as_json, text="\n".join(lines))
     else:

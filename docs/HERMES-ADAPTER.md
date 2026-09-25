@@ -279,6 +279,20 @@ only when the general plugin is not enabled; otherwise the outbox owns capture.
 `on_pre_compress` writes a checkpoint through the same outbox before Hermes
 compresses a session.
 
+Hermes appends each turn's recalled context to that turn's user message and
+replays it byte for byte on every later turn (the `api_content` sidecar). The
+provider keeps a fingerprint of each context section it showed, per session, and
+a section unchanged since the session's last shown turn is one line in the new
+turn's context: `unchanged since your last turn: <section>`. Only the new turn
+changes; earlier turns are never touched, so the cached prompt prefix holds.
+Current Time is always sent. A prefetch counts as shown only once its turn
+completed (`sync_turn`, called whoever writes the turn), only when Hermes waited
+for it (its 8 s external prefetch bound) and only when it went inline whole
+(under Hermes' spill cap). The fingerprints reset on every session switch
+(including `/undo`), before compression (`on_pre_compress`) and on restart; the
+gateway's detached compaction evicts the live agent, whose provider starts
+empty.
+
 ## Tests
 
 `tests/hermes_adapter` runs against stock Hermes installed in the same

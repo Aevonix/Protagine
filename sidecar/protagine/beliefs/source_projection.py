@@ -1159,8 +1159,10 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     if commitments_provider is None:
         commitments_provider = lambda: _host._commitment_store  # noqa: E731
+    # The running mind keeps the owner's interests: this pass lists them and settles one the owner says is answered.
     commitment_extractor = CommitmentExtractor(ledger, commitments_provider,
-                                               aliases=contact_aliases(lambda: _host._contacts_store))
+                                               aliases=contact_aliases(lambda: _host._contacts_store),
+                                               interests=_host._mind)
     from protagine.turns.media import SourceMedia
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors

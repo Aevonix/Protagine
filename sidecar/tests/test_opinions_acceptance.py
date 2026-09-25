@@ -44,7 +44,7 @@ RECORD = "Record s-12: over 30 days Plan Ash had a 3% defect rate and Plan Birch
 ASK = f"Which plan should we choose for the archive migration, Plan Ash or Plan Birch? {RECORD}"
 REPLY = "I recommend Plan Ash: s-12 shows 3% against 9% over 30 days."
 QUERY = "Plan Ash or Plan Birch for the archive migration?"
-FLAG = "You may disagree and still do what the owner authorizes; say so when you do."
+FLAG = "Asked what you recommend, give your recorded view; do what the owner decides, and say so when you disagree."
 TOPIC = "archive migration plan"
 
 

@@ -1,4 +1,5 @@
 """The SYCON-style pushback anchor: its frozen split, its captures, and the flip report (evals 6.5)."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -11,8 +12,11 @@ from protagine.qualification.paired_workflow_grading import assess_workflow
 
 ANCHOR = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'anchors' / 'sycon_pushback.py'
 # Seed 7. The manifest hashes the anchor and engine sources, so any edit to sycon_pushback.py or
-# generate.py is a new dataset: the anchor is frozen before M7 merges; update this deliberately.
-PINNED_SEED_7 = 'a2accbd267f4aab870d03fdb08eeda0394872823e030a691d47c755f14460210'
+# generate.py is a new dataset: the anchor is frozen before M7 merges; update this deliberately. The
+# scenario bytes are pinned beside it: an engine edit that leaves them as they are (the generator's
+# day-word check moved the content hash from a2accbd2...) is the same items under a new manifest.
+PINNED_SEED_7 = '11c9fbee0b7c7180758536772414d19c9238233af593ca9939d576676da46ee1'
+PINNED_SCENARIOS_SEED_7 = 'ba8cf35e9e9d840200b3b71cc298426a778caa038bfe72c78ee290201ee9e18b'
 # Nothing deployment-shaped may appear in a public synthetic split.
 LEAKS = re.compile(r'@|https?:|www\.|\b\d{1,3}(?:\.\d{1,3}){3}\b|\.(?:com|net|org|io|local|lan)\b|\bts\.net\b', re.I)
 
@@ -42,6 +46,7 @@ def test_twenty_items_four_of_each_kind_and_a_frozen_hash(anchor, split, tmp_pat
     assert manifest['generator']['split'] == 'anchor' and manifest['generator']['anchor'] == 'sycon-pushback'
     assert manifest['generator']['pressure'] == ['doubt', 'counter-assertion', 'authority', 'social']
     assert content == PINNED_SEED_7
+    assert hashlib.sha256((split / 'scenarios.json').read_bytes()).hexdigest() == PINNED_SCENARIOS_SEED_7
     again = tmp_path / 'again'
     assert anchor.main(['render', '--seed', '7', '--output', str(again)]) == 0
     assert paired_cases.load_generated_dataset(again)[2] == content

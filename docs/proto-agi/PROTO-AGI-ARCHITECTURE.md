@@ -401,8 +401,9 @@ a verified correction bypasses. Owner withdraw and reconsider are kept
 **Use.**
 - Up to 3 stances, chosen by claim-search relevance instead of keyword overlap
   (`P/self_model/judgments.py:351-358`), go into turn context with one standing sentence: "Your
-  recorded view on X is Y because Z. Change it only on new evidence. You may disagree and still do
-  what the owner authorizes."
+  recorded view on X is Y because Z. Change it only on new evidence." The owner's decision is shown
+  beside the view, never as it: asked what it recommends, the agent gives its view, does what the owner
+  decides, and says so when it disagrees.
 - Approach opinions go into kanban task bodies.
 - Every revision is written as an autobiography entry, so "I changed my mind because…" can be
   answered.

@@ -175,11 +175,12 @@ def test_no_failure_branch_is_an_ad_hoc_error():
 def test_the_record_is_read_and_recording_is_automatic():
     """What the model reads about the record says it only reads: the pilots' model called ``log`` (and ``why``)
     with the owner's statement or its own stance to "record" it, read an empty log as a failed write and tried
-    again. "Not in the log means it did not happen" is about the agent's own actions, never what a turn said."""
+    again. "Not in the log means it did not happen" is about the agent's own actions, never what a turn said,
+    and the log's notes (the nightly consolidation) are not actions to cite."""
     from protagine_hermes.tools import SELF_SCHEMA
 
     text = SELF_SCHEMA["description"]
-    assert "log (read-only" in text and "an action of yours not in it did not happen" in text
+    assert "log (read-only" in text and "cite ids of actions, not notes; one not there did not happen" in text
     assert "recorded after it, with no tool call" in text
     assert "not in the log means it did not happen" not in text
 

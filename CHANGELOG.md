@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased - self log, owner decisions, settled interests, held first mentions, unchanged sections
+
+From the re-pilot's self, opinions and drives diagnosis and the prompt-cache check. `protagine_self log`
+lists the agent's actions (`audit.is_action`) apart from its notes and notices, with whole ids, so the
+nightly consolidation is never cited as something the agent did; the self family's grader tells a cited
+note (`self_report:no_non_action_ids`) from a made-up id (`no_fabricated_ids`). An owner's decision is
+authority, never evidence: on no route (a revise, a form on the same topic or another) does it change or
+support a view; it is kept beside the view it bears on (`owner_decision`) and shown on its own line, and
+the standing sentence has the agent give its recorded view when asked what it recommends. Capture lists
+the owner's open interests after the open items, so "my curiosity is satisfied" settles one in the pass
+that closes commitments (`Mind.settle_interest`), and the tick holds optional work while capture still
+owes any of the owner's new turns. A first mention the owner wants no reminder about is created held.
+The memory provider sends a context section once per session while it stays the same ("unchanged since
+your last turn: <section>" in the new turn only; reset on a session switch, before compression and on
+restart). The dev generator refuses "today" or "yesterday" in a turn after the clock crossed midnight;
+the engine edit moves every generated dataset's content hash, and only the identity family's scenarios
+change.
+
 ## Unreleased - owner outreach (M11)
 
 The mind can now reach out to the owner unprompted, because it has a reason to,

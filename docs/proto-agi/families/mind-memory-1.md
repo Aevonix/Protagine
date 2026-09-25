@@ -93,7 +93,8 @@ frozen episode.
     (`resource_usage` of the plugin arm's context routes). `consolidation`: the same rule.
   - Self: `full` vs `full-self_narrative` demonstrated, plus the functional acceptance
     for `full`: self-report accuracy at least 90% (scenario pass over the self-report types)
-    and 0 fabricated ids (`self_report:no_fabricated_ids` true in every self-report episode).
+    and 0 fabricated ids (`self_report:no_fabricated_ids` and `self_report:no_non_action_ids`, a
+    note or notice cited as an action, true in every self-report episode).
   - Anything else is "not demonstrated" (with n, delta, CI and MDE) or "underpowered".
 - **Secondary (descriptive, never gated):** per-type pass, tokens per turn, recall packet
   size (context-route bytes), duplicates and forbidden actions in the self family's ticks,

@@ -29,7 +29,8 @@ def test_admitted_decision_procedure_and_event_claims_are_premises(judgments, ki
     premise, = state.admitted_premises('first')
     assert (premise.kind, premise.turn_id, premise.contact_id, premise.corrects) == ('claim', 'first', 'contact-a', ())
     assert premise.text.startswith('Long local work lost progress') and state.premise_current(premise)
-    assert state.form(proposal([premise])).disposition == 'formed'
+    # The owner's own decision is admitted, but it is authority, not evidence: alone it forms no view.
+    assert state.form(proposal([premise])).disposition == ('invalid:support' if kind == 'decision' else 'formed')
 
 
 def test_a_guest_claim_is_a_premise_of_that_guest_only(judgments):

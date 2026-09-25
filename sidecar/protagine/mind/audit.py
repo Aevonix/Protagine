@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from protagine.redact import redact_sensitive_text
 
@@ -24,6 +24,8 @@ MAX_TEXT = 400
 NOTICE_TYPES = ("ask_notice", "digest", "breaker_notice", "health_notice", "grant_refused", "recipient_unknown",
                 "link_proposal", "cadence_confirm", "task_outcome")
 ACTION_KINDS = ("task", "goal", "message")
+# What a row that is not one of the agent's actions shows where the agent reads its own log (``split``).
+NOTE_FIELDS = ("id", "created_at", "kind", "type", "title", "status")
 
 
 def _clip(text: Any, limit: int = MAX_TEXT) -> str:
@@ -79,6 +81,15 @@ def is_action(entry: Dict[str, Any]) -> bool:
             and entry.get("type") not in NOTICE_TYPES)
 
 
+def split(entries: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(actions, notes)`` of rendered rows, in their order: the agent's own actions (``is_action``) and
+    everything else the log holds (an internal note such as the nightly consolidation, a notice, a decision
+    not to act), each note cut to what it is (``NOTE_FIELDS``): no drive or decision that reads as a reason."""
+    actions = [item for item in entries if is_action(item)]
+    notes = [{key: item.get(key) for key in NOTE_FIELDS} for item in entries if not is_action(item)]
+    return actions, notes
+
+
 def log(store: Any, *, limit: int = 20, since: Optional[datetime] = None,
         status: Optional[List[str]] = None, kind: Optional[List[str]] = None,
         recipient: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -109,7 +120,9 @@ def why(store: Any, intention_id: str) -> Optional[Dict[str, Any]]:
     parts.append(f"verified: {value['verified'] or 'none'}")
     if value["verdict"]:
         parts.append(f"owner verdict {value['verdict']}")
-    value["sentence"] = f"{value['title']}: " + ", ".join(parts) + "."
+    value["action"] = is_action(value)
+    value["sentence"] = f"{value['title']}: " + ", ".join(parts) + "." + (
+        "" if value["action"] else " Not an action: an internal note or notice.")
     value["history"] = history
     value["text"] = value["sentence"]
     return value
@@ -159,15 +172,32 @@ def stats(store: Any, *, now: Optional[datetime] = None, days: int = 7,
     }
 
 
+def _when_text(item: Dict[str, Any]) -> str:
+    return (item.get("created_at") or "")[:16].replace("T", " ")
+
+
+def _row_line(item: Dict[str, Any]) -> str:
+    """One row with its whole id: an id is cited as the log shows it, and a prefix is no id."""
+    tail = item.get("outcome") or item.get("status")
+    code = f" [{item['ask_code']}]" if item.get("ask_code") and item.get("status") == "asked" else ""
+    return (f"{_when_text(item)}  {item['id']}  {item['kind']:<7} {item['decision']:<5} {tail:<10} "
+            f"{item['drive']}/{item['type']}: {item['title']}{code}")
+
+
 def render_log(entries: List[Dict[str, Any]]) -> str:
-    lines = []
-    for item in entries:
-        when = (item.get("created_at") or "")[:16].replace("T", " ")
-        tail = item.get("outcome") or item.get("status")
-        code = f" [{item['ask_code']}]" if item.get("ask_code") and item.get("status") == "asked" else ""
-        lines.append(f"{when}  {item['id'][:8]}  {item['kind']:<7} {item['decision']:<5} {tail:<10} "
-                     f"{item['drive']}/{item['type']}: {item['title']}{code}")
+    lines = [_row_line(item) for item in entries]
     return "\n".join(lines) if lines else "(no intentions yet)"
+
+
+def render_split(actions: List[Dict[str, Any]], notes: List[Dict[str, Any]]) -> str:
+    """The agent's own reading of its log: its actions, then apart the rows that are not one."""
+    lines = (["Your actions (cite these ids):", *(_row_line(item) for item in actions)] if actions
+             else ["Your actions: none in this window."])
+    if notes:
+        lines += ["", "Not actions (notes, notices, decisions not to act; never report one as something you did):",
+                  *(f"{_when_text(item)}  {item['id']}  {item['kind']}/{item['type']}: {item['title']}"
+                    for item in notes)]
+    return "\n".join(lines)
 
 
 def render_stats(value: Dict[str, Any]) -> str:
@@ -175,4 +205,5 @@ def render_stats(value: Dict[str, Any]) -> str:
                      for key, item in value.items())
 
 
-__all__ = ["ACTION_KINDS", "NOTICE_TYPES", "entry", "is_action", "log", "render_log", "render_stats", "stats", "why"]
+__all__ = ["ACTION_KINDS", "NOTE_FIELDS", "NOTICE_TYPES", "entry", "is_action", "log", "render_log", "render_split",
+           "render_stats", "split", "stats", "why"]

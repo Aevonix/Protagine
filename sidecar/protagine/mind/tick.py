@@ -36,7 +36,7 @@ from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from . import audit, drives as drive_functions, outreach as outreach_functions, reactions
-from .affect import SECTION_CHARS, Affect
+from .affect import SECTION_CHARS, Affect, postponable
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, Verdict, ask_expiry, boundary_crossed, in_quiet_hours,
     may_contact_of, new_ask_code, parse_quiet_hours,
@@ -186,6 +186,8 @@ class Mind:
         self.owner_id = owner_id or None
         self.commitments = commitments
         self.capture = capture      # the CommitmentExtractor over the same ledger, drained before each decision
+        if capture is not None and getattr(capture, "interests", False) is None:
+            capture.interests = lambda: self    # its pass settles the owner's interests (``settle_interest``)
         self.drain_forced_s, self.drain_timer_s = DRAIN_FORCED_S, DRAIN_TIMER_S
         self.appraisal_forced_s, self.appraisal_timer_s = APPRAISAL_FORCED_S, APPRAISAL_TIMER_S
         self.appraisal_idle_s, self.appraisal_poll_s = APPRAISAL_IDLE_S, APPRAISAL_POLL_S
@@ -399,6 +401,44 @@ class Mind:
                                     text=topic, causes=[f"{by}: {why}" if why else by],
                                     half_life_s=INTEREST_HALF_LIFE_S)
         return {"key": key, "topic": topic, "weight": entry.get("level"), "causes": entry.get("causes")}
+
+    def open_interests(self) -> List[str]:
+        """The owner's interests curiosity would research now (``INTEREST_FLOOR``), less those settled: what
+        capture lists after the owner's open items, so their word that one is answered settles it in the pass
+        that closes items. Reads only."""
+        settled = self.concerns.settled_keys(self.clock() - SETTLED_FOR)
+        return [item["topic"] for item in self._interests(keep_new=False)
+                if float(item.get("weight") or 0.0) >= drive_functions.INTEREST_FLOOR
+                and f"research:{slug(item['topic'])}" not in settled]
+
+    def settle_interest(self, topic: str, *, cause: str, now: datetime | None = None) -> bool:
+        """The owner said an interest is answered or no longer wanted (capture's ``complete`` or ``cancel`` on a
+        listed interest). Its level drops to 0, research on it not dispatched yet is cancelled, and its research
+        concern is resolved as a stored finding resolves it: curiosity does not raise it again for
+        ``SETTLED_FOR``, whatever an appraisal still says about it."""
+        topic = " ".join(str(topic or "").split())[:160]
+        if not topic:
+            return False
+        now = now or self.clock()
+        key = f"interest:{slug(topic)}"
+        if self.mind_state.get(key) is not None:
+            self.mind_state.set(key, level=0.0, causes=[cause], now=now)
+        candidate = drive_functions.research_candidate(topic=topic, why="the owner settled it", sources=[cause],
+                                                       salience=0.0, now=now)
+        for row in self.store.intentions(status=["approved", "proposed"], kind=["task", "goal"], limit=500):
+            if row.dedup_base == candidate.dedup_base:
+                self.outcomes.record(row.id, status="cancelled", summary="the owner settled it", by="owner",
+                                     implicit_verdict=False)
+        concern, _ = self.concerns.bump(drive="curiosity", kind="interest", summary=topic, salience=0.0,
+                                        dedup_key=candidate.dedup_key, sources=[cause], detail=candidate.as_detail(),
+                                        now=now)
+        for other in self.concerns.open(limit=500, status=("open", "intended")):
+            if other.detail.get("dedup_base") == candidate.dedup_base and (concern is None or other.id != concern.id):
+                self.concerns.resolve(other.id, note=f"the owner settled it ({cause})", now=now)
+        if concern is not None:
+            self.concerns.resolve(concern.id, note=f"the owner settled it ({cause})", now=now)
+        logger.info("interest settled by the owner: %s", topic)
+        return True
 
     # -- the loop -------------------------------------------------------------------------
 
@@ -966,8 +1006,9 @@ class Mind:
                 for row in rows if getattr(row, "outcome", None) == "miss"
                 and not str(getattr(row, "subject", "")).startswith("intention:")]
 
-    def _interests(self) -> List[Dict[str, Any]]:
-        """Seeded and declared interests from ``mind_state`` plus the owner's own ``interest`` appraisals.
+    def _interests(self, *, keep_new: bool = True) -> List[Dict[str, Any]]:
+        """Seeded and declared interests from ``mind_state`` plus the owner's own ``interest`` appraisals
+        (``keep_new`` False: read only, an appraisal not kept yet counted as it is).
 
         With ``faculties.outreach`` on, an appraisal that saw the owner welcome a topic (hint
         ``offer_relevant_topic``) is kept as a month-long interest, once per record (the appraisal record
@@ -993,6 +1034,8 @@ class Mind:
                 topic = str(record["topic"]).strip()
                 key = f"interest:{slug(topic)}"
                 cause = f"appraisal:{record['id']}"
+                if not keep_new:
+                    continue
                 kept.add(slug(topic))
                 if cause not in ((self.mind_state.get(key) or {}).get("causes") or []):
                     self.add_interest(topic, by=cause)
@@ -1779,6 +1822,15 @@ class Mind:
         (a no, a lapsed ask, a failed run) is raised again every tick while its source stays open;
         it must not hold a slot, or three of them starve every other concern."""
         pairs = []
+        # The owner's turns capture has not landed yet may settle what optional work is for (an interest they
+        # say is answered): until they land, optional work waits (``affect.postponable``); what is owed does not.
+        unfinished = getattr(self.capture, "unfinished", None)
+        try:
+            owed = int(unfinished(self.owner_id)) if callable(unfinished) and self.owner_id else 0
+        except Exception as error:
+            logger.debug("capture backlog unreadable (%s)", type(error).__name__)
+            owed = 0
+        waiting: List[str] = []
         for concern in self.concerns.open(limit=200):
             if len(pairs) >= BROADCAST:
                 break
@@ -1804,6 +1856,9 @@ class Mind:
                 continue
             if candidate.type in OUTREACH_TYPES and reached_out:
                 continue    # one unprompted interruption a tick: the next waits for the interruption to fade
+            if owed and postponable(candidate):
+                waiting.append(candidate.title)
+                continue
             may_adopt = (self.goals.may_adopt() and candidate.drive in {"curiosity", "mastery"}
                          and not candidate.parent_goal_id and not self.goals.taken(candidate))
             steps_done: List[str] = []
@@ -1853,6 +1908,9 @@ class Mind:
             formed.append({"id": row.id, "type": row.type, "kind": row.kind, "drive": row.drive,
                            "decision": row.decision, "status": row.status, "score": round(score, 3),
                            "concern": concern.id})
+        if waiting:
+            logger.info("optional work waits for %d owner turn(s) capture has not landed: %s", owed,
+                        "; ".join(waiting))
         return formed, len(pairs) - len(ranked)
 
     def _charge_unformed(self, candidate: Candidate, concern: Concern, now: datetime) -> None:

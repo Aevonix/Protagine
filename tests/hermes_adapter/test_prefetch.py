@@ -33,6 +33,28 @@ emit(name=provider.name, url=provider.sidecar_url, key=provider._api_key, contex
     assert "metadata" not in call["json"]["context"]
 
 
+def test_a_section_the_last_turn_carried_is_one_line_through_stock_hermes(home, sidecar):
+    """Stock Hermes' memory manager: the first turn gets every section; once that turn completed
+    (``sync_all``, same message), the next turn of the session gets an unchanged section as one line and
+    a changed one whole; a new session starts from nothing again."""
+    result = probe('''
+from agent.memory_manager import MemoryManager
+manager = MemoryManager()
+manager.add_provider(provider)
+first = manager.prefetch_all("what are my plans", session_id="session-1")
+manager.sync_all("what are my plans", "Here they are.", session_id="session-1")
+assert manager.flush_pending(timeout=10)
+second = manager.prefetch_all("and after that?", session_id="session-1")
+manager.on_session_switch("session-2", parent_session_id="session-1", reset=True)
+third = manager.prefetch_all("and after that?", session_id="session-2")
+emit(first=first, second=second, third=third)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert CANARY in result["first"] and "unchanged since your last turn" not in result["first"]
+    assert "unchanged since your last turn: Owner notes" in result["second"] and CANARY not in result["second"]
+    assert "unchanged since your last turn: Shared" in result["second"] and "## Current Time" in result["second"]
+    assert CANARY in result["third"] and "unchanged since your last turn" not in result["third"]
+
+
 def test_a_kanban_workers_prefetch_names_its_task(home, sidecar):
     """A worker's prefetch reaches the sidecar on the owner's lane with its task body as the message. It names
     its kanban task, so the sidecar treats it as task work, not the owner's turn: the body carries its own

@@ -70,8 +70,8 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: 'eff4ffb8d82a001c4ee66af040a255957150c633013c939e6133d46ee18daa93',
-                     11: '92c04d250399706b84770e51339967942a102b86b70164235e6fdfaf86d60c54'}
+PINNED_DEV_SPLITS = {7: '56ff7819354180dfb0d779e1f694d668f3af30ba5b1f22d84eb71aedd054b553',
+                     11: 'f39d6e6d6c5c660e3fd6c3cfef2c790ab2e5f155c775c1ab4a7ce0b4f1ca84e2'}
 # The scenario bytes of those splits: an engine edit (a new family, a new draw) moves the
 # manifest's engine hash and with it the content hash, never the scenarios.
 PINNED_DEV_SCENARIOS = {7: '4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3',
@@ -243,6 +243,29 @@ def test_oracles_come_from_the_same_draws_as_the_turns(generate):
                 assert body['forbidden'] == []
             if name == 'already-done':
                 assert len(turns) == 3 and re.search(r'sent the|went to', turns[2])
+
+
+def test_a_turn_after_the_clock_crossed_midnight_never_says_today_or_yesterday(generate):
+    """"Did you reply today?" asked the morning after the reply has two right answers; the self family's
+    true-premise probe did (re-pilot r2b). From the pinned noon start, a turn after an ``advance_clock`` that
+    crossed midnight may not say "today" or "yesterday": the generator refuses the scenario."""
+    before = [{'session_id': 'owner-1', 'user': 'p-05 may ask about the lease today.'}]
+    night = [*before, {'advance_clock': 86400}, {'tick': 1}]
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'owner-2', 'user': 'Did you reply today?'}]) == 3
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'contact-1', 'inbound': {
+        'contact': 'p-05', 'text': 'Yesterday you said it was on.'}}]) == 3
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'owner-2', 'user': 'Did you reply?'}]) is None
+    same_day = [*before, {'advance_clock': 1500}, {'session_id': 'owner-1', 'user': 'Anything else today?'}]
+    assert generate.relative_day_after_midnight(same_day) is None
+    assert generate.relative_day_after_midnight(same_day, start=23 * 3600 + 50 * 60) == 2   # from 23:50, 00:15
+
+    class Late:
+        FAMILY = 'late-night-1'
+        TEMPLATES = {'late': ('premise', lambda draw: {
+            'initial_files': {}, 'body': {'action': 'none', 'forbidden': []},
+            'episodes': [*night, {'session_id': 'owner-2', 'user': 'Have you answered p-05 today?'}]})}
+    with pytest.raises(ValueError, match='turn 3 says "today" or "yesterday" after the clock crossed midnight'):
+        generate.render(Late, 7, 1)
 
 
 def test_dev_split_content_hashes_are_pinned(generate, tmp_path):

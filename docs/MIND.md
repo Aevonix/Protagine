@@ -30,8 +30,14 @@ The design is in
    previous turns of the last hour for context, and a later message that
    changes one is an action on it rather than a new row: `reschedule`
    (earlier or later; with no time it is a hold, the deadline is cleared and
-   the item stays open), `complete` or `cancel` (resolved `done` or
-   `obsolete` by `conversation`). A stall or a partial update changes
+   the item stays open; a first mention the person wants no reminder about is
+   created held, with no time), `complete` or `cancel` (resolved `done` or
+   `obsolete` by `conversation`). On the owner's turns the owner's open
+   interests (what curiosity would research) are listed after the items,
+   numbered on from them, and a `complete` (answered) or `cancel` (no longer
+   wanted) on one settles it in the same pass (`Mind.settle_interest`: its
+   level goes to 0, research on it not dispatched yet is cancelled, and its
+   research concern is resolved as a stored finding resolves it). A stall or a partial update changes
    nothing; an obligation between other people is not an item; an item
    conditioned on another event, or with no clear time, gets no deadline.
    An action must identify its row: the listed wording, and the listed
@@ -125,7 +131,12 @@ The design is in
    a job the worker holds is waited for), bounded to 5 s on the timer and
    30 s on a forced tick (`POST /tick`, the CLI, the benchmark), so a promise
    made seconds ago is a row before the drives look; the tick summary's
-   `capture_drained` records what landed and how long it waited. Alongside
+   `capture_drained` records what landed and how long it waited. While
+   capture still owes any of the owner's turns after the drain
+   (`CommitmentExtractor.unfinished`, never the backlog), optional work
+   (`affect.postponable`: curiosity and social work, optional messages)
+   waits for them, so a word that settles it lands first; what is owed does
+   not wait. Alongside
    the drain it waits (never processes) for the owner's appraisal jobs in
    flight, up to 30 s on a forced tick and 2 s on the timer, and not for a
    queue nothing is working on (`appraisal_wait`): their outcomes reach the
@@ -177,7 +188,7 @@ The design is in
    expires unsent (no handle ever resolved, the body never pulled) never
    reported the obligation: while the row is still open its key is freed
    and the reminder forms again at the next tick.
-   | curiosity | seeded and declared interests (`protagine mind interest`, `identity.yaml` `agent.interests`, the owner's own `interest` appraisals), open questions, knowledge-domain expectation misses | a research task whose finding is stored | research tasks and goals |
+   | curiosity | seeded and declared interests (`protagine mind interest`, `identity.yaml` `agent.interests`, the owner's own `interest` appraisals), open questions, knowledge-domain expectation misses | a research task whose finding is stored; the owner's word that the interest is answered or not wanted (capture) | research tasks and goals |
    | mastery | the same signature failing twice in 7 days, repeated owner corrections | a later verified success | investigations and goals |
    | upkeep | failing health checks (3 strikes), backlogs, pending name-only identity links | health OK | notices, upkeep tasks, one owner ask per link |
    | social | contacts with an owner-set cadence or tier `regular` or above, overdue against it; `unknown` and group-only contacts weigh 0 | a reply or a conversation | check-ins |
@@ -509,7 +520,9 @@ CLI); a guest, a group the owner shares and a mind worker get the switch state
 `state` (level, budgets, open asks with codes, `working_on`: the approved and
 dispatched tasks with their ids, and the narrative text),
 `log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
-yesterday?" is one call, and an action that is not in the log did not happen),
+yesterday?" is one call, and an action that is not in the log did not happen;
+the agent's own actions, `audit.is_action`, come under `actions` and every other
+row, the nightly consolidation or a notice, under `notes`, with whole ids),
 `why <id>` (an unknown id answers "no intention `<id>` exists in the audit
 log"), `rate <id> <verdict>`, `yes|no <code>`. `rate`, `yes` and `no` stay
 owner-only. The agent's opinions ride the same tool (integration map X8):
@@ -822,7 +835,7 @@ protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `outreach {enabled, paused_until, per_day, sent_24h, muted, care}`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`; `split=true`: `{actions, notes, text}`, the agent's actions apart from its notes and notices), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `outreach {enabled, paused_until, per_day, sent_24h, muted, care}`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
 | `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, skills, text}`: each lesson with its verified tally, with `uses=true` every use in the 90-day window, and the skills Protagine keeps with their loads; a guest viewer gets nothing |
 | `POST /lessons/{id}/retire` | `{reason, by?}` | the retired lesson; 404 unknown, 409 already closed |
 | `POST /skills/used` | `{skill, session_id?, task_id?}` (the plugin's `on_skill_lifecycle` forwarding) | `{ok, counted, loads}`; only `protagine-*` skills are counted |

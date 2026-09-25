@@ -4,6 +4,15 @@ Implements Hermes's MemoryProvider ABC: per-turn recall through
 ``/v1/host/context/assemble``, turn sync when the general plugin is absent,
 a durable checkpoint before compression, and the owner's one write tool.
 
+Hermes appends each turn's recalled context to that turn's user message and
+replays it byte for byte on every later turn. A section the session's last
+turn already carried, unchanged, is therefore one line in the new turn's
+context ("unchanged since your last turn: <section>"); earlier turns are never
+touched, so the cached prompt prefix holds. The per-session fingerprints count
+a prefetch as shown only once its turn completed (``sync_turn``), Hermes waited
+for it and it went inline whole, and they reset on a session switch, before
+compression and on restart.
+
 Config key: memory.provider = "protagine-memory". The sidecar URL and key come
 from the shared ``plugins.protagine`` keys written by ``protagine init``, with
 ``memory.config`` and the profile's ``protagine-memory.json`` as overrides.
@@ -11,6 +20,7 @@ from the shared ``plugins.protagine`` keys written by ``protagine init``, with
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +41,16 @@ logger = logging.getLogger(__name__)
 FORGET_TIMEOUT_SECONDS = 5.0
 
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
+
+# A section the session's last shown turn carried, unchanged, is this one line; Current Time is always fresh.
+UNCHANGED_LINE = "unchanged since your last turn: {title}"
+_ALWAYS_SENT = frozenset({"Current Time"})
+# Hermes waits this long for an external prefetch and drops a later answer (``agent.memory_manager``, 0.21.3),
+# and spills one longer than its inline cap to a file (``tools.hook_output_spill``): either way the turn may not
+# have carried the sections whole, so such a prefetch is never counted as shown.
+_PREFETCH_WAIT_FALLBACK_S = 8.0
+_PREFETCH_WAIT_MARGIN_S = 0.5
+_SPILL_CAP_FALLBACK = 10_000
 
 
 def _env(name: str, default: str = "") -> str:
@@ -264,6 +284,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._last_checkpoint: dict[str, Any] = {"state": "unverified"}
         self._last_erasure: dict[str, Any] = {"state": "unverified"}
         self._turn_writer_skip_logged = False
+        # session_id -> {section key: fingerprint} of the last turn whose context the model has in its history,
+        # and session_id -> (message, fingerprints) of the prefetch its turn has not completed yet.
+        self._shown: dict[str, dict[str, str]] = {}
+        self._offered: dict[str, tuple[str, dict[str, str]]] = {}
+        self._shown_lock = threading.Lock()
+        self._spill_cap: Optional[float] = None
 
     def _configure(self, config: dict[str, Any]) -> None:
         self.sidecar_url = config.get("url") or _env("PROTAGINE_URL") or "http://127.0.0.1:7777"
@@ -448,8 +474,80 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if not contact_id:
             logger.warning("Protagine prefetch withheld: current turn has no participant binding")
             return ""
-        ctx = self._prefetch_sync(query, session_id=effective_session, contact_id=contact_id)
-        return self._with_fresh_temporal_sync(ctx, contact_id=contact_id)
+        started = _ttime.monotonic()
+        sections = self._prefetch_sections(query, session_id=effective_session, contact_id=contact_id)
+        prints, unchanged = self._unchanged(effective_session, sections)
+        ctx = self._format_sections(sections, unchanged=unchanged) if sections else ""
+        result = self._with_fresh_temporal_sync(ctx, contact_id=contact_id)
+        self._offer(effective_session, query, prints, size=len(result), elapsed=_ttime.monotonic() - started)
+        return result
+
+    # -- Unchanged sections: one line instead of what the last turn already carried --------
+
+    @staticmethod
+    def _section_key(section: dict[str, Any]) -> tuple[str, str]:
+        title = str(section.get("title", section.get("id", "protagine-context")))
+        return str(section.get("id") or title), title
+
+    def _unchanged(self, session_id: str, sections: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+        """``(fingerprint of every section, keys of the ones the session's last shown turn carried as they are)``."""
+        with self._shown_lock:
+            shown = dict(self._shown.get(session_id) or {})
+        prints, unchanged = {}, set()
+        for section in sections:
+            key, title = self._section_key(section)
+            prints[key] = hashlib.sha256(f"{title}\n{section.get('body', '')}".encode("utf-8", "replace")).hexdigest()
+            if title not in _ALWAYS_SENT and shown.get(key) == prints[key]:
+                unchanged.add(key)
+        return prints, unchanged
+
+    def _prefetch_wait(self) -> float:
+        try:
+            from agent.memory_manager import _EXTERNAL_PREFETCH_TIMEOUT_S as wait
+        except ImportError:
+            wait = _PREFETCH_WAIT_FALLBACK_S
+        return float(wait) - _PREFETCH_WAIT_MARGIN_S
+
+    def _spill_limit(self) -> float:
+        if self._spill_cap is None:
+            try:
+                from tools.hook_output_spill import get_spill_config
+                config = get_spill_config()
+                self._spill_cap = float(config.get("max_chars") or _SPILL_CAP_FALLBACK) if config.get(
+                    "enabled", True) else float("inf")
+            except Exception:
+                self._spill_cap = float(_SPILL_CAP_FALLBACK)
+        return self._spill_cap
+
+    def _offer(self, session_id: str, message: str, prints: dict[str, str], *, size: int, elapsed: float) -> None:
+        """What this prefetch showed, kept until ``sync_turn`` says its turn completed: only a prefetch Hermes
+        waited for and put inline whole."""
+        with self._shown_lock:
+            if prints and elapsed <= self._prefetch_wait() and size <= self._spill_limit():
+                self._offered.pop(session_id, None)
+                while len(self._offered) >= self._HANDLE_CACHE_MAX:
+                    self._offered.pop(next(iter(self._offered)))
+                self._offered[session_id] = (message, prints)
+            else:
+                self._offered.pop(session_id, None)
+
+    def _confirm_shown(self, session_id: str, message: str) -> None:
+        """The turn a prefetch fed completed: its sections are in the history every later turn replays."""
+        with self._shown_lock:
+            offered = self._offered.get(session_id)
+            if offered is None or offered[0] != message:
+                return
+            del self._offered[session_id]
+            self._shown.pop(session_id, None)
+            while len(self._shown) >= self._HANDLE_CACHE_MAX:
+                self._shown.pop(next(iter(self._shown)))
+            self._shown[session_id] = offered[1]
+
+    def _reset_shown(self) -> None:
+        """A switched, rewound or compressed history may no longer carry what earlier turns were shown."""
+        with self._shown_lock:
+            self._shown.clear()
+            self._offered.clear()
 
     def _with_turn_gap(self, block):
         gap = self._prev_turn_gap_secs
@@ -531,12 +629,18 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def _prefetch_sync(self, query: str, *, session_id: str = "", contact_id: Optional[str] = None) -> str:
         """Blocking /context/assemble call -> formatted context string."""
+        sections = self._prefetch_sections(query, session_id=session_id, contact_id=contact_id)
+        return self._format_sections(sections) if sections else ""
+
+    def _prefetch_sections(self, query: str, *, session_id: str = "",
+                           contact_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """Blocking /context/assemble call -> its sections (none when it cannot answer)."""
         bound_contact = contact_id or self._prefetch_contact(session_id)
         if not bound_contact:
-            return ""
+            return []
         if self._is_circuit_open():
             logger.debug("Protagine prefetch skipped: circuit breaker open")
-            return ""
+            return []
         guest = bound_contact != self._contact_id
         # A kanban worker prefetches on the owner's lane with its task body as the message: task work, not
         # the owner's turn, so it names its task (the sidecar then adds no turn lesson and logs no use).
@@ -560,14 +664,14 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 logger.warning("Protagine prefetch auth failed (HTTP %d); check the API key", code)
             else:
                 logger.debug("Protagine prefetch failed: %s", exc)
-            return ""
+            return []
         except (httpx.HTTPError, OSError) as exc:
             self._record_connection_failure()
             logger.debug("Protagine prefetch failed: %s", exc)
-            return ""
+            return []
         self._record_connection_success()
         sections = data.get("sections", []) if isinstance(data, dict) else []
-        return self._format_sections(sections) if sections else ""
+        return [section for section in sections if isinstance(section, dict)] if isinstance(sections, list) else []
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Intentionally a no-op: recall is keyed on the next message, not known yet."""
@@ -634,7 +738,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "",
                   turn_id: str = "", **_: Any) -> None:
-        """Persist a completed turn (non-blocking) when this provider is the turn writer."""
+        """Persist a completed turn (non-blocking) when this provider is the turn writer. Whoever writes it, the
+        turn completed: the context its prefetch showed is in the history later turns replay."""
+        self._confirm_shown(session_id or self._session_id, user_content)
         if not self._turn_writer_enabled():
             if not self._turn_writer_skip_logged:
                 logger.info("Protagine memory provider is read/context-only; the general plugin owns turn capture")
@@ -782,6 +888,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:
+        self._reset_shown()
         compression_continuation = (kwargs.get("reason") == "compression" and self._session_id
                                     and parent_session_id == self._session_id)
         if reset or kwargs.get("rewound") or (new_session_id != self._session_id and not compression_continuation):
@@ -841,7 +948,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
 
     def on_pre_compress(self, messages: List[Dict[str, Any]], *, require_checkpoint: bool = False) -> str:
-        """Commit direct evidence through the shared outbox before Hermes compresses."""
+        """Commit direct evidence through the shared outbox before Hermes compresses. The compressed history no
+        longer carries earlier turns' context, so every section is sent whole again."""
+        self._reset_shown()
         try:
             if os.environ.get("HERMES_KANBAN_TASK"):
                 self._last_checkpoint = {"state": "not_applicable", "reason": "worker_run"}
@@ -887,7 +996,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
-    def _format_sections(self, sections: list[dict[str, Any]]) -> str:
-        """Unfenced sections; native Hermes owns the memory framing and the system block the guidance."""
-        return "\n\n".join(f"## {section.get('title', section.get('id', 'protagine-context'))}\n{section.get('body', '')}"
-                           for section in sections)
+    def _format_sections(self, sections: list[dict[str, Any]], *, unchanged: frozenset | set = frozenset()) -> str:
+        """Unfenced sections; native Hermes owns the memory framing and the system block the guidance. A section in
+        ``unchanged`` is one line: the session's last turn carried it as it is."""
+        parts = []
+        for section in sections:
+            key, title = self._section_key(section)
+            parts.append(UNCHANGED_LINE.format(title=title) if key in unchanged
+                         else f"## {title}\n{section.get('body', '')}")
+        return "\n\n".join(parts)
