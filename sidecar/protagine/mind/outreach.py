@@ -231,14 +231,22 @@ def muted(inputs: OutreachInputs, slug: str, topic: str) -> bool:
     return any(similar(text, topic) for text in inputs.mutes.values())
 
 
-def lesson_factor(inputs: OutreachInputs, text: str) -> float:
-    """x0.5 for a relevant owner-verified pitfall, x1.2 for a relevant owner-verified strategy."""
+def bears_on(lesson: Any, topic: str, text: str) -> bool:
+    """Whether an outreach lesson bears on a topic: its signature names the topic (``topic:<slug>``,
+    ``outreach_finding:<slug>``, the same slug or two shared terms), else its words are relevant to the text."""
     from .lessons import relevant
+    named = str(getattr(lesson, "signature", "") or "").partition(":")[2]
+    if named and (named == _slug(topic) or similar(named.replace("-", " "), topic)):
+        return True
+    return relevant(lesson, text)
+
+
+def lesson_factor(inputs: OutreachInputs, topic: str, text: str) -> float:
+    """x0.5 for each owner-verified pitfall bearing on the topic, x1.2 for each such strategy."""
     factor = 1.0
     for lesson in inputs.lessons:
-        if not relevant(lesson, text):
-            continue
-        factor *= 0.5 if getattr(lesson, "kind", "") == "pitfall" else 1.2
+        if bears_on(lesson, topic, text):
+            factor *= 0.5 if getattr(lesson, "kind", "") == "pitfall" else 1.2
     return factor
 
 
@@ -261,7 +269,7 @@ def relevance(finding: Finding, inputs: OutreachInputs) -> Tuple[float, Optional
         shared, share = overlap(terms(finding.topic), inputs.memory)
         if shared >= MIN_SHARED and share >= MIN_SHARE and MEMORY_WEIGHT * share > best:
             best, source, interest = MEMORY_WEIGHT * share, "memory", None
-    return min(1.0, best * lesson_factor(inputs, f"{finding.topic} {text}")), interest, source
+    return min(1.0, best * lesson_factor(inputs, finding.topic, f"{finding.topic} {text}")), interest, source
 
 
 def novelty(inputs: OutreachInputs, slug: str, type: str) -> float:
@@ -616,7 +624,7 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-__all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "Care", "DIGEST_FLOOR", "FINDING_WINDOW", "Finding", "Followup",
+__all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "bears_on", "Care", "DIGEST_FLOOR", "FINDING_WINDOW", "Finding", "Followup",
            "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",

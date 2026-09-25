@@ -302,3 +302,19 @@ def test_a_followup_is_duty_work_with_the_owners_words_as_data():
     offer = outreach.followup_candidate(Followup("o-2", "lease renewal", "lease-renewal", "Want a hand?", offer=True,
                                                  words="Yes please, draft it."), inputs())
     assert "took up an offer of help with lease renewal" in offer.text and "Yes please, draft it." in offer.text
+
+
+def test_owner_verified_outreach_lessons_halve_or_lift_the_topics_they_name():
+    from protagine.mind.lessons import Lesson
+
+    def lesson(signature, kind, title="Some owner preference", when="anything at all"):
+        return Lesson(id="L-1", signature=signature, kind=kind, title=title, when_to_use=when, content="x",
+                      verified="owner")
+    for lessons, expected in (([lesson("outreach_finding:tidal-energy", "pitfall")], 0.5),
+                              ([lesson("topic:tidal-energy", "strategy")], 1.2),
+                              ([lesson("topic:kelp-farming", "pitfall")], 1.0),
+                              ([lesson("topic:x", "pitfall", "Tidal energy output news", "tidal energy output")], 0.5)):
+        state = inputs(interests=[declared(origin="mentioned")], lessons=lessons)
+        assert outreach.relevance(finding(), state)[0] == pytest.approx(0.4 * expected), lessons
+    lifted = inputs(interests=[declared(origin="mentioned")], lessons=[lesson("topic:tidal-energy", "strategy")])
+    assert outreach.relevance(finding(), lifted)[0] == pytest.approx(0.48)

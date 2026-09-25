@@ -1163,6 +1163,7 @@ class Mind:
             followups=followups)
         if findings:
             state.memory = self._owner_memory(now)
+            state.lessons = self._outreach_lessons()
         state.quotes = self._owner_words([*(item.turn for item in interests if item.turn),
                                           *(care.turn for care in cares if care.turn)])
         replies = self._owner_words([item.words for item in followups if item.words])
@@ -1199,6 +1200,18 @@ class Mind:
                                     commitment_due=_utc(promise.get("due_at")) if promise else None,
                                     offer=row.type in {"outreach_loop", "outreach_care"}))
         return items
+
+    def _outreach_lessons(self) -> List[Any]:
+        """The lessons the owner's verdicts taught about what they want to hear (``topic:*`` from their words,
+        ``outreach_*`` from their ratings of outreach): owner-verified and active only."""
+        if not self.lessons.enabled:
+            return []
+        try:
+            return [lesson for lesson in self.lessons.all() if lesson.status == "active" and lesson.verified == "owner"
+                    and str(lesson.signature).startswith(("topic:", "outreach_"))]
+        except Exception as error:
+            logger.warning("lessons unavailable for outreach (%s)", type(error).__name__)
+            return []
 
     def _age_findings(self, state: outreach_functions.OutreachInputs) -> None:
         """A finding not shared inside its window, or on a topic the owner muted, is settled: the digest

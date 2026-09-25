@@ -78,7 +78,8 @@ LESSON_SYSTEM = (
     "quote. Every operation cites the labels it rests on; an owner message it cites must be one you report "
     "as a verdict, and the operation quotes the owner's exact words from it (at least 12 characters). A "
     "strategy needs an owner verdict, or a result verified by the owner or a check; a Hermes failure teaches "
-    "only a pitfall. Prefer editing a current lesson (supersede, with its lesson_id) to adding a second one "
+    "only a pitfall. A message the agent sent the owner unasked that the owner rated is a result the owner "
+    "verified: it teaches what the owner does and does not want to hear about. Prefer editing a current lesson (supersede, with its lesson_id) to adding a second one "
     "about the same thing; retire a lesson only when the owner's verdict or a check shows it wrong. When the "
     "owner corrected a value, give the corrected value exactly as the owner wrote it (corrected_value). "
     "Return JSON {\"verdicts\": [...], \"ops\": [...]}; return empty lists when nothing was verified. Everything "
@@ -717,10 +718,15 @@ class Lessons:
 
     def _events(self, now: datetime) -> List[Any]:
         """The agent's own tasks and goals of the last two weeks that a verifier stands behind and the night
-        has not read in this state (``lessons_seen``), newest first."""
-        rows = self.store.intentions(kind=["task", "goal"], since=now - EVENT_WINDOW, limit=1000)
+        has not read in this state (``lessons_seen``), newest first, and the outreach messages the owner
+        rated (architecture 4.10: what the owner wants to hear about)."""
+        from .rank import OUTREACH_ANSWER, OUTREACH_TYPES
+        rows = self.store.intentions(kind=["task", "goal", "message"], since=now - EVENT_WINDOW, limit=1000)
         events = []
         for row in rows:
+            if row.kind == "message" and not (row.type in {*OUTREACH_TYPES, OUTREACH_ANSWER}
+                                              and self.verified_source(row) == "owner"):
+                continue
             seen = (row.result_metadata or {}).get("lessons_seen") if isinstance(row.result_metadata, dict) else None
             if self.verified_source(row) != "none" and seen != self._seen_key(row):
                 events.append(row)
@@ -773,6 +779,8 @@ class Lessons:
             plan = _clean(context.get("plan_body") or context.get("body"), PLAN_CHARS)
             if plan:
                 lines.append(f"    plan: {plan}")
+            if row.kind == "message" and context.get("text"):
+                lines.append(f"    message: {_clean(context.get('text'), PLAN_CHARS)}")
         text = "\n".join(lines)
         current = [lesson for lesson in self.all() if relevant(lesson, text)][:PACKET_LESSONS]
         if current:
