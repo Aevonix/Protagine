@@ -308,6 +308,20 @@ def _mind_section() -> str:
         return ""
 
 
+def _mind_open_questions(query_text: str) -> str:
+    """The questions the mind asked the owner that are still open and about this turn's subject (a
+    contradiction it asked about), or nothing. Never breaks the turn."""
+    mind = _mind()
+    if mind is None or not query_text:
+        return ""
+    try:
+        from protagine.mind.questions import open_questions
+        return "\n".join(f"- {line}" for line in open_questions(mind, query_text))
+    except Exception:
+        logger.debug("open questions unavailable", exc_info=True)
+        return ""
+
+
 def _mind_note_novel(query_text: str) -> None:
     """An owner turn memory recalled nothing for: a new topic, a little curiosity for the agent's own
     affect at the next tick (architecture 4.3). A no-op without a mind; never breaks the turn."""
@@ -827,6 +841,16 @@ def _viewer_is_guest(request: Request | None, person_id: Optional[str]) -> bool:
     if authority.anonymous or not authority.authenticated:
         return True
     return bool(person and person != owner_person_id())
+
+
+def _commitment_due(row) -> str:
+    """A commitment line's due part: the converted time, and beside it the words the person used for it
+    (capture's ``metadata.due_text``), so the context never offers only the conversion."""
+    if not row.get("due_at"):
+        return ""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    said = " ".join(str(metadata.get("due_text") or "").split()).replace('"', "'")[:120]
+    return f" (due: {row['due_at']}" + (f', said as "{said}"' if said else "") + ")"
 
 
 def _canonical_shared_commitments(rows, contact_id):
@@ -1873,7 +1897,7 @@ async def _assemble_sections(
                 lines = ["Open commitments (a live reservation held by another session is that session's work):"]
                 for c in all_comms:
                     status_tag = "[OVERDUE]" if c.get("status") == "overdue" or c['id'] in {item['id'] for item in overdue} else "[pending]"
-                    due = f" (due: {c.get('due_at', '')})" if c.get('due_at') else ""
+                    due = _commitment_due(c)
                     reservation = reservations.get(c['id'])
                     work_tag = ('; work=' + reservation['work_state']
                                 + ('' if _canonical_only else '; session=' + reservation.get('session_id', ''))) if reservation else ('; work=unclaimed' if reservations_available else '; work=unknown')
@@ -1932,6 +1956,11 @@ async def _assemble_sections(
                 mind_text = _mind_section()
                 if mind_text:
                     sections.append(ContextSection(id='protagine-mind', title='Mind', body=mind_text, priority=77))
+                # The mind's open questions about this turn's subject: statements that still disagree.
+                questions = _mind_open_questions(query_text)
+                if questions:
+                    sections.append(ContextSection(id='protagine-open-questions', title='Open questions',
+                                                   body=questions, priority=78))
                 if _situation_store is not None and re.search(r'\b(hardware|machine|server|model|endpoint|cluster|offline|online|running|doing|status)\b', query_text, re.I):
                     from protagine.self_model.situation import compact_situation
                     snapshot = _situation_store.snapshot(subject_person_id=person, viewer_scope='owner')

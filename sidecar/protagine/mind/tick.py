@@ -104,6 +104,12 @@ OUTREACH_HISTORY = timedelta(days=30)
 SHARED_FINDINGS = frozenset(FINDING_TYPES - {"mastery_investigation"})
 OWNER_MEMORY = timedelta(days=30)
 OWNER_MEMORY_TURNS = 300
+# Tasks formed to fulfil an owed item: each reports its outcome (done, failed, blocked) to the person the
+# item is owed to, once per outcome (``task_outcome``); the owner hears it as a notice, a contact only
+# on the owner's word on the exact text.
+REPORTED_TASK_TYPES = frozenset({"commitment_overdue"})
+TASK_OUTCOME = "task_outcome"
+TASK_OUTCOME_CHARS = 600
 # Questions only the owner answers: always an ask, whatever the level, settled by ``answer``.
 OWNER_QUESTIONS = frozenset({"link_proposal", "cadence_confirm"})
 # How far back the social drive reads its own intention rows (in-flight and unsent check-ins, and the
@@ -233,6 +239,7 @@ class Mind:
                                  commitments=commitments, followups=followups, autobiography=self.autobiography,
                                  clock=self.clock)
         self.outcomes.on_settled = self._on_settled
+        self.outcomes.on_blocked = self._on_blocked
         self.outbox.on_sent = self._on_sent
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.concerns = concerns if concerns is not None else Concerns(self.state_dir / MIND_DB, clock=self.clock)
@@ -1777,11 +1784,12 @@ class Mind:
                 break
             if concern.exhausted or not concern.detail.get("type"):
                 continue
-            if self.store.get_by_dedup_key(concern.dedup_key) is not None:
+            candidate = Candidate.from_detail(concern.detail)
+            if self._formed(concern.dedup_key, candidate):
                 # The obligation was reported once already (architecture 3.3); it does not compete again.
                 self.concerns.drop(concern.id, note="already intended", now=now)
                 continue
-            pairs.append((concern, Candidate.from_detail(concern.detail)))
+            pairs.append((concern, candidate))
         by_key = {candidate.dedup_key: concern for concern, candidate in pairs}
         weights = self.effective_weights()
         view = self.feelings.view()
@@ -1942,8 +1950,13 @@ class Mind:
         rendered.sort(key=lambda h: (not h["is_primary"], not h["verified"]))
         return rendered[:5]
 
+    def _formed(self, key: str, candidate: Candidate) -> bool:
+        """An intention exists under the candidate's key, or under the key an earlier release gave it."""
+        return any(self.store.get_by_dedup_key(each) is not None
+                   for each in (key, *drive_functions.former_keys(candidate)))
+
     async def _form(self, candidate: Candidate, score: float, now: datetime) -> Optional[StoredInitiative]:
-        if self.store.get_by_dedup_key(candidate.dedup_key) is not None:
+        if self._formed(candidate.dedup_key, candidate):
             return None
         to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
         stored = await self._may_contact(candidate.recipient)
@@ -2174,6 +2187,8 @@ class Mind:
                 logger.warning("reflector report not applied for %s (%s)", row.id, type(error).__name__)
         if self.faculties["outreach"] and self.owner_id:
             self._outreach_settled(row, outcome, now)
+        if outcome in {"done", "failed"}:
+            self._report_task(row, outcome)
         if outcome == "done":
             self._close_commitment(row)
             if concern is not None:
@@ -2206,6 +2221,49 @@ class Mind:
                 and (item["key"] == f"{o.MUTE_PREFIX}{slug(topic)}" or o.similar(str(item.get("text") or ""), topic))
                 for item in self.mind_state.items(o.MUTE_PREFIX))
             self._mark_finding(source[len("intention:"):], "muted" if muted else "digest", now)
+
+    def _on_blocked(self, row: StoredInitiative) -> None:
+        """A blocked task stays open; the person its obligation is owed to hears that it is stuck, once."""
+        self._report_task(row, "blocked")
+
+    def _report_task(self, row: StoredInitiative, outcome: str) -> None:
+        """The one word a task formed for an owed item gets: what became of it, to the person it is owed to.
+
+        A worker has no way to message anyone, so without this its result reached no one (a done
+        task closed the commitment silently; a failed one left it open and unsaid). The owner gets
+        it as a notice; a contact gets it only through authority with the owner's word on the exact
+        text (``ask_owner``), since the worker's report may carry what only the owner may see."""
+        if (row.kind != "task" or row.type not in REPORTED_TASK_TYPES or row.source_type != "commitment"
+                or not row.source_id or outcome not in {"done", "failed", "blocked"}):
+            return
+        key = f"{TASK_OUTCOME}:{row.id}:{outcome}"
+        if self.store.get_by_dedup_key(key) is not None:
+            return
+        record: Dict[str, Any] = {}
+        try:
+            record = dict(self.commitments.get(str(row.source_id)) or {}) if self.commitments is not None else {}
+        except Exception as error:
+            logger.debug("commitment %s unavailable for the report (%s)", row.source_id, type(error).__name__)
+        person = str(record.get("person_id") or row.entity_id or self.owner_id or "")
+        description = str(record.get("description") or row.description or "").strip()
+        head = {"done": f"Done: {description}.", "failed": f"I could not finish: {description}.",
+                "blocked": f"I am stuck on: {description}."}[outcome]
+        detail = " ".join(str(row.result or row.failed_reason or "").split())
+        if len(detail) > TASK_OUTCOME_CHARS:
+            detail = detail[: TASK_OUTCOME_CHARS - 1].rstrip() + "…"
+        text = f"{head} {detail}".strip()
+        title = f"{outcome}: {description}"[:160]
+        if not person or self._is_owner(person):
+            self.outbox.notice(type=TASK_OUTCOME, title=title, text=text, dedup_key=key)
+            return
+        candidate = Candidate(
+            type=TASK_OUTCOME, drive="duty", kind="message", title=title, dedup_key=key, salience=0.9, cost=0.05,
+            recipient=person, text=text, rationale="a task for an obligation to them finished",
+            evidence=[f"intention:{row.id}", f"commitment:{row.source_id}"], concern=f"report: {description}"[:160],
+            source_type="commitment", source_id=str(row.source_id), ask_owner=True, concern_kind="obligation")
+        self.concerns.bump(drive="duty", kind="obligation", summary=candidate.concern, dedup_key=key,
+                           salience=candidate.salience, sources=candidate.evidence, detail=candidate.as_detail(),
+                           now=self.clock())
 
     def _close_commitment(self, row: StoredInitiative) -> None:
         """The body's report of a done intention is what settles its commitment. The dispatched

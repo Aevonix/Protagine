@@ -245,10 +245,13 @@ def tick_effects(body):
 # Markdown emphasis and code marks are formatting, not wording: "the **blue file**" says "the blue file". An
 # underscore inside a word (a file name) stays; line breaks and runs of spaces read as one space.
 _MARKS = re.compile(r"[*`~]+|(?<![0-9A-Za-z])_+|_+(?![0-9A-Za-z])")
+# A hyphen joining two words is spelling, not wording: "reading-list" says "reading list". Read the same way
+# on both sides, an id such as "p-05" still matches itself; a dash between spaced words stays punctuation.
+_JOINING_HYPHEN = re.compile(r"(?<=\w)[-\u2010\u2011](?=\w)")
 
 
 def _plain(text):
-    return " ".join(_MARKS.sub("", text).split()).casefold()
+    return " ".join(_JOINING_HYPHEN.sub(" ", _MARKS.sub("", text)).split()).casefold()
 
 
 def _contains(text, token):

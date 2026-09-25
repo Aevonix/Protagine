@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from protagine.commitments.extract import request_confirmed
 from protagine.commitments.parties import ASSISTANT_KINDS, between_others, party
 from protagine.contacts.comms import evaluate_outreach
 
@@ -54,6 +55,9 @@ SOCIAL_TIERS = frozenset({"regular", "trusted", "inner_circle"})
 GRANTED_KINDS = frozenset({"notice", "check_in"})
 # Capture metadata kind of a recurring check-in the owner set for a contact (undated, no grant).
 CADENCE_KIND = "cadence"
+# Capture metadata kind of an item whose only effect is a word to the person when it falls due (a reminder,
+# a nudge, a word if something has not happened): a message, never a task, whoever does the underlying work.
+REMINDER_KIND = "reminder"
 
 
 def task_body(*, description: str, drive: str, concern: str, evidence: Iterable[str], context: str = "") -> str:
@@ -105,6 +109,29 @@ def schedule_key(row_id: Any, event: str, due: datetime) -> str:
     schedule that earns one new reminder and one new heads-up.
     """
     return f"commitment:{row_id}:{event}:{due.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def task_key(row: Dict[str, Any]) -> str:
+    """The dedup key of the one task an assistant-owed obligation gets per schedule the person set:
+    ``commitment:<id>:task``, and ``commitment:<id>:task:<turn>`` once a conversation rescheduled it
+    (capture's ``metadata.reschedule``, by ``conversation``, noting its turn). The deadline itself is
+    not in it: one the worker moves (a snooze) or a clock jump never tasks the same obligation again,
+    while the person asking again ("try it by five instead") does."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    moved = metadata.get("reschedule") if isinstance(metadata.get("reschedule"), dict) else {}
+    stamp = str(moved.get("note") or "").strip() if moved.get("by") == "conversation" else ""
+    return f"commitment:{row['id']}:task" + (f":{stamp}" if stamp else "")
+
+
+def former_keys(candidate: Any) -> Tuple[str, ...]:
+    """The keys the release before ``task_key`` formed the same intention under, which count as formed: an
+    obligation's task was keyed on its deadline (``commitment:<id>:overdue:<due>``), so a task that release
+    started is never started again after an upgrade."""
+    if (getattr(candidate, "type", None) != "commitment_overdue" or getattr(candidate, "kind", None) != "task"
+            or not getattr(candidate, "source_id", None)):
+        return ()
+    due = _utc(getattr(candidate, "due_at", None))
+    return (schedule_key(candidate.source_id, "overdue", due),) if due is not None else ()
 
 
 def heads_up_at(row: Dict[str, Any], due: Optional[datetime] = None) -> Optional[datetime]:
@@ -177,6 +204,11 @@ def _level(candidates: List[Candidate]) -> float:
 
 # -- duty -------------------------------------------------------------------------------
 
+def names_owner(name: Any, owner_id: str | None) -> bool:
+    """A recipient that is the owner themselves ("owner", "me", their contact id): never a third party."""
+    return party(name, owner_names=[owner_id] if owner_id else []) == "owner"
+
+
 def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tuple[str, str]]:
     """``(kind, recipient_id)`` of a row capture recorded as the owner's message to a third party
     (``metadata.kind`` ``notice`` with the owner's words, or ``check_in`` with a topic, and
@@ -186,10 +218,12 @@ def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tu
     party. A notice without words is an ordinary commitment too."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     kind = str(metadata.get("kind") or "")
-    if kind not in GRANTED_KINDS or metadata.get("grant") != "owner":
-        return None
+    if kind not in GRANTED_KINDS or metadata.get("grant") != "owner" or not request_confirmed(metadata):
+        return None      # no grant, or one the owner's confirmed words never stood behind
     if not owner_id or str(row.get("person_id") or "") != owner_id:
         return None
+    if names_owner(metadata.get("recipient"), owner_id):
+        return None      # addressed to the owner: their own reminder, never a message to a third party
     if kind == "notice" and not str(metadata.get("content") or "").strip():
         return None
     recipient = str(metadata.get("recipient_id") or "").strip()
@@ -218,9 +252,10 @@ def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Option
     resolved to a contact yet."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     kind = str(metadata.get("kind") or "")
-    if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"))
+    if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"
+                                      and request_confirmed(metadata)))
             or not owner_id or str(row.get("person_id") or "") != owner_id
-            or str(metadata.get("recipient_id") or "").strip()):
+            or str(metadata.get("recipient_id") or "").strip() or names_owner(metadata.get("recipient"), owner_id)):
         return None
     return str(metadata.get("recipient") or "").strip() or None
 
@@ -303,7 +338,8 @@ def owed_between_others(row: Dict[str, Any], *, owner_id: str | None) -> bool:
 def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None,
                          people_on: bool = True) -> Candidate:
     """The duty candidate of a commitment past its time. With the people faculty off an owner's
-    message to a third party is not one: the row takes its pre-M5 form below."""
+    message to a third party is not one: it is the owner's reminder that it is due, as is any
+    message row on the owner's lane that the mind may not send."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     person = str(row.get("person_id") or "") or None
     description = str(row.get("description") or "").strip()
@@ -347,6 +383,15 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             priority=priority / 100.0, concern_kind="obligation")
     key = schedule_key(row["id"], "overdue", due)
     obligor = _obligor(row, metadata, person, owner_id)
+    kind = str(metadata.get("kind") or "")
+    if kind in (*GRANTED_KINDS, REMINDER_KIND) and owner_id and person == owner_id:
+        # A word the owner asked for, or a message to someone the mind may not send (no confirmed grant,
+        # addressed to the owner, or the people faculty off), is the owner's own word when due, never a task.
+        obligor = "owner"
+    elif kind == REMINDER_KIND and obligor == "assistant":
+        # On a contact's lane too a word someone asked for is a word when due (to the owner, as every
+        # contact-lane reminder is), never a worker's task.
+        obligor = person or "owner"
     if obligor != "assistant":
         # A promise the owner made, or anyone else's promise the owner is tracking, is owed back to the
         # owner as words, not to a worker as work: the reminder is the effect, whichever lane the row
@@ -363,12 +408,15 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
             source_type="commitment", source_id=row["id"], priority=priority / 100.0, concern_kind="obligation")
     who = "the owner" if person and person == owner_id else (f"contact {person}" if person else "someone")
-    body = task_body(description=f"Fulfil the overdue commitment to {who}: {description}", drive="duty",
+    body = task_body(description=(f"Fulfil the overdue commitment to {who}: {description}\nYour final report "
+                                  f"is what {who} is told about it."), drive="duty",
                      concern=f"overdue commitment: {description}", evidence=evidence,
                      context=str(row.get("source_context") or ""))
+    # One obligation, one task per schedule the person set (``task_key``): a deadline the worker moves or
+    # a clock jump never tasks it again; the task's report is its one word.
     return Candidate(
         type="commitment_overdue", drive="duty", kind="task", title=f"Overdue: {description}"[:160],
-        dedup_key=key, salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
+        dedup_key=task_key(row), salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
         cost=0.15, recipient=person, text=body, rationale="a commitment is past due", evidence=evidence,
         concern=f"overdue commitment: {description}", invalidates_if=f"commitment:{row['id']}:resolved",
         success_check=check, due_at=due, source_type="commitment", source_id=row["id"], priority=priority / 100.0,
@@ -462,7 +510,10 @@ def duty(inputs: DriveInputs) -> DriveResult:
         went_out = inputs.heads_ups.get(str(row["id"]))
         if went_out is not None and now - went_out < inputs.heads_up_grace:
             continue   # the heads-up reached the owner minutes ago; one word at a time
-        candidates.append(commitment_candidate(row, due, now, owner_id=inputs.owner_id, people_on=inputs.people_on))
+        candidate = commitment_candidate(row, due, now, owner_id=inputs.owner_id, people_on=inputs.people_on)
+        if any(inputs.is_settled(key) for key in former_keys(candidate)):
+            continue   # settled under the key the previous release gave its task
+        candidates.append(candidate)
     for wait in inputs.reply_waits:
         if wait.get("eligibility") not in {None, "due"} or wait.get("native_task_id"):
             continue
@@ -777,7 +828,7 @@ __all__ = ["CHECK_IN_TYPES", "DEFAULT_WEIGHTS", "DRIVES", "DRIVE_FUNCTIONS", "DU
            "FAILURE_CLUSTER", "FAILURE_WINDOW", "GRANTED_KINDS", "HEADS_UP_GRACE", "HEALTH_STRIKES", "SOCIAL_TIERS",
            "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "cadence_confirm_candidate", "commitment_candidate", "curiosity",
            "duty", "effective_weights",
-           "enabled", "failure_signature", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
+           "enabled", "failure_signature", "former_keys", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
            "link_proposal_candidate", "mastery", "owed_between_others", "period", "recipient_unknown_candidate",
            "reply_wait_candidate",
            "research_candidate", "run", "schedule_key", "slug", "social", "span", "stale_task_candidate",

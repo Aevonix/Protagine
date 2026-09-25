@@ -3,6 +3,7 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 from .records import digest, read
@@ -79,7 +80,8 @@ TIMING_DEFINITIONS = {
 WORKLOAD_PROTOCOL = 'paired-request-workloads-1'
 WORKLOADS = ('foreground', 'background', 'unknown')
 WORKLOAD_BASIS = (
-    'Request workload is taken from explicit recorded workload metadata, or joined by unique '
+    'Request workload is taken from explicit recorded workload metadata (a kanban worker\'s calls are '
+    'recorded as background), or joined by unique '
     'trace_request_id to a private model_request event on paired-source-worker (background). '
     'Generic helper threads do not distinguish Hermes foreground from background review; '
     'missing, ambiguous or conflicting evidence stays unknown. Coverage describes observed '
@@ -711,6 +713,47 @@ def _native_turns(rows):
             'episodes_with_incomplete_turn': episodes}
 
 
+# Hermes delivers a cron response's silence marker unless it is the whole response or its own first or last
+# line (cron/scheduler.py), so a marker mid-line reaches the owner: output meant as nothing.
+SILENCE_MARKER = re.compile(r"\[SILENT\]|\bSILENT\b|\bNO[_ ]REPLY\b")
+TICK_OUTPUT_BASIS = (
+    'Tick sends are messages delivered while a body tick ran, not replies to a turn. A silence-marker send '
+    'carries the silence marker ([SILENT], SILENT, NO_REPLY) where Hermes still delivers it. A control episode '
+    '(nothing warranted) with any tick send had output where none was due: a leaked marker, a status report '
+    'or a wrong action. Descriptive, shown beside the score; never graded.')
+
+
+def _tick_output(rows, cases):
+    """What an arm delivered during body ticks, beside its score: the comparator's noise made visible."""
+    episodes = sends = markers = controls = sent_controls = 0
+    for row, case in zip(rows, cases):
+        body = (row.get('effects') or {}).get('body') or {}
+        ticks = [tick for tick in body.get('ticks') or [] if isinstance(tick, dict)]
+        if not ticks:
+            continue
+        episodes += 1
+        outbox = body.get('outbox') or []
+        texts = [str(entry.get('text') or '') for tick in ticks
+                 for entry in outbox[int(tick.get('outbox_before') or 0):int(tick.get('outbox_after') or 0)]
+                 if isinstance(entry, dict) and entry.get('via') != 'reply']
+        sends += len(texts)
+        markers += sum(bool(SILENCE_MARKER.search(text)) for text in texts)
+        oracle = ((case or {}).get('oracle') or {}).get('body') or {}
+        if oracle.get('action') == 'none':
+            controls += 1
+            sent_controls += bool(texts)
+    return {'episodes_with_ticks': episodes, 'tick_sends': sends, 'silence_marker_sends': markers,
+            'silence_marker_rate': markers / sends if sends else None, 'control_episodes': controls,
+            'control_episodes_with_tick_sends': sent_controls, 'basis': TICK_OUTPUT_BASIS}
+
+
+def _tick_output_cell(output):
+    if not output or not output.get('episodes_with_ticks'):
+        return 'no ticks'
+    return (f"{output['silence_marker_sends']}/{output['tick_sends']} carried a silence marker; "
+            f"{output['control_episodes_with_tick_sends']}/{output['control_episodes']} controls sent")
+
+
 def _resources(rows):
     per_arm = {}
     for arm, items in rows.items():
@@ -733,12 +776,14 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     labels, reference, profiles, rule = arms_of(manifest)
     treatment = next(arm for arm in labels if arm != reference)
     rows = {arm: [] for arm in labels}
+    cases = {arm: [] for arm in labels}
     workloads = {arm: [] for arm in labels}
     pairs = []
     for declared in manifest['pairs']:
         results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in labels}
         for arm in labels:
             rows[arm].append(results[arm])
+            cases[arm].append(declared['arms'][arm].get('case'))
             workloads[arm].append(_workload_observations(directory, declared['arms'][arm], results[arm]))
         complete = {arm: _completion(results[arm]) for arm in labels}
         projections = {arm: None for arm in labels}
@@ -777,6 +822,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'completion_percent': 100 * completed / declared_count if full else None,
             'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm]),
             'native_turns': _native_turns(rows[arm]),
+            'tick_output': _tick_output(rows[arm], cases[arm]),
             'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
@@ -898,8 +944,8 @@ def markdown(report):
         f"Comparable pairs: {report['comparable_pairs']}/{report['declared_episodes']}. "
         f"Arms: {', '.join(arms)}; comparator: {reference}. "
         f"Temperature: {'provider default' if report.get('temperature') is None else report['temperature']}.", '',
-        '| Arm | Profile | Attributed completions | Recorded outcomes | Incomplete agent turns |',
-        '| --- | --- | --- | --- | --- |']
+        '| Arm | Profile | Attributed completions | Recorded outcomes | Incomplete agent turns | Tick output |',
+        '| --- | --- | --- | --- | --- | --- |']
     profiles = report.get('profiles') or {}
     for arm in arms:
         row = report['arms'][arm]
@@ -910,7 +956,7 @@ def markdown(report):
         turns = row.get('native_turns') or _native_turns([])
         lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} | "
                      f"{turns['incomplete_agent_turns']}/{turns['agent_turns']} "
-                     f"in {turns['episodes_with_incomplete_turn']} episodes |")
+                     f"in {turns['episodes_with_incomplete_turn']} episodes | {_tick_output_cell(row.get('tick_output'))} |")
     score = report['paired_score']
     lines.extend(['', (f"Completion delta ({score.get('treatment', arms[1])} minus {score.get('comparator', reference)}): "
         f"{score['delta_percentage_points']:+.1f} percentage points. "

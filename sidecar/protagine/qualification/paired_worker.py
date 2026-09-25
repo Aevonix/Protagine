@@ -271,8 +271,39 @@ def bind_sender(agent, entry):
 # The disposable, single-owner fixture API has one key (protagine init's
 # api.key shape); the adapter's model tools are the plugin arms' extras.
 PAIRED_FIXTURE_SCOPES = None
-# The plugin's own model tools in plugin arms: its memory, and its mind's state and action log.
-PLUGIN_TOOLS = ['protagine_memory_search', 'protagine_memory_forget', 'protagine_self']
+# The plugin's own model tools in plugin arms, fixed per family for a comparison series: a generated family
+# declares its set (``plugin_tools``, paired_cases.GENERATED_PLUGIN_TOOLS), recorded in the plan, so one
+# series is never compared across a change of the treatment's tools. ``memory`` is the plugin's memory;
+# ``memory_self`` adds its mind's state and action log. A dataset that declares none gets the default.
+PLUGIN_TOOLS_PROTOCOL = 'paired-plugin-tools-1'
+PLUGIN_TOOL_SETS = {'memory': ['protagine_memory_search', 'protagine_memory_forget'],
+                    'memory_self': ['protagine_memory_search', 'protagine_memory_forget', 'protagine_self']}
+PLUGIN_TOOLS = PLUGIN_TOOL_SETS['memory_self']
+
+
+def plugin_tools(mode):
+    """The plugin arms' model tools for the dataset's declared set; the default when it declares none."""
+    if mode is None:
+        return list(PLUGIN_TOOLS)
+    if mode not in PLUGIN_TOOL_SETS:
+        raise ValueError('Unknown plugin tool set')
+    return list(PLUGIN_TOOL_SETS[mode])
+# The message every in-process kanban worker's conversation opens with. The harness writes it, so a model
+# call carrying it is a worker's: the body's background work (``request_workload``).
+KANBAN_WORKER_PROMPT = 'work kanban task '
+
+
+def request_workload(body):
+    """``background`` for a kanban worker's model call (its first user message is the worker prompt the
+    harness gives every worker, memory context appended or not), else None (not known)."""
+    for message in body.get('messages') or [] if isinstance(body, dict) else []:
+        if not isinstance(message, dict) or message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, list):
+            content = ' '.join(str(part.get('text') or '') for part in content if isinstance(part, dict))
+        return 'background' if isinstance(content, str) and content.startswith(KANBAN_WORKER_PROMPT) else None
+    return None
 SYSTEM = ('Complete the requested work using available evidence and tools. '
           'Workspace files are in /state/workspace. Preserve useful facts for later sessions. '
           'Distinguish confirmed facts, proposals and uncertainty. Do not claim an action '
@@ -299,7 +330,8 @@ def inspect_payload():
             'outbound': OUTBOUND_PROTOCOL,
             'people_instrument': PEOPLE_INSTRUMENT_PROTOCOL,
             'skills_dir': SKILLS_PROTOCOL,
-            'treatment_tools': PLUGIN_TOOLS, 'private_trace_protocol': trace_protocol,
+            'treatment_tools': PLUGIN_TOOLS, 'plugin_tools': PLUGIN_TOOLS_PROTOCOL,
+            'private_trace_protocol': trace_protocol,
             'workflow_protocol': paired_workflow_runtime.PROTOCOL,
             'workflow_runtime_sha256': hashlib.sha256(
                 Path(paired_workflow_runtime.__file__).read_bytes()).hexdigest(),
@@ -638,14 +670,24 @@ def background_backlog(path, now=None):
     return backlog
 
 
-def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, poll=DRAIN_POLL_SECONDS, wait=None):
+def unworked_queues():
+    """The ledger queues nothing in this arm works: the vector jobs of an arm whose embedder is declared off
+    (``PROTAGINE_EMBED_PROVIDER`` skip, as ``native_memory_worker.embedding_environment`` sets it)."""
+    return ('source_vector_jobs',) if os.environ.get('PROTAGINE_EMBED_PROVIDER', 'skip') == 'skip' else ()
+
+
+def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, poll=DRAIN_POLL_SECONDS, wait=None,
+                     skip=()):
     """Wait, never process, until the ledger owes nothing and runs nothing, a queue sits idle, the budget ends
-    or ``wait`` reports a stop; ``{status: drained|idle|budget|stopped|no_queue, waited_seconds, left}``."""
+    or ``wait`` reports a stop; ``{status: drained|idle|budget|stopped|no_queue, waited_seconds, left}``. The
+    queues in ``skip`` (``unworked_queues``) are neither waited for nor left; they are named in ``skipped``."""
     wait, started, idle_since = wait or time.sleep, time.monotonic(), None
     while True:
         backlog, elapsed = background_backlog(path), time.monotonic() - started
         if backlog is None:
             return {'status': 'no_queue', 'waited_seconds': 0.0, 'left': {}}
+        passed = sorted(table for table in backlog if table in skip)
+        backlog = {table: row for table, row in backlog.items() if table not in skip}
         owed, running = (sum(row[key] for row in backlog.values()) for key in ('owed', 'running'))
         idle_since = None if running else elapsed if idle_since is None else idle_since
         status = ('drained' if not owed and not running else 'idle' if idle_since is not None
@@ -654,7 +696,8 @@ def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, po
             status = 'stopped'
         if status:
             return {'status': status, 'waited_seconds': round(elapsed, 3),
-                    'left': {table: row for table, row in backlog.items() if any(row.values())}}
+                    'left': {table: row for table, row in backlog.items() if any(row.values())},
+                    **({'skipped': passed} if skip else {})}
 
 
 @contextmanager
@@ -815,6 +858,7 @@ def main():
     skill_tools = inputs.get('skill_tools')
     if skill_tools is not None and skill_tools not in SKILL_TOOLS:
         raise ValueError('Unknown skill tools mode')
+    treatment_tools = plugin_tools(inputs.get('plugin_tools'))
     turn_system = SYSTEM if note is None else f'{SYSTEM}\n{note}'
     if profile.get('curator'):
         paired_arms.install_curator(config)
@@ -837,7 +881,7 @@ def main():
               'tool_evidence': {'declared_turns': len(inputs['episodes']), 'turns_completed': 0,
                                 'tool_loading': tool_loading, 'message_timestamps': message_timestamps,
                                 'environment_note': inputs.get('environment_note'), 'outbound': outbound,
-                                'skill_tools': skill_tools}}
+                                'skill_tools': skill_tools, 'plugin_tools': inputs.get('plugin_tools')}}
     if phase is not None:
         result['workflow_phase'] = {'index': phase['index'], 'pid': os.getpid(),
                                     'start_turn': phase['start_turn']}
@@ -890,7 +934,8 @@ def main():
         # Observe before provider setup can start background requests. The
         # resource stack closes agents and the source worker before observation
         # ends, including on failures and at each process restart.
-        with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
+        with observe_requests(runtime['base_url'], diagnostic=trace,
+                              workload=request_workload) as requests, ExitStack() as resources:
             observer = None
             # The declared outbound path, identical in every arm (agent turns, workers, heartbeat).
             outbound_toolsets = install_outbound(outbound)
@@ -913,7 +958,7 @@ def main():
                     # last-in first-out): the audit ids the self family grades a self-report against.
                     resources.callback(lambda: audit.update(mind_audit()))
                 from toolsets import create_custom_toolset
-                create_custom_toolset('paired_protagine', 'Protagine plugin tools', tools=PLUGIN_TOOLS)
+                create_custom_toolset('paired_protagine', 'Protagine plugin tools', tools=treatment_tools)
                 toolsets.append('paired_protagine')
                 if not resuming:
                     records = people_records(inputs['initial_files'])
@@ -977,7 +1022,7 @@ def main():
 
                     def work():
                         try:
-                            outcome.update(worker.run_conversation(f'work kanban task {task.id}',
+                            outcome.update(worker.run_conversation(KANBAN_WORKER_PROMPT + task.id,
                                                                    system_message=SYSTEM))
                         except Exception as exc:
                             outcome['error'] = type(exc).__name__
@@ -1003,7 +1048,7 @@ def main():
                     protagine_flush()
                 drains.append({'index': index, 'before': before, **drain_background(
                     home / 'memory-state' / 'turn-idempotency.db', seconds=inputs.get('drain_seconds', DRAIN_SECONDS),
-                    wait=stop.wait)})
+                    wait=stop.wait, skip=unworked_queues())})
                 trace.record('drain', drains[-1])
 
             result['stage'] = 'running'

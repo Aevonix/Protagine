@@ -13,7 +13,7 @@ import pytest
 
 from protagine.mind.compose import Composer, PURPOSES, TASK, purpose_kind, template
 from protagine.mind.rank import Candidate
-from test_mind_social import C, CONTACT, OWNER, PAST, contact, make  # noqa: F401  (pytest fixture)
+from test_mind_social import C, CONTACT, OWNER, PAST, confirmed, contact, make  # noqa: F401  (pytest fixture)
 
 CANARY = "amber-cobalt-42"
 
@@ -87,8 +87,8 @@ def _seed_check_in(fx, *, topic="the quarterly figures", description=None):
     return fx.commitments.create(
         person_id=OWNER, description=description or f"Check in with {CONTACT} about {topic}",
         due_at=(fx.now + C).isoformat(), source_type="cognition",
-        metadata={"kind": "check_in", "recipient": CONTACT, "topic": topic, "grant": "owner",
-                  "counterpart": CONTACT, "obligor": "assistant"})
+        metadata=confirmed({"kind": "check_in", "recipient": CONTACT, "topic": topic, "grant": "owner",
+                            "counterpart": CONTACT, "obligor": "assistant"}))
 
 
 async def test_the_canary_in_the_concern_the_evidence_and_the_owner_turn_never_reaches_the_message(make):

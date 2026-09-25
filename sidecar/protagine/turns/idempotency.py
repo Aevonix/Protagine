@@ -725,14 +725,23 @@ class TurnIdempotencyLedger:
         """Recall direct source excerpts inside the already-authorized viewer."""
         if not contact_id:
             return []
+        from protagine.util.temporal import strip_arrival_stamps
         stop = {"the", "and", "that", "this", "what", "when", "where", "how", "you", "your", "was", "were", "are", "for", "with", "remember", "about"}
+        # The arrival stamp is when the question came, in every stamped message alike: not search terms.
+        text = strip_arrival_stamps(query[:4096])
+        # An identifier ("p-72", "B-12", "4.2m") is searched as the phrase of its pieces, first: split
+        # into one- and two-letter words it never took part, so a fact was found by its subject alone. One
+        # whose pieces are all words the search keeps anyway ("answer.json") needs no phrase of its own.
+        identifiers = list(dict.fromkeys(
+            piece.lower() for piece in re.findall(r"[^\W_]+(?:[-./][^\W_]+)+", text)
+            if any(len(part) <= 2 for part in re.findall(r"\w+", piece))))[:4]
         words = list(dict.fromkeys(
-            word.lower() for word in re.findall(r"\w+", query[:4096])
-            if len(word) > 2 and word.lower() not in stop
+            [*identifiers, *(word.lower() for word in re.findall(r"\w+", text)
+                             if len(word) > 2 and word.lower() not in stop)]
         ))[:12]
         if not words:
             return []
-        expression = " OR ".join('"' + word + '"' for word in words)
+        expression = " OR ".join('"' + word.replace('"', '') + '"' for word in words)
         from protagine.turns.audio import evidence_metadata
 
         with closing(self._connect()) as conn:

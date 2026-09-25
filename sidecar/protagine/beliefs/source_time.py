@@ -252,8 +252,12 @@ def _temporal_request_text(text: str) -> str:
     """Exclude delimited evidence, retaining a quoted date used as an operand.
 
     This only selects text for temporal interpretation. Retrieval still uses
-    the original query, including every quoted word and structured field.
+    the original query, including every quoted word and structured field. A
+    leading arrival stamp is when the message came, never a date it asks about.
     """
+    from protagine.util.temporal import strip_arrival_stamps
+    # Read as a date, an arrival stamp limited every stamped question to its own arrival day.
+    text = strip_arrival_stamps(text)
     text = re.sub(r"(?s)```.*?```|~~~.*?~~~", " ", text)
     text = re.sub(r"(?m)^\s*>[^\n]*", " ", text)
     decoder = json.JSONDecoder()

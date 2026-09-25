@@ -16,9 +16,9 @@ from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMEN
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
                             MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
                             OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
-                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL, QUIET_HOURS_PROTOCOL,
-                            SKILL_TOOLS,
-                            SKILLS_PROTOCOL, TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            PEOPLE_INSTRUMENT_PROTOCOL, PLUGIN_TOOL_SETS, PLUGIN_TOOLS_PROTOCOL, PROFILE_SWITCHES,
+                            EMBEDDING_PROTOCOL, QUIET_HOURS_PROTOCOL, SKILL_TOOLS, SKILLS_PROTOCOL, TOOL_LOADING_MODES,
+                            TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -330,6 +330,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     skill_tools = declared_mode(by_arm, 'skill_tools', tuple(SKILL_TOOLS), 'skill tools')
     if skill_tools is not None and payload.get('skills_dir') != SKILLS_PROTOCOL:
         raise ValueError('Declared skill tools require an image whose worker gives them to every arm')
+    plugin_tool_set = declared_mode(by_arm, 'plugin_tools', tuple(PLUGIN_TOOL_SETS), 'plugin tool set')
+    if plugin_tool_set is not None and payload.get('plugin_tools') != PLUGIN_TOOLS_PROTOCOL:
+        raise ValueError('A declared plugin tool set requires an image whose worker gives it to the plugin arms')
     # A plugin arm reads the contact records every arm is given only from its people store.
     people_seeded = any(labels[arm].get('plugin') for arm in labels) and any(
         PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
@@ -396,6 +399,10 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if skill_tools is not None:
         comparison['skill_tools'] = {'protocol': SKILLS_PROTOCOL, 'mode': skill_tools,
                                      'tools': list(SKILL_TOOLS[skill_tools])}
+    if plugin_tool_set is not None:
+        # The plugin arms' model tools, part of the series' identity (the comparison key).
+        comparison['plugin_tools'] = {'protocol': PLUGIN_TOOLS_PROTOCOL, 'mode': plugin_tool_set,
+                                      'tools': list(PLUGIN_TOOL_SETS[plugin_tool_set])}
     if people_seeded:
         comparison['people_instrument'] = PEOPLE_INSTRUMENT_PROTOCOL
     if embedding is not None:

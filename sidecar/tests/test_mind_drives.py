@@ -53,7 +53,7 @@ def test_duty_rises_with_overdue_commitments_reply_waits_stale_tasks_and_stalled
     assert set(by_type) == {"commitment_overdue", "commitment_deliverable", "reply_wait", "stale_task", "goal_stalled"}
     overdue = by_type["commitment_overdue"]
     assert overdue.kind == "task" and overdue.salience == pytest.approx(0.9)
-    assert overdue.dedup_key == schedule_key("c-1", "overdue", NOW - timedelta(hours=3))
+    assert overdue.dedup_key == "commitment:c-1:task"          # one task per schedule the person set
     assert overdue.success_check == {"kind": "commitment_resolved", "commitment_id": "c-1"}
     assert overdue.invalidates_if == "commitment:c-1:resolved" and "Report what you did" in overdue.text
     deliverable = by_type["commitment_deliverable"]
@@ -70,7 +70,7 @@ def test_duty_skips_settled_keys_and_counts_duty_misses_in_its_level():
     state = inputs(commitments=[{"id": "c-1", "person_id": OWNER, "description": "x", "priority": 50,
                                  "due_at": (NOW - timedelta(hours=1)).isoformat(), "status": "overdue"}],
                    expectation_misses=[{"domain": "commitment", "subject": "commitment:c-7", "expectation": "kept"}],
-                   settled={schedule_key("c-1", "overdue", NOW - timedelta(hours=1))})
+                   settled={"commitment:c-1:task"})
     level, candidates = duty(state)
     assert candidates == [] and level == pytest.approx(min(1.0, 0.8 / 2 + 0.1))
 
@@ -338,7 +338,7 @@ def test_an_owner_commitment_from_conversation_is_a_reminder_message_not_a_worke
     due = NOW - timedelta(hours=2, minutes=5)
     reminder = commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER)
     assert reminder.kind == "message" and reminder.type == "commitment_reminder" and reminder.recipient == OWNER
-    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)          # the same key as the task form has
+    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)          # keyed by its deadline
     assert "send the report" in reminder.text and due.strftime("%Y-%m-%d %H:%M UTC") in reminder.text
     assert reminder.text.endswith("2 h ago.") and "Report what you did" not in reminder.text
     assert reminder.invalidates_if == "commitment:c-7:resolved" and reminder.source_id == "c-7"
@@ -368,7 +368,10 @@ def test_who_owes_the_work_decides_between_a_reminder_and_a_task():
     promised = commitment_candidate(_owner_row(metadata={"obligor": "assistant"}), due, NOW, owner_id=OWNER)
     assert promised.kind == "task" and promised.type == "commitment_overdue" and promised.recipient == OWNER
     assert "Fulfil the overdue commitment to the owner: send the report" in promised.text
-    assert promised.dedup_key == commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key
+    # The reminder is keyed by its deadline (a moved deadline earns a new word); the task by the schedule
+    # the person set (a deadline the worker moves never tasks it again): test_obligation_effects.
+    assert promised.dedup_key == "commitment:c-7:task"
+    assert commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key.startswith("commitment:c-7:overdue:")
     _, candidates = duty(inputs(commitments=[_owner_row(metadata={"obligor": "assistant"})]))
     assert [c.type for c in candidates] == ["commitment_overdue"]
 

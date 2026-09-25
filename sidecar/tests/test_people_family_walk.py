@@ -67,6 +67,17 @@ def _turn(prompt):
     return said, stamp.group(1) if stamp else None
 
 
+CHASE = r'check in with them|ask them for it yourself|go straight to them|chase them directly'
+
+
+def _asking(body, contact, phrase):
+    """The owner's words that hand the chase over, from the sentence naming the contact to the one asking."""
+    sentences = re.split(r'(?<=[.!?;])\s+', body)
+    first = next(i for i, text in enumerate(sentences) if contact in text)
+    last = next(i for i, text in enumerate(sentences) if phrase in text)
+    return ' '.join(sentences[min(first, last):max(first, last) + 1])
+
+
 def _item(text, vocabulary):
     return next((item for item in vocabulary if item in text), None)
 
@@ -98,6 +109,8 @@ class RightModel:
             return self._answer('[]')
         if task == 'mind_compose':
             return self._answer(self.compose(prompt), tokens=40)
+        if task == 'source_claim_review':
+            return self._answer(json.dumps(self.review(prompt)))
         raise RuntimeError(f'the script has no answer for {task}')
 
     @staticmethod
@@ -120,7 +133,7 @@ class RightModel:
                      'counterpart': contact.group(0), 'obligor': 'assistant',
                      'metadata': {'kind': 'cadence', 'recipient': contact.group(0), 'topic': f'the {item}',
                                   'cadence_minutes': int(every.group(1))}}]
-        chase = re.search(r'check in with them|ask them for it yourself|go straight to them|chase them directly', body)
+        chase = re.search(CHASE, body)
         within = re.search(r'(?:within|in the next|inside|Should) (\d+) minutes', body)
         if contact and item and chase and within and stamp:
             from datetime import datetime, timedelta
@@ -129,8 +142,15 @@ class RightModel:
                      'due_at': due.isoformat(), 'priority': 70, 'source_type': 'cognition', 'listed_due': None,
                      'counterpart': contact.group(0), 'obligor': 'assistant',
                      'metadata': {'kind': 'check_in', 'recipient': contact.group(0), 'topic': f'the {item}',
-                                  'grant': 'owner'}}]
+                                  'asked': _asking(body, contact.group(0), chase.group(0)), 'grant': 'owner'}}]
         return []
+
+    @staticmethod
+    def review(prompt):
+        """The claim-review pass on a case-3 message: kept when the quoted words hand the chase over."""
+        proposals = json.loads(prompt)['proposals']
+        return {str(row['index']): {'keep': bool(re.search(CHASE, row['claim']['asked'])), 'reason': 'read'}
+                for row in proposals}
 
     @staticmethod
     def appraise(prompt):

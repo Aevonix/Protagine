@@ -34,6 +34,16 @@ PAST = timedelta(seconds=300)        # the family's PAST_HORIZON_SECONDS
 REGULAR = {"regular", "trusted", "inner_circle"}
 
 
+def confirmed(metadata, asked=None):
+    """A stored owner's message to a third party as capture leaves it once the claim-review pass kept the
+    owner's words asking for it (``commitments.extract.request_confirmed``): only such a row is sent."""
+    from protagine.commitments.extract import REQUEST_REVIEW_VERSION
+    asked = asked or f"If it has not happened by then, contact {metadata['recipient']} yourself"
+    return {**metadata, "asked": asked, "request_review": {
+        "version": REQUEST_REVIEW_VERSION, "keep": True, "reason": "the owner asks for it",
+        "recipient": metadata["recipient"], "quote": asked, "model_id": "test"}}
+
+
 def contact(cid, *, may_contact="ask", cadence=None, tier="regular", first_seen=T0, last=None, count=0, name=None):
     return {"contact_id": cid, "display_name": name or cid, "trust_tier": tier, "may_contact": may_contact,
             "cadence_minutes": cadence, "first_seen_at": first_seen.isoformat(),
@@ -425,7 +435,8 @@ async def test_permission_ask_holds_with_an_owner_ask_and_never_sends(make):
 async def test_a_never_contact_under_a_strong_reason_gets_nothing(make):
     fx = make([contact(CONTACT, may_contact="never", cadence=CADENCE)])
     fx.commitments.create(person_id=OWNER, description=f"Check on {CONTACT}", due_at=(fx.now + C).isoformat(),
-                          metadata={"kind": "check_in", "recipient": CONTACT, "topic": "their health", "grant": "owner"})
+                          metadata=confirmed({"kind": "check_in", "recipient": CONTACT, "topic": "their health",
+                                              "grant": "owner"}))
     fx.shift(C + PAST)
     for _ in range(3):
         await fx.tick()
@@ -503,8 +514,8 @@ async def test_a_granted_check_in_due_now_is_the_one_word_and_its_topic_carries_
     fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)])
     fx.commitments.create(person_id=OWNER, description=f"Check in with {CONTACT} on the budget draft",
                           due_at=(fx.now + C).isoformat(), source_type="cognition",
-                          metadata={"kind": "check_in", "recipient": CONTACT, "topic": "the budget draft",
-                                    "grant": "owner", "counterpart": CONTACT, "obligor": "assistant"})
+                          metadata=confirmed({"kind": "check_in", "recipient": CONTACT, "topic": "the budget draft",
+                                              "grant": "owner", "counterpart": CONTACT, "obligor": "assistant"}))
     fx.shift(C + PAST)
     assert [item["type"] for item in (await fx.tick())["formed"]] == ["commitment_check_in"]
     first, = await fx.send_all()

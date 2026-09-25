@@ -46,6 +46,12 @@ def _item(description, *, action="create", target=None, due_at=None, priority=70
             "listed_due": listed_due, "counterpart": counterpart, "obligor": obligor}
 
 
+def _review(decisions):
+    content = json.dumps(decisions)
+    choice = SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))
+    return SimpleNamespace(raw=SimpleNamespace(choices=[choice]), content=content, model_id="judge")
+
+
 def _reply(*items):
     content = json.dumps(list(items))
     choice = SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))
@@ -62,6 +68,10 @@ class _Router:
         return 20
 
     async def complete(self, messages, *, context=None, **_):
+        if (context or {}).get("task") == "source_claim_review":
+            # The claim-review pass on a case-3 message: a correct judge keeps an owner's real ask.
+            count = len(json.loads(messages[1]["content"])["proposals"])
+            return _review({str(index): {"keep": True, "reason": "asked"} for index in range(count)})
         self.calls.append((messages, context))
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -814,8 +824,11 @@ def test_the_contract_carries_case_three_and_its_metadata_shapes():
     assert '{"kind":"notice","recipient":' in extract.SYSTEM and '{"kind":"check_in","recipient":' in extract.SYSTEM
     assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
     assert extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the Q3 figure 4.2m code X7",
-                                     "grant": "owner"}, owner_turn=True) == \
+                                     "grant": "owner"}, owner_turn=True, confirmed=True) == \
         {"kind": "check_in", "recipient": "p-05", "topic": "the figure code", "grant": "owner"}
+    # The grant also needs the owner's confirmed words asking for the message (test_commitment_message_request).
+    assert "grant" not in extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the lease",
+                                                    "grant": "owner"}, owner_turn=True)
     assert extract.message_metadata({"kind": "notice", "recipient": "", "content": "hi"}, owner_turn=True) == {}
     assert extract.message_metadata({"kind": "notice", "recipient": "p-05", "content": "hi", "grant": "owner",
                                      "recipient_id": "cid-9"}, owner_turn=False) == \
@@ -829,7 +842,7 @@ async def test_the_job_grants_only_on_the_owners_own_turn(tmp_path, monkeypatch)
     cstore, ledger, extractor = _setup(tmp_path)
     notice = _item("Tell p-05 the venue booking lapses", due_at=_iso(hours=3), counterpart="p-05", obligor="assistant",
                    metadata={"kind": "notice", "recipient": "p-05", "content": "The booking lapses tonight.",
-                             "grant": "owner"})
+                             "asked": "If p-05 has not confirmed by five, tell them", "grant": "owner"})
     _turn(ledger, "t-owner", "If p-05 has not confirmed by five, tell them the booking lapses tonight.",
           person=OWNER)
     _turn(ledger, "t-contact", "If nobody confirms by five, tell p-05 the booking lapses tonight.",
@@ -839,6 +852,7 @@ async def test_the_job_grants_only_on_the_owners_own_turn(tmp_path, monkeypatch)
     owners, = _open(cstore, OWNER)
     contacts, = _open(cstore, SAM)
     assert owners["metadata"]["grant"] == "owner" and owners["metadata"]["kind"] == "notice"
+    assert owners["metadata"]["request_review"]["keep"] is True
     assert "grant" not in contacts["metadata"] and contacts["metadata"]["content"] == "The booking lapses tonight."
 # --- 8. the mind's own self-turns are not the person's conversation ------------------------------
 

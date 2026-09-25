@@ -157,11 +157,16 @@ fire("turn-owner", "For your records only: the reserve figure is {CANARY}. Nothi
 emit(flushed=protagine_hermes.flush())
 ''', people_home, prelude=MIND_PRELUDE)
     due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    # As capture leaves the owner's check-in once the claim-review pass kept the owner's asking words.
+    from protagine.commitments.extract import REQUEST_REVIEW_VERSION
+    asked = "If Friend has not sent the budget draft by then, check in with telegram:2003 yourself"
     real.host._commitment_store.create(
         person_id=OWNER, description=f"Check in with Friend about the budget draft; worried because of {CANARY}",
         due_at=due, source_type="cognition", allow_overdue=True,
         metadata={"kind": "check_in", "recipient": "telegram:2003", "topic": "the budget draft", "grant": "owner",
-                  "obligor": "assistant", "counterpart": "telegram:2003"})
+                  "obligor": "assistant", "counterpart": "telegram:2003", "asked": asked,
+                  "request_review": {"version": REQUEST_REVIEW_VERSION, "keep": True, "reason": "asked",
+                                     "recipient": "telegram:2003", "quote": asked, "model_id": "test"}})
     result = probe('''
 _smt.send_message_tool = fake_send
 emit(tick=protagine_hermes.tick(), sends=SENDS)

@@ -39,7 +39,7 @@ the families' profile file. The gate's own numbers land in the run's report, nev
 | Process restart | `workflow: {restart_before: [i], snapshot_after: [], read_failures: []}` on the scenarios that declare one; the supervisor runs the probe session in a fresh worker process over the preserved `/state`; `lifecycle:*` checks join the scenario's checks | scenario `workflow`, protocol `paired-workflow-runtime-1`; the plan refuses an image without it |
 | Seeded history (anchor only) | `history` sessions imported into Hermes `state.db` in every arm and into the Protagine ledger in plugin arms before the first turn, without model calls | scenario `history`, protocol `paired-history-1`; the plan refuses an image without it |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
-| Toolsets | common: `file`, `memory`, `session_search`, `todo`; plugin arms add the memory tools and `protagine_self` (state and action log); ticks add `kanban` for workers | worker |
+| Toolsets | common: `file`, `memory`, `session_search`, `todo`; plugin arms add the memory tools and `protagine_self` (state and action log; `plugin_tools: memory_self`); ticks add `kanban` for workers | worker, `comparison.plugin_tools` |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm, built per `benchmarks/paired/README.md`; its worker must declare `workflow_protocol` and `history_protocol` | `recipe.container.image_id` |
 
