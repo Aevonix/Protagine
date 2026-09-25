@@ -768,6 +768,26 @@ class Consolidation:
 
     # -- stage 3: contradictions ---------------------------------------------------------------
 
+    def open_conflict(self, claim_ids: Iterable[Any], now: datetime) -> Optional[Dict[str, Any]]:
+        """For a contradiction question's claims (its evidence): who said them and what they are about, while
+        two live statements about that subject still disagree; None once they agree (a correction, a
+        retraction) or when the claims are gone. ``mind.questions`` carries such a question to the owner's turn."""
+        ids = [str(item) for item in claim_ids if str(item or "").startswith("claim:")][:16]
+        if not ids:
+            return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT c.subject_key, c.predicate, s.contact_id FROM source_claims c JOIN turn_sources s "
+                f"ON s.turn_id=c.turn_id WHERE c.id IN ({','.join('?' for _ in ids)}) LIMIT 1", ids).fetchone()
+            if row is None:
+                return None
+            key = (str(row[0]), str(row[1]))
+            found = self._conflicts(self._live_claims(conn, str(row[2]), now)).get(key)
+        if found is None:
+            return None
+        return {"contact_id": str(row[2]), "subject_key": key[0], "predicate": key[1],
+                "subject": str(found[0].get("subject") or key[0])}
+
     def _conflicts(self, claims: Iterable[Mapping[str, Any]]) -> Dict[Tuple[str, str], Tuple[Dict[str, Any], Dict[str, Any], List[str]]]:
         """Per ``(subject_key, predicate)``: two live scalar claims with different values and overlapping validity."""
         groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}

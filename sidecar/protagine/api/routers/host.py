@@ -308,6 +308,20 @@ def _mind_section() -> str:
         return ""
 
 
+def _mind_open_questions(query_text: str) -> str:
+    """The questions the mind asked the owner that are still open and about this turn's subject (a
+    contradiction it asked about), or nothing. Never breaks the turn."""
+    mind = _mind()
+    if mind is None or not query_text:
+        return ""
+    try:
+        from protagine.mind.questions import open_questions
+        return "\n".join(f"- {line}" for line in open_questions(mind, query_text))
+    except Exception:
+        logger.debug("open questions unavailable", exc_info=True)
+        return ""
+
+
 def _mind_note_novel(query_text: str) -> None:
     """An owner turn memory recalled nothing for: a new topic, a little curiosity for the agent's own
     affect at the next tick (architecture 4.3). A no-op without a mind; never breaks the turn."""
@@ -1984,6 +1998,11 @@ async def _assemble_sections(
                 mind_text = _mind_section()
                 if mind_text:
                     sections.append(ContextSection(id='protagine-mind', title='Mind', body=mind_text, priority=77))
+                # The mind's open questions about this turn's subject: statements that still disagree.
+                questions = _mind_open_questions(query_text)
+                if questions:
+                    sections.append(ContextSection(id='protagine-open-questions', title='Open questions',
+                                                   body=questions, priority=78))
                 if _situation_store is not None and re.search(r'\b(hardware|machine|server|model|endpoint|cluster|offline|online|running|doing|status)\b', query_text, re.I):
                     from protagine.self_model.situation import compact_situation
                     snapshot = _situation_store.snapshot(subject_person_id=person, viewer_scope='owner')
