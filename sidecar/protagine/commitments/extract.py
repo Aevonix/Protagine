@@ -122,8 +122,9 @@ SYSTEM = (
     "(it happened) or \"cancel\" (no longer wanted).\n"
     "- A stall (\"not yet\", \"still on it\") or a partial update (one part done, the rest pending) about a "
     "NUMBERED item is NEITHER: record nothing for it. A status line about an obligation that is NOT on the "
-    "numbered list (how it stands: pending, not started, still owed) is its first mention: record it as a NEW "
-    "item like any other.\n"
+    "numbered list (how it stands: pending, not started, still owed) is its first mention: when it is one of "
+    "1-4, record it as a NEW item like any other; when the list says more open items are not listed, record "
+    "nothing for it (it may be one of them).\n"
     "- \"Do not remind me about X for now\" / \"park X, I'll say when it is live again\" is a HOLD: \"reschedule\" "
     "the listed item with due_at null. A hold is never a reminder and never a cancel. Reinstating a held item "
     "(\"remind me about X again, at T\") is \"reschedule\" with the new time, not a new item.\n\n"
@@ -339,6 +340,23 @@ def _when(row: Any) -> Optional[datetime]:
     return _utc(str(row["occurred_at"] or row["ingested_at"] or ""))
 
 
+def listed_first(existing: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+    """The open items in the order the prompt numbers them, and so the order an update's number points into.
+    When more are open than the prompt shows, the ones sharing the most words with the turn are shown (the
+    rest of the room by the store's order, priority then due date), so the item a turn is about is listed;
+    shown and unshown items each keep the store's order."""
+    if len(existing) <= OPEN_ITEMS_LISTED:
+        return list(existing)
+
+    def words(value: Any) -> set:
+        return {word for word in re.findall(r"\w+", str(value or "").casefold()) if len(word) > 3}
+    said = words(text)
+    ranked = sorted(range(len(existing)), key=lambda index: -len(said & words(existing[index].get("description"))))
+    shown = set(ranked[:OPEN_ITEMS_LISTED])
+    return [item for index, item in enumerate(existing) if index in shown] + [
+        item for index, item in enumerate(existing) if index not in shown]
+
+
 def _listed_wording(item: Dict[str, Any]) -> str:
     """The wording the prompt shows for an open item, and so the wording an update must echo."""
     return (item.get("description") or "?")[:100]
@@ -412,6 +430,9 @@ def build_prompt(*, user_message: str, assistant_message: str, conversation_text
             due = item.get("due_at")
             when = f"due {due}" if due else "no due"
             parts.append(f"\n[{index}] {_listed_wording(item)} ({when})")
+        more = len(existing) - OPEN_ITEMS_LISTED
+        if more > 0:
+            parts.append(f"\n({more} more open item{' is' if more == 1 else 's are'} not listed)")
     if rejections:
         parts.append("\n\nRecently CLOSED items, with why. [invalid] or [duplicate]: do NOT record it or anything "
                      "similar again. [obsolete]: it was withdrawn or dismissed; record it again only when this turn "
@@ -995,7 +1016,8 @@ class CommitmentExtractor:
                 return {}
             person_id = source["contact_id"]
             speaker_names = await self._names(person_id)
-            existing = await self._existing(commitments, person_id, speaker_names)
+            existing = listed_first(await self._existing(commitments, person_id, speaker_names),
+                                    f"{user_message}\n{assistant_message}")
             rejections = commitments.recent_rejections(limit=6) or []
             from protagine.util.temporal import resolve_communication_timezone
             prompt = build_prompt(user_message=user_message, assistant_message=assistant_message,
@@ -1072,5 +1094,5 @@ def contact_aliases(contacts_provider):
 
 __all__ = ["ACTIONS", "BACKOFF_SECONDS", "CADENCE_KIND", "CommitmentExtractor", "HOLD_RETRY_SECONDS", "ITEM_SCHEMA", "MAX_ATTEMPTS",
            "MESSAGE_KINDS", "OPEN_ITEMS_LISTED", "OUTPUT_BUDGET_TOKENS", "RESPONSE_SCHEMA", "SYSTEM", "TASK",
-           "build_prompt", "contact_aliases", "enqueue", "erase_removed", "initialize", "message_metadata",
-           "parse_items", "record_items"]
+           "build_prompt", "contact_aliases", "enqueue", "erase_removed", "initialize", "listed_first",
+           "message_metadata", "parse_items", "record_items"]

@@ -880,7 +880,30 @@ def test_a_status_line_about_an_unlisted_obligation_is_its_first_mention():
     from protagine.commitments import extract
     system = " ".join(extract.SYSTEM.split())
     assert "about a NUMBERED item is NEITHER: record nothing for it" in system
-    assert "NOT on the numbered list" in system and "is its first mention: record it as a NEW item" in system
+    assert "NOT on the numbered list" in system
+    assert "is its first mention: when it is one of 1-4, record it as a NEW item" in system
     example = system.split("They said: None of it started yet")[1].split("They said:")[0]
     assert example.count('"action":"create"') == 2 and "first mention" in example
     assert "[] (a stall on a listed item changes nothing)" in system
+
+
+async def test_the_item_a_turn_is_about_is_listed_when_more_are_open_than_the_prompt_shows(tmp_path):
+    """The prompt numbers at most OPEN_ITEMS_LISTED open items. Chosen by priority and due date alone, a person
+    with more lost the one a turn was about, and the status-line rule then told the model to record it again
+    as new: a duplicate obligation, duplicate nudges and an inflated load. The items that share words with the
+    turn are shown (numbered the same way for the prompt and for the update); the list says how many more are
+    open, and while it does, a status line about an item not on it records nothing."""
+    from protagine.commitments.extract import OPEN_ITEMS_LISTED, SYSTEM
+    cstore, ledger, extractor = _setup(tmp_path)
+    for index in range(1, OPEN_ITEMS_LISTED + 1):
+        cstore.create(person_id=PERSON, description=f"Open item number {index}", priority=90 - index)
+    lease = cstore.create(person_id=PERSON, description="Send Dana the signed lease", priority=60)
+    _turn(ledger, "t-1", "Still haven't started the lease for Dana.")
+    router = _Router(_reply(_item("Send Dana the signed lease", action="complete", target=OPEN_ITEMS_LISTED)))
+    assert await extractor.process_one(router) is True
+    prompt = router.prompt()
+    assert f"[{OPEN_ITEMS_LISTED}] Send Dana the signed lease (no due)" in prompt
+    assert "1 more open item is not listed" in prompt and f"Open item number {OPEN_ITEMS_LISTED} " not in prompt
+    assert cstore.get(lease["id"])["status"] == "fulfilled"          # the update found the item it was shown
+    system = " ".join(SYSTEM.split())
+    assert "when the list says more open items are not listed, record nothing for it" in system
