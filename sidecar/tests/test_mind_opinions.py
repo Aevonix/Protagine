@@ -225,7 +225,8 @@ def test_the_section_is_bounded_cited_and_carries_the_standing_sentence(fx):
     lines = [line for line in text.splitlines() if line.startswith("- Your recorded view on ")]
     assert 1 <= len(lines) <= 3 and all(len(line) <= 420 for line in lines)
     assert len(text) <= CONTEXT_CHARS and text.endswith(STANDING)
-    assert "You may disagree and still do what the owner authorizes; say so when you do." in STANDING
+    assert "the owner's decision are not evidence" in STANDING and "say so when you disagree" in STANDING
+    assert "Asked what you recommend, give your recorded view" in STANDING
     assert all("[opinion " in line and "Rests on:" in line and "(turn:view-" in line for line in lines)
 
 

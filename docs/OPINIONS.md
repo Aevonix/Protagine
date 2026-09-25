@@ -51,6 +51,16 @@ words or what the speaker said). Doubt, insistence, flattery and appeals to auth
 no admitted premise, and the agent's own words never revise, so pushback alone can never
 change a view.
 
+**The owner's decision is authority, not evidence.** Insistence that carries a choice ("Plan
+Birch is the plan") is admitted as a claim of kind `decision` from the owner's own turn. It
+decides what is done, not which option is better: it satisfies the new-premise rule on no
+route (a revise that names it, a form on the same topic, a form under another topic), and it
+is never a premise of a view, so a decision alone forms none (`invalid:support`). A proposal
+that brings it is kept beside the view it bears on as `owner_decision` (disposition
+`owner_decision`; the view is unchanged unless the proposal also brings new evidence, and a
+revision carries the decision forward). Forgetting where the decision was said removes the
+decision and leaves the view. A contact's decision stays an ordinary claim.
+
 **The soft limit.** Forming is not revising. A view changes at most once per rolling 24 h;
 a limited revision waits for the window and is not dropped. A correction to a premise the
 view cites, a verified task outcome and an owner reconsideration bypass the limit.
@@ -111,8 +121,10 @@ stance, reason, what would change them and what they rest on, fused with the sem
 index; views from the current session come first among those that match and fill any slot
 left), each with its id, reason, up to two premises
 (cited by the source the agent can open, `turn:<id>`, as recall cites it, or by
-`intention:<id>`) and what would change it, then the standing sentence: change a view only on new evidence;
-the agent may disagree and still do what the owner authorizes, and says so when it does.
+`intention:<id>`) and what would change it, with the owner's decision on its matter on a line of its own
+("The owner decided: ... your view stays as recorded", owner only), then the standing sentence: change a view
+only on new evidence, which the owner's decision is not; asked what it recommends, the agent gives its recorded
+view, does what the owner decides, and says so when it disagrees.
 When newer turns from the viewer have not been weighed yet, a line says so. For an owner
 turn that asks for a judgment when no view is relevant yet, the section only asks the
 agent to state its position and the evidence it rests on, because that reply is what the

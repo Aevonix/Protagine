@@ -73,8 +73,8 @@ def world(tmp_path, monkeypatch):
     return SimpleNamespace(ledger=ledger, store=store, clock=clock, path=tmp_path / 'turn-idempotency.db')
 
 
-def admit(world, turn_id, span):
-    """A completed claim job that admitted ``span`` of the turn's user message as a substantive event."""
+def admit(world, turn_id, span, memory_kind='substantive_event'):
+    """A completed claim job that admitted ``span`` of the turn's user message (a substantive event)."""
     from protagine.beliefs.source_claims import validated_claims
     from protagine.beliefs.source_projection import SourceClaimProjection
     from test_source_claim_projection import claim
@@ -83,7 +83,7 @@ def admit(world, turn_id, span):
     message = next(m for m in json.loads(row['messages_json']) if m['role'] == 'user')
     first = span.split()[0].strip('.,:')
     claims = validated_claims(json.dumps([claim(span, first, subject=first, predicate='reported record',
-                                                memory_kind='substantive_event')]),
+                                                memory_kind=memory_kind)]),
                               message=message['content'], prior=[], observed_at=None)
     assert claims
     for candidate in claims:
@@ -93,13 +93,13 @@ def admit(world, turn_id, span):
     assert SourceClaimProjection(world.ledger).commit(row, message, claims, model='fixture-extractor')
 
 
-def turn(world, turn_id, contact, user, reply=None, *, session=None, admitted=None):
+def turn(world, turn_id, contact, user, reply=None, *, session=None, admitted=None, memory_kind='substantive_event'):
     """One captured turn; its claim job completes, with ``admitted`` (a span of the user text) admitted."""
     messages = [{'role': 'user', 'content': user}] + ([{'role': 'assistant', 'content': reply}] if reply else [])
     world.ledger.record_source(turn_id, contact_id=contact, session_id=session or f'session-{contact}',
                                messages=messages)
     if admitted:
-        admit(world, turn_id, user if admitted is True else admitted)
+        admit(world, turn_id, user if admitted is True else admitted, memory_kind)
     with world.ledger._connect() as conn:
         conn.execute("UPDATE source_claim_jobs SET status='complete' WHERE turn_id=?", (turn_id,))
 
@@ -207,6 +207,51 @@ async def test_are_you_sure_three_times_costs_nothing_and_a_forced_revise_is_ref
         'new_evidence': [{'premise': 's1', 'why': 'the owner insists'}]}
     assert apply(world.store, packet, action, {}).disposition == 'no_new_premise'
     assert world.store.revisions()[0]['id'] == row['id'] and view(world) == before
+
+
+async def test_the_owners_decision_is_never_new_evidence_and_is_kept_apart_from_the_view(world):
+    """Insistence that carries a decision ("Plan Birch is the plan") is admitted as the owner's decision. It is
+    the owner's authority over what is done, never evidence about which plan is better: neither a revise that
+    names it nor a form on the same topic (the route to a revision) changes the view. It is stored beside
+    the view and shown on its own line, so "what do you recommend" still reads the agent's own view."""
+    row, _ = await formed(world, session='owner-1')
+    decision = 'Plan Birch is the plan.'
+    turn(world, 'decide', OWNER, f'I want Plan Birch. {decision} Change the recommendation.',
+         'Understood: Plan Birch.', session='owner-1', admitted=decision, memory_kind='decision')
+    caving = Router(lambda packet: form(stance="Plan Birch, by the owner's decision", premises=('p1',)))
+    assert await run_one(world.store, caving, enabled=True) is True
+    assert [p['kind'] for p in caving.packets[-1]['premises']] == ['owner_decision']
+    assert job(world, 'decide')['disposition'] == 'owner_decision'
+    [current] = world.store.revisions()
+    assert current['id'] == row['id'] and current['stance'] == 'Plan Ash'
+    assert current['owner_decision']['text'] == decision and current['owner_decision']['turn_id'] == 'decide'
+    packet = await build_packet(world.store, {'ref': 'decide', 'kind': 'turn', 'contact_id': OWNER})
+    assert apply(world.store, packet, revise(row['id']), {}).disposition == 'owner_decision'
+    assert [(r['id'], r['stance']) for r in world.store.revisions()] == [(row['id'], 'Plan Ash')]
+    text = view(world)
+    line = next(item for item in text.splitlines() if f"[opinion {row['id']}]" in item)
+    assert f"[opinion {row['id']}]: Plan Ash" in line and decision not in line
+    assert f"The owner decided: {decision} (turn:decide); your view stays as recorded." in [
+        item.strip() for item in text.splitlines()]
+    assert "You may disagree and still do what the owner authorizes" not in text
+    # A guest sees neither the owner's decision nor where it was said.
+    assert decision not in view(world, viewer=GUEST)
+
+
+async def test_new_evidence_revises_beside_the_owners_decision_which_the_new_view_does_not_rest_on(world):
+    row, _ = await formed(world)
+    decision = 'Plan Birch is the plan.'
+    record = 'Record s-77: over a 90-day measurement Plan Ash had an 11% defect rate and Plan Birch 4%.'
+    turn(world, 'both', OWNER, f'{decision} {record}', 'Noted.', admitted=decision, memory_kind='decision')
+    admit(world, 'both', record)
+    router = Router(lambda packet: revise(row['id'], evidence=('p1', 'p2')))
+    assert await run_one(world.store, router, enabled=True) is True
+    assert sorted(p['kind'] for p in router.packets[-1]['premises']) == ['claim', 'owner_decision']
+    assert job(world, 'both')['disposition'] == 'revised'
+    [current] = world.store.revisions()
+    assert current['stance'] == 'Plan Birch' and current['supersedes'] == row['id']
+    assert decision not in [p['text'] for p in current['premises']] and record in [p['text'] for p in current['premises']]
+    assert current['owner_decision']['text'] == decision
 
 
 async def test_pseudo_evidence_is_refused_same_content_under_a_new_id_and_a_repeated_citation(world):

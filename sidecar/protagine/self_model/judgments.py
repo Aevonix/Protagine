@@ -6,6 +6,9 @@ task outcome, a mind finding, the agent's own statement, or a quote carried over
 a migrated appraisal. The store, not the model, enforces the new-premise rule: a
 revision needs a current premise of a revising kind that the head does not already
 cite, by reference or by content, and forming under another topic is no way around it.
+The owner's decision (an admitted claim of kind ``decision`` from the owner's own turn) is
+authority over what is done, never evidence: it satisfies the rule on no route and is no
+premise of a view; it is kept beside the view it bears on (``owner_decision``).
 A revision never widens who may see a view, and the owner's controls are the owner's.
 Every formation, revision and withdrawal is an owner-audience autobiography entry in the
 ledger. The pass that proposes stances is ``protagine.mind.opinions``; the projection
@@ -92,6 +95,7 @@ class Premise:
     role: str = 'support'
     at: str = ''
     audience: str = ''     # 'all' only for a finding the mind marked public: research into its own interest
+    memory_kind: str = ''  # a claim's memory kind as admitted: an owner's ``decision`` is authority, not evidence
 
     def as_dict(self):
         return asdict(self) | {'corrects': list(self.corrects)}
@@ -159,6 +163,12 @@ def _audience(subject_kind, premises):
         p.kind == 'outcome' or (p.kind == 'finding' and p.audience == 'all') for p in premises) else 'owner'
 
 
+def _decision(premise):
+    """The owner's decision as it is kept beside a view: what was said, and where, so erasing it removes it."""
+    return {'text': premise.text, 'ref': premise.ref, 'turn_id': premise.turn_id,
+            'message_hash': premise.message_hash, 'at': premise.at}
+
+
 def _about(subject_kind, subject):
     return f' about {subject}' if subject_kind == 'person' else f' (approach to {subject})' if subject_kind == 'approach' else ''
 
@@ -212,7 +222,8 @@ def _admitted(conn, turn_id, message_hash, contact_id, *, corrects=False):
         text = str(claim.get('evidence') or claim.get('value') or '')
         result.append((Premise('claim', _claim_ref(row['id']), text[:PREMISE_CHARS], content_key(text),
                                turn_id, message_hash, contact_id, corrects=corrected,
-                               at=row['occurred_at'] or row['ingested_at'] or ''), bases))
+                               at=row['occurred_at'] or row['ingested_at'] or '',
+                               memory_kind=str(claim.get('memory_quality', {}).get('memory_kind') or '')), bases))
     return result
 
 
@@ -420,6 +431,13 @@ def erase_removed(conn, turn_id, session_id, retained):
             for table in ('turn_source_search', 'turn_sources', 'source_vector_jobs'):
                 conn.execute('DELETE FROM ' + table + ' WHERE turn_id IN (?,?,?)', entries)
             conn.execute('DELETE FROM opinion_jobs WHERE ref=?', (f"reconsider:{row['id']}",))
+    # The owner's decision beside a view is no premise of it: forgetting where it was said removes the decision only.
+    for row in conn.execute("SELECT id,payload_json FROM self_judgment_revisions "
+                            "WHERE json_extract(payload_json,'$.owner_decision.turn_id')=?", (turn_id,)).fetchall():
+        payload = json.loads(row['payload_json'] or '{}')
+        if (payload.get('owner_decision') or {}).get('message_hash') not in hashes:
+            payload.pop('owner_decision', None)
+            conn.execute('UPDATE self_judgment_revisions SET payload_json=? WHERE id=?', (_json(payload), row['id']))
     if not retained:
         conn.execute('DELETE FROM opinion_jobs WHERE ref=?', (turn_id,))
 
@@ -531,6 +549,11 @@ class SelfJudgments:
                        hashlib.sha256(identifier.encode()).hexdigest(), verified=str(get('verified') or ''),
                        at=at.isoformat() if isinstance(at, datetime) else str(at))
 
+    def decides(self, premise):
+        """Whether a premise is the owner's decision: authority over what is done, never evidence for a view."""
+        p = Premise.from_dict(premise)
+        return p.kind == 'claim' and p.memory_kind == 'decision' and bool(self.owner_id) and p.contact_id == self.owner_id
+
     def premise_current(self, premise):
         with closing(self.ledger._connect()) as conn:
             return _Sources(conn, self.owner_id).current(premise)
@@ -580,7 +603,7 @@ class SelfJudgments:
                   'audience': row['audience'], 'stance': '', 'reason': '', 'certainty': '', 'revise_if': '',
                   'stance_class': None, 'premises': [], 'supersedes': row['supersedes'], 'created_at': row['created_at'],
                   'source_turn_id': row['source_turn_id'], 'session_id': '', 'status': row['status'],
-                  'owner_correction': None, 'processor': json.loads(row['processor_json'] or '{}')}
+                  'owner_correction': None, 'owner_decision': None, 'processor': json.loads(row['processor_json'] or '{}')}
         if not row['topic']:
             result['status'] = 'withdrawn' if row['status'] == 'withdrawn' else 'erased'
             return result
@@ -594,7 +617,7 @@ class SelfJudgments:
                 premises = self._premises_of(conn, view)
             result.update(stance=data.get('stance', ''), reason=data.get('reason', ''), certainty=data.get('certainty', ''),
                           revise_if=view['revise_if'], stance_class=data.get('stance_class'), session_id=data.get('session_id', ''),
-                          premises=[p.as_dict() for p in premises])
+                          premises=[p.as_dict() for p in premises], owner_decision=data.get('owner_decision'))
         if row['status'] == 'current' and superseded:
             result['status'] = 'superseded'  # revised since: a later revision is the topic's head
         elif row['status'] == 'current' and not (premises and sources.retained(json.loads(row['dependency_json'] or '[]'))
@@ -808,11 +831,14 @@ class SelfJudgments:
                 refs.extend(found[1] if found else [])
         return refs
 
-    def _insert(self, conn, proposal, premises, dependencies, *, supersedes, floor='all'):
+    def _insert(self, conn, proposal, premises, dependencies, *, supersedes, floor='all', decision=None):
         """One revision, made the head. ``floor`` is the audience of the view it replaces: a
-        revision never widens who may see a view (the old view's conversation stays in its chain)."""
+        revision never widens who may see a view (the old view's conversation stays in its chain).
+        ``decision``: the owner's decision kept beside the view, never one of its premises."""
         payload = {'stance': proposal.stance, 'reason': proposal.reason, 'certainty': proposal.certainty,
                    'session_id': str(proposal.session_id or '')}
+        if decision:
+            payload['owner_decision'] = dict(decision)
         if proposal.stance_class:
             payload['stance_class'] = proposal.stance_class
         kind, _, rest = proposal.source_ref.partition(':')
@@ -882,10 +908,16 @@ class SelfJudgments:
                 premises = [self._canonical(sources, p) for p in clean.premises]
                 if None in premises:
                     return Result('invalid:premise_not_current')
+                decisions = [p for p in premises if self.decides(p)]
+                premises = [p for p in premises if not self.decides(p)]
+                if not any(p.role == 'support' for p in premises):
+                    return Result('invalid:support')      # the owner's decision alone is not the agent's view
                 held = self._held(conn, sources, clean, premises)
                 if held is not None:
                     return held
-                identifier, audience = self._insert(conn, clean, premises, self._dependencies(sources, premises), supersedes=None)
+                identifier, audience = self._insert(conn, clean, premises, self._dependencies(sources, premises),
+                                                    supersedes=None,
+                                                    decision=_decision(decisions[-1]) if decisions else None)
         if route is not None:
             return self.revise(route, replace(clean, new_evidence=tuple(
                 p.ref for p in clean.premises if p.kind in REVISING_KINDS)))
@@ -929,19 +961,31 @@ class SelfJudgments:
                 original = self._original(conn, row)
                 earlier = self._premises_of(conn, original) if original is not None else []
                 allowed = {p.ref for p in earlier}
-                if any(p.ref not in allowed and p.kind not in REVISING_KINDS for p in clean.premises):
+                if any(p.ref not in allowed and (p.kind not in REVISING_KINDS or self.decides(p)) for p in clean.premises):
                     return Result('invalid:premise', stance_id)
                 if len(premises) != len(clean.premises):
                     return Result('invalid:premise_not_current', stance_id)
                 merged, new = premises, [p for p in premises if p.ref not in allowed]
                 old = json.loads(original['payload_json']).get('stance', '') if original is not None else ''
                 floor = original['audience'] if original is not None else 'owner'
+                decision = json.loads((original or row)['payload_json']).get('owner_decision')
             else:
                 earlier = self._premises_of(conn, row)
                 refs, keys = {p.ref for p in earlier}, {p.key for p in earlier}
+                # The owner's decision is authority, never new evidence (form-to-revise comes here too): it is
+                # kept beside the view, which stays as it is unless something else in the proposal is new.
+                decisions = [p for p in premises if self.decides(p) and p.ref not in refs]
+                premises = [p for p in premises if not self.decides(p)]
+                decision = (_decision(decisions[-1]) if decisions
+                            else json.loads(row['payload_json']).get('owner_decision'))
                 new = [p for p in premises if p.ref in clean.new_evidence and p.kind in REVISING_KINDS
                        and p.ref not in refs and p.key not in keys]
                 if not new:
+                    if decisions:
+                        payload = json.loads(row['payload_json'] or '{}') | {'owner_decision': decision}
+                        conn.execute('UPDATE self_judgment_revisions SET payload_json=? WHERE id=?',
+                                     (_json(payload), stance_id))
+                        return Result('owner_decision', stance_id)
                     return Result('no_new_premise', stance_id)
                 if not any(set(p.corrects) & refs or (p.kind == 'outcome' and p.verified in VERIFIED_OUTCOMES) for p in new):
                     recent = [r[0] for r in conn.execute('''SELECT created_at FROM self_judgment_revisions
@@ -960,7 +1004,8 @@ class SelfJudgments:
             if not any(p.role == 'support' for p in merged):
                 return Result('invalid:support', stance_id)
             dependencies = self._dependencies(sources, merged) + json.loads(row['dependency_json'] or '[]')
-            identifier, audience = self._insert(conn, clean, merged, dependencies, supersedes=stance_id, floor=floor)
+            identifier, audience = self._insert(conn, clean, merged, dependencies, supersedes=stance_id, floor=floor,
+                                                decision=decision)
         evidence = '; '.join(p.text[:120] for p in new[:2])
         self._entry(identifier, 'revised', f"I changed my view on {clean.topic}{_about(clean.subject_kind, clean.subject)}: "
                     f"now {clean.stance} (was: {old}). Because: {clean.reason}" + (f" New evidence: {evidence}." if evidence else '')

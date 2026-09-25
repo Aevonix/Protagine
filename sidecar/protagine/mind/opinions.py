@@ -52,9 +52,13 @@ APPROACH_TOPIC = "approach"
 FAILURE_RUN = 3
 OUTCOME_WINDOW = timedelta(days=30)
 CONTEXT_CHARS, LINE_CHARS, CONTEXT_STANCES = 1400, 420, 3
+# The owner's decision is authority over what is done, never evidence for a view: it is shown beside the view it
+# bears on, and a question about what the agent recommends reads the view.
 STANDING = ("Change a recorded view only on new evidence: a new record or measurement, an observed outcome, a "
-            "research result or a correction to a premise it cites. Doubt, insistence, flattery or the same claim "
-            "again are not evidence. You may disagree and still do what the owner authorizes; say so when you do.")
+            "research result or a correction to a premise it cites. Doubt, insistence, flattery, the same claim "
+            "again or the owner's decision are not evidence. Asked what you recommend, give your recorded view; do "
+            "what the owner decides, and say so when you disagree.")
+DECISION_CHARS = 200
 # Recording is automatic: the reply is read after the turn. A cue that said it "becomes your recorded view"
 # sent the model to write the stance through protagine_self, a read-only tool, until the iteration cap.
 CUE_LINE = ("When you give a recommendation or judgment, state it and the evidence it rests on in your reply; it "
@@ -83,7 +87,9 @@ stance's own revise_if. Name each such premise in new_evidence with why. None of
 ("are you sure?"), insistence, flattery, appeals to authority or to what others think, a claim with no data, a \
 new reading of a premise the stance already cites, a record about something the stance does not depend on, the \
 same claim again under another name or id, and the agent's own statements. A premise that agrees is no reason to \
-revise. Never adopt a conclusion because the speaker holds it.
+revise. Never adopt a conclusion because the speaker holds it. A premise of kind "owner_decision" is what the owner \
+decided: their call on what is done, never evidence for or against a stance; a revise that names it keeps the stance \
+and records the decision beside it.
 For an owner request to reconsider, re-examine the stance's premises; revise it only as they support, otherwise \
 answer "none", which withdraws the view.
 Shapes:
@@ -235,8 +241,10 @@ def _stance_entry(row: Mapping[str, Any], *, stance_id: Optional[int] = None) ->
                          for p in premises[:8]]}
 
 
-def _premise_entries(premises: List[Any], statements: List[Any], stances: Dict[int, Dict[str, Any]]):
-    """Local ids for the call, and which stances already cite (or are corrected by) each premise."""
+def _premise_entries(premises: List[Any], statements: List[Any], stances: Dict[int, Dict[str, Any]], *,
+                     decides: Any = None):
+    """Local ids for the call, and which stances already cite (or are corrected by) each premise. An owner's
+    decision (``decides``, the store's rule) is shown as ``owner_decision``: authority, not evidence."""
     cited: Dict[int, Tuple[set, set]] = {}
     for stance_id, row in stances.items():
         refs = {str(_premise_dict(p).get("ref") or "") for p in row.get("premises") or []}
@@ -247,7 +255,8 @@ def _premise_entries(premises: List[Any], statements: List[Any], stances: Dict[i
     for index, premise in enumerate(premises, 1):
         local = f"p{index}"
         mapping[local] = premise
-        entries.append({"id": local, "kind": premise.kind, "text": _clip(premise.text, STATEMENT_CHARS),
+        kind = "owner_decision" if callable(decides) and decides(premise) else premise.kind
+        entries.append({"id": local, "kind": kind, "text": _clip(premise.text, STATEMENT_CHARS),
                         "cited_by": [sid for sid, (refs, keys) in cited.items()
                                      if premise.ref in refs or (premise.key and premise.key in keys)],
                         "corrects": [sid for sid, (refs, _) in cited.items() if set(premise.corrects or ()) & refs]})
@@ -317,7 +326,8 @@ async def build_packet(store: Any, job: Mapping[str, Any]):
                                semantic_turn_ids=await _semantic_turn_ids(store, query))
         stances = {int(row["id"]): row for row in rows}
         stances = dict(list(stances.items())[:PACKET_STANCES])
-        mapping, entries, spoken = _premise_entries(premises, statements, stances)
+        mapping, entries, spoken = _premise_entries(premises, statements, stances,
+                                                    decides=getattr(store, "decides", None))
         data = {"kind": "turn", "speaker": {"id": speaker, "is_owner": owner}, "said": [t[:TEXT_CHARS] for t in said[:4]],
                 "reply": reply[:REPLY_CHARS], "premises": entries, "statements": spoken,
                 "stances": [_stance_entry(row) for row in stances.values()]}
@@ -693,7 +703,24 @@ class Opinions:
     # -- B.4 turn context ----------------------------------------------------------------------
 
     @staticmethod
-    def _line(row: Mapping[str, Any], *, cite: bool = True) -> str:
+    def _decision_line(row: Mapping[str, Any]) -> str:
+        """The owner's decision on a view's matter, on its own line: the owner's call, not the agent's view."""
+        decision = row.get("owner_decision") if isinstance(row.get("owner_decision"), Mapping) else {}
+        if not str(decision.get("text") or "").strip():
+            return ""
+        where = f"turn:{decision['turn_id']}" if decision.get("turn_id") else str(decision.get("ref") or "")
+        return (f"  The owner decided: {_clip(decision['text'], DECISION_CHARS)} ({where}); your view stays as "
+                "recorded.")
+
+    @classmethod
+    def _line(cls, row: Mapping[str, Any], *, cite: bool = True) -> str:
+        """One view, bounded, and for the owner (``cite``: their ledger rows) the owner's decision beside it."""
+        view = cls._view_line(row, cite=cite)
+        decision = cls._decision_line(row) if cite else ""
+        return f"{view}\n{decision}" if decision else view
+
+    @staticmethod
+    def _view_line(row: Mapping[str, Any], *, cite: bool = True) -> str:
         """One view, bounded. ``cite`` quotes what it rests on: the owner's ledger rows, so only for the owner."""
         head = f"- Your recorded view on {_clip(row.get('topic'), 80)}{_about(row)} [opinion {row['id']}]: "
         support = [p for p in (_premise_dict(p) for p in row.get("premises") or [])

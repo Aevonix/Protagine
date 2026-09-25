@@ -169,6 +169,40 @@ def test_new_premise_rule_refuses_statements_repeats_and_restatements_but_revise
     assert [r['id'] for r in state.revisions()] == [result.stance_id]
 
 
+def test_the_owners_decision_is_authority_on_every_route_and_a_contacts_decision_stays_a_claim(judgments):
+    """An owner's decision (a claim of kind decision from the owner's own turn) never satisfies the
+    new-premise rule: not as a revision's new evidence, not re-formed on the same topic, and not as the
+    only support of a view formed under another topic. It is kept beside the view, and forgetting where
+    it was said removes it without touching the view. A contact's decision is still a claim."""
+    state, _ = judgments
+    source(state, 'first', 'Inspection s-12 found 3 of 40 seals cracked after the long run without checkpoints.')
+    stance = formed(state)
+    source(state, 'decided', 'Checkpoints are dropped for long work from now on.', memory_kind='decision')
+    decided = state.admitted_premises('decided')
+    assert [(p.kind, p.memory_kind) for p in decided] == [('claim', 'decision')]
+    revised = state.revise(stance, proposal(decided, stance='No checkpoints.', new_evidence=[decided[0].ref],
+                                            source_ref='turn:decided'))
+    assert (revised.disposition, revised.stance_id) == ('owner_decision', stance)
+    assert state.form(proposal(decided, stance='No checkpoints.', source_ref='turn:decided')).disposition == (
+        'owner_decision')
+    rival = state.form(proposal(decided, topic='dropping checkpoints', stance='No checkpoints.',
+                                source_ref='turn:decided', session_id='session-decided'))
+    assert rival.disposition == 'invalid:support'
+    [row] = state.revisions()
+    assert row['id'] == stance and row['stance'] == 'I favor explicit checkpoints for long local work.'
+    assert row['owner_decision'] == {'text': 'Checkpoints are dropped for long work from now on.',
+                                     'ref': decided[0].ref, 'turn_id': 'decided',
+                                     'message_hash': decided[0].message_hash, 'at': decided[0].at}
+    state.ledger.erase_sources(contact_id='contact-a', turn_ids=['decided'])
+    [row] = state.revisions()
+    assert row['id'] == stance and row['owner_decision'] is None
+    source(state, 'theirs', 'Checkpoints were dropped by the build team for long work.', memory_kind='decision',
+           contact_id='contact-b')
+    theirs = state.admitted_premises('theirs')
+    assert state.revise(stance, proposal(theirs, stance='No checkpoints.', new_evidence=[theirs[0].ref],
+                                         source_ref='turn:theirs')).disposition == 'revised'
+
+
 def test_a_revision_rests_first_on_its_new_evidence_and_not_on_the_words_it_replaced(judgments):
     """The revised view is read with what now supports it: the new evidence first, then the data
     the old view rested on (kept, so it can never come back as new). The agent's earlier words
