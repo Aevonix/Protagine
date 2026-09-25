@@ -843,32 +843,6 @@ def _viewer_is_guest(request: Request | None, person_id: Optional[str]) -> bool:
     return bool(person and person != owner_person_id())
 
 
-# The owner's items a contact's turn may see: an obligation between the owner and them. Words the owner
-# means to send later (a notice's content, a check-in's topic), a cadence and a deliverable stay the owner's.
-_OWNER_ITEM_PRIVATE_KINDS = frozenset({"notice", "check_in", "cadence", "deliverable"})
-_OWNER_ITEMS_SHOWN = 5
-
-
-async def _owner_items_with(contact_id, owner_id, contact_record):
-    """The owner's open items that name this contact as a party (by contact id or display name), for the
-    contact's own turn: the model answering them knows what the owner owes them and what they owe the
-    owner (families' deadline-moved-by-contact: "I need it in 13 minutes, not 47"). Wording and due time
-    only; never an item about anyone else, never a message kind."""
-    finder = getattr(_commitment_store, "get_open_involving", None)
-    if not contact_id or not owner_id or contact_id == owner_id or finder is None:
-        return []
-    aliases = [contact_id]
-    try:
-        name = getattr(await contact_record(contact_id), "display_name", None)
-    except Exception:
-        name = None
-    if name:
-        aliases.append(str(name))
-    rows = [row for row in finder(aliases) if row.get("person_id") == owner_id
-            and str((row.get("metadata") or {}).get("kind") or "") not in _OWNER_ITEM_PRIVATE_KINDS]
-    return rows[:_OWNER_ITEMS_SHOWN]
-
-
 def _commitment_due(row) -> str:
     """A commitment line's due part: the converted time, and beside it the words the person used for it
     (capture's ``metadata.due_text``), so the context never offers only the conversion."""
@@ -1751,13 +1725,6 @@ async def _assemble_sections(
                           else _facts_store.automatic_view())
     sections: list[ContextSection] = []
     query_text = body.incoming_message.content if body.incoming_message else ""
-    # The contact's record, read at most once per assembly (the digest and the owner's items with them).
-    _contact_reads: dict = {}
-
-    async def _contact_record(cid):
-        if cid not in _contact_reads:
-            _contact_reads[cid] = await _contacts_store.get(cid) if _contacts_store is not None else None
-        return _contact_reads[cid]
 
     # Read authenticated work before recall selection. Native requests still
     # refresh this observation at their existing model boundary.
@@ -1917,10 +1884,6 @@ async def _assemble_sections(
             _seen_ids = {c.get("id") for c in _listed}
             all_comms = _listed + [c for c in overdue[:5]
                                    if c.get("id") not in _seen_ids]
-            # A contact's turn: the owner's open items with them, by wording and due time only.
-            owner_items = (await _owner_items_with(contact_id, owner_id, _contact_record)
-                           if _canonical_only and contact_id else [])
-            lines = []
             if all_comms:
                 from protagine.commitments.work import CommitmentWork
                 reservations = {}
@@ -1939,11 +1902,6 @@ async def _assemble_sections(
                     work_tag = ('; work=' + reservation['work_state']
                                 + ('' if _canonical_only else '; session=' + reservation.get('session_id', ''))) if reservation else ('; work=unclaimed' if reservations_available else '; work=unknown')
                     lines.append(f"- {status_tag} id={c['id']}; {c.get('description', '')}{due}{work_tag}")
-            if owner_items:
-                lines.append("The owner's open items with this person (wording and due time only):")
-                for c in owner_items:
-                    lines.append(f"- {c.get('description', '')}" + (f" (due: {c['due_at']})" if c.get("due_at") else ""))
-            if lines:
                 sections.append(ContextSection(
                     id="protagine-commitments",
                     title="Pending Commitments",
@@ -2048,7 +2006,7 @@ async def _assemble_sections(
     if _contacts_store is not None and contact_id and contact_id != owner_id and faculty_on("people"):
         try:
             from protagine.contacts.digest import MAX_CHARS as _DIGEST_CHARS
-            _digest = str(getattr(await _contact_record(contact_id), "digest", None) or "").strip()
+            _digest = str(getattr(await _contacts_store.get(contact_id), "digest", None) or "").strip()
             if _digest:
                 sections.append(ContextSection(
                     id="protagine-person", title="About this person",
