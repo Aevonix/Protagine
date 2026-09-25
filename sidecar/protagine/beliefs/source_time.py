@@ -248,12 +248,28 @@ class MemoryTimeQuery:
         return not claim.get("superseded_by")
 
 
+# A host's arrival stamp in front of a message (Hermes gateway message timestamps: ``[Tue 2026-04-28
+# 13:40:53 CEST]``, or the older ``[2026-04-13T17:02:06+0200]``) says when the message came, not what
+# time it asks about: read as a date, it limited every stamped question to its own arrival day.
+_ARRIVAL_STAMP = re.compile(
+    r"^\s*\[(?:[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: [A-Za-z0-9_+\-/:]+)?"
+    r"|\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*")
+
+
+def _without_arrival_stamps(text: str) -> str:
+    while (match := _ARRIVAL_STAMP.match(text)) is not None:
+        text = text[match.end():]
+    return text
+
+
 def _temporal_request_text(text: str) -> str:
     """Exclude delimited evidence, retaining a quoted date used as an operand.
 
     This only selects text for temporal interpretation. Retrieval still uses
-    the original query, including every quoted word and structured field.
+    the original query, including every quoted word and structured field. A
+    leading arrival stamp is when the message came, never a date it asks about.
     """
+    text = _without_arrival_stamps(text)
     text = re.sub(r"(?s)```.*?```|~~~.*?~~~", " ", text)
     text = re.sub(r"(?m)^\s*>[^\n]*", " ", text)
     decoder = json.JSONDecoder()
