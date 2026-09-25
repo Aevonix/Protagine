@@ -72,8 +72,24 @@ The design is in
    `assistant`, with `metadata.kind` `notice`
    (the owner's own words, sent verbatim) or `check_in` (a topic of at most
    six words, never a figure, amount or code, composed at send time), the
-   `recipient` as named and `grant: owner`. Only the owner's own turn keeps
-   the grant; the same shape from a contact is an ordinary item. A message to
+   `recipient` as named and `grant: owner`. It reaches someone the owner did
+   not write to, so it exists only on the owner's own words asking for it:
+   the extractor quotes them (`asked`, naming the recipient), code checks the
+   quote is the owner's and names the recipient, and the claim-review pass
+   (`source_claims.review_proposals`) confirms against the whole message that
+   the words ask the assistant itself to contact that person. Anything short
+   of that ("tell me / let me know / flag it to me if it lapses", a recipient
+   that is the owner, a refused or failed review) is the owner's own reminder
+   (`kind: reminder`, obligor `owner`); the row keeps the quote and the
+   review's decision. Only the owner's own turn keeps the grant; the same
+   shape from a contact is an ordinary item.
+   A word the person asked for (a reminder, a nudge, a word if something has
+   not happened) is `kind: reminder`: a message when due, never a task. A
+   word about an item of the same turn, or about a listed open item, is that
+   item's own word (folded into it, or its heads-up when earlier), and a
+   restated listed item with a new time moves it, compare-and-set. The
+   person's own words for the time are kept as `metadata.due_text` and shown
+   beside the converted date in Pending Commitments. A message to
    pass on now ("tell Kim the meeting moved") is the reply's own job: nothing
    is recorded, and capture drops a third-party message due within three
    minutes of the turn, so the mind never sends a second copy of what the
@@ -209,8 +225,8 @@ The design is in
    (`P/contacts/digest.py`). With the faculty off (the `full-people`
    ablation) what M5 adds goes and nothing older: the social weight is 0,
    nothing is composed (a message keeps its template) or digested, no link
-   ask is raised, an owner's message to a third party or cadence takes its
-   pre-M5 form (overdue work for the assistant), the "About this person"
+   ask is raised, an owner's message to a third party is the owner's own
+   reminder when due (never a worker's task) and a cadence stays undated, the "About this person"
    section is left out, and `/v1/mind/people` refuses `merge`, `link` and
    `cadence` with 409 `people_off` while the plugin's `protagine_people`
    offers only `who`, `inspect` and `set_permission`. `may_contact`,
