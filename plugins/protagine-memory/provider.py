@@ -735,9 +735,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             return _terminal(f"unknown Protagine tool: {tool_name}")
         try:
             return handler(args)
-        except Exception as exc:
+        except Exception as exc:   # a handler's own requests answer for themselves: this is its arguments
             logger.warning("Protagine tool %s failed: %s", tool_name, exc)
-            return _terminal(f"the tool failed ({type(exc).__name__})")
+            return json.dumps({"error": f"the arguments could not be used ({type(exc).__name__}); correct them"})
 
     # -- Tool handlers ---------------------------------------------------------
 
@@ -764,6 +764,14 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                                     headers=self._headers(), json=body)
                 if resp.status_code == 404:
                     return _terminal(_UNKNOWN_COMMITMENT)
+                if resp.status_code in (400, 422):   # refused as sent: the sidecar's words say what to correct
+                    try:
+                        detail = resp.json().get("detail")
+                    except Exception:
+                        detail = None
+                    return json.dumps({"error": f"the settle was refused: {str(detail or resp.status_code)[:300]}"})
+                if 400 <= resp.status_code < 500:
+                    return _terminal(f"the sidecar refused the settle (HTTP {resp.status_code})")
                 resp.raise_for_status()
                 return json.dumps({"ok": True, "action": action, "commitment": resp.json()})
         except Exception as exc:

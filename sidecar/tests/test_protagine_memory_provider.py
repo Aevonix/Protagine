@@ -977,3 +977,25 @@ def test_the_clock_line_follows_the_one_wall_clock(provider_mod, monkeypatch):
     expected = datetime.fromtimestamp(shifted, timezone.utc)
     line = provider._current_time_line()
     assert expected.strftime("%A, %B %d, %Y") in line and expected.strftime("%I:%M").lstrip("0") in line
+
+
+def test_a_settle_the_sidecar_refuses_as_sent_names_what_to_correct(provider_mod, monkeypatch):
+    """A snooze whose new_due_at the sidecar cannot read is refused (422), not unconfirmed: the model can fix
+    the time (ISO-8601, a timezone), so the sidecar's words come back as an ordinary error. So does an argument
+    the tool cannot use at all. A server error or a lost answer stays final: the settle may or may not have
+    landed, and trying again with other arguments cannot tell."""
+    fake = _FakeHttpx(routes={
+        ("PATCH", "/v1/host/commitments/c-01"): _FakeResponse(
+            status_code=422, payload={"detail": "Invalid due_at format: 'tomorrow 9am'"}),
+        ("PATCH", "/v1/host/commitments/c-02"): _FakeResponse(status_code=503, payload={"detail": "busy"})})
+    provider = _make_provider(provider_mod, fake, monkeypatch)
+    provider._lane = lambda: ("owner", "cid-base")
+    refused = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {
+        "commitment_id": "c-01", "action": "snoozed", "new_due_at": "tomorrow 9am", "reason": "owner asked"}))
+    assert "retry" not in refused and "Invalid due_at format" in refused["error"]
+    unusable = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {
+        "commitment_id": "c-01", "action": "dismissed", "reason": 7}))
+    assert "retry" not in unusable and "argument" in unusable["error"]
+    unconfirmed = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {
+        "commitment_id": "c-02", "action": "fulfilled"}))
+    assert unconfirmed["retry"] is False and "not confirmed" in unconfirmed["reason"]
