@@ -62,9 +62,16 @@ DEFAULTS: dict[str, Any] = {
             "open_goals": 2,
             "goal_tasks": 4,          # steps an agent-owned goal may spend
             "goal_horizon_days": 7,   # the longest horizon an adopted goal may have
-            "task_max_runtime_s": 600,
+            "task_max_runtime_s": 600,   # one worker run, for a task type task_types does not name
             "task_max_retries": 1,
+            # Research-shaped work reads sources and writes them up in one run: longer, with a retry.
+            "task_types": {name: {"max_runtime_s": 1800, "max_retries": 2}
+                           for name in ("research", "question", "mastery_investigation", "goal_step")},
         },
+        # Extra fields on every model request a mind task's worker makes (the protagine-act profile's
+        # providers carry them as extra_body): an output cap, so one runaway completion cannot hold the
+        # model for the run's whole budget. null leaves a field to the provider.
+        "worker_request": {"max_tokens": 8192, "top_p": 0.95},
         "quiet_hours": "22:00-07:00",
         "ask_expires_hours": 72,
         "breaker": {"failures": 3, "window_hours": 24, "demotion_hours": 72},
@@ -91,6 +98,10 @@ DEFAULTS: dict[str, Any] = {
             "skills": False,
         },
     },
+    # The model-backed source projections (claim extraction, appraisal, capture, media descriptions):
+    # jobs queued a day or more before this release started drain at most this many an hour; new turns
+    # are projected at once. 0 leaves that backlog pending.
+    "projections": {"backlog_per_hour": 12},
 }
 
 # The whole environment override set. Everything else is configured in the file.
@@ -225,7 +236,7 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce and check every field Protagine reads; unknown keys are kept as they are."""
     if not isinstance(data, dict):
         raise ConfigError("protagine.yaml must be a mapping")
-    for section in ("sidecar", "hermes", "router", "owner", "mind"):
+    for section in ("sidecar", "hermes", "router", "owner", "mind", "projections"):
         if not isinstance(data.get(section), dict):
             raise ConfigError(f"{section} must be a mapping")
     data["environment"] = _validate_environment(data.get("environment"))
@@ -279,8 +290,12 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(budgets, dict):
         raise ConfigError("mind.budgets must be a mapping")
     for name, value in list(budgets.items()):
+        if name == "task_types":
+            budgets[name] = _validate_task_types(value)
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"mind.budgets.{name} must be a number")
+    mind["worker_request"] = _validate_worker_request(mind.get("worker_request"))
     drives = mind.get("drives")
     if not isinstance(drives, dict):
         raise ConfigError("mind.drives must be a mapping of drive weights")
@@ -304,7 +319,48 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or grace < 0:
         raise ConfigError("mind.heads_up_grace_minutes must be a non-negative number of minutes")
     mind["heads_up_grace_minutes"] = float(grace)
+    rate = data["projections"].get("backlog_per_hour", 12)
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0 <= rate < float("inf"):
+        raise ConfigError("projections.backlog_per_hour must be a non-negative number (0 leaves the backlog pending)")
     return data
+
+
+def _validate_task_types(value: Any) -> dict[str, dict[str, int]]:
+    """``mind.budgets.task_types``: per task type, a positive ``max_runtime_s`` and ``max_retries`` >= 0."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError("mind.budgets.task_types must be a mapping of task types to {max_runtime_s, max_retries}")
+    result: dict[str, dict[str, int]] = {}
+    for kind, entry in value.items():
+        where = f"mind.budgets.task_types.{kind}"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping with max_runtime_s and/or max_retries")
+        unknown = sorted(set(entry) - {"max_runtime_s", "max_retries"})
+        if unknown:
+            raise ConfigError(f"{where}: unknown key {unknown[0]} (max_runtime_s or max_retries)")
+        runtime, retries = entry.get("max_runtime_s"), entry.get("max_retries")
+        if runtime is not None and (isinstance(runtime, bool) or not isinstance(runtime, int) or runtime <= 0):
+            raise ConfigError(f"{where}.max_runtime_s must be a positive whole number of seconds")
+        if retries is not None and (isinstance(retries, bool) or not isinstance(retries, int) or retries < 0):
+            raise ConfigError(f"{where}.max_retries must be a whole number, 0 or more")
+        result[str(kind)] = {key: val for key, val in (("max_runtime_s", runtime), ("max_retries", retries))
+                             if val is not None}
+    return result
+
+
+def _validate_worker_request(value: Any) -> dict[str, Any]:
+    """``mind.worker_request``: extra request fields for the worker profile; null drops a field."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError("mind.worker_request must be a mapping of request fields (max_tokens, top_p, ...)")
+    tokens, top_p = value.get("max_tokens"), value.get("top_p")
+    if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0):
+        raise ConfigError("mind.worker_request.max_tokens must be a positive whole number of tokens, or null")
+    if top_p is not None and (isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not 0 < top_p <= 1):
+        raise ConfigError("mind.worker_request.top_p must be a number above 0 and at most 1, or null")
+    return dict(value)
 
 
 def _apply_env_overrides(data: dict[str, Any], environ: dict[str, str]) -> dict[str, Any]:

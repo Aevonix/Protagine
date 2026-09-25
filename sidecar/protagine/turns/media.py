@@ -57,6 +57,13 @@ def initialize(conn):
         turn_id TEXT NOT NULL,message_hash TEXT NOT NULL,asset_hash TEXT NOT NULL,
         block_index INTEGER NOT NULL,role TEXT NOT NULL,
         PRIMARY KEY(turn_id,message_hash,block_index))''')
+    if 'enqueued_at' not in {row[1] for row in conn.execute('PRAGMA table_info(source_media)')}:
+        # When the newest source naming the asset was recorded; ``turns.projection_backlog`` reads it.
+        from .projection_backlog import EPOCH_SQL
+        conn.execute('ALTER TABLE source_media ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0')
+        conn.execute('UPDATE source_media SET enqueued_at=coalesce((SELECT max(' + EPOCH_SQL.format('s.ingested_at')
+                     + ') FROM source_media_links l JOIN turn_sources s ON s.turn_id=l.turn_id '
+                     'WHERE l.asset_hash=source_media.asset_hash),0)')
     conn.execute('CREATE INDEX IF NOT EXISTS source_media_asset ON source_media_links(asset_hash)')
     conn.execute('CREATE VIRTUAL TABLE IF NOT EXISTS source_media_search USING fts5(asset_hash UNINDEXED,description)')
 
@@ -110,13 +117,15 @@ def normalize_messages(conn, store, turn_id, session_id, messages):
                                    'reference_sha256': hashlib.sha256(json.dumps(block, sort_keys=True).encode()).hexdigest()})
                     continue
                 asset = store.store_source_video(data)
-                conn.execute('''INSERT INTO source_media(asset_hash,mime_type,size_bytes,width,height,status,media_metadata_json)
-                    VALUES (?,'video/mp4',?,0,0,'video_pending',?) ON CONFLICT(asset_hash) DO UPDATE SET
+                # A new source naming the asset makes its description new work (``projection_backlog``).
+                conn.execute('''INSERT INTO source_media(asset_hash,mime_type,size_bytes,width,height,status,media_metadata_json,
+                    enqueued_at) VALUES (?,'video/mp4',?,0,0,'video_pending',?,?) ON CONFLICT(asset_hash) DO UPDATE SET
                     status=CASE WHEN source_media.status='orphan' THEN 'video_pending' ELSE source_media.status END,
                     next_attempt=CASE WHEN source_media.status='orphan' THEN 0 ELSE source_media.next_attempt END,
                     media_metadata_json=CASE WHEN source_media.status='orphan' THEN excluded.media_metadata_json
-                                             ELSE source_media.media_metadata_json END''',
-                    (asset, len(data), json.dumps({'video': disposition('pending')})))
+                                             ELSE source_media.media_metadata_json END,
+                    enqueued_at=excluded.enqueued_at''',
+                    (asset, len(data), json.dumps({'video': disposition('pending')}), time.time()))
                 conn.execute('''INSERT OR IGNORE INTO source_media_links
                     (turn_id,message_hash,asset_hash,block_index,role) VALUES (?,?,?,?,?)''',
                     (turn_id, original_hash, asset, index, message['role']))
@@ -199,11 +208,12 @@ def normalize_messages(conn, store, turn_id, session_id, messages):
                                'reference_sha256': hashlib.sha256(str(url).encode()).hexdigest()})
                 continue
             stored = store.store_original(image)
-            conn.execute('''INSERT INTO source_media(asset_hash,mime_type,size_bytes,width,height)
-                VALUES (?,?,?,?,?) ON CONFLICT(asset_hash) DO UPDATE SET
+            conn.execute('''INSERT INTO source_media(asset_hash,mime_type,size_bytes,width,height,enqueued_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(asset_hash) DO UPDATE SET
                 status=CASE WHEN source_media.status='orphan' THEN 'pending' ELSE source_media.status END,
-                next_attempt=CASE WHEN source_media.status='orphan' THEN 0 ELSE source_media.next_attempt END''',
-                (stored.image_hash, stored.mime_type, stored.size_bytes, stored.width, stored.height))
+                next_attempt=CASE WHEN source_media.status='orphan' THEN 0 ELSE source_media.next_attempt END,
+                enqueued_at=excluded.enqueued_at''',
+                (stored.image_hash, stored.mime_type, stored.size_bytes, stored.width, stored.height, time.time()))
             conn.execute('''INSERT OR IGNORE INTO source_media_links
                 (turn_id,message_hash,asset_hash,block_index,role) VALUES (?,?,?,?,?)''',
                 (turn_id, original_hash, stored.image_hash, index, message['role']))
@@ -325,6 +335,7 @@ class SourceMedia:
             return 'pending' if conn.execute("SELECT 1 FROM source_media WHERE status='orphan'").fetchone() else 'complete'
 
     def claim_job(self, *, include_documents=False, include_videos=False):
+        from .projection_backlog import admit, watermark
         now = time.time()
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -339,8 +350,17 @@ class SourceMedia:
             # Original insertion order is shared across media kinds. A stream
             # of later PDF arrivals cannot starve an already eligible image,
             # or vice versa. Leased, failed and orphan rows are not eligible.
-            row = conn.execute('SELECT * FROM source_media WHERE ' + eligibility + ' ORDER BY rowid LIMIT 1',
-                               parameters).fetchone()
+            # An image or clip description is a model call: one from the backlog
+            # (``projection_backlog``) waits for its hourly slot. A PDF's text is local.
+            query = 'SELECT * FROM source_media WHERE (' + eligibility + ') AND {} ORDER BY rowid LIMIT 1'
+            before = watermark(conn)
+            row = conn.execute(query.format("(enqueued_at>=? OR mime_type='application/pdf')"),
+                               [*parameters, before]).fetchone()
+            if row is None:
+                row = conn.execute(query.format("enqueued_at<? AND mime_type!='application/pdf'"),
+                                   [*parameters, before]).fetchone()
+                if row is not None and not admit(conn, now=now):
+                    row = None
             if row is None:
                 return None
             token = uuid.uuid4().hex

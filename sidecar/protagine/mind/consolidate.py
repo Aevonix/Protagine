@@ -394,7 +394,9 @@ class Consolidation:
             if remaining <= 0:
                 break
             try:
-                if self.available and await asyncio.wait_for(projection.process_one(self.router), remaining):
+                # New statements only: the pre-upgrade backlog is the worker's to trickle (turns.projection_backlog).
+                if self.available and await asyncio.wait_for(projection.process_one(self.router, backlog=False),
+                                                             remaining):
                     processed += 1
                     continue
                 with self._conn() as conn:

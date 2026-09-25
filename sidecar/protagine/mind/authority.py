@@ -164,6 +164,13 @@ class Verdict:
                 "floor": self.floor, "notice": self.notice}
 
 
+# The research-shaped task types (the ones whose report is a finding, ``outcomes.FINDING_TYPES``): one
+# worker run reads sources and writes them up, so it gets a longer run and a second attempt.
+RESEARCH_TASK_BUDGET = {"max_runtime_s": 1800, "max_retries": 2}
+DEFAULT_TASK_TYPES = {name: dict(RESEARCH_TASK_BUDGET)
+                      for name in ("research", "question", "mastery_investigation", "goal_step")}
+
+
 @dataclass
 class Budgets:
     tasks_per_hour: int = 4
@@ -176,19 +183,45 @@ class Budgets:
     open_goals: int = 2
     goal_tasks: int = 4            # steps an agent-owned goal may spend
     goal_horizon_days: int = 7     # the longest horizon an adopted goal may have
-    task_max_runtime_s: int = 600
+    task_max_runtime_s: int = 600  # one worker run of a task type ``task_types`` does not name
     task_max_retries: int = 1
+    # Per task type: ``{max_runtime_s, max_retries}``, either one falling back to the two above.
+    task_types: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: {name: dict(value) for name, value in DEFAULT_TASK_TYPES.items()})
 
     @classmethod
     def from_config(cls, value: Mapping[str, Any] | None) -> "Budgets":
         budgets = cls()
         for name, default in vars(budgets).items():
             raw = (value or {}).get(name, default)
+            if name == "task_types":
+                # Over the defaults, one type and one field at a time: overriding research's runtime
+                # keeps its retries, and the other types keep theirs.
+                merged = {kind: dict(entry) for kind, entry in default.items()}
+                for kind, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+                    if not isinstance(entry, Mapping):
+                        continue
+                    target = merged.setdefault(str(kind), {})
+                    for key in ("max_runtime_s", "max_retries"):
+                        try:
+                            if key in entry:
+                                target[key] = int(entry[key])
+                        except (TypeError, ValueError):
+                            pass
+                budgets.task_types = merged
+                continue
             try:
                 setattr(budgets, name, type(default)(raw))
             except (TypeError, ValueError):
                 setattr(budgets, name, default)
         return budgets
+
+    def for_task(self, task_type: str | None) -> tuple[int, int]:
+        """``(max_runtime_s, max_retries)``: one worker run's limit and the retries after a failed run,
+        for a task of this type."""
+        entry = self.task_types.get(str(task_type or "")) or {}
+        return (int(entry.get("max_runtime_s", self.task_max_runtime_s)),
+                int(entry.get("max_retries", self.task_max_retries)))
 
 
 @dataclass
@@ -304,8 +337,10 @@ class Authority:
         since = now - timedelta(hours=breaker.window_hours)
         reset_at = self.store.last_transition_at("breaker_reset", type=f"breaker_reset:{cls}") \
             if self.store is not None else None
+        # A failure the outcome marked uncounted (a timeout, ``Outcomes._breaker_count``) fails its task only.
         failures = [row for row in (self.store.failures_since(cls, since) if self.store is not None else [])
-                    if reset_at is None or (row.failed_at and row.failed_at > reset_at)]
+                    if (reset_at is None or (row.failed_at and row.failed_at > reset_at))
+                    and ((row.result_metadata or {}).get("breaker") or {}).get("counted") is not False]
         tripped = len(failures) >= breaker.failures
         until = None
         if tripped:

@@ -436,14 +436,57 @@ def write_hermes_config(path: Path, config: dict[str, Any], *, backup_dir: Path)
 # Worker profile
 # ---------------------------------------------------------------------------
 
+def worker_request_fields(cfg: Config) -> dict[str, Any]:
+    """``mind.worker_request`` without its nulls: the fields every worker request carries."""
+    fields = cfg.get("mind.worker_request") or {}
+    return {str(key): copy.deepcopy(value) for key, value in fields.items() if value is not None} \
+        if isinstance(fields, dict) else {}
+
+
+def _cap_worker_requests(profile: dict[str, Any], fields: dict[str, Any]) -> None:
+    """Put ``fields`` into the ``extra_body`` of every custom endpoint the worker may use.
+
+    Stock Hermes sends a custom endpoint's ``extra_body`` with each request (the named provider's
+    runtime, and the agent's own merge by base URL for ``provider: custom``); it sends no output
+    limit otherwise, so one runaway completion could hold the model for a run's whole budget. A
+    model or fallback given as a bare ``base_url`` gets an entry of its own for that. The worker's
+    fields win over the provider's; a field set to null in ``protagine.yaml`` is left to the provider.
+    """
+    if not fields:
+        return
+    providers = profile.get("providers")
+    for entry in providers.values() if isinstance(providers, dict) else ():
+        if isinstance(entry, dict):
+            entry["extra_body"] = {**(entry.get("extra_body") if isinstance(entry.get("extra_body"), dict) else {}),
+                                   **copy.deepcopy(fields)}
+    listed = profile.get("custom_providers")
+    for entry in listed if isinstance(listed, list) else ():
+        if isinstance(entry, dict):
+            entry["extra_body"] = {**(entry.get("extra_body") if isinstance(entry.get("extra_body"), dict) else {}),
+                                   **copy.deepcopy(fields)}
+    urls: list[str] = []
+    for key in ("model", "fallback_model", "fallback_providers"):
+        value = profile.get(key)
+        for source in value if isinstance(value, list) else [value]:
+            url = str(source.get("base_url") or "").strip() if isinstance(source, dict) else ""
+            if url and url not in urls:
+                urls.append(url)
+    if urls and (listed is None or isinstance(listed, list)):
+        profile["custom_providers"] = [*(listed or []), *(
+            {"name": WORKER_PROFILE if number == 1 else f"{WORKER_PROFILE}-{number}", "base_url": url,
+             "extra_body": copy.deepcopy(fields)} for number, url in enumerate(urls, 1))]
+
+
 def worker_profile_config(main_config: dict[str, Any], cfg: Config, *, sidecar_url: str,
                           key_file: Path) -> dict[str, Any]:
-    """The ``protagine-act`` profile: the main model and its providers, the mind toolsets and the deny list."""
+    """The ``protagine-act`` profile: the main model and its providers, capped per request
+    (``mind.worker_request``), the mind toolsets and the deny list."""
     profile: dict[str, Any] = {}
     # The model and every provider entry it or its fallbacks can name: a profile reads only its own config.
     for key in ("model", "providers", "custom_providers", "fallback_providers", "fallback_model"):
         if main_config.get(key):
             profile[key] = copy.deepcopy(main_config[key])
+    _cap_worker_requests(profile, worker_request_fields(cfg))
     # The dispatcher pins a worker's tools from ``platform_toolsets.cli``; a top-level ``toolsets`` is ignored.
     profile["platform_toolsets"] = {"cli": list(cfg.get("mind.worker_toolsets") or [])}
     profile["approvals"] = {"deny": list(cfg.get("mind.deny.commands") or [])}

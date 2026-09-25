@@ -253,6 +253,11 @@ The design is in
    prompt only then, so every other call is the same in every arm). The call
    has no tools, so an answer from the model's own recollection is never
    stored as something learned: anything else it returns gets the template.
+   The prompt gives the worker's budget for the task's kind (one run of N
+   minutes that cannot be continued) and asks for one bounded first
+   deliverable; work that needs more runs is listed in `steps` and becomes a
+   goal of at most `budgets.goal_tasks` steps, its plan in the goal's
+   description, or, with no room for a goal, only its first run as one task.
    Without a router the
    template applies; with the tick's call spent, the concern waits.
 8. **Goals.** Curiosity and mastery may adopt an agent-owned goal
@@ -280,7 +285,10 @@ The design is in
     records the outcome and its verifier (Verification, below), runs the
     intention's `success_check`, resolves the
     expectation it registered, records implicit feedback, checks the
-    breaker, settles the concern and satiates the drive, closes the
+    breaker (a run stopped at its runtime limit fails the task but counts
+    toward the breaker only when a retry timed out as well with nothing new
+    to show; `result_metadata.breaker` says which), settles the concern and
+    satiates the drive, closes the
     commitment a done `commitment_*` intention was raised for (the worker
     cannot mark it fulfilled itself: the guard blocks
     `protagine_resolve_commitment(fulfilled)` in mind runs, so the row's
@@ -654,10 +662,18 @@ mind:
   autonomy: suggest                 # off | suggest | standard | trusted
   deny: {tools: [], text: [], commands: []}
   worker_toolsets: [web, file, session_search, memory, todo]
+  # One worker run per task: task_types per task type, task_max_runtime_s / task_max_retries for
+  # any other type and for a field a type leaves out.
   budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
             contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
             llm_tokens_per_day: 200000, open_goals: 2, goal_tasks: 4,
-            goal_horizon_days: 7, task_max_runtime_s: 600, task_max_retries: 1}
+            goal_horizon_days: 7, task_max_runtime_s: 600, task_max_retries: 1,
+            task_types: {research: {max_runtime_s: 1800, max_retries: 2},
+                         question: {max_runtime_s: 1800, max_retries: 2},
+                         mastery_investigation: {max_runtime_s: 1800, max_retries: 2},
+                         goal_step: {max_runtime_s: 1800, max_retries: 2}}}
+  # extra_body on every request a mind task's worker makes; null leaves a field to the provider
+  worker_request: {max_tokens: 8192, top_p: 0.95}
   quiet_hours: "22:00-07:00"        # owner notices wait; the digest and tasks do not
   ask_expires_hours: 72
   breaker: {failures: 3, window_hours: 24, demotion_hours: 72}

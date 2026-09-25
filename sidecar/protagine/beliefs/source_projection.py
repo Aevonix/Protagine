@@ -28,9 +28,17 @@ def initialize(conn):
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
         timezone TEXT NOT NULL DEFAULT 'UTC', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
-        error TEXT, model TEXT, extraction_version TEXT, lease_token TEXT NOT NULL DEFAULT '')''')
-    if 'diagnostics_json' not in {row[1] for row in conn.execute('PRAGMA table_info(source_claim_jobs)')}:
+        error TEXT, model TEXT, extraction_version TEXT, lease_token TEXT NOT NULL DEFAULT '',
+        diagnostics_json TEXT, enqueued_at REAL NOT NULL DEFAULT 0)''')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(source_claim_jobs)')}
+    if 'diagnostics_json' not in columns:
         conn.execute('ALTER TABLE source_claim_jobs ADD COLUMN diagnostics_json TEXT')
+    if 'enqueued_at' not in columns:
+        # A queue from before the column: a job was enqueued when its source was recorded.
+        from protagine.turns.projection_backlog import EPOCH_SQL
+        conn.execute('ALTER TABLE source_claim_jobs ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0')
+        conn.execute('UPDATE source_claim_jobs SET enqueued_at=coalesce((SELECT ' + EPOCH_SQL.format('s.ingested_at')
+                     + ' FROM turn_sources s WHERE s.turn_id=source_claim_jobs.turn_id),0)')
     conn.execute('''CREATE TABLE IF NOT EXISTS source_claims (
         id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, message_hash TEXT NOT NULL,
         subject_key TEXT NOT NULL, predicate TEXT NOT NULL, value_key TEXT NOT NULL, data_json TEXT NOT NULL,
@@ -44,8 +52,8 @@ def initialize(conn):
 def enqueue(conn, turn_id, messages, *, scope, timezone_name=None):
     # Checkpoint history has no per-message verified speaker attribution/time.
     if scope == "person" and any(m.get("role") == "user" for m in messages):
-        conn.execute('INSERT OR IGNORE INTO source_claim_jobs(turn_id,timezone) VALUES (?,?)',
-                     (turn_id, timezone_name or "UTC"))
+        conn.execute('INSERT OR IGNORE INTO source_claim_jobs(turn_id,timezone,enqueued_at) VALUES (?,?,?)',
+                     (turn_id, timezone_name or "UTC", time.time()))
 
 
 def erase_removed(conn, turn_id, session_id, retained):
@@ -536,14 +544,23 @@ class SourceClaimProjection:
                 written += 1
             return written
 
-    def claim_job(self):
+    def claim_job(self, *, backlog=True):
+        """Lease the next due job: a new one first; a backlog job (``turns.projection_backlog``) only
+        when none is due, ``backlog`` is set and the hourly budget has room."""
+        from protagine.turns import projection_backlog
         now = time.time()
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute('BEGIN IMMEDIATE')
-            job = conn.execute('''SELECT j.*,s.contact_id,s.session_id,s.scope,s.messages_json,s.occurred_at,s.ingested_at
+            before = projection_backlog.watermark(conn)
+            query = '''SELECT j.*,s.contact_id,s.session_id,s.scope,s.messages_json,s.occurred_at,s.ingested_at
                 FROM source_claim_jobs j JOIN turn_sources s ON s.turn_id=j.turn_id
-                WHERE (j.status='pending' AND j.next_attempt<=?) OR (j.status='running' AND j.lease_until<=?)
-                ORDER BY s.ingested_at LIMIT 1''', (now, now)).fetchone()
+                WHERE ((j.status='pending' AND j.next_attempt<=?) OR (j.status='running' AND j.lease_until<=?))
+                AND j.enqueued_at {} ? ORDER BY s.ingested_at LIMIT 1'''
+            job = conn.execute(query.format('>='), (now, now, before)).fetchone()
+            if job is None and backlog:
+                job = conn.execute(query.format('<'), (now, now, before)).fetchone()
+                if job is not None and not projection_backlog.admit(conn, now=now):
+                    job = None
             if job is None:
                 return None
             token = uuid.uuid4().hex
@@ -573,8 +590,8 @@ class SourceClaimProjection:
                 (time.time() + request_timeout + 30, job['turn_id'], job['lease_token']))
             return updated.rowcount == 1
 
-    async def process_one(self, router):
-        job = self.claim_job()
+    async def process_one(self, router, *, backlog=True):
+        job = self.claim_job(backlog=backlog)
         if job is None:
             return False
         model = None
@@ -1113,7 +1130,12 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     outcome, only when it lands.
 
     ``vectors=False`` leaves the source-vector jobs to a task on the loop that owns the vector store (the
-    paired harness runs this worker on its own thread)."""
+    paired harness runs this worker on its own thread).
+
+    The model-backed lanes (media, appraisal, claim, commitment) take new jobs first; a job queued
+    before this release started is backlog and starts only in a slot of its hourly budget
+    (``turns.projection_backlog``), so an upgraded store's history never runs through the model at
+    the lanes' full rate."""
     projection = SourceClaimProjection(ledger)
     from protagine.identity import get_owner_contact_id
     from protagine.self_model.judgments import SelfJudgments
@@ -1139,6 +1161,18 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
         media.recover_unowned_files()
     except OSError:
         logger.warning("source media orphan recovery deferred")
+    try:
+        from protagine.turns import projection_backlog
+        with closing(ledger._connect()) as conn:
+            backlog = projection_backlog.status(conn)
+        waiting = sum((backlog.get('waiting') or {}).values())
+        if waiting:
+            logger.info("%d model projection jobs queued before %s are backlog: new turns go first, and at most "
+                        "%g backlog jobs start an hour (projections.backlog_per_hour)", waiting,
+                        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(backlog['backlog_before'])),
+                        projection_backlog.configured_per_hour())
+    except Exception as exc:
+        logger.debug("projection backlog not read (%s)", type(exc).__name__)
 
     async def reconcile_identities():
         from protagine.api.routers.social_state import reconcile_pending_identities

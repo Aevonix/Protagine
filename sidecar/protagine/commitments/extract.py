@@ -722,7 +722,7 @@ class CommitmentExtractor:
         routed = getattr(router, "supports_function_routing", False) is True
         return commitments is not None and router is not None and routed
 
-    def _claim(self, deadline: float, *, ignore_backoff: bool = False, skip: tuple = ()):
+    def _claim(self, deadline: float, *, ignore_backoff: bool = False, skip: tuple = (), backlog: bool = True):
         """Lease the next job; ``ignore_backoff`` takes a pending row before its retry time.
 
         One person's jobs are taken in order: a job is claimable only when no
@@ -741,7 +741,15 @@ class CommitmentExtractor:
         spend the job's ``MAX_ATTEMPTS``, so a dead endpoint still gets its
         full backoff before the job is failed, while a blip costs the person's
         captures seconds, however many ticks fall inside it.
+
+        A backlog job (``turns.projection_backlog``: enqueued more than a day
+        before this release started) is taken only when no new job is
+        claimable, with ``backlog`` set and room in the hourly budget, and never
+        while its person has a new job unfinished. The order holds within each
+        class: a person's new turn is not held behind their backlog, which
+        lands after it.
         """
+        from protagine.turns import projection_backlog
         now = self.clock()
         if ignore_backoff:
             pending, pending_params = "r.status='pending'", []
@@ -751,16 +759,26 @@ class CommitmentExtractor:
                        "WHERE ls.contact_id=s.contact_id AND l.rowid>r.rowid AND l.status IN ('pending','running'))))")
             pending_params = [now, now]
         exclude = f" AND r.turn_id NOT IN ({','.join('?' for _ in skip)})" if skip else ""
+        query = ("SELECT r.*, (r.status='running' OR r.next_attempt<=?) AS charged "
+                 "FROM commitment_runs r LEFT JOIN turn_sources s ON s.turn_id=r.turn_id "
+                 f"WHERE ({pending} OR (r.status='running' AND r.lease_until<=?)){exclude} AND {{own}} "
+                 "AND NOT EXISTS (SELECT 1 FROM commitment_runs e JOIN turn_sources es ON es.turn_id=e.turn_id "
+                 "WHERE es.contact_id=s.contact_id AND e.rowid<r.rowid AND e.status IN ('pending','running'){earlier}) "
+                 "{later}ORDER BY r.rowid LIMIT 1")
         params = [now, *pending_params, now, *skip]
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT r.*, (r.status='running' OR r.next_attempt<=?) AS charged "
-                "FROM commitment_runs r LEFT JOIN turn_sources s ON s.turn_id=r.turn_id "
-                f"WHERE ({pending} OR (r.status='running' AND r.lease_until<=?)){exclude} "
-                "AND NOT EXISTS (SELECT 1 FROM commitment_runs e JOIN turn_sources es ON es.turn_id=e.turn_id "
-                "WHERE es.contact_id=s.contact_id AND e.rowid<r.rowid AND e.status IN ('pending','running')) "
-                "ORDER BY r.rowid LIMIT 1", params).fetchone()
+            before = projection_backlog.watermark(conn)
+            row = conn.execute(query.format(own="r.enqueued_at>=?", earlier=" AND e.enqueued_at>=?", later=""),
+                               [*params, before, before]).fetchone()
+            if row is None and backlog:
+                row = conn.execute(query.format(
+                    own="r.enqueued_at<?", earlier="",
+                    later="AND NOT EXISTS (SELECT 1 FROM commitment_runs n JOIN turn_sources ns ON ns.turn_id=n.turn_id "
+                          "WHERE ns.contact_id=s.contact_id AND n.enqueued_at>=? AND n.status IN ('pending','running')) "),
+                    [*params, before, before]).fetchone()
+                if row is not None and not projection_backlog.admit(conn):
+                    row = None
             if row is None:
                 return None
             token, charged = uuid.uuid4().hex, bool(row["charged"])
@@ -902,11 +920,14 @@ class CommitmentExtractor:
 
         Health reads this: capture jobs that sit for hours mean the projection worker and the
         tick's drain are both not landing them, whatever the reason. Rows from before the
-        ``enqueued_at`` column (0) are of unknown age and never counted.
+        ``enqueued_at`` column (0) are of unknown age and never counted, and neither is the
+        backlog (``turns.projection_backlog``), which waits for its hourly slots by design.
         """
+        from protagine.turns import projection_backlog
         with closing(self.ledger._connect()) as conn:
             row = conn.execute("SELECT MIN(enqueued_at) AS oldest FROM commitment_runs "
-                               "WHERE status IN ('pending', 'running') AND enqueued_at > 0").fetchone()
+                               "WHERE status IN ('pending', 'running') AND enqueued_at > 0 AND enqueued_at >= ?",
+                               (projection_backlog.watermark(conn),)).fetchone()
         oldest = row[0] if row is not None else None
         if not oldest:
             return None
@@ -952,7 +973,8 @@ class CommitmentExtractor:
             remaining = budget_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 break
-            job = self._claim(0, ignore_backoff=ignore_backoff, skip=tuple(attempted)) if usable else None
+            # The backlog is the worker's to trickle (``turns.projection_backlog``), never a decision's wait.
+            job = self._claim(0, ignore_backoff=ignore_backoff, skip=tuple(attempted), backlog=False) if usable else None
             if job is not None:
                 try:
                     result = await asyncio.wait_for(self._run(job, router, commitments), remaining)
