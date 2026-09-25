@@ -208,39 +208,49 @@ every incomplete turn was Hermes' 8-iteration cap, filled by plugin tool calls
 that could not succeed. Every such call now gets one final answer
 (`client.final_answer`, `retry: false`, which the provider's system note calls
 final): a refusal of `protagine_self` outside the owner's own chat, a read given
-write-shaped arguments ("only reads; what this turn says is recorded after
-it"), an unknown operation, an id or opinion the record does not hold, `yes`/`no`
+content to write ("only reads; what this turn says is recorded after it"; an
+argument the schema offers but the read does not take is ignored and the read
+served with that note), an id or opinion the record does not hold, `yes`/`no`
 with no ask open or with a code the owner's message does not carry (a miscopied
-code on a message that carries an open ask's code names it instead), an owner-only
-change from anyone else, a memory search with no hits, reminders and forgets a
-non-owner asks for, an unreachable sidecar, and every guard block in a
-non-owner session, worded for a reply the contact reads; an argument the model
-can correct names its valid form. In a contact's session a message to the sender
-(any handle of theirs) or to a target nothing resolves is answered "your final
-response is delivered to the sender as your reply", and no verdict becomes
-Hermes' approval gate there any more: in a gateway that gate posts its prompt to
-the session's own chat, where a contact could approve (with `/approve`, or a
-bare "yes" while the turn waits) a message the owner's floor reserves, and
-"always" would allowlist that tool for every session. `protagine_self` says log
-is read-only and recording is automatic, and the opinions cue line says the
-view is recorded after the turn with no tool call. The memory provider binds a
-turn's sender the way the guard and the tools do (from `pre_llm_call`) when a
-host sets no gateway context, so such a host's contact turns get their own
-recall instead of none, or, on an internal platform, the owner's. Every "Now"
-the model reads (the sidecar's temporal section, the provider's clock line, the
-mind's default clock) follows `time.time`, the clock Hermes' own follows.
-Capture records a status line about an obligation that is not on the open list
-as its first mention; the stall rule is about listed items. Feelings: under the
-plan's mechanism rule the overload and priority consumers read the stateless
-rule table by default (`affect_rules.RULE_CONSUMERS`), strategy switch and
-satiation keep the state, and the owner-turn Mind section carries no tone line
-and no idle curiosity (the tone stays in self-report). The paired harness goes
+code on a message that carries an open ask's code names it instead), an
+owner-only change from anyone else, a memory search with no hits (unless part of
+the search failed, when the result says only exact words were matched),
+reminders and forgets a non-owner asks for, an unreachable sidecar, and every
+guard block in a non-owner session, worded for a reply the contact reads; an
+argument the model can correct (a misspelled operation, a snooze time the
+sidecar cannot read) names its valid form. In a contact's session a message to
+the session's own chat (the chat the gateway bound, or without a gateway the
+sender's direct chat) is answered "your final response is delivered to this
+conversation as your reply"; another handle of the sender's, or a direct message
+to the sender from a group, goes to the verdict like any recipient, and a target
+no contact is known at is answered "nothing was sent: no contact is known at
+that target". No verdict becomes Hermes' approval gate there any more: in a
+gateway that gate posts its prompt to the session's own chat, where a contact
+could approve (with `/approve`, or a bare "yes" while the turn waits) a message
+the owner's floor reserves, and "always" would allowlist that tool for every
+session. `protagine_self` says log is read-only and recording is automatic, and
+the opinions cue line says the view is recorded after the turn with no tool
+call. The memory provider binds a turn's sender the way the guard and the tools
+do (from `pre_llm_call`) when a host sets no gateway context, and carries the
+binding across a compression's session rotation, so such a host's contact turns
+get their own recall instead of none, or, on an internal platform, the owner's.
+Every "now" in the sidecar reads `temporal.now_utc` (`time.time`, the clock
+Hermes' own follows): the mind's clock, the stamps its stores write and compare,
+a turn's `ingested_at` and every "Now" line the model reads; the plugins read
+`time.time`. Capture records a status line about an obligation that is not on
+the open list as its first mention; the stall rule is about listed items. When
+more items are open than the prompt shows, those sharing words with the turn
+are listed, and while the list says more are open a status line about an
+unlisted one records nothing. Feelings: the owner-turn Mind section carries no
+tone line and no idle curiosity (the tone stays in self-report); every consumer
+still reads the state until the held-out gate assigns any to the rule table.
+An opinion job holds a lease while its model call runs. The paired harness goes
 on past a turn that hit the cap but answered (the supervisor too), waits for the
-arm's ledger jobs before a declared restart or a clock advance (bounded by
-`drain_seconds`, default 90, recorded in `tool_evidence.drains`), names the
-valid target form when a send fails, and reads token checks without markdown.
-The adapter line ceiling moves to 3,000; the six tools take 3,388 of 3,400
-characters.
+arm's ledger jobs, running or claimable, before a declared restart or a clock
+advance (bounded by `drain_seconds`, default 90, recorded in
+`tool_evidence.drains`), names the valid target form when a send fails, and
+reads token checks without markdown. The adapter line ceiling moves to 3,050;
+the six tools take 3,388 of 3,400 characters.
 
 ## Unreleased - opinions
 
