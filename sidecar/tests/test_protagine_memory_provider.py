@@ -999,3 +999,21 @@ def test_a_settle_the_sidecar_refuses_as_sent_names_what_to_correct(provider_mod
     unconfirmed = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {
         "commitment_id": "c-02", "action": "fulfilled"}))
     assert unconfirmed["retry"] is False and "not confirmed" in unconfirmed["reason"]
+
+
+def test_a_compression_mid_turn_keeps_the_turns_sender(provider_mod, monkeypatch):
+    """Hermes rotates the session id when it compresses mid-turn. A host that binds the sender on the agent and
+    sets no gateway context has only the sender ``pre_llm_call`` named for the old id: the same turn goes on
+    under the new one, so the binding moves with it. Otherwise a contact's turn on an internal platform falls
+    back to the owner's lane and recall, the leak the binding closes. A new session starts unbound."""
+    def resolve(request):
+        known = {"2003": "p-03"}.get(request["params"]["address"])
+        return {"contact_id": known} if known else _FakeResponse(status_code=404, payload={"detail": "none"})
+    provider = _make_provider(provider_mod, _FakeHttpx(routes={_RESOLVE: resolve}), monkeypatch)
+    provider.initialize("s1", platform="cli")
+    provider.resolve_contact(platform="telegram", user_id="2003", session_id="s1")
+    assert provider._lane() == ("guest", "p-03") and provider._prefetch_contact("s1") == "p-03"
+    provider.on_session_switch("s2", parent_session_id="s1", reason="compression")
+    assert provider._lane() == ("guest", "p-03") and provider._prefetch_contact("s2") == "p-03"
+    provider.on_session_switch("s3", parent_session_id="", reset=True)
+    assert provider._prefetch_contact("s3") != "p-03"

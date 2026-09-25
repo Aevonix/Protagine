@@ -786,6 +786,11 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if reset or kwargs.get("rewound") or (new_session_id != self._session_id and not compression_continuation):
             self._last_turn_started_at = 0.0
             self._prev_turn_gap_secs = None
+        elif compression_continuation:
+            with self._handle_cache_lock:   # the same turn goes on under the new id, with the sender it bound
+                sender = self._turn_senders.get(parent_session_id)
+                if sender is not None:
+                    self._turn_senders[new_session_id] = sender
         self._session_id = new_session_id
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
