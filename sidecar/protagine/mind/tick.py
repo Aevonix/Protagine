@@ -197,11 +197,11 @@ class Mind:
         self.persist = persist
         self.faculties = faculties_of(mind)
         self.drive_weights = drive_functions.weights(mind.get("drives"), faculty_on=self.faculties["drives"])
-        if not self.faculties["people"]:
-            # People off (the full-people ablation): what M5 adds goes, and nothing older. No
-            # check-ins, no composition (a message keeps its template), no owner-granted messages to
-            # third parties or cadences, no link asks, no digests; may_contact still governs.
-            self.drive_weights["social"] = 0.0
+        # People off (the full-people ablation): what M5 adds goes, and nothing older. No contact
+        # check-ins (the social drive's contact branch, ``drives.social``; a waiting one is retired), no
+        # composition (a message keeps its template), no owner-granted messages to third parties or
+        # cadences, no link asks, no digests; may_contact still governs. The drive's weight stays: its
+        # owner branch is outreach's (architecture 4.10).
         self.act_threshold = float(mind.get("act_threshold") or DEFAULT_ACT_THRESHOLD)
         self.digest_hour = int(mind.get("digest_hour", 8) or 0)
         try:
@@ -543,6 +543,8 @@ class Mind:
         drive_work = row.type not in audit.NOTICE_TYPES and not str(row.type or "").startswith("reach_out:")
         if reason is None and drive_work and row.drive in DRIVES and float(self.drive_weights.get(row.drive, 1.0)) <= 0:
             reason = f"the {row.drive} drive is off"
+        if reason is None and not self.faculties["people"] and row.drive == "social" and row.type in CHECK_IN_TYPES:
+            reason = "people faculty off: contact check-ins are the people faculty's"
         if reason is None and row.parent_goal_id:
             goal = self.store.get(row.parent_goal_id)
             if goal is None or goal.status != "approved":

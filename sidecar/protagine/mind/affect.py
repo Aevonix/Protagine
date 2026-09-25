@@ -37,6 +37,7 @@ from protagine.initiatives.models import MIND_ACTIVE_STATUSES
 
 from .audit import NOTICE_TYPES
 from .drives import DUTY_DOMAINS, _obligor, _utc, slug
+from .rank import OUTREACH_ANSWER
 from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
@@ -165,10 +166,15 @@ def open_work_ask(row: Any) -> bool:
             and getattr(row, "type", None) not in NOTICE_TYPES)
 
 
+# Outreach overload never postpones: care is for exactly the moment the owner is swamped, and an answer
+# is what the owner asked for.
+UNPOSTPONED = frozenset({"outreach_care", OUTREACH_ANSWER})
+
+
 def postponable(candidate: Any) -> bool:
     """What overload postpones: curiosity and social work, and optional messages; never the step of an
-    adopted goal (owed to the goal, whatever its drive)."""
-    if getattr(candidate, "parent_goal_id", None):
+    adopted goal (owed to the goal, whatever its drive), care for the owner, or an answer they asked for."""
+    if getattr(candidate, "parent_goal_id", None) or getattr(candidate, "type", None) in UNPOSTPONED:
         return False
     drive = str(getattr(candidate, "drive", "") or "")
     if drive in {"curiosity", "social"}:

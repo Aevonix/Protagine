@@ -454,12 +454,25 @@ async def test_a_reply_cancels_an_unsent_check_in(make):
     assert row.status == "cancelled" and "replied" in row.cancelled_reason and row.verdict is None
 
 
-async def test_people_off_gives_social_weight_zero_and_no_contact_messages(make):
+async def test_people_off_keeps_the_social_weight_but_sends_no_contact_messages(make):
+    """People off removes the social drive's contact check-ins, not the drive: its owner branch (outreach)
+    is its own faculty's. A check-in still waiting when people goes off is retired."""
     fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)], config={"faculties": {"people": False}})
-    assert fx.mind.drive_weights["social"] == 0.0 and fx.mind.composer.enabled is False
+    assert fx.mind.drive_weights["social"] == 0.5 and fx.mind.composer.enabled is False
     fx.shift(C + PAST)
     summary = await fx.tick()
     assert summary["formed"] == [] and summary["check_ins_scored"] is None and fx.messages_to(CONTACT) == []
+
+
+async def test_a_check_in_waiting_when_people_goes_off_is_retired(make, tmp_path):
+    fx = make([contact(CONTACT, may_contact="auto", cadence=CADENCE)], config={"faculties": {"people": False}})
+    waiting, _ = fx.store.create_intention(
+        kind="message", type="check_in", title="Check in", drive="social", cls="contact", decision="act",
+        decision_reason="r", status="approved", dedup_key="check_in:x", recipient=CONTACT, hermes_kind="none",
+        context={"text": "hi"}, created_at=fx.now)
+    await fx.tick()
+    row = fx.store.get(waiting.id)
+    assert row.status == "cancelled" and "people faculty off" in row.cancelled_reason
 
 
 async def test_a_pending_link_proposal_becomes_one_owner_ask_answered_through_the_store(make):

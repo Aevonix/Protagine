@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from protagine.commitments.parties import ASSISTANT_KINDS, between_others, party
 from protagine.contacts.comms import evaluate_outreach
 
-from .rank import Candidate
+from .rank import CHECK_IN_TYPES, Candidate
 
 DRIVES = ("duty", "social", "curiosity", "mastery", "upkeep")
 DEFAULT_WEIGHTS = {"duty": 1.0, "social": 0.5, "curiosity": 0.5, "mastery": 1.0, "upkeep": 1.0}
@@ -49,8 +49,6 @@ HEADS_UP_GRACE = timedelta(minutes=30)
 # Tiers the social drive may check in with when the owner set no cadence (architecture 4.5);
 # ``unknown`` and group-only contacts weigh 0 whatever their history.
 SOCIAL_TIERS = frozenset({"regular", "trusted", "inner_circle"})
-# Intention types that are check-ins to a contact: scored by reply or silence, counted in the streak.
-CHECK_IN_TYPES = frozenset({"check_in", "commitment_check_in"})
 # Capture metadata kinds of an owner-granted message to a third party (the notice path).
 GRANTED_KINDS = frozenset({"notice", "check_in"})
 # Capture metadata kind of a recurring check-in the owner set for a contact (undated, no grant).

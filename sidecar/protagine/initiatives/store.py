@@ -1064,8 +1064,10 @@ class InitiativeStore:
             "SELECT ask_code FROM initiatives WHERE status = 'asked' AND ask_code IS NOT NULL").fetchall()]
 
     def count_transitions(self, action: str, since: datetime, *, kind: Optional[str] = None,
-                          recipient: Optional[str] = None, exclude_types: Tuple[str, ...] = ()) -> int:
-        """Transitions of one kind since ``since``, from the history: the budget counters."""
+                          recipient: Optional[str] = None, exclude_types: Tuple[str, ...] = (),
+                          include_types: Tuple[str, ...] = ()) -> int:
+        """Transitions of one kind since ``since``, from the history: the budget counters. ``include_types``
+        counts only those types, ``exclude_types`` leaves those out."""
         query = ("SELECT COUNT(*) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
                  "WHERE h.action = ? AND h.timestamp >= ?")
         params: List[Any] = [action, since.isoformat()]
@@ -1078,10 +1080,13 @@ class InitiativeStore:
         if exclude_types:
             query += f" AND i.type NOT IN ({','.join('?' * len(exclude_types))})"
             params.extend(exclude_types)
+        if include_types:
+            query += f" AND i.type IN ({','.join('?' * len(include_types))})"
+            params.extend(include_types)
         return int(self._db.execute(query, params).fetchone()[0])
 
     def last_transition_at(self, action: str, *, recipient: Optional[str] = None,
-                           type: Optional[str] = None) -> Optional[datetime]:
+                           type: Optional[str] = None, types: Tuple[str, ...] = ()) -> Optional[datetime]:
         query = ("SELECT MAX(h.timestamp) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
                  "WHERE h.action = ?")
         params: List[Any] = [action]
@@ -1091,6 +1096,9 @@ class InitiativeStore:
         if type:
             query += " AND i.type = ?"
             params.append(type)
+        if types:
+            query += f" AND i.type IN ({','.join('?' * len(types))})"
+            params.extend(types)
         value = self._db.execute(query, params).fetchone()[0]
         if not value:
             return None

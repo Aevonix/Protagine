@@ -255,7 +255,8 @@ def test_full_and_full_people_differ_only_in_the_people_flag_and_the_mind_reads_
             store.close()
     assert minds['on'].faculties['people'] is True and minds['on'].drive_weights['social'] == on['drives']['social']
     assert minds['on'].composer.enabled is True
-    assert minds['off'].faculties['people'] is False and minds['off'].drive_weights['social'] == 0.0
+    # People off removes the contact check-ins, not the social drive (its owner branch is outreach's).
+    assert minds['off'].faculties['people'] is False and minds['off'].drive_weights['social'] == on['drives']['social']
     assert minds['off'].composer.enabled is False
 
 
