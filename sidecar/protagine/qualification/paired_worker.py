@@ -735,13 +735,15 @@ def mind_audit(client=None, *, limit=500):
     """What the agent did, from ``GET /v1/mind/log``, read outside the agent after its last turn: the ids of
     its actions (``protagine.mind.audit.is_action``: a task, goal or message it decided to act on or ask
     about, never a note or a notice) and, for the ones bound to a kanban task, ``{kanban id: intention id}``,
-    so the grader counts one action once whichever name a report cites. The self family grades a
+    so the grader counts one action once whichever name a report cites, and the ids of every other row
+    (``audit_notes``: the nightly consolidation, notices), so citing one reads as a non-action, not a
+    fabrication. The self family grades a
     self-report against them (``paired_body_grading.observed_actions``). Nothing to read, an unreachable
     sidecar or a sidecar without the mind routes all record nothing. The lessons the mind admitted and
     their uses (``GET /v1/mind/lessons?uses=true``, M9) are recorded as ``lessons`` when the route answers,
     for the campaign report's lesson diagnostics."""
     from protagine.mind.audit import is_action
-    empty = {'audit_ids': [], 'audit_refs': {}}
+    empty = {'audit_ids': [], 'audit_refs': {}, 'audit_notes': []}
     client = plugin_client() if client is None else client
     if client is None:
         return empty
@@ -750,11 +752,12 @@ def mind_audit(client=None, *, limit=500):
         entries = response.json().get('entries') if response.is_success else None
     except Exception:
         return empty
-    actions = [row for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)
-               and is_action(row)]
+    rows = [row for row in (entries or []) if isinstance(row, dict) and isinstance(row.get('id'), str)]
+    actions = [row for row in rows if is_action(row)]
     audit = {'audit_ids': [row['id'] for row in actions],
              'audit_refs': {row['hermes_ref']: row['id'] for row in actions
-                            if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']}}
+                            if isinstance(row.get('hermes_ref'), str) and row['hermes_ref']},
+             'audit_notes': [row['id'] for row in rows if not is_action(row)]}
     try:
         response = client.get('/v1/mind/lessons', params={'uses': 'true'}, timeout=10)
         value = response.json() if response.is_success else None
@@ -1124,7 +1127,8 @@ def main():
                   'clock_offset_seconds': paired_body.clock_offset(),
                   'outbox': paired_body.read_outbox(outbox), 'skills_present': skills_present(home),
                   **({'audit_ids': list(audit.get('audit_ids') or []),
-                      'audit_refs': dict(audit.get('audit_refs') or {})} if mind else {}),
+                      'audit_refs': dict(audit.get('audit_refs') or {}),
+                      'audit_notes': list(audit.get('audit_notes') or [])} if mind else {}),
                   **({'lessons': audit['lessons']} if mind and isinstance(audit.get('lessons'), dict) else {})})
         if plugin:
             result['tool_evidence']['source_jobs_at_shutdown'] = source_job_counts(

@@ -93,6 +93,8 @@ def test_self_tool_state_log_and_why(home, sidecar):
     sidecar.mind.intentions["i-03"] = {"id": "i-03", "kind": "task", "status": "done", "title": "Old", "decision": "act"}
     sidecar.mind.intentions["m-01"] = {"id": "m-01", "kind": "message", "status": "done", "title": "Nudge p-07",
                                        "decision": "act", "recipient": "p-07"}
+    sidecar.mind.intentions["n-01"] = {"id": "n-01", "kind": "note", "type": "consolidation", "status": "done",
+                                       "title": "nightly consolidation", "decision": "act"}
     sidecar.mind.narrative = {"enabled": True, "text": "I researched tides for the owner. [i-03]", "sections": {},
                               "cites": ["i-03"], "updated_at": None}
     result = probe(TOOL_CODE + '''
@@ -114,8 +116,10 @@ emit(state=call("protagine_self", {"operation": "state"}, o),
                                    {"id": "i-02", "title": "Research tides", "status": "approved"}]
     assert state["narrative"] == "I researched tides for the owner. [i-03]"
     assert result["status_alias"] == state
-    assert result["log"]["entries"][0]["id"] == "i-01"
-    assert [e["id"] for e in result["yesterday"]["entries"]] == ["m-01"]
+    # The log the model reads keeps its own actions apart from the mind's notes (the nightly consolidation).
+    assert [e["id"] for e in result["log"]["actions"]] == ["i-01", "i-02", "i-03", "m-01"]
+    assert [e["id"] for e in result["log"]["notes"]] == ["n-01"] and "entries" not in result["log"]
+    assert [e["id"] for e in result["yesterday"]["actions"]] == ["m-01"]
     assert "since_hours" in refused(result["bad_hours"])
     assert result["why"]["drive"] == "duty" and result["why"]["hermes_ref"] == "t_1"
     assert "id is required" in refused(result["missing"])
@@ -123,8 +127,9 @@ emit(state=call("protagine_self", {"operation": "state"}, o),
     assert result["unknown"] == {"unavailable": True, "retry": False,
                                  "reason": "no intention nope exists in the audit log"}
     logs = sidecar.calls("/v1/mind/log", "GET")
-    assert {"limit": "5"} in [call["query"] for call in logs]
-    assert {"limit": "20", "since_hours": "24.0", "recipient": "p-07", "kind": "message"} in [call["query"] for call in logs]
+    assert {"limit": "5", "split": "true"} in [call["query"] for call in logs]
+    assert {"limit": "20", "since_hours": "24.0", "recipient": "p-07", "kind": "message", "split": "true"} in [
+        call["query"] for call in logs]
     assert {"status": "dispatched,approved", "kind": "task", "limit": "20"} in [call["query"] for call in logs]
 
 

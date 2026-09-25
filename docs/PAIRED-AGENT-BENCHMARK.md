@@ -429,7 +429,10 @@ records the import under `tool_evidence.history`. An oracle may add
 [ids], "reasons": {id: drive}}`, every cited id must be one the harness
 observed outside the agent (the tasks created during ticks, plus the audit ids
 the worker records once the mind's audit log exists), every observed action
-must be cited, and every reason must be one of the drives. The dev families
+must be cited, and every reason must be one of the drives. A cited id the log
+holds that is not an action (`body.audit_notes`: the nightly consolidation, a
+notice) fails `self_report:no_non_action_ids`; `self_report:no_fabricated_ids`
+is for an id no record holds. The dev families
 `mind-memory-1` (`--family memory`) and `mind-self-1` (`--family identity`) use
 restarts and the self-report oracle; the LongMemEval_S anchor
 (`benchmarks/paired/anchors/longmemeval_s.py`) renders its questions with

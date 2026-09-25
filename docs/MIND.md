@@ -479,7 +479,9 @@ CLI); a guest, a group the owner shares and a mind worker get the switch state
 `state` (level, budgets, open asks with codes, `working_on`: the approved and
 dispatched tasks with their ids, and the narrative text),
 `log` (`limit`, `since_hours`, `kind`, `recipient`: "did I message p-07
-yesterday?" is one call, and an action that is not in the log did not happen),
+yesterday?" is one call, and an action that is not in the log did not happen;
+the agent's own actions, `audit.is_action`, come under `actions` and every other
+row, the nightly consolidation or a notice, under `notes`, with whole ids),
 `why <id>` (an unknown id answers "no intention `<id>` exists in the audit
 log"), `rate <id> <verdict>`, `yes|no <code>`. `rate`, `yes` and `no` stay
 owner-only. The agent's opinions ride the same tool (integration map X8):
@@ -792,7 +794,7 @@ protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `outreach {enabled, paused_until, per_day, sent_24h, muted, care}`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`; `split=true`: `{actions, notes, text}`, the agent's actions apart from its notes and notices), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `outreach {enabled, paused_until, per_day, sent_24h, muted, care}`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
 | `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, skills, text}`: each lesson with its verified tally, with `uses=true` every use in the 90-day window, and the skills Protagine keeps with their loads; a guest viewer gets nothing |
 | `POST /lessons/{id}/retire` | `{reason, by?}` | the retired lesson; 404 unknown, 409 already closed |
 | `POST /skills/used` | `{skill, session_id?, task_id?}` (the plugin's `on_skill_lifecycle` forwarding) | `{ok, counted, loads}`; only `protagine-*` skills are counted |

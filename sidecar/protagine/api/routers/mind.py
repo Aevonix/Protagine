@@ -480,9 +480,11 @@ async def skill_used(body: SkillUsedBody) -> Dict[str, Any]:
 @router.get("/log")
 async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str] = None,
               since_hours: Optional[float] = None, recipient: Optional[str] = None,
-              viewer: Optional[str] = None) -> Dict[str, Any]:
+              viewer: Optional[str] = None, split: bool = False) -> Dict[str, Any]:
     """Newest first. ``since_hours`` and ``recipient`` answer "did I message p-07 yesterday?" exactly.
-    A non-owner ``viewer`` gets only the rows addressed to them, bare (``GUEST_FIELDS``)."""
+    A non-owner ``viewer`` gets only the rows addressed to them, bare (``GUEST_FIELDS``). ``split`` is the
+    agent's own reading (``protagine_self log``): its actions (``audit.is_action``) under ``actions`` and the
+    rest (the nightly consolidation, notices) under ``notes``, so a note is never read as something it did."""
     mind = _require()
     guest = _guest(mind, viewer)
     if guest:
@@ -498,6 +500,9 @@ async def log(limit: int = 20, status: Optional[str] = None, kind: Optional[str]
     if guest:
         entries = [_guest_entry(item) for item in entries if item.get("recipient") == viewer]
         return {"entries": entries, "text": "\n".join(item["text"] for item in entries) or "(nothing addressed to you)"}
+    if split:
+        actions, notes = audit.split(entries)
+        return {"actions": actions, "notes": notes, "text": audit.render_split(actions, notes)}
     return {"entries": entries, "text": audit.render_log(entries)}
 
 

@@ -55,7 +55,7 @@ SELF_SCHEMA = {
     "name": "protagine_self",
     "description": "Your mind and record, the only source for what you did or decided: state (level, asks with "
                    "codes, working_on, narrative), log (read-only, newest first; since_hours, kind, recipient; cite "
-                   "ids; an action of yours not in it did not happen), why <id or opinion number>, rate <id> "
+                   "ids of actions, not notes; one not there did not happen), why <id or opinion number>, rate <id> "
                    "<verdict>, opinions [query]; owner only: yes|no <code> (typed by the owner), withdraw|reconsider "
                    "<opinion> <reason>. What a turn says is recorded after it, with no tool call.",
     "parameters": {"type": "object", "properties": {
@@ -205,7 +205,8 @@ class Tools:
         if operation in {"log", "why"} and not self._owners_own(session_id):
             return final_answer(RECORD_IS_OWNERS)
         if operation == "log":
-            params: dict[str, Any] = {"limit": max(1, min(int(args.get("limit") or 20), 100))}
+            # Split: the agent's own actions apart from the mind's notes (the nightly consolidation, notices).
+            params: dict[str, Any] = {"limit": max(1, min(int(args.get("limit") or 20), 100)), "split": "true"}
             if args.get("since_hours") is not None and str(args.get("since_hours")).strip():
                 try:
                     params["since_hours"] = max(0.0, float(args["since_hours"]))

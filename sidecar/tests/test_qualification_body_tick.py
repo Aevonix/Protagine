@@ -100,7 +100,8 @@ def test_tick_drives_cron_and_kanban_once_and_deliveries_land_in_the_outbox(tmp_
                              if line.startswith('RESULT:')))
     assert report['registered'] is True and report['protagine_tick'] is None
     # No plugin loaded: nothing to read and nothing raised; the body record carries no audit ids.
-    assert report['audit_ids_without_plugin'] == {'audit_ids': [], 'audit_refs': {}} and report['plugin_client'] is None
+    assert report['audit_ids_without_plugin'] == {'audit_ids': [], 'audit_refs': {}, 'audit_notes': []}
+    assert report['plugin_client'] is None
     first, second, third, fourth, fifth, sixth = report['ticks']
     # Nothing is due before the clock moves: zero deliveries, the ready task dispatched once.
     assert first['cron_jobs_run'] == 0 and first['outbox_after'] == 0
@@ -172,11 +173,13 @@ def test_audit_ids_are_the_agents_own_actions_read_from_the_mind_log():
                               {'id': 'd-01', 'decision': 'act', 'kind': 'message', 'type': 'digest'},
                               {'id': 'g-01', 'decision': 'act', 'kind': 'goal', 'type': 'goal'},
                               {'id': 7, 'decision': 'act', 'kind': 'task'}, 'junk'])
-    assert paired_worker.mind_audit(client) == {'audit_ids': ['i-01', 'i-02', 'g-01'], 'audit_refs': {'t-1': 'i-01'}}
+    assert paired_worker.mind_audit(client) == {'audit_ids': ['i-01', 'i-02', 'g-01'], 'audit_refs': {'t-1': 'i-01'},
+                                                 'audit_notes': ['i-03', 'i-04', 'n-01', 'n-02', 'd-01']}
     (path, kwargs), *_ = client.calls
     assert path == '/v1/mind/log' and kwargs['params'] == {'limit': 500} and 0 < kwargs['timeout'] <= 30
-    assert paired_worker.mind_audit(_Client(status=404)) == {'audit_ids': [], 'audit_refs': {}}
-    assert paired_worker.mind_audit(_Client(raise_on_get=True)) == {'audit_ids': [], 'audit_refs': {}}
+    assert paired_worker.mind_audit(_Client(status=404)) == {'audit_ids': [], 'audit_refs': {}, 'audit_notes': []}
+    assert paired_worker.mind_audit(_Client(raise_on_get=True)) == {'audit_ids': [], 'audit_refs': {},
+                                                                     'audit_notes': []}
     body = {'protocol': 'paired-body-tick-1', 'ticks': [{'created_task_ids': ['t-1', 't-2']}],
             'audit_ids': ['i-01', 'i-02'], 'audit_refs': {'t-1': 'i-01'}}
     required, known = observed_actions(body)

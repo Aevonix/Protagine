@@ -99,6 +99,28 @@ def test_the_recipient_filter_selects_before_the_limit(stand_in):
     assert [entry["id"] for entry in answer] == [sent]
     assert [entry["id"] for entry in _call("GET", "/v1/mind/log", params={"recipient": "p-07", "limit": 1}).json()["entries"]] == [sent]
 
+def test_the_agents_log_lists_its_actions_apart_from_its_notes(stand_in):
+    """What ``protagine_self log`` reads (``split``): the rows ``audit.is_action`` counts as the agent's own
+    actions under ``actions``, and every other row (the nightly consolidation, a notice) under ``notes``, which
+    never reads as something the agent did. Every id is shown whole: a prefix is not an id anyone can cite."""
+    action = _row(stand_in.store, "message to p-07", kind="message", recipient="p-07", age=timedelta(hours=2))
+    note, _ = stand_in.store.create_intention(
+        kind="note", type="consolidation", title="nightly consolidation", drive="upkeep", cls="internal",
+        decision="act", decision_reason="the nightly pass", status="done", dedup_key=None,
+        created_at=NOW - timedelta(hours=1))
+    answer = _call("GET", "/v1/mind/log", params={"split": "true"}).json()
+    assert set(answer) == {"actions", "notes", "text"}
+    assert [entry["id"] for entry in answer["actions"]] == [action]
+    assert [entry["id"] for entry in answer["notes"]] == [note.id]
+    assert "drive" not in answer["notes"][0] and "decision" not in answer["notes"][0]
+    actions, _, notes = answer["text"].partition("Not actions")
+    assert action in actions and note.id not in actions and note.id in notes
+    # The unsplit log (the CLI's, the harness's) still holds every row, with whole ids.
+    plain = _call("GET", "/v1/mind/log").json()
+    assert {entry["id"] for entry in plain["entries"]} == {action, note.id}
+    assert action in plain["text"] and note.id in plain["text"]
+
+
 def test_why_names_the_missing_intention(stand_in):
     response = _call("GET", "/v1/mind/why/nope")
     assert response.status_code == 404

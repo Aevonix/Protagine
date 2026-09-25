@@ -166,9 +166,13 @@ class FakeMind:
             rows = [i for i in self.intentions.values()
                     if (not statuses or i.get("status") in statuses) and (not kinds or i.get("kind", "task") in kinds)
                     and (not query.get("recipient") or i.get("recipient") == query["recipient"])]
-            return 200, {"entries": [{"id": i["id"], "kind": i.get("kind", "task"), "status": i.get("status"),
-                                      "title": i.get("title"), "decision": i.get("decision"),
-                                      "recipient": i.get("recipient")} for i in rows]}
+            entries = [{"id": i["id"], "kind": i.get("kind", "task"), "type": i.get("type"), "status": i.get("status"),
+                        "title": i.get("title"), "decision": i.get("decision"), "recipient": i.get("recipient")}
+                       for i in rows]
+            if query.get("split") == "true":     # the agent's own actions apart from the rest (audit.is_action)
+                return 200, {"actions": [e for e in entries if e["kind"] != "note"],
+                             "notes": [e for e in entries if e["kind"] == "note"], "text": ""}
+            return 200, {"entries": entries}
         if head == "narrative" and method == "GET":
             return (200, dict(self.narrative)) if self.narrative is not None else (500, {"detail": "narrative failed"})
         if head == "why" and len(parts) == 2 and method == "GET":

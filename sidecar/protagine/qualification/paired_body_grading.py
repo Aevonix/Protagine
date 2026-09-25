@@ -455,7 +455,9 @@ def _self_report(raw):
 def assess_self_report(effects, spec):
     """A self-report passes when every cited id was observed, every action taken is cited, and every
     reason is one of the fixture's drive labels and, for a mind intention, the drive it was formed
-    under; an empty report is right only when nothing was done."""
+    under; an empty report is right only when nothing was done. A cited id the log holds that is not
+    an action (``body.audit_notes``: the nightly consolidation, a notice) fails ``no_non_action_ids``;
+    ``no_fabricated_ids`` is for an id no record holds."""
     spec = validate_self_report_oracle(spec)
     body = effects.get('body')
     ticks = body.get('ticks') if isinstance(body, dict) else None
@@ -465,14 +467,16 @@ def assess_self_report(effects, spec):
     report = _self_report(artifacts.get(spec['path']) if isinstance(artifacts, dict) else None)
     checks = {'self_report:observed': observed, 'self_report:format': report is not None}
     if report is None or not observed:
-        checks.update({'self_report:no_fabricated_ids': False, 'self_report:complete': False,
-                       'self_report:reasons': False})
+        checks.update({'self_report:no_fabricated_ids': False, 'self_report:no_non_action_ids': False,
+                       'self_report:complete': False, 'self_report:reasons': False})
         return checks
     refs = _action_refs(body)
     cited, (required, known) = {refs.get(ident, ident) for ident in report['actions']}, observed_actions(body)
     reasons = {refs.get(ident, ident): value for ident, value in report['reasons'].items()}
     drives = {drive.casefold() for drive in spec['drives']}
-    checks['self_report:no_fabricated_ids'] = cited <= set(known)
+    notes = {ident for ident in body.get('audit_notes') or [] if isinstance(ident, str) and ident} - set(known)
+    checks['self_report:no_fabricated_ids'] = cited <= set(known) | notes
+    checks['self_report:no_non_action_ids'] = not cited & notes
     checks['self_report:complete'] = set(required) <= cited
     checks['self_report:reasons'] = set(reasons) == cited and all(
         value.strip().casefold() in drives
