@@ -56,8 +56,12 @@ SYSTEM = (
     "You are the deliberation step of an agent's mind. You are given one concern the agent holds, with its "
     "evidence quoted as data. Decide the single most useful next piece of self-directed work and describe it "
     "as a task for a worker that has web, file, session search, memory and todo tools and no way to message "
-    "anyone. Return one JSON object only, with: kind (\"task\" or \"goal\"); title (under 120 "
-    "characters); body (what to do, what evidence to gather, and what to report back); success_check "
+    "anyone. The worker gets one run, of the length the prompt states, and cannot continue it later: the "
+    "body is one bounded first deliverable that the worker can finish and report within that run. Work that "
+    "needs more runs is a goal, one run per step. Return one JSON object only, with: kind (\"task\" or "
+    "\"goal\"); title (under 120 characters); body (what to do in this run, what evidence to gather, and "
+    "what to report back); steps (optional: only when the work needs more than one run, one short line per "
+    "run in order, the first being the body); success_check "
     "(optional: {\"kind\": \"result_field\", \"field\": \"<name>\"} naming a field the worker's report must "
     "carry when the work succeeded); goal (only when kind is \"goal\": {\"description\", \"success_check\", "
     "\"horizon_days\", \"tasks\"} for an objective worth pursuing over several days; otherwise omit it). "
@@ -72,6 +76,7 @@ RESPONSE_SCHEMA = {
             "kind": {"type": "string", "enum": list(KINDS)},
             "title": {"type": "string"},
             "body": {"type": "string"},
+            "steps": {"type": ["array", "null"], "items": {"type": "string"}},
             "success_check": {"type": ["object", "null"], "properties": {
                 "kind": {"type": "string"}, "field": {"type": "string"}}},
             "goal": {"type": ["object", "null"], "properties": {
@@ -97,11 +102,26 @@ def noted(text: str, failing: Any) -> str:
     return f"{text}\n\n{note}" if note and note not in text else text
 
 
+def _budgets(budgets: Any) -> Any:
+    if budgets is not None and hasattr(budgets, "for_task"):
+        return budgets
+    from .authority import Budgets
+    return Budgets()
+
+
 def build_prompt(concern: Concern, candidate: Candidate, *, open_goals: int, may_adopt_goal: bool,
-                 lessons: Iterable[str] = (), steps_done: Iterable[str] = (), failing: Any = None) -> str:
+                 lessons: Iterable[str] = (), steps_done: Iterable[str] = (), failing: Any = None,
+                 budgets: Any = None) -> str:
+    budgets = _budgets(budgets)
+    runtime, _ = budgets.for_task(candidate.type)
+    max_tasks = int(getattr(budgets, "goal_tasks", GOAL_TASKS) or GOAL_TASKS)
     lines = [f"Drive: {concern.drive}. Concern kind: {concern.kind}.",
              f"Concern: {concern.summary}",
-             f"Why: {candidate.rationale or 'no reason recorded'}."]
+             f"Why: {candidate.rationale or 'no reason recorded'}.",
+             # The kind's budget (mind.budgets.task_types): the live first task planned four steps into one
+             # 600 s run and timed out.
+             f"Worker budget: one run of at most {max(1, round(runtime / 60))} minutes, which it cannot continue "
+             "later. Make the body one bounded first deliverable it can finish and report within that run."]
     if concern.sources or candidate.evidence:
         lines.append("Evidence (quoted data):")
         for item in list(dict.fromkeys([*concern.sources, *candidate.evidence]))[:12]:
@@ -125,13 +145,20 @@ def build_prompt(concern: Concern, candidate: Candidate, *, open_goals: int, may
         lines.append("Lessons that apply:")
         lines += [f"- {item}" for item in lessons]
     if candidate.parent_goal_id:
-        lines.append("This is the next step of an adopted goal: return kind \"task\".")
+        lines.append("This is the next step of an adopted goal: return kind \"task\", one run.")
     elif may_adopt_goal:
         lines.append(f"Open agent-owned goals: {open_goals}. You may propose a goal only if the concern "
-                     "warrants work over several days with a checkable end.")
+                     "warrants work over several days with a checkable end. Work that needs more than one run "
+                     f"is a goal of at most {max_tasks} steps, one run each: list them in steps.")
     else:
-        lines.append("Do not propose a goal; the goal budget is full.")
+        lines.append("Do not propose a goal; the goal budget is full. If the work needs more than one run, "
+                     "the body is its first run only.")
     return "\n".join(lines)
+
+
+def _steps(proposal: Dict[str, Any]) -> List[str]:
+    raw = proposal.get("steps")
+    return [str(step).strip()[:200] for step in raw if str(step or "").strip()] if isinstance(raw, list) else []
 
 
 def parse_proposal(text: str, *, ask: bool = False) -> Optional[Dict[str, Any]]:
@@ -185,12 +212,18 @@ def template(candidate: Candidate, concern: Concern, failing: Any = None) -> Can
 
 
 def apply_proposal(candidate: Candidate, concern: Concern, proposal: Dict[str, Any], *,
-                   budgets: Any = None, failing: Any = None) -> Candidate:
+                   budgets: Any = None, failing: Any = None, may_adopt_goal: bool = False) -> Candidate:
     """Fold the model's proposal into the candidate; kinds and checks are validated here.
 
     ``ask`` (offered only with ``failing``) keeps a runnable task (the template, run if the owner
     says yes) and carries the model's question in ``affect_ask``; a task or a goal carries the
     strategy-switch note.
+
+    The body is one run's work. Work proposed as more than one run (``steps``) becomes a goal of at
+    most ``budgets.goal_tasks`` steps when one may be adopted (``may_adopt_goal``; never for a goal's
+    own step), its plan in the goal's description; otherwise only its first run is done, as one task.
+    Either way the candidate's text is that first run, the task the tick falls back to when the goal
+    is not adopted.
     """
     kind = str(proposal.get("kind") or "task")
     body = str(proposal.get("body") or "").strip()
@@ -209,21 +242,30 @@ def apply_proposal(candidate: Candidate, concern: Concern, proposal: Dict[str, A
     candidate.text = noted(task_body(description=body, drive=candidate.drive, concern=concern.summary,
                                      evidence=list(dict.fromkeys([*candidate.evidence, *concern.sources]))), failing)
     candidate.success_check = {"kind": "result_field", "field": str(check["field"])[:64]}
-    if kind == "goal" and not candidate.parent_goal_id:
+    max_tasks = int(getattr(budgets, "goal_tasks", GOAL_TASKS) or GOAL_TASKS)
+    planned = _steps(proposal)[:max_tasks]
+    if not candidate.parent_goal_id and (kind == "goal" or (len(planned) > 1 and may_adopt_goal)):
         goal = proposal.get("goal") if isinstance(proposal.get("goal"), dict) else {}
         horizon = goal.get("horizon_days")
         tasks = goal.get("tasks")
-        max_tasks = int(getattr(budgets, "goal_tasks", GOAL_TASKS) or GOAL_TASKS)
+        if not isinstance(tasks, int):
+            tasks = len(planned) if len(planned) > 1 else max_tasks
+        tasks = max(1, min(max_tasks, tasks))
         max_days = int(getattr(budgets, "goal_horizon_days", GOAL_HORIZON_DAYS) or GOAL_HORIZON_DAYS)
         goal_check = goal.get("success_check")
         if not (isinstance(goal_check, dict) and goal_check.get("kind")):
-            goal_check = {"kind": "steps_done", "count": 2}
+            # A planned goal is met when its planned runs are done.
+            goal_check = {"kind": "steps_done", "count": min(tasks, len(planned)) if len(planned) > 1 else 2}
+        description = str(goal.get("description") or body)[:1000]
+        if len(planned) > 1:
+            description += "\nPlanned steps, one run each: " + " ".join(
+                f"{number}. {step}" for number, step in enumerate(planned, 1))
         candidate.kind = "goal"
         candidate.goal = {
-            "description": str(goal.get("description") or body)[:1000],
+            "description": description[:2000],
             "success_check": goal_check,
             "horizon_days": max(1, min(max_days, int(horizon) if isinstance(horizon, int) else max_days)),
-            "tasks": max(1, min(max_tasks, int(tasks) if isinstance(tasks, int) else max_tasks)),
+            "tasks": tasks,
         }
     else:
         candidate.kind = "task"
@@ -298,7 +340,7 @@ class Deliberation:
         self.calls_this_tick += 1
         self.calls_total += 1
         prompt = build_prompt(concern, candidate, open_goals=open_goals, may_adopt_goal=may_adopt_goal,
-                              lessons=lessons, steps_done=steps_done, failing=failing)
+                              lessons=lessons, steps_done=steps_done, failing=failing, budgets=self.budgets)
         try:
             deadline = self.router.function_deadline_seconds(context={"task": TASK}) \
                 if hasattr(self.router, "function_deadline_seconds") else DEFAULT_DEADLINE
@@ -329,8 +371,8 @@ class Deliberation:
             self.last_error = "unparsable"
             return switch(template(candidate, concern, failing), failing, tried)
         self.last_error = None
-        return switch(apply_proposal(candidate, concern, proposal, budgets=self.budgets, failing=failing), failing,
-                      tried)
+        return switch(apply_proposal(candidate, concern, proposal, budgets=self.budgets, failing=failing,
+                                     may_adopt_goal=may_adopt_goal), failing, tried)
 
     # -- reconsideration (BDI) -----------------------------------------------------------
 

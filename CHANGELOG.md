@@ -202,6 +202,43 @@ prunes nothing a read begun before it may still be reading. A version manifest
 that vanishes under a prune anyway is retried once. See
 [docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md).
 
+Three fixes from running 1.10 on an upgraded store. The projection worker no
+longer runs an upgraded store's history through the model. A store from 1.9
+carried claim-extraction and appraisal jobs that its single worker loop, which
+started one model projection per source-vector commit, never reached; the
+per-family lanes took them back to back, oldest first, 140 to 190 small calls
+(an empty claim list, an empty appraisal) every ten minutes, and the owner's
+chat decoded at half speed. A job queued more than a day before the running
+release first opened the store is now backlog
+(`protagine.turns.projection_backlog`; claim and appraisal jobs and media
+descriptions record when they were queued, and a queue from before that column
+dates each job by its source). The claim, appraisal, capture and media lanes
+take new jobs first and at once, and backlog jobs start at most
+`projections.backlog_per_hour` times an hour across all of them (default 12,
+evenly spaced; 0 leaves them pending). The tick's capture drain, the night's
+claim settling, the tick's wait for the owner's appraisals and capture's health
+check do not wait for backlog, and a person's new turn is not held behind their
+backlogged ones. The sidecar logs the backlog it finds at startup. Mind tasks
+get budgets by kind: research, questions, investigations and goal steps get one
+run of 1,800 s and a second attempt (`mind.budgets.task_types`), other tasks
+keep 600 s and one attempt. The deliberation prompt tells the proposer the run
+its task gets and asks for one bounded first deliverable; work that needs more
+runs comes back as `steps` and becomes a goal of at most `budgets.goal_tasks`
+steps, or only its first run when no goal can be adopted (the first autonomous
+task on the upgraded store planned four steps into one 600 s run and timed
+out). A run stopped at its time limit fails its task but counts toward the
+breaker only when a retry timed out as well with nothing new to show
+(`result_metadata.breaker` says which), so one slow task no longer brings the
+mind within two failures of a 72-hour demotion. The `protagine-act` worker
+profile caps every request a mind task's worker makes (`mind.worker_request`,
+default `max_tokens` 8192 and `top_p` 0.95): stock Hermes sends a custom
+endpoint's `extra_body` with each request, so each endpoint entry in the
+profile carries the fields, and a model given as a bare `base_url` gets an
+entry of its own. Nothing capped the worker before, and one of its model calls
+generated about 20K tokens until the run was killed. `protagine upgrade`
+rewrites an existing profile. See [docs/MIND.md](docs/MIND.md) and
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ## Unreleased - opinions
 
 The agent now holds opinions that change only on evidence (build plan M7,

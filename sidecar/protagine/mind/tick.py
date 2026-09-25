@@ -1337,8 +1337,8 @@ class Mind:
                 if request:
                     context["body"] = f"{context['body']}\n\n{request}".strip()
                 context["reflector"] = reflector
-            context["max_runtime_seconds"] = self.policy.budgets.task_max_runtime_s
-            context["max_retries"] = self.policy.budgets.task_max_retries
+            # The budget of the task's kind (``mind.budgets.task_types``); deliberation told the proposer.
+            context["max_runtime_seconds"], context["max_retries"] = self.policy.budgets.for_task(candidate.type)
             if candidate.parent_goal_id:
                 context["goal_mode"] = True
                 context["goal_max_turns"] = DEFAULT_MAX_TURNS
@@ -1984,13 +1984,15 @@ class Mind:
             body = context.get("body") or row.description
             if note and note not in body:
                 body = body + "\n\n" + note
+            runtime, retries = self.policy.budgets.for_task(row.type)
             payloads.append({
                 "id": row.id, "kind": row.kind, "type": row.type, "drive": row.drive,
                 "dedup_key": f"mind:{row.id}", "idempotency_key": f"mind:{row.id}",
                 "title": row.description, "body": body,
                 "assignee": WORKER_PROFILE, "recipient": row.entity_id, "reason": row.decision_reason,
-                "max_runtime_seconds": int(context.get("max_runtime_seconds") or self.policy.budgets.task_max_runtime_s),
-                "max_retries": int(context.get("max_retries") or self.policy.budgets.task_max_retries),
+                # What the row was formed with; a row formed without one takes its kind's budget.
+                "max_runtime_seconds": int(context.get("max_runtime_seconds") or runtime),
+                "max_retries": int(retries if context.get("max_retries") is None else context["max_retries"]),
                 "goal_mode": bool(context.get("goal_mode")), "goal_max_turns": context.get("goal_max_turns"),
                 "parent_goal_id": row.parent_goal_id,
                 "created_at": row.created_at.isoformat() if row.created_at else None,

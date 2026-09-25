@@ -422,7 +422,7 @@ def test_new_runs_table_has_no_lease_columns(tmp_path):
     with ledger._connect() as conn:
         columns = {row[1] for row in conn.execute('PRAGMA table_info(appraisal_runs)')}
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index')")}
-    assert columns == {'turn_id', 'status', 'attempts', 'next_attempt', 'disposition', 'error'}
+    assert columns == {'turn_id', 'status', 'attempts', 'next_attempt', 'disposition', 'error', 'enqueued_at'}
     assert {'appraisal_outcomes', 'appraisal_outcome_subject', 'appraisal_outcome_turn'} <= tables
 
 

@@ -128,7 +128,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    task with the key that was archived in between (stock's lookup skips
    archived tasks) is bound and settled as `cancelled` rather than recreated.
    Messages and notices never travel through dispatch. Runtime and retries
-   fall back to `mind.budgets.task_max_runtime_s` / `task_max_retries`.
+   are the task kind's (`mind.budgets.task_types`, else
+   `task_max_runtime_s` / `task_max_retries`), and fall back to that flat
+   pair when a payload carries none.
 3. `GET /v1/mind/outbox` → for each message, in order: skip it if the body's
    own ledger has begun it before; `POST /v1/mind/outbox/{id}/sending {target,
    at}` (any non-2xx: not ours); record `sending` locally; send **verbatim**

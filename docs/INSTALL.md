@@ -58,7 +58,10 @@ default `standard`). Then it:
    `security.protected_instruction_extra_patterns += protagine.yaml, identity.yaml, api.key`,
    and `plugins.protagine.{sidecar_url, key_file}`;
 6. creates the `protagine-act` worker profile: the main `model` with the
-   `providers`, `custom_providers` and fallback entries it can name, the mind's
+   `providers`, `custom_providers` and fallback entries it can name, each
+   custom endpoint's `extra_body` carrying `mind.worker_request` (an output cap
+   of 8,192 tokens and `top_p` 0.95 on every worker request; a model given as a
+   bare `base_url` gets a `custom_providers` entry for it), the mind's
    toolsets as `platform_toolsets.cli` (what the dispatcher pins) and
    `approvals.deny` from `mind.deny.commands`. `protagine doctor` asks stock
    Hermes what a dispatched worker resolves and fails on a stale profile, an
@@ -206,7 +209,9 @@ mind:
   worker_toolsets: [web, file, session_search, memory, todo]
   budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
             contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
-            llm_tokens_per_day: 200000, task_max_runtime_s: 600, task_max_retries: 1}
+            llm_tokens_per_day: 200000, task_max_runtime_s: 600, task_max_retries: 1,
+            task_types: {research: {max_runtime_s: 1800, max_retries: 2}, ...}}   # docs/MIND.md
+  worker_request: {max_tokens: 8192, top_p: 0.95}   # extra_body on every mind worker request
   quiet_hours: "22:00-07:00"         # owner notices wait; tasks and the digest do not
   ask_expires_hours: 72              # silence = no
   breaker: {failures: 3, window_hours: 24, demotion_hours: 72}
@@ -216,7 +221,17 @@ mind:
   faculties: {initiative: true, people: true, affect: true, opinions: true, broadcast: true,
               semantic_recall: true, consolidation: true, self_narrative: true, lessons: true,
               skills: false}
+projections:
+  backlog_per_hour: 12               # model projections queued a day before this release started
 ```
+
+`projections.backlog_per_hour` bounds the model work an upgrade inherits. Claim
+extraction, appraisal, capture and image descriptions each keep a queue of
+jobs, one per source. A job queued more than a day before the running release
+first opened the store is backlog: each queue takes its new jobs first and at
+once, and backlog jobs start at most this many times an hour across all the
+queues, evenly spaced (0 leaves them pending). The sidecar logs the backlog it
+found at startup.
 
 `router.embed_url` (an OpenAI-compatible embeddings endpoint, with
 `embed_model`) turns semantic recall on; `mind.faculties.semantic_recall:

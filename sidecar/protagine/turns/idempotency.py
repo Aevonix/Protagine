@@ -257,6 +257,8 @@ class TurnIdempotencyLedger:
                     whole_source INTEGER NOT NULL CHECK(whole_source IN (0,1)),
                     UNIQUE(source_turn_id,source_version,whole_source))''')
                 conn.execute("CREATE TABLE IF NOT EXISTS source_projection_erasures (turn_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, PRIMARY KEY(turn_id, source_turn_id))")
+                from .projection_backlog import initialize as initialize_backlog
+                initialize_backlog(conn)
                 from protagine.beliefs.source_projection import initialize
                 initialize(conn)
                 from protagine.turns.media import initialize as initialize_media

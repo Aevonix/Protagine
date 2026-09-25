@@ -209,7 +209,14 @@ def initialize(conn):
     # made before this keep their unused lease_until and lease_token columns.
     conn.execute('''CREATE TABLE IF NOT EXISTS appraisal_runs (
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt REAL NOT NULL DEFAULT 0, disposition TEXT, error TEXT)''')
+        next_attempt REAL NOT NULL DEFAULT 0, disposition TEXT, error TEXT, enqueued_at REAL NOT NULL DEFAULT 0)''')
+    if 'enqueued_at' not in {row[1] for row in conn.execute('PRAGMA table_info(appraisal_runs)')}:
+        # A queue from before the column: a job was enqueued when its source was recorded
+        # (``turns.projection_backlog`` reads it).
+        from protagine.turns.projection_backlog import EPOCH_SQL
+        conn.execute('ALTER TABLE appraisal_runs ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0')
+        conn.execute('UPDATE appraisal_runs SET enqueued_at=coalesce((SELECT ' + EPOCH_SQL.format('s.ingested_at')
+                     + ' FROM turn_sources s WHERE s.turn_id=appraisal_runs.turn_id),0)')
     conn.execute('''CREATE TABLE IF NOT EXISTS appraisal_records (
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, subject_id TEXT NOT NULL,
         head_key TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -255,7 +262,7 @@ def enqueue(conn, turn_id, contact_id, messages, *, scope, runtime_observation=F
             m.get('role') == 'user' or runtime_observation and
             m.get('_native_runtime_observation') == 'native-runtime-observation-v1'
             for m in messages):
-        conn.execute('INSERT OR IGNORE INTO appraisal_runs(turn_id) VALUES (?)', (turn_id,))
+        conn.execute('INSERT OR IGNORE INTO appraisal_runs(turn_id,enqueued_at) VALUES (?,?)', (turn_id, time.time()))
 
 
 def erase_removed(conn, turn_id, session_id, retained):
@@ -300,8 +307,10 @@ def requeue_attributed(conn, source_ids):
     stays unadmitted; a job in flight sees its status change and never commits."""
     count = 0
     for source_id in dict.fromkeys(source_ids):
+        # New work the merge caused, not backlog: its time is now (``turns.projection_backlog``).
         count += conn.execute("UPDATE appraisal_runs SET status='pending',attempts=0,next_attempt=0,error=NULL,"
-                              "disposition='reattributed' WHERE turn_id=?", (source_id,)).rowcount
+                              "disposition='reattributed',enqueued_at=? WHERE turn_id=?",
+                              (time.time(), source_id)).rowcount
     return count
 
 
@@ -505,15 +514,24 @@ class AppraisalStore:
     def _claim(self):
         """The oldest due pending job becomes running (attempts + 1), atomically, so concurrent
         consumers take different jobs. The first claim on a ledger in this process resets what a
-        dead process left running; only the source worker claims, so nothing live is reset."""
+        dead process left running; only the source worker claims, so nothing live is reset.
+        A backlog job (``turns.projection_backlog``) is taken only when no new job is due and the
+        hourly budget has room."""
+        from protagine.turns import projection_backlog
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute('BEGIN IMMEDIATE')
             path = str(self.ledger.db_path)
             if path not in _RECOVERED:
                 conn.execute("UPDATE appraisal_runs SET status='pending' WHERE status='running'")
                 _RECOVERED.add(path)
-            row = conn.execute("SELECT * FROM appraisal_runs WHERE status='pending' AND next_attempt<=? ORDER BY rowid LIMIT 1",
-                               (self.clock(),)).fetchone()
+            before = projection_backlog.watermark(conn)
+            query = ("SELECT * FROM appraisal_runs WHERE status='pending' AND next_attempt<=? AND enqueued_at {} ? "
+                     "ORDER BY rowid LIMIT 1")
+            row = conn.execute(query.format('>='), (self.clock(), before)).fetchone()
+            if row is None:
+                row = conn.execute(query.format('<'), (self.clock(), before)).fetchone()
+                if row is not None and not projection_backlog.admit(conn):
+                    row = None
             if row is None:
                 return None
             conn.execute("UPDATE appraisal_runs SET status='running',attempts=attempts+1 WHERE turn_id=?", (row['turn_id'],))
@@ -902,12 +920,16 @@ class AppraisalStore:
         return events[-int(limit):] if int(limit) > 0 else []
 
     def pending_jobs(self, *, contact_id=None):
-        """``{pending, running}``: due pending jobs and running jobs, for one contact's turns when given."""
-        join, where, args = '', '', [self.clock()]
-        if contact_id:
-            join, where = ' JOIN turn_sources s ON s.turn_id=r.turn_id', ' WHERE s.contact_id=?'
-            args.append(str(contact_id))
+        """``{pending, running}``: due pending jobs and running jobs, for one contact's turns when given.
+        A pending backlog job (``turns.projection_backlog``) is not counted: it waits for its slot, and
+        nothing should wait for it."""
+        from protagine.turns import projection_backlog
+        join, where = '', ''
         with closing(self.ledger._connect()) as conn:
-            row = conn.execute("SELECT coalesce(sum(r.status='pending' AND r.next_attempt<=?),0), "
+            args = [self.clock(), projection_backlog.watermark(conn)]
+            if contact_id:
+                join, where = ' JOIN turn_sources s ON s.turn_id=r.turn_id', ' WHERE s.contact_id=?'
+                args.append(str(contact_id))
+            row = conn.execute("SELECT coalesce(sum(r.status='pending' AND r.next_attempt<=? AND r.enqueued_at>=?),0), "
                                f"coalesce(sum(r.status='running'),0) FROM appraisal_runs r{join}{where}", args).fetchone()
         return {'pending': int(row[0]), 'running': int(row[1])}

@@ -50,6 +50,17 @@ def _reason(summary: Any, error: Any) -> str:
     return str(error or summary or "").strip()
 
 
+# Stock kanban's words for a run it killed at ``max_runtime_seconds`` (kanban_db_dispatch.enforce_max_runtime).
+_RUNTIME_LIMIT = re.compile(r"^elapsed \d+s > limit \d+s$")
+
+
+def timed_out(run: Any, error: Any = None) -> bool:
+    """True when the reported run was stopped at its runtime limit."""
+    if isinstance(run, dict) and "timed_out" in {str(run.get("outcome") or ""), str(run.get("status") or "")}:
+        return True
+    return bool(_RUNTIME_LIMIT.match(str(error or "").strip()))
+
+
 def hermes_reason(row: StoredInitiative) -> str:
     """The reason Hermes gave for a failed or blocked task it reported, or ``""`` when the row is not
     a Hermes failure with a reason (what the nightly lesson packet quotes)."""
@@ -238,8 +249,10 @@ class Outcomes:
                 self.store.update(intention_id, **updates)
             return self.store.get(intention_id)
         if final is False and resolved in TERMINAL_OUTCOMES:
+            # ``summary`` on its own: whether a retry made progress is read against it (``_breaker_count``).
             return self.store.transition(intention_id, row.status, action=f"run_{resolved}", at=self.clock(),
                                          details={"by": by, "status": status_key, "error": (error or summary or "")[:500],
+                                                  "summary": str(summary or "")[:500],
                                                   "run": run if isinstance(run, dict) else None}, **updates)
         if resolved is None:
             if row.status == "approved" and hermes_ref:
@@ -287,6 +300,10 @@ class Outcomes:
             metadata["run"] = run
         if error:
             metadata["error"] = str(error)[:500]
+        counted = True
+        if outcome == "failed":
+            counted, why = self._breaker_count(row, run=run, error=error, summary=summary, result=result)
+            metadata["breaker"] = {"counted": counted, **({"reason": why} if why else {})}
         stamps = {"done": {"completed_at": now},
                   "failed": {"failed_at": now, "failed_reason": reason or outcome},
                   "expired": {"cancelled_at": now, "cancelled_reason": "expired"},
@@ -307,7 +324,7 @@ class Outcomes:
         self._resolve_expectation(updated, outcome, check_result)
         if verdict and not row.verdict:
             self._feedback(updated, verdict)
-        if outcome == "failed" and self.authority is not None and updated is not None:
+        if outcome == "failed" and counted and self.authority is not None and updated is not None:
             self._breaker(updated)
         if self.autobiography is not None and updated is not None:
             self.autobiography.record(updated.id, f"outcome_{outcome}", self._narrate(updated, check_result),
@@ -380,6 +397,28 @@ class Outcomes:
             self.expectations.store.resolve(row.expectation_id, verdict)
         except Exception as error:
             logger.warning("expectation %s not resolved (%s)", row.expectation_id, type(error).__name__)
+
+    def _breaker_count(self, row: StoredInitiative, *, run: Any, error: Any, summary: Any,
+                       result: Any) -> tuple[bool, str]:
+        """Whether a failed task counts toward the breaker (3 in 24 h demote its class), and why not.
+
+        A timeout fails the task (its concern, affect and lessons read the failure) but is not a
+        wrong act: the worker was working when its run's budget ran out, a sizing miss the breaker
+        cannot fix by demoting the mind for 72 hours. It counts once a retry exists and timed out
+        too with nothing new to show (no report summary or structured result beyond what an earlier
+        run left): a worker that spends whole runs without progress is a fault to stop. Any other
+        failure counts as before.
+        """
+        if not timed_out(run, error):
+            return True, ""
+        earlier = [item for item in self.store.get_history(row.id, limit=100) if item.action == "run_failed"]
+        if not earlier:
+            return False, "timed out on its only run"
+        seen = {str((item.details or {}).get(key) or "").strip() for item in earlier for key in ("summary", "error")}
+        text = str(summary or "").strip()
+        if (text and text not in seen) or (isinstance(result, dict) and result):
+            return False, "timed out after progress on its retry"
+        return True, "timed out on a retry with no progress"
 
     def _breaker(self, row: StoredInitiative) -> None:
         state = self.authority.breaker_state(row.cls or "internal")
