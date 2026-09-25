@@ -92,6 +92,7 @@ class Candidate:
     affect_ask: str = ""          # the owner question when affect demotes an act to an ask (strategy switch)
     lesson_ids: List[str] = field(default_factory=list)   # the lessons its body and deliberation carry
     reflector: Optional[Dict[str, Any]] = None  # a mastery investigation asked for lesson operations
+    extra: Optional[Dict[str, Any]] = None      # context keys the intention row keeps (outreach: topic_slug, why, ev)
 
     def as_detail(self) -> Dict[str, Any]:
         """The candidate as a concern's stored detail (JSON); ``from_detail`` restores it."""

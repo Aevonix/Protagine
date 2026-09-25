@@ -15,7 +15,8 @@ engine that actually ran: follow-ups ``0.5 + days/14``, overdue commitments
 | mastery   | the same signature failing twice in 7 days, repeated corrections | a later verified success        |
 | upkeep    | failing health checks, backlogs, pending link proposals          | health OK                       |
 | social    | contacts with an owner cadence or tier regular+, overdue vs their | a reply or a conversation       |
-|           | cadence, backed off by ignored check-ins and declining affect     |                                 |
+|           | cadence, backed off by ignored check-ins and declining affect;    |                                 |
+|           | toward the owner, hours since they last spoke (outreach, 4.10)    | the owner's next turn           |
 
 Weights come from ``mind.drives`` (0 turns a drive off). With
 ``mind.faculties.drives`` off every weight is 1 and nothing satiates: the
@@ -155,6 +156,8 @@ class DriveInputs:
     contacts: List[Dict[str, Any]] = field(default_factory=list)
     link_proposals: List[Dict[str, Any]] = field(default_factory=list)  # pending name-only identity candidates
     people_on: bool = True
+    # The owner branch of the social drive (``outreach.OutreachInputs``), None with ``faculties.outreach`` off.
+    outreach: Any = None
 
     def is_settled(self, dedup_key: str, dedup_base: str | None = None) -> bool:
         """True for a key resolved recently, or a base (the period-free key of recurring work)
@@ -477,6 +480,10 @@ def duty(inputs: DriveInputs) -> DriveResult:
                 continue
             if float(item.get("age_hours") or 0) >= STALLED_GOAL_HOURS:
                 candidates.append(stalled_goal_candidate(item, owner_id=inputs.owner_id))
+    if inputs.outreach is not None:
+        # The deeper dig the owner asked for in reply to an outreach: owed, so duty's.
+        from . import outreach
+        candidates.extend(outreach.followups(inputs.outreach))
     misses = [m for m in inputs.expectation_misses if str(m.get("domain") or "") in DUTY_DOMAINS]
     level = min(1.0, _level(candidates) + 0.1 * len(misses))
     return round(level, 3), inputs.wanted(candidates)
@@ -679,10 +686,19 @@ def social(inputs: DriveInputs) -> DriveResult:
     the next period a new one. A contact with a check-in still in flight, or
     with a message the owner granted falling due now, gets nothing more from
     this drive: one word at a time per person.
+
+    The owner branch (architecture 4.10, ``outreach.candidates``) runs whatever the people faculty: a
+    finding, an offer on an open loop or care, each only with something concrete to say, and the answer
+    to a follow-up the owner asked for. Its pressure (hours since the owner last spoke) is the drive's
+    level when it is the higher.
     """
-    if not inputs.people_on:
-        return 0.0, []
     candidates: List[Candidate] = []
+    owner_level, owner_candidates = 0.0, []
+    if inputs.outreach is not None:
+        from . import outreach
+        owner_level, owner_candidates = outreach.candidates(inputs.outreach)
+    if not inputs.people_on:
+        return owner_level, inputs.wanted(owner_candidates)
     owed = granted_due(inputs)
     for row in inputs.contacts:
         cid = str(row.get("contact_id") or "")
@@ -715,7 +731,7 @@ def social(inputs: DriveInputs) -> DriveResult:
                       f"ignored streak {int(row.get('ignored_streak') or 0)}"],
             concern=f"check in with {name}", invalidates_if=f"contact:{cid}:replied",
             cooldown_hours=verdict["cooldown_hours"], source_type="contact", source_id=cid, concern_kind="social"))
-    return _level(candidates), inputs.wanted(candidates)
+    return max(_level(candidates), owner_level), inputs.wanted([*candidates, *owner_candidates])
 
 
 DRIVE_FUNCTIONS: Dict[str, Callable[[DriveInputs], DriveResult]] = {

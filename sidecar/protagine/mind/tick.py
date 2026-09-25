@@ -34,7 +34,7 @@ from protagine.contacts.comms import MIND_REF, conversation_cadence_minutes
 from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
-from . import audit, drives as drive_functions
+from . import audit, drives as drive_functions, outreach as outreach_functions
 from .affect import SECTION_CHARS, Affect
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, Verdict, ask_expiry, boundary_crossed, in_quiet_hours,
@@ -50,8 +50,9 @@ from .lessons import Lessons
 from .skills import Skills
 from .opinions import Opinions
 from .outbox import Outbox
-from .outcomes import Autobiography, Outcomes, evaluate_check, invalidation_reason
-from .rank import Candidate, DEFAULT_ACT_THRESHOLD, eligible
+from .outcomes import FINDING_TYPES, Autobiography, Outcomes, evaluate_check, invalidation_reason
+from .rank import (Candidate, DEFAULT_ACT_THRESHOLD, OUTREACH_ANSWER, OUTREACH_FOLLOWUP, OUTREACH_TYPES,
+                   eligible)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ THREADED_PLATFORMS = frozenset({"telegram", "discord"})
 WORKER_PROFILE = "protagine-act"
 DEFAULT_FACULTIES = {"initiative": True, "drives": True, "deliberation": True, "goals": True, "broadcast": True,
                      "people": True, "semantic_recall": True, "consolidation": True, "self_narrative": True,
-                     "affect": True, "affect_rules": False, "lessons": True, "skills": False}
+                     "affect": True, "affect_rules": False, "lessons": True, "skills": False, "outreach": True}
 # How long a tick waits for capture jobs still pending before the drives read the store: a
 # forced tick (the CLI, the harness) is a decision point and waits longer than the 60 s timer.
 DRAIN_FORCED_S, DRAIN_TIMER_S = 30.0, 5.0
@@ -91,8 +92,17 @@ CONSOLIDATION_WAIT_S = 300.0
 DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable", "commitment_notice",
                        "commitment_check_in"})
 # The owner-granted message to a third party is the obligation itself: once it is sent the
-# commitment it was raised for is done.
-FULFILLED_BY_SENDING = frozenset({"commitment_notice", "commitment_check_in"})
+# commitment it was raised for is done. So is the answer to a follow-up the owner asked for, when the
+# assistant promised it in the same reply (``outreach_answer`` bound to that promise).
+FULFILLED_BY_SENDING = frozenset({"commitment_notice", "commitment_check_in", OUTREACH_ANSWER})
+# Owner outreach (architecture 4.10): the messages, and how far back the mind reads its own.
+OUTREACH_MESSAGES = frozenset({*OUTREACH_TYPES, OUTREACH_ANSWER})
+OUTREACH_HISTORY = timedelta(days=30)
+# The findings outreach may share: the research-shaped reports of the agent's own work, never an
+# investigation of its own failures (that is the autobiography's).
+SHARED_FINDINGS = frozenset(FINDING_TYPES - {"mastery_investigation"})
+OWNER_MEMORY = timedelta(days=30)
+OWNER_MEMORY_TURNS = 300
 # Questions only the owner answers: always an ask, whatever the level, settled by ``answer``.
 OWNER_QUESTIONS = frozenset({"link_proposal", "cadence_confirm"})
 # How far back the social drive reads its own intention rows (in-flight and unsent check-ins, and the
@@ -920,6 +930,8 @@ class Mind:
         # asked, queued or running) the next period does not start another.
         inputs.settled |= {row.dedup_base for row in self.store.intentions(status=list(MIND_ACTIVE_STATUSES), limit=500)
                            if row.dedup_base}
+        if self.faculties["outreach"] and self.owner_id:
+            inputs.outreach = self._outreach_inputs(now, inputs)
         return inputs
 
     def _open_commitments(self) -> List[Dict[str, Any]]:
@@ -946,12 +958,15 @@ class Mind:
                 and not str(getattr(row, "subject", "")).startswith("intention:")]
 
     def _interests(self) -> List[Dict[str, Any]]:
-        """Seeded and declared interests from ``mind_state`` plus the owner's own ``interest`` appraisals."""
-        found: Dict[str, Dict[str, Any]] = {}
-        for item in self.mind_state.items("interest:"):
-            topic = str(item.get("text") or item["key"].partition(":")[2])
-            found[slug(topic)] = {"topic": topic, "weight": float(item.get("level") or 1.0),
-                                  "sources": list(item.get("causes") or []), "why": "a declared interest"}
+        """Seeded and declared interests from ``mind_state`` plus the owner's own ``interest`` appraisals.
+
+        With ``faculties.outreach`` on, an appraisal that saw the owner welcome a topic (hint
+        ``offer_relevant_topic``) is kept as a month-long interest, once per record (the appraisal record
+        itself lives six hours), and each interest carries its ``origin`` (outreach's relevance weight):
+        ``owner`` (declared, set by hand or asked for more), ``welcome``, ``mentioned`` (an appraisal that
+        only saw it come up) or ``own`` (the agent's identity interest)."""
+        keep = bool(self.faculties.get("outreach")) and self.owner_id
+        records: List[Dict[str, Any]] = []
         if self.appraisals is not None and self.owner_id:
             try:
                 view = self.appraisals.view(self.owner_id, viewer_contact_id=self.owner_id, limit=20)
@@ -959,18 +974,214 @@ class Mind:
             except Exception as error:
                 logger.debug("appraisals unavailable (%s)", type(error).__name__)
                 records = []
+        records = [record for record in records if record.get("kind") == "appraisal"
+                   and record.get("dimension") == "interest" and str(record.get("topic") or "").strip()]
+        kept = set()
+        if keep:
             for record in records:
-                if record.get("kind") != "appraisal" or record.get("dimension") != "interest":
+                if record.get("hint") != "offer_relevant_topic" or not record.get("id"):
                     continue
-                topic = str(record.get("topic") or "").strip()
-                if not topic:
-                    continue
-                entry = found.setdefault(slug(topic), {"topic": topic, "weight": 0.0, "sources": [],
-                                                       "why": "the owner showed interest"})
-                entry["weight"] = float(entry["weight"]) + 1.0
-                if record.get("id"):
-                    entry["sources"].append(f"appraisal:{record['id']}")
+                topic = str(record["topic"]).strip()
+                key = f"interest:{slug(topic)}"
+                cause = f"appraisal:{record['id']}"
+                kept.add(slug(topic))
+                if cause not in ((self.mind_state.get(key) or {}).get("causes") or []):
+                    self.add_interest(topic, by=cause)
+        found: Dict[str, Dict[str, Any]] = {}
+        for item in self.mind_state.items("interest:"):
+            topic = str(item.get("text") or item["key"].partition(":")[2])
+            causes = list(item.get("causes") or [])
+            found[slug(topic)] = {"topic": topic, "weight": float(item.get("level") or 1.0),
+                                  "sources": causes, "why": "a declared interest",
+                                  "origin": outreach_functions.interest_origin(causes)}
+        for record in records:
+            topic = str(record["topic"]).strip()
+            if slug(topic) in kept:
+                continue
+            entry = found.setdefault(slug(topic), {"topic": topic, "weight": 0.0, "sources": [],
+                                                   "why": "the owner showed interest", "origin": "mentioned"})
+            entry["weight"] = float(entry["weight"]) + 1.0
+            if record.get("id"):
+                entry["sources"].append(f"appraisal:{record['id']}")
+        if not keep:
+            for entry in found.values():
+                entry.pop("origin", None)
         return list(found.values())
+
+    # -- owner outreach (architecture 4.10) --------------------------------------------------------
+
+    def _owner_last_turn(self) -> Optional[datetime]:
+        return _utc((self.mind_state.get(outreach_functions.OWNER_TURN_KEY) or {}).get("text"))
+
+    def _outreach_sent(self, now: datetime) -> List[StoredInitiative]:
+        """The mind's outreach messages to the owner of the last month that went out or are going, newest
+        first."""
+        rows = self.store.intentions(kind=["message"], since=now - OUTREACH_HISTORY, limit=2000,
+                                     recipient=self.owner_id)
+        return [row for row in rows if row.type in OUTREACH_MESSAGES
+                and row.status in {"approved", "sending", "sent", "uncertain"}]
+
+    @staticmethod
+    def _reaction(row: StoredInitiative) -> Dict[str, Any]:
+        value = (row.result_metadata or {}).get("reaction") if isinstance(row.result_metadata, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def _findings(self, now: datetime) -> List[StoredInitiative]:
+        """Done research-shaped rows whose finding outreach has not settled (``result_metadata.outreach``)."""
+        rows = self.store.intentions(status=["done"], kind=["task"], since=now - timedelta(days=7), limit=500)
+        return [row for row in rows if row.type in SHARED_FINDINGS
+                and ((row.result_metadata or {}).get("outreach") or {}).get("state") == "pending"]
+
+    def _mark_finding(self, ident: Any, state: str, now: datetime, **extra: Any) -> None:
+        row = self.store.get(str(ident)) if ident else None
+        if row is None:
+            return
+        metadata = dict(row.result_metadata or {})
+        metadata["outreach"] = {**dict(metadata.get("outreach") or {}), "state": state, "at": now.isoformat(), **extra}
+        self.store.update(row.id, result_metadata=metadata)
+
+    def _owner_words(self, turn_ids: Iterable[str]) -> Dict[str, str]:
+        """The owner's own words in these turns, while the ledger holds them (an erased turn quotes nothing)."""
+        wanted = [str(ident) for ident in dict.fromkeys(turn_ids) if ident]
+        if not wanted or self.ledger is None or not hasattr(self.ledger, "_connect"):
+            return {}
+        words: Dict[str, str] = {}
+        from contextlib import closing
+        try:
+            with closing(self.ledger._connect()) as conn:
+                for ident in wanted:
+                    if self.ledger.is_source_erased(ident, self.owner_id):
+                        continue
+                    row = conn.execute("SELECT messages_json FROM turn_sources WHERE turn_id=? AND contact_id=?",
+                                       (ident, self.owner_id)).fetchone()
+                    if row is None:
+                        continue
+                    text = " ".join(str(message.get("content") or "") for message in json.loads(row[0])
+                                    if isinstance(message, dict) and message.get("role") == "user")
+                    if text.strip():
+                        words[ident] = text
+        except Exception as error:
+            logger.debug("owner words unavailable (%s)", type(error).__name__)
+        return words
+
+    def _owner_memory(self, now: datetime) -> str:
+        """The owner's own words of the last month (their person-scoped turns), for a finding's relevance."""
+        if self.ledger is None or not hasattr(self.ledger, "_connect"):
+            return ""
+        from contextlib import closing
+        from .consolidate import SELF_TURN_SQL
+        since = (now - OWNER_MEMORY).astimezone(timezone.utc).isoformat()
+        texts: List[str] = []
+        try:
+            with closing(self.ledger._connect()) as conn:
+                for row in conn.execute(
+                        f"SELECT s.messages_json FROM turn_sources s WHERE s.contact_id=? AND s.scope='person' "
+                        f"AND {SELF_TURN_SQL} AND coalesce(s.occurred_at, s.ingested_at) > ? "
+                        f"ORDER BY coalesce(s.occurred_at, s.ingested_at) DESC LIMIT ?",
+                        (self.owner_id, since, OWNER_MEMORY_TURNS)):
+                    texts += [str(message.get("content") or "") for message in json.loads(row[0])
+                              if isinstance(message, dict) and message.get("role") == "user"]
+        except Exception as error:
+            logger.debug("owner memory unavailable (%s)", type(error).__name__)
+        return "\n".join(texts)
+
+    def _outreach_inputs(self, now: datetime, inputs: DriveInputs) -> outreach_functions.OutreachInputs:
+        """The owner branch's snapshot: what the owner cares about and said, what the mind found, what it
+        sent and how the owner took it, and the holds."""
+        o = outreach_functions
+        interests = [o.Interest(topic=item["topic"], slug=slug(item["topic"]), level=float(item.get("weight") or 0.0),
+                                origin=str(item.get("origin") or "mentioned"),
+                                turn=next((str(cause)[len("turn:"):] for cause in item.get("sources") or []
+                                           if str(cause).startswith("turn:")), None))
+                     for item in inputs.interests]
+        cares = []
+        for item in self.mind_state.items(o.CARE_PREFIX):
+            causes = [str(cause) for cause in item.get("causes") or []]
+            commitment = next((cause[len("commitment:"):] for cause in causes if cause.startswith("commitment:")), None)
+            record = next((row for row in inputs.commitments if str(row.get("id")) == commitment), None) \
+                if commitment else None
+            if commitment and record is None:
+                continue    # the thing it names is resolved: nothing left to offer help with
+            cares.append(o.Care(slug=item["key"][len(o.CARE_PREFIX):], thing=str(item.get("text") or ""),
+                                level=float(item.get("level") or 0.0),
+                                turn=next((cause[len("turn:"):] for cause in causes if cause.startswith("turn:")), None),
+                                commitment=commitment, due_at=_utc((record or {}).get("due_at"))))
+        cared = {care.commitment for care in cares if care.commitment}
+        sent = []
+        for row in self._outreach_sent(now):
+            context = row.context if isinstance(row.context, dict) else {}
+            sent.append(o.Sent(id=row.id, type=str(row.type), slug=str(context.get("topic_slug") or ""),
+                               at=_utc(row.created_at) or now, verdict=row.verdict,
+                               reaction=self._reaction(row).get("class"), source=str(context.get("source_ref") or "")))
+        findings = []
+        for row in self._findings(now):
+            completed = _utc(row.completed_at) or now
+            context = row.context if isinstance(row.context, dict) else {}
+            topic = str(context.get("topic") or context.get("concern") or row.description)[:160]
+            findings.append(o.Finding(id=row.id, type=str(row.type), topic=topic, slug=slug(topic),
+                                      summary=str(row.result or ""), completed_at=completed,
+                                      requested_by=str(context["requested"]) if context.get("requested") else None,
+                                      bound_commitment=context.get("bound_commitment")))
+        owner_items = [str(row.get("description") or "") for row in inputs.commitments
+                       if drive_functions._obligor(row, row.get("metadata") if isinstance(row.get("metadata"), dict)
+                                                   else {}, str(row.get("person_id") or "") or None,
+                                                   self.owner_id) == "owner"]
+        state = o.OutreachInputs(
+            now=now, owner_id=str(self.owner_id), quiet=self.in_quiet_hours(now),
+            paused_until=o.pause_until(self.mind_state.get(o.PAUSE_KEY)),
+            budget=self.authority.budget_check(kind="message", recipient=self.owner_id, type="outreach_finding",
+                                               now=now),
+            last_owner_turn=self._owner_last_turn(), local_hour=now.astimezone(self.tz).hour,
+            interests=interests, findings=findings,
+            loops=o.open_loops(inputs.commitments, owner_id=str(self.owner_id), now=now, skip=cared),
+            cares=cares,
+            mutes={item["key"][len(o.MUTE_PREFIX):]: str(item.get("text") or item["key"][len(o.MUTE_PREFIX):])
+                   for item in self.mind_state.items(o.MUTE_PREFIX)
+                   if float(item.get("level") or 0.0) >= o.MUTE_FLOOR},
+            timing={int(item["key"][len(o.TIMING_PREFIX):]): float(item.get("level") or 0.0)
+                    for item in self.mind_state.items(o.TIMING_PREFIX)
+                    if item["key"][len(o.TIMING_PREFIX):].isdigit()},
+            sent=sent,
+            queued_24h=self.store.count_transitions("queued", now - timedelta(days=1), kind="message",
+                                                    recipient=self.owner_id,
+                                                    exclude_types=self.authority.REQUESTED_TYPES),
+            goals=[*owner_items, *[str(item.get("title") or "") for item in inputs.hermes_goals]])
+        if findings:
+            state.memory = self._owner_memory(now)
+        state.quotes = self._owner_words([*(item.turn for item in interests if item.turn),
+                                          *(care.turn for care in cares if care.turn)])
+        self._age_findings(state)
+        return state
+
+    def _age_findings(self, state: outreach_functions.OutreachInputs) -> None:
+        """A finding not shared inside its window, or on a topic the owner muted, is settled: the digest
+        lists it when it was worth it (``DIGEST_FLOOR``), else it is dropped."""
+        o = outreach_functions
+        keep = []
+        for finding in state.findings:
+            if finding.requested_by is None and o.muted(state, finding.slug, finding.topic):
+                self._mark_finding(finding.id, "muted", state.now)
+            elif finding.requested_by is None and state.now - finding.completed_at > o.FINDING_WINDOW:
+                value = o.digest_value(finding, state)
+                self._mark_finding(finding.id, "digest" if value >= o.DIGEST_FLOOR else "dropped", state.now,
+                                   value=round(value, 3))
+            else:
+                keep.append(finding)
+        state.findings = keep
+
+    def _outreach_formed(self, row: StoredInitiative, now: datetime) -> None:
+        """A finding's outreach (or a requested answer) is formed: the finding is shared. A follow-up the
+        owner asked for is formed: the outreach it answers records it."""
+        context = row.context if isinstance(row.context, dict) else {}
+        source = str(context.get("source_ref") or "")
+        if row.type in {"outreach_finding", OUTREACH_ANSWER} and source.startswith("intention:"):
+            self._mark_finding(source[len("intention:"):], "sent", now, row=row.id)
+        elif row.type == OUTREACH_FOLLOWUP and context.get("requested"):
+            outreach_row = self.store.get(str(context["requested"]))
+            if outreach_row is not None:
+                metadata = dict(outreach_row.result_metadata or {})
+                metadata["reaction"] = {**self._reaction(outreach_row), "followup": row.id}
+                self.store.update(outreach_row.id, result_metadata=metadata)
 
     def _health_probes(self) -> Dict[str, bool]:
         probes: Dict[str, Callable[[], Any]] = {"initiatives": lambda: self.store.count()}
@@ -1129,10 +1340,13 @@ class Mind:
         ranked = eligible([candidate for _, candidate in pairs], threshold=self.act_threshold, drives=weights,
                           base=self.drive_weights, feedback=self.feedback, affect=view)
         formed: List[Dict[str, Any]] = []
+        reached_out = False
         for candidate, score in ranked:
             concern = by_key.get(candidate.dedup_key)
             if concern is None:
                 continue
+            if candidate.type in OUTREACH_TYPES and reached_out:
+                continue    # one unprompted interruption a tick: the next waits for the interruption to fade
             may_adopt = (self.goals.may_adopt() and candidate.drive in {"curiosity", "mastery"}
                          and not candidate.parent_goal_id and not self.goals.taken(candidate))
             steps_done: List[str] = []
@@ -1171,6 +1385,10 @@ class Mind:
                 self._charge_unformed(shaped, concern, now)
                 continue
             self.concerns.intended(concern.id, row.id, now=now)
+            if row.type in OUTREACH_TYPES:
+                reached_out = True
+            if row.type in {*OUTREACH_MESSAGES, OUTREACH_FOLLOWUP}:
+                self._outreach_formed(row, now)
             if row.kind == "goal":
                 self.autobiography.record(row.id, "goal_adopted",
                                           f"I adopted a goal: {row.description} ({row.drive} drive), to be met by "
@@ -1304,6 +1522,8 @@ class Mind:
         }
         if candidate.topic:
             context["topic"] = candidate.topic
+        if candidate.extra:
+            context.update(candidate.extra)
         if candidate.ask_owner:
             context["ask_owner"] = True     # re-decided later (a deferral), it is still the owner's word
         for key in ("grant", "purpose", "cooldown_hours"):
@@ -1346,6 +1566,9 @@ class Mind:
                 context["goal_mode"] = True
                 context["goal_max_turns"] = DEFAULT_MAX_TURNS
         horizon = candidate.due_at if candidate.kind == "goal" else None
+        if candidate.type in OUTREACH_MESSAGES and (candidate.extra or {}).get("expires_hours"):
+            # A finding is news for half a day, an offer for a day; unsent past that, it goes to the digest.
+            horizon = now + timedelta(hours=float(candidate.extra["expires_hours"]))
         expires_at = ask_expiry(now, self.policy) if verdict.decision == "ask" else (horizon or now + TASK_WINDOW)
         code = new_ask_code(self.store.open_ask_codes()) if verdict.decision == "ask" else None
         row, created = self.store.create_intention(
@@ -1439,6 +1662,8 @@ class Mind:
         decision = verdict.decision
         if decision == "act":
             window = (row.due_at or row.expires_at) if row.kind == "goal" else None
+            if row.type in OUTREACH_MESSAGES and row.expires_at is not None and not reconsidered:
+                window = row.expires_at
             updated = self.store.transition(row.id, "approved", action="queued", at=now, decision="act",
                                             decision_reason=verdict.reason, cls=verdict.cls,
                                             expires_at=window or now + TASK_WINDOW)
@@ -1498,6 +1723,8 @@ class Mind:
                                               result=(row.result_metadata or {}).get("result"), now=now)
             except Exception as error:
                 logger.warning("reflector report not applied for %s (%s)", row.id, type(error).__name__)
+        if self.faculties["outreach"] and self.owner_id:
+            self._outreach_settled(row, outcome, now)
         if outcome == "done":
             self._close_commitment(row)
             if concern is not None:
@@ -1510,6 +1737,18 @@ class Mind:
                 self.concerns.progress(concern.id, progressed=False, note=str(row.failed_reason or "failed"), now=now)
         elif concern is not None:
             self.concerns.drop(concern.id, note=outcome, now=now)
+
+    def _outreach_settled(self, row: StoredInitiative, outcome: str, now: datetime) -> None:
+        """A research-shaped task that reported a finding waits for the owner branch (``pending``); a
+        finding's outreach that expired unsent hands the finding to the digest."""
+        context = row.context if isinstance(row.context, dict) else {}
+        if (outcome == "done" and row.type in SHARED_FINDINGS and str(row.result or "").strip()
+                and not context.get("reflector")):
+            self._mark_finding(row.id, "pending", now)
+        elif row.type == "outreach_finding" and outcome == "expired":
+            source = str(context.get("source_ref") or "")
+            if source.startswith("intention:"):
+                self._mark_finding(source[len("intention:"):], "digest", now)
 
     def _close_commitment(self, row: StoredInitiative) -> None:
         """The body's report of a done intention is what settles its commitment. The dispatched
@@ -1932,14 +2171,51 @@ class Mind:
         last = self.store.last_transition_at("queued", type="digest")
         since = last or (now - timedelta(days=1))
         breakers = [self.authority.breaker_state(cls, now) for cls in CLASSES if cls != "floor"]
+        found, offers, paused, listed = (self._outreach_digest(since, now)
+                                         if self.faculties["outreach"] and self.owner_id else ([], [], None, []))
         text = self.outbox.build_digest(since=since, level=self.level, breaker_states=breakers,
                                         goals=goal_lines([self.goals.render(g) for g in self.goals.open()]),
-                                        opt_outs=await self._opt_outs_since(since))
+                                        opt_outs=await self._opt_outs_since(since), found=found, offers=offers,
+                                        paused=paused)
         self._daily["digest"] = local_date
         if text.endswith("Nothing to report."):
             return None
         row = self.outbox.queue_digest(local_date=local_date, text=text)
+        if row is not None:
+            for ident in listed:
+                self._mark_finding(ident, "listed", now, digest=row.id)
         return row.id if row is not None else None
+
+    def _outreach_digest(self, since: datetime, now: datetime) -> tuple[List[str], List[str], Optional[str], List[str]]:
+        """The digest's outreach lines: findings the digest owns (worth it, not sent in their window) and the
+        ones the owner put off, offers that expired unsent or were put off, and a paused line."""
+        o = outreach_functions
+        found, listed, offers = [], [], []
+        rows = self.store.intentions(status=["done"], kind=["task"], since=now - timedelta(days=14), limit=500)
+        for row in rows:
+            if row.type in SHARED_FINDINGS and ((row.result_metadata or {}).get("outreach") or {}).get("state") == "digest":
+                context = row.context if isinstance(row.context, dict) else {}
+                topic = str(context.get("topic") or row.description)
+                found.append(f"{topic}: {o.excerpt(str(row.result or ''), topic)}")
+                listed.append(row.id)
+        for row in self.store.intentions(kind=["message"], since=since - timedelta(days=2), limit=1000,
+                                         recipient=self.owner_id):
+            if row.type not in OUTREACH_TYPES:
+                continue
+            context = row.context if isinstance(row.context, dict) else {}
+            put_off = self._reaction(row).get("class") == "not_now" and (_utc(self._reaction(row).get("at")) or now) >= since
+            unsent = row.status == "expired" and (_utc(row.cancelled_at) or now) >= since
+            if not (put_off or unsent):
+                continue
+            line = f"{context.get('topic') or row.description}: {str(context.get('text') or '')}"
+            (found if row.type == "outreach_finding" else offers).append(line + (" (you said not now)" if put_off else ""))
+        pause = self.mind_state.get(o.PAUSE_KEY)
+        paused = None
+        if o.pause_until(pause) is not None and now < o.pause_until(pause):
+            started = _utc((pause or {}).get("updated_at")) or now
+            paused = (f"Check-ins paused since {started.astimezone(self.tz).date().isoformat()}; "
+                      f"say 'you can check in again' to resume.")
+        return found, offers, paused, listed
 
     async def request_message(self, payload: Mapping[str, Any], *, source: str = "reach_out") -> bool:
         """A message another subsystem wants sent, through authority into the outbox.
@@ -2297,9 +2573,29 @@ class Mind:
             "running": self._running,
             "consolidation": self._consolidation_state(),
             "affect": self.feelings.state(),
+            "outreach": self._outreach_state(now),
             "lessons": self._lessons_state(),
             "skills": self.skills.state(),
         }
+
+    def _outreach_state(self, now: datetime) -> Dict[str, Any]:
+        """Owner outreach as ``state`` shows it: on or off, the pause, the day's count against its budget,
+        the muted topics and what care is open."""
+        o = outreach_functions
+        enabled = bool(self.faculties.get("outreach")) and bool(self.owner_id)
+        until = o.pause_until(self.mind_state.get(o.PAUSE_KEY))
+        if until is not None and now >= until:
+            until = None
+        sent = self.store.count_transitions("queued", now - timedelta(days=1), kind="message", recipient=self.owner_id,
+                                            include_types=tuple(sorted(OUTREACH_TYPES))) if self.owner_id else 0
+        return {"enabled": enabled,
+                "paused_until": (o.INDEFINITE if until is not None and until.year == datetime.max.year
+                                 else until.isoformat() if until is not None else None),
+                "per_day": int(self.policy.budgets.outreach_per_day), "sent_24h": sent,
+                "muted": [str(item.get("text") or "") for item in self.mind_state.items(o.MUTE_PREFIX)
+                          if float(item.get("level") or 0.0) >= o.MUTE_FLOOR],
+                "care": [str(item.get("text") or "") for item in self.mind_state.items(o.CARE_PREFIX)
+                         if float(item.get("level") or 0.0) >= o.CARE_MIN_LEVEL]}
 
     def sync_skills(self, now: datetime | None = None) -> Optional[Dict[str, Any]]:
         """Protagine's skills follow its lessons (``Skills.sync``); a failure is logged, never raised."""

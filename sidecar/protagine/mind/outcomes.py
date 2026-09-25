@@ -39,8 +39,9 @@ TERMINAL_OUTCOMES = frozenset({"done", "failed", "expired", "denied", "cancelled
 IMPLICIT_VERDICT = {"cancelled": "dismissed", "expired": "ignored", "denied": "dismissed"}
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 # Task types whose completion summary is a finding the agent keeps (architecture 4.5): research and
-# investigations write what they learned as an autobiography entry a later turn recalls.
-FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step"})
+# investigations write what they learned as an autobiography entry a later turn recalls. A follow-up the
+# owner asked for in reply to an outreach is research too (architecture 4.10).
+FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step", "outreach_followup"})
 FINDING_CHARS = 800
 OWNER_EVIDENCE = ("appraisal:", "turn:", "claim:")   # evidence read from what the owner said
 VERIFIERS = frozenset({"owner", "check", "hermes_failure", "none"})

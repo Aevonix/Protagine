@@ -15,7 +15,7 @@ from protagine.mind.deliberate import GOAL_TASKS, RESPONSE_SCHEMA, SYSTEM, apply
 from protagine.mind.rank import Candidate
 from test_mind_drives_loop import DeliberationRouter, fx, idle, research  # noqa: F401  (fixture)
 
-RESEARCH_TYPES = ("research", "question", "mastery_investigation", "goal_step")
+RESEARCH_TYPES = ("research", "question", "mastery_investigation", "goal_step", "outreach_followup")
 
 
 # ---------------------------------------------------------------------------

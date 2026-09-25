@@ -69,7 +69,8 @@ DEFAULTS: dict[str, Any] = {
             "outreach_per_day": 3,
             # Research-shaped work reads sources and writes them up in one run: longer, with a retry.
             "task_types": {name: {"max_runtime_s": 1800, "max_retries": 2}
-                           for name in ("research", "question", "mastery_investigation", "goal_step")},
+                           for name in ("research", "question", "mastery_investigation", "goal_step",
+                                        "outreach_followup")},
         },
         # Extra fields on every model request a mind task's worker makes (the protagine-act profile's
         # providers carry them as extra_body): an output cap, so one runaway completion cannot hold the

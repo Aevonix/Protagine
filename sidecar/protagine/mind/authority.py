@@ -171,7 +171,7 @@ class Verdict:
 # worker run reads sources and writes them up, so it gets a longer run and a second attempt.
 RESEARCH_TASK_BUDGET = {"max_runtime_s": 1800, "max_retries": 2}
 DEFAULT_TASK_TYPES = {name: dict(RESEARCH_TASK_BUDGET)
-                      for name in ("research", "question", "mastery_investigation", "goal_step")}
+                      for name in ("research", "question", "mastery_investigation", "goal_step", "outreach_followup")}
 
 
 @dataclass

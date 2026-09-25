@@ -205,7 +205,11 @@ class Outbox:
 
     def build_digest(self, *, since: datetime, level: str, breaker_states: List[Dict[str, Any]] | None = None,
                      suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None,
-                     opt_outs: List[str] | None = None) -> str:
+                     opt_outs: List[str] | None = None, found: List[str] | None = None,
+                     offers: List[str] | None = None, paused: str | None = None) -> str:
+        """The day's digest. Owner outreach (architecture 4.10) adds what the mind found that bears on the
+        owner's interests but did not interrupt them for (``found``), the offers of help that went unsent or
+        were put off (``offers``) and, while check-ins are paused, how to resume them (``paused``)."""
         rows = self.store.intentions(since=since, limit=500)
         rows = [row for row in rows if row.type not in NOTICE_TYPES]
         acted = [row for row in rows if row.decision == "act" and row.kind in {"task", "message", "goal"}]
@@ -229,6 +233,14 @@ class Outbox:
                 lines.append(f"- [{row.ask_code}] {_clip(row.description, 120)}")
         for row in suggestions or []:
             lines.append(f"- suggestion: {_clip(row.description, 120)}")
+        if found:
+            lines.append(f"Found for you ({len(found)}):")
+            lines += [f"- {_clip(item, 200)}" for item in found[:6]]
+        if offers:
+            lines.append(f"Offers ({len(offers)}):")
+            lines += [f"- {_clip(item, 160)}" for item in offers[:6]]
+        if paused:
+            lines.append(paused)
         if goals:
             lines.append(f"Goals I am pursuing ({len(goals)}):")
             lines += [f"- {_clip(item, 140)}" for item in goals[:4]]
