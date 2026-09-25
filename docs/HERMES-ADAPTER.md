@@ -102,9 +102,13 @@ to the rules above. Read-only tools never wait on the sidecar.
 In a contact's (non-owner) session nothing becomes Hermes' approval gate: in a gateway that gate posts its
 prompt to the session's own chat and waits for `/approve` or a bare "yes" from it, so the contact would be
 the one approving. There an `ask` verdict is refused, and every refusal is the plugin's one final answer
-(`retry: false`), worded for a reply the contact reads. A message to the sender (their chat or any handle
-of theirs) or to a target nothing resolves is answered with "your final response is delivered to the
-sender as your reply": the reply already is that message.
+(`retry: false`), worded for a reply the contact reads. The final response is delivered to the session's
+own chat and nowhere else: the chat the gateway bound for the turn (a group's chat in a group), or, with no
+gateway, the sender's direct chat. A message to that chat is answered with "your final response is
+delivered to this conversation as your reply": the reply already is that message. Anything else, another
+handle of the sender's and a direct message to the sender from a group included, is a recipient for the
+sidecar's verdict; a target no contact is known at is answered "nothing was sent: no contact is known at
+that target".
 
 ## The body: the mind's effects on Hermes
 

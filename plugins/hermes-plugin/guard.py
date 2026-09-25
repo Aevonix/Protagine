@@ -11,9 +11,10 @@ toolsets have no shell or code tool, and ``write_file``/``patch`` are confined
 to the task workspace. The name rule is a tripwire on top: a shell or code
 tool an owner adds can spell a file name in ways no text rule sees (a glob, an
 escape, a computed string). In a non-owner session every refusal is ``final_answer``: final for the turn
-and worded for a reply the contact reads, never "blocked". There a message to the sender is the reply
-itself, and nothing ever raises Hermes' approval gate: the gateway posts that prompt to the session's own
-chat, where the contact could answer it.
+and worded for a reply the contact reads, never "blocked". There a message to the session's own chat is
+the reply itself (the final response is delivered there, and only there), a target no contact is known at
+is refused as such, and nothing ever raises Hermes' approval gate: the gateway posts that prompt to the
+session's own chat, where the contact could answer it.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import re
 import time
 from typing import Any, Mapping
 
+from .body import DM_CHAT_TYPES
 from .capture import SessionMap
 from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable, final_answer
 
@@ -72,8 +74,13 @@ FLOOR_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
-# In a contact's session the final response is delivered to the sender: a send to them repeats it.
-REPLY = "your final response is delivered to the sender as your reply; there is nothing to send"
+# In a contact's session the final response is delivered to the session's own chat, and only there: a send to
+# that chat repeats it, and anything meant for another recipient does not reach them through it.
+REPLY = "your final response is delivered to this conversation as your reply; there is nothing to send"
+UNKNOWN_RECIPIENT = ("nothing was sent: no contact is known at that target; your final response goes to this "
+                     "conversation only")
+NOT_SENT = ("nothing was sent: that recipient cannot be messaged from this conversation; your final response goes to "
+            "this conversation only")
 
 
 def block(message: str) -> dict[str, str]:
@@ -187,8 +194,10 @@ class Guard:
         guest = not mind and self.sessions.is_owner(session_id) is False
         if not mind and not guest:
             return None
-        if guest and tool in MESSAGING_TOOLS and self._to_sender(args, session_id):
-            return final_answer(REPLY, block=True)
+        if guest and tool in MESSAGING_TOOLS:
+            answer = self._guest_message(args, session_id)
+            if answer is not None:
+                return final_answer(answer, block=True)
         try:
             verdict = self._rules(tool, args, session_id, mind)
         except Exception as error:  # fails closed, and still answers a contact's turn finally
@@ -199,7 +208,8 @@ class Guard:
             # Final for the turn, so a contact's turn does not spend its iterations on other arguments, and
             # worded for the reply: the model repeats a "blocked" to the contact.
             return final_answer("session_search is unavailable to non-owner sessions; answer from the message and "
-                                "the recalled context" if tool == "session_search" else
+                                "the recalled context" if tool == "session_search" else NOT_SENT
+                                if tool in MESSAGING_TOOLS else
                                 f"{tool} is not available in this conversation; answer in your final response",
                                 block=True)
         return verdict
@@ -334,21 +344,25 @@ class Guard:
             return {}
         return dict(job) if isinstance(job, Mapping) else {}
 
-    def _to_sender(self, args: Mapping[str, Any], session_id: str) -> bool:
-        """Whether a contact's session is messaging that contact (its own chat, or any handle the sidecar
-        resolves to them) or no one the sidecar knows (a guessed or bare target): either way the final
-        response is all there is to deliver. A sidecar that cannot answer leaves it to the verdict."""
+    def _guest_message(self, args: Mapping[str, Any], session_id: str) -> str | None:
+        """A contact's session messaging ``platform:address``: the session's own chat (in a direct chat the
+        sender's handle too) is the reply, a target no contact is known at is refused as the verdict would;
+        anything else, including a call with no address or a sidecar that cannot answer, is the verdict's."""
         target = str(args.get("target") or args.get("chat_id") or args.get("to") or "")
         platform, address = (parse_deliver(f"{args['platform']}:{target}" if args.get("platform") else target)
                              or [("", "")])[0]
         info = self.sessions.get(session_id)
-        if info is not None and (platform.lower(), address) == (info.platform.lower(), info.sender_id):
-            return True
+        if args.get("contact_id") or info is None or not address or platform == "*":
+            return None
+        chat, chat_type = self.sessions.chat(session_id)
+        if platform.lower() == info.platform.lower() and (
+                address == chat or ((not chat_type or chat_type in DM_CHAT_TYPES) and address == info.sender_id)):
+            return REPLY
         try:
-            contact = self.client.resolve_contact(platform, address, timeout=GUARD_TIMEOUT) if address else None
+            contact = self.client.resolve_contact(platform, address, timeout=GUARD_TIMEOUT)
         except Exception:
-            return False
-        return contact is None or contact.get("contact_id") == self.sessions.contact_id(session_id)
+            return None
+        return UNKNOWN_RECIPIENT if contact is None else None
 
     def _session_contact(self, session_id: str) -> dict[str, Any] | None:
         if self.sessions.is_owner(session_id):
