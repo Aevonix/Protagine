@@ -144,7 +144,7 @@ def test_a_declared_outbound_path_is_one_send_message_tool_for_every_turn_worker
             agents.append((kwargs['session_id'], list(kwargs['enabled_toolsets'])))
             super().__init__(**kwargs)
     monkeypatch.setattr(sys.modules['run_agent'], 'AIAgent', Recorded)
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda names: installs.append(list(names)) or 'job-1')
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda names, prompt=None: installs.append(list(names)) or 'job-1')
     monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: {'job_id': job_id})
     profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
     request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},

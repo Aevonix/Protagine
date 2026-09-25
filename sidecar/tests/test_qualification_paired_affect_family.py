@@ -180,7 +180,7 @@ def test_gate_arms_are_built_in():
     assert on['faculties']['affect'] is True and on['faculties']['affect_rules'] is False
     assert off['faculties'] == {**on['faculties'], 'affect': False}
     assert rules == {**off, 'faculties': {**off['faculties'], 'affect_rules': True}}
-    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-5'
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-6'
     assert not (GENERATORS / 'affect_profiles.json').exists()
     with pytest.raises(ValueError, match='redefine'):
         paired.validate_profiles({'full-affect-plus-rules': {'plugin': True, 'full': True, 'minus_affect': True,

@@ -135,6 +135,13 @@ GENERATED_SKILL_TOOLS = {'mind-improve-1': 'read'}
 # Every episode of a generated family starts its body clock at this UTC time of day, in
 # every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
 GENERATED_CLOCK_START = '12:00'
+# Families whose scenarios grade what the agent does inside the owner's quiet hours: the window is written
+# into every mind arm (paired_worker.QUIET_HOURS_PROTOCOL) and seeded in the family's owner.json for every
+# arm. Every other family keeps quiet hours off in every mind arm.
+GENERATED_QUIET_HOURS = {'mind-outreach-1': '22:00-07:00'}
+# The per-episode deadline of a generated family, 600 s unless listed: the outreach family's direction
+# templates run up to nine ticks with two research runs.
+GENERATED_DEADLINE_SECONDS = {'mind-outreach-1': 1200}
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
 # A generated scenario may also declare a process-restart contract (``workflow``, the
@@ -304,6 +311,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
                 inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
             if dataset_version in GENERATED_SKILL_TOOLS:
                 inputs['skill_tools'] = GENERATED_SKILL_TOOLS[dataset_version]
+            if dataset_version in GENERATED_QUIET_HOURS:
+                inputs['quiet_hours'] = GENERATED_QUIET_HOURS[dataset_version]
             inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
@@ -316,7 +325,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
                 inputs['history'] = copy.deepcopy(scenario['history'])
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
-        timeout_seconds = 600 if generous else 120 * len(scenario['episodes']) + 30
+        timeout_seconds = (GENERATED_DEADLINE_SECONDS.get(dataset_version, 600) if split is not None
+                           else 600 if generous else 120 * len(scenario['episodes']) + 30)
         max_output_bytes = 1048576 if generous else 262144
         if split is not None and validate_probes(scenario):
             days = campaign_days(scenario['episodes'])

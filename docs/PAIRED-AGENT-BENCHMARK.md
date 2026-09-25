@@ -79,7 +79,7 @@ Execution is sequential. With the default two arms the first episode runs base H
 An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
 flags, before the plugin loads, and the binary switches that are on
-(`heartbeat`, `curator`, and the mind switches `initiative`, `full`, the
+(`heartbeat`, `heartbeat_checkin`, `curator`, and the mind switches `initiative`, `full`, the
 `minus_*` ablations and the additions `plus_skills` and `plus_affect_rules`; a switch is listed
 only when it is on). The built-in
 profiles are `base_hermes` (plugin off) and `protagine` (plugin on, the mind
@@ -98,8 +98,9 @@ off: `full-people` (the people family, `mind-people-1`), `full-affect` (the
 feelings family, `mind-affect-1`), `full-opinions` (the opinions family,
 `mind-opinions-1`), `full-semantic_recall` and `full-consolidation` (the
 memory family, `mind-memory-1`), `full-self_narrative` (the identity family,
-`mind-self-1`) and `full-lessons` (the self-improvement family,
-`mind-improve-1`), plus two arms that turn on a faculty that ships off:
+`mind-self-1`), `full-lessons` (the self-improvement family,
+`mind-improve-1`) and `full-outreach` (the owner outreach family,
+`mind-outreach-1`), plus two arms that turn on a faculty that ships off:
 `full-plus-skills` (`faculties.skills` on) and `full-affect-plus-rules`, the
 feelings family's mechanism arm (`full-affect` with `faculties.affect_rules`
 on, so every affect consumer reads its frozen stateless rule instead of the
@@ -124,8 +125,9 @@ endpoint, credential, contact, path or database setting: those are shared by
 every arm, never arm differences. The same body runs in every arm, so the image,
 model, budgets, tools and oracle are identical; only the profile differs. Arm
 profiles beyond the built-in pair require an image whose worker declares the
-current arm-profile protocol (`arm_profiles`, `paired-arm-profiles-5` since the
-affect mechanism arm); older images run only the default pair.
+current arm-profile protocol (`arm_profiles`, `paired-arm-profiles-6` since the
+owner outreach family's arms); older images run only the default pair. A
+profile installs at most one heartbeat (`heartbeat` or `heartbeat_checkin`).
 
 ### Comparator arms
 
@@ -146,6 +148,21 @@ sets `next_run_at` to now, so Hermes cron `tick()` runs it exactly once per
 tick and the heartbeat gets at least as many model calls as the mind's tick.
 The prompt's SHA-256 is frozen in the plan (`comparison.heartbeat`) and the
 image must carry the same prompt. A restarted phase keeps the durable job.
+
+`base-heartbeat-checkin` is the same job, tools, delivery, context and schedule
+with a wording that checks in with the owner when that is useful, the product
+comparator of the owner outreach family (`mind-outreach-1`):
+
+> Check your memory, sessions, board and workspace. If the owner would want to
+> hear from you now, because something they care about has news, an open item
+> of theirs could use a hand, or they seem to need help, message them once and
+> say why. If not, or if they asked not to be disturbed, reply exactly
+> [SILENT].
+
+Its SHA-256 is frozen separately: a plan that selects the arm records it as
+`comparison.heartbeat_checkin` and refuses an image whose worker carries
+another (`heartbeat_checkin_prompt_sha256`). `base-heartbeat` keeps its
+original wording for every family that uses it.
 
 `base-curator` is stock Hermes with `curator.enabled` and `curator.consolidate`
 on; the arm's step of every body tick runs one synchronous `hermes curator run`
@@ -510,6 +527,20 @@ clock never runs back. A day-boundary rule then fires by the scenario's own
 advances alone. The plan records it as `comparison.clock_start` and refuses an
 image whose worker lacks the protocol; the frozen datasets keep the
 container's clock.
+
+**Quiet hours.** Every mind arm runs with `mind.quiet_hours` off, because a
+clock advance would otherwise hold owner messages for reasons that have
+nothing to do with the scenario. A family whose scenarios grade what happens
+inside the owner's quiet hours declares a window instead
+(`paired_cases.GENERATED_QUIET_HOURS`, today only `mind-outreach-1` with
+`22:00-07:00`, protocol `paired-quiet-hours-1`): the worker writes it into
+every mind arm's `mind.quiet_hours`, and the family seeds the same window in
+its `owner.json`, which the first owner turn of every episode points to, so a
+base arm reads what the mind arms are configured with. The plan records it as
+`comparison.quiet_hours` and refuses an image whose worker lacks the protocol.
+A generated family's per-episode deadline is 600 s unless
+`paired_cases.GENERATED_DEADLINE_SECONDS` lists it (`mind-outreach-1`: 1,200
+s, for its nine-tick direction templates with two research runs).
 
 The dev split is regenerated with `--per-template 3` (21 episodes) for two
 seeds; the loader content hashes are pinned in

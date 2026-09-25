@@ -15,14 +15,23 @@ def comparator_request(arm, profile):
                        'episodes': [USER, TICK, CLOCK, {'tick': 1}]}}
 
 
-def test_heartbeat_arm_installs_the_job_once_and_its_tick_step_makes_it_due(stubbed_hermes, monkeypatch, capsys):
-    installs, due = [], []
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets: installs.append(list(toolsets)) or 'job-1')
+@pytest.mark.parametrize('arm,switch,prompt', [
+    ('base-heartbeat', 'heartbeat', paired_arms.HEARTBEAT_PROMPT),
+    ('base-heartbeat-checkin', 'heartbeat_checkin', paired_arms.HEARTBEAT_CHECKIN_PROMPT)])
+def test_heartbeat_arm_installs_the_job_once_and_its_tick_step_makes_it_due(stubbed_hermes, monkeypatch, capsys,
+                                                                            arm, switch, prompt):
+    installs, prompts, due = [], [], []
+
+    def install(toolsets, wording=paired_arms.HEARTBEAT_PROMPT):
+        installs.append(list(toolsets))
+        prompts.append(wording)
+        return 'job-1'
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', install)
     monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: due.append(job_id) or {'job_id': job_id})
-    profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
-    code, result = run_worker(monkeypatch, capsys, comparator_request('base-heartbeat', profile))
+    profile = {'name': arm, 'plugin': False, 'overlay': {}, switch: True}
+    code, result = run_worker(monkeypatch, capsys, comparator_request(arm, profile))
     assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
-    assert installs == [['file', 'memory', 'session_search', 'todo']]
+    assert installs == [['file', 'memory', 'session_search', 'todo']] and prompts == [prompt]
     assert paired_arms.heartbeat_toolsets(installs[0]) == ['file', 'memory', 'session_search', 'todo', 'kanban', 'cronjob']
     ticks = [event for event in stubbed_hermes.events if event[0] == 'tick']
     assert len(ticks) == 3 and all(callable(event[2]) for event in ticks)
@@ -36,7 +45,8 @@ def test_heartbeat_arm_installs_the_job_once_and_its_tick_step_makes_it_due(stub
 def test_curator_arm_turns_the_curator_on_and_reviews_at_every_tick(stubbed_hermes, monkeypatch, capsys):
     reviews = []
     monkeypatch.setattr(paired_arms, 'curator_review', lambda: reviews.append(1) or {'summary': 'no changes'})
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets: pytest.fail('no heartbeat in this arm'))
+    monkeypatch.setattr(paired_arms, 'install_heartbeat',
+                        lambda toolsets, prompt=None: pytest.fail('no heartbeat in this arm'))
     profile = {'name': 'base-curator', 'plugin': False, 'overlay': {}, 'curator': True}
     code, result = run_worker(monkeypatch, capsys, comparator_request('base-curator', profile))
     assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
@@ -47,7 +57,7 @@ def test_curator_arm_turns_the_curator_on_and_reviews_at_every_tick(stubbed_herm
 
 
 def test_a_generated_family_loads_every_tool_eagerly_in_every_arm(stubbed_hermes, monkeypatch, capsys):
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets: 'job-1')
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets, prompt=None: 'job-1')
     monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: {'job_id': job_id})
     profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
     request = comparator_request('base-heartbeat', profile)
@@ -88,7 +98,7 @@ def test_a_generated_family_stamps_every_turn_with_the_body_clock(stubbed_hermes
     from test_qualification_body_events import INBOUND, REACTION
     clock = [datetime(2027, 3, 4, 9, 19, 34, tzinfo=timezone.utc)]
     monkeypatch.setattr(sys.modules['hermes_time'], 'now', lambda: clock[0])
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets: 'job-1')
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda toolsets, prompt=None: 'job-1')
     monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: {'job_id': job_id})
     profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
     request = comparator_request('base-heartbeat', profile)
