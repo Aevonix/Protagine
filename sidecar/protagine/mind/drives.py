@@ -176,6 +176,11 @@ def _level(candidates: List[Candidate]) -> float:
 
 # -- duty -------------------------------------------------------------------------------
 
+def names_owner(name: Any, owner_id: str | None) -> bool:
+    """A recipient that is the owner themselves ("owner", "me", their contact id): never a third party."""
+    return party(name, owner_names=[owner_id] if owner_id else []) == "owner"
+
+
 def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tuple[str, str]]:
     """``(kind, recipient_id)`` of a row capture recorded as the owner's message to a third party
     (``metadata.kind`` ``notice`` with the owner's words, or ``check_in`` with a topic, and
@@ -189,6 +194,8 @@ def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tu
         return None
     if not owner_id or str(row.get("person_id") or "") != owner_id:
         return None
+    if names_owner(metadata.get("recipient"), owner_id):
+        return None      # addressed to the owner: their own reminder, never a message to a third party
     if kind == "notice" and not str(metadata.get("content") or "").strip():
         return None
     recipient = str(metadata.get("recipient_id") or "").strip()
@@ -219,7 +226,7 @@ def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Option
     kind = str(metadata.get("kind") or "")
     if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"))
             or not owner_id or str(row.get("person_id") or "") != owner_id
-            or str(metadata.get("recipient_id") or "").strip()):
+            or str(metadata.get("recipient_id") or "").strip() or names_owner(metadata.get("recipient"), owner_id)):
         return None
     return str(metadata.get("recipient") or "").strip() or None
 
@@ -302,7 +309,8 @@ def owed_between_others(row: Dict[str, Any], *, owner_id: str | None) -> bool:
 def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, owner_id: str | None,
                          people_on: bool = True) -> Candidate:
     """The duty candidate of a commitment past its time. With the people faculty off an owner's
-    message to a third party is not one: the row takes its pre-M5 form below."""
+    message to a third party is not one: it is the owner's reminder that it is due, as is any
+    message row on the owner's lane that the mind may not send."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     person = str(row.get("person_id") or "") or None
     description = str(row.get("description") or "").strip()
@@ -346,6 +354,10 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             priority=priority / 100.0, concern_kind="obligation")
     key = schedule_key(row["id"], "overdue", due)
     obligor = _obligor(row, metadata, person, owner_id)
+    if str(metadata.get("kind") or "") in GRANTED_KINDS and owner_id and person == owner_id:
+        # A message to someone the mind may not send (no confirmed grant, addressed to the owner, or the
+        # people faculty off) is the owner's own word when due, never a worker's task.
+        obligor = "owner"
     if obligor != "assistant":
         # A promise the owner made, or anyone else's promise the owner is tracking, is owed back to the
         # owner as words, not to a worker as work: the reminder is the effect, whichever lane the row

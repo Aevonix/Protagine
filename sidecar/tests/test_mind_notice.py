@@ -1,7 +1,8 @@
 """The owner-granted message to a named third party (deferred to M5 by the initiative work).
 
 "If X has not happened by T, tell C": capture records a ``notice`` (the owner's own words) or
-a ``check_in`` (the matter, composed later) with a per-commitment owner grant; the duty drive
+a ``check_in`` (the matter, composed later) with a per-commitment owner grant, once the owner's own words
+asking for it (``asked``) are confirmed by the claim-review pass; the duty drive
 emits the message at T; the grant counts as ``may_contact=auto`` for that recipient only, never
 over a ``never``; a sent row settles the commitment; a message to pass on now is the reply's own job,
 never a notice. Permission is read again when a message may leave.
@@ -36,6 +37,27 @@ def _store(tmp_path):
     return CommitmentStore(tmp_path / "protagine-commitments.db")
 
 
+class KeepRouter:
+    """The claim-review pass's judge, keeping every proposal (what a correct judge does with a real ask)."""
+
+    async def complete(self, messages, *, context=None, **_):
+        assert (context or {}).get("task") == "source_claim_review"
+        count = len(json.loads(messages[1]["content"])["proposals"])
+        content = json.dumps({str(index): {"keep": True, "reason": "the owner asks for it"} for index in range(count)})
+        return SimpleNamespace(content=content, model_id="judge")
+
+
+def asking(item, asked):
+    """The item with the owner's words that ask for the message, as the extractor quotes them."""
+    return {**item, "metadata": {**item["metadata"], "asked": asked}}
+
+
+async def reviewed(items, said, *, person=None):
+    """The items as the claim-review pass leaves them on the owner's turn."""
+    return await extract.review_message_requests(KeepRouter(), items, person_id=person or OWNER, owner_text=said,
+                                                 owner_names=[OWNER])
+
+
 # ---------------------------------------------------------------------------
 # capture: the contract and the stored metadata
 # ---------------------------------------------------------------------------
@@ -56,22 +78,30 @@ def test_every_timed_message_for_a_third_party_is_case_three_and_case_two_is_the
     assert "unless the reply shows it already went to them" in extract.SYSTEM
 
 
-def test_a_deliverable_for_someone_else_is_a_message_to_them_never_to_the_person_who_asked(tmp_path):
+async def test_a_deliverable_for_someone_else_is_a_message_to_them_never_to_the_person_who_asked(tmp_path):
     """Audit M5: a deliverable goes to the turn's own person, so words meant for a third party are a
-    case-3 message to that party: a notice when they are the owner's own words, else a check-in."""
+    case-3 message to that party: a notice when they are the owner's own words, else a check-in. Like
+    any case-3 message it stands only on the owner's confirmed words asking for it."""
     store = _store(tmp_path)
     deliverable = {**NOTICE, "description": f"Send {CONTACT} the venue address", "source_type": "introspection",
                    "metadata": {"kind": "deliverable", "content": "The venue is at 5 Main St.", "channel_hint": "sms"}}
-    composed = record_items([deliverable], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
-                            owner_id=OWNER, owner_text=f"Send {CONTACT} the venue address.")
+    said = f"Send {CONTACT} the venue address."
+    composed = record_items(await reviewed([asking(deliverable, said)], said), person_id=OWNER, commitment_store=store,
+                            existing=[], rejections=[], owner_id=OWNER, owner_text=said)
     row = store.get(composed["created"][0])
     assert row["metadata"]["kind"] == "check_in" and row["metadata"]["recipient"] == CONTACT
     assert row["metadata"]["grant"] == "owner" and "content" not in row["metadata"]
-    dictated = record_items([deliverable], person_id=OWNER,
+    said = f"Text {CONTACT}: the venue is at 5 Main St."
+    dictated = record_items(await reviewed([asking(deliverable, f"Text {CONTACT}")], said), person_id=OWNER,
                             commitment_store=_store(tmp_path / "dictated"), existing=[], rejections=[], owner_id=OWNER,
-                            owner_text=f"Text {CONTACT}: the venue is at 5 Main St.")
+                            owner_text=said)
     row = _store(tmp_path / "dictated").get(dictated["created"][0])
     assert row["metadata"]["kind"] == "notice" and row["metadata"]["content"] == "The venue is at 5 Main St."
+    # Without the owner's words asking for it, it is the owner's own reminder, never a message to them.
+    unasked = record_items([deliverable], person_id=OWNER, commitment_store=_store(tmp_path / "unasked"), existing=[],
+                           rejections=[], owner_id=OWNER, owner_text=said)
+    row = _store(tmp_path / "unasked").get(unasked["created"][0])
+    assert "kind" not in row["metadata"] and "grant" not in row["metadata"] and row["metadata"]["obligor"] == "owner"
     # A contact cannot have their deliverable relayed: no grant, so it is an ordinary row.
     relayed = record_items([deliverable], person_id=OTHER, commitment_store=store, existing=[], rejections=[],
                            owner_id=OWNER, owner_text=f"Text {CONTACT}: the venue is at 5 Main St.")
@@ -86,10 +116,14 @@ def test_a_deliverable_for_someone_else_is_a_message_to_them_never_to_the_person
         assert own_store.get(own["created"][0])["metadata"]["kind"] == "deliverable"
 
 
-def test_record_items_stores_the_notice_and_the_check_in_metadata_for_the_owner(tmp_path):
+async def test_record_items_stores_the_notice_and_the_check_in_metadata_for_the_owner(tmp_path):
     store = _store(tmp_path)
-    result = record_items([NOTICE, CHECK_IN], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
-                          turn_id="turn-1", owner_id=OWNER)
+    said = (f"If {CONTACT} has not confirmed within 30 minutes, tell them: the parcel is running late, sorry. "
+            f"Then ask {CONTACT} about the budget draft too.")
+    items = await reviewed([asking(NOTICE, f"If {CONTACT} has not confirmed within 30 minutes, tell them"),
+                            asking(CHECK_IN, f"ask {CONTACT} about the budget draft")], said)
+    result = record_items(items, person_id=OWNER, commitment_store=store, existing=[], rejections=[],
+                          turn_id="turn-1", owner_id=OWNER, owner_text=said)
     assert len(result["created"]) == 2
     notice, check_in = (store.get(ident) for ident in result["created"])
     assert notice["metadata"]["kind"] == "notice" and notice["metadata"]["content"] == "The parcel is running late, sorry."
@@ -97,6 +131,8 @@ def test_record_items_stores_the_notice_and_the_check_in_metadata_for_the_owner(
     assert notice["metadata"]["obligor"] == "assistant" and notice["metadata"]["counterpart"] == CONTACT
     assert check_in["metadata"]["kind"] == "check_in" and check_in["metadata"]["grant"] == "owner"
     assert check_in["metadata"]["topic"] == "the budget draft figures and more"     # clamped to six words
+    assert notice["metadata"]["asked"] == f"If {CONTACT} has not confirmed within 30 minutes, tell them"
+    assert notice["metadata"]["request_review"]["keep"] is True
 
 
 def test_a_contacts_own_request_to_message_a_third_party_carries_no_grant(tmp_path):
@@ -107,18 +143,19 @@ def test_a_contacts_own_request_to_message_a_third_party_carries_no_grant(tmp_pa
     assert row["metadata"]["kind"] == "notice" and "grant" not in row["metadata"]
 
 
-def test_a_notice_carries_only_words_the_owner_said(tmp_path):
+async def test_a_notice_carries_only_words_the_owner_said(tmp_path):
     """Audit M4(d): the notice path sends the owner's own words verbatim, so words the owner never
     said (a model's paraphrase, or owner-only detail) become a check-in around the matter."""
     store = _store(tmp_path)
     said = f"If {CONTACT} has not confirmed within 30 minutes, tell them: the parcel is running late,  sorry!"
-    kept = record_items([NOTICE], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
-                        owner_id=OWNER, owner_text=said)
+    asked = f"If {CONTACT} has not confirmed within 30 minutes, tell them"
+    kept = record_items(await reviewed([asking(NOTICE, asked)], said), person_id=OWNER, commitment_store=store,
+                        existing=[], rejections=[], owner_id=OWNER, owner_text=said)
     assert store.get(kept["created"][0])["metadata"]["content"] == "The parcel is running late, sorry."
     invented = {**NOTICE, "description": f"Warn {CONTACT} about the late parcel",
                 "metadata": {**NOTICE["metadata"], "content": "The parcel is late; the reserve is amber-cobalt-42."}}
-    moved = record_items([invented], person_id=OWNER, commitment_store=store, existing=[], rejections=[],
-                         owner_id=OWNER, owner_text=said)
+    moved = record_items(await reviewed([asking(invented, asked)], said), person_id=OWNER, commitment_store=store,
+                         existing=[], rejections=[], owner_id=OWNER, owner_text=said)
     row = store.get(moved["created"][0])
     assert row["metadata"]["kind"] == "check_in" and "content" not in row["metadata"]
     assert row["metadata"]["grant"] == "owner" and row["metadata"]["topic"] == "Warn about the late parcel"
@@ -253,18 +290,18 @@ async def test_an_unknown_recipient_asks_the_owner_who_they_are(make):
     assert (await fx.tick())["formed"] == []
 
 
-async def test_people_off_leaves_the_granted_message_in_its_m4_form(make):
-    """Audit M9: with the faculty off the owner's message to a third party is what it was before
-    M5, the assistant's overdue work for the owner: no notice, no composed check-in, no
-    recipient question, and no rewrite of anything into an owner notice."""
+async def test_people_off_turns_the_granted_message_into_the_owners_reminder(make):
+    """Audit M9, revised by the capture-safety review: with the faculty off the owner's message to a
+    third party is never sent, composed or asked about, and never a worker's task either (a worker
+    with a send tool could reach the contact): it is the owner's own reminder that it fell due."""
     fx = make([contact(CONTACT, may_contact="auto", name="Sam")], config={"faculties": {"people": False}})
     notice = _seed(fx, NOTICE)
     _seed(fx, {**CHECK_IN, "metadata": {**CHECK_IN["metadata"], "recipient": "Kim"}, "counterpart": "Kim"})
     fx.shift(C + PAST)
     formed = (await fx.tick())["formed"]
-    assert sorted(item["type"] for item in formed) == ["commitment_overdue", "commitment_overdue"]
-    assert all(fx.store.get(item["id"]).entity_id == OWNER and item["kind"] == "task" for item in formed)
-    assert fx.messages_to(CONTACT) == [] and fx.messages_to(OWNER) == []
+    assert sorted(item["type"] for item in formed) == ["commitment_reminder", "commitment_reminder"]
+    assert all(fx.store.get(item["id"]).entity_id == OWNER and item["kind"] == "message" for item in formed)
+    assert fx.messages_to(CONTACT) == [] and len(fx.messages_to(OWNER)) == 2
     assert "recipient_id" not in fx.commitments.get(notice["id"])["metadata"]
 
 
@@ -304,13 +341,17 @@ class ScriptedRouter:
             return SimpleNamespace(content=json.dumps([self.item] if self.cue in prompt else []))
         if task == "mind_compose":
             return SimpleNamespace(content=self.reply, usage={"total_tokens": 20})
+        if task == "source_claim_review":
+            return await KeepRouter().complete(messages, context=context)
         raise AssertionError(f"unexpected task {task}")
 
 
 async def test_delegated_chase_reaches_the_contact_not_the_owner_and_never_the_other_contact(make):
     item = {"action": "create", "target": None, "description": f"Ask {CONTACT} for the budget draft", "priority": 70,
             "due_at": (T0 + timedelta(minutes=12)).isoformat(), "source_type": "cognition", "listed_due": None,
-            "metadata": {"kind": "check_in", "recipient": CONTACT, "topic": "the budget draft", "grant": "owner"},
+            "metadata": {"kind": "check_in", "recipient": CONTACT, "topic": "the budget draft", "grant": "owner",
+                         "asked": f"If {CONTACT} has not sent me the budget draft within 12 minutes, ask them for "
+                                  "it yourself"},
             "counterpart": CONTACT, "obligor": "assistant"}
     router = ScriptedRouter(item, f"Hi {CONTACT}, could you send over the budget draft when you have a moment?")
     fx = make([contact(CONTACT), contact(OTHER)], router=router)
@@ -337,6 +378,7 @@ async def test_delegated_chase_reaches_the_contact_not_the_owner_and_never_the_o
     assert fx.messages_to(OTHER) == [] and fx.messages_to(OWNER) == []
     compose_calls = [c for c, _ in router.calls if c.get("task") == "mind_compose"]
     assert len(compose_calls) == 1
+    assert len([c for c, _ in router.calls if c.get("task") == "source_claim_review"]) == 1
     fx.mind.outbox.sending(payload["id"], target=f"capture:{CONTACT}")
     fx.mind.outbox.sent(payload["id"])
     assert fx.commitments.get(row["id"])["status"] == "fulfilled"
@@ -474,7 +516,7 @@ def test_the_contract_says_a_message_to_pass_on_now_is_the_replys_own_job():
     assert "about two minutes from now when it is to go now" not in extract.SYSTEM
 
 
-def test_capture_never_records_a_message_to_a_third_party_due_as_the_turn_happens(tmp_path):
+async def test_capture_never_records_a_message_to_a_third_party_due_as_the_turn_happens(tmp_path):
     """A notice, a check-in or a deliverable for someone else due within minutes of the turn is a
     relay the reply itself sends (every arm's foreground has a send path): recording it as a
     notice would send it twice. A message timed later or on a condition is recorded as before."""
@@ -486,10 +528,13 @@ def test_capture_never_records_a_message_to_a_third_party_due_as_the_turn_happen
     deliverable = {**NOTICE, "description": f"Send {CONTACT} the venue address", "source_type": "introspection",
                    "due_at": (turn + timedelta(minutes=2)).isoformat(),
                    "metadata": {"kind": "deliverable", "content": "The venue is at 5 Main St.", "channel_hint": "sms"}}
-    later = {**NOTICE, "description": f"Tell {CONTACT} the parcel is late if it has not arrived"}
-    result = record_items([now_notice, now_check_in, deliverable, later], person_id=OWNER, commitment_store=store,
-                          existing=[], rejections=[], owner_id=OWNER, turn_time=turn,
-                          owner_text=f"Tell {CONTACT}: the parcel is running late, sorry. The venue is at 5 Main St.")
+    later = asking({**NOTICE, "description": f"Tell {CONTACT} the parcel is late if it has not arrived"},
+                   f"If it has not arrived by then, tell {CONTACT}")
+    said = (f"Tell {CONTACT}: the parcel is running late, sorry. The venue is at 5 Main St. If it has not "
+            f"arrived by then, tell {CONTACT}.")
+    result = record_items(await reviewed([now_notice, now_check_in, deliverable, later], said), person_id=OWNER,
+                          commitment_store=store, existing=[], rejections=[], owner_id=OWNER, turn_time=turn,
+                          owner_text=said)
     assert len(result["created"]) == 1 and result["ignored_actions"] == 3
     kept = store.get(result["created"][0])
     assert kept["metadata"]["kind"] == "notice" and kept["due_at"].startswith(NOTICE["due_at"][:16])
