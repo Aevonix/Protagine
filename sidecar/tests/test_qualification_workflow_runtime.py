@@ -474,9 +474,10 @@ def _ledger(path, rows):
     import sqlite3
     with sqlite3.connect(path) as conn:
         conn.execute('CREATE TABLE source_claim_jobs (turn_id TEXT, status TEXT, next_attempt REAL)')
-        conn.execute('CREATE TABLE opinion_jobs (ref TEXT, done_at REAL, next_attempt REAL)')
+        conn.execute('CREATE TABLE opinion_jobs (ref TEXT, done_at REAL, next_attempt REAL, '
+                     'lease_until REAL NOT NULL DEFAULT 0)')
         for table, row in rows:
-            conn.execute(f'INSERT INTO {table} VALUES (?,?,?)', row)
+            conn.execute(f'INSERT INTO {table} VALUES (?,?,?{",0" if table == "opinion_jobs" else ""})', row)
 
 
 def _set(path, sql):
@@ -508,7 +509,7 @@ def test_the_background_drain_waits_for_owed_work_and_records_what_it_left(tmp_p
     assert drained['status'] == 'drained'
     # Only the job backing off is left, and it is reported.
     assert drained['left'] == {'source_claim_jobs': {'owed': 0, 'running': 0, 'deferred': 1}}
-    _set(path, "INSERT INTO opinion_jobs VALUES ('turn:t3', NULL, 0)")   # owed, and no lane works it
+    _set(path, "INSERT INTO opinion_jobs VALUES ('turn:t3', NULL, 0, 0)")   # owed, and no lane works it
     assert worker.drain_background(path, seconds=30, idle=0.05, poll=0.01)['status'] == 'idle'
     _set(path, "INSERT INTO source_claim_jobs VALUES ('t4', 'running', 0)")   # a model call that never returns
     budget = worker.drain_background(path, seconds=0.05, idle=5, poll=0.01)

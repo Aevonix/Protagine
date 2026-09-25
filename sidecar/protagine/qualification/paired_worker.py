@@ -606,7 +606,7 @@ def source_job_counts(path):
 # DRAIN_IDLE_SECONDS). A base arm has no ledger and passes straight through; the wait counts in the episode.
 DRAIN_SECONDS, DRAIN_IDLE_SECONDS, DRAIN_POLL_SECONDS = 90.0, 5.0, 0.25
 BACKGROUND_JOBS = {'source_claim_jobs': 'status', 'commitment_runs': 'status', 'appraisal_runs': 'status',
-                   'source_vector_jobs': 'status', 'opinion_jobs': 'done_at'}
+                   'source_vector_jobs': 'status', 'opinion_jobs': 'lease'}
 
 
 def background_backlog(path, now=None):
@@ -617,12 +617,13 @@ def background_backlog(path, now=None):
     now, backlog = time.time() if now is None else now, {}
     with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
         for table, marker in BACKGROUND_JOBS.items():
-            open_row = "status='pending'" if marker == 'status' else 'done_at IS NULL'
-            running = "status='running'" if marker == 'status' else '0'
+            # A status job runs while 'running'; an opinion job while the pass holds its lease (its model call).
+            open_row = "status='pending'" if marker == 'status' else 'done_at IS NULL AND lease_until<=:now'
+            running = "status='running'" if marker == 'status' else 'done_at IS NULL AND lease_until>:now'
             try:
                 owed, busy, deferred = conn.execute(
-                    f'SELECT coalesce(sum({open_row} AND next_attempt<=?),0), coalesce(sum({running}),0), '
-                    f'coalesce(sum({open_row} AND next_attempt>?),0) FROM {table}', (now, now)).fetchone()
+                    f'SELECT coalesce(sum({open_row} AND next_attempt<=:now),0), coalesce(sum({running}),0), '
+                    f'coalesce(sum({open_row} AND next_attempt>:now),0) FROM {table}', {'now': now}).fetchone()
             except sqlite3.Error:
                 continue
             backlog[table] = {'owed': owed, 'running': busy, 'deferred': deferred}

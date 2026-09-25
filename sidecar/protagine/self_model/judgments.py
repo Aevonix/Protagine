@@ -295,7 +295,9 @@ def initialize(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS opinion_jobs (
         ref TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('turn','finding','reconsider')),
         contact_id TEXT NOT NULL, enqueued_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt REAL NOT NULL DEFAULT 0, done_at REAL, disposition TEXT)''')
+        next_attempt REAL NOT NULL DEFAULT 0, done_at REAL, disposition TEXT, lease_until REAL NOT NULL DEFAULT 0)''')
+    if 'lease_until' not in {row[1] for row in conn.execute('PRAGMA table_info(opinion_jobs)')}:
+        conn.execute('ALTER TABLE opinion_jobs ADD COLUMN lease_until REAL NOT NULL DEFAULT 0')
     conn.execute('CREATE INDEX IF NOT EXISTS opinion_jobs_pending ON opinion_jobs(done_at,next_attempt)')
     # The owner's controls, and the reason each carries, are the owner's whatever view they name.
     conn.execute("UPDATE self_judgment_revisions SET audience='owner' WHERE correction_id IS NOT NULL AND audience!='owner'")
@@ -1073,14 +1075,23 @@ class SelfJudgments:
                 ORDER BY enqueued_at,ref LIMIT 1''', (now, kinds, now - STALE_JOB_S)).fetchone()
             return dict(row) if row else None
 
+    def claim(self, ref, seconds):
+        """Mark a job taken for ``seconds`` (its model call's deadline and a margin), as the ledger's other jobs
+        hold a lease while they run, so a reader can tell work in flight from work nobody does. The queue itself
+        never waits on it: ``next_job`` still offers a job whose worker died."""
+        with closing(self.ledger._connect()) as conn, conn:
+            conn.execute('UPDATE opinion_jobs SET lease_until=? WHERE ref=? AND done_at IS NULL',
+                         (self.clock() + seconds, ref))
+
     def finish(self, ref, disposition, *, retry_at=None):
         now = self.clock()
         with closing(self.ledger._connect()) as conn, conn:
             if retry_at is not None:
-                conn.execute('UPDATE opinion_jobs SET next_attempt=?,disposition=? WHERE ref=? AND done_at IS NULL',
-                             (retry_at, disposition, ref))
+                conn.execute('UPDATE opinion_jobs SET next_attempt=?,disposition=?,lease_until=0 WHERE ref=? AND '
+                             'done_at IS NULL', (retry_at, disposition, ref))
             else:
-                conn.execute('UPDATE opinion_jobs SET done_at=?,disposition=? WHERE ref=?', (now, disposition, ref))
+                conn.execute('UPDATE opinion_jobs SET done_at=?,disposition=?,lease_until=0 WHERE ref=?',
+                             (now, disposition, ref))
             conn.execute('DELETE FROM opinion_jobs WHERE done_at IS NOT NULL AND done_at<?', (now - 30 * 86400,))
 
     def fail(self, ref, code):
@@ -1090,8 +1101,9 @@ class SelfJudgments:
             if row is None:
                 return
             attempts = row['attempts'] + 1
-            conn.execute('UPDATE opinion_jobs SET attempts=?,disposition=?,next_attempt=?,done_at=? WHERE ref=?',
-                         (attempts, f'failed:{code}', now + 60 * attempts, now if attempts >= JOB_ATTEMPTS else None, ref))
+            conn.execute('UPDATE opinion_jobs SET attempts=?,disposition=?,next_attempt=?,done_at=?,lease_until=0 '
+                         'WHERE ref=?', (attempts, f'failed:{code}', now + 60 * attempts,
+                                         now if attempts >= JOB_ATTEMPTS else None, ref))
 
     async def process_one(self, router):
         """The projection worker's 'judgment' reflection: one opinion job, when the pass is installed."""

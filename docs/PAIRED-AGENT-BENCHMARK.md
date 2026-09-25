@@ -214,7 +214,9 @@ before a declared restart the worker waits for the arm's background queues: the
 jobs in its ledger (claims, capture, appraisals, opinions, source vectors) that are
 claimable now or running, while the source worker keeps processing them. The wait
 is bounded (`drain_seconds`, default 90), stops early when a queue sits idle
-(nothing running for 5 s) and never waits for a job backing off after a failure;
+(nothing running for 5 s) and never waits for a job backing off after a failure.
+A job is running while its worker holds its lease: a status of `running`, or, for
+an opinion job, the lease the opinion pass takes for its model call;
 each drain is recorded in `tool_evidence.drains` with what it left. A base arm has
 no ledger and passes straight through. A turn that spent its iteration budget but
 answered does not end a phase: the worker and the supervisor go on, and

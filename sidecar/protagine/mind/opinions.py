@@ -513,6 +513,9 @@ async def run_one(store: Any, router: Any, *, enabled: bool | None = None) -> bo
     if job.get("kind") != "reconsider" and now - float(job.get("enqueued_at") or now) > STALE_JOB_S:
         store.finish(ref, "stale")       # evidence goes stale; the owner's request does not
         return True
+    claim = getattr(store, "claim", None)
+    if callable(claim):
+        claim(ref, deadline + 30)        # in flight until finished or failed, for anyone reading the queue
     processor: Dict[str, str] = {}
     try:
         packet = await build_packet(store, job)
