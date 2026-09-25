@@ -215,6 +215,7 @@ class Outcomes:
         self.clock = clock or (lambda: now_utc())
         self.on_breaker_trip = None  # callable(cls, state) set by the tick
         self.on_settled = None       # callable(row, outcome, check_result) set by the tick: concerns and satiation
+        self.on_blocked = None       # callable(row) set by the tick: a blocked task's report to whom it is owed
 
     # -- reconciliation -------------------------------------------------------------
 
@@ -267,7 +268,14 @@ class Outcomes:
             reason = _reason(summary, error)
             if reason:
                 updates.update(verified="hermes_failure", failed_reason=reason[:2000])
-            return self.store.update(intention_id, outcome="blocked", result=summary or error or row.result, **updates)
+            updated = self.store.update(intention_id, outcome="blocked", result=summary or error or row.result,
+                                        **updates)
+            if callable(self.on_blocked) and updated is not None:
+                try:
+                    self.on_blocked(updated)
+                except Exception as error:
+                    logger.warning("blocked hook failed for %s (%s)", updated.id, type(error).__name__)
+            return updated
         return self._settle(row, resolved, summary=summary, error=error, verified=verified, result=result, run=run,
                             by=by, updates=updates, implicit_verdict=implicit_verdict)
 

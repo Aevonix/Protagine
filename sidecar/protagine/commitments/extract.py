@@ -89,7 +89,10 @@ SYSTEM = (
     "owner, or a contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later "
-    "(\"remind me to X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\").\n"
+    "(\"remind me to X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\"). "
+    "When all that is owed at that time is a word to the person (a reminder, a nudge, a word if something has not "
+    "happened), metadata is {\"kind\":\"reminder\"}: a message when it falls due, never a task, whoever does the "
+    "underlying work.\n"
     "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the "
     "reply did NOT satisfy (email it, text it to their other number, send it later), AND the actual content to "
     "send is present in the exchange. IMPORTANT: in a chat the assistant's reply already IS a message to the "
@@ -161,19 +164,20 @@ SYSTEM = (
     '"description": string, "due_at": ISO-8601-UTC string or null, "priority": integer 0-100, '
     '"source_type": "cognition" | "introspection", "metadata": null or '
     '{"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":"sms"|"dm"|"email"} or '
-    '{"heads_up_at": ISO-8601-UTC string} or the notice or check_in object of case 3 or the cadence object of case 4, '
+    '{"kind":"reminder"} or {"heads_up_at": ISO-8601-UTC string} (both may be given) or the notice or check_in '
+    'object of case 3 or the cadence object of case 4, '
     '"listed_due": ISO-8601-UTC string or null, "counterpart": string or null, "obligor": string or null}\n'
     "priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard deadline, and "
     "below 50 only when the person calls the item optional, a nice-to-have or low priority.\n"
     "Use \"introspection\" + the deliverable metadata (due_at about two minutes from now) for case 2; "
     "\"cognition\" + the notice or check_in metadata for case 3; \"cognition\" + the cadence metadata for case 4; "
-    "\"cognition\" + metadata null (or the heads-up metadata when one was asked for) for case 1, and "
+    "\"cognition\" + metadata null, the reminder metadata and/or the heads-up metadata for case 1, and "
     "metadata null for every update, unless the turn states a NEW heads-up time for a rescheduled item (then the "
     "heads-up metadata; an unchanged heads-up moves with the deadline by itself).\n\n"
     "Examples (the person's local zone there is UTC-4: 9am local is 13:00Z):\n"
     "They said: Remind me to call the dentist Friday at 9am. | Assistant replied: Got it.\n"
     '[{"action":"create","target":null,"description":"Remind them to call the dentist Friday 9am",'
-    '"due_at":"2026-06-26T13:00:00+00:00","priority":70,"source_type":"cognition","metadata":null,'
+    '"due_at":"2026-06-26T13:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"reminder"},'
     '"listed_due":null,"counterpart":null,"obligor":"owner"}]\n'
     "They said: Email me the Q3 revenue number. | Assistant replied: Q3 revenue was 4.2 million.\n"
     '[{"action":"create","target":null,"description":"Email them the Q3 revenue","due_at":"2026-06-21T21:40:00+00:00",'
@@ -204,7 +208,8 @@ SYSTEM = (
     'arrives, chase them yourself","grant":"owner"},"listed_due":null,"counterpart":"p-05","obligor":"assistant"}]\n'
     "They said: p-05 owes me the site photos by noon; if nothing arrives, let me know. | Assistant replied: Will do.\n"
     '[{"action":"create","target":null,"description":"p-05 sends the site photos","due_at":"2026-06-26T16:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"owner","obligor":"p-05"}]'
+    '"priority":70,"source_type":"cognition","metadata":{"kind":"reminder"},"listed_due":null,"counterpart":"owner",'
+    '"obligor":"p-05"}]'
     "   (a word for the person: their reminder, never a message to p-05)\n"
     "They said: Check on p-09 every week about the kitchen quote; they are happy to hear from you. | "
     "Assistant replied: Will do.\n"

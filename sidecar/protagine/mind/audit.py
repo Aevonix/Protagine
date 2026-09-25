@@ -22,7 +22,7 @@ MAX_TEXT = 400
 # owner named that the store cannot resolve, and a name-only identity link or cadence match that needs
 # the owner's word. A contradiction question (the memory milestone) is not a notice: it is an action.
 NOTICE_TYPES = ("ask_notice", "digest", "breaker_notice", "health_notice", "grant_refused", "recipient_unknown",
-                "link_proposal", "cadence_confirm")
+                "link_proposal", "cadence_confirm", "task_outcome")
 ACTION_KINDS = ("task", "goal", "message")
 
 

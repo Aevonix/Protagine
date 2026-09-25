@@ -55,6 +55,9 @@ CHECK_IN_TYPES = frozenset({"check_in", "commitment_check_in"})
 GRANTED_KINDS = frozenset({"notice", "check_in"})
 # Capture metadata kind of a recurring check-in the owner set for a contact (undated, no grant).
 CADENCE_KIND = "cadence"
+# Capture metadata kind of an item whose only effect is a word to the person when it falls due (a reminder,
+# a nudge, a word if something has not happened): a message, never a task, whoever does the underlying work.
+REMINDER_KIND = "reminder"
 
 
 def task_body(*, description: str, drive: str, concern: str, evidence: Iterable[str], context: str = "") -> str:
@@ -106,6 +109,18 @@ def schedule_key(row_id: Any, event: str, due: datetime) -> str:
     schedule that earns one new reminder and one new heads-up.
     """
     return f"commitment:{row_id}:{event}:{due.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def task_key(row: Dict[str, Any]) -> str:
+    """The dedup key of the one task an assistant-owed obligation gets per schedule the person set:
+    ``commitment:<id>:task``, and ``commitment:<id>:task:<turn>`` once a conversation rescheduled it
+    (capture's ``metadata.reschedule``, by ``conversation``, noting its turn). The deadline itself is
+    not in it: one the worker moves (a snooze) or a clock jump never tasks the same obligation again,
+    while the person asking again ("try it by five instead") does."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    moved = metadata.get("reschedule") if isinstance(metadata.get("reschedule"), dict) else {}
+    stamp = str(moved.get("note") or "").strip() if moved.get("by") == "conversation" else ""
+    return f"commitment:{row['id']}:task" + (f":{stamp}" if stamp else "")
 
 
 def heads_up_at(row: Dict[str, Any], due: Optional[datetime] = None) -> Optional[datetime]:
@@ -354,9 +369,9 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             priority=priority / 100.0, concern_kind="obligation")
     key = schedule_key(row["id"], "overdue", due)
     obligor = _obligor(row, metadata, person, owner_id)
-    if str(metadata.get("kind") or "") in GRANTED_KINDS and owner_id and person == owner_id:
-        # A message to someone the mind may not send (no confirmed grant, addressed to the owner, or the
-        # people faculty off) is the owner's own word when due, never a worker's task.
+    if str(metadata.get("kind") or "") in (*GRANTED_KINDS, REMINDER_KIND) and owner_id and person == owner_id:
+        # A word the owner asked for, or a message to someone the mind may not send (no confirmed grant,
+        # addressed to the owner, or the people faculty off), is the owner's own word when due, never a task.
         obligor = "owner"
     if obligor != "assistant":
         # A promise the owner made, or anyone else's promise the owner is tracking, is owed back to the
@@ -374,12 +389,15 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             invalidates_if=f"commitment:{row['id']}:resolved", success_check=check, due_at=due,
             source_type="commitment", source_id=row["id"], priority=priority / 100.0, concern_kind="obligation")
     who = "the owner" if person and person == owner_id else (f"contact {person}" if person else "someone")
-    body = task_body(description=f"Fulfil the overdue commitment to {who}: {description}", drive="duty",
+    body = task_body(description=(f"Fulfil the overdue commitment to {who}: {description}\nYour final report "
+                                  f"is what {who} is told about it."), drive="duty",
                      concern=f"overdue commitment: {description}", evidence=evidence,
                      context=str(row.get("source_context") or ""))
+    # One obligation, one task per schedule the person set (``task_key``): a deadline the worker moves or
+    # a clock jump never tasks it again; the task's report is its one word.
     return Candidate(
         type="commitment_overdue", drive="duty", kind="task", title=f"Overdue: {description}"[:160],
-        dedup_key=key, salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
+        dedup_key=task_key(row), salience=min(1.0, 0.8 + (0.1 if priority >= 80 else 0.0)),
         cost=0.15, recipient=person, text=body, rationale="a commitment is past due", evidence=evidence,
         concern=f"overdue commitment: {description}", invalidates_if=f"commitment:{row['id']}:resolved",
         success_check=check, due_at=due, source_type="commitment", source_id=row["id"], priority=priority / 100.0,
