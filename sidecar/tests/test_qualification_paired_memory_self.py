@@ -21,8 +21,8 @@ CONTACT = re.compile(r'p-\d\d')
 # Dev split, per-template 3, seed 7. The manifest hashes the template and engine sources, so any
 # edit to memory.py, identity.py or generate.py is a new dataset: update these deliberately,
 # together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {'memory.py': '30fa34aa6ea0340bd755ae1689954acb59bfb90877f93fb426b4e504f78ce06d',
-                     'identity.py': '032fd22fca7d7ab17528aa7023a34795c5ae09882a73f58149faed29194d86ee'}
+PINNED_DEV_SPLITS = {'memory.py': '8c7d35720617b129fa51904b5bd0c22a37fe3f57526b91bbfc6ff648079aabd1',
+                     'identity.py': 'fd969437c6e153bdc9b0797b0edb6b0a1181e1f4ab96327a05af8838a2eda065'}
 DRIVES = ['duty', 'social', 'curiosity', 'mastery', 'upkeep']
 # One night crossed right before the probe (a day of body clock, then a tick), in every template and arm.
 NIGHT = [{'advance_clock': 86400}, {'tick': 1}]

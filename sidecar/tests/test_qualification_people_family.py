@@ -26,8 +26,8 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 CANARY = re.compile(r'\b[a-z]+-[a-z]+-\d\d\b')
 # The dev split, per-template 2, for the two recorded seeds. Any edit to people.py or
 # generate.py is a new dataset: update these deliberately, with the generators README.
-PINNED_DEV_SPLITS = {7: '34fba589d88ab54692264824664d3b93b267c868fba6fd5cf6a05ad28bdbc89a',
-                     11: '5a32be07f96e4292ded949756ddc88bba942c2cd20eedd1acc6e793ab0b0c73a'}
+PINNED_DEV_SPLITS = {7: 'f27395c386e354b00a4b35cdbce31019f8f686679c641e62df8a9d1e6932a1a0',
+                     11: '2206bdf80ebd8b019b530090050a836396437809b76d1cab06c028c220cc2e40'}
 PER_TEMPLATE = 2
 
 

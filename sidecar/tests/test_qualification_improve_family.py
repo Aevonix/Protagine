@@ -17,7 +17,7 @@ DESIGNS = {'procedure': {'reference-code', 'slot-label', 'shipping-fee'},
 # The dev split, per-template 1 (8 campaigns, 64 probes), seed 7. The manifest hashes the
 # template and engine sources, so any edit to improve.py or generate.py is a new dataset:
 # update this deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLIT = {7: '378c76faeb7d15c418c286d5633aa74e23a2663a5e6eb70e8c0fe000d5f1911a'}
+PINNED_DEV_SPLIT = {7: '618b7632c90f83f660b1c08fe70a5ac4cd799722edf0eee7e538aa3cc24cb2d4'}
 CONTACT = re.compile(r'p-\d\d')
 
 

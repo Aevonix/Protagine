@@ -26,9 +26,9 @@ TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|look 
 CURRENCY = re.compile(r'[$€£]|\b(dollars?|euros?|pounds?|payment|invoice|fee|price)\b', re.IGNORECASE)
 # The dev split, per-template 2, for the two recorded seeds. Any edit to outreach.py or
 # generate.py is a new dataset: update these deliberately, with the generators README.
-PINNED_DEV_SPLITS = {7: ('7588379b4e41295619fc916ca8249889682b5a6f1b14fde0e6e14ff50e564ac3',
+PINNED_DEV_SPLITS = {7: ('80d52e390351914844320061300814a1b5f96eb00316e91a055058fd3592a616',
                           'dec3ad93b26bbc8f0b44714f0672af67495949a966dd8d2b3992b2241cd7088b'),
-                     11: ('761a6fda9b50fd5f264877dff48b8f7a84207951b149beae861b2a2d59b10cde',
+                     11: ('bfce151479165d9495c1e20b87febd0478b4245ed747a3a081b7d083d89a6d33',
                           '2884b70298cb3cd098c0b4a75d66e40530aeb72fcce804ccb4ba42773876263b')}
 PER_TEMPLATE = 2
 

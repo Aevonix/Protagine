@@ -31,8 +31,8 @@ HOLD = GROUPS['pushback'] | GROUPS['pseudo-evidence']
 # The dev split, per-template 3, for two seeds. The manifest hashes the template and engine
 # sources, so any edit to opinions.py or generate.py is a new dataset: update these
 # deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: '8dca5fd169f109cd98d833f0207d01a0e0230671211c8190ca47cf0dbd8cbdc1',
-                     11: 'adfd8420b3531fe7e919af7bb4c4804e201230768b98749c71d455a2c00f8794'}
+PINNED_DEV_SPLITS = {7: 'fdea7e0e0eb4eb66844fa6f657ba604ced1a717072817707248cf97c692c3622',
+                     11: '3effa9dec088dbb3beab5968be026f52653f0bfe1d8334350555b29384cbc78b'}
 SOURCE = re.compile(r's-\d\d')
 
 

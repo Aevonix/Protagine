@@ -19,8 +19,8 @@ TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|read|
 # The dev split, per-template 3, seed 7: the manifest hashes the template and engine sources, so
 # any edit to affect.py or generate.py is a new dataset. Update deliberately, together with
 # benchmarks/paired/generators/README.md and docs/proto-agi/families/mind-affect-1.md.
-PINNED_DEV_SPLIT = {7: '7810d2c0e19b3430bfbcf8032421905a2752af48136de9212f0f74d4a22f0c50',
-                    11: '57834816404761bbbb298c88dddd26b3a7d7dd40037eef03ea17fa8f9b1f8b46'}
+PINNED_DEV_SPLIT = {7: 'ccce9f35fd635418d174155ce7635d2b3461196025b4ad44cbddfde926bb1e41',
+                    11: 'bfcc51f0e1fd0cf843402dbf3c7914fcc66958bae5107982a40bad8631751fb8'}
 
 
 @pytest.fixture(scope='module')
