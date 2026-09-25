@@ -132,6 +132,11 @@ GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
 # (paired_worker.SKILL_TOOLS): Hermes lists skills only to an agent with a skill tool, so without them
 # no arm could see one (evals section 11, 2026-09-24). No arm has skill_manage.
 GENERATED_SKILL_TOOLS = {'mind-improve-1': 'read'}
+# Every generated family's plugin tool set (paired_worker.PLUGIN_TOOL_SETS), fixed for its comparison series.
+# The initiative series (its dev runs and held-out gate) ran with the plugin's memory tools only; the memory
+# family's self-report probe reads the mind's action log. A family not listed keeps ``memory_self``.
+GENERATED_PLUGIN_TOOLS = {'mind-initiative-1': 'memory'}
+GENERATED_PLUGIN_TOOLS_DEFAULT = 'memory_self'
 # Every episode of a generated family starts its body clock at this UTC time of day, in
 # every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
 GENERATED_CLOCK_START = '12:00'
@@ -304,6 +309,7 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
                 inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
             if dataset_version in GENERATED_SKILL_TOOLS:
                 inputs['skill_tools'] = GENERATED_SKILL_TOOLS[dataset_version]
+            inputs['plugin_tools'] = GENERATED_PLUGIN_TOOLS.get(dataset_version, GENERATED_PLUGIN_TOOLS_DEFAULT)
             inputs['clock_start'] = GENERATED_CLOCK_START
             if 'workflow' in scenario:
                 # The normalized contract: the supervisor restarts the worker process before
