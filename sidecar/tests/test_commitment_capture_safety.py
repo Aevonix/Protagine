@@ -870,3 +870,17 @@ def test_the_contract_sets_priority_below_50_only_for_what_the_person_calls_opti
             "deadline, and below 50 only when the person calls the item optional, a nice-to-have or low "
             "priority.") in system
     assert system.index("priority: 70 for an ordinary promise") < system.index('Use "introspection"')
+
+
+def test_a_status_line_about_an_unlisted_obligation_is_its_first_mention():
+    """The stall rule ("not yet" records nothing) is about a numbered open item. The faculty pilots' extractor
+    applied it to the first mention of obligations the owner reported as not started ("This is a pure stall.
+    Record nothing."), so the load never reached the mind or the rules. A status line about an obligation that
+    is not on the list records it, whatever words report how it stands."""
+    from protagine.commitments import extract
+    system = " ".join(extract.SYSTEM.split())
+    assert "about a NUMBERED item is NEITHER: record nothing for it" in system
+    assert "NOT on the numbered list" in system and "is its first mention: record it as a NEW item" in system
+    example = system.split("They said: None of it started yet")[1].split("They said:")[0]
+    assert example.count('"action":"create"') == 2 and "first mention" in example
+    assert "[] (a stall on a listed item changes nothing)" in system

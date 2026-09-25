@@ -120,8 +120,10 @@ SYSTEM = (
     "- The person saying it is done, sent or handled, or the other party (also relayed in an inbound message) "
     "confirming they have it, that someone else did it, or that they no longer need it, is \"complete\" "
     "(it happened) or \"cancel\" (no longer wanted).\n"
-    "- A stall (\"not yet\", \"still on it\") or a partial update (one part done, the rest pending) is NEITHER: "
-    "record nothing for it.\n"
+    "- A stall (\"not yet\", \"still on it\") or a partial update (one part done, the rest pending) about a "
+    "NUMBERED item is NEITHER: record nothing for it. A status line about an obligation that is NOT on the "
+    "numbered list (how it stands: pending, not started, still owed) is its first mention: record it as a NEW "
+    "item like any other.\n"
     "- \"Do not remind me about X for now\" / \"park X, I'll say when it is live again\" is a HOLD: \"reschedule\" "
     "the listed item with due_at null. A hold is never a reminder and never a cancel. Reinstating a held item "
     "(\"remind me about X again, at T\") is \"reschedule\" with the new time, not a new item.\n\n"
@@ -209,6 +211,13 @@ SYSTEM = (
     "[]   (a message to pass on now is the reply's own job)\n"
     "They said: p-03 is off, so p-06 now covers the stock report p-03 owed p-02. | Assistant replied: Noted.\n"
     "[]   (between other people: theirs, not the owner's)\n"
+    "They said: None of it started yet, but I still owe Dana the signed lease and the meter reading, both by five "
+    "on Friday. | Assistant replied: Noted.\n"
+    '[{"action":"create","target":null,"description":"Send Dana the signed lease","due_at":"2026-06-26T21:00:00+00:00",'
+    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"Dana","obligor":"owner"},'
+    '{"action":"create","target":null,"description":"Send Dana the meter reading","due_at":"2026-06-26T21:00:00+00:00",'
+    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"Dana","obligor":"owner"}]'
+    "   (not on the list yet: a status line is their first mention)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
     "They said: Text me that. | Assistant replied: The address is 5 Main St.\n"
@@ -232,7 +241,7 @@ SYSTEM = (
     '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
     '"obligor":null}]\n'
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
-    "[]   (a stall changes nothing)")
+    "[]   (a stall on a listed item changes nothing)")
 
 ITEM_SCHEMA = {
     "type": "object",
