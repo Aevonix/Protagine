@@ -31,7 +31,12 @@ The design is in
    changes one is an action on it rather than a new row: `reschedule`
    (earlier or later; with no time it is a hold, the deadline is cleared and
    the item stays open), `complete` or `cancel` (resolved `done` or
-   `obsolete` by `conversation`). A stall or a partial update changes
+   `obsolete` by `conversation`). On the owner's turns the owner's open
+   interests (what curiosity would research) are listed after the items,
+   numbered on from them, and a `complete` (answered) or `cancel` (no longer
+   wanted) on one settles it in the same pass (`Mind.settle_interest`: its
+   level goes to 0, research on it not dispatched yet is cancelled, and its
+   research concern is resolved as a stored finding resolves it). A stall or a partial update changes
    nothing; an obligation between other people is not an item; an item
    conditioned on another event, or with no clear time, gets no deadline.
    An action must identify its row: the listed wording, and the listed
@@ -95,7 +100,12 @@ The design is in
    a job the worker holds is waited for), bounded to 5 s on the timer and
    30 s on a forced tick (`POST /tick`, the CLI, the benchmark), so a promise
    made seconds ago is a row before the drives look; the tick summary's
-   `capture_drained` records what landed and how long it waited. Alongside
+   `capture_drained` records what landed and how long it waited. While
+   capture still owes any of the owner's turns after the drain
+   (`CommitmentExtractor.unfinished`, never the backlog), optional work
+   (`affect.postponable`: curiosity and social work, optional messages)
+   waits for them, so a word that settles it lands first; what is owed does
+   not wait. Alongside
    the drain it waits (never processes) for the owner's appraisal jobs in
    flight, up to 30 s on a forced tick and 2 s on the timer, and not for a
    queue nothing is working on (`appraisal_wait`): their outcomes reach the
@@ -147,7 +157,7 @@ The design is in
    expires unsent (no handle ever resolved, the body never pulled) never
    reported the obligation: while the row is still open its key is freed
    and the reminder forms again at the next tick.
-   | curiosity | seeded and declared interests (`protagine mind interest`, `identity.yaml` `agent.interests`, the owner's own `interest` appraisals), open questions, knowledge-domain expectation misses | a research task whose finding is stored | research tasks and goals |
+   | curiosity | seeded and declared interests (`protagine mind interest`, `identity.yaml` `agent.interests`, the owner's own `interest` appraisals), open questions, knowledge-domain expectation misses | a research task whose finding is stored; the owner's word that the interest is answered or not wanted (capture) | research tasks and goals |
    | mastery | the same signature failing twice in 7 days, repeated owner corrections | a later verified success | investigations and goals |
    | upkeep | failing health checks (3 strikes), backlogs, pending name-only identity links | health OK | notices, upkeep tasks, one owner ask per link |
    | social | contacts with an owner-set cadence or tier `regular` or above, overdue against it; `unknown` and group-only contacts weigh 0 | a reply or a conversation | check-ins |

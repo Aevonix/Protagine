@@ -11,7 +11,8 @@ engine that actually ran: follow-ups ``0.5 + days/14``, overdue commitments
 | duty      | overdue and due-soon commitments, due reply waits, stale owner   | fulfilled commitments; done     |
 |           | tasks, stalled Hermes goals, duty-domain expectation misses      | tasks                           |
 | curiosity | interests (seeded, declared, appraised), open questions,         | a research task whose finding   |
-|           | contradictions, knowledge-domain misses                          | is stored                       |
+|           | contradictions, knowledge-domain misses                          | is stored; the owner's word     |
+|           |                                                                  | that it is answered (capture)   |
 | mastery   | the same signature failing twice in 7 days, repeated corrections | a later verified success        |
 | upkeep    | failing health checks, backlogs, pending link proposals          | health OK                       |
 | social    | contacts with an owner cadence or tier regular+, overdue vs their | a reply or a conversation       |
@@ -42,6 +43,7 @@ STALLED_GOAL_HOURS = 24.0
 HEALTH_STRIKES = 3
 FAILURE_WINDOW = timedelta(days=7)
 FAILURE_CLUSTER = 2
+INTEREST_FLOOR = 0.25   # below this level curiosity leaves an interest alone
 DUTY_DOMAINS = frozenset({"commitment", "intention", "expected_reply", "task_outcome", "task_duration"})
 SATIETY_DAMPING = 0.5   # effective weight = w x (1 - 0.5 x satiety)
 # After a heads-up went out, the overdue reminder for the same row waits this long
@@ -518,7 +520,7 @@ def curiosity(inputs: DriveInputs) -> DriveResult:
     for interest in inputs.interests:
         topic = str(interest.get("topic") or "").strip()
         weight = float(interest.get("weight") or 0.0)
-        if not topic or weight < 0.25:
+        if not topic or weight < INTEREST_FLOOR:
             continue
         salience = min(1.0, 0.7 + 0.1 * min(3.0, weight))
         candidates.append(research_candidate(topic=topic, why=str(interest.get("why") or "a declared interest"),

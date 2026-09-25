@@ -38,6 +38,11 @@ and uncharged (its scheduled attempts alone spend its budget), so one failed
 call delays a person's captures by seconds, not by its whole backoff. A job
 with nothing queued behind it keeps the gentle backoff. ``drain`` lets the
 mind land what capture still owes before it decides over the store.
+
+The owner's open interests (what they said they were curious about, which the
+curiosity drive would research) are listed after the open items, numbered on
+from them, so the same pass that completes or cancels a commitment settles an
+interest the owner says is answered or no longer wanted (``Mind.settle_interest``).
 """
 
 from __future__ import annotations
@@ -71,6 +76,8 @@ OUTPUT_BUDGET_TOKENS = 1500
 # Earlier turns shown with the audited turn, so an amendment ("make that
 # noon") or an acceptance ("fine, I'll do it") is judged with its referent.
 CONTEXT_TURNS, CONTEXT_WINDOW_SECONDS, CONTEXT_CHARS = 3, 3600, 3000
+# The owner's open interests listed after the items, numbered on from them.
+OPEN_INTERESTS_LISTED = 6
 # Failures that mean "the model's answer was unusable", retried at once; a
 # transport failure keeps the growing backoff.
 OUTPUT_DEFECTS = ("incomplete_final_answer", "missing_final_answer", "unparsable_output")
@@ -411,7 +418,7 @@ def _local(turn_time: str, timezone_name: str) -> str:
 
 def build_prompt(*, user_message: str, assistant_message: str, conversation_text: str,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]], turn_time: str = "",
-                 timezone_name: str = "", speaker: str = "") -> str:
+                 timezone_name: str = "", speaker: str = "", interests: List[str] = ()) -> str:
     parts = []
     if turn_time:
         local = _local(turn_time, timezone_name)
@@ -433,6 +440,14 @@ def build_prompt(*, user_message: str, assistant_message: str, conversation_text
         more = len(existing) - OPEN_ITEMS_LISTED
         if more > 0:
             parts.append(f"\n({more} more open item{' is' if more == 1 else 's are'} not listed)")
+    if interests:
+        parts.append("\n\nThe person's open INTERESTS, numbered on from the items (what they said they were curious "
+                     "about; never a new item): this turn saying one is answered or satisfied is \"complete\", no "
+                     "longer wanted looked into is \"cancel\", with its number as target and its wording exactly; "
+                     "anything else about one records nothing:")
+        start = min(len(existing), OPEN_ITEMS_LISTED)
+        for index, topic in enumerate(interests[:OPEN_INTERESTS_LISTED], start=start + 1):
+            parts.append(f"\n[{index}] {topic} (interest, no due)")
     if rejections:
         parts.append("\n\nRecently CLOSED items, with why. [invalid] or [duplicate]: do NOT record it or anything "
                      "similar again. [obsolete]: it was withdrawn or dismissed; record it again only when this turn "
@@ -730,17 +745,20 @@ def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Opti
 
 
 def _landed(result: Dict[str, Any]) -> int:
-    return sum(len(result.get(key) or ()) for key in ("created", "updated", "resolved"))
+    return sum(len(result.get(key) or ()) for key in ("created", "updated", "resolved", "settled_interests"))
 
 
 class CommitmentExtractor:
     """One durable job per person-scoped turn, processed on the router."""
 
-    def __init__(self, ledger, commitments_provider, *, aliases=None, clock=time.time) -> None:
+    def __init__(self, ledger, commitments_provider, *, aliases=None, clock=time.time, interests=None) -> None:
         """``aliases(contact_id)`` names the contact the way a conversation does (a display name, a
-        handle), possibly awaitable; ``contact_aliases`` builds one over the contacts store."""
+        handle), possibly awaitable; ``contact_aliases`` builds one over the contacts store.
+        ``interests()`` is the running mind (``open_interests``, ``settle_interest``), or None; a mind
+        binds its own capture to itself."""
         self.ledger, self.commitments_provider, self.clock = ledger, commitments_provider, clock
         self.aliases = aliases
+        self.interests = interests
         with closing(ledger._connect()) as conn, conn:
             initialize(conn)
 
@@ -971,6 +989,64 @@ class CommitmentExtractor:
         counts.update({row["status"]: int(row["n"]) for row in rows})
         return counts
 
+    def _mind(self, person_id: str) -> Any:
+        """The running mind, when this is its owner's turn and it keeps interests; else None."""
+        try:
+            mind = self.interests() if callable(self.interests) else None
+        except Exception:
+            return None
+        owner = getattr(mind, "owner_id", None)
+        return mind if owner and person_id == owner and callable(getattr(mind, "open_interests", None)) else None
+
+    def _open_interests(self, person_id: str) -> List[str]:
+        """The owner's open interests the prompt lists after the items; none for anyone else."""
+        mind = self._mind(person_id)
+        try:
+            topics = list(mind.open_interests()) if mind is not None else []
+        except Exception as error:
+            logger.debug("open interests unavailable (%s)", type(error).__name__)
+            return []
+        return [str(topic) for topic in topics if str(topic or "").strip()][:OPEN_INTERESTS_LISTED]
+
+    def _settle_interests(self, items: List[Dict[str, Any]], *, existing: List[Dict[str, Any]],
+                          interests: List[str], person_id: str, turn_id: str) -> tuple:
+        """``(items left for record_items, interests settled)``: a ``complete`` (answered) or ``cancel`` (no
+        longer wanted) aimed at a listed interest, with its wording exactly, settles it; any other action at
+        one is nothing, as an update that does not fit its item is."""
+        from protagine.commitments.store import _normalize_desc
+        start = min(len(existing), OPEN_ITEMS_LISTED)
+        kept, settled = [], []
+        mind = self._mind(person_id) if interests else None
+        for item in items:
+            target = item.get("target") if isinstance(item, dict) else None
+            try:
+                index = int(target) if not isinstance(target, bool) and isinstance(target, (int, str)) else 0
+            except ValueError:
+                index = 0
+            if not interests or not start < index <= start + len(interests):
+                kept.append(item)
+                continue
+            topic = interests[index - start - 1]
+            action = str(item.get("action") or "").strip().lower()
+            if (mind is not None and action in {"complete", "cancel"}
+                    and _normalize_desc(item.get("description") or "") == _normalize_desc(topic)):
+                try:
+                    if mind.settle_interest(topic, cause=f"turn:{turn_id}"):
+                        settled.append(topic)
+                except Exception as error:
+                    logger.warning("interest not settled (%s)", type(error).__name__)
+        return kept, settled
+
+    def unfinished(self, contact_id: str) -> int:
+        """The person's capture jobs queued since this release started (never the backlog) and not finished:
+        turns of theirs capture has not landed yet. The tick holds optional work while the owner has any."""
+        from protagine.turns import projection_backlog
+        with closing(self.ledger._connect()) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM commitment_runs r JOIN turn_sources s ON s.turn_id=r.turn_id "
+                               "WHERE r.status IN ('pending', 'running') AND s.contact_id=? AND r.enqueued_at > 0 "
+                               "AND r.enqueued_at >= ?", (contact_id, projection_backlog.watermark(conn))).fetchone()
+        return int(row[0] or 0) if row is not None else 0
+
     async def process_one(self, router, *, ignore_backoff: bool = False) -> bool:
         commitments = self._commitments()
         if not self._usable(router, commitments):
@@ -1040,6 +1116,7 @@ class CommitmentExtractor:
             speaker_names = await self._names(person_id)
             existing = listed_first(await self._existing(commitments, person_id, speaker_names),
                                     f"{user_message}\n{assistant_message}")
+            interests = self._open_interests(person_id)
             rejections = commitments.recent_rejections(limit=6) or []
             from protagine.util.temporal import resolve_communication_timezone
             prompt = build_prompt(user_message=user_message, assistant_message=assistant_message,
@@ -1047,7 +1124,7 @@ class CommitmentExtractor:
                                   rejections=rejections,
                                   turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""),
                                   timezone_name=str(job.get("timezone") or resolve_communication_timezone()),
-                                  speaker=await self._speaker(person_id, speaker_names))
+                                  speaker=await self._speaker(person_id, speaker_names), interests=interests)
             deadline = router.function_deadline_seconds(context={"task": TASK})
             if (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
                     or not 0 < deadline <= 600):
@@ -1062,7 +1139,8 @@ class CommitmentExtractor:
                 messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 context={"task": TASK, "allow_fallback": True, "max_output_tokens": OUTPUT_BUDGET_TOKENS,
                          "response_schema": RESPONSE_SCHEMA}), deadline + 5)
-            items = parse_items(final_text(response))
+            items, settled = self._settle_interests(parse_items(final_text(response)), existing=existing,
+                                                    interests=interests, person_id=person_id, turn_id=job["turn_id"])
         except asyncio.CancelledError:
             self._release(job)
             raise
@@ -1089,6 +1167,7 @@ class CommitmentExtractor:
                         job["turn_id"], result["conflicts"])
             self._requeue(job, "stale_snapshot")
             return result
+        result["settled_interests"] = settled      # the owner's interests this pass settled (``_settle_interests``)
         self._finish(job, "recorded" if _landed(result) else "nothing")
         if _landed(result):
             logger.info("commitment extraction landed %d change(s) for %s", _landed(result), person_id)
