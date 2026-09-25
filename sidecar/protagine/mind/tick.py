@@ -1122,11 +1122,12 @@ class Mind:
                 break
             if concern.exhausted or not concern.detail.get("type"):
                 continue
-            if self.store.get_by_dedup_key(concern.dedup_key) is not None:
+            candidate = Candidate.from_detail(concern.detail)
+            if self._formed(concern.dedup_key, candidate):
                 # The obligation was reported once already (architecture 3.3); it does not compete again.
                 self.concerns.drop(concern.id, note="already intended", now=now)
                 continue
-            pairs.append((concern, Candidate.from_detail(concern.detail)))
+            pairs.append((concern, candidate))
         by_key = {candidate.dedup_key: concern for concern, candidate in pairs}
         weights = self.effective_weights()
         view = self.feelings.view()
@@ -1280,8 +1281,13 @@ class Mind:
         rendered.sort(key=lambda h: (not h["is_primary"], not h["verified"]))
         return rendered[:5]
 
+    def _formed(self, key: str, candidate: Candidate) -> bool:
+        """An intention exists under the candidate's key, or under the key an earlier release gave it."""
+        return any(self.store.get_by_dedup_key(each) is not None
+                   for each in (key, *drive_functions.former_keys(candidate)))
+
     async def _form(self, candidate: Candidate, score: float, now: datetime) -> Optional[StoredInitiative]:
-        if self.store.get_by_dedup_key(candidate.dedup_key) is not None:
+        if self._formed(candidate.dedup_key, candidate):
             return None
         to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
         stored = await self._may_contact(candidate.recipient)

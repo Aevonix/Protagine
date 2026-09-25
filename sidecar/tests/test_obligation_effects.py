@@ -160,3 +160,37 @@ async def test_the_person_asking_again_in_conversation_earns_a_new_task(fx):
     formed = (await fx.mind.tick(force=True))["formed"]
     assert [item["type"] for item in formed] == ["commitment_overdue"]
     assert fx.store.get(formed[0]["id"]).dedup_key == f"commitment:{row['id']}:task:turn:turn-again"
+
+
+async def test_an_obligation_the_previous_release_tasked_is_not_tasked_again(fx, monkeypatch):
+    """The release before this one keyed an obligation's task on its deadline
+    (``commitment:<id>:overdue:<due>``): an upgrade finds that task under the old key and forms no second."""
+    from protagine.mind import drives
+    row = fx.commitments.create(person_id=OWNER, description="Draft the offsite agenda",
+                                due_at=(fx.now + timedelta(minutes=5)).isoformat())
+    fx.shift(minutes=10)
+    current = drives.task_key
+    monkeypatch.setattr(drives, "task_key",
+                        lambda item: drives.schedule_key(item["id"], "overdue", drives._utc(item["due_at"])))
+    formed, = (await fx.mind.tick(force=True))["formed"]
+    assert formed["type"] == "commitment_overdue"
+    monkeypatch.setattr(drives, "task_key", current)
+    fx.shift(minutes=10)
+    for _ in range(2):
+        assert (await fx.mind.tick(force=True))["formed"] == []
+    assert len([r for r in fx.store.intentions(kind=["task"], limit=50) if r.source_id == row["id"]]) == 1
+    # Settled under the old key (resolved), the obligation is not raised as a new task either.
+    due = drives._utc(row["due_at"])
+    rows = [fx.commitments.get(row["id"])]
+    settled = {drives.schedule_key(row["id"], "overdue", due)}
+    assert duty(DriveInputs(now=fx.now, owner_id=OWNER, commitments=rows, settled=settled))[1] == []
+
+
+def test_a_reminder_on_a_contacts_lane_is_a_word_never_a_task(tmp_path, fx):
+    """"Remind me at 1 to send the signed form" on p-07's lane, filed with the assistant as obligor: a word
+    when due (to the owner, as every contact-lane word is), never a worker's task."""
+    store = CommitmentStore(tmp_path / "c.db")
+    row = _row(store, person=CONTACT, metadata={"kind": "reminder", "obligor": "assistant"},
+               due=fx.now - timedelta(minutes=2), description="Remind them to send the signed form")
+    candidates = duty(DriveInputs(now=fx.now, owner_id=OWNER, commitments=[store.get(row["id"])]))[1]
+    assert [(c.type, c.kind, c.recipient) for c in candidates] == [("commitment_reminder", "message", OWNER)]

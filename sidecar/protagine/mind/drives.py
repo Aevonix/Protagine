@@ -124,6 +124,17 @@ def task_key(row: Dict[str, Any]) -> str:
     return f"commitment:{row['id']}:task" + (f":{stamp}" if stamp else "")
 
 
+def former_keys(candidate: Any) -> Tuple[str, ...]:
+    """The keys the release before ``task_key`` formed the same intention under, which count as formed: an
+    obligation's task was keyed on its deadline (``commitment:<id>:overdue:<due>``), so a task that release
+    started is never started again after an upgrade."""
+    if (getattr(candidate, "type", None) != "commitment_overdue" or getattr(candidate, "kind", None) != "task"
+            or not getattr(candidate, "source_id", None)):
+        return ()
+    due = _utc(getattr(candidate, "due_at", None))
+    return (schedule_key(candidate.source_id, "overdue", due),) if due is not None else ()
+
+
 def heads_up_at(row: Dict[str, Any], due: Optional[datetime] = None) -> Optional[datetime]:
     """When the person asked to be warned about a commitment, or None.
 
@@ -371,10 +382,15 @@ def commitment_candidate(row: Dict[str, Any], due: datetime, now: datetime, *, o
             priority=priority / 100.0, concern_kind="obligation")
     key = schedule_key(row["id"], "overdue", due)
     obligor = _obligor(row, metadata, person, owner_id)
-    if str(metadata.get("kind") or "") in (*GRANTED_KINDS, REMINDER_KIND) and owner_id and person == owner_id:
+    kind = str(metadata.get("kind") or "")
+    if kind in (*GRANTED_KINDS, REMINDER_KIND) and owner_id and person == owner_id:
         # A word the owner asked for, or a message to someone the mind may not send (no confirmed grant,
         # addressed to the owner, or the people faculty off), is the owner's own word when due, never a task.
         obligor = "owner"
+    elif kind == REMINDER_KIND and obligor == "assistant":
+        # On a contact's lane too a word someone asked for is a word when due (to the owner, as every
+        # contact-lane reminder is), never a worker's task.
+        obligor = person or "owner"
     if obligor != "assistant":
         # A promise the owner made, or anyone else's promise the owner is tracking, is owed back to the
         # owner as words, not to a worker as work: the reminder is the effect, whichever lane the row
@@ -493,7 +509,10 @@ def duty(inputs: DriveInputs) -> DriveResult:
         went_out = inputs.heads_ups.get(str(row["id"]))
         if went_out is not None and now - went_out < inputs.heads_up_grace:
             continue   # the heads-up reached the owner minutes ago; one word at a time
-        candidates.append(commitment_candidate(row, due, now, owner_id=inputs.owner_id, people_on=inputs.people_on))
+        candidate = commitment_candidate(row, due, now, owner_id=inputs.owner_id, people_on=inputs.people_on)
+        if any(inputs.is_settled(key) for key in former_keys(candidate)):
+            continue   # settled under the key the previous release gave its task
+        candidates.append(candidate)
     for wait in inputs.reply_waits:
         if wait.get("eligibility") not in {None, "due"} or wait.get("native_task_id"):
             continue
@@ -795,7 +814,7 @@ __all__ = ["CHECK_IN_TYPES", "DEFAULT_WEIGHTS", "DRIVES", "DRIVE_FUNCTIONS", "DU
            "FAILURE_CLUSTER", "FAILURE_WINDOW", "GRANTED_KINDS", "HEADS_UP_GRACE", "HEALTH_STRIKES", "SOCIAL_TIERS",
            "STALE_TASK_HOURS", "STALLED_GOAL_HOURS", "cadence_confirm_candidate", "commitment_candidate", "curiosity",
            "duty", "effective_weights",
-           "enabled", "failure_signature", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
+           "enabled", "failure_signature", "former_keys", "granted_due", "granted_message", "heads_up_at", "heads_up_candidate",
            "link_proposal_candidate", "mastery", "owed_between_others", "period", "recipient_unknown_candidate",
            "reply_wait_candidate",
            "research_candidate", "run", "schedule_key", "slug", "social", "span", "stale_task_candidate",
