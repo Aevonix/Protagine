@@ -662,14 +662,24 @@ def background_backlog(path, now=None):
     return backlog
 
 
-def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, poll=DRAIN_POLL_SECONDS, wait=None):
+def unworked_queues():
+    """The ledger queues nothing in this arm works: the vector jobs of an arm whose embedder is declared off
+    (``PROTAGINE_EMBED_PROVIDER`` skip, as ``native_memory_worker.embedding_environment`` sets it)."""
+    return ('source_vector_jobs',) if os.environ.get('PROTAGINE_EMBED_PROVIDER', 'skip') == 'skip' else ()
+
+
+def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, poll=DRAIN_POLL_SECONDS, wait=None,
+                     skip=()):
     """Wait, never process, until the ledger owes nothing and runs nothing, a queue sits idle, the budget ends
-    or ``wait`` reports a stop; ``{status: drained|idle|budget|stopped|no_queue, waited_seconds, left}``."""
+    or ``wait`` reports a stop; ``{status: drained|idle|budget|stopped|no_queue, waited_seconds, left}``. The
+    queues in ``skip`` (``unworked_queues``) are neither waited for nor left; they are named in ``skipped``."""
     wait, started, idle_since = wait or time.sleep, time.monotonic(), None
     while True:
         backlog, elapsed = background_backlog(path), time.monotonic() - started
         if backlog is None:
             return {'status': 'no_queue', 'waited_seconds': 0.0, 'left': {}}
+        passed = sorted(table for table in backlog if table in skip)
+        backlog = {table: row for table, row in backlog.items() if table not in skip}
         owed, running = (sum(row[key] for row in backlog.values()) for key in ('owed', 'running'))
         idle_since = None if running else elapsed if idle_since is None else idle_since
         status = ('drained' if not owed and not running else 'idle' if idle_since is not None
@@ -678,7 +688,8 @@ def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, po
             status = 'stopped'
         if status:
             return {'status': status, 'waited_seconds': round(elapsed, 3),
-                    'left': {table: row for table, row in backlog.items() if any(row.values())}}
+                    'left': {table: row for table, row in backlog.items() if any(row.values())},
+                    **({'skipped': passed} if skip else {})}
 
 
 @contextmanager
@@ -1028,7 +1039,7 @@ def main():
                     protagine_flush()
                 drains.append({'index': index, 'before': before, **drain_background(
                     home / 'memory-state' / 'turn-idempotency.db', seconds=inputs.get('drain_seconds', DRAIN_SECONDS),
-                    wait=stop.wait)})
+                    wait=stop.wait, skip=unworked_queues())})
                 trace.record('drain', drains[-1])
 
             result['stage'] = 'running'

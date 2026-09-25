@@ -486,6 +486,27 @@ def _set(path, sql):
         conn.execute(sql)
 
 
+def test_the_drain_does_not_wait_for_vector_jobs_an_arm_without_an_embedder_never_runs(tmp_path, monkeypatch):
+    """An arm with embeddings declared off owes source_vector_jobs that nothing runs: every drain waited out
+    its idle time and reported "idle". Those jobs are skipped (named in ``skipped``), so the drain reports
+    "drained" once the queues that are worked are done; with an embedder they are waited for as before."""
+    import sqlite3
+    path = tmp_path / 'turn-idempotency.db'
+    _ledger(path, [('source_claim_jobs', ('t0', 'complete', 0))])
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE source_vector_jobs (turn_id TEXT, status TEXT, next_attempt REAL)')
+        conn.execute("INSERT INTO source_vector_jobs VALUES ('t0', 'pending', 0)")
+    monkeypatch.setenv('PROTAGINE_EMBED_PROVIDER', 'skip')
+    skipped = worker.unworked_queues()
+    assert skipped == ('source_vector_jobs',)
+    drained = worker.drain_background(path, seconds=30, idle=5, poll=0.01, skip=skipped)
+    assert drained['status'] == 'drained' and drained['waited_seconds'] < 1
+    assert drained['skipped'] == ['source_vector_jobs'] and drained['left'] == {}
+    monkeypatch.setenv('PROTAGINE_EMBED_PROVIDER', 'openai_api')
+    assert worker.unworked_queues() == ()
+    assert worker.drain_background(path, seconds=30, idle=0.05, poll=0.01)['status'] == 'idle'
+
+
 def test_the_background_drain_waits_for_owed_work_and_records_what_it_left(tmp_path):
     """Before a restart or a clock jump the harness waits for the arm's ledger: work claimable now and work
     running. It never processes a job itself, never waits for one backing off, never for a queue nobody works,
