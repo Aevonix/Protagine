@@ -154,3 +154,11 @@ def test_rank_names_the_owed_outreach_types_that_feedback_never_weighs():
     finding = candidate("outreach_finding", "social", topic="Tidal energy")
     assert finding.multiplier_keys() == ["outreach_finding:social", "outreach_topic:tidal-energy"]
     assert rank.feedback_multiplier(Feedback({"outreach_topic:tidal-energy": 0.5}), finding) == 0.5
+
+
+def test_satiation_never_holds_back_an_answer_the_owner_asked_for():
+    view = affect.AffectView(route={}, owner_id=OWNER, satiated=True, boost=0.5)
+    answer = candidate(OUTREACH_ANSWER, "social")
+    finding = candidate("outreach_finding", "social")
+    assert affect.discretionary(finding) and not affect.discretionary(answer)
+    assert view.threshold_factor(finding) == 1.5 and view.threshold_factor(answer) == 1.0

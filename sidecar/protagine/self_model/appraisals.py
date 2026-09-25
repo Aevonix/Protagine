@@ -358,12 +358,15 @@ def contact_signal(value):
 
 
 class AppraisalStore:
-    def __init__(self, ledger, *, owner_id, clock=time.time, on_contact=None):
+    def __init__(self, ledger, *, owner_id, clock=time.time, on_contact=None, on_owner=None):
         self.ledger, self.owner_id, self.clock = ledger, str(owner_id or ''), clock
         # Called (awaited when it returns an awaitable) with the contact signal of a non-owner
         # speaker once the source's appraisal committed: {contact_id, their_valence, opt_out,
         # turn_id, source_version, occurred_at}.
         self.on_contact = on_contact
+        # The owner's own opt-out the appraisal saw ({turn_id, opt_out, occurred_at}): owner outreach pauses on
+        # it when the phrases missed it. It never reaches contact affect or permission (the owner is auto).
+        self.on_owner = on_owner
         with closing(ledger._connect()) as conn, conn:
             initialize(conn)
 
@@ -816,7 +819,20 @@ class AppraisalStore:
 
     async def _signal_contact(self, source, signal):
         """Hand a non-owner speaker's valence and opt-out to ``on_contact``; the owner's own turns
-        never feed contact affect or permission. A failing writer never undoes the appraisal."""
+        never feed contact affect or permission, and only the owner's opt-out goes to ``on_owner``. A failing
+        writer never undoes the appraisal."""
+        if source['contact_id'] == self.owner_id:
+            if self.on_owner is not None and signal is not None and signal['opt_out']:
+                try:
+                    result = self.on_owner({'turn_id': source['turn_id'], 'opt_out': True,
+                                            'occurred_at': source['occurred_at'] or source['ingested_at']})
+                    if inspect.isawaitable(result):
+                        await result
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning('owner signal not written (%s)', type(exc).__name__)
+            return
         if (self.on_contact is None or signal is None or source['contact_id'] == self.owner_id
                 or (signal['their_valence'] is None and not signal['opt_out'])):
             return

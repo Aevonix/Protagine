@@ -168,6 +168,7 @@ class Followup:
     words: str = ""             # the owner's reply, quoted as data
     commitment: Optional[str] = None
     commitment_due: Optional[datetime] = None
+    offer: bool = False         # the owner took up an offer of help (a loop or care), not a finding
 
 
 @dataclass
@@ -493,19 +494,23 @@ def followup_candidate(item: Followup, inputs: OutreachInputs) -> Candidate:
     """The deeper dig the owner asked for: duty's (owed, never satiable), a template body with the owner's
     words quoted as data. Bound to an assistant promise captured from the same reply, it takes that
     promise's key, so duty never forms a second task for it."""
-    description = (f"The owner asked to dig deeper into {item.topic}. What was shared: {item.shared} Look at the "
-                   f"sources behind it and report specifics, with where each came from.")
+    if item.offer:
+        description = (f"The owner took up an offer of help with {item.topic}. What was offered: {item.shared} Do "
+                       f"what their reply asks, from their own words, and report what you prepared.")
+    else:
+        description = (f"The owner asked to dig deeper into {item.topic}. What was shared: {item.shared} Look at "
+                       f"the sources behind it and report specifics, with where each came from.")
     body = task_body(description=description, drive="duty", concern=f"the owner asked for more on {item.topic}",
                      evidence=[f"intention:{item.outreach_id}"],
                      context=f"The owner's reply: {item.words}" if item.words else "")
     key = f"outreach:followup:{item.outreach_id}"
+    # The dig reports a finding; a promise it is bound to is kept when the answer is sent (``outreach_answer``).
     check: Dict[str, Any] = {"kind": "result_field", "field": "finding"}
     extra: Dict[str, Any] = {"requested": item.outreach_id, "topic_slug": item.slug}
     if item.commitment:
         from .drives import schedule_key
         if item.commitment_due is not None:
             key = schedule_key(item.commitment, "overdue", item.commitment_due)
-        check = {"kind": "commitment_resolved", "commitment_id": item.commitment}
         extra["bound_commitment"] = item.commitment
     return Candidate(
         type=OUTREACH_FOLLOWUP, drive="duty", kind="task", title=f"Dig deeper: {item.topic}"[:160], dedup_key=key,

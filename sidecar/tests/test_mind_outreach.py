@@ -292,5 +292,13 @@ def test_a_followup_is_duty_work_with_the_owners_words_as_data():
     assert "find out its field site" in made.text and made.multiplier_keys() == []
     bound = outreach.followup_candidate(Followup("o-1", "tidal energy", "tidal-energy", "x", commitment="c-9",
                                                  commitment_due=NOW + 2 * H), inputs())
-    assert bound.dedup_key.startswith("commitment:c-9:overdue:")
-    assert bound.success_check == {"kind": "commitment_resolved", "commitment_id": "c-9"}
+    assert bound.dedup_key.startswith("commitment:c-9:overdue:") and bound.extra["bound_commitment"] == "c-9"
+    # The dig reports a finding; the promise is kept when the answer is sent, so the answer carries its check.
+    assert bound.success_check == {"kind": "result_field", "field": "finding"}
+    report = finding(ident="f-3")
+    report.requested_by, report.bound_commitment = "o-1", "c-9"
+    answer = outreach.answer_candidate(report, inputs())
+    assert answer.success_check == {"kind": "commitment_resolved", "commitment_id": "c-9"}
+    offer = outreach.followup_candidate(Followup("o-2", "lease renewal", "lease-renewal", "Want a hand?", offer=True,
+                                                 words="Yes please, draft it."), inputs())
+    assert "took up an offer of help with lease renewal" in offer.text and "Yes please, draft it." in offer.text

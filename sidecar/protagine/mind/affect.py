@@ -144,9 +144,10 @@ def plan_hash(body: Any) -> str:
 def discretionary(candidate: Any) -> bool:
     """Work the agent may hold without anyone being owed it: recurring self-chosen work, curiosity and
     social outreach, and anything below the owed priority. The step of an adopted goal is owed whatever
-    its drive (rank.py), and an unreadable priority counts as owed."""
-    if getattr(candidate, "parent_goal_id", None):
-        return False
+    its drive (rank.py), and so is the answer to a follow-up the owner asked for; an unreadable priority
+    counts as owed."""
+    if getattr(candidate, "parent_goal_id", None) or getattr(candidate, "type", None) == OUTREACH_ANSWER:
+        return False    # a goal's step, or the answer the owner asked for: owed
     if getattr(candidate, "dedup_base", None) is not None:
         return True
     if str(getattr(candidate, "drive", "") or "") in {"curiosity", "social"}:
