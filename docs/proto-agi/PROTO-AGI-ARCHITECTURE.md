@@ -423,7 +423,7 @@ owner weight (`0` disables it) and is satiated by the outcomes that satisfy it.
 | Drive | Rises with (existing stores) | Satisfied by | Produces |
 |---|---|---|---|
 | **duty** | Open or overdue commitments, due reply waits, stale owner kanban tasks and Hermes goals (posted by the plugin), expectation misses in the duty domain | Fulfilled commitments; done tasks | Follow-up tasks, owner notices |
-| **social** | Contacts with `may_contact ≠ never` **and** an owner-set cadence or tier `regular` or above: overdue cadence × tier weight, open threads, contact-affect trend. `unknown` and group-only contacts weigh 0. | A reply or a conversation | Check-in intentions |
+| **social** | Contacts with `may_contact ≠ never` **and** an owner-set cadence or tier `regular` or above: overdue cadence × tier weight, open threads, contact-affect trend. `unknown` and group-only contacts weigh 0. Toward the owner (section 4.10): the hours since the owner last spoke | A reply or a conversation; the owner's next turn | Check-in intentions; owner outreach (a finding, an offer of help on an open item, care) |
 | **curiosity** | Open questions, contradictions, expectation misses in the knowledge domain, owner-declared interests, own `interest` appraisals | A research task whose finding is stored | Research tasks and goals; the finding is stored as an autobiography entry |
 | **mastery** | The same signature failing ≥2 times in 7 days, repeated corrections, eval regressions | A later verified success in that class | Mastery investigations and goals; sets the learning budget (section 4.8) |
 | **upkeep** | Consolidation backlog, projection lag, pending link proposals, failing health checks | Health OK | Upkeep tasks |
@@ -663,12 +663,70 @@ These edges make it one mind. Each is tested by a named ablation in the evals.
 | Contradiction (memory) | Curiosity | A question concern | `memory` family, contradiction scenarios |
 | Reply or silence (people) | Priority learning | The per-contact multiplier and backoff change | `people` family, adaptation scenarios |
 | Failure cluster | Mastery, then lessons | A reflector task, then a lesson, then a changed next attempt | `improve` campaigns |
+| Finding (curiosity) | Outreach | A finding that bears on what the owner cares about becomes one message, else a digest line | `outreach` family, warranted and control scenarios |
+| The owner's reply to an outreach | Interests, feedback, lessons | Interest up or muted, the type and topic multipliers move, a follow-up task; the night's lessons | `outreach` family, direction scenarios |
 | Everything the agent does | Identity | Autobiography and self-narrative | `self` family |
 
 If these edges show no effect in their families, the "one mind" claim is withdrawn, and Protagine
 ships as a memory, contacts and opinions provider (evals, section 9). When a release turns a
 faculty off, the families coupled to it are re-run in the shipped configuration before any claim
 is made (evals, section 9).
+
+### 4.10 Outreach (the social drive toward the owner)
+
+The owner asked for an agent that checks in because it has a reason to, not on a timer: that asks
+whether they need something about a thing they mentioned, shows them what it found that bears on
+what they care about, and takes direction from how they react. Outreach is the social drive turned
+toward the owner (M11, `P/mind/outreach.py`, pure; the tick gathers its snapshot).
+
+**Motivation, only with substance.** The drive's owner branch proposes a message only from one of
+three sources, never an empty "anything you need?":
+
+| Source | Type | When |
+|---|---|---|
+| A **finding** of the mind's own research (research, question, goal step, follow-up), done in the last 48 h | `outreach_finding` | its report bears on what the owner said they care about: an interest they declared, set or welcomed, an open goal or item of theirs, their own recent words |
+| An **open loop**: the owner's own open item, not due within 48 h (duty speaks then), not parked, not a message to someone else | `outreach_loop` | after a quiet stretch: the pressure is the hours since the owner last spoke over 24 |
+| **Care**: the owner said a named thing (never a person) is stressing them or that they are behind on it | `outreach_care` | within hours of saying it, while the thing is open |
+
+**Value against interruption.** A candidate's salience is its expected value, `relevance ×
+novelty × timeliness`; its cost is the interruption, `min(0.9, 0.35 e^(-m/60) + 0.15 s + 0.10 k +
+0.20 h)` (minutes since the last outreach, the owner's ignored streak, the day's unprompted owner
+messages, the hour's "not now" mark). The one ranker decides with its act threshold, the feedback
+multiplier (type and topic, never `reach_out:<owner>`) and affect. Quiet hours, the owner's pause,
+the daily budget (`budgets.outreach_per_day`, separate from `owner_messages_per_day`, so outreach
+never takes a reminder's slot), a muted topic and a topic's backoff (`24 h × 2^streak`) hold a
+candidate before it forms, so nothing piles up into a burst; and the tick forms at most one
+unprompted outreach, so two findings at once are one interruption. A finding worth it but not sent
+in its window goes to the digest ("Found for you"); so do offers that went unsent or were put off.
+
+**Every message says why**, from a template that quotes what the owner said, read from the ledger
+at render time (erasing the turn erases the quote); no model call composes owner outreach.
+
+**Direction from reactions.** Every owner turn reaches `Mind.owner_turn` from `turns/sync`, read
+by deterministic classifiers (`P/mind/reactions.py`). A reply links to the newest open outreach
+(sent in the last day, unanswered) whose topic it names, or by position when it is the owner's
+first turn since that outreach and reads as a reply. What is learned lives where the mind already
+learns:
+
+| The owner says | Effect |
+|---|---|
+| "dig deeper", "find out", "tell me more" | verdict `useful` (type and topic feedback up), interest +1, a duty follow-up with the owner's words quoted as data; its report is sent back as `outreach_answer` at no cost; a promise the assistant made in the same reply is kept when the answer is sent |
+| "not interested", "not useful", "drop it" | verdict `not_useful`, the topic muted for months (a similar one too), its interest 0, what waits on it cancelled |
+| "not now" | a four-hour pause, the hour's timing mark, the item in the digest |
+| "leave me alone today" | a pause until the owner's next day |
+| "stop checking in" (or the contact opt-out phrases) | a pause until the owner resumes it, what is queued cancelled at once; reminders and requested answers keep going; `may_contact` is never touched |
+| "keep me posted on X", "I care about X" | an owner interest in X (a mute on it lifted) |
+| "stressed about X", "behind on X" | care for X (72 h), matched to the owner's open item on it |
+| silence for a day | `ignored` (weak): the interest ×0.8, the streak raises the next cost |
+
+Two appraisal nets back the phrases: the owner's opt-out the appraisal saw pauses outreach, and an
+owner dismissal after a send is a negative on it. The night's lesson stage reads rated outreach as
+results the owner verified; a lesson on a topic halves (pitfall) or lifts (strategy) the next
+finding's relevance. Recovery: "you can check in again", `protagine mind outreach on`,
+`POST /v1/mind/outreach`.
+
+Guardrails: owner only by construction (every builder names the owner); the flag
+`mind.faculties.outreach` removes exactly what M11 adds. Flag: `outreach`.
 
 ---
 
@@ -730,8 +788,9 @@ rows' `lesson_ids` and one `lesson_use` note per owner message a lesson served.
 CREATE TABLE mind_state (            -- affect, drive levels, self-narrative blocks
   key          TEXT PRIMARY KEY,     -- 'affect.frustration:<topic>', 'affect.worry',
                                      -- 'drive.duty', 'self.interests', 'breaker.owner', ...
-  level        REAL, baseline REAL, half_life_s REAL,
-  text         TEXT,                 -- self-narrative sections only
+  level        REAL, baseline REAL, half_life_s REAL,   -- also 'interest:<topic>', 'outreach.pause',
+                                     -- 'outreach.mute:<topic>', 'outreach.timing:<HH>', 'care:<thing>'
+  text         TEXT,                 -- self-narrative sections, a topic, a pause's end
   causes_json  TEXT,                 -- <= 5 cited refs (source, intention, expectation ids)
   updated_at   REAL
 );
@@ -944,6 +1003,7 @@ mind:
     commands: []                     # command globs, written to the worker's approvals.deny
   worker_toolsets: [web, file, session_search, memory, todo]
   budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
+            outreach_per_day: 3,     # unprompted owner outreach (section 4.10), counted apart
             contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
             llm_tokens_per_day: 200000, learn_share: 0.25, open_goals: 2,
             task_max_runtime_s: 600, task_max_retries: 1}
@@ -1067,6 +1127,10 @@ inside every run.
   is the social drive's `evaluate_outreach`, passed to the budget check as the check-in's own
   cooldown; `P/delivery/rate_limiter.py` was deleted in M5 with nothing calling it, so the
   back-off covers check-ins only. A message a budget defers is composed when it goes, not before.
+  Unprompted owner outreach has its own daily budget (`outreach_per_day`) and is not counted in
+  `owner_messages_per_day`, so it never defers a reminder the owner asked for; the answer to a
+  follow-up the owner asked for is counted by neither. An outreach the budget would hold is not
+  formed at all (no deferred queue).
   Hermes enforces runtime limits through kanban `max_runtime_seconds` and `max_retries`.
 - **Breaker.** 3 failures of a class within 24 h demote that class one level, for example act to
   ask. The demotion lasts 72 h or until the owner resets it (`protagine mind reset <class>`),
@@ -1153,7 +1217,8 @@ So:
 | Learning may change (wants) | Learning may never change (may) |
 |---|---|
 | drive satiation within bounds | autonomy level, classes, floor |
-| per-type and per-contact multipliers and outreach backoff | deny list, worker toolsets |
+| per-type, per-contact and per-topic multipliers and outreach backoff | deny list, worker toolsets |
+| interests, mutes, the outreach pause and timing marks | quiet hours, `outreach_per_day` |
 | lessons, approach opinions, stances | `may_contact`, budgets |
 | agent-owned goals, within `budgets.open_goals` | the constitution |
 | (behind the `skills` flag) SKILL.md files in Protagine's own directory | oracles, graders, held-out packs, the harness, decision rules |

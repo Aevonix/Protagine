@@ -41,6 +41,21 @@ general self-improvement simply by recording a successful review.
   90-day audit retention and no more. An owner verdict in conversation counts
   only when the night's model quotes the owner's exact words; a verdict it
   does not recognise scores and teaches nothing.
+- **Owner outreach (M11)**: the owner's replies are read by a lexicon
+  (`P/mind/reactions.py`) with two appraisal nets (the owner's opt-out and a
+  dismissal after a send); a reply worded outside it and not caught by the
+  nets is linked only as engagement or not at all, so recall on held-out
+  phrasings is unmeasured until the family's pilot, which reports it per class
+  (a follow-up adds one tool-less classification call per linked reply if
+  positive-reply recall is under 80%). A position link needs a short or
+  referring reply, so a long reply that names neither the topic nor the item
+  links nothing. Relevance is lexical (shared terms with the owner's interests,
+  goals and recent words). "Not now" teaches a per-hour mark, not a schedule:
+  best-hour learning from reply latency is not built. A finding whose text
+  carries a price trips the authority floor's money pattern and becomes an ask
+  instead of a message; the family's items carry no currency. No family has
+  measured the faculty yet: the flag ships at its release-candidate value
+  until the gate decides.
 - **Skills (M9)**: off by default. Loads are counted only for Protagine's own
   `protagine-*` skills, and a process whose Hermes lacks
   `clear_skills_system_prompt_cache` lists a new skill only after a restart.
