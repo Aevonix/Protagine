@@ -101,7 +101,8 @@ async def test_a_deliverable_for_someone_else_is_a_message_to_them_never_to_the_
     unasked = record_items([deliverable], person_id=OWNER, commitment_store=_store(tmp_path / "unasked"), existing=[],
                            rejections=[], owner_id=OWNER, owner_text=said)
     row = _store(tmp_path / "unasked").get(unasked["created"][0])
-    assert "kind" not in row["metadata"] and "grant" not in row["metadata"] and row["metadata"]["obligor"] == "owner"
+    assert row["metadata"]["kind"] == "reminder" and "grant" not in row["metadata"]
+    assert row["metadata"]["obligor"] == "owner"
     # A contact cannot have their deliverable relayed: no grant, so it is an ordinary row.
     relayed = record_items([deliverable], person_id=OTHER, commitment_store=store, existing=[], rejections=[],
                            owner_id=OWNER, owner_text=f"Text {CONTACT}: the venue is at 5 Main St.")
@@ -167,12 +168,13 @@ def test_the_extractor_contract_says_a_withheld_permission_is_no_message():
     assert "I have not said you may write to p-05 yet" in extract.SYSTEM
 
 
-def test_a_notice_without_words_is_a_plain_commitment(tmp_path):
+def test_a_notice_without_words_is_the_owners_reminder(tmp_path):
     store = _store(tmp_path)
     empty = {**NOTICE, "metadata": {"kind": "notice", "recipient": CONTACT, "content": "  ", "grant": "owner"}}
     result = record_items([empty], person_id=OWNER, commitment_store=store, existing=[], rejections=[], owner_id=OWNER)
     row = store.get(result["created"][0])
-    assert "kind" not in row["metadata"] and row["metadata"]["counterpart"] == CONTACT
+    assert row["metadata"]["kind"] == "reminder" and row["metadata"]["counterpart"] == CONTACT
+    assert "grant" not in row["metadata"] and "recipient" not in row["metadata"]
 
 
 # ---------------------------------------------------------------------------

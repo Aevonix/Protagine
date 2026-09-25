@@ -110,7 +110,7 @@ def _check_in(recipient, *, asked=None, topic="the quote"):
 def _assert_owner_reminder_only(store):
     row, = _rows(store)
     metadata = row["metadata"] or {}
-    assert metadata.get("kind") not in {"notice", "check_in"} and "grant" not in metadata
+    assert metadata.get("kind") == "reminder" and "grant" not in metadata
     assert "recipient" not in metadata and metadata.get("obligor") == "owner"
     candidates = _due(store)
     assert [c.type for c in candidates] == ["commitment_reminder"]
@@ -279,7 +279,7 @@ async def test_one_review_call_judges_every_proposal_of_the_turn_separately(tmp_
     assert len(router.reviews()) == 1
     by_kind = {(row["metadata"] or {}).get("kind"): row for row in _rows(store)}
     assert by_kind["check_in"]["metadata"]["recipient"] == LANDLORD
-    reminder = by_kind[None]
+    reminder = by_kind["reminder"]
     assert reminder["metadata"]["obligor"] == "owner" and "grant" not in reminder["metadata"]
 
 

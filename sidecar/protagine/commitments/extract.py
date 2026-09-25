@@ -141,7 +141,8 @@ SYSTEM = (
     "Two deliverables or two dates in one turn are two items. When the person asks for a word BEFORE a deadline "
     "(\"give me a heads-up ten minutes before\", \"warn me at half three\"), due_at stays the deadline and metadata is "
     '{"heads_up_at": "<ISO-8601-UTC>"} (or {"lead_minutes": N}); the heads-up is part of that one item, '
-    "never a second one.\n"
+    "never a second one. A reminder or nudge they want at or after an item's deadline (if it passes, if they go "
+    "quiet) is that item's own word, never a second item: for a listed item there is nothing new to record.\n"
     "counterpart: for a NEW item, the other party, the one it is owed to or who owes it, written exactly as the "
     "conversation identifies them (a contact id such as p-07, a name, or a handle); \"owner\" when the other party is "
     "the assistant's owner and no name is given, as for a contact's promise the owner is waiting on or relies on; "
@@ -571,6 +572,92 @@ def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_
         "kind": "notice", "recipient": other, "grant": "owner"}
 
 
+# One matter, one item. A word the person asks for about an item (``kind: reminder``) that names a party
+# of that item and shares a word of its matter, due at, before or within ``FOLD_AFTER`` of its deadline,
+# is that item's own word: folded into an item of the same turn, or into an open item the turn listed,
+# never recorded beside it. Before the deadline it is the item's heads-up. It folds only into an item
+# whose own word goes to the same person (no kind, or a reminder); two obligations are never merged.
+REMINDER_KIND = "reminder"
+FOLD_AFTER = timedelta(hours=2)
+# Words that carry no matter of their own: a reminder about X and X share X, not these.
+_MATTER_STOP = frozenset("""
+a an and are as at be been before but by can did do does for from get gets had has have her here him his
+how i if in into is it its let me my no not now of off on or our out she so than that the their them then
+there these they this to up us was we were what when where which who why will with would you your yourself
+owner assistant someone something again later soon today tomorrow tonight time minutes minute hours hour
+days day week due deadline pass passes passed lapse lapses lapsed goes gone quiet word
+send sends sent give gives check checks remind reminds reminder tell tells ask asks chase chases nudge nudges
+flag flags confirm confirms confirmed deliver delivers know hear heard make sure
+""".split())
+
+
+def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set:
+    """The named third parties of an item or a stored row (never the owner or the assistant)."""
+    from protagine.commitments.parties import ASSISTANT, OWNER, party
+    metadata = metadata if isinstance(metadata, dict) else {}
+    values = (item.get("counterpart"), item.get("obligor"), metadata.get("recipient"), metadata.get("counterpart"),
+              metadata.get("obligor"))
+    return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
+
+
+def _matter_words(description: Any, parties: set) -> set:
+    names = {word for name in parties for word in re.findall(r"[^\W_]+", name)}
+    return {word for word in re.findall(r"[^\W_]+", str(description or "").casefold())
+            if len(word) >= 3 and not word.isdigit() and word not in _MATTER_STOP and word not in names}
+
+
+def _same_matter(first: tuple, second: tuple) -> bool:
+    """Two (description, parties) pairs about one matter: a party of one is a party of, or named by, the
+    other, and they share a word of the matter itself."""
+    (first_text, first_parties), (second_text, second_parties) = first, second
+    named = (bool(first_parties & second_parties) or any(_names(name, second_text) for name in first_parties)
+             or any(_names(name, first_text) for name in second_parties))
+    both = first_parties | second_parties
+    return named and bool(_matter_words(first_text, both) & _matter_words(second_text, both))
+
+
+def _folds(prepared: Dict[int, Any], listed: List[Dict[str, Any]]) -> Dict[int, tuple]:
+    """For each word-only item of the turn that is another item's own word: ``("turn", index)`` for an
+    item of the same turn (a substantive one first, else an earlier reminder), ``("listed", row)`` for an
+    open item the prompt listed."""
+    facts = {}
+    for index, entry in prepared.items():
+        if entry is None:
+            continue
+        item, stated = entry[0], entry[1]
+        facts[index] = (str(item.get("description") or ""), _parties_of(item, stated), stated.get("kind") or None,
+                        _utc(item.get("due_at")))
+    folds: Dict[int, tuple] = {}
+    for index, (text, parties, kind, due) in facts.items():
+        if kind != REMINDER_KIND or due is None:
+            continue
+        for other in sorted(facts, key=lambda j: (facts[j][2] == REMINDER_KIND, j)):
+            other_text, other_parties, other_kind, other_due = facts[other]
+            if (other == index or other in folds or other_kind not in (None, REMINDER_KIND) or other_due is None
+                    or (other_kind == REMINDER_KIND and other > index)):
+                continue
+            if due <= other_due + FOLD_AFTER and _same_matter((text, parties), (other_text, other_parties)):
+                folds[index] = ("turn", other)
+                break
+        if index in folds:
+            continue
+        for row in listed:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            row_due = _utc(row.get("due_at"))
+            if (metadata.get("kind") or None) not in (None, REMINDER_KIND) or row_due is None:
+                continue
+            if due <= row_due + FOLD_AFTER and _same_matter(
+                    (text, parties), (str(row.get("description") or ""), _parties_of({}, metadata))):
+                folds[index] = ("listed", row)
+                break
+    return folds
+
+
+def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
+
+
 def _immediate(item: Dict[str, Any], turn_time: Optional[datetime]) -> bool:
     """A message due within ``IMMEDIATE_RELAY`` of its turn: a relay the reply itself passes on."""
     due = _utc(item.get("due_at"))
@@ -625,17 +712,19 @@ def _without_review(item: Any) -> Any:
 
 def owner_reminder(item: Dict[str, Any], metadata: Dict[str, Any], owner_names: Iterable[Any] = ()
                    ) -> Dict[str, Any]:
-    """A case-3 item the owner's words do not ask for, as the owner's own reminder: no message fields, no
-    grant, obligor owner; the contact it was about stays its counterpart."""
+    """A case-3 item the owner's words do not ask for, as the owner's own reminder (``kind: reminder``, a
+    word to the owner when it falls due): no message fields, no grant, obligor owner; the contact it was
+    about stays its counterpart."""
     from protagine.commitments.parties import ASSISTANT, OWNER, party
     names = list(owner_names)
     kept = {key: value for key, value in (metadata or {}).items() if key not in (*MESSAGE_FIELDS, "channel_hint")}
+    kept["kind"] = REMINDER_KIND
     counterpart = item.get("counterpart")
     recipient = metadata.get("recipient") if isinstance(metadata, dict) else None
     if (party(counterpart, owner_names=names) in (None, OWNER, ASSISTANT)
             and party(recipient, owner_names=names) not in (None, OWNER, ASSISTANT)):
         counterpart = recipient
-    return {**item, "metadata": kept or None, "obligor": "owner", "counterpart": counterpart,
+    return {**item, "metadata": kept, "obligor": "owner", "counterpart": counterpart,
             "source_type": "cognition"}
 
 
@@ -758,6 +847,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     different named third parties is an obligation between other people and is never recorded
     (``parties.between_others``): ``owner_names`` are the names the owner goes by besides ``owner_id``,
     ``assistant_names`` the assistant's, and ``speaker_names`` the turn's own person's (one person).
+    One matter is one item (``_folds``): a word the person asks for about an item of the same turn, or
+    about a listed open item, is that item's own word, counted in ``folded``; one due before the item's
+    deadline is its heads-up (written compare-and-set on an open row of the same person).
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
@@ -772,9 +864,38 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     created: List[str] = []
     updated: List[str] = []
     resolved: List[str] = []
-    skipped = ignored = conflicts = others = reminders = 0
+    skipped = ignored = conflicts = others = reminders = folded = 0
     owners = [name for name in (owner_id, *owner_names) if name]
-    for item in items:
+    owner_turn = bool(owner_id) and person_id == owner_id
+    # Every new item as it will be recorded (``None``: a relay the reply passes on), then which of them is
+    # another item's own word (``_folds``); the loop below applies both in the items' order.
+    prepared: Dict[int, Any] = {}
+    for index, item in enumerate(items):
+        if str(item.get("action") or "create").strip().lower() != "create" or not str(item.get("description")
+                                                                                      or "").strip():
+            continue
+        stated = _for_third_party(item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
+                                  item.get("counterpart"), person_id)
+        if stated.get("kind") in MESSAGE_KINDS and _immediate(item, turn_time):
+            prepared[index] = None    # an immediate relay: the foreground turn's job, never a notice or a reminder
+            continue
+        confirmed = converted = False
+        if owner_turn and stated.get("kind") in MESSAGE_KINDS:
+            confirmed = (request_problem(stated, owner_text=owner_text, owner_names=owners) is None
+                         and _confirmed(stated))
+            if not confirmed:
+                # Not the owner's words asking the assistant to contact that person: the owner's own reminder.
+                item = owner_reminder(item, stated, owners)
+                stated, converted = dict(item.get("metadata") or {}), True
+        prepared[index] = (item, stated, confirmed, converted)
+    folds = _folds(prepared, listed)
+    for index, (where, into) in folds.items():
+        due = _utc(prepared[index][0].get("due_at"))
+        if where == "turn":
+            kept = prepared[into][1]
+            if due < _utc(prepared[into][0].get("due_at")) and not _warns(kept):
+                kept["heads_up_at"] = due.isoformat()      # a word before the deadline is its heads-up
+    for index, item in enumerate(items):
         description = str(item.get("description") or "").strip()
         action = str(item.get("action") or "create").strip().lower()
         stated = item.get("metadata") if isinstance(item.get("metadata"), dict) else None
@@ -812,20 +933,28 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             continue
         if not description:
             continue
-        owner_turn = bool(owner_id) and person_id == owner_id
-        stated = _for_third_party(stated, item.get("counterpart"), person_id)
-        if stated.get("kind") in MESSAGE_KINDS and _immediate(item, turn_time):
+        if prepared.get(index) is None:
             ignored += 1       # an immediate relay: the foreground turn's job, never a notice or a reminder
             continue
-        confirmed = False
-        if owner_turn and stated.get("kind") in MESSAGE_KINDS:
-            confirmed = (request_problem(stated, owner_text=owner_text, owner_names=owners) is None
-                         and _confirmed(stated))
-            if not confirmed:
-                # Not the owner's words asking the assistant to contact that person: the owner's own reminder.
-                item = owner_reminder(item, stated, owners)
-                stated = dict(item.get("metadata") or {})
-                reminders += 1
+        item, stated, confirmed, converted = prepared[index]
+        reminders += int(converted)
+        if index in folds:
+            folded += 1
+            where, row = folds[index]
+            due = _utc(item.get("due_at"))
+            if (where == "listed" and row.get("person_id") == person_id and not _warns(row.get("metadata"))
+                    and due < _utc(row.get("due_at"))):
+                # A word before an open item's deadline is its heads-up, written against what was listed.
+                try:
+                    changed = commitment_store.update(row["id"], metadata={"heads_up_at": due.isoformat()},
+                                                      expect={"description": row.get("description"),
+                                                              "due_at": row.get("due_at")})
+                    if changed is not None:
+                        updated.append(changed["id"])
+                except CommitmentConflict:
+                    logger.info("commitment heads-up skipped: the row changed since it was listed")
+                    conflicts += 1
+            continue
         if (str((stated or {}).get("kind") or "") not in ASSISTANT_KINDS
                 and between_others(item.get("obligor"), item.get("counterpart"), owner_names=owners,
                                    assistant_names=assistant_names, same=speaker_names)):
@@ -861,7 +990,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         known.append(norm)
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
             "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
-            "between_others": others, "owner_reminders": reminders}
+            "between_others": others, "owner_reminders": reminders, "folded": folded}
 
 
 def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Optional[Dict[str, Any]]) -> Dict[str, Any]:
