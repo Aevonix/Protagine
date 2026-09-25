@@ -398,3 +398,16 @@ async def test_the_production_writer_finds_the_running_mind_or_does_nothing():
     await result
     assert seen == [{"turn_id": "t", "opt_out": True}]
     assert owner_signal_writer(lambda: None)({"opt_out": True}) is None
+
+
+async def test_a_reply_in_the_same_second_as_the_send_still_answers_it(make):
+    """A turn's time comes to the whole second, the send's to the microsecond: the same second links."""
+    fx = make()
+    await say(fx, "I care a lot about tidal energy.", "t-declare")
+    fx.shift(timedelta(minutes=1, milliseconds=400))
+    fx.found("tidal energy", report("QX-41", "tidal energy"))
+    await fx.tick()
+    row, = fx.outreach_rows()
+    assert fx.store.get(row.id).completed_at.microsecond == 400000
+    fx.now = fx.now.replace(microsecond=0)          # the reply, stamped to the whole second
+    assert (await say(fx, "That tidal energy item you sent: not now.", "t-same", "owner-2"))["linked"] == row.id

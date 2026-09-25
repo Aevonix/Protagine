@@ -1351,6 +1351,8 @@ class Mind:
         for row in self.store.intentions(kind=["message"], since=now - timedelta(hours=o.REPLY_HOURS + 48), limit=500,
                                          recipient=self.owner_id):
             sent_at = _utc(row.completed_at) or _utc(row.created_at)
+            # A turn's time comes to the whole second (the host's ``occurred_at``); so does the send's here.
+            sent_at = sent_at.replace(microsecond=0) if sent_at is not None else None
             if (row.type in OUTREACH_MESSAGES and row.status in {"sent", "uncertain"} and not self._reaction(row)
                     and sent_at is not None and sent_at <= now and now - sent_at <= timedelta(hours=o.REPLY_HOURS)):
                 open_rows.append((sent_at, row))
