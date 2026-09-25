@@ -286,6 +286,9 @@ async def test_a_tool_less_note_is_not_a_finding_and_the_topic_is_still_research
 
 
 async def test_a_topic_that_already_had_a_goal_gets_one_task_and_one_call(fx):
+    # Start on this week's Monday so the 3-day step stays inside the week and the 6-day step leaves it,
+    # whatever weekday the suite runs on (from a Friday, 3 days already crossed into the next ISO week).
+    fx.now = (fx.now - timedelta(days=fx.now.weekday())).replace(hour=12, minute=0, second=0)
     router = DeliberationRouter({"beekeeping": goal("beekeeping", horizon_days=2, tasks=1)})
     fx.mind.router = router
     fx.mind.add_interest("beekeeping")
