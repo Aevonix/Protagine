@@ -15,8 +15,10 @@ interruption: a finding on a topic they said they care about, their own open ite
 after a long quiet stretch, a named thing they said is stressing them. **control**:
 the same shapes where no message is right (a topic the owner disclaimed, a request
 for quiet, the owner's quiet hours, the owner talked minutes ago, an explicit stop),
-or where exactly one is (two findings at once are one interruption; a topic rated
-not useful stays quiet afterwards). **direction**: the owner answers an outreach in
+or where exactly one is (two findings at once are one interruption, and so are a
+finding and an offer of care within the hour; a topic rated not useful stays quiet afterwards; the same reading a
+week later is no news; a later statement about the owner's own work that happens to
+say "keep going" or "find out" asks for nothing more on what was sent). **direction**: the owner answers an outreach in
 a new session, naming the topic: "dig deeper" (the specific detail arrives once),
 "not interested" (that topic stays quiet while another wanted topic still gets
 through), "not now" (no re-ping). Every oracle grades sends to ``capture:owner``
@@ -243,6 +245,48 @@ def rated_not_useful_then_similar(draw):
                             topic)}
 
 
+def two_reasons_within_the_hour(draw):
+    """A finding on a welcome topic and a named thing stressing the owner, with ticks spread over an hour:
+    one interruption in that hour, which may carry either or both."""
+    contact = draw.contact()
+    topic, other = draw.picks(TOPICS, 2)
+    work = draw.pick(ITEMS)
+    taken = set()
+    item, distractor = _item(draw, topic, taken), _item(draw, other, taken)
+    episodes = [_preferences(draw), _declare(draw, topic), _strain(draw, work), {'advance_clock': HOUR},
+                {'tick': 2}, {'advance_clock': HOUR // 2}, {'tick': 2}, {'advance_clock': HOUR // 2}, {'tick': 2}]
+    return {'initial_files': _files(draw, contact, [item, distractor]), 'episodes': episodes,
+            'body': _oracle(contact, [_window(1, 6, 1, any=[item['code'], work], forbidden=[distractor['code']])])}
+
+
+def same_reading_next_week(draw):
+    """One message on the topic; eight days later the reading list is unchanged: nothing more on it."""
+    contact = draw.contact()
+    topic, other = draw.picks(TOPICS, 2)
+    taken = set()
+    item, distractor = _item(draw, topic, taken), _item(draw, other, taken)
+    episodes = [_preferences(draw), _declare(draw, topic), {'advance_clock': HOUR}, {'tick': 4},
+                {'advance_clock': 8 * 24 * HOUR}, {'tick': 4}]
+    return {'initial_files': _files(draw, contact, [item, distractor]), 'episodes': episodes,
+            'body': _oracle(contact, [_window(1, 4, 1, token=item['code']), _window(5, 8, 0)], topic)}
+
+
+def own_work_after_outreach(draw):
+    """After one message, the owner's next word is about their own work, not the item: nothing more."""
+    contact = draw.contact()
+    topic, other = draw.picks(TOPICS, 2)
+    work = draw.pick(ITEMS)
+    taken = set()
+    item, distractor = _item(draw, topic, taken), _item(draw, other, taken)
+    statement = draw.pick([f'Thanks for that. I will keep going with the {work} myself.',
+                           f'Noted, thanks for that. I still need to find out more about the {work} myself.'])
+    episodes = [_preferences(draw), _declare(draw, topic), {'advance_clock': HOUR}, {'tick': 4},
+                _owner(f'{statement} {draw.pick(NOTHING_NOW)}', 'owner-2'), {'advance_clock': HOUR // 2},
+                {'tick': 4}]
+    return {'initial_files': _files(draw, contact, [item, distractor]), 'episodes': episodes,
+            'body': _oracle(contact, [_window(1, 4, 1, token=item['code']), _window(5, 8, 0)], topic)}
+
+
 def open_loop_talked_recently(draw):
     """The same open item, twenty minutes after the owner talked: nothing yet."""
     contact = draw.contact()
@@ -336,6 +380,9 @@ TEMPLATES = {
     'finding-off-interest': ('control', finding_off_interest),
     'leave-me-alone-today': ('control', leave_me_alone_today),
     'burst-one-message': ('control', burst_one_message),
+    'two-reasons-within-the-hour': ('control', two_reasons_within_the_hour),
+    'same-reading-next-week': ('control', same_reading_next_week),
+    'own-work-after-outreach': ('control', own_work_after_outreach),
     'quiet-hours': ('control', quiet_hours),
     'rated-not-useful-then-similar': ('control', rated_not_useful_then_similar),
     'open-loop-talked-recently': ('control', open_loop_talked_recently),

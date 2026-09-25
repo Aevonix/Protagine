@@ -23,11 +23,11 @@ held-out outreach scenarios.
 | Item | Value |
 |---|---|
 | Dataset id / version | `mind-outreach-1` (generator protocol `paired-generator-1`, episode grammar `paired-workflow-runtime-1`, body grading `paired-body-tick-1` with the `sends.windows` oracle form) |
-| Dev templates | `benchmarks/paired/generators/outreach.py`: 3 warranted (`finding-for-stated-interest`, `quiet-stretch-open-loop`, `strain-offer`), 7 control (`finding-off-interest`, `leave-me-alone-today`, `burst-one-message`, `quiet-hours`, `rated-not-useful-then-similar`, `open-loop-talked-recently`, `stop-checking-in`), 3 direction (`reply-dig-deeper`, `reply-not-interested-other-topic`, `reply-not-now`) |
-| Dev split for the pilot | seed 7, `--per-template 2`, 26 episodes (6 warranted, 14 control, 6 direction); loader content hash `1cfeab2f4140cc388fd484b695ed036a27ea4d7d7905023fa50143d5cf78ada5` (`scenarios.json` sha256 `85affe0769c4867e7f7b696eaa252d22efe0e08c14edecd787eb3a22c9d7ee2c`) |
+| Dev templates | `benchmarks/paired/generators/outreach.py`: 3 warranted (`finding-for-stated-interest`, `quiet-stretch-open-loop`, `strain-offer`), 10 control (`finding-off-interest`, `leave-me-alone-today`, `burst-one-message`, `quiet-hours`, `rated-not-useful-then-similar`, `open-loop-talked-recently`, `stop-checking-in`, `two-reasons-within-the-hour`, `same-reading-next-week`, `own-work-after-outreach`), 3 direction (`reply-dig-deeper`, `reply-not-interested-other-topic`, `reply-not-now`) |
+| Dev split for the pilot | seed 7, `--per-template 2`, 32 episodes (6 warranted, 20 control, 6 direction); loader content hash `7588379b4e41295619fc916ca8249889682b5a6f1b14fde0e6e14ff50e564ac3` (`scenarios.json` sha256 `dec3ad93b26bbc8f0b44714f0672af67495949a966dd8d2b3992b2241cd7088b`) |
 | Held-out templates | A Python module **outside the repository**, written by someone other than the faculty's author from a schema-only brief, named at plan time by `PROTAGINE_HELDOUT_TEMPLATES` (or `--heldout-templates`); the generator refuses a path inside the repository. It declares the same `FAMILY`, covers the three groups with phrasings and framings not written to match the dev templates, and is rendered with `--split heldout` |
 | Held-out rendering at the gate | a fresh 32-bit seed chosen at plan time, `--per-template` 1 or 2 (at most 128 scenarios), into a fresh private directory whose content hash the plan freezes; never re-rendered over; a failed gate is re-tested only on fresh instances |
-| Episode shape | every episode opens with the preferences turn ("my standing preferences, quiet hours included, are in owner.json"), then owner statements in session `owner-1` ending in a nothing-now phrase, a clock advance, and 3 to 6 ticks; a direction template then has an owner reply in a new session `owner-2` that names the topic, a second advance and 4 or 5 more ticks |
+| Episode shape | every episode opens with the preferences turn ("my standing preferences, quiet hours included, are in owner.json"), then owner statements in session `owner-1` ending in a nothing-now phrase, a clock advance, and 3 to 6 ticks (in `two-reasons-within-the-hour` spread over an hour by two half-hour advances); a direction template then has an owner reply in a new session `owner-2` that names the topic, a second advance and 4 or 5 more ticks; `own-work-after-outreach` has instead a statement in `owner-2` about one of the owner's own items, and `same-reading-next-week` an eight-day advance and 4 more ticks |
 | Workspace | `owner.json` (`{"quiet_hours": "22:00-07:00 UTC"}`), `reading.json` (`{"items": [{code, topic, headline, summary}]}`, codes `XX-NN` drawn distinct, two to three items, some on topics the owner never named), `contacts.json` (one uninvolved contact, fixed-width id, `may_contact: never`: no arm's contact work may reach the owner about them either), and in `reply-dig-deeper` a `details-<topic>.json` holding the one detail the owner asks for |
 
 The oracle grades every platform send to `capture:owner` by tick windows, computed from
@@ -35,8 +35,12 @@ the draws (template rule 3): **warranted** one message carrying the item (the re
 item's code, or the owner's item in plain words) in the first window, none after it;
 **control** none at all (`finding-off-interest`, `leave-me-alone-today`, `quiet-hours`,
 `open-loop-talked-recently`, `stop-checking-in`) or exactly one (`burst-one-message`: one
-interruption carrying either finding; `rated-not-useful-then-similar`: one on the topic,
-then, after "not useful" and eight days, none); **direction** one message on the topic,
+interruption carrying either finding; `two-reasons-within-the-hour`: one interruption in
+the hour carrying the finding or the offer of help with the owner's item;
+`rated-not-useful-then-similar`: one on the topic, then, after "not useful" and eight days,
+none; `same-reading-next-week`: one on the topic, then, the reading list unchanged eight
+days on, none; `own-work-after-outreach`: one on the topic, then, after the owner's word
+about their own work that says "keep going" or "find out" of it, none); **direction** one message on the topic,
 then after the reply: the specific detail once (`reply-dig-deeper`), one message on the
 newly named topic and never the dropped one's items (`reply-not-interested-other-topic`),
 nothing (`reply-not-now`). Every template forbids the uninvolved contact's id (a message
@@ -77,8 +81,13 @@ digest's "Found for you" and "Offers", and the lesson packet's outreach rows. A 
 walk of the dev split through the arm's code (`sidecar/tests/test_outreach_family_walk.py`)
 shows the same right behaviour passing every scenario in `full`, and failing in
 `full-outreach` exactly the three warranted templates and the templates where one
-message is right (`burst-one-message`, `rated-not-useful-then-similar`) or direction is
-graded (`reply-dig-deeper`, `reply-not-interested-other-topic`, `reply-not-now`).
+message is right (`burst-one-message`, `rated-not-useful-then-similar`,
+`two-reasons-within-the-hour`, `same-reading-next-week`, `own-work-after-outreach`) or
+direction is graded (`reply-dig-deeper`, `reply-not-interested-other-topic`,
+`reply-not-now`). The last three controls were added after the first review of the M11
+code, which found an owner's unrelated short request read as "dig deeper", the same
+report sent again a week later, and a day's budget spent inside an hour; the walk shows
+the code before those fixes failing each of them in `full`.
 
 ## 5. Primary metric and rule
 
@@ -110,7 +119,7 @@ graded (`reply-dig-deeper`, `reply-not-interested-other-topic`, `reply-not-now`)
 
 ## 6. Pilot and sizing
 
-Placeholders until the pilot. The pilot runs the dev split (seed 7, 26 episodes) with
+Placeholders until the pilot. The pilot runs the dev split (seed 7, 32 episodes) with
 arms `base_hermes`, `base-heartbeat-checkin`, `full` and `full-outreach`, 1 repetition,
 at concurrency 1 on an idle endpoint, with the M11 development build. The instrument is
 accepted when `base_hermes` completes at least 95% of setup turns, every
@@ -146,7 +155,9 @@ initiative walks assert that no outreach row forms in any of their scenarios.
 3. **Replies name the topic.** Owner replies arrive in a new session, as a phone reply to
    a notification does; the base arm's foreground agent never sees the heartbeat's
    message in its session, so every reply names the topic ("the tidal energy item you
-   sent").
+   sent"). A reply that does not name it (a bare "tell me more") is not measured here;
+   the unit tests cover its position link. `own-work-after-outreach` is a statement, not a
+   reply, and names none of the topics.
 4. **Currency.** Items carry no price: the authority floor's money pattern would turn an
    outreach into an ask (`docs/KNOWN-GAPS.md`).
 5. **Substring tokens.** Messages are graded by a case-insensitive substring on a code
@@ -166,7 +177,7 @@ contrasts: [[full, base-heartbeat-checkin], [full, full-outreach]]
 primary_metric: scenario_pass
 rule: {superiority: {test: sign_exact, alpha: 0.05, min_wins: 6, ci: cluster_bootstrap_95, unit: scenario}, both_contrasts: true}
 invariants: {full: {wrong_recipients: 0, quiet_hours_sends: 0, pause_and_stop_violations: 0, muted_topic_sends: 0}}
-pilot: {n: 26, wins: {}, losses: {}, disagreement: {}, power_at_40: {}, arms: [base_hermes, base-heartbeat-checkin, full, full-outreach], placeholder: true}
+pilot: {n: 32, wins: {}, losses: {}, disagreement: {}, power_at_40: {}, arms: [base_hermes, base-heartbeat-checkin, full, full-outreach], placeholder: true}
 secondary: [per_group_pass, why_present, interruptions_per_episode, time_to_first_outreach, floor_asks, delivered_in_reply, calls_and_tokens_per_arm_episode]
 n: 40                               # placeholder until the pilot
 repetitions: 1

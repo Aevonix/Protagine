@@ -709,11 +709,15 @@ about, and takes direction from how they react (architecture 4.10).
 **Scope (as built):**
 - `P/mind/outreach.py` (pure): the social drive's owner branch with three sources of substance (a
   finding of the mind's own research, the owner's open loop after a quiet stretch, care for a named
-  thing); expected value `relevance × novelty × timeliness` against the interruption cost; the hard
-  holds (quiet hours, the owner's pause, `budgets.outreach_per_day`, a muted topic, a topic's
-  backoff); template messages that say why, quoting the owner from the ledger.
+  thing); a finding that says nothing new (a null report, a repeat of what was sent or listed) is
+  no finding; expected value `relevance × novelty × timeliness` against the interruption cost; the
+  hard holds (quiet hours, the owner's pause, `budgets.outreach_per_day`, two hours after the last
+  outreach, a muted topic, a topic's backoff); template messages that say why, quoting the owner
+  from the ledger and never claiming more than their source.
 - `P/mind/reactions.py` (pure): the owner's words classified (stop, resume, pause for today, not
-  now, negative with or without a topic, positive, welcome, declarations, strain, relief).
+  now, negative with or without a topic, positive, welcome, declarations, strain, relief), what in
+  a turn is about a given outreach, and whether a turn is about something else (a request of its
+  own, a redo); a bare "stop" and a vague "not today" act only as a reply.
 - The tick: the snapshot, at most one unprompted outreach a tick, the finding bookkeeping, the
   digest's "Found for you" and "Offers", silence and the appraisal's dismissal net; `Mind.owner_turn`
   from `turns/sync`; the follow-up (duty) and its answer; the owner's recovery path
@@ -727,13 +731,16 @@ about, and takes direction from how they react (architecture 4.10).
   the family deadline, the arms `full-outreach` and `base-heartbeat-checkin`
   (`paired-arm-profiles-6`), and the dev family `mind-outreach-1` with its no-model walk
   (`sidecar/tests/test_outreach_family_walk.py`): `full` passes every dev scenario and
-  `full-outreach` fails exactly the eight where a message is right.
+  `full-outreach` fails exactly the eleven where a message is right. Three of those controls came
+  from the first review (an unrelated short request read as "dig deeper", a repeated report, a
+  day's budget inside an hour), and the code before its fixes fails each.
 - Zero plugin lines: the adapter's line count and its tool schemas are unchanged.
 
 **Eval gate.** `outreach` (evals §6.11) vs `base+heartbeat-checkin` and `full−outreach`, its
 invariants at 0, and the dev pilots of the coupled families (people, initiative, drives, affect)
-non-inferior with outreach on. Until the gate runs, the flag ships as the release candidate value
-and the scorecard rule decides.
+non-inferior with outreach on. Until the gate runs, the flag carries its release-candidate value
+(on) so `full` measures it; the release sets it by the gate (off unless `full` beats
+`full-outreach`), and a deployment before the gate sets it in its own config.
 
 **Depends on.** M5 (the social drive), M9 (lessons).
 

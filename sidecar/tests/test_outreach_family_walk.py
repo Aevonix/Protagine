@@ -303,6 +303,7 @@ async def walk(tmp_path, monkeypatch, scenario, profile='full'):
         checks = assess(arm.observed(scenario), scenario['oracle'])
         rows = [row for row in arm.mind.store.intentions(kind=['message'], limit=500) if row.type in OUTREACH_TYPES]
         arm.state = {item['key']: item for item in arm.mind.mind_state.items()}
+        arm.task_rows = arm.mind.store.intentions(kind=['task'], limit=500)
         return arm, checks, rows
 
 
@@ -328,7 +329,7 @@ async def test_the_right_behaviour_meets_every_outreach_oracle_through_the_code(
 # The templates where one message is right: without the faculty the same right behaviour sends nothing.
 FACULTY_TEMPLATES = {'finding-for-stated-interest', 'quiet-stretch-open-loop', 'strain-offer', 'burst-one-message',
                      'rated-not-useful-then-similar', 'reply-dig-deeper', 'reply-not-interested-other-topic',
-                     'reply-not-now'}
+                     'reply-not-now', 'two-reasons-within-the-hour', 'same-reading-next-week', 'own-work-after-outreach'}
 
 
 @pytest.mark.parametrize('scenario', SCENARIOS, ids=[s['id'] for s in SCENARIOS])
@@ -336,3 +337,25 @@ async def test_the_full_outreach_arm_differs_from_full_only_where_the_faculty_ac
     arm, checks, rows = await walk(tmp_path, monkeypatch, scenario, profile='full-outreach')
     assert bool(_failed(checks)) == (scenario['scenario'] in FACULTY_TEMPLATES), (_failed(checks), arm.outbox)
     assert rows == [] and [entry for entry in arm.outbox if entry['via'] == 'platform'] == []
+
+
+GUARDS = [s for s in SCENARIOS if s['scenario'] in {'same-reading-next-week', 'own-work-after-outreach',
+                                                     'two-reasons-within-the-hour'}]
+
+
+@pytest.mark.parametrize('scenario', GUARDS, ids=[s['id'] for s in GUARDS])
+async def test_the_later_controls_reach_what_they_guard(scenario, tmp_path, monkeypatch):
+    """They pass for the right reason: the week-later research ran and was a repeat, the owner's word about
+    their own work linked no outreach and formed no follow-up, and the second reason waited out the hour."""
+    arm, checks, rows = await walk(tmp_path, monkeypatch, scenario)
+    tasks = arm.task_rows
+    states = [((row.result_metadata or {}).get('outreach') or {}).get('state') for row in tasks
+              if row.type == 'research' and row.status == 'done']
+    if scenario['scenario'] == 'same-reading-next-week':
+        assert states.count('sent') == 1 and 'repeat' in states, states
+    elif scenario['scenario'] == 'own-work-after-outreach':
+        assert not [row for row in tasks if row.type == 'outreach_followup']
+        assert all(not (row.result_metadata or {}).get('reaction') for row in rows)
+    else:
+        assert {row.type for row in rows if row.status == 'sent'} <= {'outreach_care', 'outreach_finding'}
+        assert len([row for row in rows if row.status == 'sent']) == 1

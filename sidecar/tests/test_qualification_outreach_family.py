@@ -13,10 +13,12 @@ GENERATORS = Path(__file__).resolve().parents[2] / 'benchmarks' / 'paired' / 'ge
 OUTREACH = GENERATORS / 'outreach.py'
 WARRANTED = {'finding-for-stated-interest', 'quiet-stretch-open-loop', 'strain-offer'}
 CONTROLS = {'finding-off-interest', 'leave-me-alone-today', 'burst-one-message', 'quiet-hours',
-            'rated-not-useful-then-similar', 'open-loop-talked-recently', 'stop-checking-in'}
+            'rated-not-useful-then-similar', 'open-loop-talked-recently', 'stop-checking-in',
+            'two-reasons-within-the-hour', 'same-reading-next-week', 'own-work-after-outreach'}
 DIRECTION = {'reply-dig-deeper', 'reply-not-interested-other-topic', 'reply-not-now'}
 FINDINGS = {'finding-for-stated-interest', 'burst-one-message', 'rated-not-useful-then-similar',
-            'reply-dig-deeper', 'reply-not-interested-other-topic', 'reply-not-now'}
+            'reply-dig-deeper', 'reply-not-interested-other-topic', 'reply-not-now', 'same-reading-next-week',
+            'own-work-after-outreach'}
 CODE = re.compile(r'\b[A-Z]{2}-\d\d\b')
 # Words that would send the agent to a tool during a setup turn.
 TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|look up|search|fetch|remind|open)\b',
@@ -24,10 +26,10 @@ TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|look 
 CURRENCY = re.compile(r'[$€£]|\b(dollars?|euros?|pounds?|payment|invoice|fee|price)\b', re.IGNORECASE)
 # The dev split, per-template 2, for the two recorded seeds. Any edit to outreach.py or
 # generate.py is a new dataset: update these deliberately, with the generators README.
-PINNED_DEV_SPLITS = {7: ('1cfeab2f4140cc388fd484b695ed036a27ea4d7d7905023fa50143d5cf78ada5',
-                          '85affe0769c4867e7f7b696eaa252d22efe0e08c14edecd787eb3a22c9d7ee2c'),
-                     11: ('77d90cb98f5343830eb465f9d5db4959f3fc5225dbd9b9fbc3c274f862cb4b0f',
-                          'f19b78c7a232b01ec32e4d30ea0f04e025cfe4e7264f447c7e54cf5f432dd1e3')}
+PINNED_DEV_SPLITS = {7: ('7588379b4e41295619fc916ca8249889682b5a6f1b14fde0e6e14ff50e564ac3',
+                          'dec3ad93b26bbc8f0b44714f0672af67495949a966dd8d2b3992b2241cd7088b'),
+                     11: ('761a6fda9b50fd5f264877dff48b8f7a84207951b149beae861b2a2d59b10cde',
+                          '2884b70298cb3cd098c0b4a75d66e40530aeb72fcce804ccb4ba42773876263b')}
 PER_TEMPLATE = 2
 
 
@@ -67,7 +69,7 @@ def test_family_shape_groups_and_fixed_width_contacts(generate):
     module, scenarios = outreach(generate)
     assert module.FAMILY == 'mind-outreach-1' and generate.FAMILIES['outreach'] == OUTREACH
     assert {item['scenario'] for item in scenarios} == WARRANTED | CONTROLS | DIRECTION
-    assert len(scenarios) == 13 * PER_TEMPLATE and len({item['id'] for item in scenarios}) == len(scenarios)
+    assert len(scenarios) == 16 * PER_TEMPLATE and len({item['id'] for item in scenarios}) == len(scenarios)
     by_group = {group: {item['scenario'] for item in scenarios if item['family'] == group}
                 for group in ('warranted', 'control', 'direction')}
     assert by_group == {'warranted': WARRANTED, 'control': CONTROLS, 'direction': DIRECTION}
@@ -101,6 +103,11 @@ def test_setup_turns_are_statements_and_replies_name_the_topic(generate):
             assert not TOOL_WORDS.search(text), (item['id'], text)
             assert '?' not in text, 'no turn asks the agent anything'
             if session == 'owner-1':
+                assert any(text.endswith(phrase) for phrase in module.NOTHING_NOW), text
+            elif item['scenario'] == 'own-work-after-outreach':
+                # A later statement about the owner's own work: it names one of their items and no topic.
+                assert any(name in text for name in module.ITEMS), text
+                assert not any(topic in text for topic in module.TOPICS), text
                 assert any(text.endswith(phrase) for phrase in module.NOTHING_NOW), text
             else:
                 # A reply comes in a new session and names the topic of what was sent.
@@ -149,6 +156,18 @@ def test_oracles_come_from_the_same_draws_as_the_turns(generate):
             assert 12 * 3600 + advanced == 22 * 3600 + 1800, 'the ticks fall at 22:30, inside 22:00-07:00'
         if name == 'rated-not-useful-then-similar':
             assert spans[1] == {'ticks': [5, 8], 'count': 0}
+        if name == 'two-reasons-within-the-hour':
+            # A finding and an offer of care, the ticks spread over an hour, never at one instant: one message.
+            assert [entry['advance_clock'] for entry in item['episodes'] if 'advance_clock' in entry][1:] == [1800, 1800]
+            assert len(spans) == 1 and spans[0]['ticks'] == [1, 6] and spans[0]['count'] == 1
+            code, work = spans[0]['any']
+            assert by_code[code] in turns and work in module.ITEMS and work in turns
+            assert all(by_code[forbidden] not in turns for forbidden in spans[0]['forbidden'])
+        if name == 'same-reading-next-week':
+            assert spans[1] == {'ticks': [5, 8], 'count': 0}
+            assert max(entry.get('advance_clock', 0) for entry in item['episodes']) == 8 * 24 * 3600
+        if name == 'own-work-after-outreach':
+            assert spans[1] == {'ticks': [5, 8], 'count': 0}
         if name == 'reply-dig-deeper':
             detail_file = next(raw for key, raw in item['initial_files'].items() if key.startswith('details-'))
             detail = json.loads(detail_file)
@@ -171,7 +190,7 @@ def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
         assert hashlib.sha256(scenarios).hexdigest() == scenario_sha, f'seed {seed} scenarios changed'
         assert written == content, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest = json.loads((tmp_path / str(seed) / 'manifest.json').read_text())
-        assert manifest['families'] == {'warranted': 6, 'control': 14, 'direction': 6}
+        assert manifest['families'] == {'warranted': 6, 'control': 20, 'direction': 6}
 
 
 def test_gate_arms_are_built_in_and_the_dataset_builds_cases_with_the_family_instrument(generate, tmp_path):
