@@ -250,6 +250,17 @@ SYSTEM = (
     '"obligor":null}]\n'
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
     "[]   (a stall on a listed item changes nothing)")
+# The HOLD rule above is for a listed item. A first mention the person wants no reminder about is held from the
+# start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it).
+SYSTEM += (
+    "\n\nA NEW item whose turn says the person wants NO reminder or chasing about it (\"no reminders\", \"don't "
+    "remind me\", \"no need to chase me on it\", however they put it) is a HOLD from its first mention: "
+    "\"create\" it with due_at null and no heads-up, never a reminder.\n"
+    "They said: The parcel receipt for p-05 is due in 20 minutes; I am handling it myself. No reminders about it. "
+    "| Assistant replied: Understood.\n"
+    '[{"action":"create","target":null,"description":"Send p-05 the parcel receipt","due_at":null,"priority":70,'
+    '"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"p-05","obligor":"owner"}]'
+    "   (held: no reminder was wanted)")
 
 ITEM_SCHEMA = {
     "type": "object",

@@ -30,7 +30,8 @@ The design is in
    previous turns of the last hour for context, and a later message that
    changes one is an action on it rather than a new row: `reschedule`
    (earlier or later; with no time it is a hold, the deadline is cleared and
-   the item stays open), `complete` or `cancel` (resolved `done` or
+   the item stays open; a first mention the person wants no reminder about is
+   created held, with no time), `complete` or `cancel` (resolved `done` or
    `obsolete` by `conversation`). On the owner's turns the owner's open
    interests (what curiosity would research) are listed after the items,
    numbered on from them, and a `complete` (answered) or `cancel` (no longer
