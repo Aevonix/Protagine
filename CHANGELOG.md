@@ -16,9 +16,11 @@ schema and validation) confirms against the owner's whole message that the words
 itself to tell, ask or chase them. The grant is that confirmation; the row keeps the quote and the
 decision. Anything short of it is the owner's own reminder: an unsaid quote, one that does not name the
 recipient, a refused or failed review, a review the model wrote itself, and a recipient that is the owner
-(never reviewed, never asked about). On the drive side a notice or check-in row on the owner's lane the
-mind may not send (unconfirmed, addressed to the owner, or the people faculty off) is the owner's
-reminder when due, never a worker's task.
+(never reviewed, never asked about). On the drive side a grant counts only on a row carrying that
+confirmed request (`extract.request_confirmed`), so a row granted before the review existed is never
+sent once the people faculty is back on; a notice or check-in row on the owner's lane the mind may not
+send (unconfirmed, addressed to the owner, or the people faculty off) is the owner's reminder when due,
+never a worker's task.
 
 **An obligation's action reaches the person it is owed to.** A word the person asked for is recorded as
 `metadata.kind: reminder`, a message when due whoever the extractor names as obligor. A task formed for an

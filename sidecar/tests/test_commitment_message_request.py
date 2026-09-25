@@ -385,3 +385,20 @@ async def test_end_to_end_a_word_for_the_owner_never_reaches_the_contact(make):
     assert [entry["type"] for entry in formed] == ["commitment_reminder"]
     assert [payload["recipient"] for payload in sent] == [FX_OWNER]
     assert fx.messages_to(FLORIST_ID) == []
+
+
+def test_a_stored_grant_the_owners_words_never_stood_behind_is_never_sent(tmp_path):
+    """A row granted before the review existed (or by any other writer) carries ``grant: owner`` but no
+    confirmed request: once the people faculty is back on, it is the owner's reminder when due, never a
+    message to the contact and never a question about who they are."""
+    store = CommitmentStore(db_path=tmp_path / "c.db")
+    for recipient_id in (FLORIST, None):
+        metadata = {"kind": "check_in", "recipient": FLORIST, "topic": "the quote", "grant": "owner",
+                    "obligor": "assistant", "counterpart": FLORIST}
+        if recipient_id:
+            metadata.update(recipient_id=recipient_id, recipient_exact=True)
+        store.create(person_id=OWNER, description=f"Chase {FLORIST} for the flower quote ({recipient_id})",
+                     priority=70, due_at=(_now() + timedelta(minutes=30)).isoformat(), source_type="cognition",
+                     metadata=metadata)
+    candidates = _due(store)
+    assert sorted((c.type, c.recipient) for c in candidates) == [("commitment_reminder", OWNER)] * 2

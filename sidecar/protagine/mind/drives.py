@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from protagine.commitments.extract import request_confirmed
 from protagine.commitments.parties import ASSISTANT_KINDS, between_others, party
 from protagine.contacts.comms import evaluate_outreach
 
@@ -205,8 +206,8 @@ def granted_message(row: Dict[str, Any], *, owner_id: str | None) -> Optional[Tu
     party. A notice without words is an ordinary commitment too."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     kind = str(metadata.get("kind") or "")
-    if kind not in GRANTED_KINDS or metadata.get("grant") != "owner":
-        return None
+    if kind not in GRANTED_KINDS or metadata.get("grant") != "owner" or not request_confirmed(metadata):
+        return None      # no grant, or one the owner's confirmed words never stood behind
     if not owner_id or str(row.get("person_id") or "") != owner_id:
         return None
     if names_owner(metadata.get("recipient"), owner_id):
@@ -239,7 +240,8 @@ def unresolved_recipient(row: Dict[str, Any], *, owner_id: str | None) -> Option
     resolved to a contact yet."""
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     kind = str(metadata.get("kind") or "")
-    if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"))
+    if (not (kind == CADENCE_KIND or (kind in GRANTED_KINDS and metadata.get("grant") == "owner"
+                                      and request_confirmed(metadata)))
             or not owner_id or str(row.get("person_id") or "") != owner_id
             or str(metadata.get("recipient_id") or "").strip() or names_owner(metadata.get("recipient"), owner_id)):
         return None

@@ -21,6 +21,7 @@ from protagine.initiatives.store import InitiativeStore
 from protagine.mind import Mind
 from protagine.qualification import native_memory_worker as worker
 from protagine.turns import TurnIdempotencyLedger
+from test_mind_social import confirmed
 
 # These drive the paired worker in-process, and the worker runs inside Hermes. The sidecar's own test run has
 # no Hermes and skips them; CI runs them in a second step with stock Hermes installed.
@@ -107,8 +108,8 @@ async def test_invariant_episode_two_a_never_contact_under_every_reason_gets_not
     now = worker.mind_clock()
     arm.commitments.create(person_id=arm.owner, description="Tell p-07 the venue moved",
                            due_at=(now + timedelta(minutes=5)).isoformat(), source_type="cognition",
-                           metadata={"kind": "notice", "recipient": "p-07", "content": "The venue moved.",
-                                     "grant": "owner", "obligor": "assistant", "counterpart": "p-07"})
+                           metadata=confirmed({"kind": "notice", "recipient": "p-07", "content": "The venue moved.",
+                                               "grant": "owner", "obligor": "assistant", "counterpart": "p-07"}))
     arm.commitments.create(person_id=blocked.contact_id, description="p-07 sends the signed form",
                            due_at=(now + timedelta(minutes=5)).isoformat(), source_type="cognition",
                            metadata={"obligor": "p-07", "counterpart": "owner"})

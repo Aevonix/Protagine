@@ -710,6 +710,13 @@ def request_problem(metadata: Dict[str, Any], *, owner_text: Optional[str], owne
     return None
 
 
+def request_confirmed(metadata: Dict[str, Any]) -> bool:
+    """True when a case-3 message stands on the owner's confirmed request: the review kept this very request
+    (the recipient and the quote it judged are the row's). The drive asks it of a stored row before it
+    sends, so a row granted before the review existed, or by any other writer, is the owner's reminder."""
+    return isinstance(metadata, dict) and _confirmed(metadata)
+
+
 def _confirmed(metadata: Dict[str, Any]) -> bool:
     """True when the review kept this very request: the recipient and the quote it judged are the row's."""
     review = metadata.get("request_review")
@@ -1474,4 +1481,4 @@ __all__ = ["ACTIONS", "BACKOFF_SECONDS", "CADENCE_KIND", "CommitmentExtractor", 
            "MESSAGE_KINDS", "OPEN_ITEMS_LISTED", "OUTPUT_BUDGET_TOKENS", "REQUEST_REVIEW_SYSTEM", "REQUEST_REVIEW_VERSION",
            "RESPONSE_SCHEMA", "SYSTEM", "TASK", "build_prompt", "contact_aliases", "enqueue", "erase_removed",
            "initialize", "listed_first", "message_metadata", "names_owner", "owner_reminder", "parse_items",
-           "record_items", "request_problem", "review_message_requests"]
+           "record_items", "request_confirmed", "request_problem", "review_message_requests"]

@@ -81,7 +81,8 @@ The design is in
    of that ("tell me / let me know / flag it to me if it lapses", a recipient
    that is the owner, a refused or failed review) is the owner's own reminder
    (`kind: reminder`, obligor `owner`); the row keeps the quote and the
-   review's decision. Only the owner's own turn keeps the grant; the same
+   review's decision, and the duty drive sends only a row that carries them
+   (a grant stored before the review existed is the owner's reminder). Only the owner's own turn keeps the grant; the same
    shape from a contact is an ordinary item.
    A word the person asked for (a reminder, a nudge, a word if something has
    not happened) is `kind: reminder`: a message when due, never a task. A

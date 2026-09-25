@@ -21,7 +21,7 @@ from protagine.commitments import extract
 from protagine.commitments.extract import CommitmentExtractor, record_items
 from protagine.commitments.store import CommitmentStore
 from protagine.mind.drives import DriveInputs, commitment_candidate, duty
-from test_mind_social import C, CONTACT, OTHER, OWNER, PAST, T0, contact, make  # noqa: F401  (pytest fixture)
+from test_mind_social import C, CONTACT, OTHER, OWNER, PAST, T0, confirmed, contact, make  # noqa: F401  (pytest fixture)
 
 NOTICE = {"action": "create", "target": None, "description": f"Tell {CONTACT} the parcel is late", "priority": 70,
           "due_at": (T0 + timedelta(minutes=30)).isoformat(), "source_type": "cognition", "listed_due": None,
@@ -182,7 +182,7 @@ def test_a_notice_without_words_is_the_owners_reminder(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _row(ident, item, *, recipient_id=CONTACT, due=T0 - timedelta(minutes=5)):
-    metadata = dict(item["metadata"], counterpart=item["counterpart"], obligor=item["obligor"])
+    metadata = confirmed(dict(item["metadata"], counterpart=item["counterpart"], obligor=item["obligor"]))
     if recipient_id:
         metadata.update(recipient_id=recipient_id, recipient_exact=True)   # as the tick resolves an id
     return {"id": ident, "person_id": OWNER, "description": item["description"], "priority": 70, "status": "overdue",
@@ -225,7 +225,8 @@ def test_an_unresolved_recipient_becomes_an_owner_ask_instead():
 # ---------------------------------------------------------------------------
 
 def _seed(fx, item, **overrides):
-    metadata = {**item["metadata"], "counterpart": item["counterpart"], "obligor": item["obligor"], **overrides}
+    metadata = confirmed({**item["metadata"], "counterpart": item["counterpart"], "obligor": item["obligor"],
+                          **overrides})
     return fx.commitments.create(person_id=OWNER, description=item["description"], due_at=(fx.now + C).isoformat(),
                                  source_type="cognition", metadata=metadata)
 
@@ -423,7 +424,7 @@ async def test_an_approved_notice_is_not_sent_after_the_recipient_opts_out(make)
     fx.now = T0.replace(hour=22, minute=30)
     fx.commitments.create(person_id=OWNER, description=NOTICE["description"],
                           due_at=(fx.now + timedelta(minutes=10)).isoformat(), source_type="cognition",
-                          metadata={**NOTICE["metadata"], "counterpart": CONTACT, "obligor": "assistant"})
+                          metadata=confirmed({**NOTICE["metadata"], "counterpart": CONTACT, "obligor": "assistant"}))
     fx.shift(timedelta(minutes=10) + PAST)
     formed, = (await fx.tick())["formed"]
     assert formed["type"] == "commitment_notice" and formed["status"] == "approved"
