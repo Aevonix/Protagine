@@ -333,6 +333,8 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
         generous = dataset_version == WORKFLOW_VERSION or split is not None
         timeout_seconds = (GENERATED_DEADLINE_SECONDS.get(dataset_version, 600) if split is not None
                            else 600 if generous else 120 * len(scenario['episodes']) + 30)
+        if split is not None and dataset_version in GENERATED_DEADLINE_SECONDS:
+            inputs['family_deadline'] = timeout_seconds
         max_output_bytes = 1048576 if generous else 262144
         if split is not None and validate_probes(scenario):
             days = campaign_days(scenario['episodes'])

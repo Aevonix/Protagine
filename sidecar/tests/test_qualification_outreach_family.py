@@ -270,3 +270,18 @@ def test_rendered_oracles_pass_the_expected_outcome_and_fail_one_fault_per_scena
         if any(window.get('forbidden') for window in windows(item)):
             leaked = paired_cases.assess(observe(item, 'leak'), oracle)
             assert leaked[sends] is False, item['id']
+
+
+def test_a_declared_family_deadline_passes_the_case_record_and_an_undeclared_one_does_not(generate, tmp_path):
+    # The outreach family's 1,200 s episodes were refused by CaseSpec.record's 600 s case bound at plan time.
+    import dataclasses
+    from protagine.qualification.records import MAX_FAMILY_SECONDS
+    generate.write(tmp_path / 'fam', generate.load_templates(OUTREACH), 3, 'dev', 1, OUTREACH)
+    profiles = paired.validate_profiles(None)
+    case = paired_cases.cases('full', dataset_dir=tmp_path / 'fam', profile={'name': 'full', **profiles['full']})[0]
+    assert case.inputs['family_deadline'] == 1200 and case.record()['timeout_seconds'] == 1200
+    undeclared = dataclasses.replace(case, inputs={k: v for k, v in case.inputs.items() if k != 'family_deadline'})
+    with pytest.raises(ValueError):
+        undeclared.record()
+    with pytest.raises(ValueError):
+        dataclasses.replace(case, timeout_seconds=MAX_FAMILY_SECONDS + 1).record()
