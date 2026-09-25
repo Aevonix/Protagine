@@ -890,6 +890,34 @@ class CommitmentStore:
                 out.append(item)
         return out
 
+    def get_open_involving(self, aliases: List[str]) -> List[Dict[str, Any]]:
+        """Open items, anyone's, that name one of ``aliases`` as a party: the counterpart, the obligor
+        or the recipient of a message, compared in the normalized form used for wording. The contact
+        turn's context reads the owner's items with that contact through this."""
+        wanted = {_normalize_desc(str(alias)) for alias in aliases if str(alias or "").strip()}
+        wanted.discard("")
+        if not wanted:
+            return []
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """SELECT * FROM commitments
+                       WHERE status IN ('pending', 'overdue') AND metadata IS NOT NULL
+                       ORDER BY due_at IS NULL, due_at ASC, priority DESC""",
+                ).fetchall()
+            finally:
+                conn.close()
+        out = []
+        for row in rows:
+            item = self._row_to_dict(row)
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            names = {_normalize_desc(str(metadata.get(key))) for key in ("counterpart", "obligor", "recipient")
+                     if isinstance(metadata.get(key), str)}
+            if names & wanted:
+                out.append(item)
+        return out
+
     def _find_open_duplicate(self, conn, person_id, description):
         norm = _normalize_desc(description)
         if not norm:
