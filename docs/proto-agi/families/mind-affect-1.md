@@ -6,7 +6,7 @@ line, whose built-in arm profiles replace the pilot's overlay file for the two g
 pilot and its n are placeholders until the M6 development build lands (section 6); the gate's
 own numbers land in the run's report, never here. 2026-09-24: the mechanism arm is a built-in
 profile (`full-affect-plus-rules`, switch `plus_affect_rules`); no arm is declared in a file.
-2026-09-24, after the dev pilot (i2ac): the mechanism rule was applied to the dev results (rules
+2026-09-24, after the dev pilot: the mechanism rule was applied to the dev results (rules
 6/6, 5/6, 2/3 against the state's 4/6, 3/6, 0/3 on overload, priority and aggregate), so with only
 the affect flag on the `overload` and `priority` consumers now read the rule table
 (`affect_rules.RULE_CONSUMERS`); `strategy_switch` and `satiation` keep the state, which also stays

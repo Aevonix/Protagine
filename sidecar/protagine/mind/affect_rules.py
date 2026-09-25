@@ -14,7 +14,7 @@ from datetime import timedelta
 
 from .affect import CONSUMERS, SWITCH_FAILURES, AffectInputs, AffectView, dismissals_of, failure_record, load_of
 
-# 2026-09-24, the affect dev pilot (i2ac): the rules arm tied or beat the decaying state on every measured
+# 2026-09-24, the affect dev pilot: the rules arm tied or beat the decaying state on every measured
 # consumer (overload 6/6 vs 4/6, priority 5/6 vs 3/6, aggregate 2/3 vs 0/3; the aggregate template holds a
 # nudge under load and orders the work, so it reads overload and priority). Those consumers read the rule;
 # strategy_switch and satiation are not measured yet and keep the state.
