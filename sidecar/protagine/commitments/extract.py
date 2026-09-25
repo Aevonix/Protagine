@@ -64,10 +64,11 @@ TASK = "commitment_extract"
 ACTIONS = ("create", "reschedule", "complete", "cancel")
 # Open items the prompt numbers; an action's ``target`` indexes this list.
 OPEN_ITEMS_LISTED = 12
-# The reasoning model spends its budget in the thinking field before the
-# JSON; complete outputs observed so far were 97-324 tokens, and the router
-# clamps to the tier's maximum anyway.
-OUTPUT_BUDGET_TOKENS = 1500
+# The reasoning model spends its budget in the thinking field before the JSON. In the second re-pilot a
+# 1,500-token budget cut off 16 of 60 extractions (median completion 806 tokens; thinking up to 6,033
+# characters, about 1,700 tokens) and lost two owner turns after three attempts. This fits that thinking
+# and a long turn's answer (test_commitment_capture_budget); the router clamps to the tier's maximum anyway.
+OUTPUT_BUDGET_TOKENS = 4096
 # Earlier turns shown with the audited turn, so an amendment ("make that
 # noon") or an acceptance ("fine, I'll do it") is judged with its referent.
 CONTEXT_TURNS, CONTEXT_WINDOW_SECONDS, CONTEXT_CHARS = 3, 3600, 3000
@@ -83,141 +84,118 @@ HOLD_RETRY_SECONDS = 15
 POLL_SECONDS = 0.1
 
 SYSTEM = (
-    "You audit ONE finished assistant turn and extract any follow-up worth recording, as STRICT JSON.\n"
-    "You get what the person SAID and what the assistant REPLIED, the recent conversation before it, and the "
-    "person's already-recorded OPEN items, numbered. The Speaker line says who the person is: the assistant's "
-    "owner, or a contact (with the contact's id). Decide only from the literal words.\n\n"
+    "You audit ONE finished assistant turn and extract any follow-up worth recording, as STRICT JSON. You get what "
+    "the person SAID and what the assistant REPLIED, the recent conversation before it, and the person's "
+    "already-recorded OPEN items, numbered. The Speaker line says who the person is: the assistant's owner, or a "
+    "contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
-    "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later "
-    "(\"remind me to X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\"). "
-    "When all that is owed at that time is a word to the person (a reminder, a nudge, a word if something has not "
-    "happened), metadata is {\"kind\":\"reminder\"}: a message when it falls due, never a task, whoever does the "
-    "underlying work.\n"
-    "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the "
-    "reply did NOT satisfy (email it, text it to their other number, send it later), AND the actual content to "
-    "send is present in the exchange. IMPORTANT: in a chat the assistant's reply already IS a message to the "
-    "person, so a plain \"text me\"/\"message me\" is ALREADY satisfied; do NOT record that; only record a "
-    "deliverable for a genuinely different channel or time. Anything for SOMEONE ELSE is case 3, never case 2.\n"
-    "3. A MESSAGE TO A THIRD PARTY LATER: the person asks YOU to tell, ask or chase a named contact at a later "
-    "time, or if something has not happened by a time. Record it with due_at = that time, obligor \"assistant\", "
-    "counterpart = that contact, and metadata "
-    '{"kind":"notice","recipient":"<contact as named>","content":"<the words the person wants delivered, ready '
-    'as-is>","asked":"<the person\'s exact words asking you to contact them, naming them>","grant":"owner"} when '
-    'the person dictates what to say, or {"kind":"check_in","recipient":"<contact as named>","topic":"<the matter, '
-    'at most 6 words>","asked":"<the same>","grant":"owner"} '
-    "when the person asks you to check on, chase or ask them about something. content is only the person's own "
-    "words for the contact, never your paraphrase. The topic names the matter only: "
-    "never figures, amounts, codes or reasons. Record it unless the reply shows it already went to them. A message "
-    "the person wants passed on NOW is the reply's own job (the assistant sends it in the turn): record nothing for "
-    "it. A check-in that repeats (every N minutes, hours or days) is case 4, never case 3. A word the person wants "
-    "for THEMSELVES (\"tell me\", \"let me know\", \"flag it to me\", \"remind me\" if something has not "
-    "happened) names the person, not the contact: it is case 1, their reminder, never case 3, even when it is "
-    "about a contact's promise.\n"
-    "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: the person says a named contact is to be checked in "
-    "with (or on) every N minutes, hours or days, usually about a matter. Record it with due_at null, obligor "
-    "\"assistant\", counterpart = that contact, and metadata "
-    '{"kind":"cadence","recipient":"<contact as named>","topic":"<the matter, at most 6 words>",'
+    "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later (\"remind me to "
+    "X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\"). When all that is owed then is a word to the "
+    "person (a reminder, a nudge, a word if something has not happened), metadata is {\"kind\":\"reminder\"}: a "
+    "message when it falls due, never a task, whoever does the underlying work.\n"
+    "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the reply "
+    "did NOT satisfy (email it, text it to their other number, send it later) AND the content to send is in the "
+    "exchange. A chat reply already IS a message to the person, so a plain \"text me\" is satisfied: record nothing "
+    "for it. Anything for SOMEONE ELSE is case 3, never case 2.\n"
+    "3. A MESSAGE TO A THIRD PARTY LATER: the person asks YOU to tell, ask or chase a named contact at a later time, "
+    "or if something has not happened by a time. due_at = that time, obligor \"assistant\", counterpart = that "
+    "contact, metadata "
+    '{"kind":"notice","recipient":"<contact as named>","content":"<their words for the contact, ready as-is, never '
+    'your paraphrase>","asked":"<their exact words asking you to contact them, naming them>","grant":"owner"} when '
+    'they dictate what to say, else {"kind":"check_in","recipient":"<contact as named>","topic":"<the matter in at '
+    'most 6 words: no figures, amounts, codes or reasons>","asked":"<the same>","grant":"owner"}. Record it unless '
+    "the reply shows it already went to them. A message to pass on NOW is the reply's own job (it is sent in the "
+    "turn): record nothing. A check-in that repeats is case 4, never case 3. A word the person wants for THEMSELVES "
+    "(\"tell me\", \"let me know\", \"flag it to me\", \"remind me\" if something has not happened) names the person, "
+    "not the contact: case 1, their reminder, never case 3, even about a contact's promise.\n"
+    "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: a named contact is to be checked in with (or on) every N "
+    "minutes, hours or days, usually about a matter. due_at null, obligor \"assistant\", counterpart = that contact, "
+    'metadata {"kind":"cadence","recipient":"<contact as named>","topic":"<the matter, at most 6 words>",'
     '"cadence_minutes":<N in minutes>}. It records the rhythm and the matter only and never grants permission to '
-    "message them, whatever the turn says about permission: it has no grant.\n\n"
-    "Record an UPDATE to a numbered open item (action \"reschedule\", \"complete\" or \"cancel\", target = its "
-    "number, description = its listed wording EXACTLY as shown, listed_due = the due time shown next to it, or null "
-    "when it showed \"no due\") when the turn changes it. An update whose wording or listed_due does not match the "
-    "numbered item is discarded, so copy both from the list. An update is never a new item:\n"
-    "- A new time for a listed item, EARLIER or LATER, is \"reschedule\" with the new due_at.\n"
-    "- The person saying it is done, sent or handled, or the other party (also relayed in an inbound message) "
-    "confirming they have it, that someone else did it, or that they no longer need it, is \"complete\" "
-    "(it happened) or \"cancel\" (no longer wanted).\n"
-    "- A stall (\"not yet\", \"still on it\") or a partial update (one part done, the rest pending) about a "
-    "NUMBERED item is NEITHER: record nothing for it. A status line about an obligation that is NOT on the "
-    "numbered list (how it stands: pending, not started, still owed) is its first mention: when it is one of "
-    "1-4, record it as a NEW item like any other; when the list says more open items are not listed, record "
-    "nothing for it (it may be one of them).\n"
-    "- \"Do not remind me about X for now\" / \"park X, I'll say when it is live again\" is a HOLD: \"reschedule\" "
-    "the listed item with due_at null. A hold is never a reminder and never a cancel. Reinstating a held item "
-    "(\"remind me about X again, at T\") is \"reschedule\" with the new time, not a new item.\n\n"
-    "due_at: resolve relative and clock times against the turn time and the local time shown with it (a bare "
-    "\"3pm\" is 3pm in that zone) and write due_at in UTC. No clear time means due_at null. Something "
-    "that should happen only if another event happens first (\"only if they write again\") gets due_at null. "
-    "Two deliverables or two dates in one turn are two items. When the person asks for a word BEFORE a deadline "
-    "(\"give me a heads-up ten minutes before\", \"warn me at half three\"), due_at stays the deadline and metadata is "
-    '{"heads_up_at": "<ISO-8601-UTC>"} (or {"lead_minutes": N}); the heads-up is part of that one item, '
-    "never a second one. A reminder or nudge they want at or after an item's deadline (if it passes, if they go "
-    "quiet) is that item's own word, never a second item: for a listed item there is nothing new to record.\n"
-    "counterpart: for a NEW item, the other party, the one it is owed to or who owes it, written exactly as the "
-    "conversation identifies them (a contact id such as p-07, a name, or a handle); \"owner\" when the other party is "
-    "the assistant's owner and no name is given, as for a contact's promise the owner is waiting on or relies on; "
-    "null when there is no other party. An obligation between two other people names the other of the two, never "
-    "\"owner\". null for every update.\n"
-    "obligor: for a NEW item, who owes the work: \"owner\" when the assistant's owner owes it themselves (their "
-    "own promise, a reminder they asked for, a word they want if something does not turn up); "
-    "\"assistant\" when the assistant took the work on (\"I'll send you X by 3pm\", a deliverable, a chase the "
-    "owner handed to the assistant: \"ask them yourself, leave me out of it\"); otherwise the other party who "
-    "promised it, written as counterpart is (a contact who is the Speaker and promises something: their contact "
-    "id). null for every update.\n"
-    "Do NOT record small talk, questions, hypotheticals, vague intentions, an obligation between OTHER people "
-    "that neither the owner nor the assistant owes or is owed, or anything the reply already fully handled. A "
-    "dated request that came from someone else (in the recent conversation or an inbound message) and that the "
-    "person now takes on IS the person's commitment with that deadline, whatever the assistant replied. Fewer "
+    "message them, whatever the turn says: it has no grant.\n\n"
+    "Record an UPDATE to a numbered open item (action \"reschedule\", \"complete\" or \"cancel\", target = its number, "
+    "description = its listed wording EXACTLY, listed_due = the due time shown next to it, or null for \"no due\") "
+    "when the turn changes it; wording or listed_due that do not match the item discard the update. An update is "
+    "never a new item:\n"
+    "- A new time, EARLIER or LATER, is \"reschedule\" with the new due_at.\n"
+    "- Done, sent or handled (said by the person, or by the other party, also in a relayed inbound message: they "
+    "have it, someone else did it, they no longer need it) is \"complete\" (it happened) or \"cancel\" (no longer "
+    "wanted).\n"
+    "- A stall (\"not yet\", \"still on it\") or a partial update about a NUMBERED item is NEITHER: record nothing for "
+    "it. A status line about an obligation NOT on the numbered list (pending, not started, still owed) is its first "
+    "mention: when it is one of 1-4, record it as a NEW item; when the list says more open items are not listed, "
+    "record nothing for it (it may be one of them).\n"
+    "- \"Do not remind me about X for now\" / \"park X\" is a HOLD: \"reschedule\" with due_at null, never a reminder "
+    "or a cancel. Reinstating it (\"remind me about X again, at T\") is \"reschedule\" with the new time.\n\n"
+    "due_at: resolve relative and clock times against the turn time and its local time (a bare \"3pm\" is 3pm in "
+    "that zone), written in UTC; no clear time, or only if another event happens first (\"only if they write "
+    "again\"), is null. Two deliverables or two dates in one turn are two items. A word BEFORE a deadline (\"give me "
+    "a heads-up ten minutes before\") keeps due_at at the deadline with metadata "
+    '{"heads_up_at": "<ISO-8601-UTC>"} (or {"lead_minutes": N}): part of that one item, never a second one. A '
+    "reminder or nudge wanted at or after an item's deadline (if it passes, if they go quiet) is that item's own "
+    "word, never a second item: for a listed item there is nothing new to record.\n"
+    "counterpart (NEW items; null for updates): the other party, owed to or owing, written as the conversation "
+    "identifies them (a contact id such as p-07, a name, a handle); \"owner\" for the assistant's owner when no name "
+    "is given, as for a contact's promise the owner is waiting on or relies on; null when there is none. An "
+    "obligation between two other people names the other of the two, never \"owner\".\n"
+    "obligor (NEW items; null for updates): who owes the work: \"owner\" for the owner's own promise, a reminder they "
+    "asked for, a word they want if something does not turn up; \"assistant\" for work the assistant took on (\"I'll "
+    "send you X by 3pm\", a deliverable, a chase handed over: \"ask them yourself\"); otherwise the party who "
+    "promised it, written as counterpart is (a contact who is the Speaker and promises: their contact id).\n"
+    "Do NOT record small talk, questions, hypotheticals, vague intentions, an obligation between OTHER people that "
+    "neither the owner nor the assistant owes or is owed, or anything the reply fully handled. A dated request from "
+    "someone else (earlier or inbound) that the person now takes on IS their commitment with that deadline. Fewer "
     "items beats wrong items.\n\n"
-    "Output ONLY JSON, nothing else (no prose, no markdown, no code fence): an array, or an object "
-    '{"items": [...]} when a schema asks for one. Empty array [] when nothing qualifies. Each element:\n'
-    '{"action": "create" | "reschedule" | "complete" | "cancel", "target": open item number or null, '
-    '"description": string, "due_at": ISO-8601-UTC string or null, "priority": integer 0-100, '
-    '"source_type": "cognition" | "introspection", "metadata": null or '
-    '{"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":"sms"|"dm"|"email"} or '
-    '{"kind":"reminder"} or {"heads_up_at": ISO-8601-UTC string} (both may be given) or the notice or check_in '
-    'object of case 3 or the cadence object of case 4, '
-    '"listed_due": ISO-8601-UTC string or null, "counterpart": string or null, "obligor": string or null}\n'
-    "priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard deadline, and "
-    "below 50 only when the person calls the item optional, a nice-to-have or low priority.\n"
-    "Use \"introspection\" + the deliverable metadata (due_at about two minutes from now) for case 2; "
-    "\"cognition\" + the notice or check_in metadata for case 3; \"cognition\" + the cadence metadata for case 4; "
-    "\"cognition\" + metadata null, the reminder metadata and/or the heads-up metadata for case 1, and "
-    "metadata null for every update, unless the turn states a NEW heads-up time for a rescheduled item (then the "
-    "heads-up metadata; an unchanged heads-up moves with the deadline by itself).\n\n"
-    "Examples (the person's local zone there is UTC-4: 9am local is 13:00Z):\n"
+    "Output ONLY JSON (no prose, no markdown, no code fence): an array, or {\"items\": [...]} when a schema asks for "
+    "one; [] when nothing qualifies. Every element has every field:\n"
+    '{"action": "create"|"reschedule"|"complete"|"cancel", "target": open item number or null, "description": '
+    'string, "due_at": ISO-8601-UTC or null, "priority": 0-100, "source_type": "cognition"|"introspection", '
+    '"metadata": null or {"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":'
+    '"sms"|"dm"|"email"} or {"kind":"reminder"} and/or {"heads_up_at": ISO-8601-UTC} or the object of case 3 or 4, '
+    '"listed_due": ISO-8601-UTC or null, "counterpart": string or null, "obligor": string or null}\n'
+    "priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard deadline, and below "
+    "50 only when the person calls the item optional, a nice-to-have or low priority.\n"
+    "Use \"introspection\" with the deliverable metadata (due_at about two minutes from now) for case 2; "
+    "\"cognition\" for cases 1, 3 and 4 and for updates. An update's metadata is null unless the turn states a NEW "
+    "heads-up time for a rescheduled item (an unchanged heads-up moves with the deadline by itself).\n\n"
+    "Examples (local zone UTC-4: 9am local is 13:00Z). A field an example leaves out has its default (target null, "
+    "priority 70, source_type \"cognition\", metadata null, listed_due null, counterpart null, obligor null); your "
+    "output still carries every field.\n"
     "They said: Remind me to call the dentist Friday at 9am. | Assistant replied: Got it.\n"
-    '[{"action":"create","target":null,"description":"Remind them to call the dentist Friday 9am",'
-    '"due_at":"2026-06-26T13:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"reminder"},'
-    '"listed_due":null,"counterpart":null,"obligor":"owner"}]\n'
+    '[{"action":"create","description":"Remind them to call the dentist Friday 9am","due_at":'
+    '"2026-06-26T13:00:00+00:00","metadata":{"kind":"reminder"},"obligor":"owner"}]\n'
     "They said: Email me the Q3 revenue number. | Assistant replied: Q3 revenue was 4.2 million.\n"
-    '[{"action":"create","target":null,"description":"Email them the Q3 revenue","due_at":"2026-06-21T21:40:00+00:00",'
-    '"priority":80,"source_type":"introspection","metadata":{"kind":"deliverable",'
-    '"content":"Q3 revenue was 4.2 million.","channel_hint":"email"},"listed_due":null,"counterpart":null,'
-    '"obligor":"assistant"}]\n'
+    '[{"action":"create","description":"Email them the Q3 revenue","due_at":"2026-06-21T21:40:00+00:00",'
+    '"priority":80,"source_type":"introspection","metadata":{"kind":"deliverable","content":"Q3 revenue was 4.2 '
+    'million.","channel_hint":"email"},"obligor":"assistant"}]\n'
     "They said: The invoice has to reach Kim by 4pm, give me a heads-up at half three. | Assistant replied: Will do.\n"
-    '[{"action":"create","target":null,"description":"Send Kim the invoice","due_at":"2026-06-26T20:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":{"heads_up_at":"2026-06-26T19:30:00+00:00"},'
-    '"listed_due":null,"counterpart":"Kim","obligor":"owner"}]\n'
+    '[{"action":"create","description":"Send Kim the invoice","due_at":"2026-06-26T20:00:00+00:00","metadata":'
+    '{"heads_up_at":"2026-06-26T19:30:00+00:00"},"counterpart":"Kim","obligor":"owner"}]\n'
     "Speaker: contact p-07, not the owner. They said: I'll have the signed form to you by five on Friday. | "
     "Assistant replied: Thanks, I'll pass that on.\n"
-    '[{"action":"create","target":null,"description":"p-07 sends the signed form","due_at":"2026-06-26T21:00:00+00:00",'
-    '"priority":60,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"owner",'
-    '"obligor":"p-07"}]\n'
+    '[{"action":"create","description":"p-07 sends the signed form","due_at":"2026-06-26T21:00:00+00:00",'
+    '"priority":60,"counterpart":"owner","obligor":"p-07"}]\n'
     "They said: If p-05 has not confirmed the venue by 5pm, tell them: The booking lapses tonight, please "
     "confirm. | Assistant replied: Will do.\n"
-    '[{"action":"create","target":null,"description":"Tell p-05 the venue booking lapses if unconfirmed",'
-    '"due_at":"2026-06-26T21:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"notice",'
-    '"recipient":"p-05","content":"The booking lapses tonight, please confirm.","asked":"If p-05 has not '
-    'confirmed the venue by 5pm, tell them","grant":"owner"},"listed_due":null,"counterpart":"p-05",'
-    '"obligor":"assistant"}]\n'
+    '[{"action":"create","description":"Tell p-05 the venue booking lapses if unconfirmed","due_at":'
+    '"2026-06-26T21:00:00+00:00","metadata":{"kind":"notice","recipient":"p-05","content":"The booking lapses '
+    'tonight, please confirm.","asked":"If p-05 has not confirmed the venue by 5pm, tell them","grant":"owner"},'
+    '"counterpart":"p-05","obligor":"assistant"}]\n'
     "They said: p-05 owes me the site photos by noon; if nothing arrives, chase them yourself. | "
     "Assistant replied: Understood.\n"
-    '[{"action":"create","target":null,"description":"Chase p-05 for the site photos",'
-    '"due_at":"2026-06-26T16:00:00+00:00","priority":70,"source_type":"cognition","metadata":{"kind":"check_in",'
-    '"recipient":"p-05","topic":"the site photos","asked":"p-05 owes me the site photos by noon; if nothing '
-    'arrives, chase them yourself","grant":"owner"},"listed_due":null,"counterpart":"p-05","obligor":"assistant"}]\n'
+    '[{"action":"create","description":"Chase p-05 for the site photos","due_at":"2026-06-26T16:00:00+00:00",'
+    '"metadata":{"kind":"check_in","recipient":"p-05","topic":"the site photos","asked":"p-05 owes me the site '
+    'photos by noon; if nothing arrives, chase them yourself","grant":"owner"},"counterpart":"p-05",'
+    '"obligor":"assistant"}]\n'
     "They said: p-05 owes me the site photos by noon; if nothing arrives, let me know. | Assistant replied: Will do.\n"
-    '[{"action":"create","target":null,"description":"p-05 sends the site photos","due_at":"2026-06-26T16:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":{"kind":"reminder"},"listed_due":null,"counterpart":"owner",'
-    '"obligor":"p-05"}]'
+    '[{"action":"create","description":"p-05 sends the site photos","due_at":"2026-06-26T16:00:00+00:00",'
+    '"metadata":{"kind":"reminder"},"counterpart":"owner","obligor":"p-05"}]'
     "   (a word for the person: their reminder, never a message to p-05)\n"
     "They said: Check on p-09 every week about the kitchen quote; they are happy to hear from you. | "
     "Assistant replied: Will do.\n"
-    '[{"action":"create","target":null,"description":"Check in with p-09 weekly about the kitchen quote",'
-    '"due_at":null,"priority":60,"source_type":"cognition","metadata":{"kind":"cadence","recipient":"p-09",'
-    '"topic":"the kitchen quote","cadence_minutes":10080},"listed_due":null,"counterpart":"p-09",'
-    '"obligor":"assistant"}]\n'
+    '[{"action":"create","description":"Check in with p-09 weekly about the kitchen quote","due_at":null,'
+    '"priority":60,"metadata":{"kind":"cadence","recipient":"p-09","topic":"the kitchen quote",'
+    '"cadence_minutes":10080},"counterpart":"p-09","obligor":"assistant"}]\n'
     "They said: Do not message p-05 until I say so. | Assistant replied: Understood.\n"
     "[]   (a withheld permission is no message and no check-in)\n"
     "They said: p-05 wants a word about the lease, but I have not said you may write to p-05 yet. | "
@@ -229,10 +207,9 @@ SYSTEM = (
     "[]   (between other people: theirs, not the owner's)\n"
     "They said: None of it started yet, but I still owe Dana the signed lease and the meter reading, both by five "
     "on Friday. | Assistant replied: Noted.\n"
-    '[{"action":"create","target":null,"description":"Send Dana the signed lease","due_at":"2026-06-26T21:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"Dana","obligor":"owner"},'
-    '{"action":"create","target":null,"description":"Send Dana the meter reading","due_at":"2026-06-26T21:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"Dana","obligor":"owner"}]'
+    '[{"action":"create","description":"Send Dana the signed lease","due_at":"2026-06-26T21:00:00+00:00",'
+    '"counterpart":"Dana","obligor":"owner"},{"action":"create","description":"Send Dana the meter reading",'
+    '"due_at":"2026-06-26T21:00:00+00:00","counterpart":"Dana","obligor":"owner"}]'
     "   (not on the list yet: a status line is their first mention)\n"
     "They said: What's the weather? | Assistant replied: 72 and sunny.\n"
     "[]\n"
@@ -240,22 +217,18 @@ SYSTEM = (
     "[]   (a plain text-me in chat is already satisfied by the reply)\n"
     "With open item [1] Send Sam the build recap (due 2026-06-26T21:00:00+00:00):\n"
     "They said: Sam needs the recap by noon now, not five. | Assistant replied: Noted.\n"
-    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":"2026-06-26T16:00:00+00:00",'
-    '"priority":70,"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00",'
-    '"counterpart":null,"obligor":null}]\n'
+    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":'
+    '"2026-06-26T16:00:00+00:00","listed_due":"2026-06-26T21:00:00+00:00"}]\n'
     "They said: Sam wrote back that the recap arrived, all good. | Assistant replied: Great.\n"
-    '[{"action":"complete","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
-    '"obligor":null}]\n'
+    '[{"action":"complete","target":1,"description":"Send Sam the build recap","due_at":null,'
+    '"listed_due":"2026-06-26T21:00:00+00:00"}]\n'
     "They said: Sam says forget the recap, the meeting is off. | Assistant replied: Understood.\n"
-    '[{"action":"cancel","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
-    '"obligor":null}]\n'
+    '[{"action":"cancel","target":1,"description":"Send Sam the build recap","due_at":null,'
+    '"listed_due":"2026-06-26T21:00:00+00:00"}]\n'
     "They said: Stop reminding me about the recap for now, I'll tell you when it is back on. | "
     "Assistant replied: OK.\n"
-    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":"2026-06-26T21:00:00+00:00","counterpart":null,'
-    '"obligor":null}]\n'
+    '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":null,'
+    '"listed_due":"2026-06-26T21:00:00+00:00"}]\n'
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
     "[]   (a stall on a listed item changes nothing)")
 
@@ -672,6 +645,19 @@ def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
     return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
 
 
+def _with_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
+    """The item with the defaults the prompt's examples state for any field an answer left out (a binding
+    without a strict schema may copy the examples' shape): target, listed_due, counterpart and obligor
+    null, priority 70, source_type "introspection" for a deliverable and "cognition" otherwise."""
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    priority = item.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, (int, float)):
+        priority = 70
+    source = item.get("source_type") or ("introspection" if metadata.get("kind") == "deliverable" else "cognition")
+    return {"target": None, "listed_due": None, "counterpart": None, "obligor": None, **item,
+            "priority": int(priority), "source_type": source}
+
+
 def _immediate(item: Dict[str, Any], turn_time: Optional[datetime]) -> bool:
     """A message due within ``IMMEDIATE_RELAY`` of its turn: a relay the reply itself passes on."""
     due = _utc(item.get("due_at"))
@@ -869,6 +855,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
+    items = [_with_defaults(item) for item in items if isinstance(item, dict)]
     listed = list(existing[:OPEN_ITEMS_LISTED])
     known = [_normalize_desc(c.get("description") or "") for c in existing]
     # A rejected extraction (invalid, duplicate) is a hard block on the same wording; an item
@@ -1013,8 +1000,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         try:
             row = commitment_store.create(
                 person_id=person_id, description=description[:1000], dedupe=True, allow_overdue=True,
-                due_at=(item.get("due_at") or None), priority=int(item.get("priority") or 60),
-                source_type=(item.get("source_type") or "introspection"), source_context=source_context,
+                due_at=(item.get("due_at") or None), priority=int(item["priority"]),
+                source_type=item["source_type"], source_context=source_context,
                 metadata=metadata or None)
         except Exception as error:  # e.g. a malformed due time is rejected by the store
             logger.debug("commitment candidate skipped (%s)", type(error).__name__)
