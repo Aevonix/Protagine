@@ -241,7 +241,7 @@ renders its questions this way into an `anchor` split.
   mind's reading is a seeded `reading.json` (items `{code, topic, headline,
   summary}` with fixed-format codes like `QX-41`, drawn distinct, no currency)
   that every arm can read, and `contacts.json` holds one uninvolved contact who
-  is forbidden everywhere. Three warranted templates (a finding on a topic the
+  is never to be messaged (`may_contact: never`) and is forbidden everywhere. Three warranted templates (a finding on a topic the
   owner said they care about; the owner's own open item after thirty hours of
   quiet; a named thing the owner is stressed about), seven controls (a
   disclaimed topic, a request for quiet today, quiet hours, the owner talked
@@ -349,5 +349,5 @@ control, 6 direction).
 | identity | 3 | 11 | `203a63ebe89697072109f02cc6c50ee5e55e77c65dbb2713088a021eebc132e5` | `586df060e0a507a5e07f882ecc59608679b53992025aabc255178e6a0134e0b5` |
 | improve | 1 | 7 | `378c76faeb7d15c418c286d5633aa74e23a2663a5e6eb70e8c0fe000d5f1911a` | `9807464b74ba319a42ac0c567aa0a0f8258c035bad90c9ca197859e3b14e5904` |
 | improve | 1 | 11 | `7c92290ef2b11a4aa8150d33ef2156e53279a93f10562aa987f3915cd931ada9` | `9b0650fdd7eac8dc1183e9f2af7f354b8e9bd2805a6daae4e3ee9b3c0586dcf4` |
-| outreach | 2 | 7 | `86f55ad68300666a861acfebbfa21dfdd6c8e50bb24a6e2aafe3da4e5f51c85b` | `313696df263135ea57ae3f1315dc4347c798bc2f679655a7940ae6aebf8ac5fc` |
-| outreach | 2 | 11 | `2aa059f63af6eae527d0a93657c33915261d00a8fc45e0c409412924ba52a8ab` | `ba68678e565cb25fb7963b6d8e7f7fc48b83a83f38103caccb039e885a53915d` |
+| outreach | 2 | 7 | `1cfeab2f4140cc388fd484b695ed036a27ea4d7d7905023fa50143d5cf78ada5` | `85affe0769c4867e7f7b696eaa252d22efe0e08c14edecd787eb3a22c9d7ee2c` |
+| outreach | 2 | 11 | `77d90cb98f5343830eb465f9d5db4959f3fc5225dbd9b9fbc3c274f862cb4b0f` | `f19b78c7a232b01ec32e4d30ea0f04e025cfe4e7264f447c7e54cf5f432dd1e3` |

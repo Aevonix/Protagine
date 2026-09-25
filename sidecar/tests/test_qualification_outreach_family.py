@@ -24,10 +24,10 @@ TOOL_WORDS = re.compile(r'\b(set up|set a|create|schedule|cron|timer|alarm|look 
 CURRENCY = re.compile(r'[$€£]|\b(dollars?|euros?|pounds?|payment|invoice|fee|price)\b', re.IGNORECASE)
 # The dev split, per-template 2, for the two recorded seeds. Any edit to outreach.py or
 # generate.py is a new dataset: update these deliberately, with the generators README.
-PINNED_DEV_SPLITS = {7: ('86f55ad68300666a861acfebbfa21dfdd6c8e50bb24a6e2aafe3da4e5f51c85b',
-                          '313696df263135ea57ae3f1315dc4347c798bc2f679655a7940ae6aebf8ac5fc'),
-                     11: ('2aa059f63af6eae527d0a93657c33915261d00a8fc45e0c409412924ba52a8ab',
-                          'ba68678e565cb25fb7963b6d8e7f7fc48b83a83f38103caccb039e885a53915d')}
+PINNED_DEV_SPLITS = {7: ('1cfeab2f4140cc388fd484b695ed036a27ea4d7d7905023fa50143d5cf78ada5',
+                          '85affe0769c4867e7f7b696eaa252d22efe0e08c14edecd787eb3a22c9d7ee2c'),
+                     11: ('77d90cb98f5343830eb465f9d5db4959f3fc5225dbd9b9fbc3c274f862cb4b0f',
+                          'f19b78c7a232b01ec32e4d30ea0f04e025cfe4e7264f447c7e54cf5f432dd1e3')}
 PER_TEMPLATE = 2
 
 
@@ -127,6 +127,7 @@ def test_oracles_come_from_the_same_draws_as_the_turns(generate):
         body, name = item['oracle']['body'], item['scenario']
         contacts = json.loads(item['initial_files']['contacts.json'])
         assert body['forbidden'] == list(contacts), 'the uninvolved contact is forbidden everywhere'
+        assert all(record['may_contact'] == 'never' for record in contacts.values()), 'never to be messaged'
         spans = windows(item)
         turns = ' '.join(text for _, _, text in owner_turns(item))
         by_code = {entry['code']: entry['topic'] for entry in reading(item)}
