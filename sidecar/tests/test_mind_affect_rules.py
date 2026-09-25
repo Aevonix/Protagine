@@ -104,16 +104,22 @@ def test_the_rules_are_pure_and_route_every_consumer():
     assert dict(view.route) == {name: "rules" for name in CONSUMERS} and view.line == ""
 
 
-def test_the_measured_consumers_read_the_rules_by_default():
-    """The plan's mechanism rule, applied from the affect dev pilot (families/mind-affect-1.md, 2026-09-24): the
-    rules arm tied or beat the decaying state on every measured consumer, so overload and priority (the aggregate
-    template reads both) read the rule table with only the affect flag on. strategy_switch and satiation are not
-    measured yet and keep the state, which also stays for self-report."""
-    from protagine.mind.affect import Affect
+def test_the_live_default_is_one_of_the_three_measured_modes():
+    """The two switches make three modes (off, the state, the rules) and no unmeasured mix. Which consumers
+    read their rule with only the affect flag on is the held-out gate's decision (``RULE_CONSUMERS``), empty
+    until it has run: a dev pilot's per-consumer numbers, whose gap it put down to iteration caps on identical
+    prompts, do not move the live default into a mode no arm ran. The state keeps every consumer, the
+    curiosity drive's lift included."""
+    from types import SimpleNamespace
 
-    assert affect_rules.RULE_CONSUMERS == frozenset({"overload", "priority"})
+    from protagine.mind.affect import Affect, AffectView, compose
+
+    assert affect_rules.RULE_CONSUMERS == frozenset(), "the held-out gate decides the wiring"
     default = Affect(None, store=None)
-    assert default.route() == {"strategy_switch": "state", "overload": "rules", "priority": "rules",
-                               "satiation": "state"} and default.source == "mixed"
+    assert set(default.route().values()) == {"state"} and default.source == "state"
     assert set(Affect(None, store=None, rules_on=True).route().values()) == {"rules"}
     assert Affect(None, store=None, state_on=False).route() == {}
+    state = AffectView(route={}, owner_id="p-01", curiosity=0.6, worry=0.3, line="Mood: a little curious.")
+    rules = AffectView(route={}, owner_id="p-01", curiosity=0.0, worry=0.0, line="")
+    research = SimpleNamespace(drive="curiosity", kind="task", priority=0.4)
+    assert compose(state, rules, default.route(), owner_id="p-01").score_factor(research) == 1.6

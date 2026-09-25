@@ -139,14 +139,6 @@ class World:
                                            resolved_at=(self.now - timedelta(hours=hours)).timestamp()))
 
 
-@pytest.fixture(autouse=True)
-def the_state_decides(monkeypatch):
-    """These tests exercise the decaying state and every consumer reading it. Since the dev pilot the shipped
-    routing sends overload and priority to the rule table (``affect_rules.RULE_CONSUMERS``, tested with the
-    rules); here every consumer reads the state unless a test routes one itself."""
-    monkeypatch.setattr(affect_rules, "RULE_CONSUMERS", frozenset())
-
-
 @pytest.fixture
 def world(tmp_path):
     instance = World(tmp_path)

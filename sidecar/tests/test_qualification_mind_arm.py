@@ -162,13 +162,12 @@ def test_served_mind_reads_the_arm_owners_appraisals(tmp_path, monkeypatch):
 
 
 
-@pytest.mark.parametrize('arm, source', [('full', 'mixed'), ('full-affect', 'off'),
+@pytest.mark.parametrize('arm, source', [('full', 'state'), ('full-affect', 'off'),
                                          ('full-affect-plus-rules', 'rules')])
 def test_each_affect_arm_serves_its_switch_to_the_arms_mind(tmp_path, monkeypatch, arm, source):
     """The affect family's gate arms end to end: the profile's switches become mind.faculties, the
     served Mind reads the owner's reported outcomes from the arm's own ledger, and two reported
-    failures switch the strategy in full (the state; overload and priority read the rules since the dev
-    pilot, so its source is mixed) and in full-affect-plus-rules (the rules) only."""
+    failures switch the strategy in full (the state) and in full-affect-plus-rules (the rules) only."""
     from test_mind_affect_loop import REPORTS, TOPIC
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'p-01')
     section = worker.mind_section(paired_worker.mind_switches(paired.PROFILES[arm]))
@@ -187,7 +186,7 @@ def test_each_affect_arm_serves_its_switch_to_the_arms_mind(tmp_path, monkeypatc
         report = mind.state()['affect']
     assert report['source'] == source and report['enabled'] is (source != 'off')
     assert summary['affect'].get('switch', []) == ([] if source == 'off' else [TOPIC])
-    assert (report['levels'] != {}) is (source == 'mixed')                  # the state is kept in full only
+    assert (report['levels'] != {}) is (source == 'state')
 
 def test_the_worker_profile_exists_for_the_dispatcher(tmp_path):
     directory = worker.install_worker_profile(tmp_path)

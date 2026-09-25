@@ -382,13 +382,13 @@ two dismissals in 7 days hold optional nudges), and the rules replace the
 state: nothing is kept and no tone renders, whatever `affect` says, so the
 two switches make three modes (off, the state, the rules) and no unmeasured
 mix. With both off, affect reads and writes nothing. Which consumers read
-their rule with only `affect` on is a code constant
+their rule after the affect family's gate is a code constant
 (`affect_rules.RULE_CONSUMERS`, with the state kept for self-report and
-tone), never a setting, and neither switch has an environment variable. Since
-the affect dev pilot (2026-09-24) it holds `overload` and `priority`: under the
-plan's mechanism rule the rules arm tied or beat the state on every measured
-consumer (the aggregate template reads both). `strategy_switch` and `satiation`
-are not measured yet and read the state.
+tone), never a setting, and neither switch has an environment variable. It is
+empty until the held-out gate has run: the affect dev pilot (2026-09-24)
+favoured the rules on overload and priority but put the gap down to iteration
+caps on identical prompts, and a partial set would make an unmeasured mix the
+live default.
 
 **Self-report.** `protagine_self state`, `GET /v1/mind/state` (`affect`) and
 `protagine mind status` show each level with its cited causes (`failed

@@ -348,8 +348,7 @@ async def test_owner_reported_failures_switch_strategy_and_a_verified_success_ca
     assert NOTE in ax.mind.section().splitlines()
     async with AsyncClient(transport=ASGITransport(app=ax.app()), base_url="http://mind") as client:
         state = (await client.get("/v1/mind/state", headers=AUTH)).json()["affect"]
-    # The shipped routing: the switch reads the state; overload and priority the rule table.
-    assert state["enabled"] is True and state["source"] == "mixed" and state["route"]["strategy_switch"] == "state"
+    assert state["enabled"] is True and state["source"] == "state"
     frustration = state["levels"]["frustration"][0]
     assert frustration["topic"] == TOPIC and 0.5 <= frustration["level"] <= 0.7 and frustration["failures"] == 2
     assert frustration["approaches"] == [APPROACH]
@@ -609,10 +608,8 @@ async def test_worry_notes_what_is_due_soon_and_lifts_owed_duty(ax):
     assert f"Due soon and not started: File the tax return (due {due})." in ax.mind.section()
     worry = ax.mind.state()["affect"]["levels"]["worry"]
     assert worry["level"] == pytest.approx(0.1) and worry["causes"][0].startswith("due_soon commitment:")
-    # The priority consumer reads the rule table by default: owed duty x 1.25 while anything owed is due soon
-    # and not started; the decaying worry level above stays for self-report.
     formed, = summary["formed"]
-    assert formed["type"] == "commitment_overdue" and formed["score"] == round(0.8 * 0.85 * 1.25, 3)
+    assert formed["type"] == "commitment_overdue" and formed["score"] == round(0.8 * 0.85 * (1 + 0.5 * 0.1), 3)
 
 
 async def seed_every_consumer(fx):

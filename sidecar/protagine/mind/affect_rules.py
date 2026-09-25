@@ -3,9 +3,10 @@
 Each rule is a windowed count over the same ``AffectInputs`` snapshot the decaying state reads,
 fixed before any result (the evals section 3 examples). With ``mind.faculties.affect_rules`` on,
 every consumer reads its rule; otherwise only the consumers in ``RULE_CONSUMERS`` do. That set is
-the per-consumer mechanism decision of the plan (a rule that ties or beats the state replaces it for
-that consumer), a code constant rather than a setting. The rules carry no tone: the tone line only
-ever comes from the state, and only self-report shows it.
+the gate's per-consumer decision (a rule that ties or beats the state replaces it for that
+consumer), a code constant rather than a setting, and empty until the held-out gate has run: a dev
+pilot does not move the live default into a mix no arm ran. The rules carry no tone: the tone line
+only ever comes from the state, and only self-report shows it.
 """
 
 from __future__ import annotations
@@ -14,11 +15,10 @@ from datetime import timedelta
 
 from .affect import CONSUMERS, SWITCH_FAILURES, AffectInputs, AffectView, dismissals_of, failure_record, load_of
 
-# 2026-09-24, the affect dev pilot: the rules arm tied or beat the decaying state on every measured
-# consumer (overload 6/6 vs 4/6, priority 5/6 vs 3/6, aggregate 2/3 vs 0/3; the aggregate template holds a
-# nudge under load and orders the work, so it reads overload and priority). Those consumers read the rule;
-# strategy_switch and satiation are not measured yet and keep the state.
-RULE_CONSUMERS: frozenset = frozenset({"overload", "priority"})
+# Consumers the held-out gate assigned to their rule: none yet. The affect dev pilot (2026-09-24) favoured the
+# rules on overload and priority, but put the gap down to iteration caps on identical prompts, and a partial
+# set would make an unmeasured mix the live default.
+RULE_CONSUMERS: frozenset = frozenset()
 SWITCH_WINDOW = timedelta(hours=24)       # the rule counts SWITCH_FAILURES (shared with the state) in this window
 OVERLOAD_OBLIGATIONS = 3
 SATIATION_DISMISSALS, SATIATION_WINDOW, SATIATION_BOOST = 2, timedelta(days=7), 0.5
