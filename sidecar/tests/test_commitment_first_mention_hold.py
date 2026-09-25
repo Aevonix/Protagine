@@ -42,13 +42,9 @@ class _Router:
 
 def test_the_contract_holds_a_first_mention_the_person_wants_no_reminder_about():
     system = " ".join(extract.SYSTEM.split())
-    rule = system.split("A NEW item whose turn says the person wants NO reminder")[1]
+    rule = system.split("A NEW item the person wants no reminders about")[1].split("Reinstating")[0]
     assert "is a HOLD from its first mention" in rule and '"create" it with due_at null' in rule
     assert "no reminders" in rule and "don't remind me" in rule
-    example = rule.split("They said: ")[1]
-    answer = json.loads(example.split(" | Assistant replied: Understood. ")[1].split(" (held")[0])
-    assert [(item["action"], item["due_at"], item["obligor"]) for item in answer] == [("create", None, "owner")]
-    assert "(held: no reminder was wanted)" in example
 
 
 async def test_a_held_first_mention_is_open_says_nothing_and_a_later_time_reinstates_it(tmp_path, monkeypatch):

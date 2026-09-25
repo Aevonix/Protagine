@@ -32,7 +32,8 @@ JSON_CHARS_PER_TOKEN = 3.0
 
 def test_the_prompt_is_measured_and_stays_short():
     """Every rule, in fewer characters than the prompt that truncated (13,667)."""
-    assert len(SYSTEM) <= 13000
+    # 13,200 (was 13,000): the no-reminders first-mention hold, folded into the HOLD rule rather than a separate block.
+    assert len(SYSTEM) <= 13200
 
 
 def _long_turn(count: int):

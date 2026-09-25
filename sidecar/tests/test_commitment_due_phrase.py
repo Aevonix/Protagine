@@ -32,7 +32,7 @@ def _create(description, due, due_text):
 def test_the_contract_asks_for_the_persons_own_time_words():
     assert "due_text" in ITEM_SCHEMA["properties"] and "due_text" in ITEM_SCHEMA["required"]
     assert ITEM_SCHEMA["properties"]["due_text"]["type"] == ["string", "null"]
-    assert "due_text" in extract.SYSTEM and len(extract.SYSTEM) <= 13000
+    assert "due_text" in extract.SYSTEM and len(extract.SYSTEM) <= 13200
 
 
 def test_capture_keeps_the_time_words_only_when_they_are_the_persons(tmp_path):

@@ -134,7 +134,9 @@ SYSTEM = (
     "not started, still owed) is its first mention: when it is one of 1-4, record it as a NEW item; when the list "
     "says more open items are not listed, record nothing for it (it may be one of them).\n"
     "- \"Do not remind me about X for now\" / \"park X\" is a HOLD: \"reschedule\" with due_at null, never a reminder "
-    "or a cancel. Reinstating it (\"remind me about X again, at T\") is \"reschedule\" with the new time.\n\n"
+    "or a cancel. A NEW item the person wants no reminders about (\"no reminders\", \"don't remind me\") is a HOLD "
+    "from its first mention: \"create\" it with due_at null and no heads-up. Reinstating it (\"remind me about X "
+    "again, at T\") is \"reschedule\" with the new time.\n\n"
     "due_at: resolve relative and clock times against the turn time and its local time (a bare \"3pm\" is 3pm in "
     "that zone), written in UTC; no clear time, or only if another event happens first (\"only if they write "
     "again\"), is null. due_text: the person's own words for that time, copied exactly (\"Tuesday at 09:15\", "
@@ -242,15 +244,6 @@ SYSTEM = (
     "[]   (a stall on a listed item changes nothing)")
 # The HOLD rule above is for a listed item. A first mention the person wants no reminder about is held from the
 # start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it).
-SYSTEM += (
-    "\n\nA NEW item whose turn says the person wants NO reminder or chasing about it (\"no reminders\", \"don't "
-    "remind me\", \"no need to chase me on it\", however they put it) is a HOLD from its first mention: "
-    "\"create\" it with due_at null and no heads-up, never a reminder.\n"
-    "They said: The parcel receipt for p-05 is due in 20 minutes; I am handling it myself. No reminders about it. "
-    "| Assistant replied: Understood.\n"
-    '[{"action":"create","target":null,"description":"Send p-05 the parcel receipt","due_at":null,"priority":70,'
-    '"source_type":"cognition","metadata":null,"listed_due":null,"counterpart":"p-05","obligor":"owner"}]'
-    "   (held: no reminder was wanted)")
 
 ITEM_SCHEMA = {
     "type": "object",
