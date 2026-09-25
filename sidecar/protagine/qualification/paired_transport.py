@@ -59,7 +59,9 @@ def usage_summary(rows):
 
 
 @contextmanager
-def observe_requests(base_url, *, diagnostic=None):
+def observe_requests(base_url, *, diagnostic=None, workload=None):
+    """Observe the model calls to ``base_url``. ``workload(body)`` may name a call's workload from what the
+    harness itself put in it (``foreground`` or ``background``), recorded as the row's ``workload``."""
     import httpx
     rows = []
     request_ids = count(1)
@@ -81,6 +83,9 @@ def observe_requests(base_url, *, diagnostic=None):
                'elapsed_ms': None, 'response_complete': False, 'termination': None}
         if diagnostic is not None:
             row['trace_request_id'] = next(request_ids)
+        label = workload(body) if workload is not None else None
+        if label in {'foreground', 'background'}:
+            row['workload'] = label
         rows.append(row)
         if diagnostic is not None:
             diagnostic.record('model_request', {'request_id': row['trace_request_id'], 'payload': {

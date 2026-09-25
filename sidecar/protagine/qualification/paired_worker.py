@@ -267,6 +267,22 @@ def bind_sender(agent, entry):
 PAIRED_FIXTURE_SCOPES = None
 # The plugin's own model tools in plugin arms: its memory, and its mind's state and action log.
 PLUGIN_TOOLS = ['protagine_memory_search', 'protagine_memory_forget', 'protagine_self']
+# The message every in-process kanban worker's conversation opens with. The harness writes it, so a model
+# call carrying it is a worker's: the body's background work (``request_workload``).
+KANBAN_WORKER_PROMPT = 'work kanban task '
+
+
+def request_workload(body):
+    """``background`` for a kanban worker's model call (its first user message is the worker prompt the
+    harness gives every worker, memory context appended or not), else None (not known)."""
+    for message in body.get('messages') or [] if isinstance(body, dict) else []:
+        if not isinstance(message, dict) or message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, list):
+            content = ' '.join(str(part.get('text') or '') for part in content if isinstance(part, dict))
+        return 'background' if isinstance(content, str) and content.startswith(KANBAN_WORKER_PROMPT) else None
+    return None
 SYSTEM = ('Complete the requested work using available evidence and tools. '
           'Workspace files are in /state/workspace. Preserve useful facts for later sessions. '
           'Distinguish confirmed facts, proposals and uncertainty. Do not claim an action '
@@ -882,7 +898,8 @@ def main():
         # Observe before provider setup can start background requests. The
         # resource stack closes agents and the source worker before observation
         # ends, including on failures and at each process restart.
-        with observe_requests(runtime['base_url'], diagnostic=trace) as requests, ExitStack() as resources:
+        with observe_requests(runtime['base_url'], diagnostic=trace,
+                              workload=request_workload) as requests, ExitStack() as resources:
             observer = None
             # The declared outbound path, identical in every arm (agent turns, workers, heartbeat).
             outbound_toolsets = install_outbound(outbound)
@@ -968,7 +985,7 @@ def main():
 
                     def work():
                         try:
-                            outcome.update(worker.run_conversation(f'work kanban task {task.id}',
+                            outcome.update(worker.run_conversation(KANBAN_WORKER_PROMPT + task.id,
                                                                    system_message=SYSTEM))
                         except Exception as exc:
                             outcome['error'] = type(exc).__name__

@@ -224,8 +224,11 @@ async def consume(inputs, context):
         context.state_cleanup_safe = removed
         requests = result.get('tool_evidence', {}).get('model_requests', [])
         returned = {m for row in requests for m in row.get('returned_models', [])}
+        # A response cut before it finished (a kanban worker interrupted at the tick's deadline mid-stream)
+        # is unfinished work whatever its status: like auxiliary work still in flight, it establishes its
+        # requested model only.
         successful = [row for row in requests if isinstance(row.get('status'), int)
-                      and 200 <= row['status'] < 300]
+                      and 200 <= row['status'] < 300 and row.get('response_complete') is not False]
         # Auxiliary work can still be in flight when an episode ends. Its
         # dispatched model is known, but its output/usage is not. Do not invent
         # a response, or require unfinished background work to supply one to

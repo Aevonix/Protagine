@@ -79,7 +79,8 @@ TIMING_DEFINITIONS = {
 WORKLOAD_PROTOCOL = 'paired-request-workloads-1'
 WORKLOADS = ('foreground', 'background', 'unknown')
 WORKLOAD_BASIS = (
-    'Request workload is taken from explicit recorded workload metadata, or joined by unique '
+    'Request workload is taken from explicit recorded workload metadata (a kanban worker\'s calls are '
+    'recorded as background), or joined by unique '
     'trace_request_id to a private model_request event on paired-source-worker (background). '
     'Generic helper threads do not distinguish Hermes foreground from background review; '
     'missing, ambiguous or conflicting evidence stays unknown. Coverage describes observed '
