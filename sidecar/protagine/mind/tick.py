@@ -2664,6 +2664,9 @@ class Mind:
             unsent = row.status == "expired" and (_utc(row.cancelled_at) or now) >= since
             if not (put_off or unsent):
                 continue
+            source = str(context.get("source_ref") or "")
+            if unsent and source.startswith("intention:") and source[len("intention:"):] in listed:
+                continue    # the finding itself is listed above: once is enough
             line = (f"{context.get('topic') or row.description}{' (you said not now)' if put_off else ''}: "
                     f"{str(context.get('text') or '')}")
             (found if row.type == "outreach_finding" else offers).append(line)

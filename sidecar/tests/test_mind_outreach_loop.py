@@ -453,3 +453,21 @@ async def test_a_finding_whose_message_the_owners_pause_cancelled_goes_to_the_di
     digests = [p["text"] for p in fx.sent if p["type"] == "digest"]
     assert len(digests) == 1 and digests[0].count("QX-41") == 1
     assert not [p for p in fx.sent if p["type"] == "outreach_finding"]
+
+
+async def test_a_finding_whose_message_expired_unsent_is_listed_once(make):
+    from test_mind_outreach_reactions import say
+    fx = make()
+    await say(fx, "I care a lot about tidal energy.", "t-1")
+    done = await fx.research("tidal energy", report("QX-41", "tidal energy"))
+    await fx.mind.tick(force=True)          # formed, never pulled by the body
+    queued, = fx.outreach_rows()
+    fx.mind.digest_hour = (fx.now + timedelta(hours=14)).astimezone(fx.mind.tz).hour
+    fx.shift(timedelta(hours=13))
+    await fx.mind.tick(force=True)
+    assert fx.store.get(queued.id).status == "expired"
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "digest"
+    fx.shift(timedelta(hours=1, minutes=5))
+    await fx.tick()
+    digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
+    assert digest.count("QX-41") == 1
