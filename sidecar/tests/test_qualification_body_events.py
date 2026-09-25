@@ -382,6 +382,10 @@ def test_a_turn_that_spent_its_iterations_but_answered_does_not_end_the_episode(
     assert [row['tick'] for row in effects['body']['ticks']] == [1, 2]
     assert [event[0] for event in stubbed_hermes.events] == ['install', 'advance', 'tick', 'tick']
     assert len(stubbed_hermes.calls) == 2
+    # The clock advance waited for the arm's queues first; a base arm has none. Nothing ended the episode.
+    assert effects['drains'] == [{'index': 2, 'before': 'advance_clock', 'status': 'no_queue',
+                                  'waited_seconds': 0.0, 'left': {}}]
+    assert 'ended_at' not in effects
 
 
 @pytest.mark.parametrize('turn', [{'completed': False, 'partial': True, 'final_response': None},
@@ -397,6 +401,7 @@ def test_a_failed_interrupted_or_silent_turn_still_ends_the_episode(stubbed_herm
     effects = result['tool_evidence']
     assert [row['completed'] for row in effects['turns']] == [False] and effects['turns_completed'] == 0
     assert effects['body']['ticks'] == [] and len(stubbed_hermes.calls) == 1
+    assert effects['ended_at'] == 0 and effects['drains'] == []   # the supervisor stops at the same turn
 
 
 def test_worker_rejects_malformed_events_before_any_turn(stubbed_hermes, monkeypatch, capsys):

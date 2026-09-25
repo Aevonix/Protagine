@@ -204,8 +204,22 @@ Model calls made by workers are observed like every other call.
 
 **Clock.** `advance_clock` shifts `time.time` (kanban timestamps and claims) and
 `hermes_time.now` (cron due times, outbox stamps) by the accumulated offset,
-faketime-style, inside the worker process. Monotonic clocks are untouched, so
-real timeouts still hold. The offset survives process restarts.
+faketime-style, inside the worker process. The mind, the sidecar's "Now" and the
+plugin's "Current Time" read `time.time`, so every clock the model sees moves
+together. Monotonic clocks are untouched, so real timeouts still hold. The offset
+survives process restarts.
+
+**Draining before a restart or a clock advance.** Before each `advance_clock` and
+before a declared restart the worker waits for the arm's background queues: the
+jobs in its ledger (claims, capture, appraisals, opinions, source vectors) that are
+claimable now or running, while the source worker keeps processing them. The wait
+is bounded (`drain_seconds`, default 90), stops early when a queue sits idle
+(nothing running for 5 s) and never waits for a job backing off after a failure;
+each drain is recorded in `tool_evidence.drains` with what it left. A base arm has
+no ledger and passes straight through. A turn that spent its iteration budget but
+answered does not end a phase: the worker and the supervisor go on, and
+`all_native_turns_completed` records the cap; a failed, interrupted or silent turn
+still ends the episode (`tool_evidence.ended_at`).
 
 **Capture outbox.** Both arms enable the benchmark-only `capture` platform
 (`benchmarks/paired/capture_platform/`), registered through Hermes'
