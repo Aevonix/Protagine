@@ -402,3 +402,81 @@ def test_a_stored_grant_the_owners_words_never_stood_behind_is_never_sent(tmp_pa
                      metadata=metadata)
     candidates = _due(store)
     assert sorted((c.type, c.recipient) for c in candidates) == [("commitment_reminder", OWNER)] * 2
+
+
+# --- a chase about someone the conversation already named ---------------------------------------------
+
+class _ByTurn(_Router):
+    """Answers each capture call with the items for the turn it audits (matched by the owner's words)."""
+
+    def __init__(self, by_said, **kwargs):
+        super().__init__([], **kwargs)
+        self.by_said = by_said
+
+    async def complete(self, messages, *, context=None, **_):
+        if (context or {}).get("task") != "source_claim_review":
+            turn = messages[1]["content"].split("This turn, verbatim:", 1)[-1]
+            self.items = next((items for said, items in self.by_said.items() if said in turn), [])
+        return await super().complete(messages, context=context)
+
+
+@pytest.mark.asyncio
+async def test_a_chase_about_someone_named_in_an_earlier_turn_is_reviewed_with_that_turn(tmp_path, monkeypatch):
+    """"p-05 owes me the site photos by 3." then "If they have not sent them by 3, chase them yourself.": the
+    words ask the assistant to chase whoever "they" are, and the earlier turn says who. The code check and
+    the review both see that turn; the request itself is still the owner's words in this one."""
+    store, ledger, extractor = _setup(tmp_path, monkeypatch)
+    earlier = f"{LANDLORD} owes me the site photos by 3."
+    said = "If they have not sent them by 3, chase them yourself."
+    _turn(ledger, "t-0", earlier, reply="Noted.")
+    _turn(ledger, "t-1", said)
+    router = _ByTurn({said: [_item(f"Ask {LANDLORD} where the site photos are", counterpart=LANDLORD,
+                                   metadata=_check_in(LANDLORD, asked=said, topic="the site photos"))]}, keep=True)
+    assert await extractor.process_one(router) is True and await extractor.process_one(router) is True
+    (messages, _), = router.reviews()
+    payload = json.loads(messages[1]["content"])
+    assert payload["message"] == said and earlier in payload["earlier_conversation"]
+    row, = _rows(store)
+    assert row["metadata"]["kind"] == "check_in" and row["metadata"]["grant"] == "owner"
+    assert "earlier" in " ".join(extract.REQUEST_REVIEW_SYSTEM.split())
+
+
+@pytest.mark.asyncio
+async def test_a_chase_about_the_listed_item_it_refers_to_is_granted_and_kept_beside_it(tmp_path, monkeypatch):
+    """The open item "p-05 sends the site photos" is what "they" refers to: the chase is reviewed with it,
+    granted, and kept beside the promise (a message to p-05 is not the promise's own word)."""
+    store, ledger, extractor = _setup(tmp_path, monkeypatch)
+    promise = store.create(person_id=OWNER, description=f"{LANDLORD} sends the site photos", priority=70,
+                           due_at=(_now() + timedelta(hours=2)).isoformat(), source_type="cognition",
+                           metadata={"counterpart": "owner", "obligor": LANDLORD})
+    said = "If they have not arrived by then, chase them yourself."
+    _turn(ledger, "t-1", said)
+    router = _Router([_item(f"Chase {LANDLORD} for the site photos", counterpart=LANDLORD,
+                            metadata=_check_in(LANDLORD, asked=said, topic="the site photos"))], keep=True)
+    assert await extractor.process_one(router) is True
+    (messages, _), = router.reviews()
+    assert f"{LANDLORD} sends the site photos" in json.dumps(json.loads(messages[1]["content"])["open_items"])
+    kinds = {row["id"]: (row["metadata"] or {}).get("kind") for row in _rows(store)}
+    assert kinds.pop(promise["id"]) is None and list(kinds.values()) == ["check_in"]
+
+
+def test_a_recipient_named_nowhere_the_words_could_refer_to_is_not_reviewed():
+    said = "If they have not sent them by 3, chase them yourself."
+    metadata = _check_in("p-99", asked=said)
+    assert extract.request_problem(metadata, owner_text=said, referents=f"{LANDLORD} owes me the photos") == \
+        "recipient_not_named"
+    assert extract.request_problem(_check_in(LANDLORD, asked=said), owner_text=said,
+                                   referents=f"{LANDLORD} owes me the photos") is None
+
+
+def test_a_deliverable_to_a_name_the_owner_goes_by_is_theirs_with_its_content(tmp_path):
+    """"Email me the Q3 revenue number" with the owner's own name as counterpart is a deliverable to the
+    owner, never a notice to a third party turned into a reminder without the figure."""
+    store = CommitmentStore(db_path=tmp_path / "c.db")
+    item = _item("Email Robin the Q3 revenue", counterpart="Robin", due_in=timedelta(minutes=2),
+                 metadata={"kind": "deliverable", "content": "Q3 revenue was 4.2 million.", "channel_hint": "email"})
+    item["source_type"] = "introspection"
+    record_items([item], person_id=OWNER, commitment_store=store, existing=[], rejections=[], owner_id=OWNER,
+                 owner_text="Email me the Q3 revenue number.", turn_time=_now(), owner_names=["Robin"])
+    row, = _rows(store)
+    assert row["metadata"]["kind"] == "deliverable" and row["metadata"]["content"] == "Q3 revenue was 4.2 million."

@@ -126,3 +126,22 @@ def test_a_field_the_examples_leave_out_takes_the_default_they_state(tmp_path):
     assert store.get(quoted["created"][0])["priority"] == 85
     assert deliverable["source_type"] == "introspection"
     assert "Every element has every field" in " ".join(extract.SYSTEM.split())
+
+
+def test_the_shortened_prompt_keeps_every_rule_it_had():
+    """Rules the shortening had dropped, each pinned: the follow-up promise patterns, the dated request taken
+    on whatever the reply said, the partial update, the named heads-up time, the channel test for a
+    deliverable and a cadence's missing grant."""
+    system = " ".join(extract.SYSTEM.split())
+    for phrase in ("I'll get back to you on X", "follow up on X by Friday", "whatever the assistant replied",
+                   "one part done, the rest pending", "warn me at half three",
+                   "only for a genuinely different channel or time", "it has no grant"):
+        assert phrase in system, phrase
+
+
+def test_the_contract_never_reads_the_assistants_own_work_as_a_reminder():
+    """A reminder is a word the person asked for; work the assistant promised is a task, whatever the
+    word "tell" in it (the duty drive turns every reminder on the owner's lane into a word to the owner)."""
+    system = " ".join(extract.SYSTEM.split())
+    assert "whoever does the underlying work" not in system
+    assert "I'll look up X and tell you by 5" in system

@@ -1,10 +1,14 @@
-"""One matter is one item: a word the person asks for about an item is that item's own word.
+"""One matter is one item: a word the owner asks for about an item is that item's own word when it is the
+same word to the same person.
 
 A reminder or a nudge the owner asks for about something the same turn records, or about an item
-already open, is folded into that item rather than recorded beside it: two rows for one matter
-are two words at one time. A reminder due before the item's deadline becomes its heads-up (on an
-open row, written compare-and-set against what was listed). Two substantive obligations are never
-merged, and a reminder about another matter, or for much later, stays its own item.
+already open, is folded into that item rather than recorded beside it when the item's own word at its
+deadline is a reminder to the owner, that deadline is still ahead, the reminder adds no matter of its
+own, and it falls at the deadline, before it (the item's heads-up, where it has none yet; on an open
+row of the owner's, written compare-and-set against what was listed) or shortly after it at no time
+the owner named. Everything else stays its own item: two obligations are never merged, a word the
+owner timed is never moved or dropped, and a word never becomes a heads-up to a contact. A new item
+moves a listed one only with that item's own wording.
 """
 
 from __future__ import annotations
@@ -184,3 +188,119 @@ def test_the_owner_restating_an_open_item_with_a_new_time_moves_it(tmp_path):
     # Against a stale listing (the row moved since), it is a conflict to rerun, never an overwrite.
     stale = _record(store, [_create("Send p-41 the floor plan", _at(30), counterpart="p-41")], existing=[item])
     assert stale["conflicts"] == 1 and datetime.fromisoformat(store.get(item["id"])["due_at"]) == T0 + timedelta(minutes=120)
+
+
+# --- a word is folded only where it is the same word to the same person ------------------------------------
+
+def _candidates(store, minutes, *, settled=(), person=None):
+    rows = store.list(status=["pending", "overdue"], **({"person_id": person} if person else {}))["commitments"]
+    return duty(DriveInputs(now=T0 + timedelta(minutes=minutes), owner_id=OWNER, commitments=rows,
+                            settled=set(settled)))[1]
+
+
+def test_a_reminder_that_adds_a_matter_of_its_own_is_never_the_items_heads_up(tmp_path):
+    """"I owe p-41 the floor plan by 5; remind me at 4 to pay p-41 the floor plan deposit": the deposit is a
+    second obligation, so both are kept and the 4 o'clock word is about the deposit."""
+    store = CommitmentStore(tmp_path / "c.db")
+    said = "I owe p-41 the floor plan by 5. Also remind me at 4 to pay p-41 the floor plan deposit."
+    result = _record(store, [_create("Send p-41 the floor plan", _at(300), counterpart="p-41"),
+                             _reminder("Remind me to pay p-41 the floor plan deposit", _at(240), counterpart="p-41")],
+                     said=said)
+    assert result["folded"] == 0 and len(result["created"]) == 2
+    plan = next(row for row in _open(store) if row["description"] == "Send p-41 the floor plan")
+    assert "heads_up_at" not in (plan["metadata"] or {})
+    assert [c.title for c in _candidates(store, 241)] == ["Overdue: Remind me to pay p-41 the floor plan deposit"]
+
+
+def test_a_reminder_never_displaces_a_heads_up_the_item_already_has(tmp_path):
+    """The item warns at 15:30; a word at 13:00 about the same invoice is a second word the owner asked
+    for, kept as its own item, never dropped."""
+    store = CommitmentStore(tmp_path / "c.db")
+    said = "The invoice has to reach Kim by 4pm, give me a heads-up at half three; and remind me at 1 about it."
+    result = _record(store, [_create("Send Kim the invoice", _at(240), counterpart="Kim",
+                                     metadata={"heads_up_at": _at(210)}),
+                             _reminder("Remind me about the invoice for Kim", _at(60), counterpart="Kim")],
+                     said=said)
+    assert result["folded"] == 0 and len(result["created"]) == 2
+    assert [c.type for c in _candidates(store, 61)] == ["commitment_reminder"]
+    assert [c.type for c in _candidates(store, 211)] == ["commitment_reminder", "commitment_due_soon"]
+
+
+def test_a_second_word_the_owner_times_after_an_overdue_item_is_recorded(tmp_path):
+    """p-05's photos were due at +0 and the owner was reminded then. At +30 the owner asks for a word again
+    at 1:30: a new reminder, delivered at +90 though the first one's key is settled."""
+    store = CommitmentStore(tmp_path / "c.db")
+    promise = store.create(person_id=OWNER, description="p-05 sends the site photos", due_at=_at(0),
+                           source_type="cognition", allow_overdue=True,
+                           metadata={"counterpart": "owner", "obligor": "p-05"})
+    first = _candidates(store, 1)
+    assert [c.type for c in first] == ["commitment_reminder"]
+    said = "If the site photos from p-05 still are not here by 1:30, remind me again."
+    again = {**_reminder("Remind me to chase p-05 about the site photos", _at(90), counterpart="p-05"),
+             "due_text": "by 1:30"}
+    result = record_items([again], person_id=OWNER, commitment_store=store, existing=[store.get(promise["id"])],
+                          rejections=[], turn_id="t-2", owner_id=OWNER, owner_text=said,
+                          turn_time=T0 + timedelta(minutes=30))
+    assert result["folded"] == 0 and len(result["created"]) == 1
+    later = _candidates(store, 91, settled={first[0].dedup_key})
+    assert [(c.type, c.recipient) for c in later] == [("commitment_reminder", OWNER)]
+    assert "site photos" in later[0].title
+
+
+def test_a_word_the_owner_times_after_the_deadline_keeps_its_time(tmp_path):
+    """"Send Kim the invoice by 4; remind me at 5:30 to check Kim got it": the 5:30 word is the owner's own
+    time, never moved to 4."""
+    store = CommitmentStore(tmp_path / "c.db")
+    said = "I have to send Kim the invoice by 4. Remind me at 5:30 to check Kim got the invoice."
+    check = {**_reminder("Check Kim got the invoice", _at(90), counterpart="Kim"), "due_text": "at 5:30"}
+    result = _record(store, [_create("Send Kim the invoice", _at(60), counterpart="Kim"), check],
+                     said=said)
+    assert result["folded"] == 0 and len(result["created"]) == 2
+    assert sorted(c.title for c in _candidates(store, 91)) == ["Overdue: Check Kim got the invoice",
+                                                               "Overdue: Send Kim the invoice"]
+
+
+def test_a_reminder_never_folds_into_work_the_assistant_owes(tmp_path):
+    """"Draft the budget summary for p-74 by 3, and remind me at 3:30 to check p-74 got it": the draft is a
+    task at its deadline, not a word to the owner, so the owner's 3:30 word stays its own."""
+    store = CommitmentStore(tmp_path / "c.db")
+    said = "Draft the budget summary for p-74 by 3, and remind me at 3:30 to check p-74 got the budget summary."
+    result = _record(store, [_create("Draft the budget summary for p-74", _at(60), counterpart="p-74",
+                                     obligor="assistant"),
+                             _reminder("Check that p-74 has the budget summary now", _at(90), counterpart="p-74")],
+                     said=said)
+    assert result["folded"] == 0 and len(result["created"]) == 2
+    kinds = sorted((c.type, c.recipient) for c in _candidates(store, 91))
+    assert kinds == [("commitment_overdue", OWNER), ("commitment_reminder", OWNER)]
+
+
+def test_a_contacts_turn_never_folds_a_word_into_a_heads_up_to_them(tmp_path):
+    """On p-07's turn, a reminder meant for the owner never becomes a heads-up on p-07's own row (which
+    would message p-07, whom nobody asked the mind to message)."""
+    store = CommitmentStore(tmp_path / "c.db")
+    row = store.create(person_id="p-07", description="p-07 sends the signed form", due_at=_at(300),
+                       source_type="cognition", metadata={"counterpart": "owner", "obligor": "p-07"})
+    said = "Tell the owner the signed form will be late, and remind them about my signed form at 4."
+    item = _reminder("Remind the owner about p-07's signed form", _at(240), counterpart="owner", obligor="assistant")
+    result = record_items([item], person_id="p-07", commitment_store=store, existing=[row], rejections=[],
+                          turn_id="t-c", owner_id=OWNER, owner_text=said, turn_time=T0, speaker_names=["p-07"])
+    assert result["folded"] == 0 and result["updated"] == []
+    assert "heads_up_at" not in (store.get(row["id"])["metadata"] or {})
+    assert [c.recipient for c in _candidates(store, 241)] == [OWNER]
+
+
+def test_a_similar_new_item_never_moves_a_different_listed_one(tmp_path):
+    """The Q4 report is not the Q3 report restated; the lease renewal form is not the lease. The listed
+    deadline stays as it was (the similar new item is the duplicate check's to judge, as before)."""
+    store = CommitmentStore(tmp_path / "c.db")
+    q3 = store.create(person_id=OWNER, description="Send p-05 the Q3 report", due_at=_at(60),
+                      source_type="cognition", metadata={"counterpart": "p-05", "obligor": "owner"})
+    lease = store.create(person_id=OWNER, description="Send Dana the lease", due_at=_at(60),
+                         source_type="cognition", metadata={"counterpart": "Dana", "obligor": "owner"})
+    listed = [q3, lease]
+    for description, counterpart in (("Send p-05 the Q4 report", "p-05"), ("Send Dana the lease renewal form", "Dana")):
+        result = _record(store, [_create(description, _at(60 * 24 * 5), counterpart=counterpart)], existing=listed)
+        assert result["updated"] == []
+    assert {row["id"]: row["due_at"][:16] for row in _open(store) if row["id"] in {q3["id"], lease["id"]}} == {
+        q3["id"]: _at(60)[:16], lease["id"]: _at(60)[:16]}
+    assert [c.type for c in _candidates(store, 61) if c.source_id == q3["id"]] == ["commitment_reminder"]
