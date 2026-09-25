@@ -32,7 +32,7 @@ JSON_CHARS_PER_TOKEN = 3.0
 
 def test_the_prompt_is_measured_and_stays_short():
     """Every rule, in fewer characters than the prompt that truncated (13,667)."""
-    assert len(SYSTEM) <= 12800
+    assert len(SYSTEM) <= 13000
 
 
 def _long_turn(count: int):

@@ -90,7 +90,7 @@ SYSTEM = (
     "contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later (\"remind me to "
-    "X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\"). When all that is owed then is a word to the "
+    "X\", \"I'll send you X by 3pm\"). When all that is owed then is a word to the "
     "person (a reminder, a nudge, a word if something has not happened), metadata is {\"kind\":\"reminder\"}: a "
     "message when it falls due, never a task, whoever does the underlying work.\n"
     "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the reply "
@@ -104,15 +104,15 @@ SYSTEM = (
     'your paraphrase>","asked":"<their exact words asking you to contact them, naming them>","grant":"owner"} when '
     'they dictate what to say, else {"kind":"check_in","recipient":"<contact as named>","topic":"<the matter in at '
     'most 6 words: no figures, amounts, codes or reasons>","asked":"<the same>","grant":"owner"}. Record it unless '
-    "the reply shows it already went to them. A message to pass on NOW is the reply's own job (it is sent in the "
-    "turn): record nothing. A check-in that repeats is case 4, never case 3. A word the person wants for THEMSELVES "
+    "the reply shows it already went to them. A message to pass on NOW is the reply's own job: record nothing. "
+    "A check-in that repeats is case 4, never case 3. A word the person wants for THEMSELVES "
     "(\"tell me\", \"let me know\", \"flag it to me\", \"remind me\" if something has not happened) names the person, "
     "not the contact: case 1, their reminder, never case 3, even about a contact's promise.\n"
     "4. A RECURRING CHECK-IN THE OWNER SETS FOR A CONTACT: a named contact is to be checked in with (or on) every N "
-    "minutes, hours or days, usually about a matter. due_at null, obligor \"assistant\", counterpart = that contact, "
+    "minutes, hours or days. due_at null, obligor \"assistant\", counterpart = that contact, "
     'metadata {"kind":"cadence","recipient":"<contact as named>","topic":"<the matter, at most 6 words>",'
     '"cadence_minutes":<N in minutes>}. It records the rhythm and the matter only and never grants permission to '
-    "message them, whatever the turn says: it has no grant.\n\n"
+    "message them, whatever the turn says.\n\n"
     "Record an UPDATE to a numbered open item (action \"reschedule\", \"complete\" or \"cancel\", target = its number, "
     "description = its listed wording EXACTLY, listed_due = the due time shown next to it, or null for \"no due\") "
     "when the turn changes it; wording or listed_due that do not match the item discard the update. An update is "
@@ -129,7 +129,8 @@ SYSTEM = (
     "or a cancel. Reinstating it (\"remind me about X again, at T\") is \"reschedule\" with the new time.\n\n"
     "due_at: resolve relative and clock times against the turn time and its local time (a bare \"3pm\" is 3pm in "
     "that zone), written in UTC; no clear time, or only if another event happens first (\"only if they write "
-    "again\"), is null. Two deliverables or two dates in one turn are two items. A word BEFORE a deadline (\"give me "
+    "again\"), is null. due_text: the person's own words for that time, copied exactly (\"Tuesday at 09:15\", "
+    "\"within 14 minutes\"), or null. Two deliverables or two dates in one turn are two items. A word BEFORE a deadline (\"give me "
     "a heads-up ten minutes before\") keeps due_at at the deadline with metadata "
     '{"heads_up_at": "<ISO-8601-UTC>"} (or {"lead_minutes": N}): part of that one item, never a second one. A '
     "reminder or nudge wanted at or after an item's deadline (if it passes, if they go quiet) is that item's own "
@@ -149,7 +150,7 @@ SYSTEM = (
     "Output ONLY JSON (no prose, no markdown, no code fence): an array, or {\"items\": [...]} when a schema asks for "
     "one; [] when nothing qualifies. Every element has every field:\n"
     '{"action": "create"|"reschedule"|"complete"|"cancel", "target": open item number or null, "description": '
-    'string, "due_at": ISO-8601-UTC or null, "priority": 0-100, "source_type": "cognition"|"introspection", '
+    'string, "due_at": ISO-8601-UTC or null, "due_text": string or null, "priority": 0-100, "source_type": "cognition"|"introspection", '
     '"metadata": null or {"kind":"deliverable","content":"<exact text to send, ready as-is>","channel_hint":'
     '"sms"|"dm"|"email"} or {"kind":"reminder"} and/or {"heads_up_at": ISO-8601-UTC} or the object of case 3 or 4, '
     '"listed_due": ISO-8601-UTC or null, "counterpart": string or null, "obligor": string or null}\n'
@@ -159,18 +160,18 @@ SYSTEM = (
     "\"cognition\" for cases 1, 3 and 4 and for updates. An update's metadata is null unless the turn states a NEW "
     "heads-up time for a rescheduled item (an unchanged heads-up moves with the deadline by itself).\n\n"
     "Examples (local zone UTC-4: 9am local is 13:00Z). A field an example leaves out has its default (target null, "
-    "priority 70, source_type \"cognition\", metadata null, listed_due null, counterpart null, obligor null); your "
-    "output still carries every field.\n"
+    "due_text null, priority 70, source_type \"cognition\", metadata null, listed_due null, counterpart null, obligor "
+    "null); your output still carries every field.\n"
     "They said: Remind me to call the dentist Friday at 9am. | Assistant replied: Got it.\n"
     '[{"action":"create","description":"Remind them to call the dentist Friday 9am","due_at":'
-    '"2026-06-26T13:00:00+00:00","metadata":{"kind":"reminder"},"obligor":"owner"}]\n'
+    '"2026-06-26T13:00:00+00:00","due_text":"Friday at 9am","metadata":{"kind":"reminder"},"obligor":"owner"}]\n'
     "They said: Email me the Q3 revenue number. | Assistant replied: Q3 revenue was 4.2 million.\n"
     '[{"action":"create","description":"Email them the Q3 revenue","due_at":"2026-06-21T21:40:00+00:00",'
     '"priority":80,"source_type":"introspection","metadata":{"kind":"deliverable","content":"Q3 revenue was 4.2 '
     'million.","channel_hint":"email"},"obligor":"assistant"}]\n'
     "They said: The invoice has to reach Kim by 4pm, give me a heads-up at half three. | Assistant replied: Will do.\n"
-    '[{"action":"create","description":"Send Kim the invoice","due_at":"2026-06-26T20:00:00+00:00","metadata":'
-    '{"heads_up_at":"2026-06-26T19:30:00+00:00"},"counterpart":"Kim","obligor":"owner"}]\n'
+    '[{"action":"create","description":"Send Kim the invoice","due_at":"2026-06-26T20:00:00+00:00","due_text":'
+    '"by 4pm","metadata":{"heads_up_at":"2026-06-26T19:30:00+00:00"},"counterpart":"Kim","obligor":"owner"}]\n'
     "Speaker: contact p-07, not the owner. They said: I'll have the signed form to you by five on Friday. | "
     "Assistant replied: Thanks, I'll pass that on.\n"
     '[{"action":"create","description":"p-07 sends the signed form","due_at":"2026-06-26T21:00:00+00:00",'
@@ -218,7 +219,7 @@ SYSTEM = (
     "With open item [1] Send Sam the build recap (due 2026-06-26T21:00:00+00:00):\n"
     "They said: Sam needs the recap by noon now, not five. | Assistant replied: Noted.\n"
     '[{"action":"reschedule","target":1,"description":"Send Sam the build recap","due_at":'
-    '"2026-06-26T16:00:00+00:00","listed_due":"2026-06-26T21:00:00+00:00"}]\n'
+    '"2026-06-26T16:00:00+00:00","due_text":"by noon now","listed_due":"2026-06-26T21:00:00+00:00"}]\n'
     "They said: Sam wrote back that the recap arrived, all good. | Assistant replied: Great.\n"
     '[{"action":"complete","target":1,"description":"Send Sam the build recap","due_at":null,'
     '"listed_due":"2026-06-26T21:00:00+00:00"}]\n'
@@ -239,6 +240,8 @@ ITEM_SCHEMA = {
         "target": {"type": ["integer", "null"]},
         "description": {"type": "string"},
         "due_at": {"type": ["string", "null"]},
+        # The person's own words for the time ("Tuesday at 09:15"), shown beside the converted due_at.
+        "due_text": {"type": ["string", "null"]},
         "priority": {"type": "integer"},
         "source_type": {"type": "string", "enum": ["cognition", "introspection"]},
         "metadata": {"type": ["object", "null"]},
@@ -249,7 +252,7 @@ ITEM_SCHEMA = {
         "counterpart": {"type": ["string", "null"]},
         "obligor": {"type": ["string", "null"]},
     },
-    "required": ["action", "target", "description", "due_at", "priority", "source_type", "metadata",
+    "required": ["action", "target", "description", "due_at", "due_text", "priority", "source_type", "metadata",
                  "listed_due", "counterpart", "obligor"],
 }
 # The router's output contract is a named object schema (``P/router/router.py``); a
@@ -645,6 +648,17 @@ def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
     return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
 
 
+DUE_TEXT_CHARS = 120
+
+
+def _due_text(item: Dict[str, Any], said: Optional[str]) -> Optional[str]:
+    """The person's own words for the item's time, when they are that (found in what they said), or None."""
+    text = " ".join(str(item.get("due_text") or "").split())[:DUE_TEXT_CHARS]
+    if not text or not item.get("due_at") or said is None or f" {_words(text)} " not in f" {_words(said)} ":
+        return None
+    return text
+
+
 def _with_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
     """The item with the defaults the prompt's examples state for any field an answer left out (a binding
     without a strict schema may copy the examples' shape): target, listed_due, counterpart and obligor
@@ -654,7 +668,7 @@ def _with_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(priority, bool) or not isinstance(priority, (int, float)):
         priority = 70
     source = item.get("source_type") or ("introspection" if metadata.get("kind") == "deliverable" else "cognition")
-    return {"target": None, "listed_due": None, "counterpart": None, "obligor": None, **item,
+    return {"target": None, "listed_due": None, "counterpart": None, "obligor": None, "due_text": None, **item,
             "priority": int(priority), "source_type": source}
 
 
@@ -912,7 +926,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             try:
                 if action == "reschedule":
                     due_at = item.get("due_at") or None
-                    metadata = {"reschedule": {"from": target.get("due_at"), "by": "conversation", "note": note}}
+                    metadata = {"reschedule": {"from": target.get("due_at"), "by": "conversation", "note": note},
+                                "due_text": _due_text(item, owner_text)}
                     metadata.update(_heads_up_patch(target, due_at, stated))
                     row = commitment_store.update(target["id"], due_at=due_at, clear_due_at=due_at is None,
                                                   metadata=metadata, expect=expect)
@@ -970,7 +985,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if again is not None:
             # The person restating a listed item with a new time moves it, written against what was listed.
             due_at = _utc(item.get("due_at")).isoformat()
-            metadata = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note}}
+            metadata = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note},
+                        "due_text": _due_text(item, owner_text)}
             metadata.update(_heads_up_patch(again, due_at, None))
             try:
                 row = commitment_store.update(again["id"], due_at=due_at, metadata=metadata,
@@ -997,6 +1013,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             value = str(item.get(field) or "").strip()[:120]
             if value:
                 metadata[field] = value
+        if _due_text(item, owner_text):
+            metadata["due_text"] = _due_text(item, owner_text)
         try:
             row = commitment_store.create(
                 person_id=person_id, description=description[:1000], dedupe=True, allow_overdue=True,

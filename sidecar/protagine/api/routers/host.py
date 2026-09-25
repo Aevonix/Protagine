@@ -855,6 +855,16 @@ async def _owner_items_with(contact_id, owner_id, contact_record):
     return rows[:_OWNER_ITEMS_SHOWN]
 
 
+def _commitment_due(row) -> str:
+    """A commitment line's due part: the converted time, and beside it the words the person used for it
+    (capture's ``metadata.due_text``), so the context never offers only the conversion."""
+    if not row.get("due_at"):
+        return ""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    said = " ".join(str(metadata.get("due_text") or "").split()).replace('"', "'")[:120]
+    return f" (due: {row['due_at']}" + (f', said as "{said}"' if said else "") + ")"
+
+
 def _canonical_shared_commitments(rows, contact_id):
     """Expose only descriptions already present in this person's source evidence.
 
@@ -1910,7 +1920,7 @@ async def _assemble_sections(
                 lines = ["Open commitments (a live reservation held by another session is that session's work):"]
                 for c in all_comms:
                     status_tag = "[OVERDUE]" if c.get("status") == "overdue" or c['id'] in {item['id'] for item in overdue} else "[pending]"
-                    due = f" (due: {c.get('due_at', '')})" if c.get('due_at') else ""
+                    due = _commitment_due(c)
                     reservation = reservations.get(c['id'])
                     work_tag = ('; work=' + reservation['work_state']
                                 + ('' if _canonical_only else '; session=' + reservation.get('session_id', ''))) if reservation else ('; work=unclaimed' if reservations_available else '; work=unknown')
