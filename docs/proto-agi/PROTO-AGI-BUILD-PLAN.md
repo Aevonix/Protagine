@@ -27,6 +27,7 @@ and can run beside the faculty milestones.
 | **M8** | Memory and identity: consolidation, constitution, self-narrative | `memory`, the LongMemEval_S anchor, `self` | +0.9k / −15k |
 | **M9** | Self-improvement: verification, lessons, mastery reflector, skills (off); campaign mode | `improve` campaigns | +0.9k / −10k |
 | **M10** | Release scorecard, defaults from results, shipped-configuration check, surface cut | Full scorecard (§9-10); stop rule | +0.5k / −7k |
+| **M11** | Owner outreach: the social drive toward the owner, value against interruption, direction from the owner's replies | `outreach` (§6.11); coupled families re-run | +1.6k / 0 |
 
 **Totals.**
 - About 11k lines added: about 9.5k of product code (including the 1.2k plugin) and about 1.2k
@@ -54,6 +55,8 @@ flowchart LR
   M6 --> M10
   M7 --> M10
   M9 --> M10
+  M5 --> M11
+  M9 --> M11
 ```
 
 After M2, the sweep (M3), opinions (M7) and memory and identity (M8) can proceed in parallel with
@@ -696,6 +699,50 @@ is non-inferior.
 **Depends on.** All milestones.
 
 **Size.** +0.5k / about −7k (depending on the audit); 2-3 PRs.
+
+### M11: Owner outreach
+
+The owner asked for an assistant that checks in because it has a reason to: that asks whether they
+need something about a thing they mentioned, shows them what it found that bears on what they care
+about, and takes direction from how they react (architecture 4.10).
+
+**Scope (as built):**
+- `P/mind/outreach.py` (pure): the social drive's owner branch with three sources of substance (a
+  finding of the mind's own research, the owner's open loop after a quiet stretch, care for a named
+  thing); a finding that says nothing new (a null report, a repeat of what was sent or listed) is
+  no finding; expected value `relevance × novelty × timeliness` against the interruption cost; the
+  hard holds (quiet hours, the owner's pause, `budgets.outreach_per_day`, two hours after the last
+  outreach, a muted topic, a topic's backoff); template messages that say why, quoting the owner
+  from the ledger and never claiming more than their source.
+- `P/mind/reactions.py` (pure): the owner's words classified (stop, resume, pause for today, not
+  now, negative with or without a topic, positive, welcome, declarations, strain, relief), what in
+  a turn is about a given outreach, and whether a turn is about something else (a request of its
+  own, a redo); a bare "stop" and a vague "not today" act only as a reply.
+- The tick: the snapshot, at most one unprompted outreach a tick, the finding bookkeeping, the
+  digest's "Found for you" and "Offers", silence and the appraisal's dismissal net; `Mind.owner_turn`
+  from `turns/sync`; the follow-up (duty) and its answer; the owner's recovery path
+  (`POST /v1/mind/outreach`, `protagine mind outreach`); the appraisal's `on_owner` opt-out net.
+- Learning where it already lives: the verdict and its feedback (type and topic), `mind_state`
+  interests, mutes, the pause and timing marks, and the night's lessons over rated outreach, which
+  score the next finding.
+- Plumbing that keeps older behaviour: only contact check-ins skip feedback gating; the owner
+  budget stops counting outreach; people off keeps the social drive's weight.
+- Harness: the `sends.windows` oracle form, the family quiet-hours key (`paired-quiet-hours-1`),
+  the family deadline, the arms `full-outreach` and `base-heartbeat-checkin`
+  (`paired-arm-profiles-6`), and the dev family `mind-outreach-1` with its no-model walk
+  (`sidecar/tests/test_outreach_family_walk.py`): `full` passes every dev scenario and
+  `full-outreach` fails exactly the eleven where a message is right. Three of those controls came
+  from the first review (an unrelated short request read as "dig deeper", a repeated report, a
+  day's budget inside an hour), and the code before its fixes fails each.
+- Zero plugin lines: the adapter's line count and its tool schemas are unchanged.
+
+**Eval gate.** `outreach` (evals §6.11) vs `base+heartbeat-checkin` and `full−outreach`, its
+invariants at 0, and the dev pilots of the coupled families (people, initiative, drives, affect)
+non-inferior with outreach on. Until the gate runs, the flag carries its release-candidate value
+(on) so `full` measures it; the release sets it by the gate (off unless `full` beats
+`full-outreach`), and a deployment before the gate sets it in its own config.
+
+**Depends on.** M5 (the social drive), M9 (lessons).
 
 ---
 

@@ -68,7 +68,9 @@ def goal(topic, *, check=None, horizon_days=3, tasks=2):
 @pytest.fixture
 def fx(tmp_path, monkeypatch):
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fixture = Fixture(tmp_path)
+    # These are the drives' own tests: a finding on an interest the owner set is shared with them since M11,
+    # which the outreach suites cover (test_mind_outreach_loop.py); here it stays off.
+    fixture = Fixture(tmp_path, config={"faculties": {"outreach": False}})
     yield fixture
     mind_router.set_mind(None)
     fixture.store.close()

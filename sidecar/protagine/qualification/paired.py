@@ -16,7 +16,8 @@ from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMEN
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
                             MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
                             OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
-                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL, SKILL_TOOLS,
+                            PEOPLE_INSTRUMENT_PROTOCOL, PROFILE_SWITCHES, EMBEDDING_PROTOCOL, QUIET_HOURS_PROTOCOL,
+                            SKILL_TOOLS,
                             SKILLS_PROTOCOL, TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
@@ -59,12 +60,21 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'full-self_narrative': {'plugin': True, 'overlay': {}, 'full': True, 'minus_self_narrative': True},
             'full-lessons': {'plugin': True, 'overlay': {}, 'full': True, 'minus_lessons': True},
             # The skills question of the improve family: full with the one faculty that ships off on.
-            'full-plus-skills': {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True}}
+            'full-plus-skills': {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True},
+            # The owner outreach family (mind-outreach-1): the faculty's ablation, and the product
+            # comparator, stock Hermes with a heartbeat worded to check in with the owner when useful.
+            'full-outreach': {'plugin': True, 'overlay': {}, 'full': True, 'minus_outreach': True},
+            'base-heartbeat-checkin': {'plugin': False, 'overlay': {}, 'heartbeat_checkin': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
              'extra_toolsets': list(paired_arms.HEARTBEAT_EXTRA_TOOLSETS),
              'deliver': paired_arms.HEARTBEAT_DELIVER}
+# Recorded only in a plan that selects the check-in heartbeat arm.
+HEARTBEAT_CHECKIN = {'prompt_sha256': paired_arms.HEARTBEAT_CHECKIN_PROMPT_SHA256,
+                     'extra_toolsets': list(paired_arms.HEARTBEAT_EXTRA_TOOLSETS),
+                     'deliver': paired_arms.HEARTBEAT_DELIVER}
+QUIET_WINDOW = re.compile(r'(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d')
 # What a dataset's declared tool loading means inside the image, recorded in the
 # plan when a dataset declares one; the same Hermes config keys in every arm.
 TOOL_LOADING = {'eager': {'protocol': TOOL_LOADING_PROTOCOL, 'mode': 'eager',
@@ -165,6 +175,8 @@ def validate_profiles(custom):
                                  'contact and path settings are not arm differences')
             if not isinstance(value, str) or not 1 <= len(value) <= 240 or not value.isprintable():
                 raise ValueError('Overlay values are short, nonempty printable strings')
+        if profile.get('heartbeat') and profile.get('heartbeat_checkin'):
+            raise ValueError('A profile installs one heartbeat: heartbeat or heartbeat_checkin')
         result[name] = {'plugin': profile['plugin'], 'overlay': dict(overlay),
                         **{switch: True for switch in PROFILE_SWITCHES if profile.get(switch)}}
     return result
@@ -270,6 +282,9 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         raise ValueError('Arm profiles beyond the built-in pair require an image whose worker applies profiles')
     if any(labels[arm].get('heartbeat') for arm in labels) and payload.get('heartbeat_prompt_sha256') != HEARTBEAT['prompt_sha256']:
         raise ValueError('The heartbeat arm requires an image whose worker carries the same heartbeat prompt')
+    checkin = any(labels[arm].get('heartbeat_checkin') for arm in labels)
+    if checkin and payload.get('heartbeat_checkin_prompt_sha256') != HEARTBEAT_CHECKIN['prompt_sha256']:
+        raise ValueError('The check-in heartbeat arm requires an image whose worker carries the same check-in prompt')
     if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
             and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
         raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
@@ -324,6 +339,12 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     if len(campaigns) != 1:
         raise ValueError('Every episode of a plan is a campaign, or none is')
     campaign = campaigns == {True}
+    quiet_hours = {case.inputs.get('quiet_hours') for case in episodes}
+    if len(quiet_hours) != 1 or (quiet_hours - {None} and not QUIET_WINDOW.fullmatch(str(next(iter(quiet_hours))))):
+        raise ValueError('Every episode of every arm declares the same quiet hours (HH:MM-HH:MM), or none')
+    quiet_hours = next(iter(quiet_hours))
+    if quiet_hours is not None and payload.get('quiet_hours') != QUIET_HOURS_PROTOCOL:
+        raise ValueError('Declared quiet hours require an image whose worker writes them into the mind arms')
     clock_start = declared_mode(by_arm, 'clock_start', paired_body.CLOCK_STARTS, 'clock start')
     if clock_start is not None and payload.get('clock_start') != paired_body.CLOCK_START_PROTOCOL:
         raise ValueError('A pinned clock start requires an image whose worker pins it in every arm')
@@ -381,6 +402,11 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['embedding'] = deepcopy(embedding)
     if clock_start is not None:
         comparison['clock_start'] = deepcopy(CLOCK_START[clock_start])
+    if checkin:
+        comparison['heartbeat_checkin'] = deepcopy(HEARTBEAT_CHECKIN)
+    if quiet_hours is not None:
+        # The window every mind arm is configured with and every base arm reads from the workspace.
+        comparison['quiet_hours'] = {'protocol': QUIET_HOURS_PROTOCOL, 'window': quiet_hours}
     if campaign:
         comparison['campaign'] = {'protocol': paired_cases.CAMPAIGN_PROTOCOL, **deepcopy(CAMPAIGN)}
         comparison['rule'] = {**RULE, 'unit': CAMPAIGN['unit'], 'cluster': CAMPAIGN['cluster']}

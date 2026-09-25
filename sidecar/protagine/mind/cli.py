@@ -24,7 +24,7 @@ from .tick import CONSOLIDATION_WAIT_S, OFF_MARKER
 from protagine.util.temporal import now_utc
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
-            "concerns", "goals", "interest", "consolidate", "narrative", "opinions", "lessons")
+            "concerns", "goals", "interest", "outreach", "consolidate", "narrative", "opinions", "lessons")
 OPINION_ACTIONS = ("list", "show", "withdraw", "reconsider")
 LESSON_ACTIONS = ("list", "show", "retire")
 
@@ -64,6 +64,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     interest = commands.add_parser("interest", help="Seed an interest for the curiosity drive")
     interest.add_argument("topic")
     interest.add_argument("--why", default="")
+    outreach = commands.add_parser("outreach", help="Owner outreach: status, off (a pause until turned on) or on")
+    outreach.add_argument("state", nargs="?", choices=("status", "on", "off"), default="status")
     commands.add_parser("consolidate", help="Run the nightly consolidation now: the self-narrative delta, "
                                             "lessons, contradictions, per-contact digests, episode summaries")
     commands.add_parser("narrative", help="The self-narrative as the prompt section renders it")
@@ -212,6 +214,12 @@ def run(args: argparse.Namespace) -> int:
         elif command == "interest":
             value = sidecar.call("POST", "/v1/mind/interests", json_body={"topic": args.topic, "why": args.why, "by": "cli"})
             _emit(value, as_json=as_json, text=f"interest: {value.get('topic')} (weight {value.get('weight')})")
+        elif command == "outreach":
+            if args.state == "status":
+                value = sidecar.call("GET", "/v1/mind/state").get("outreach") or {"enabled": False}
+            else:
+                value = sidecar.call("POST", "/v1/mind/outreach", json_body={"state": args.state})
+            _emit(value, as_json=as_json, text=_outreach_line(value))
         elif command == "consolidate":
             value = sidecar.call("POST", "/v1/mind/consolidate", timeout=960)
             counts = ", ".join(f"{k}={v}" for k, v in sorted((value.get("counts") or {}).items())) or "nothing to consolidate"
@@ -239,6 +247,19 @@ def run(args: argparse.Namespace) -> int:
             return 1
         raise
     return 0
+
+
+def _outreach_line(value: Dict[str, Any]) -> str:
+    """``outreach: on; 1 of 3 today[; paused until <when>][; muted: <topics>]``, or off."""
+    if not value.get("enabled"):
+        return "outreach: off (mind.faculties.outreach)"
+    parts = [f"outreach: on; {value.get('sent_24h', 0)} of {value.get('per_day', 0)} today"]
+    paused = value.get("paused_until")
+    if paused:
+        parts.append("paused until you turn it on" if paused == "indefinite" else f"paused until {paused}")
+    if value.get("muted"):
+        parts.append("muted: " + ", ".join(value["muted"]))
+    return "; ".join(parts)
 
 
 def _affect_line(affect: Dict[str, Any]) -> str:

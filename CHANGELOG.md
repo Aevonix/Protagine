@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased - owner outreach (M11)
+
+The mind can now reach out to the owner unprompted, because it has a reason to,
+not on a timer ([docs/MIND.md](docs/MIND.md), Outreach to the owner;
+architecture 4.10). The social drive turns toward the owner
+(`mind/outreach.py`): it proposes a message only from something concrete, a
+finding of its own research that bears on what the owner said they care about,
+the owner's own open item after a quiet stretch, or care for a named thing the
+owner said is stressing them. There is no empty check-in, and a report that
+found nothing, or only what was already sent or listed, is no finding. A message's value
+(relevance x novelty x timeliness) is weighed against the interruption (the
+last outreach's recency, the owner's ignored streak, the day's unprompted
+messages, a "not now" mark on the hour) by the one ranker; quiet hours, a
+pause, a daily budget (`mind.budgets.outreach_per_day: 3`, counted apart from
+the reminders the owner asked for), two hours after the last outreach, a muted
+topic and a topic's backoff hold it, and at most one goes out a tick; one quiet
+stretch is one check-in. Every message says why, quoting the owner, and never
+claims more than its source.
+What was worth it but not sent lands in the digest ("Found for you", "Offers").
+
+The owner's replies steer it (`mind/reactions.py`, read in the turn path):
+"dig deeper" rates it useful and starts a follow-up whose answer comes back;
+"not interested" mutes the topic; "not now" pauses for four hours; "leave me
+alone today" until tomorrow; "stop checking in" until the owner resumes it
+(`protagine mind outreach on|off|status`, `POST /v1/mind/outreach`); silence
+for a day is a weak "ignored". A reply that does not name the topic counts
+only when it plainly answers the outreach (the owner's first turn after it, not
+mid-conversation, no request of its own), and only what in it is about the
+outreach counts; a bare "stop" or "not today" means something only as such a
+reply. What it learns lives where the mind already
+learns: the verdict and its feedback (per type and per topic), interests,
+mutes, the pause and timing marks, and the night's lessons over rated
+messages. The appraisal backs the phrases with two nets (the owner's opt-out,
+a dismissal after a send). `mind.faculties.outreach` (on) removes all of it.
+
+Behaviour kept: only contact check-ins skip feedback gating; people off keeps
+the social drive's weight and retires waiting check-ins. The plugin is
+unchanged.
+
+Benchmark: the `sends` oracle takes tick windows; a family may declare quiet
+hours (`paired-quiet-hours-1`) and a deadline; the arms `full-outreach` and
+`base-heartbeat-checkin` (a heartbeat worded to check in when useful, hashed on
+its own; `paired-arm-profiles-6`); and the dev family `mind-outreach-1`
+(`benchmarks/paired/generators/outreach.py`, plan in
+`docs/proto-agi/families/mind-outreach-1.md`), walked through the code by
+`sidecar/tests/test_outreach_family_walk.py`.
+
 ## Unreleased - people, memory, feelings, opinions and self-improvement, integrated
 
 The people (M5) and memory and identity (M8) milestones merged onto one line

@@ -144,7 +144,7 @@ def test_a_declared_outbound_path_is_one_send_message_tool_for_every_turn_worker
             agents.append((kwargs['session_id'], list(kwargs['enabled_toolsets'])))
             super().__init__(**kwargs)
     monkeypatch.setattr(sys.modules['run_agent'], 'AIAgent', Recorded)
-    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda names: installs.append(list(names)) or 'job-1')
+    monkeypatch.setattr(paired_arms, 'install_heartbeat', lambda names, prompt=None: installs.append(list(names)) or 'job-1')
     monkeypatch.setattr(paired_arms, 'make_due', lambda job_id: {'job_id': job_id})
     profile = {'name': 'base-heartbeat', 'plugin': False, 'overlay': {}, 'heartbeat': True}
     request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
@@ -255,7 +255,8 @@ def test_full_and_full_people_differ_only_in_the_people_flag_and_the_mind_reads_
             store.close()
     assert minds['on'].faculties['people'] is True and minds['on'].drive_weights['social'] == on['drives']['social']
     assert minds['on'].composer.enabled is True
-    assert minds['off'].faculties['people'] is False and minds['off'].drive_weights['social'] == 0.0
+    # People off removes the contact check-ins, not the social drive (its owner branch is outreach's).
+    assert minds['off'].faculties['people'] is False and minds['off'].drive_weights['social'] == on['drives']['social']
     assert minds['off'].composer.enabled is False
 
 

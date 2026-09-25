@@ -613,6 +613,47 @@ restart. Loads of Protagine's skills reach `POST /v1/mind/skills/used` and are
 counted in `/v1/mind/stats` and `protagine mind lessons`. The flag stays off
 until the skills arm beats lessons alone.
 
+## Outreach to the owner
+
+The social drive turns toward the owner (`P/mind/outreach.py`, architecture
+4.10). It speaks up only when it has something concrete: a finding of its own
+research that bears on what the owner said they care about (an interest they
+declared with `protagine mind interest`, in conversation, or welcomed), the
+owner's own open item after a day or so of quiet (not one due within 48 h:
+reminders and heads-ups are duty's), or a named thing the owner said is
+stressing them. There is no "anything you need?" message, and a report that
+found nothing, or only what was already sent or listed, is never sent as a
+finding.
+
+Each candidate's value is `relevance × novelty × timeliness` and its cost the
+interruption (recency of the last outreach, the owner's ignored streak, the
+day's unprompted messages, a "not now" mark on the hour); the ranker decides.
+Quiet hours, a pause, `budgets.outreach_per_day` (3; reminders the owner asked
+for are counted apart), two hours after the last outreach, a muted topic and a
+topic's backoff hold a candidate before it forms, and at most one unprompted
+outreach goes out a tick. An offer of help on an open item waits for a quiet
+stretch since the owner last spoke (or since the last such offer), so one quiet
+stretch is one check-in. Every
+message says why, quoting the owner ("You said \"I care a lot about tidal
+energy\", so I looked into tidal energy: ... Say 'dig deeper' for more, or
+'not interested' and I will drop it."). What was worth it but not sent is in
+the next digest's "Found for you"; offers that lapsed or were put off are in
+its "Offers".
+
+The owner's replies steer it, read in the turn path (`P/mind/reactions.py`):
+"dig deeper" rates it useful and starts a follow-up whose answer is sent when
+it is ready, outside the daily budget; "not interested" mutes the topic; "not now" pauses for four
+hours; "leave me alone today" until tomorrow; "stop checking in" until
+"you can check in again" or `protagine mind outreach on`. A reply that does not
+name the topic counts only when it plainly answers the outreach: the owner's
+first turn after it, not mid-conversation, and not a request of its own ("can
+you find out when the last train leaves?" is a request, not "dig deeper"). A
+bare "stop" or "not today" means something about outreach only as such a reply. Reminders the owner
+asked for never stop. Silence for a day counts as a weak "ignored". What is
+learned is the verdict and its feedback, the topic's interest level, a mute,
+the pause and the hour's mark, and at night the lessons over the rated
+messages. With `faculties.outreach` off none of it runs.
+
 ## Asks
 
 An ask lives only in the sidecar. Nothing is created in Hermes until the owner
@@ -671,13 +712,15 @@ mind:
   # One worker run per task: task_types per task type, task_max_runtime_s / task_max_retries for
   # any other type and for a field a type leaves out.
   budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
+            outreach_per_day: 3,    # unprompted outreach to the owner, counted apart from reminders
             contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
             llm_tokens_per_day: 200000, open_goals: 2, goal_tasks: 4,
             goal_horizon_days: 7, task_max_runtime_s: 600, task_max_retries: 1,
             task_types: {research: {max_runtime_s: 1800, max_retries: 2},
                          question: {max_runtime_s: 1800, max_retries: 2},
                          mastery_investigation: {max_runtime_s: 1800, max_retries: 2},
-                         goal_step: {max_runtime_s: 1800, max_retries: 2}}}
+                         goal_step: {max_runtime_s: 1800, max_retries: 2},
+                         outreach_followup: {max_runtime_s: 1800, max_retries: 2}}}
   # extra_body on every request a mind task's worker makes; null leaves a field to the provider
   worker_request: {max_tokens: 8192, top_p: 0.95}
   quiet_hours: "22:00-07:00"        # owner notices wait; the digest and tasks do not
@@ -701,6 +744,7 @@ mind:
     opinions: true                  # the opinion pass, approach views in task bodies, the stance section
     lessons: true                   # lessons: the night's lesson stage, lesson lines, the lesson section, the reflector
     skills: false                   # proven lessons as SKILL.md in Protagine's skills.external_dirs entry
+    outreach: true                  # owner outreach: the social drive toward the owner (Outreach, above)
 ```
 
 `identity.yaml` holds the constitution (`agent.name`, `agent.values`,
@@ -728,6 +772,7 @@ protagine mind stats               the in-vivo panel over the audit log
 protagine mind concerns            what is on the mind: drive levels, open concerns, the broadcast set
 protagine mind goals               the agent-owned goals that are open
 protagine mind interest <topic>    seed an interest for the curiosity drive
+protagine mind outreach [on|off]   owner outreach: its state, a pause until turned on, or on again
 protagine mind consolidate         run the nightly consolidation now (docs/CONSOLIDATION.md)
 protagine mind narrative           the self-narrative as the owner's prompt section renders it
 protagine mind opinions [list|show <id>|withdraw <id>|reconsider <id>] [--query Q] [--history] [--reason R]
@@ -747,7 +792,7 @@ protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 | `POST /observations` | the body's board: `{observed_at, board, body, counts, stale_tasks, blocked_tasks, goals, mind_tasks}` with `idle_s` per task (docs/HERMES-ADAPTER.md), or the flat `{observations: [{kind, id, title, assignee, status, age_hours}]}`; stale owner tasks and goals are duty inputs | `{accepted, kinds}` |
 | `POST /guard` | `{tool, args, session | session_id, run, task_id, recipients?, ...}`: a messaging tool's recipient is read from `args` (`contact_id`, `platform` + `target|chat_id|to`, or stock `target="platform:chat_id[:thread_id]"`); `recipients` are the contact ids an effect reaches later (a delivering cron job), each authorized with `may_contact` and the message budgets | `{allow, action: allow | block | ask, reason}` |
 | `POST /decide` | `{code, answer: yes | no, contact_id?, session_id?, message?}` (the plugin's `protagine_self yes|no`) | `{ok, id, status, ...}`; 404 no open ask, 403 not the owner |
-| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
+| `GET /log` (`limit`, `status`, `kind`, `since_hours`, `recipient`), `GET /why/{id}` (404 `unknown_intention`: "no intention `<id>` exists in the audit log"), `GET /log/{id}`, `GET /asks`, `GET /state` (`/status`; with `faculties`, `drives`, `concerns`, `goals`, `interests`, `deliberation`, `affect`, `outreach {enabled, paused_until, per_day, sent_24h, muted, care}`, `lessons {enabled, active, candidate}` and `skills {enabled, generation, owned}`), `GET /stats` (with `lessons` and `lesson_use_rate`, the wins over verified uses, and `skills`) | | |
 | `GET /lessons?status=&uses=&viewer=` | | `{enabled, lessons, uses, skills, text}`: each lesson with its verified tally, with `uses=true` every use in the 90-day window, and the skills Protagine keeps with their loads; a guest viewer gets nothing |
 | `POST /lessons/{id}/retire` | `{reason, by?}` | the retired lesson; 404 unknown, 409 already closed |
 | `POST /skills/used` | `{skill, session_id?, task_id?}` (the plugin's `on_skill_lifecycle` forwarding) | `{ok, counted, loads}`; only `protagine-*` skills are counted |
@@ -755,6 +800,7 @@ protagine mind lessons [list|show <id>|retire <id>] [--all] [--reason R]
 | `POST /consolidate` | | runs the nightly consolidation now and returns the night's record (`protagine mind consolidate`); 501 `consolidation_not_available` on a sidecar without it |
 | `GET /concerns`, `GET /goals` | | the workspace (open concerns, the broadcast set, drive levels) and the open goals |
 | `POST /interests` | `{topic, why?}` | a seeded interest the curiosity drive researches |
+| `POST /outreach` | `{state: on \| off}` | owner outreach's state `{enabled, paused_until, per_day, sent_24h, muted, care}` after the switch; off pauses unprompted outreach until turned on; `{enabled: false}` with the faculty off; 422 for another state |
 | `POST /asks/{code}/yes`, `POST /asks/{code}/no` | `{contact_id?, message?, by?}` | the audit entry |
 | `POST /off {reason?}`, `POST /on`, `POST /tick`, `POST /rate {id, verdict}`, `POST /level {autonomy}`, `POST /reset {cls}` | | |
 | `GET /opinions?q=&contact_id=&by=&history=&limit=`, `GET /opinions/{id}`, `POST /opinions/{id}/withdraw`, `POST /opinions/{id}/reconsider` | `{reason, contact_id?, by?, correction_id?}` for the two controls | `{enabled, opinions}`, `{opinion, history}`, `{revision_id, status}`; audience-filtered, owner-only controls (docs/OPINIONS.md) |

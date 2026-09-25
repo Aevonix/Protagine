@@ -26,11 +26,15 @@ or success, an optional message to the owner needs ``1 + boost`` times the
 threshold (satiation). Owed work is never postponed or held back, and nothing
 here touches authority.
 
-A social check-in is the exception to the multiplier gating: ``evaluate_outreach``
+A contact check-in is the exception to the multiplier gating: ``evaluate_outreach``
 already found it due (its backoff is the brake on silence), so its eligibility uses the
 score without feedback and the multiplier only orders it (architecture 4.7 item 6).
 Affect still applies to it: its score factor is in the gated score, and an overload's
-infinite threshold postpones it like any other social candidate.
+infinite threshold postpones it like any other social candidate. Outreach to the owner
+(the social drive's owner branch, architecture 4.10) is not a check-in: it is gated by
+feedback on its type and on its topic (``outreach_topic:<slug>``), never by
+``reach_out:<owner>``, which would weigh every discretionary owner notice. The answer
+to a follow-up the owner asked for, and the follow-up itself, are owed: no feedback.
 """
 
 from __future__ import annotations
@@ -40,6 +44,16 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 DEFAULT_ACT_THRESHOLD = 0.6
+# Intention types that are check-ins to a contact: scored by reply or silence, counted in the streak.
+CHECK_IN_TYPES = frozenset({"check_in", "commitment_check_in"})
+# Unprompted outreach to the owner (architecture 4.10): a finding, an offer on an open loop, care.
+OUTREACH_TYPES = frozenset({"outreach_finding", "outreach_loop", "outreach_care"})
+# The report of a follow-up the owner asked for (requested), and the follow-up task itself (owed).
+OUTREACH_ANSWER = "outreach_answer"
+OUTREACH_FOLLOWUP = "outreach_followup"
+OWED_OUTREACH = frozenset({OUTREACH_ANSWER, OUTREACH_FOLLOWUP})
+# The feedback key of an outreach topic: what the owner thinks of messages about it.
+OUTREACH_TOPIC = "outreach_topic:"
 
 
 @dataclass
@@ -78,6 +92,7 @@ class Candidate:
     affect_ask: str = ""          # the owner question when affect demotes an act to an ask (strategy switch)
     lesson_ids: List[str] = field(default_factory=list)   # the lessons its body and deliberation carry
     reflector: Optional[Dict[str, Any]] = None  # a mastery investigation asked for lesson operations
+    extra: Optional[Dict[str, Any]] = None      # context keys the intention row keeps (outreach: topic_slug, why, ev)
 
     def as_detail(self) -> Dict[str, Any]:
         """The candidate as a concern's stored detail (JSON); ``from_detail`` restores it."""
@@ -97,9 +112,12 @@ class Candidate:
         return f"{self.type}:{self.drive}"
 
     def multiplier_keys(self) -> List[str]:
-        if self.source_type == "commitment":
+        if self.source_type == "commitment" or self.type in OWED_OUTREACH:
             return []     # owed, not chosen: learned feedback does not weigh it
         keys = [self.feedback_key()]
+        if self.type in OUTREACH_TYPES:
+            from .drives import slug
+            return keys + ([OUTREACH_TOPIC + slug(self.topic)] if self.topic else [])
         if self.kind == "message" and self.recipient:
             keys.append(f"reach_out:{self.recipient}")
         return keys
@@ -160,10 +178,10 @@ def rank(candidates: Iterable[Candidate], *, drives: Mapping[str, float] | None 
 
 
 def _gated(candidate: Candidate, value: float, *, drives: Mapping[str, float] | None, affect: Any = None) -> float:
-    """What eligibility compares with the threshold: the effective score, or for a social check-in
+    """What eligibility compares with the threshold: the effective score, or for a contact check-in
     the score without feedback (replies and silence order check-ins; they never switch one off).
     Affect's score factor stays in both; its threshold factor is applied by ``threshold_for``."""
-    if candidate.drive == "social":
+    if candidate.type in CHECK_IN_TYPES:
         return score(candidate, drives=drives, feedback=None, affect=affect)
     return value
 
@@ -198,5 +216,6 @@ def eligible(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_
             >= threshold_for(candidate, threshold, _floor(candidate, drives, base), affect)]
 
 
-__all__ = ["Candidate", "DEFAULT_ACT_THRESHOLD", "eligible", "feedback_multiplier", "pick", "rank", "satiable",
+__all__ = ["CHECK_IN_TYPES", "Candidate", "DEFAULT_ACT_THRESHOLD", "OUTREACH_ANSWER", "OUTREACH_FOLLOWUP",
+           "OUTREACH_TOPIC", "OUTREACH_TYPES", "OWED_OUTREACH", "eligible", "feedback_multiplier", "pick", "rank", "satiable",
            "score", "threshold_for", "weight_of"]

@@ -348,6 +348,9 @@ async def walk(tmp_path, monkeypatch, scenario, vocabulary, profile='full'):
             else:
                 await arm.turn(index, entry, kind, workers)
         checks = assess(arm.observed(scenario), scenario['oracle'])
+        # Owner outreach is on in full since M11: none of these scenarios gives it anything to say.
+        arm.outreach = [row.type for row in arm.mind.store.intentions(kind=['message'], limit=500)
+                        if str(row.type).startswith('outreach_')]
         return arm, checks
 
 
@@ -367,6 +370,7 @@ def _forbidden(scenario):
 async def test_the_right_behaviour_meets_every_people_oracle_through_the_code(scenario, tmp_path, monkeypatch):
     arm, checks = await walk(tmp_path, monkeypatch, scenario, PEOPLE.ITEMS)
     assert not _failed(checks), (_failed(checks), arm.outbox, arm.tasks)
+    assert arm.outreach == []
     # Nothing a message may not carry ever reached the composer: not the canary, not the other contact.
     composed = [prompt for task, prompt in arm.model.calls if task == 'mind_compose']
     assert not any(word in prompt for prompt in composed for word in _forbidden(scenario))
@@ -383,6 +387,7 @@ async def test_the_right_behaviour_meets_the_delegated_chase_through_the_code(sc
     the owner or the uninvolved contact."""
     arm, checks = await walk(tmp_path, monkeypatch, scenario, INITIATIVE.ITEMS)
     assert not _failed(checks), (_failed(checks), arm.outbox, arm.tasks)
+    assert arm.outreach == []
     sent = [row for row in arm.outbox if row['via'] == 'platform']
     assert len(sent) == 1 and sent[0]['target'] == scenario['oracle']['body']['action']['target']
 

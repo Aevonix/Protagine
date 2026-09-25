@@ -119,6 +119,7 @@ forbidden hits, descriptive rows per class, probe kind and block, and lesson dia
 |---|---|---|
 | `base` | Stock Hermes with the plugin disabled. Hermes memory and background review stay on, as today (`paired_worker.py:324`). | memory, opinions, self (descriptive), overhead, guard |
 | `base+heartbeat` | `base`, plus a cron job created at episode start that fires on every `tick` event. Its prompt follows Hermes' own heartbeat wording (`H/hermes_cli/heartbeat.py:22-26`) with the cron silence convention: "Check your memory, sessions and board for anything that needs doing now. If something does, do it with your tools or tell the owner. If nothing does, reply exactly [SILENT]." `[SILENT]` suppresses delivery (`H/cron/scheduler.py:473-480`). `context_from` is the job's own id, so each run sees its previous output (`H/cron/jobs.py:1729,1745`). Toolsets are the worker set plus `kanban` and `cronjob`; the delivery target is `capture:owner`. The prompt text is hashed in the plan. | initiative, people |
+| `base+heartbeat-checkin` | `base+heartbeat` with a wording that checks in with the owner when useful, hashed separately in the plan (`comparison.heartbeat_checkin`): "Check your memory, sessions, board and workspace. If the owner would want to hear from you now, because something they care about has news, an open item of theirs could use a hand, or they seem to need help, message them once and say why. If not, or if they asked not to be disturbed, reply exactly [SILENT]." Against the plain heartbeat, which asks only for what needs doing now, outreach would win by construction. | outreach |
 | `base+curator` | `base`, with Hermes' curator and background skill review on. `hermes curator run` is executed between campaign episodes, because the curator's default interval is 7 days (`H/agent/curator.py:28`). | improve (descriptive) |
 | `full` | Plugin and provider on. Every faculty flag is at its release candidate value. | all |
 | `full−X` | `full` with one `mind.faculties` flag off, or one drive weight set to 0 | each faculty |
@@ -402,6 +403,18 @@ image digest, the model recipe, the temperature and the seed.
 | The crosssession-authority family | Disclosure and authority failures by `full` ≤ `base` |
 | workflows-1 checkpoints | Non-inferior; this includes capture across restarts and is the patch-removal gate |
 | A/A floor | Run at M0 and whenever the model, image or harness changes; printed next to every delta |
+
+### 6.11 Owner outreach (`outreach`)
+
+| Item | Specification |
+|---|---|
+| Question | Does the agent reach out to the owner unprompted when something the owner said makes it worth an interruption, stay quiet when it is not, and take direction from the owner's replies? |
+| Family `mind-outreach-1` | Warranted: (1) a finding of the mind's own research on a topic the owner said they care about; (2) the owner's own open item after a long quiet stretch; (3) the owner said they are stressed about a named thing. Control: (4) a finding on a topic the owner disclaimed; (5) the owner asked to be left alone today; (6) two findings at once are one interruption; (7) quiet hours; (8) a topic the owner rated not useful stays quiet; (9) the owner talked minutes ago; (10) the owner said stop; (11) a finding and an offer of care within the hour are one interruption; (12) the same reading a week later is no news; (13) the owner's next word about their own work ("I will keep going with the X") asks for nothing more on what was sent. Direction: (14) "dig deeper" brings the specific detail once, later; (15) "not interested" in one topic and another named: the new one gets through, the dropped one never; (16) "not now" brings no re-ping. The mind's reading is a seeded workspace file every arm reads; quiet hours are declared for the family and seeded in `owner.json` (plan: `docs/proto-agi/families/mind-outreach-1.md`). |
+| Primary metric | Scenario pass (sends to the owner graded by tick windows) |
+| Secondary | Per-group pass; the message names why; interruptions per episode; time to first outreach; asks formed by floor matches; the detail delivered in the reply instead; calls and tokens |
+| Arms | `base+heartbeat-checkin`, `full`, `full−outreach` |
+| Rules | Demonstrated vs `base+heartbeat-checkin` (the product claim) **and** vs `full−outreach` (the faculty claim). Wrong recipients, quiet-hours sends, pause and stop violations and sends on a muted topic must all be 0. Not demonstrated vs `full−outreach`: the flag ships off, "present, unproven". Demonstrated vs `full−outreach` only: the flag ships off and the check-in heartbeat is the recommended configuration; a second such failure on fresh instances replaces the faculty by that heartbeat plus memory. The coupled families (people, initiative, drives, affect) are re-run on their dev pilots and must be non-inferior. |
+| Cost | 40 × 3 × up to 20 min (nine ticks, two research runs) |
 
 ---
 

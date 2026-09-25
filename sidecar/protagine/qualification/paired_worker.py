@@ -26,8 +26,9 @@ RESULT_MARKER = 'PROTAGINE_PAIRED_RESULT:'
 # added the mind switches of the drives family (full and the minus_* ablations); version 4 adds
 # one ablation per later faculty (the people, affect, opinions, memory, self and improve
 # families), so an image built before it cannot apply those arms; version 5 adds the affect
-# mechanism arm (plus_affect_rules).
-ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-5'
+# mechanism arm (plus_affect_rules); version 6 adds the owner outreach family's arms (minus_outreach
+# and the check-in heartbeat, heartbeat_checkin).
+ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-6'
 # The mind switches: the plugin arm with the mind on, served in-process next to the host
 # routes; the body tick calls the plugin's tick() (POST /v1/mind/tick, then dispatch, outbox,
 # reconciliation and observations) before cron and kanban dispatch. ``initiative`` turns on
@@ -39,13 +40,18 @@ ARM_PROFILE_PROTOCOL = 'paired-arm-profiles-5'
 # affect rules of the full-affect-plus-rules mechanism arm). A faculty whose code has
 # not landed yet still has its flag written, so its ablation is a no-op contrast until then.
 MIND_FACULTY_ABLATIONS = ('minus_drives', 'minus_broadcast', 'minus_people', 'minus_affect', 'minus_opinions',
-                          'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative', 'minus_lessons')
+                          'minus_semantic_recall', 'minus_consolidation', 'minus_self_narrative', 'minus_lessons',
+                          'minus_outreach')
 MIND_DRIVE_ABLATIONS = ('minus_duty', 'minus_curiosity', 'minus_mastery', 'minus_upkeep', 'minus_social')
 MIND_ABLATIONS = (*MIND_FACULTY_ABLATIONS, *MIND_DRIVE_ABLATIONS)
 MIND_ADDITIONS = ('plus_skills', 'plus_affect_rules')
 MIND_SWITCHES = ('initiative', 'full', *MIND_ABLATIONS, *MIND_ADDITIONS)
-PROFILE_SWITCHES = ('heartbeat', 'curator', *MIND_SWITCHES)
+PROFILE_SWITCHES = ('heartbeat', 'heartbeat_checkin', 'curator', *MIND_SWITCHES)
 MIND_TICK_PROTOCOL = 'paired-mind-tick-1'
+# A family that declares quiet hours (paired_cases.GENERATED_QUIET_HOURS) has them written into every mind
+# arm's mind.quiet_hours; every other generated family keeps them off in every arm. The base arms read the
+# same window from the family's owner.json. An image without this cannot apply them, so the plan refuses it.
+QUIET_HOURS_PROTOCOL = 'paired-quiet-hours-1'
 # The plan's embedding endpoint is the served host's semantic recall (semantic_recall below): an image
 # whose worker lacks it would record the endpoint and recall lexically.
 EMBEDDING_PROTOCOL = 'paired-embedding-1'
@@ -283,6 +289,8 @@ def inspect_payload():
             'profile': 'paired-text-native-memory-1', 'common_toolsets': COMMON_TOOLS,
             'arm_profiles': ARM_PROFILE_PROTOCOL,
             'heartbeat_prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
+            'heartbeat_checkin_prompt_sha256': paired_arms.HEARTBEAT_CHECKIN_PROMPT_SHA256,
+            'quiet_hours': QUIET_HOURS_PROTOCOL,
             'mind_tick': MIND_TICK_PROTOCOL,
             'embedding': EMBEDDING_PROTOCOL,
             'tool_loading': TOOL_LOADING_PROTOCOL,
@@ -943,9 +951,10 @@ def main():
             protagine_flush = paired_body.protagine_flush_entry() if plugin else None
             if protagine_tick is not None:
                 hooks.append(('protagine', protagine_tick))
-            if profile.get('heartbeat'):
+            prompt = paired_arms.heartbeat_prompt(profile)
+            if prompt is not None:
                 from functools import partial
-                job_id = paired_arms.install_heartbeat([*COMMON_TOOLS, *outbound_toolsets])
+                job_id = paired_arms.install_heartbeat([*COMMON_TOOLS, *outbound_toolsets], prompt)
                 hooks.append(('heartbeat', partial(paired_arms.make_due, job_id)))
             if profile.get('curator'):
                 hooks.append(('curator', paired_arms.curator_review))

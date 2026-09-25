@@ -167,7 +167,7 @@ jobs:
         run: >-
           pytest -v tests/test_people_family_walk.py tests/test_people_acceptance.py
           tests/test_m8_arm_contrasts.py tests/test_paired_people_instrument.py
-          tests/test_qualification_paired_campaign.py
+          tests/test_qualification_paired_campaign.py tests/test_outreach_family_walk.py
 
   docker:
     runs-on: ubuntu-latest

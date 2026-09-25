@@ -84,7 +84,7 @@ def test_the_drives_family_arms_are_full_and_its_binary_ablations(fixture):
         assert paired_worker.arm_profile(pairs[0]['arms'][arm]['case']['inputs'])['full'] is True
         assert paired_worker.mind_switches(profiles[arm])
     assert paired_worker.mind_switches({'plugin': True, 'overlay': {}}) is None
-    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-5'
+    assert paired_worker.ARM_PROFILE_PROTOCOL == 'paired-arm-profiles-6'
     assert set(paired_worker.MIND_SWITCHES) <= set(paired_worker.PROFILE_SWITCHES)
 
     full = worker.mind_section(paired_worker.mind_switches(profiles['full']))
@@ -539,3 +539,114 @@ def test_skills_present_lists_every_skill_at_episode_end(tmp_path):
         (folder / 'SKILL.md').write_text('---\nname: x\n---\n')
     (tmp_path / 'skills' / 'notes' / 'README.md').write_text('not a skill')
     assert paired_worker.skills_present(tmp_path) == {'hermes': ['order-codes'], 'protagine': ['protagine-codes']}
+
+
+# The owner outreach family (mind-outreach-1): full, its faculty ablation and the check-in heartbeat.
+
+CHECKIN_SHA256 = '849671c6867d91ec79ca7982d08783c70ad2f8208b3381522ebca77f8f37b684'
+
+
+def test_the_outreach_family_arms_are_full_its_ablation_and_a_check_in_heartbeat(fixture):
+    from protagine.config import DEFAULTS
+    arms = ['base-heartbeat-checkin', 'full', 'full-outreach']
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled', arms=arms,
+                           reference_arm='base-heartbeat-checkin', **fixture.resources)
+    profiles = manifest['comparison']['profiles']
+    assert profiles['full-outreach'] == {'name': 'full-outreach', 'plugin': True, 'overlay': {}, 'full': True,
+                                         'minus_outreach': True}
+    assert profiles['base-heartbeat-checkin'] == {'name': 'base-heartbeat-checkin', 'plugin': False, 'overlay': {},
+                                                  'heartbeat_checkin': True}
+    assert manifest['comparison']['heartbeat_checkin'] == paired.HEARTBEAT_CHECKIN
+    assert paired_worker.mind_switches(profiles['base-heartbeat-checkin']) is None
+    assert 'heartbeat_checkin' in paired_worker.PROFILE_SWITCHES and 'minus_outreach' in paired_worker.MIND_ABLATIONS
+    full = worker.mind_section(paired_worker.mind_switches(profiles['full']))
+    ablated = worker.mind_section(paired_worker.mind_switches(profiles['full-outreach']))
+    assert DEFAULTS['mind']['faculties']['outreach'] is True and full['faculties']['outreach'] is True
+    assert ablated['faculties'] == {**full['faculties'], 'outreach': False}
+    assert full['budgets']['outreach_per_day'] == 3 == DEFAULTS['mind']['budgets']['outreach_per_day']
+    assert ablated['budgets'] == full['budgets'] and ablated['drives'] == full['drives']
+    # A plan without the check-in arm records nothing new.
+    other = paired.plan(fixture.output / 'other', native_binding='candidate', evidence_mode='controlled',
+                        arms=['base-heartbeat', 'full'], **fixture.resources)
+    assert 'heartbeat_checkin' not in other['comparison'] and 'quiet_hours' not in other['comparison']
+
+
+def test_the_check_in_heartbeat_wording_is_frozen_and_the_plain_heartbeat_is_unchanged():
+    from protagine.qualification import paired_arms
+    import hashlib
+    assert paired_arms.HEARTBEAT_CHECKIN_PROMPT_SHA256 == hashlib.sha256(
+        paired_arms.HEARTBEAT_CHECKIN_PROMPT.encode()).hexdigest() == CHECKIN_SHA256
+    assert paired_arms.HEARTBEAT_PROMPT_SHA256 == '85f1bddfd19e3d8f621beed19258de9c2cda37c2c01ed72f52807bb5f961a8a6'   # frozen for the other families
+    text = paired_arms.HEARTBEAT_CHECKIN_PROMPT
+    assert text.startswith('[Heartbeat: recurring instruction, fires on every body tick]\n')
+    assert 'say why' in text and text.endswith('reply exactly [SILENT].')
+    assert paired_arms.heartbeat_prompt({'heartbeat_checkin': True}) == text
+    assert paired_arms.heartbeat_prompt({'heartbeat': True}) == paired_arms.HEARTBEAT_PROMPT
+    assert paired_arms.heartbeat_prompt({'plugin': False}) is None
+
+
+def test_the_check_in_heartbeat_arm_needs_an_image_carrying_its_prompt(fixture, monkeypatch):
+    from protagine.qualification import paired_container
+    original = paired_container.configuration
+
+    def older(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items()
+                                       if k != 'heartbeat_checkin_prompt_sha256'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', older)
+    with pytest.raises(ValueError, match='check-in heartbeat'):
+        paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                    arms=['base-heartbeat-checkin', 'full'], **fixture.resources)
+    assert paired.plan(fixture.output / 'plain', native_binding='candidate', evidence_mode='controlled',
+                       arms=['base-heartbeat', 'full'], **fixture.resources)['declared_attempts'] == 4
+
+
+def test_a_profile_cannot_turn_on_both_heartbeats():
+    with pytest.raises(ValueError, match='one heartbeat'):
+        paired.validate_profiles({'both': {'plugin': False, 'heartbeat': True, 'heartbeat_checkin': True}})
+
+
+def test_mind_section_writes_quiet_hours_only_when_the_dataset_declares_them():
+    switches = paired_worker.mind_switches(paired.PROFILES['full'])
+    assert worker.mind_section(switches)['quiet_hours'] == ''
+    assert worker.mind_section(switches, quiet_hours='22:00-07:00')['quiet_hours'] == '22:00-07:00'
+    assert worker.mind_section(True, quiet_hours='22:00-07:00')['quiet_hours'] == '22:00-07:00'
+    assert worker.mind_section(None, quiet_hours='22:00-07:00') == {'enabled': False}
+    assert worker.mind_section(switches, quiet_hours='22:00-07:00')['digest_hour'] == 24
+
+
+def _with_quiet_hours(monkeypatch, window):
+    from dataclasses import replace
+    from protagine.qualification import paired_cases
+    base = paired_cases.cases
+
+    def cases(arm, case_ids=None, profile=None):
+        return [replace(case, inputs={**case.inputs, 'quiet_hours': window}) for case in base(arm, case_ids, profile)]
+    monkeypatch.setattr(paired_cases, 'cases', cases)
+
+
+def test_a_plan_records_the_familys_quiet_hours_and_needs_an_image_that_applies_them(fixture, monkeypatch):
+    _with_quiet_hours(monkeypatch, '22:00-07:00')
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                           arms=['base-heartbeat-checkin', 'full', 'full-outreach'], **fixture.resources)
+    assert manifest['comparison']['quiet_hours'] == {'protocol': 'paired-quiet-hours-1', 'window': '22:00-07:00'}
+    assert paired_worker.QUIET_HOURS_PROTOCOL == 'paired-quiet-hours-1' == paired.QUIET_HOURS_PROTOCOL
+    from protagine.qualification import paired_container
+    original = paired_container.configuration
+
+    def older(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != 'quiet_hours'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', older)
+    with pytest.raises(ValueError, match='quiet hours'):
+        paired.plan(fixture.output / 'older', native_binding='candidate', evidence_mode='controlled',
+                    arms=['base-heartbeat-checkin', 'full'], **fixture.resources)
+
+
+def test_a_malformed_quiet_hours_window_is_refused(fixture, monkeypatch):
+    _with_quiet_hours(monkeypatch, 'late at night')
+    with pytest.raises(ValueError, match='quiet hours'):
+        paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                    arms=['base-heartbeat-checkin', 'full'], **fixture.resources)

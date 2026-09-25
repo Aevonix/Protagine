@@ -21,6 +21,8 @@ from typing import Any, Dict, Optional, Sequence
 from protagine.initiatives.models import StoredInitiative
 from protagine.util.temporal import now_utc
 
+from .rank import CHECK_IN_TYPES, OUTREACH_ANSWER, OUTREACH_TOPIC, OUTREACH_TYPES
+
 logger = logging.getLogger(__name__)
 
 # The body's task states -> the intention outcome. ``None`` is progress only.
@@ -37,8 +39,9 @@ TERMINAL_OUTCOMES = frozenset({"done", "failed", "expired", "denied", "cancelled
 IMPLICIT_VERDICT = {"cancelled": "dismissed", "expired": "ignored", "denied": "dismissed"}
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
 # Task types whose completion summary is a finding the agent keeps (architecture 4.5): research and
-# investigations write what they learned as an autobiography entry a later turn recalls.
-FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step"})
+# investigations write what they learned as an autobiography entry a later turn recalls. A follow-up the
+# owner asked for in reply to an outreach is research too (architecture 4.10).
+FINDING_TYPES = frozenset({"research", "question", "mastery_investigation", "goal_step", "outreach_followup"})
 FINDING_CHARS = 800
 OWNER_EVIDENCE = ("appraisal:", "turn:", "claim:")   # evidence read from what the owner said
 VERIFIERS = frozenset({"owner", "check", "hermes_failure", "none"})
@@ -373,11 +376,19 @@ class Outcomes:
         if row is None or self.feedback is None:
             return
         outcome = {"useful": "actioned", "not_useful": "dismissed", "wrong": "dismissed"}.get(verdict, verdict)
-        # A check-in teaches the timing with that one contact: one silent contact must not lower
-        # check-ins with everyone, so a social outcome feeds only ``reach_out:<contact>``.
-        keys = [] if row.drive == "social" else [f"{row.type}:{row.drive}"]
-        if row.kind == "message" and row.entity_id:
-            keys.append(f"reach_out:{row.entity_id}")
+        context = row.context if isinstance(row.context, dict) else {}
+        if row.type in OUTREACH_TYPES or row.type == OUTREACH_ANSWER:
+            # Outreach teaches which kinds of message and which topics the owner values: its type and its
+            # topic, never ``reach_out:<owner>``, which weighs every discretionary owner notice.
+            keys = [f"{row.type}:{row.drive}"]
+            if context.get("topic_slug"):
+                keys.append(OUTREACH_TOPIC + str(context["topic_slug"]))
+        else:
+            # A check-in teaches the timing with that one contact: one silent contact must not lower
+            # check-ins with everyone, so a contact check-in feeds only ``reach_out:<contact>``.
+            keys = [] if row.drive == "social" and row.type in CHECK_IN_TYPES else [f"{row.type}:{row.drive}"]
+            if row.kind == "message" and row.entity_id:
+                keys.append(f"reach_out:{row.entity_id}")
         for key in keys:
             try:
                 self.feedback.record(key, outcome, source=row.id)

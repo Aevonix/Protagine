@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 
 MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'affect_rules', 'opinions',
-                  'broadcast', 'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills')
+                  'broadcast', 'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills', 'outreach')
 WORKER_PROFILE = 'protagine-act'
 
 
-def mind_section(switches):
+def mind_section(switches, quiet_hours=None):
     """The ``mind`` section of the disposable ``protagine.yaml`` for a profile's mind switches.
 
     Off (``None`` or ``False``) in the plain plugin arm. ``{'initiative': True}``
@@ -33,13 +33,15 @@ def mind_section(switches):
     is a no-op contrast until its milestone. Quiet hours and the daily digest
     are off in every mind arm because an episode's clock advance would
     otherwise hold or add owner notices that have nothing to do with the
-    scenario.
+    scenario; a family that declares quiet hours (``quiet_hours``, the owner
+    outreach family) has that window written instead, the one its base arms
+    read from the workspace.
     """
     if not switches:
         return {'enabled': False}
     if switches is True:
         switches = {'initiative': True}
-    section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24}
+    section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': quiet_hours or '', 'digest_hour': 24}
     if not switches.get('full'):
         section['faculties'] = {name: name in {'initiative', 'semantic_recall'} for name in MIND_FACULTIES}
         return section
@@ -180,7 +182,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     """
     inputs = request['inputs']
     person = inputs['contact_id']
-    section = mind_section(mind)
+    section = mind_section(mind, quiet_hours=inputs.get('quiet_hours'))
     embedding = embedding_environment(inputs, section)
     os.environ.update(PROTAGINE_STATE_DIR=str(state / 'memory-state'),
         PROTAGINE_EVENT_JOURNAL_DIR=str(state / 'memory-state' / 'events'),

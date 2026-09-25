@@ -41,6 +41,28 @@ general self-improvement simply by recording a successful review.
   90-day audit retention and no more. An owner verdict in conversation counts
   only when the night's model quotes the owner's exact words; a verdict it
   does not recognise scores and teaches nothing.
+- **Owner outreach (M11)**: the owner's replies are read by a lexicon
+  (`P/mind/reactions.py`) with two appraisal nets (the owner's opt-out and a
+  dismissal after a send); a reply worded outside it and not caught by the
+  nets is linked only as engagement or not at all, so recall on held-out
+  phrasings is unmeasured until the family's pilot, which reports it per class
+  (a follow-up adds one tool-less classification call per linked reply if
+  positive-reply recall is under 80%). A position link needs a short or
+  referring reply, the owner's first turn after the outreach, not
+  mid-conversation, with no request of its own, so a reply that names neither
+  the topic nor the item and misses any of these links nothing and the
+  outreach is scored by silence. Relevance is lexical (shared terms with the
+  owner's interests and goals, and a sentence of the owner's naming the
+  topic), and so are the null-report and repeat checks (a report worded as a
+  finding that says nothing new in new words passes them). "Not now" teaches a per-hour mark, not a schedule:
+  best-hour learning from reply latency is not built. A finding whose text
+  carries a price trips the authority floor's money pattern and becomes an ask
+  instead of a message; the family's items carry no currency. No family has
+  measured the faculty yet: the flag carries its release-candidate value (on)
+  so the family's `full` arm measures it; the release sets it by the gate
+  (`docs/proto-agi/families/mind-outreach-1.md` section 5: off unless `full`
+  beats `full-outreach`), and a deployment before the gate turns it on or off
+  deliberately in its own config.
 - **Skills (M9)**: off by default. Loads are counted only for Protagine's own
   `protagine-*` skills, and a process whose Hermes lacks
   `clear_skills_system_prompt_cache` lists a new skill only after a restart.

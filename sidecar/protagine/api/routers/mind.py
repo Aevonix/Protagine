@@ -30,6 +30,8 @@ text in docs/HERMES-ADAPTER.md):
   POST /consolidate               run the nightly consolidation now (501 until the mind exposes it)
   GET  /concerns, /goals          the workspace (open concerns, the broadcast set) and the open goals
   POST /interests                 {topic, why?} -> a seeded interest the curiosity drive researches
+  POST /outreach                  {state: on|off} -> the owner's outreach switch (off pauses unprompted outreach
+                                   until turned on; reminders and requested answers keep going) and its state
   POST /asks/{code}/yes|no        {contact_id?, message?}
   POST /off {reason?}, /on, /tick, /rate {id, verdict}, /level {autonomy}, /reset {cls}
   GET  /lessons?status&uses&viewer the lessons with their verified tallies (and every use); a guest gets none
@@ -292,6 +294,17 @@ async def interests(body: InterestBody) -> Dict[str, Any]:
     except ValueError as error:
         raise HTTPException(status_code=422, detail={"code": "invalid_interest", "message": str(error)}) from None
     return {"ok": True, **value}
+
+
+class OutreachBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    state: str = Field(pattern="^(on|off)$")
+
+
+@router.post("/outreach")
+async def outreach_switch(body: OutreachBody) -> Dict[str, Any]:
+    """Owner outreach on or off (``protagine mind outreach on|off``), the recovery path of a pause."""
+    return _require().outreach_switch(body.state, by="api")
 
 
 # -- the body's pull protocol (6.2) -------------------------------------------------------

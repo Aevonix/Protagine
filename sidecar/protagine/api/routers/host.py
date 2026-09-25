@@ -2983,6 +2983,20 @@ async def _process_turn_sync(
                                 source_ref=f"turn:{source_id}", owner_id=get_owner_contact_id())
         except Exception:
             logger.warning("opt-out detection failed", exc_info=True)
+    # Owner outreach (architecture 4.10): the owner's words about the mind reaching out (a reply to an
+    # outreach, "stop checking in", an interest, a worry) reach the mind in the same turn. Never raises.
+    if body.user_message is not None and body.context.contact_id and not _is_system_turn:
+        try:
+            from protagine.identity import get_owner_contact_id
+            from protagine.util.temporal import parse_iso
+            mind = _mind()
+            if (mind is not None and hasattr(mind, "owner_turn")
+                    and body.context.contact_id == get_owner_contact_id()):
+                await mind.owner_turn(getattr(body.user_message, "content", "") or "", turn_id=source_id,
+                                      occurred_at=parse_iso(_occurred_at(body.context.metadata)),
+                                      session_id=body.context.session_id)
+        except Exception:
+            logger.warning("owner outreach reaction failed", exc_info=True)
     try:
         if _contacts_store is not None and body.context.contact_id and not _is_system_turn:
             await _contacts_store.record_interaction(body.context.contact_id,

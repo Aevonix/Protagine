@@ -23,6 +23,16 @@ _QUOTED_SQL = """(json_extract(c.data_json,'$.representation') IN ('preference',
     OR json_extract(c.data_json,'$.memory_quality.memory_kind')='procedure')"""
 
 
+def owner_signal_writer(mind_provider):
+    """The appraisal's owner net for the running mind (owner outreach, architecture 4.10): the owner's
+    opt-out it saw pauses outreach when the phrase match missed it. No mind, or one without the hook: nothing."""
+    def write(signal):
+        mind = mind_provider()
+        hook = getattr(mind, "owner_signal", None)
+        return hook(signal) if callable(hook) else None
+    return write
+
+
 def initialize(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS source_claim_jobs (
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
@@ -1144,7 +1154,8 @@ async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=Tru
     from protagine.contacts.affect_writer import contact_signal_writer
     from protagine.api.routers import host as _host
     appraisals = AppraisalStore(ledger, owner_id=get_owner_contact_id(), on_contact=contact_signal_writer(
-        lambda: _host._affect_store, lambda: _host._contacts_store, owner_id_provider=get_owner_contact_id))
+        lambda: _host._affect_store, lambda: _host._contacts_store, owner_id_provider=get_owner_contact_id),
+        on_owner=owner_signal_writer(_host._mind))
     from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     if commitments_provider is None:
         commitments_provider = lambda: _host._commitment_store  # noqa: E731

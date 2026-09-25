@@ -173,3 +173,21 @@ def test_owner_can_retire_a_lesson_from_the_cli(home, monkeypatch, capsys):
     assert (method, path) == ("POST", "/v1/mind/lessons/L-1a2b3c4d5e/retire")
     assert json.loads(body) == {"reason": "the rule changed", "by": "cli"}
     assert "retired" in capsys.readouterr().out
+
+
+def test_the_owner_turns_outreach_off_and_on_from_the_cli(home, monkeypatch, capsys):
+    """The recovery path of a pause (architecture 4.10): off pauses unprompted outreach until turned on."""
+    state = {"enabled": True, "paused_until": None, "per_day": 3, "sent_24h": 1, "muted": ["kelp farming"], "care": []}
+    transport = _Transport({
+        ("GET", "/v1/mind/state"): {"enabled": True, "outreach": state},
+        ("POST", "/v1/mind/outreach"): {**state, "paused_until": "indefinite"},
+    })
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "outreach"])) == 0
+    assert capsys.readouterr().out.strip() == "outreach: on; 1 of 3 today; muted: kelp farming"
+    assert mind_cli.run(_parse(["mind", "outreach", "off"])) == 0
+    assert "paused until you turn it on" in capsys.readouterr().out
+    posted = [call for call in transport.calls if call[1] == "/v1/mind/outreach"]
+    assert posted and json.loads(posted[0][2]) == {"state": "off"}
+    with pytest.raises(SystemExit):
+        _parse(["mind", "outreach", "maybe"])
