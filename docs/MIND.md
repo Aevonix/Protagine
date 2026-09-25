@@ -75,9 +75,12 @@ The design is in
    `recipient` as named and `grant: owner`. It reaches someone the owner did
    not write to, so it exists only on the owner's own words asking for it:
    the extractor quotes them (`asked`, naming the recipient), code checks the
-   quote is the owner's and names the recipient, and the claim-review pass
-   (`source_claims.review_proposals`) confirms against the whole message that
-   the words ask the assistant itself to contact that person. Anything short
+   quote is the owner's and names the recipient (or refers to one named in the
+   recent conversation or a listed open item: "if they have not sent them,
+   chase them yourself"), and the claim-review pass
+   (`source_claims.review_proposals`) confirms against the whole message, with
+   that conversation and those items to show whom the words mean, that the
+   words ask the assistant itself to contact that person. Anything short
    of that ("tell me / let me know / flag it to me if it lapses", a recipient
    that is the owner, a refused or failed review) is the owner's own reminder
    (`kind: reminder`, obligor `owner`); the row keeps the quote and the
@@ -85,10 +88,20 @@ The design is in
    (a grant stored before the review existed is the owner's reminder). Only the owner's own turn keeps the grant; the same
    shape from a contact is an ordinary item.
    A word the person asked for (a reminder, a nudge, a word if something has
-   not happened) is `kind: reminder`: a message when due, never a task. A
-   word about an item of the same turn, or about a listed open item, is that
-   item's own word (folded into it, or its heads-up when earlier), and a
-   restated listed item with a new time moves it, compare-and-set. The
+   not happened) is `kind: reminder`: a message when due, never a task, on any
+   lane. On the owner's turn such a word is another item's own only when it is
+   the same word to the owner: that item's word at its deadline is a reminder
+   to the owner (not a message to someone else, not the assistant's work), its
+   deadline is still ahead, the word adds no matter of its own, and it falls at
+   the deadline, before it where the item has no heads-up yet (it becomes the
+   heads-up, compare-and-set on an open row of the owner's), or within 30
+   minutes after it at no time the owner named ("if I go quiet past that,
+   nudge me"). Anything else stays its own item, so a word the owner asked for
+   is never dropped, moved or sent to someone else. A new item with a listed
+   item's own wording and a new time moves it, compare-and-set; a merely
+   similar one (the Q4 report beside the Q3 report) never does. A message the
+   owner asked for is a duplicate only of a message to the same recipient,
+   never of the promise it chases. The
    person's own words for the time are kept as `metadata.due_text` and shown
    beside the converted date in Pending Commitments. A message to
    pass on now ("tell Kim the meeting moved") is the reply's own job: nothing

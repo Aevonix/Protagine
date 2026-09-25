@@ -16,7 +16,10 @@ schema and validation) confirms against the owner's whole message that the words
 itself to tell, ask or chase them. The grant is that confirmation; the row keeps the quote and the
 decision. Anything short of it is the owner's own reminder: an unsaid quote, one that does not name the
 recipient, a refused or failed review, a review the model wrote itself, and a recipient that is the owner
-(never reviewed, never asked about). On the drive side a grant counts only on a row carrying that
+(never reviewed, never asked about). Words that refer back ("if they have not sent them, chase them
+yourself") stand on a recipient named in the recent conversation or a listed open item: the code check and
+the review both get that conversation and those items, only to show whom the words mean. A confirmed message
+is a duplicate only of a message to the same recipient, never of the promise it chases. On the drive side a grant counts only on a row carrying that
 confirmed request (`extract.request_confirmed`), so a row granted before the review existed is never
 sent once the people faculty is back on; a notice or check-in row on the owner's lane the mind may not
 send (unconfirmed, addressed to the owner, or the people faculty off) is the owner's reminder when due,
@@ -28,18 +31,27 @@ owed item reports what became of it (done with the worker's summary, failed with
 what it needs; `Outcomes.on_blocked`) to that person, once per outcome: the owner as a `task_outcome`
 notice, a contact only through authority with the owner's word on the exact text. One obligation gets one
 task per schedule the person set (`commitment:<id>:task`, plus the turn of a conversation reschedule): a
-deadline the worker moves or a clock jump never re-tasks it.
+deadline the worker moves or a clock jump never re-tasks it, and a task the previous release formed under its
+deadline key (`commitment:<id>:overdue:<due>`) counts as formed (`drives.former_keys`). A reminder is a word
+on a contact's lane too, never a task. The extractor no longer reads work the assistant promised ("I'll look
+up X and tell you by 5") as a reminder.
 
-**One matter is one item.** A word the person asks for about an item of the same turn, or about a listed
-open item (a shared named party and matter word, due at, before or within two hours after the deadline),
-is that item's own word: folded into it, never recorded beside it, and its heads-up when earlier (written
-compare-and-set on an open row). A new item that restates a listed item with a different deadline moves
-it, compare-and-set. `record_items` reports `owner_reminders` and `folded`.
+**One matter is one item.** On the owner's turn, a reminder about an item of the same turn or a listed
+open item is that item's own word only when it is the same word to the owner: the item's word at its
+deadline is a reminder to the owner (not a message to someone else, not work the assistant owes), its
+deadline is still ahead, the reminder adds no matter of its own, and it falls at the deadline, before it
+where the item has no heads-up yet (it becomes the heads-up, compare-and-set on an open row of the owner's),
+or within 30 minutes after it at no time the owner named. Anything else stays its own item: a word the owner
+asked for is never dropped, moved to a time they did not ask for, or turned into a heads-up to a contact. A
+new item with a listed item's own wording and a different deadline moves it, compare-and-set; a merely
+similar one never does. A deliverable whose counterpart is a name the turn's own person goes by stays
+theirs. `record_items` reports `owner_reminders` and `folded`.
 
-**A contact's turn sees the owner's open items with them**, by wording and due time only
-(`CommitmentStore.get_open_involving`; never a message kind, a cadence, a deliverable or anyone else's).
+A contact's turn still sees only its own items proven in its own source: an owner's item that names the
+contact (a promise to them, a reminder about them) is the owner's record in the owner's words, and a display
+name is shared by everyone who goes by it.
 
-**Capture has room to finish.** The extractor prompt keeps every rule in 12,798 characters (it had grown
+**Capture has room to finish.** The extractor prompt keeps every rule in 12,999 characters (it had grown
 to 13,667, then 15,069 with this line's rules), with examples that show only the fields differing from
 the defaults they state; `record_items` reads an omitted field with the same defaults. The output budget
 is 4,096 tokens (16 of 60 extractions had ended at the 1,500 cap). The extractor also returns `due_text`,
