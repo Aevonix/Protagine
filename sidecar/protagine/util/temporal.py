@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -172,7 +173,9 @@ def _zone(tz: str):
 
 
 def now_utc() -> datetime:
-    return datetime.now(UTC)
+    """The one wall clock: ``time.time``, which Hermes' clock and the mind's read too. A host that shifts it
+    (the paired harness's body clock) shifts every "Now" line with it."""
+    return datetime.fromtimestamp(time.time(), UTC)
 
 
 def now_in(tz: str) -> datetime:

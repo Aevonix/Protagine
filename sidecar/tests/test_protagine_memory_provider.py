@@ -964,3 +964,16 @@ def test_contact_resolution_transport_failures_open_the_breaker(
     p._turn_number = 3
     assert p._resolve_handle("telegram", "tg-1") is None
     assert len(fake.requests) == 3      # the open breaker skipped the call
+
+
+def test_the_clock_line_follows_the_one_wall_clock(provider_mod, monkeypatch):
+    """The provider's "Current Time" reads ``time.time``, the clock Hermes and the sidecar follow, so a
+    host that shifts it (the paired body clock) never shows the model two different days."""
+    from datetime import datetime, timezone
+
+    provider = _make_provider(provider_mod, _FakeHttpx(), monkeypatch)
+    shifted = time.time() + 19 * 3600
+    monkeypatch.setattr(time, "time", lambda: shifted)
+    expected = datetime.fromtimestamp(shifted, timezone.utc)
+    line = provider._current_time_line()
+    assert expected.strftime("%A, %B %d, %Y") in line and expected.strftime("%I:%M").lstrip("0") in line

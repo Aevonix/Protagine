@@ -34,6 +34,7 @@ from protagine.api.auth import (
 )
 
 from protagine.turns.tool_observations import ToolObservation
+from protagine.util.temporal import now_utc as _temporal_now
 from protagine.api.schemas.host import (
     HostIdentity,
     HostMessage,
@@ -1738,7 +1739,7 @@ async def _assemble_sections(
         if _canonical_only:
             sections.append(ContextSection(
                 id="temporal-context", title="Current Time", priority=100,
-                body="Current UTC time: " + datetime.now(timezone.utc).isoformat()))
+                body="Current UTC time: " + _temporal_now().isoformat()))
         else:
             sections.append(await _build_temporal_section(
                 cid,
@@ -2104,7 +2105,7 @@ async def claims_for(contact_id: str, limit: int = 8) -> list[str]:
 
     def read() -> list[str]:
         projection = SourceClaimProjection(get_turn_idempotency_ledger(get_state_dir()))
-        now = datetime.now(timezone.utc).isoformat()
+        now = _temporal_now().isoformat()
         with closing(projection.ledger._connect()) as conn:
             rows = projection._rows(conn, contact_id, "", distinct_values=True, limit=limit * 4)
             erased = {row[0] for row in conn.execute(

@@ -186,3 +186,19 @@ async def test_context_builder_does_not_present_fallback_as_contact_record(monke
     # The reading rule (a retained clock is history) is the host's system-prompt text, not per turn.
     assert "historical" not in section.body
     assert "your local time" not in section.body and "this is NOW" not in section.body
+
+
+def test_now_follows_the_one_wall_clock(monkeypatch):
+    """``time.time`` is the one wall clock: Hermes' clock, the mind's and every "Now" line the sidecar renders
+    read it, so a host that shifts it (the paired harness's body clock) moves them together. The pilots'
+    prompts said "Now" 14 to 19 hours behind the shifted message stamps, and the model wrote those dates down."""
+    import time
+
+    from protagine.mind.tick import _wall_clock
+
+    shifted = time.time() + 19 * 3600
+    monkeypatch.setattr(time, "time", lambda: shifted)
+    expected = datetime.fromtimestamp(shifted, timezone.utc)
+    assert abs((T.now_utc() - expected).total_seconds()) < 1
+    assert abs((_wall_clock()() - expected).total_seconds()) < 1
+    assert f"Now: {expected.isoformat(timespec='seconds')[:16]}" in T.describe_now("UTC")

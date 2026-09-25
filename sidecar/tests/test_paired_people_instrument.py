@@ -318,6 +318,26 @@ def _seconds_apart(stamp, moment):
 
 
 @needs_hermes
+def test_the_body_clock_moves_every_now_line_the_model_reads():
+    """One clock (the pilots' I2): Hermes' message stamps, the sidecar's "Now" and the plugin's "Current Time"
+    all read the body clock once it is shifted, so no prompt carries two different days."""
+    from datetime import datetime, timezone
+
+    import hermes_time
+    from protagine.util import temporal
+    from protagine_memory.provider import ProtagineMemoryProvider
+
+    provider = ProtagineMemoryProvider({"url": "http://127.0.0.1:1", "contact_id": "p-01"})
+    with body_clock() as body:
+        body.advance_clock(19 * 3600)
+        hermes = hermes_time.now().astimezone(timezone.utc)
+        sidecar, line = temporal.now_utc(), provider._current_time_line()
+    assert (hermes - datetime.now(timezone.utc)).total_seconds() > 18 * 3600
+    assert abs((sidecar - hermes).total_seconds()) < 5
+    assert hermes.strftime("%A, %B %d, %Y") in line
+
+
+@needs_hermes
 async def test_an_inbound_turn_after_a_clock_advance_is_recorded_on_the_body_clock(sync_host):
     with body_clock() as body:
         contact = await sync_host.store.create(display_name='p-02', trust_tier='regular', may_contact='auto',

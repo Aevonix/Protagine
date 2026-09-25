@@ -390,8 +390,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     # -- Clock scoped to the owning user turn (pre_llm_call hook) --------------
 
     def _current_time_line(self) -> str:
+        """Read from ``time.time``, the one wall clock Hermes' own clock and the sidecar's "Now" follow too."""
         from zoneinfo import ZoneInfo
-        now = datetime.now(timezone.utc)
+        now = datetime.fromtimestamp(_ttime.time(), timezone.utc)
         if self._timezone:
             try:
                 now = now.astimezone(ZoneInfo(self._timezone))

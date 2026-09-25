@@ -130,14 +130,14 @@ def _utc(value: Any) -> Optional[datetime]:
 
 
 def _wall_clock() -> Callable[[], datetime]:
-    """UTC now; ``PROTAGINE_MIND_CLOCK_OFFSET_SECONDS`` shifts it (a test seam for the 72 h ask expiry)."""
+    """UTC now from the one wall clock (``temporal.now_utc``, ``time.time``); ``PROTAGINE_MIND_CLOCK_OFFSET_SECONDS``
+    shifts it (a test seam for the 72 h ask expiry)."""
+    from protagine.util.temporal import now_utc
     try:
         offset = float(os.environ.get("PROTAGINE_MIND_CLOCK_OFFSET_SECONDS") or 0)
     except ValueError:
         offset = 0.0
-    if not offset:
-        return lambda: datetime.now(timezone.utc)
-    return lambda: datetime.now(timezone.utc) + timedelta(seconds=offset)
+    return lambda: now_utc() + timedelta(seconds=offset)
 
 
 def faculties_of(config: Mapping[str, Any] | None) -> Dict[str, bool]:
