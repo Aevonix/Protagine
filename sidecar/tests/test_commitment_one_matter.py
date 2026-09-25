@@ -166,3 +166,21 @@ def test_a_misread_check_in_beside_the_promise_it_is_about_folds_into_it(tmp_pat
     later = T0 + timedelta(minutes=21)
     candidates = duty(DriveInputs(now=later, owner_id=OWNER, commitments=_open(store)))[1]
     assert [(c.type, c.recipient) for c in candidates] == [("commitment_reminder", OWNER)]
+
+
+def test_the_owner_restating_an_open_item_with_a_new_time_moves_it(tmp_path):
+    """Restated as a new item instead of a reschedule, the listed row is moved compare-and-set: one row,
+    at the time the owner now gave; the same time again changes nothing."""
+    store = CommitmentStore(tmp_path / "c.db")
+    item = store.create(person_id=OWNER, description="Send p-41 the floor plan", due_at=_at(60),
+                        source_type="cognition", metadata={"counterpart": "p-41", "obligor": "owner"})
+    same = _record(store, [_create("Send p-41 the floor plan", _at(60), counterpart="p-41")], existing=[item])
+    assert same["created"] == [] and same["updated"] == [] and same["skipped_duplicates"] == 1
+    moved = _record(store, [_create("Send p-41 the floor plan", _at(120), counterpart="p-41")], existing=[item])
+    assert moved["created"] == [] and moved["updated"] == [item["id"]]
+    row, = _open(store)
+    assert datetime.fromisoformat(row["due_at"]) == T0 + timedelta(minutes=120)
+    assert row["metadata"]["reschedule"]["by"] == "conversation"
+    # Against a stale listing (the row moved since), it is a conflict to rerun, never an overwrite.
+    stale = _record(store, [_create("Send p-41 the floor plan", _at(30), counterpart="p-41")], existing=[item])
+    assert stale["conflicts"] == 1 and datetime.fromisoformat(store.get(item["id"])["due_at"]) == T0 + timedelta(minutes=120)

@@ -653,6 +653,20 @@ def _folds(prepared: Dict[int, Any], listed: List[Dict[str, Any]]) -> Dict[int, 
     return folds
 
 
+def _restated(listed: List[Dict[str, Any]], norm: str, due_at: Any) -> Optional[Dict[str, Any]]:
+    """The one listed open item a new item restates with a different deadline (the same wording, as the
+    duplicate check reads it, and both dated), or None: then it is a duplicate or a new item."""
+    from protagine.commitments.store import _normalize_desc, _similar_desc
+    due = _utc(due_at)
+    if due is None:
+        return None
+    alike = [row for row in listed if _similar_desc(norm, _normalize_desc(row.get("description") or ""))]
+    if len(alike) != 1:
+        return None
+    listed_due = _utc(alike[0].get("due_at"))
+    return alike[0] if listed_due is not None and listed_due != due else None
+
+
 def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
     metadata = metadata if isinstance(metadata, dict) else {}
     return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
@@ -849,7 +863,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     ``assistant_names`` the assistant's, and ``speaker_names`` the turn's own person's (one person).
     One matter is one item (``_folds``): a word the person asks for about an item of the same turn, or
     about a listed open item, is that item's own word, counted in ``folded``; one due before the item's
-    deadline is its heads-up (written compare-and-set on an open row of the same person).
+    deadline is its heads-up (written compare-and-set on an open row of the same person). A new item that
+    restates one listed item with a different deadline (``_restated``) moves it, compare-and-set, as a
+    ``reschedule`` would.
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
     from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
@@ -962,6 +978,26 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             others += 1
             continue
         norm = _normalize_desc(description)
+        again = _restated([row for row in listed if row.get("id") not in {*updated, *resolved}], norm,
+                          item.get("due_at"))
+        if again is not None:
+            # The person restating a listed item with a new time moves it, written against what was listed.
+            due_at = _utc(item.get("due_at")).isoformat()
+            metadata = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note}}
+            metadata.update(_heads_up_patch(again, due_at, None))
+            try:
+                row = commitment_store.update(again["id"], due_at=due_at, metadata=metadata,
+                                              expect={"description": again.get("description"),
+                                                      "due_at": again.get("due_at")})
+                if row is not None:
+                    updated.append(row["id"])
+            except CommitmentConflict:
+                logger.info("commitment restatement skipped: the row changed since it was listed")
+                conflicts += 1
+            except Exception as error:
+                logger.debug("commitment restatement skipped (%s)", type(error).__name__)
+                ignored += 1
+            continue
         if any(_similar_desc(norm, k) for k in known):
             skipped += 1
             continue
