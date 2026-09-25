@@ -272,6 +272,22 @@ def test_a_reply_is_graded_from_the_inbound_turn_row_it_names():
     assert grading.assess_body(empty, REPLY)['body:reply:2'] is False
 
 
+def test_token_checks_read_the_words_not_the_markdown():
+    """A reply that sets a token in bold, italics or code, or breaks the line inside it, still says it: in the
+    people pilot every arm failed a reply for writing "the **signed lease**". The same reading applies to
+    every token check, forbidden ones included; an underscore inside a word is part of it."""
+    reply = {**REPLY, 'sends': []}
+    for text in ('You are down for the **signed lease**.', 'You are down for the _signed_ `lease`.',
+                 'You are down for the signed\nlease.', 'You are down for the ~~old~~ *signed   lease*.'):
+        effects = {'turns': turns(('inbound', 'Hi.'), ('event', None), ('inbound', text)),
+                   'body': body([], [tick(1)])}
+        assert grading.assess_body(effects, reply)['body:reply:2'] is True, text
+    leak = {'turns': turns(('inbound', 'Hi.'), ('event', None), ('inbound', 'The signed lease, not the __venue__ contract.')),
+            'body': body([], [tick(1)])}
+    assert grading.assess_body(leak, reply)['body:reply:2'] is False
+    assert grading._contains('see signed_lease.pdf', 'signed_lease') and not grading._contains('signedlease', 'signed lease')
+
+
 def test_unobserved_body_fails_the_new_checks_too():
     assert grading.assess_body({}, REPLY) == {'body:observed': False, 'body:forbidden': False,
                                               'body:reply:2': False, 'body:sends:capture:p-03': False}

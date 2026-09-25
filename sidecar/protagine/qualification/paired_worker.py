@@ -169,12 +169,24 @@ def skills_present(home):
     return {'hermes': names(Path(home) / 'skills'), 'protagine': names(Path(home).joinpath(*MIND_SKILLS_DIR))}
 
 
+# The stock tool's error for a target it cannot resolve does not say what a valid one is: every arm guessed
+# (cli:, chat:, sms:p-NN, a bare p-NN) and some rewrote contacts.json. A failed send names the form, in every arm.
+TARGET_FORM = 'a contact\'s target is their "address" in contacts.json, exactly as written there (platform:chat_id)'
+
+
 def outbound_send(args, **_):
-    """The stock send path for one ``send_message(target, message)`` call."""
+    """The stock send path for one ``send_message(target, message)`` call; a failed call names the valid target
+    form."""
     from tools.send_message_tool import send_message_tool
     args = args if isinstance(args, dict) else {}
-    return send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
-                              'message': str(args.get('message') or '')})
+    result = send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
+                                'message': str(args.get('message') or '')})
+    try:
+        value = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    return json.dumps({**value, 'target_form': TARGET_FORM}) if isinstance(value, dict) and value.get('error') \
+        else result
 
 
 def outbound_mode(mode):

@@ -195,7 +195,9 @@ added = paired_worker.install_outbound('send_message')
 again = paired_worker.install_outbound('send_message')
 from tools.registry import registry
 sent = registry.dispatch('send_message', {'target': 'capture:p-05', 'message': 'Is the lease signed?'})
-report = {'before': before, 'added': added, 'again': again, 'with': names([*paired_worker.COMMON_TOOLS, *added]),
+wrong = registry.dispatch('send_message', {'target': 'sms:p-05', 'message': 'Is the lease signed?'})
+report = {'wrong': json.loads(wrong), 'before': before, 'added': added, 'again': again,
+          'with': names([*paired_worker.COMMON_TOOLS, *added]),
           'without': names([*paired_worker.COMMON_TOOLS]), 'schema': registry.get_schema('send_message'),
           'sent': json.loads(sent) if isinstance(sent, str) else sent, 'outbox': paired_body.read_outbox(outbox)}
 print('RESULT:' + json.dumps(report, default=str))
@@ -218,6 +220,22 @@ def test_the_outbound_tool_is_the_stock_send_path_to_the_capture_platform(tmp_pa
     assert report['sent'].get('success') is True, report['sent']
     assert [(row['target'], row['text'], row['via']) for row in report['outbox']] == [
         ('capture:p-05', 'Is the lease signed?', 'platform')]
+    # A target the stock path cannot resolve fails as before, and the error names the valid form.
+    assert report['wrong']['error'] and report['wrong']['target_form'] == paired_worker.TARGET_FORM
+
+
+def test_a_failed_send_names_the_valid_target_form(monkeypatch):
+    """Every arm guessed at targets (cli:, chat:, sms:p-NN, a bare p-NN) because the stock error never says what
+    a valid one is; the declared outbound tool adds it to a failed call and changes nothing else."""
+    def stock(args):
+        return json.dumps({'error': 'Unknown platform: sms'} if args['target'].startswith('sms:') else
+                          {'success': True, 'message_id': '1'})
+    monkeypatch.setitem(sys.modules, 'tools.send_message_tool', SimpleNamespace(send_message_tool=stock))
+    failed = json.loads(paired_worker.outbound_send({'target': 'sms:p-05', 'message': 'hi'}))
+    assert failed == {'error': 'Unknown platform: sms', 'target_form': paired_worker.TARGET_FORM}
+    assert '"address" in contacts.json' in paired_worker.TARGET_FORM
+    assert json.loads(paired_worker.outbound_send({'target': 'capture:p-05', 'message': 'hi'})) == {
+        'success': True, 'message_id': '1'}
 
 
 def test_full_and_full_people_differ_only_in_the_people_flag_and_the_mind_reads_it(tmp_path, monkeypatch):
