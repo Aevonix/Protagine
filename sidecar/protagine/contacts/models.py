@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 # ── Trust tiers ──────────────────────────────────────────────────────────────
@@ -242,11 +243,11 @@ class MergeAuditRecord:
     triggered_by: str
     contact_a_snapshot: Dict[str, Any]
     contact_b_snapshot: Dict[str, Any]
-    merged_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    merged_at: datetime = field(default_factory=lambda: now_utc())
 
     def __post_init__(self):
         if self.merged_at is None:
-            self.merged_at = datetime.now(timezone.utc)
+            self.merged_at = now_utc()
 
 
 # ── Trust scopes (context-scoped trust: group chats, households, project rooms) ──

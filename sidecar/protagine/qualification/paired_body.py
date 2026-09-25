@@ -4,7 +4,8 @@ One tick runs the arm's own step first (the Protagine tick in plugin arms,
 making the heartbeat job due or the curator pass in the comparator arms, nothing
 in base), then Hermes cron ``tick()``, then kanban ``dispatch_once`` with the
 ready workers run in-process and awaited up to a bound. ``advance_clock`` shifts the two wall
-clocks Hermes reads, faketime-style, without touching monotonic clocks. A generated
+clocks Hermes reads, faketime-style, without touching monotonic clocks; every "now" in the sidecar
+and the plugins reads ``time.time`` (``temporal.now_utc``) and moves with them. A generated
 family also pins the clock's start (``start_offset``): every episode of every arm begins
 at the same UTC time of day.
 """

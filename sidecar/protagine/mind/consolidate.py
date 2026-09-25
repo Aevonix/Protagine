@@ -51,6 +51,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 from . import audit
 from .authority import boundary_crossed
 from .concerns import SETTLED_FOR
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ class Consolidation:
         self.budgets = budgets
         self.tokens_allowed = tokens_allowed or (lambda: True)
         self.faculties = faculties
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.stances = stances or self._default_stances                    # an opinion store may pass its own reader
         self.cancel = cancel            # (row, reason): the mind's check-cancellation of a moot intention
         self.tz = tz or timezone.utc

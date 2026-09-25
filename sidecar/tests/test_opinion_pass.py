@@ -711,3 +711,27 @@ async def test_the_pass_uses_the_reasoning_role_and_its_deadline(world, monkeypa
     assert job(world, 'ask-1')['disposition'] == 'none'
     call = selected.routing_status()['recent_calls'][-1]
     assert call['function_role'] == ('extraction' if override else 'reasoning')
+
+
+async def test_the_harness_drain_waits_for_an_opinion_call_in_flight(world):
+    """A job the pass has taken holds a lease while its model call runs, as the ledger's other jobs do, so the
+    paired harness's drain before a restart or a clock jump sees it running and waits for it. Without one the
+    drain read the queue as owed but idle, gave up after its idle cut-off and let the restart cut the call:
+    the stance never reached the probe (the pilots' I4). A finished or failed job holds no lease."""
+    from protagine.qualification.paired_worker import drain_background
+    turn(world, 'ask-1', OWNER, ASK, REPLY, admitted=RECORD)
+    thinking, release = asyncio.Event(), asyncio.Event()
+
+    class Thinking(Router):
+        async def complete(self, *, messages, context):
+            thinking.set()
+            await release.wait()
+            return await super().complete(messages=messages, context=context)
+    task = asyncio.create_task(run_one(world.store, Thinking(lambda packet: form()), enabled=True))
+    await thinking.wait()
+    asyncio.get_running_loop().call_later(0.8, release.set)
+    drained = await asyncio.to_thread(drain_background, world.path, seconds=10, idle=0.3, poll=0.05)
+    assert await task is True and job(world, 'ask-1')['disposition'] == 'formed'
+    assert drained['waited_seconds'] >= 0.7 and 'opinion_jobs' not in drained['left']
+    with world.ledger._connect() as conn:
+        assert conn.execute('SELECT lease_until FROM opinion_jobs').fetchone()[0] == 0

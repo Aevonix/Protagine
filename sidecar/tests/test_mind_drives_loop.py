@@ -617,8 +617,16 @@ async def test_mind_section_and_broadcast(fx):
     asked = [item for item in summary["formed"] if item["decision"] == "ask"]
     assert asked                                                            # a message to a contact asks first
     section = fx.mind.section()
-    assert section.startswith("On my mind: ") and len(section) <= 600 and "Waiting for your say on: [" in section
+    assert len(section) <= 600 and "Waiting for your say on: [" in section
     assert len(fx.mind.broadcast()) == 2                                    # five concerns, the top three intended
+    # Idle curiosity (an interest's research) stays out of the decision context; the rest of the broadcast,
+    # a question curiosity raised included, is on the mind.
+    assert {(c.drive, c.kind) for c in fx.mind.broadcast()} == {("curiosity", "interest")}
+    assert "On my mind" not in section
+    shown = SimpleNamespace(drive="curiosity", kind="question", summary="the backups are a week old")
+    fx.mind.broadcast = lambda: [*fx.mind.concerns.top(k=3), shown]
+    assert fx.mind.section().startswith("On my mind: the backups are a week old.\n")
+    del fx.mind.broadcast
     fx.mind.faculties["broadcast"] = False
     assert "On my mind" not in fx.mind.section() and fx.mind.broadcast() == []
     fx.mind.faculties["broadcast"] = True

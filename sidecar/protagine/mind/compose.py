@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Tuple
 
 from protagine.util.model_output import final_text
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class Composer:
     def __init__(self, router: Any = None, *, clock: Callable[[], datetime] | None = None,
                  tokens_allowed: Callable[[], bool] | None = None, enabled: bool = True) -> None:
         self.router = router
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.tokens_allowed = tokens_allowed or (lambda: True)
         self.enabled = enabled
         self.calls_this_tick = 0

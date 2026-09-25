@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class TelemetryStore:
 
     async def touch(self, key: str) -> None:
         async with self._lock:
-            setattr(self, key, datetime.now(timezone.utc))
+            setattr(self, key, now_utc())
         self._persist()
 
     async def silence_hours(self, key: str) -> Optional[float]:
@@ -103,7 +104,7 @@ class TelemetryStore:
             ts = getattr(self, attr, None)
             if ts is None:
                 return None
-            return (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+            return (now_utc() - ts).total_seconds() / 3600
 
     async def stale_flags(self, thresholds: Dict[str, float]) -> List[str]:
         flags = []
@@ -117,7 +118,7 @@ class TelemetryStore:
                     started = self.started_at
                 if started is not None:
                     uptime_h = (
-                        datetime.now(timezone.utc) - started
+                        now_utc() - started
                     ).total_seconds() / 3600
                     if uptime_h > threshold:
                         flags.append(f"{key}:never_ran")

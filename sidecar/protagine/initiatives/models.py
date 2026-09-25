@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 class InitiativeStatus(str, Enum):
@@ -65,7 +66,7 @@ class StoredInitiative:
     rationale: str
     action_hint: Optional[str] = None
     entity_id: Optional[str] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
 
     # === Deduplication ===
     # dedup_key is the PERIOD key (recurring types append a time bucket, e.g.
@@ -168,14 +169,14 @@ class StoredInitiative:
         """Has initiative expired?"""
         if not self.expires_at:
             return False
-        return datetime.now(timezone.utc) > self.expires_at
+        return now_utc() > self.expires_at
 
     @property
     def is_timed_out(self) -> bool:
         """Has initiative exceeded timeout?"""
         if not self.assigned_at or self.status not in ("assigned", "acknowledged"):
             return False
-        elapsed = (datetime.now(timezone.utc) - self.assigned_at).total_seconds()
+        elapsed = (now_utc() - self.assigned_at).total_seconds()
         return elapsed > self.timeout_seconds
 
     @property
@@ -224,7 +225,7 @@ class StoredInitiative:
             rationale=row.get("rationale", ""),
             action_hint=row.get("action_hint"),
             entity_id=row.get("entity_id"),
-            created_at=parse_dt(row.get("created_at")) or datetime.now(timezone.utc),
+            created_at=parse_dt(row.get("created_at")) or now_utc(),
             dedup_key=row.get("dedup_key"),
             dedup_base=row.get("dedup_base"),
             context=context,
@@ -354,7 +355,7 @@ class AssignmentHistory:
     agent_id: str = ""
     agent_name: Optional[str] = None
     action: str = ""  # assigned, acknowledged, completed, failed, cancelled, delegated, reassigned
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: now_utc())
     details: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -375,9 +376,9 @@ class AssignmentHistory:
                     ts = ts[:-1] + "+00:00"
                 timestamp = datetime.fromisoformat(ts)
             except (ValueError, TypeError):
-                timestamp = datetime.now(timezone.utc)
+                timestamp = now_utc()
         else:
-            timestamp = ts or datetime.now(timezone.utc)
+            timestamp = ts or now_utc()
 
         return cls(
             id=row.get("id"),

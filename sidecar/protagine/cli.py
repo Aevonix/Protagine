@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from protagine.util.temporal import now_utc
 
 
 def main() -> None:
@@ -1847,7 +1848,7 @@ def _cmd_validate(args) -> None:
     # Write validation stamp
     stamp_path = Path(state_dir) / ".protagine-e2e-validated"
     stamp_data = {
-        "validated_at": datetime.now(timezone.utc).isoformat(),
+        "validated_at": now_utc().isoformat(),
         "context_sections": len(sections),
         "cognitive_sections": len(found),
         "llm_tested": llm_ok,

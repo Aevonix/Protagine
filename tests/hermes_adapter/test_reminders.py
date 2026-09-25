@@ -1,6 +1,6 @@
 """Reminders live on stock cron; the plugin keeps only the job id."""
 
-from conftest import probe
+from conftest import probe, refused
 
 REMINDER_CODE = '''
 from tools.registry import registry
@@ -49,9 +49,9 @@ g, o = guest(), owner()
 emit(guest=call(SCHEDULE, g), missing=call({"operation": "schedule", "source_id": "src-1"}, o),
      unknown=call({"operation": "inspect", "job_id": "nope"}, o))
 ''', home)
-    assert "owner" in result["guest"]["error"]
-    assert "required" in result["missing"]["error"]
-    assert "unknown reminder" in result["unknown"]["error"]
+    assert "owner" in refused(result["guest"])
+    assert "required" in refused(result["missing"])
+    assert "unknown reminder" in refused(result["unknown"])
     assert sidecar.calls("/v1/host/memory/sources/deadline") == []
 
 

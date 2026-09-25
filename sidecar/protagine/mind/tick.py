@@ -25,6 +25,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from protagine.util.temporal import now_utc
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional
 from zoneinfo import ZoneInfo
@@ -130,14 +131,14 @@ def _utc(value: Any) -> Optional[datetime]:
 
 
 def _wall_clock() -> Callable[[], datetime]:
-    """UTC now; ``PROTAGINE_MIND_CLOCK_OFFSET_SECONDS`` shifts it (a test seam for the 72 h ask expiry)."""
+    """UTC now from the one wall clock (``temporal.now_utc``, ``time.time``); ``PROTAGINE_MIND_CLOCK_OFFSET_SECONDS``
+    shifts it (a test seam for the 72 h ask expiry)."""
+    from protagine.util.temporal import now_utc
     try:
         offset = float(os.environ.get("PROTAGINE_MIND_CLOCK_OFFSET_SECONDS") or 0)
     except ValueError:
         offset = 0.0
-    if not offset:
-        return lambda: datetime.now(timezone.utc)
-    return lambda: datetime.now(timezone.utc) + timedelta(seconds=offset)
+    return lambda: now_utc() + timedelta(seconds=offset)
 
 
 def faculties_of(config: Mapping[str, Any] | None) -> Dict[str, bool]:
@@ -1636,7 +1637,7 @@ class Mind:
 
     @staticmethod
     def _sent_at(row: StoredInitiative) -> datetime:
-        return _utc(row.completed_at) or _utc(row.created_at) or datetime.now(timezone.utc)
+        return _utc(row.completed_at) or _utc(row.created_at) or now_utc()
 
     def _messages_by_contact(self, now: datetime) -> Dict[str, List[StoredInitiative]]:
         """The mind's messages to each contact over the social history, newest first."""
@@ -2225,15 +2226,18 @@ class Mind:
     def section(self, *, limit: int = MIND_SECTION_CHARS) -> str:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
-        Affect's notes and its calm tone line come first but take only the room the rest leaves
-        (at most 360 characters), so they never cut the open asks. Stances and the turn's lesson
+        Affect's notes come first but take only the room the rest leaves (at most 360 characters),
+        so they never cut the open asks. The broadcast leaves out idle curiosity (an interest's
+        research): in a decision it points at the optional work the consumers postpone. A question
+        curiosity raised (a contradiction for the owner) stays. Stances and the turn's lesson
         ride their own sections (``protagine-stances``, ``protagine-lessons``), built from the
         turn's text.
         """
         if not self.enabled:
             return ""
         lines: List[str] = []
-        broadcast = self.broadcast()
+        broadcast = [concern for concern in self.broadcast()
+                     if not (concern.drive == "curiosity" and concern.kind == "interest")]
         if broadcast:
             lines.append("On my mind: " + "; ".join(f"{c.summary}"[:120] for c in broadcast) + ".")
         goals = [self.goals.render(goal) for goal in self.goals.open()]

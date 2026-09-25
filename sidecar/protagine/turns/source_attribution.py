@@ -9,6 +9,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
 import json
+from protagine.util.temporal import now_utc
 
 
 def initialize(conn):
@@ -127,7 +128,7 @@ def correct(ledger, *, operation_id, performed_by, old_contact_id, contact_id,
             'old_contact_id': old_contact_id, 'contact_id': contact_id,
             'source_ids': selected, 'affected_source_ids': affected,
             'invalidated_source_ids': sorted(descendants), 'evidence_refs': evidence,
-            'recorded_at': datetime.now(timezone.utc).isoformat(), 'performed_by': performed_by,
+            'recorded_at': now_utc().isoformat(), 'performed_by': performed_by,
             'authority_granted': False, 'source_text_preserved': True}
         conn.execute('INSERT INTO source_attribution_operations VALUES (?,?,?,?)',
                      (operation_id, request_hash, _json(result), result['recorded_at']))

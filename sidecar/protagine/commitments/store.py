@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -541,14 +542,14 @@ class CommitmentStore:
         keeps its original ``due_at`` and starts ``overdue``.
         """
         commitment_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         status = "pending"
 
         # Validate due_at is in the future AND normalize it to canonical UTC ISO
         # (see _parse_due_at: a raw string sorts wrong and a promise is forgotten).
         if due_at:
             due_dt, due_at = _parse_due_at(due_at)
-            if due_dt < datetime.now(timezone.utc):
+            if due_dt < now_utc():
                 if not allow_overdue:
                     raise ValueError("due_at must be in the future")
                 status = "overdue"
@@ -705,7 +706,7 @@ class CommitmentStore:
 
                     # Auto-fill fulfilled_at when transitioning to fulfilled
                     if status == "fulfilled" and not fulfilled_at:
-                        fulfilled_at = datetime.now(timezone.utc).isoformat()
+                        fulfilled_at = now_utc().isoformat()
 
                 # Build UPDATE statement
                 updates: List[str] = []
@@ -723,7 +724,7 @@ class CommitmentStore:
                 if due_at or clear_due_at:
                     updates.append("due_at = ?")
                     params.append(due_at if due_at else None)
-                    reopened = clear_due_at or due_dt > datetime.now(timezone.utc)
+                    reopened = clear_due_at or due_dt > now_utc()
                     if status is None and current_status == "overdue" and reopened:
                         updates.append("status = ?")
                         params.append("pending")
@@ -803,7 +804,7 @@ class CommitmentStore:
         due_at has passed. Including 'overdue' matters: the condition worker
         flips pending→overdue, and a pending-only query would make flipped
         items invisible to everything that surfaces owed work."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         with self._lock:
             conn = self._connect()
             try:
@@ -1023,7 +1024,7 @@ class CommitmentStore:
                     )
 
                 meta = dict(current.get("metadata") or {})
-                resolved_at = datetime.now(timezone.utc).isoformat()
+                resolved_at = now_utc().isoformat()
                 meta["resolution"] = {
                     **expected_resolution,
                     "at": resolved_at,
@@ -1099,7 +1100,7 @@ class CommitmentStore:
         fulfilled, cancelled (with outcome breakdown), still open. This is the
         calibration signal for whatever generates items — a source whose items
         keep getting cancelled as invalid should get more conservative."""
-        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+        cutoff = now_utc().timestamp() - days * 86400
         with self._lock:
             conn = self._connect()
             try:

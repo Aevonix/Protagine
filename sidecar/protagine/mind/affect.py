@@ -37,6 +37,7 @@ from protagine.initiatives.models import MIND_ACTIVE_STATUSES
 
 from .audit import NOTICE_TYPES
 from .drives import DUTY_DOMAINS, _obligor, _utc, slug
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -433,7 +434,7 @@ class Affect:
         self.rules_on = bool(rules_on)
         self.state_on = bool(state_on) and not self.rules_on
         self.tz = tz or timezone.utc
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self._novel: Deque[AffectEvent] = deque(maxlen=NOVEL_MAX)
         self._inputs: Optional[AffectInputs] = None
         self._view: Optional[AffectView] = None
@@ -813,12 +814,13 @@ class Affect:
         return found.note() if found is not None else ""
 
     def section_lines(self, limit: int = SECTION_CHARS) -> List[str]:
-        """The consumer notes, then the tone line; whole lines drop from the end to fit ``limit``."""
+        """The consumer notes for the decision context; whole lines drop from the end to fit ``limit``. The
+        tone line is self-report only (``state``): a mood in the decision context had no decision value."""
         try:
             view = self.view()
             if view is None or limit < 2:
                 return []
-            lines = [*view.notes(), *([view.line] if view.line else [])]
+            lines = list(view.notes())
             while len(lines) > 1 and len("\n".join(lines)) > limit:
                 lines.pop()
             if lines and len(lines[0]) > limit:

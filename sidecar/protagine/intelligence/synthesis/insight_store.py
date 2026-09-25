@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Set
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class InsightStore:
                 VALUES (?, ?)
                 ON CONFLICT(insight_id) DO NOTHING
                 """,
-                (insight_id, datetime.now(timezone.utc).isoformat()),
+                (insight_id, now_utc().isoformat()),
             )
 
     def is_dismissed(self, insight_id: str) -> bool:

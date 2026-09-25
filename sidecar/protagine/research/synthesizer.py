@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from protagine.research.gatherer import EvidenceItem, EvidencePackage, SourceType
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class DomainInsight:
     supporting_citations: List[str]       # Evidence item citations
     confidence: float = 0.0               # 0.0–1.0
     novelty_score: float = 0.0            # 0.0–1.0
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -68,7 +69,7 @@ class SynthesisReport:
     evidence_count: int
     source_breakdown: Dict[str, int]      # SourceType.value -> count
     synthesis_confidence: float           # 0.0–1.0, aggregate
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
 
 
 # ---------------------------------------------------------------------------

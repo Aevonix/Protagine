@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import logging
+from protagine.util.temporal import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ class PreferenceLearner:
             existing.value = value
             existing.confidence = min(1.0, existing.confidence + 0.1)
             existing.learned_from = "implicit"
-            existing.last_updated = datetime.now()
+            existing.last_updated = now_local()
         else:
             self._preferences[pref_key] = Preference(
                 category=category,

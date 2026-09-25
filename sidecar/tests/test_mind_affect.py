@@ -746,7 +746,9 @@ def test_the_section_drops_whole_lines_from_the_end_and_keeps_the_switch_notes_l
     world.outcome("dismissed", "nudge", hours=0.5)
     world.update()
     full = world.affect.section_lines(limit=10_000)
-    assert full[0] == NOTE and full[-1].startswith("Mood: ") and len(full) == 5
+    # The consumer notes only: the tone line is self-report (state()), never decision context.
+    assert full[0] == NOTE and len(full) == 4 and not any(line.startswith("Mood: ") for line in full)
+    assert world.affect.state()["line"].startswith("Mood: ")
     bounded = world.affect.section_lines()
     assert len("\n".join(bounded)) <= SECTION_CHARS and bounded == full[:len(bounded)]
     assert world.affect.section_lines(limit=len(NOTE) + 5) == [NOTE]

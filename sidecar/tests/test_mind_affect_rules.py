@@ -102,4 +102,24 @@ def test_the_rules_are_pure_and_route_every_consumer():
     assert list(inspect.signature(affect_rules.view).parameters) == ["inputs"]
     view = affect_rules.view(snapshot)
     assert dict(view.route) == {name: "rules" for name in CONSUMERS} and view.line == ""
-    assert affect_rules.RULE_CONSUMERS == frozenset(), "the gate decides the wiring; none at M6"
+
+
+def test_the_live_default_is_one_of_the_three_measured_modes():
+    """The two switches make three modes (off, the state, the rules) and no unmeasured mix. Which consumers
+    read their rule with only the affect flag on is the held-out gate's decision (``RULE_CONSUMERS``), empty
+    until it has run: a dev pilot's per-consumer numbers, whose gap it put down to iteration caps on identical
+    prompts, do not move the live default into a mode no arm ran. The state keeps every consumer, the
+    curiosity drive's lift included."""
+    from types import SimpleNamespace
+
+    from protagine.mind.affect import Affect, AffectView, compose
+
+    assert affect_rules.RULE_CONSUMERS == frozenset(), "the held-out gate decides the wiring"
+    default = Affect(None, store=None)
+    assert set(default.route().values()) == {"state"} and default.source == "state"
+    assert set(Affect(None, store=None, rules_on=True).route().values()) == {"rules"}
+    assert Affect(None, store=None, state_on=False).route() == {}
+    state = AffectView(route={}, owner_id="p-01", curiosity=0.6, worry=0.3, line="Mood: a little curious.")
+    rules = AffectView(route={}, owner_id="p-01", curiosity=0.0, worry=0.0, line="")
+    research = SimpleNamespace(drive="curiosity", kind="task", priority=0.4)
+    assert compose(state, rules, default.route(), owner_id="p-01").score_factor(research) == 1.6

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from protagine.instance import INSTANCE_ID_FILE, instance_id, read_instance_id
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def create_full_backup(
 
     # The archive is bound to the instance it was taken from.
     instance = instance_id(state_dir)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = now_utc().strftime("%Y%m%dT%H%M%SZ")
     base_name = f"protagine-backup-{timestamp}"
 
     with tempfile.TemporaryDirectory(prefix="protagine-backup-") as tmp:
@@ -88,7 +89,7 @@ def create_full_backup(
         meta = {
             "backup_version": BACKUP_VERSION,
             "protagine_version": _get_protagine_version(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now_utc().isoformat(),
             "instance_id": instance,
             "instance_id_hmac": _compute_identity_hmac(instance),
             "database_manifest": db_manifest,

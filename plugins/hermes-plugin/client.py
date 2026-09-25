@@ -9,6 +9,7 @@ directory, which also holds ``protagine.yaml`` and ``identity.yaml``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 import os
 from pathlib import Path
@@ -44,6 +45,16 @@ class SidecarUnavailable(RuntimeError):
     def __init__(self, message: str = "", *, delivered: bool = False):
         super().__init__(message)
         self.delivered = delivered
+
+
+def final_answer(reason: str, *, block: bool = False) -> Any:
+    """The one answer for a plugin tool call that cannot succeed this turn, whatever asked: ``retry: false``,
+    which the memory provider's system note calls final, so the model answers instead of spending the turn's
+    iterations on other spellings. A tool returns the JSON; the guard (``block``) a ``pre_tool_call`` block,
+    whose message Hermes hands the model as the call's error."""
+    if block:
+        return {"action": "block", "message": f"{reason} (retry: false)"}
+    return json.dumps({"unavailable": True, "retry": False, "reason": reason}, ensure_ascii=False)
 
 
 # The request never reached the sidecar; any other transport error may have.
@@ -370,6 +381,6 @@ class ProtagineClient:
 
 __all__ = [
     "CONSTITUTION_CHARS", "DEFAULT_URL", "MIND_STATE_ROUTE", "NARRATIVE_ROUTE", "PLUGIN_ID", "WORKER_PROFILE",
-    "ProtagineClient", "Settings", "SidecarUnavailable", "constitution_list", "hermes_config", "hermes_home",
-    "load_settings", "plugin_section", "read_yaml", "render_constitution",
+    "ProtagineClient", "Settings", "SidecarUnavailable", "constitution_list", "final_answer", "hermes_config",
+    "hermes_home", "load_settings", "plugin_section", "read_yaml", "render_constitution",
 ]

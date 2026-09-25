@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import AssignmentHistory, InitiativeStatus, StoredInitiative
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class InitiativeStore:
 
     def _rename_aside(self) -> Path:
         """Move the damaged store and its -wal/-shm files to ``initiatives.db.corrupt-<UTC stamp>``."""
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        stamp = now_utc().strftime("%Y%m%dT%H%M%S%fZ")
         aside = self._db_path.with_name(f"{self._db_path.name}.corrupt-{stamp}")
         for suffix in ("", "-wal", "-shm"):
             source = self._db_path.with_name(self._db_path.name + suffix)
@@ -370,7 +371,7 @@ class InitiativeStore:
         priority = max(0.0, min(1.0, priority))
         
         initiative_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         self._db.execute(
             """
@@ -598,7 +599,7 @@ class InitiativeStore:
         agent_name: Optional[str] = None,
     ) -> Optional[StoredInitiative]:
         """Assign initiative to agent (atomic)."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Atomic UPDATE - only works on pending initiatives
         cursor = self._db.execute(
@@ -640,7 +641,7 @@ class InitiativeStore:
         agent_id: str,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as acknowledged by agent."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative or initiative.assigned_agent_id != agent_id:
@@ -669,7 +670,7 @@ class InitiativeStore:
         result_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as completed."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative:
@@ -710,7 +711,7 @@ class InitiativeStore:
         retry: bool = False,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as failed."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative:
@@ -794,7 +795,7 @@ class InitiativeStore:
         reason: Optional[str] = None,
     ) -> Optional[StoredInitiative]:
         """Cancel an initiative."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative or not initiative.is_active:
@@ -962,7 +963,7 @@ class InitiativeStore:
             if existing is not None:
                 return existing, "deduped"
         intention_id = str(uuid.uuid4())
-        now = created_at or datetime.now(timezone.utc)
+        now = created_at or now_utc()
         self._db.execute(
             """
             INSERT INTO initiatives (
@@ -995,7 +996,7 @@ class InitiativeStore:
                    details: Optional[Dict[str, Any]] = None, at: Optional[datetime] = None,
                    **updates) -> Optional[StoredInitiative]:
         """Move an intention to ``status`` and log the transition with its time."""
-        now = at or datetime.now(timezone.utc)
+        now = at or now_utc()
         row = self.update(initiative_id, status=status, **updates)
         if row is not None:
             self._db.execute(
@@ -1234,7 +1235,7 @@ class InitiativeStore:
             "description": initiative.description,
             "reason": reason,
             "attempt_count": initiative.attempt_count,
-            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "failed_at": now_utc().isoformat(),
         }
 
         with open(self._dlq_path, "a") as f:

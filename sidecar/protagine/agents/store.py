@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import Agent, AgentMetadata, AgentStatus
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,7 @@ class AgentStore:
     def create(self, data: Dict[str, Any]) -> Agent:
         """Create a new agent."""
         agent_id = data.get("agent_id") or str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
 
         cursor = self._db.execute(
             """
@@ -356,7 +357,7 @@ class AgentStore:
         """Mark agent as online."""
         updates = {
             "status": AgentStatus.ONLINE.value,
-            "last_seen_at": datetime.now(timezone.utc),
+            "last_seen_at": now_utc(),
             "websocket_connected": websocket_connected,
         }
         if metadata:
@@ -609,7 +610,7 @@ class InviteStore:
         code = generate_setup_code()
         code_hash = hash_setup_code(code)
 
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         expires_at = now + timedelta(seconds=expires_seconds or self.DEFAULT_EXPIRY_SECONDS)
 
         self._db.execute(
@@ -652,7 +653,7 @@ class InviteStore:
         Raises ValueError if invalid, expired, used, or locked.
         """
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         cursor = self._db.execute(
             "SELECT * FROM agent_invites WHERE code_hash = ?",
@@ -685,7 +686,7 @@ class InviteStore:
     def record_failed_attempt(self, code: str) -> None:
         """Record failed validation attempt and check lockout."""
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Increment failed attempts
         cursor = self._db.execute(
@@ -733,7 +734,7 @@ class InviteStore:
         Raises ValueError if already used or invalid.
         """
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Atomic UPDATE with WHERE conditions
         cursor = self._db.execute(

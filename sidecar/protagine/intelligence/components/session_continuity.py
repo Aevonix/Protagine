@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import logging
+from protagine.util.temporal import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +74,11 @@ class SessionContinuity:
         existing = await self._find_existing_session(user_id)
 
         if existing:
-            existing.last_activity = datetime.now()
+            existing.last_activity = now_local()
             logger.debug("Resumed session %s for user %s", existing.session_id, user_id)
             return existing
 
-        session_id = f"session-{user_id}-{datetime.now().isoformat()}"
+        session_id = f"session-{user_id}-{now_local().isoformat()}"
         context = SessionContext(
             session_id=session_id,
             user_id=user_id,
@@ -109,7 +110,7 @@ class SessionContinuity:
             return
 
         ctx = self._active_sessions[session_id]
-        ctx.last_activity = datetime.now()
+        ctx.last_activity = now_local()
 
         if topics:
             ctx.topics.extend(t for t in topics if t not in ctx.topics)
@@ -145,7 +146,7 @@ class SessionContinuity:
 
     async def _find_existing_session(self, user_id: str) -> Optional[SessionContext]:
         """Find an existing active session within the timeout window."""
-        cutoff = datetime.now() - self._session_timeout
+        cutoff = now_local() - self._session_timeout
 
         for ctx in self._active_sessions.values():
             if ctx.user_id == user_id and ctx.last_activity > cutoff:

@@ -96,8 +96,19 @@ run (the dispatcher sets `HERMES_KANBAN_TASK` and `HERMES_PROFILE`). In it:
 The guard asks `POST /v1/mind/guard {tool, args, session, run, task_id, owner,
 contact_id, platform, sender_id, recipients}` with a 2 s timeout when the
 sidecar serves the mind routes and reads `{allow, reason}` (`ask: true` becomes
-Hermes' approval gate); silence blocks effectful tools, a 404 falls back to the
-rules above. Read-only tools never wait on the sidecar.
+Hermes' approval gate in the owner's and the mind's runs); silence blocks effectful tools, a 404 falls back
+to the rules above. Read-only tools never wait on the sidecar.
+
+In a contact's (non-owner) session nothing becomes Hermes' approval gate: in a gateway that gate posts its
+prompt to the session's own chat and waits for `/approve` or a bare "yes" from it, so the contact would be
+the one approving. There an `ask` verdict is refused, and every refusal is the plugin's one final answer
+(`retry: false`), worded for a reply the contact reads. The final response is delivered to the session's
+own chat and nowhere else: the chat the gateway bound for the turn (a group's chat in a group), or, with no
+gateway, the sender's direct chat. A message to that chat is answered with "your final response is
+delivered to this conversation as your reply": the reply already is that message. Anything else, another
+handle of the sender's and a direct message to the sender from a group included, is a recipient for the
+sidecar's verdict; a target no contact is known at is answered "nothing was sent: no contact is known at
+that target".
 
 ## The body: the mind's effects on Hermes
 
@@ -201,7 +212,9 @@ plugin sends `POST /v1/mind/decide {code, answer, session_id, contact_id,
 message}` only when the session's sender is the owner, the turn is not a kanban
 worker, and the owner's own message for that turn contains the code as a whole
 word; the sidecar checks the contact and the message again and answers
-`{ok, id, status, ...}` (404: no open ask with that code, 403: not the owner).
+`{ok, id, status, ...}` (404: no open ask with that code, 403: not the owner). A code the owner's message
+does not carry is never a guess away: with no ask open, or none typed, the answer is final; a miscopied code
+on a message that carries an open ask's code names that code.
 A guest, a worker whose task body quotes the code, or a page injected into an
 owner session cannot approve. `protagine_self rate {id, verdict}` posts
 `POST /v1/mind/rate` for the owner only. `log` and `why` are the owner's too,

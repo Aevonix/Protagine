@@ -104,12 +104,7 @@ def test_corrected_old_document_keeps_record_times_distinct_from_its_contents_an
     assert 'supported historical or stable facts' in original['guidance']
     assert 'does not re-inspect its underlying subject' in original['guidance']
 
-    class LaterClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2026, 9, 13, 9, tzinfo=timezone.utc)
-
-    monkeypatch.setattr(source_annotations, 'datetime', LaterClock)
+    monkeypatch.setattr(source_annotations, 'now_utc', lambda: datetime(2026, 9, 13, 9, tzinfo=timezone.utc))
     assert opened(ledger) == original
     correction = 'As of 2026-09-13, the service also accepts cancellation through its portal.'
     note = ledger.append_source_annotation(contact_id='person', session_id='later', annotation_id='policy',

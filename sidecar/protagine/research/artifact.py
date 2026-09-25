@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from protagine.research.synthesizer import DomainInsight, SynthesisReport
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class Artifact:
     slide_count: int = 0
     citation_count: int = 0
     grounded: bool = True                   # All claims have citation support
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

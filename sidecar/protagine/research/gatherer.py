@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ class WebGatherer:
                         source_type=SourceType.WEB,
                         content=item.get("snippet", item.get("content", "")),
                         citation=item.get("url", item.get("citation", "")),
-                        retrieved_at=datetime.now(timezone.utc),
+                        retrieved_at=now_utc(),
                         relevance_score=float(item.get("score", 0.7)),
                         metadata=item,
                     )
@@ -174,7 +175,7 @@ class DocumentGatherer:
                             source_type=SourceType.DOCUMENT,
                             content=extracted.to_markdown(),
                             citation=f"document://{doc_id}",
-                            retrieved_at=datetime.now(timezone.utc),
+                            retrieved_at=now_utc(),
                             relevance_score=0.8,
                             pii_flagged=getattr(extracted, "pii_detected", False),
                             injection_flagged=getattr(extracted, "injection_detected", False),
@@ -210,7 +211,7 @@ class EmailGatherer:
                         source_type=SourceType.EMAIL,
                         content=summary,
                         citation=f"email://{thread.get('id', 'unknown')}",
-                        retrieved_at=datetime.now(timezone.utc),
+                        retrieved_at=now_utc(),
                         relevance_score=float(thread.get("score", 0.5)),
                         metadata=thread,
                     )

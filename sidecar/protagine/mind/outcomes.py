@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence
 
 from protagine.initiatives.models import StoredInitiative
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class Autobiography:
     def __init__(self, ledger: Any, *, owner_id: str | None, clock=None) -> None:
         self.ledger = ledger
         self.owner_id = owner_id
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
 
     @classmethod
     def name(cls, row: StoredInitiative) -> str:
@@ -211,7 +212,7 @@ class Outcomes:
         self.commitments = commitments
         self.followups = followups
         self.autobiography = autobiography
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.on_breaker_trip = None  # callable(cls, state) set by the tick
         self.on_settled = None       # callable(row, outcome, check_result) set by the tick: concerns and satiation
 

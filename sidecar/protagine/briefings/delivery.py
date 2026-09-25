@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import Briefing, BriefingPriority, BriefingStatus
+from protagine.util.temporal import now_utc, now_local
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class IMessageBriefingGateway(BriefingGateway):
     def _in_quiet_hours(self) -> bool:
         if not self._quiet_hours:
             return False
-        now_hour = datetime.now().hour
+        now_hour = now_local().hour
         start, end = self._quiet_hours
         if start <= end:
             return start <= now_hour < end
@@ -144,7 +145,7 @@ class IMessageBriefingGateway(BriefingGateway):
                 success=True,
                 gateway=self.name(),
                 briefing_id=briefing.briefing_id,
-                delivered_at=datetime.now(timezone.utc),
+                delivered_at=now_utc(),
             )
         except Exception as exc:
             return DeliveryResult(
@@ -199,7 +200,7 @@ class TelegramBriefingGateway(BriefingGateway):
                 success=True,
                 gateway=self.name(),
                 briefing_id=briefing.briefing_id,
-                delivered_at=datetime.now(timezone.utc),
+                delivered_at=now_utc(),
             )
         except Exception as exc:
             return DeliveryResult(
@@ -235,7 +236,7 @@ class APIBriefingGateway(BriefingGateway):
             success=True,
             gateway=self.name(),
             briefing_id=briefing.briefing_id,
-            delivered_at=datetime.now(timezone.utc),
+            delivered_at=now_utc(),
         )
 
 
@@ -281,7 +282,7 @@ class WhatsAppBriefingGateway(BriefingGateway):
                     success=True,
                     gateway=self.name(),
                     briefing_id=briefing.briefing_id,
-                    delivered_at=datetime.now(timezone.utc),
+                    delivered_at=now_utc(),
                 )
             return DeliveryResult(
                 success=False,

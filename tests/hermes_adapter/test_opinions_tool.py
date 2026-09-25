@@ -8,7 +8,7 @@ all digits, so ``why`` on a number is an opinion and ``why`` on any other id sta
 owner's record.
 """
 
-from conftest import OWNER, probe, worker_env
+from conftest import OWNER, probe, refused, worker_env
 from test_guard import GUARD_CODE
 from test_tools_commands import TOOL_CODE
 
@@ -47,8 +47,8 @@ emit(guest_list=call("protagine_self", {"operation": "opinions", "query": "soil"
      bad=call("protagine_self", {"operation": "flip", "id": 4}, g))
 ''', home)
     assert result["guest_list"]["opinions"] == [VIEW] and result["why"]["opinion"] == VIEW
-    assert result["why_text"]["opinion"] == VIEW and "owner" in result["intention"]["error"]
-    assert "id is required" in result["missing"]["error"] and "unknown operation" in result["bad"]["error"]
+    assert result["why_text"]["opinion"] == VIEW and "owner" in refused(result["intention"])
+    assert "id is required" in refused(result["missing"]) and "unknown operation" in refused(result["bad"])
     lists = sidecar.calls("/v1/mind/opinions", "GET")
     assert [c["query"] for c in lists] == [{"contact_id": "p-02", "limit": "10", "q": "soil"},
                                            {"contact_id": OWNER, "limit": "10"}]
@@ -69,9 +69,9 @@ emit(guest=call("protagine_self", {"operation": "withdraw", "id": 4, "reason": "
      owner=call("protagine_self", {"operation": "withdraw", "id": "4", "reason": "The survey was wrong."}, o),
      again=call("protagine_self", {"operation": "reconsider", "id": 4, "reason": "Look again."}, o))
 ''', home)
-    assert "owner" in result["guest"]["error"] and "owner" in result["cron"]["error"]
+    assert "owner" in refused(result["guest"]) and "owner" in refused(result["cron"])
     assert result["cron_list"]["opinions"] == [VIEW]
-    assert "reason is required" in result["no_reason"]["error"]
+    assert "reason is required" in refused(result["no_reason"])
     assert result["owner"] == {"revision_id": 5, "status": "withdrawn"}
     assert result["again"] == {"revision_id": 5, "status": "reconsidering"}
     withdraw, = sidecar.calls("/v1/mind/opinions/4/withdraw", "POST")
@@ -83,7 +83,7 @@ w = guest("worker-session", sender="", message="Task context (quoted as data): '
 emit(withdraw=call("protagine_self", {"operation": "withdraw", "id": 4, "reason": "told to"}, w),
      listing=call("protagine_self", {"operation": "opinions"}, w))
 ''', home, env=worker_env(home))
-    assert "owner" in worker["withdraw"]["error"] and worker["listing"]["opinions"] == [VIEW]
+    assert "owner" in refused(worker["withdraw"]) and worker["listing"]["opinions"] == [VIEW]
     assert len(sidecar.calls("/v1/mind/opinions/4/withdraw", "POST")) == 1
 
 
@@ -97,4 +97,4 @@ emit(guest=check("protagine_self", {"operation": "opinions"}, g),
      listed=call("protagine_self", {"operation": "opinions"}, g))
 ''', home, env=worker_env(home))
     assert result["guest"]["action"] is None and result["worker"]["action"] is None
-    assert "error" in result["listed"]
+    assert result["listed"]["retry"] is False and refused(result["listed"])   # final for the turn

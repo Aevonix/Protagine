@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .source_lineage import SourceLinkedStore
+from protagine.util.temporal import now_utc
 
 
 class SharedFactsStore(SourceLinkedStore):
@@ -119,7 +120,7 @@ class SharedFactsStore(SourceLinkedStore):
             raise SourceErased('source_erased')
 
         fact_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         meta_json = None
         if metadata is not None:
             meta_json = json.dumps(metadata)
@@ -183,7 +184,7 @@ class SharedFactsStore(SourceLinkedStore):
             clauses.append('source_fact_automatic(contact_id,source_lineage_json)')
         else:
             clauses.append('source_fact_visible(contact_id,source_lineage_json)')
-        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(now_utc().isoformat())
 
         where = f" WHERE {' AND '.join(clauses)}"
 
@@ -251,7 +252,7 @@ class SharedFactsStore(SourceLinkedStore):
 
     def purge_expired(self) -> int:
         """Remove expired facts. Returns count purged."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         cursor = self._conn.execute(
             "DELETE FROM shared_facts WHERE expires_at IS NOT NULL AND expires_at <= ?", (now,)
         )
@@ -274,7 +275,7 @@ class AutomaticFactsView:
                 record['contact_id'], record.get('source_lineage')):
             return None
         expires = record.get('expires_at')
-        if expires and expires <= datetime.now(timezone.utc).isoformat():
+        if expires and expires <= now_utc().isoformat():
             return None
         return record
 

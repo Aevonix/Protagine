@@ -370,7 +370,9 @@ async def test_owner_reported_failures_switch_strategy_and_a_verified_success_ca
     assert levels["satisfaction"]["level"] == pytest.approx(0.3, abs=0.01)
     assert f"verified intention:{item['id']}:verified" in levels["satisfaction"]["causes"]
     section = ax.mind.section()
-    assert "Prior attempts" not in section and "Mood: " in section and "frustrated about quarterly figures" in section
+    # The mood is self-report only: it never rides in the decision context.
+    assert "Prior attempts" not in section and "Mood: " not in section
+    assert "frustrated about quarterly figures" in ax.mind.state()["affect"]["line"]
 
 
 class GoalRouter:

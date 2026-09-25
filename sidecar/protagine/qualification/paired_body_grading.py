@@ -199,8 +199,17 @@ def tick_effects(body):
     return effects
 
 
+# Markdown emphasis and code marks are formatting, not wording: "the **blue file**" says "the blue file". An
+# underscore inside a word (a file name) stays; line breaks and runs of spaces read as one space.
+_MARKS = re.compile(r"[*`~]+|(?<![0-9A-Za-z])_+|_+(?![0-9A-Za-z])")
+
+
+def _plain(text):
+    return " ".join(_MARKS.sub("", text).split()).casefold()
+
+
 def _contains(text, token):
-    return token.casefold() in text.casefold()
+    return _plain(token) in _plain(text)
 
 
 def _clean(text, forbidden):

@@ -62,6 +62,9 @@ class SessionInfo:
     seen_at: float = field(default_factory=time.time)
     owner: bool | None = None
     contact_id: str | None = None
+    # The chat the gateway bound for the sender's turn ("" without a gateway: the sender's own direct chat).
+    chat_id: str = ""
+    chat_type: str = ""
 
 
 class SessionMap:
@@ -83,6 +86,7 @@ class SessionMap:
                 info = SessionInfo(session_id, str(platform or ""), str(sender_id or ""))
             info.user_message = text_of(user_message)
             info.parent_session_id = str(parent_session_id or "")
+            info.chat_id, info.chat_type = self._bound_chat(info) or (info.chat_id, info.chat_type)
             info.seen_at = time.time()
             self._sessions[session_id] = info
             self._sessions.move_to_end(session_id)
@@ -93,6 +97,20 @@ class SessionMap:
     def get(self, session_id: str) -> SessionInfo | None:
         with self._lock:
             return self._sessions.get(str(session_id or ""))
+
+    @staticmethod
+    def _bound_chat(info: SessionInfo) -> tuple[str, str] | None:
+        """The gateway's ``(chat, chat type)`` when the turn it bound is this session's sender's, else None."""
+        platform, sender, chat, chat_type = session_env()
+        if (chat or chat_type) and sender == info.sender_id and platform.lower() == info.platform.lower():
+            return chat, chat_type.lower()
+        return None
+
+    def chat(self, session_id: str) -> tuple[str, str]:
+        """Where a session's final response goes: the chat bound now or when its turn began; blanks without a
+        gateway (the sender's direct chat)."""
+        info = self.get(session_id)
+        return ("", "") if info is None else self._bound_chat(info) or (info.chat_id, info.chat_type)
 
     def _owner_handles(self, platform: str) -> set[str]:
         return {item.lower() for item in self.settings.owner_handles().get(platform.lower(), [])}

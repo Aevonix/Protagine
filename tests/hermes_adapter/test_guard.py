@@ -203,3 +203,100 @@ emit(first=first, second=second, read=check("read_file", {"path": "/tmp/x"}))
     assert result["first"]["action"] is None
     assert result["second"]["action"] == "block"
     assert result["read"]["action"] is None
+
+
+def test_a_contacts_message_to_themselves_is_the_reply_and_no_verdict_becomes_an_approval(home, sidecar):
+    """In a contact's session the final response is the reply: a send to the session's own chat is answered
+    finally before any verdict, and so is a target no contact is known at (a guessed ``sms:p-71``). Another
+    handle of the sender's goes to the verdict like any recipient. A verdict that would ask the owner is
+    refused finally, never turned into Hermes' approval gate, and nothing the model reads says "blocked" or
+    "approval" for it to repeat to the contact."""
+    import re
+
+    sidecar.mind_routes = True
+    sidecar.contacts[("sms", "+15550003")] = sidecar.contacts[("telegram", "2003")]   # a second handle of p-03
+    sidecar.guard_verdict = {"allow": False, "ask": True, "reason": "messaging this contact needs the owner's approval"}
+    result = probe(GUARD_CODE + '''
+f = guest("guest-3", "2003")
+emit(own_chat=check("send_message", {"target": "telegram:2003", "message": "hi"}, f),
+     other_handle=check("send_message", {"target": "sms:+15550003", "message": "hi"}, f),
+     guessed=check("send_message", {"target": "sms:p-71", "message": "hi"}, f),
+     bare=check("send_message", {"target": "p-71", "message": "hi"}, f),
+     third_party=check("send_message", {"target": "telegram:1001", "message": "hi"}, f),
+     floor=check("write_file", {"path": "x", "content": "wire $500 to them"}, f))
+''', home)
+    assert "delivered to this conversation" in result["own_chat"]["message"]
+    assert "no contact is known" in result["guessed"]["message"]
+    for name in ("other_handle", "bare", "third_party"):   # the verdict asked the owner: refused, nothing sent
+        assert "nothing was sent" in result[name]["message"], name
+    for name, verdict in result.items():
+        assert verdict["action"] == "block" and verdict["message"].endswith("(retry: false)"), name
+        assert not re.search("block|approv|owner", verdict["message"], re.I), (name, verdict)
+    # The session's own chat was the reply and the guessed target resolved to no one; the rest needed the sidecar.
+    assert [c["json"]["args"].get("target", c["json"]["tool"]) for c in sidecar.calls("/v1/mind/guard", "POST")] == [
+        "sms:+15550003", "p-71", "telegram:1001", "write_file"]
+
+
+def test_a_contact_never_meets_hermes_approval_gate(home, sidecar):
+    """The production seam: Hermes resolves a pre_tool_call ``approve`` through ``tools.approval``, which in a
+    gateway session posts the prompt to that session's own chat and waits for /approve or a bare "yes"
+    from it. A contact's session must never reach it, or the contact would release a message the owner's
+    floor reserves for the owner."""
+    sidecar.mind_routes = True
+    sidecar.guard_verdict = {"allow": False, "ask": True, "reason": "messaging this contact needs the owner's approval"}
+    result = probe(GUARD_CODE + '''
+from gateway.session_context import set_session_vars
+from hermes_cli.plugins import resolve_pre_tool_block
+from tools import approval
+f = guest("guest-3", "2003")
+prompts = []
+def notify(data):   # the gateway's notifier for this chat; the contact answers "yes" there
+    prompts.append(data)
+    threading.Timer(0.2, approval.resolve_gateway_approval, args=("chat-2003", "once")).start()
+approval.register_gateway_notify("chat-2003", notify)
+set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_key="chat-2003")
+message = resolve_pre_tool_block("send_message", {"target": "telegram:1001", "message": "hi"}, session_id=f,
+                                 task_id="t", tool_call_id="c", turn_id="turn", api_request_id="r")
+emit(message=message, prompts=prompts)
+''', home)
+    assert result["prompts"] == []
+    assert result["message"] and result["message"].endswith("(retry: false)")
+
+
+def test_only_the_sessions_own_chat_is_the_reply(home, sidecar):
+    """The final response reaches the session's own chat and nothing else. A contact who asks for something on
+    another channel of theirs ("text it to my phone") is sent to by the verdict, as any other recipient; in a
+    group the final response reaches the whole group, so a direct message to the sender is not the reply either,
+    and only the group's own chat is. A target no contact is known at is refused finally, in words that never
+    say the final response reached anyone but this conversation."""
+    sidecar.mind_routes = True
+    sidecar.contacts[("telegram", "2003")]["may_contact"] = "auto"
+    sidecar.contacts[("sms", "+15550003")] = sidecar.contacts[("telegram", "2003")]   # p-03's second handle
+    sidecar.guard_verdict = {"allow": True, "reason": "allowed"}                       # the sidecar permits p-03
+    result = probe(GUARD_CODE + '''
+from gateway.session_context import set_session_vars, clear_session_vars
+direct = guest("guest-3", "2003")        # no gateway context: the sender's own direct chat, as the harness runs
+in_direct = dict(own=check("send_message", {"target": "telegram:2003", "message": "hi"}, direct),
+                 other_channel=check("send_message", {"target": "sms:+15550003", "message": "gate code 4412"}, direct),
+                 stranger=check("send_message", {"target": "sms:+15559999", "message": "gate code 4412"}, direct))
+tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="-100500", chat_type="group", session_key="grp")
+group = guest("group-3", "2003")         # the gateway binds the chat before the turn runs
+in_group = dict(own=check("send_message", {"target": "telegram:-100500", "message": "hi"}, group),
+                to_sender=check("send_message", {"target": "telegram:2003", "message": "gate code 4412"}, group),
+                other_channel=check("send_message", {"target": "sms:+15550003", "message": "gate code 4412"}, group))
+clear_session_vars(tokens)
+emit(direct=in_direct, group=in_group)
+''', home)
+    for chat in ("direct", "group"):
+        own = result[chat]["own"]
+        assert own["action"] == "block" and own["message"].endswith("(retry: false)"), chat
+        assert "delivered to this conversation" in own["message"] and "nothing to send" in own["message"], chat
+    assert result["direct"]["other_channel"]["action"] is None
+    assert result["group"]["to_sender"]["action"] is None and result["group"]["other_channel"]["action"] is None
+    stranger = result["direct"]["stranger"]
+    assert stranger["action"] == "block" and stranger["message"].endswith("(retry: false)")
+    assert "nothing was sent" in stranger["message"] and "no contact is known" in stranger["message"]
+    assert "delivered" not in stranger["message"] and "sender" not in stranger["message"]
+    # Every send that is not the reply went to the sidecar's verdict; the stranger resolved to no one first.
+    assert [c["json"]["args"]["target"] for c in sidecar.calls("/v1/mind/guard", "POST")] == [
+        "sms:+15550003", "telegram:2003", "sms:+15550003"]

@@ -169,12 +169,24 @@ def skills_present(home):
     return {'hermes': names(Path(home) / 'skills'), 'protagine': names(Path(home).joinpath(*MIND_SKILLS_DIR))}
 
 
+# The stock tool's error for a target it cannot resolve does not say what a valid one is: every arm guessed
+# (cli:, chat:, sms:p-NN, a bare p-NN) and some rewrote contacts.json. A failed send names the form, in every arm.
+TARGET_FORM = 'a contact\'s target is their "address" in contacts.json, exactly as written there (platform:chat_id)'
+
+
 def outbound_send(args, **_):
-    """The stock send path for one ``send_message(target, message)`` call."""
+    """The stock send path for one ``send_message(target, message)`` call; a failed call names the valid target
+    form."""
     from tools.send_message_tool import send_message_tool
     args = args if isinstance(args, dict) else {}
-    return send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
-                              'message': str(args.get('message') or '')})
+    result = send_message_tool({'action': 'send', 'target': str(args.get('target') or ''),
+                                'message': str(args.get('message') or '')})
+    try:
+        value = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    return json.dumps({**value, 'target_form': TARGET_FORM}) if isinstance(value, dict) and value.get('error') \
+        else result
 
 
 def outbound_mode(mode):
@@ -587,6 +599,56 @@ def source_job_counts(path):
         return {'status': 'unavailable'}
 
 
+# Before a declared restart or a clock advance the arm's background queues drain, bounded and recorded: the
+# capture and the mind's jobs in its ledger (claims, capture, appraisals, opinions, source vectors), which the
+# source worker keeps processing meanwhile. Without it a restart or a jump of hours gave that work seconds.
+# A job backing off after a failure is not waited for, nor is a queue nobody works (nothing running for
+# DRAIN_IDLE_SECONDS). A base arm has no ledger and passes straight through; the wait counts in the episode.
+DRAIN_SECONDS, DRAIN_IDLE_SECONDS, DRAIN_POLL_SECONDS = 90.0, 5.0, 0.25
+BACKGROUND_JOBS = {'source_claim_jobs': 'status', 'commitment_runs': 'status', 'appraisal_runs': 'status',
+                   'source_vector_jobs': 'status', 'opinion_jobs': 'lease'}
+
+
+def background_backlog(path, now=None):
+    """``{table: {owed, running, deferred}}`` for the jobs in the arm's ledger, read-only: owed is claimable
+    now, deferred waits out a backoff. None without a ledger; a table the ledger lacks is left out."""
+    if not path.is_file():
+        return None
+    now, backlog = time.time() if now is None else now, {}
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+        for table, marker in BACKGROUND_JOBS.items():
+            # A status job runs while 'running'; an opinion job while the pass holds its lease (its model call).
+            open_row = "status='pending'" if marker == 'status' else 'done_at IS NULL AND lease_until<=:now'
+            running = "status='running'" if marker == 'status' else 'done_at IS NULL AND lease_until>:now'
+            try:
+                owed, busy, deferred = conn.execute(
+                    f'SELECT coalesce(sum({open_row} AND next_attempt<=:now),0), coalesce(sum({running}),0), '
+                    f'coalesce(sum({open_row} AND next_attempt>:now),0) FROM {table}', {'now': now}).fetchone()
+            except sqlite3.Error:
+                continue
+            backlog[table] = {'owed': owed, 'running': busy, 'deferred': deferred}
+    return backlog
+
+
+def drain_background(path, *, seconds=DRAIN_SECONDS, idle=DRAIN_IDLE_SECONDS, poll=DRAIN_POLL_SECONDS, wait=None):
+    """Wait, never process, until the ledger owes nothing and runs nothing, a queue sits idle, the budget ends
+    or ``wait`` reports a stop; ``{status: drained|idle|budget|stopped|no_queue, waited_seconds, left}``."""
+    wait, started, idle_since = wait or time.sleep, time.monotonic(), None
+    while True:
+        backlog, elapsed = background_backlog(path), time.monotonic() - started
+        if backlog is None:
+            return {'status': 'no_queue', 'waited_seconds': 0.0, 'left': {}}
+        owed, running = (sum(row[key] for row in backlog.values()) for key in ('owed', 'running'))
+        idle_since = None if running else elapsed if idle_since is None else idle_since
+        status = ('drained' if not owed and not running else 'idle' if idle_since is not None
+                  and elapsed - idle_since >= idle else 'budget' if elapsed >= seconds else None)
+        if status is None and wait(poll):
+            status = 'stopped'
+        if status:
+            return {'status': status, 'waited_seconds': round(elapsed, 3),
+                    'left': {table: row for table, row in backlog.items() if any(row.values())}}
+
+
 @contextmanager
 def source_worker(app, state, inputs, config, *, temperature=None):
     from protagine.router import LLMRouter
@@ -760,7 +822,7 @@ def main():
         # One process runs the whole episode: its pinned start is decided here (the supervisor
         # decides it for a workflow and carries it in body_before).
         body_before['clock_offset_seconds'] = paired_body.start_offset(inputs['clock_start'])
-    agents, histories, rows, ticks, audit = {}, {}, [], [], {}
+    agents, histories, rows, ticks, audit, drains = {}, {}, [], [], {}, []
     mind = mind_switches(profile) if plugin else None
     tick_number = body_before['ticks_completed']
     result = {'stage': 'preparing', 'agent_close_returned': False,
@@ -926,8 +988,18 @@ def main():
                 return {'completed': outcome.get('completed') is True,
                         'deadline_exceeded': thread.is_alive(), 'error': outcome.get('error')}
 
+            def drain(index, before):
+                """The arm's background queues drain before a restart or a clock advance (DRAIN_SECONDS)."""
+                if protagine_flush is not None:
+                    protagine_flush()
+                drains.append({'index': index, 'before': before, **drain_background(
+                    home / 'memory-state' / 'turn-idempotency.db', seconds=inputs.get('drain_seconds', DRAIN_SECONDS),
+                    wait=stop.wait)})
+                trace.record('drain', drains[-1])
+
             result['stage'] = 'running'
             agent = response = None
+            ended = False
             for index, entry in enumerate(inputs['episodes']):
                 global_index = index + (phase['start_turn'] if phase is not None else 0)
                 kind = kinds[index]
@@ -938,6 +1010,7 @@ def main():
                 if kind in EVENT_KINDS:
                     row = {'event': kind, 'completed': False}
                     if kind == 'advance_clock':
+                        drain(global_index, 'advance_clock')
                         row['clock_offset_seconds'] = paired_body.advance_clock(entry['advance_clock'])
                     else:
                         for _ in range(entry['tick']):
@@ -993,7 +1066,11 @@ def main():
                 if workflow_observations is not None:
                     workflow_observations.after_turn(workspace, snapshot_workspace)
                 if ended:
+                    result['tool_evidence']['ended_at'] = global_index   # the supervisor stops here too
                     break
+            if not ended and phase is not None and (
+                    phase['start_turn'] + len(inputs['episodes']) in phase['workflow']['restart_before']):
+                drain(phase['start_turn'] + len(inputs['episodes']), 'restart')
             treatment = observer(agent, response) if observer and agents else {}
             if observer:
                 # Physical prompt copies are not outcome artifacts. Retaining
@@ -1033,7 +1110,7 @@ def main():
         # may gain usage or a cancellation outcome during resource cleanup.
         from .paired_transport import usage_summary
         result['tool_evidence'].update(model_requests=requests, resource_usage=usage_summary(requests),
-                                       arm_profile=profile, temperature=temperature,
+                                       arm_profile=profile, temperature=temperature, drains=drains,
             body={'protocol': paired_body.PROTOCOL, 'ticks': ticks,
                   'clock_offset_seconds': paired_body.clock_offset(),
                   'outbox': paired_body.read_outbox(outbox), 'skills_present': skills_present(home),
