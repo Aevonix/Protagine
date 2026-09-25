@@ -183,3 +183,27 @@ def test_the_record_is_read_and_recording_is_automatic():
     assert "log (read-only" in text and "an action of yours not in it did not happen" in text
     assert "recorded after it, with no tool call" in text
     assert "not in the log means it did not happen" not in text
+
+
+def test_no_hits_is_final_only_when_no_part_of_the_search_failed(home, sidecar):
+    """Zero hits is the answer when the search ran whole: semantic recall ready, or not part of this install
+    (lexical is then the whole search). When semantic recall failed (an embedding service down) only exact
+    words were matched, so the answer says so and leaves the model free to search in other words: for the
+    owner, a final "nothing retained" would deny a topic the memory holds."""
+    statuses = {"lease agreement": "failed", "lease terms": "ready", "lease dates": "unavailable"}
+    original = sidecar.dispatch
+
+    def dispatch(method, path, query, body):
+        if path == "/v1/host/memory/search":
+            return 200, {"content": "", "count": 0, "source_refs": [], "watermark": 0, "annotation_checks": [],
+                         "retrieval": {"semantic": statuses[body["query"]], "contact_facts": "ready"}}
+        return original(method, path, query, body)
+    sidecar.dispatch = dispatch
+    result = probe(CODE + '''
+o = session("owner-1", "1001", "what did I say about the lease last month?")
+emit(**{query: call("protagine_memory_search", {"query": query}, o) for query in %r})
+''' % list(statuses), home)
+    degraded = result["lease agreement"]
+    assert "retry" not in degraded and degraded["count"] == 0 and degraded["content"] == ""
+    assert "only exact words" in degraded["note"] and "other words" in degraded["note"]
+    assert _final(result["lease terms"]) and _final(result["lease dates"])

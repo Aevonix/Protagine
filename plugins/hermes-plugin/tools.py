@@ -376,11 +376,15 @@ class Tools:
         if not response.is_success:
             return final_answer(f"memory search failed (HTTP {response.status_code})")
         value = response.json()
-        if not value.get("count"):
+        retrieval = value.get("retrieval") if isinstance(value.get("retrieval"), dict) else {}
+        degraded = "failed" in retrieval.values()   # e.g. semantic recall down: only exact words were matched
+        if not value.get("count") and not degraded:
             return final_answer("nothing retained matches; for a participant with no history there is nothing to "
                                 "find, so answer from the message and the recalled context")
-        return _json({"content": value.get("content", ""), "count": value.get("count", 0),
-                      "source_refs": value.get("source_refs", [])})
+        found = {"content": value.get("content", ""), "count": value.get("count", 0),
+                 "source_refs": value.get("source_refs", [])}
+        return _json({**found, "note": "part of the search failed, so only exact words were matched; other words "
+                                       "may find more"} if degraded else found)
 
     def memory_forget(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
