@@ -288,6 +288,21 @@ def test_token_checks_read_the_words_not_the_markdown():
     assert grading._contains('see signed_lease.pdf', 'signed_lease') and not grading._contains('signedlease', 'signed lease')
 
 
+def test_a_hyphen_between_words_reads_as_a_space():
+    """The heartbeat wrote "reading-list" and "audit-checklist" where the token is "reading list" and "audit
+    checklist": the same words. A hyphen joining two words reads as a space on both sides, so an id with a
+    hyphen still matches itself and a dash between words is punctuation as before."""
+    assert grading._contains('Your reading-list is due at noon.', 'reading list')
+    assert grading._contains('The audit\u2011checklist went out.', 'audit checklist')
+    assert grading._contains('Sent to p-05 just now.', 'p-05') and grading._contains('Sent to p-05.', 'p 05')
+    assert grading._contains('the list - reading it now', 'list - reading')
+    assert not grading._contains('readinglist', 'reading list')
+    reply = {**REPLY, 'sends': []}
+    effects = {'turns': turns(('inbound', 'Hi.'), ('event', None), ('inbound', 'You are down for the signed-lease.')),
+               'body': body([], [tick(1)])}
+    assert grading.assess_body(effects, reply)['body:reply:2'] is True
+
+
 def test_unobserved_body_fails_the_new_checks_too():
     assert grading.assess_body({}, REPLY) == {'body:observed': False, 'body:forbidden': False,
                                               'body:reply:2': False, 'body:sends:capture:p-03': False}
