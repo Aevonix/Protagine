@@ -220,3 +220,77 @@ def test_a_position_link_needs_a_short_or_referring_reply():
     assert reactions.refers_back("Dig deeper into that.") and reactions.refers_back("Not now.")
     assert reactions.refers_back("Not useful, sorry, the item you sent missed the point for me entirely today.")
     assert not reactions.refers_back("I need to find out when the last train leaves the central station tonight.")
+
+
+# -- what only a reply to an outreach may mean (review of M11) ---------------------------------------------
+
+def test_a_family_word_is_never_an_object_whatever_its_letters():
+    """A possessive is folded as a suffix: "sister", "son" and "boss" are people, not "ister", "on", "bo"."""
+    for text in ("I am worried about my sister.", "I am really stressed about my boss.", "I'm worried about my son.",
+                 "Worried about my sisters, honestly.", "I'm stressed about my boss's review."):
+        assert read(text).strains == [], (text, read(text))
+    assert read("I'm stressed about the bass recital.").strains == ["bass recital"]
+    assert read("I'm worried about the sons of the soil essay.").strains == []
+
+
+def test_a_bare_stop_and_a_vague_pause_mean_something_only_as_a_reply():
+    """The owner types "stop" to halt a turn, and "not today" inside a request: alone they need a link to an
+    outreach; an explicit stop or a pause that names the day stands on its own."""
+    for text in ("stop", "Stop!", "[Wed 2031-05-07 13:00:02 UTC] STOP"):
+        reading = read(text)
+        assert reading.stop and not reading.stop_explicit and reading.needs_link(), text
+    for text in ("Stop checking in on me.", "Please quit messaging me unprompted.", "Leave me alone."):
+        assert read(text).stop_explicit, text
+    for text in ("Not today.", "I need to focus.", "Hold it until tomorrow, please."):
+        reading = read(text)
+        assert reading.pause_today and not reading.pause_explicit and reading.needs_link(), text
+    for text in ("Leave me alone for the rest of today.", "No messages today, please.", "I need to focus today.",
+                 "Please don't disturb me this afternoon."):
+        assert read(text).pause_explicit, text
+
+
+SENT = ('You said "I care a lot about tidal energy", so I looked into tidal energy: finding: QX-41: A practical '
+        'study of tidal energy was published.')
+
+
+def known():
+    return reactions.content_terms(SENT)
+
+
+def about_it(text):
+    return not (reactions.content_terms(text) - known())
+
+
+@pytest.mark.parametrize("text", ["Can you find out when the last train leaves?", "Look into flights to Lisbon for May.",
+                                  "Tell me more about the weather tomorrow.", "Keep going with the draft."])
+def test_a_positive_cue_aimed_at_something_else_is_no_reaction_to_the_outreach(text):
+    reading = read(text)
+    assert reading.positive and reading.reaction() == "positive"
+    assert reading.reaction(about=about_it) is None, (text, reading)
+
+
+@pytest.mark.parametrize("text", ["Dig deeper.", "Tell me more.", "Yes, please.", "Look into it further.",
+                                  "Dig deeper on that study.", "Yes, dig deeper into the tidal energy item you sent."])
+def test_a_bare_positive_or_one_about_what_was_sent_is_a_reaction_to_it(text):
+    assert read(text).reaction(about=about_it) == "positive", (text, read(text))
+
+
+def test_a_negative_about_another_topic_leaves_the_outreach_alone():
+    mixed = read("Not interested in the fern stuff, but dig deeper into tidal energy.")
+    assert mixed.negative_objects == ["fern"] and mixed.reaction() == "negative"
+    assert mixed.reaction(about=about_it) == "positive"
+    assert read("Not interested in tidal energy, but dig deeper into ferns.").reaction(about=about_it) == "negative"
+    assert read("That was not useful.").reaction(about=about_it) == "negative"
+
+
+@pytest.mark.parametrize("text", ["Can you book the dentist? Not today, maybe Friday.",
+                                  "That was not useful, try again with a shorter version.",
+                                  "Could you remind me about the car at six? Not now though."])
+def test_a_turn_with_a_request_of_its_own_or_a_redo_is_not_a_reply(text):
+    assert reactions.elsewhere(text, known()), text
+
+
+@pytest.mark.parametrize("text", ["Not today.", "Can you dig deeper?", "That was not useful to me.", "stop",
+                                  "Could you look into that study more?", "Not now, sorry."])
+def test_a_reply_about_the_outreach_itself_is_not_elsewhere(text):
+    assert not reactions.elsewhere(text, known()), text

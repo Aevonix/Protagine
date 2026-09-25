@@ -38,8 +38,8 @@ def finding(topic="tidal energy", age=H, ident="i-1", summary=None):
                    completed_at=NOW - age)
 
 
-def declared(topic="tidal energy", level=1.0, origin="owner", turn="t-1"):
-    return Interest(topic=topic, slug=outreach._slug(topic), level=level, origin=origin, turn=turn)
+def declared(topic="tidal energy", level=1.0, origin="owner", turn="t-1", asked=False):
+    return Interest(topic=topic, slug=outreach._slug(topic), level=level, origin=origin, turn=turn, asked=asked)
 
 
 def decide(made, feedback=None):
@@ -143,12 +143,16 @@ def test_muted_quiet_paused_or_over_budget_forms_nothing(state):
     assert made == []
 
 
-def test_quiet_hours_and_the_pause_hold_an_answer_and_nothing_else_does():
+def test_quiet_hours_the_pause_and_a_later_mute_hold_an_answer_and_nothing_else_does():
+    """Asking for more lifts a mute on the topic, so a mute standing when the answer is ready is the owner's
+    later word: it holds the answer. The budget and the gap after the last outreach never do."""
     requested = finding(ident="f-2")
     requested.requested_by = "o-1"
-    for state in (dict(quiet=True), dict(paused_until=datetime.max.replace(tzinfo=timezone.utc))):
+    for state in (dict(quiet=True), dict(paused_until=datetime.max.replace(tzinfo=timezone.utc)),
+                  dict(mutes={"tidal-energy": "tidal energy"})):
         assert outreach.answer_candidate(requested, inputs(**state)) is None
-    for state in (dict(budget="spent"), dict(mutes={"tidal-energy": "tidal energy"})):
+    recent = [Sent(id="o-1", type="outreach_finding", slug="tidal-energy", at=NOW - timedelta(minutes=5))]
+    for state in (dict(budget="spent"), dict(sent=recent)):
         assert outreach.answer_candidate(requested, inputs(**state)) is not None
 
 
@@ -318,3 +322,80 @@ def test_owner_verified_outreach_lessons_halve_or_lift_the_topics_they_name():
         assert outreach.relevance(finding(), state)[0] == pytest.approx(0.4 * expected), lessons
     lifted = inputs(interests=[declared(origin="mentioned")], lessons=[lesson("topic:tidal-energy", "strategy")])
     assert outreach.relevance(finding(), lifted)[0] == pytest.approx(0.48)
+
+
+# -- substance, novelty of content, grounded reasons (review of M11) ---------------------------------------
+
+def test_a_report_that_found_nothing_is_no_finding():
+    for summary in ("Nothing new on tidal energy this week; no new studies or updates were found.",
+                    "finding: none", "I could not find anything new on tidal energy.",
+                    "There was nothing notable about tidal energy."):
+        assert outreach.settle(finding(summary=summary), inputs(interests=[declared()])) == "empty", summary
+        assert outreach.finding_candidate(finding(summary=summary), inputs(interests=[declared()])) is None
+    mixed = "No new studies on tidal energy this week. MV-52: tidal energy output rose this season."
+    assert outreach.settle(finding(summary=mixed), inputs(interests=[declared()])) is None
+    made = outreach.finding_candidate(finding(summary=mixed), inputs(interests=[declared()]))
+    assert "MV-52" in made.text and "No new studies" not in made.text
+
+
+def test_a_report_already_shared_is_a_repeat_and_a_new_item_on_the_topic_is_not():
+    earlier = Sent(id="o-1", type="outreach_finding", slug="tidal-energy", at=NOW - 8 * 24 * H, verdict="useful",
+                   text='You said "I care about tidal energy", so I looked into tidal energy: QX-41: A practical study '
+                        'of tidal energy was published. Say \'dig deeper\' for more.')
+    state = inputs(interests=[declared()], sent=[earlier])
+    assert outreach.settle(finding(), state) == "repeat" and outreach.finding_candidate(finding(), state) is None
+    assert outreach.digest_value(finding(), state) == 0.0
+    fresh = finding(summary="RB-17: New observations on tidal energy are out. It compares two approaches.")
+    assert outreach.settle(fresh, state) is None and outreach.finding_candidate(fresh, state) is not None
+    # What the digest already listed counts as shared too.
+    listed = inputs(interests=[declared()], seen=["QX-41: A practical study of tidal energy was published."])
+    assert outreach.settle(finding(), listed) == "repeat"
+
+
+def test_an_interest_at_level_zero_weighs_nothing():
+    assert outreach.weight(declared(level=0.0)) == 0.0
+    assert outreach.finding_candidate(finding(), inputs(interests=[declared(level=0.0)])) is None
+
+
+def test_only_what_raised_an_interest_says_whose_it_is():
+    own = ["owner: a declared identity interest"]
+    assert outreach.interest_origin([*own, "silence:o-1", "muted:t-2"]) == "own"
+    assert outreach.interest_origin([*own, "reaction:o-1"]) == "owner"
+    assert outreach.interest_origin([*own, "engaged:o-1"]) == "welcome"
+    assert outreach.interest_origin(["appraisal:a-1"]) == "welcome"
+
+
+def test_the_reason_a_message_gives_is_the_one_that_holds():
+    def why(**interest):
+        return outreach.finding_candidate(finding(), inputs(interests=[declared(turn=None, **interest)])).rationale
+    assert why() == "You told me tidal energy matters to you, so I looked into it"
+    assert why(asked=True) == "You asked me for more on tidal energy before, so I looked into it"
+    assert why(origin="welcome") == "You seemed keen on tidal energy, so I looked into it"
+    mentioned = outreach.finding_candidate(finding(), inputs(interests=[declared(turn=None, origin="mentioned",
+                                                                                  level=3.0)]))
+    assert mentioned is None or not mentioned.rationale.startswith("You told me")
+    assert not outreach._because(inputs(), declared(turn=None, origin="own"), "own", "tidal energy").startswith(
+        "You told me")
+
+
+def test_a_memory_match_is_the_topic_named_in_one_sentence():
+    apart = "My python script for the invoices crashed again.\nThe parcel arrived but the packaging was torn."
+    assert outreach.relevance(finding(topic="python packaging"), inputs(memory=apart))[0] == 0.0
+    together = "I keep fighting python packaging at work.\nThe parcel arrived."
+    assert outreach.relevance(finding(topic="python packaging"), inputs(memory=together))[0] == pytest.approx(0.6)
+
+
+def test_nothing_unprompted_goes_within_the_minimum_gap_of_the_last_outreach():
+    sent = [Sent(id="o-1", type="outreach_finding", slug="fern-species", at=NOW - timedelta(minutes=50))]
+    state = inputs(interests=[declared()], sent=sent)
+    assert "last outreach" in holds(state, slug="tidal-energy", topic="tidal energy")
+    assert holds(state, requested=True) is None
+    later = inputs(now=NOW + outreach.MIN_GAP, interests=[declared()], sent=sent)
+    assert holds(later, slug="tidal-energy", topic="tidal energy") is None
+
+
+def test_a_check_in_on_an_open_loop_satiates_the_pressure_for_the_next():
+    loop = Loop(id="c-2", description="Sort the garage shelves", created_at=NOW - 10 * 24 * H)
+    offered = [Sent(id="o-1", type="outreach_loop", slug="renew-the-passport", at=NOW - 3 * H)]
+    made = outreach.loop_candidate(loop, inputs(last_owner_turn=NOW - 40 * H, sent=offered))
+    assert made is not None and made.salience == pytest.approx(0.9 * 3 / 24, abs=1e-3)

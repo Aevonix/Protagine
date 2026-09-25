@@ -48,14 +48,21 @@ general self-improvement simply by recording a successful review.
   phrasings is unmeasured until the family's pilot, which reports it per class
   (a follow-up adds one tool-less classification call per linked reply if
   positive-reply recall is under 80%). A position link needs a short or
-  referring reply, so a long reply that names neither the topic nor the item
-  links nothing. Relevance is lexical (shared terms with the owner's interests,
-  goals and recent words). "Not now" teaches a per-hour mark, not a schedule:
+  referring reply, the owner's first turn after the outreach, not
+  mid-conversation, with no request of its own, so a reply that names neither
+  the topic nor the item and misses any of these links nothing and the
+  outreach is scored by silence. Relevance is lexical (shared terms with the
+  owner's interests and goals, and a sentence of the owner's naming the
+  topic), and so are the null-report and repeat checks (a report worded as a
+  finding that says nothing new in new words passes them). "Not now" teaches a per-hour mark, not a schedule:
   best-hour learning from reply latency is not built. A finding whose text
   carries a price trips the authority floor's money pattern and becomes an ask
   instead of a message; the family's items carry no currency. No family has
-  measured the faculty yet: the flag ships at its release-candidate value
-  until the gate decides.
+  measured the faculty yet: the flag carries its release-candidate value (on)
+  so the family's `full` arm measures it; the release sets it by the gate
+  (`docs/proto-agi/families/mind-outreach-1.md` section 5: off unless `full`
+  beats `full-outreach`), and a deployment before the gate turns it on or off
+  deliberately in its own config.
 - **Skills (M9)**: off by default. Loads are counted only for Protagine's own
   `protagine-*` skills, and a process whose Hermes lacks
   `clear_skills_system_prompt_cache` lists a new skill only after a restart.

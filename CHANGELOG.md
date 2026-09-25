@@ -8,13 +8,16 @@ architecture 4.10). The social drive turns toward the owner
 (`mind/outreach.py`): it proposes a message only from something concrete, a
 finding of its own research that bears on what the owner said they care about,
 the owner's own open item after a quiet stretch, or care for a named thing the
-owner said is stressing them. There is no empty check-in. A message's value
+owner said is stressing them. There is no empty check-in, and a report that
+found nothing, or only what was already sent or listed, is no finding. A message's value
 (relevance x novelty x timeliness) is weighed against the interruption (the
 last outreach's recency, the owner's ignored streak, the day's unprompted
 messages, a "not now" mark on the hour) by the one ranker; quiet hours, a
 pause, a daily budget (`mind.budgets.outreach_per_day: 3`, counted apart from
-the reminders the owner asked for), a muted topic and a topic's backoff hold
-it, and at most one goes out a tick. Every message says why, quoting the owner.
+the reminders the owner asked for), two hours after the last outreach, a muted
+topic and a topic's backoff hold it, and at most one goes out a tick; one quiet
+stretch is one check-in. Every message says why, quoting the owner, and never
+claims more than its source.
 What was worth it but not sent lands in the digest ("Found for you", "Offers").
 
 The owner's replies steer it (`mind/reactions.py`, read in the turn path):
@@ -22,7 +25,11 @@ The owner's replies steer it (`mind/reactions.py`, read in the turn path):
 "not interested" mutes the topic; "not now" pauses for four hours; "leave me
 alone today" until tomorrow; "stop checking in" until the owner resumes it
 (`protagine mind outreach on|off|status`, `POST /v1/mind/outreach`); silence
-for a day is a weak "ignored". What it learns lives where the mind already
+for a day is a weak "ignored". A reply that does not name the topic counts
+only when it plainly answers the outreach (the owner's first turn after it, not
+mid-conversation, no request of its own), and only what in it is about the
+outreach counts; a bare "stop" or "not today" means something only as such a
+reply. What it learns lives where the mind already
 learns: the verdict and its feedback (per type and per topic), interests,
 mutes, the pause and timing marks, and the night's lessons over rated
 messages. The appraisal backs the phrases with two nets (the owner's opt-out,

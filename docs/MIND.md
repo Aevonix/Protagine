@@ -621,14 +621,19 @@ research that bears on what the owner said they care about (an interest they
 declared with `protagine mind interest`, in conversation, or welcomed), the
 owner's own open item after a day or so of quiet (not one due within 48 h:
 reminders and heads-ups are duty's), or a named thing the owner said is
-stressing them. There is no "anything you need?" message.
+stressing them. There is no "anything you need?" message, and a report that
+found nothing, or only what was already sent or listed, is never sent as a
+finding.
 
 Each candidate's value is `relevance × novelty × timeliness` and its cost the
 interruption (recency of the last outreach, the owner's ignored streak, the
 day's unprompted messages, a "not now" mark on the hour); the ranker decides.
 Quiet hours, a pause, `budgets.outreach_per_day` (3; reminders the owner asked
-for are counted apart), a muted topic and a topic's backoff hold a candidate
-before it forms, and at most one unprompted outreach goes out a tick. Every
+for are counted apart), two hours after the last outreach, a muted topic and a
+topic's backoff hold a candidate before it forms, and at most one unprompted
+outreach goes out a tick. An offer of help on an open item waits for a quiet
+stretch since the owner last spoke (or since the last such offer), so one quiet
+stretch is one check-in. Every
 message says why, quoting the owner ("You said \"I care a lot about tidal
 energy\", so I looked into tidal energy: ... Say 'dig deeper' for more, or
 'not interested' and I will drop it."). What was worth it but not sent is in
@@ -639,7 +644,11 @@ The owner's replies steer it, read in the turn path (`P/mind/reactions.py`):
 "dig deeper" rates it useful and starts a follow-up whose answer is sent when
 it is ready, outside the daily budget; "not interested" mutes the topic; "not now" pauses for four
 hours; "leave me alone today" until tomorrow; "stop checking in" until
-"you can check in again" or `protagine mind outreach on`. Reminders the owner
+"you can check in again" or `protagine mind outreach on`. A reply that does not
+name the topic counts only when it plainly answers the outreach: the owner's
+first turn after it, not mid-conversation, and not a request of its own ("can
+you find out when the last train leaves?" is a request, not "dig deeper"). A
+bare "stop" or "not today" means something about outreach only as such a reply. Reminders the owner
 asked for never stop. Silence for a day counts as a weak "ignored". What is
 learned is the verdict and its feedback, the topic's interest level, a mute,
 the pause and the hour's mark, and at night the lessons over the rated

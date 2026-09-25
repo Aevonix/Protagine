@@ -5,9 +5,9 @@ about the mind reaching out, as classes and, where the words carry one, an objec
 
 | class | what the owner said | needs a link to an outreach |
 |---|---|---|
-| ``stop`` | no unprompted messages ("stop checking in", the contact opt-out phrases) | no |
+| ``stop`` | no unprompted messages ("stop checking in", the contact opt-out phrases) | only a bare "stop" |
 | ``resume`` | check-ins are welcome again | no |
-| ``pause_today`` | quiet for the rest of the day | no |
+| ``pause_today`` | quiet for the rest of the day | only "not today", "I need to focus", "hold it until tomorrow" |
 | ``not_now`` | not at this moment ("not now", "in a meeting") | yes |
 | ``negative`` | not wanted ("not interested", "not useful", "drop it"); with an object, about that topic | without an object |
 | ``positive`` | more wanted ("dig deeper", "find out", "tell me more") | yes |
@@ -15,6 +15,12 @@ about the mind reaching out, as classes and, where the words carry one, an objec
 | ``declaration`` | a topic the owner cares about ("keep me posted on X") | no |
 | ``strain`` | a named thing stressing them or that they are behind on | no |
 | ``relief`` | that thing is sorted | no |
+
+What needs a link means something about outreach only as a reply to one: the owner types "stop" to
+halt a turn and "not today" inside a request. A positive cue aimed at something the outreach did not
+say ("find out when the last train leaves") and a negative about another topic are no reaction to
+it (``Reading.reaction(about=...)``); a turn with a request of its own or a redo of the assistant's
+work is not a reply at all (``elsewhere``).
 
 A negation within three words before a cue voids it ("I'm not stressed about"), except in cues
 that are negative themselves. An object phrase is at most six words, cut at punctuation or a
@@ -26,7 +32,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Pattern, Tuple
+from typing import Callable, Iterable, List, Optional, Pattern, Tuple
 
 from protagine.contacts.optout import OPT_OUT_PATTERNS
 
@@ -70,7 +76,13 @@ def _cue(expression: str, **flags: bool) -> Cue:
 
 
 _I = r"(?:i|i'm|i am|i've|i have|im)"
-STOP_CUES: Tuple[Cue, ...] = tuple(Cue(pattern, negatable=False) for pattern in OPT_OUT_PATTERNS) + (
+# A contact's bare STOP ends their messages; the owner's halts a running turn, so for outreach it is a
+# stop only as a reply to one (``BARE_STOP_CUES``).
+BARE_STOP_CUES: Tuple[Cue, ...] = (
+    _cue(r"^\s*(?:stop|stop it|stop that|enough)[.!]*\s*$", negatable=False),
+)
+STOP_CUES: Tuple[Cue, ...] = tuple(Cue(pattern, negatable=False) for pattern in OPT_OUT_PATTERNS
+                                   if not pattern.search("stop")) + (
     _cue(r"\b(?:stop|quit|no more|enough)\s+(?:checking|check(?:ing)?-?\s*ins?)(?:\s+(?:in|up))?\b", negatable=False),
     _cue(r"\b(?:don't|do not|no need to|don't need to|do not need to|you needn't|never)\s+check\s+(?:in|up)\b",
          negatable=False),
@@ -92,15 +104,19 @@ _CLAUSE_END = r"(?=\s*(?:[.;,!]|please\b|thanks\b|$))"
 PAUSE_TODAY_CUES: Tuple[Cue, ...] = (
     _cue(r"\bleave me alone (?:for )?(?:the rest of )?(?:today|tonight|this afternoon|this evening|the day)\b",
          negatable=False),
-    _cue(r"\bnot today(?!')\b", negatable=False),
     _cue(r"\bno (?:messages|pings|texts|check-ins|interruptions) (?:today|tonight|this afternoon|this evening)\b",
          negatable=False),
-    # "I need to focus" as the whole clause; "I need to focus on the report" is work talk.
+    # "I need to focus today" as the whole clause; "I need to focus on the report" is work talk.
     _cue(r"\bi (?:need|have|want) to (?:focus|concentrate|be left alone)"
-         r"(?: today| tonight| this afternoon| for the rest of the day)?" + _CLAUSE_END),
-    _cue(r"\b(?:hold|save|keep) (?:it|that|them|anything|everything|messages)\b[\w\s']{0,40}\buntil tomorrow\b"),
+         r"(?: today| tonight| this afternoon| for the rest of the day)" + _CLAUSE_END),
     _cue(r"\b(?:don't|do not) (?:disturb|bother|interrupt) me (?:today|tonight|this afternoon|this evening)\b",
          negatable=False),
+)
+# A pause that names no day, or refers to what was sent: a pause only as a reply to an outreach.
+VAGUE_PAUSE_CUES: Tuple[Cue, ...] = (
+    _cue(r"\bnot today(?!')\b", negatable=False),
+    _cue(r"\bi (?:need|have|want) to (?:focus|concentrate|be left alone)" + _CLAUSE_END),
+    _cue(r"\b(?:hold|save|keep) (?:it|that|them|anything|everything|messages)\b[\w\s']{0,40}\buntil tomorrow\b"),
 )
 NOT_NOW_CUES: Tuple[Cue, ...] = (
     _cue(r"\bnot now\b", negatable=False),
@@ -189,6 +205,9 @@ RELIEF_CUES: Tuple[Cue, ...] = (
 )
 
 
+_REACTION_CUES = (*STOP_CUES, *BARE_STOP_CUES, *RESUME_CUES, *PAUSE_TODAY_CUES, *VAGUE_PAUSE_CUES, *NOT_NOW_CUES,
+                  *NEGATIVE_CUES, *POSITIVE_CUES, *WELCOME_CUES)
+
 REFERRING = re.compile(r"\b(?:it|that|this|those|these|them|the (?:item|piece|link|one|message|thing)s?"
                        r"|what you (?:sent|found|shared)|you sent)\b", re.IGNORECASE)
 SHORT_REPLY_WORDS = 12
@@ -204,6 +223,35 @@ def refers_back(text: str) -> bool:
     happens to hold a cue ("I need to find out when the train leaves") is not taken as a reaction."""
     body = strip_prefix(text)
     return len(re.findall(r"[\w'-]+", body)) <= SHORT_REPLY_WORDS or bool(REFERRING.search(body))
+
+
+# A request of the turn's own ("can you book the dentist?") and a redo of the assistant's work ("try again
+# with a shorter version"): the turn is talking to the assistant about something else.
+_REQUEST = re.compile(r"^\s*(?:(?:and|also|oh|ok|okay|so)[\s,]+)?(?:(?:can|could|would|will|won't)\s+you\b|please\b|pls\b"
+                      r"|i\s+(?:need|want|would like|'d like)\s+you\s+to\b)", re.IGNORECASE)
+_REDO = re.compile(r"\b(?:try (?:it |that |this )?again|redo|re-do|rewrite|re-write|rephrase|start over|do (?:it|that) "
+                   r"again|another (?:go|version|draft|attempt|try|pass)|(?:make|keep) it (?:shorter|longer|simpler)"
+                   r"|(?:shorter|longer|simpler|different) version)\b", re.IGNORECASE)
+_SENTENCES = re.compile(r"[.?!;\n]+")
+
+
+def elsewhere(text: str, known: Iterable[str]) -> bool:
+    """Whether a turn is talking to the assistant about something other than what was sent (``known``: the
+    outreach's own words, ``content_terms``): a redo of the assistant's work, or a request of its own that
+    names something the outreach did not say once its reaction cues are set aside."""
+    body = strip_prefix(text)
+    if _REDO.search(body):
+        return True
+    mine = set(known)
+    for sentence in _SENTENCES.split(body):
+        if not _REQUEST.match(sentence):
+            continue
+        stripped = sentence
+        for cue in _REACTION_CUES:
+            stripped = cue.pattern.sub(" ", stripped)
+        if content_terms(stripped) - mine:
+            return True
+    return False
 
 
 def _words_before(text: str, start: int, count: int = 3) -> List[str]:
@@ -241,9 +289,18 @@ def clean_object(phrase: str, contacts: Iterable[str] = ()) -> Optional[str]:
     lowered = value.casefold()
     if lowered in _PRONOUNS or all(word.casefold() in _PRONOUNS for word in words):
         return None
-    if mentions_contact(value, contacts) or any(word.casefold().strip("'s") in _PEOPLE for word in words):
+    if mentions_contact(value, contacts) or any(_person(word) for word in words):
         return None
     return value
+
+
+def _person(word: str) -> bool:
+    """A family or work-relation word, its possessive ("sister's", "kids'") or plural folded."""
+    lowered = word.casefold().replace("\u2019", "'")
+    if lowered.endswith("'s"):
+        lowered = lowered[:-2]
+    lowered = lowered.rstrip("'")
+    return lowered in _PEOPLE or (lowered.endswith("s") and lowered[:-1] in _PEOPLE)
 
 
 def _spaced(text: str) -> str:
@@ -288,8 +345,13 @@ def _before(text: str, start: int) -> str:
     return " ".join(kept)
 
 
-def _find(text: str, cues: Iterable[Cue], contacts: Iterable[str]) -> List[Tuple[str, Optional[str]]]:
-    """``(matched phrase, object or None)`` for every cue that fires, in text order."""
+def _tail(text: str, end: int) -> str:
+    """The rest of the clause after a cue, up to the next punctuation: what the cue is aimed at."""
+    return _BOUNDARY.split(text[end:], maxsplit=1)[0].strip()
+
+
+def _hits(text: str, cues: Iterable[Cue], contacts: Iterable[str]) -> List[Tuple[str, Optional[str], str]]:
+    """``(matched phrase, object or None, the rest of its clause)`` for every cue that fires, in text order."""
     found = []
     contacts = tuple(contacts)
     for cue in cues:
@@ -297,13 +359,35 @@ def _find(text: str, cues: Iterable[Cue], contacts: Iterable[str]) -> List[Tuple
             if cue.negatable and _negated(text, match.start()):
                 continue
             target = None
+            rest = _tail(text, match.end())
             if cue.takes_object:
-                target = clean_object(_after(text, match.end()), contacts)
+                rest = _after(text, match.end())
+                target = clean_object(rest, contacts)
             elif cue.object_before:
                 target = clean_object(_before(text, match.start()), contacts)
-            found.append((match.start(), match.group(0), target))
+            found.append((match.start(), match.group(0), target, rest))
     found.sort(key=lambda item: item[0])
-    return [(phrase, target) for _, phrase, target in found]
+    return [(phrase, target, rest) for _, phrase, target, rest in found]
+
+
+def _find(text: str, cues: Iterable[Cue], contacts: Iterable[str]) -> List[Tuple[str, Optional[str]]]:
+    """``(matched phrase, object or None)`` for every cue that fires, in text order."""
+    return [(phrase, target) for phrase, target, _ in _hits(text, cues, contacts)]
+
+
+# Words a reply uses about what was sent, whatever it was: never a sign it is about something else.
+REPLY_WORDS = frozenset().union(*[set(re.findall(r"[\w'-]+", text)) for text in (
+    "please thanks thank you yes yeah sure okay ok great good nice more further deeper bit little lot again also "
+    "really now today later soon else item items piece pieces link links message messages thing things stuff one "
+    "ones detail details source sources send sent share shared found find finding findings tell show get give "
+    "look dig go going keep can could would will won't you your me my it that this those these them there what "
+    "which who how when where why about into on in at of for with from the a an and or but so then just too",)])
+
+
+def content_terms(text: str) -> set:
+    """The words of ``text`` that name something, beyond what any reply says (``REPLY_WORDS``)."""
+    from .lessons import terms
+    return {word for word in terms(text) if word not in REPLY_WORDS}
 
 
 @dataclass
@@ -311,29 +395,43 @@ class Reading:
     """What one owner turn says about outreach."""
 
     stop: bool = False
+    stop_explicit: bool = False     # a stop that stands on its own ("stop checking in"), not a bare "stop"
     resume: bool = False
     pause_today: bool = False
+    pause_explicit: bool = False    # a pause that names the day ("no messages today"), not "not today"
     not_now: bool = False
     negative: bool = False
     negative_objects: List[str] = field(default_factory=list)
+    negative_bare: bool = False     # a negative that names nothing ("not useful", "not interested")
     positive: bool = False
+    positive_tails: List[str] = field(default_factory=list)  # what each positive cue is aimed at ("" for none)
     welcome: bool = False
     declarations: List[str] = field(default_factory=list)
     strains: List[str] = field(default_factory=list)
     reliefs: List[str] = field(default_factory=list)
     relieved: bool = False     # a relief that names nothing ("all good now")
 
-    def reaction(self) -> Optional[str]:
-        """The one reaction a linked outreach takes from this turn, strongest first."""
+    def reaction(self, about: Optional[Callable[[str], bool]] = None) -> Optional[str]:
+        """The one reaction a linked outreach takes from this turn, strongest first. With ``about`` (whether a
+        phrase is about that outreach), a negative counts when it names nothing or names it, and a positive
+        when it is aimed at nothing or at it: "not interested in the fern stuff, but dig deeper into X"
+        is a positive on X."""
         for name in ("stop", "negative", "positive", "welcome", "not_now", "pause_today"):
-            if getattr(self, name):
-                return name
+            if not getattr(self, name):
+                continue
+            if about is not None and name == "negative" and not (
+                    self.negative_bare or any(about(target) for target in self.negative_objects)):
+                continue
+            if about is not None and name == "positive" and not any(
+                    not content_terms(tail) or about(tail) for tail in self.positive_tails):
+                continue
+            return name
         return None
 
     def needs_link(self) -> bool:
         """Whether what the turn says is about an outreach only a link can name."""
-        return (self.positive or self.welcome or self.not_now
-                or (self.negative and not self.negative_objects))
+        return (self.positive or self.welcome or self.not_now or self.negative_bare
+                or (self.stop and not self.stop_explicit) or (self.pause_today and not self.pause_explicit))
 
     @property
     def classes(self) -> List[str]:
@@ -355,22 +453,30 @@ def read(text: str, *, contacts: Iterable[str] = ()) -> Reading:
     reading = Reading()
     if not body.strip():
         return reading
-    reading.stop = bool(_find(body, STOP_CUES, contacts))
+    reading.stop_explicit = bool(_find(body, STOP_CUES, contacts))
+    reading.stop = reading.stop_explicit or bool(_find(body, BARE_STOP_CUES, contacts))
     reading.resume = bool(_find(body, RESUME_CUES, contacts))
-    reading.pause_today = bool(_find(body, PAUSE_TODAY_CUES, contacts))
+    reading.pause_explicit = bool(_find(body, PAUSE_TODAY_CUES, contacts))
+    reading.pause_today = reading.pause_explicit or bool(_find(body, VAGUE_PAUSE_CUES, contacts))
     reading.not_now = bool(_find(body, NOT_NOW_CUES, contacts))
-    negatives = _find(body, NEGATIVE_CUES, contacts)
-    stop_sending = [target for phrase, target in negatives
+    negatives = _hits(body, NEGATIVE_CUES, contacts)
+    stop_sending = [target for phrase, target, _ in negatives
                     if phrase.casefold().startswith(("stop sending", "quit sending"))
                     and (target is None or target.casefold() in _GENERIC)]
     if stop_sending:
-        reading.stop = True
-    negatives = [(phrase, target) for phrase, target in negatives
+        reading.stop = reading.stop_explicit = True
+    negatives = [(phrase, target, rest) for phrase, target, rest in negatives
                  if not (phrase.casefold().startswith(("stop sending", "quit sending"))
                          and (target is None or target.casefold() in _GENERIC))]
     reading.negative = bool(negatives)
-    reading.negative_objects = list(dict.fromkeys(target for _, target in negatives if target))
-    reading.positive = bool(_find(body, POSITIVE_CUES, contacts))
+    reading.negative_objects = list(dict.fromkeys(target for _, target, _ in negatives if target))
+    # Bare: no object in the turn (a "drop it" beside "not interested in X" is about X), and nothing refused as
+    # one either (a person named is who it is about).
+    reading.negative_bare = not reading.negative_objects and any(
+        target is None and not content_terms(rest) for _, target, rest in negatives)
+    positives = _hits(body, POSITIVE_CUES, contacts)
+    reading.positive = bool(positives)
+    reading.positive_tails = [rest for _, _, rest in positives]
     reading.welcome = bool(_find(body, WELCOME_CUES, contacts)) and not reading.negative
     negated_topics = {target.casefold() for target in reading.negative_objects}
     reading.declarations = list(dict.fromkeys(
@@ -418,6 +524,6 @@ def resume(text: str) -> bool:
     return read(text).resume
 
 
-__all__ = ["Cue", "MAX_OBJECT_WORDS", "Reading", "classify_reaction", "clean_object", "declared_interest",
-           "disinterest", "mentions_contact", "pause_today", "read", "refers_back", "relief", "resume", "stop",
-           "strain", "strip_prefix"]
+__all__ = ["Cue", "MAX_OBJECT_WORDS", "REPLY_WORDS", "Reading", "classify_reaction", "clean_object", "content_terms",
+           "declared_interest", "disinterest", "elsewhere", "mentions_contact", "pause_today", "read", "refers_back",
+           "relief", "resume", "stop", "strain", "strip_prefix"]

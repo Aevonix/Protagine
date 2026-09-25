@@ -296,3 +296,160 @@ async def test_the_state_shows_the_outreach_block(make):
     state = fx.mind.state()["outreach"]
     assert state["enabled"] is True and state["paused_until"] is None and state["per_day"] == 3
     assert state["sent_24h"] == 0 and state["muted"] == [] and state["care"] == []
+
+
+# -- substance, spacing and grounded reasons (review of M11) -------------------------------------------------
+
+async def test_a_muted_interest_weighs_nothing_and_is_not_researched_again(make):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", by="turn:t-1")
+    await fx.research("tidal energy", report("QX-41", "tidal energy"))
+    await fx.mind.owner_turn("Not interested in tidal energy after all, drop it.", turn_id="t-no", occurred_at=fx.now)
+    entry = next(item for item in fx.mind._interests() if item["topic"] == "tidal energy")
+    assert entry["weight"] == 0.0
+    before = {row.id for row in fx.store.intentions(kind=["task"], limit=200) if row.type == "research"}
+    fx.shift(timedelta(days=8))
+    fx.owner_spoke()
+    await fx.tick()
+    assert not [row for row in fx.store.intentions(kind=["task"], limit=200)
+                if row.type == "research" and row.id not in before and "tidal energy" in row.description]
+
+
+async def test_silence_on_an_outreach_never_makes_the_agents_own_interest_the_owners(make):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", why="a declared identity interest", by="owner")
+    fx.owner_commitment("write the tidal energy cost memo", due=fx.now + timedelta(days=10), created=fx.now - 2 * H)
+    fx.found("tidal energy", report("QX-41", "tidal energy"))
+    await fx.tick()
+    first, = fx.outreach_rows("outreach_finding")
+    fx.shift(25 * H)
+    fx.owner_spoke()
+    await fx.tick()
+    assert fx.store.get(first.id).verdict == "ignored"
+    causes = fx.mind.mind_state.get("interest:tidal-energy")["causes"]
+    assert outreach.interest_origin(causes) == "own" and not any(c.startswith("silence:") for c in causes)
+    fx.shift(8 * 24 * H)
+    fx.owner_spoke()
+    fx.found("tidal energy", report("RB-17", "tidal energy"))
+    await fx.tick()
+    assert not any(row.context["why"].startswith("You told me") for row in fx.outreach_rows("outreach_finding"))
+
+
+async def test_three_findings_are_spread_out_not_sent_inside_an_hour(make):
+    fx = make(config={"budgets": {"outreach_per_day": 3}})
+    fx.owner_spoke()
+    for i, topic in enumerate(["tidal energy", "fern species", "clock repair"]):
+        fx.mind.add_interest(topic, by=f"turn:t-{i}")
+    fx.found("tidal energy", report("QX-41", "tidal energy"))
+    await fx.tick()
+    start = fx.now
+    fx.found("fern species", report("RB-17", "fern species"))
+    fx.found("clock repair", report("KD-83", "clock repair"))
+    times = []
+    for _ in range(6 * 12):
+        fx.shift(timedelta(minutes=5))
+        before = len(fx.outreach_rows())
+        await fx.tick()
+        if len(fx.outreach_rows()) > before:
+            times.append(fx.now - start)
+    assert len(times) == 2 and times[0] >= outreach.MIN_GAP and times[1] - times[0] >= outreach.MIN_GAP, times
+
+
+async def test_the_owners_last_turn_is_read_from_the_ledger_when_the_mark_is_missing(make):
+    """After an upgrade (or the flag switched back on) the mark is absent or stale: old open items do not read
+    as a quiet stretch when the owner spoke minutes ago."""
+    fx = make()
+    for item in ["Renew the passport", "Sort the garage shelves", "Book the boiler service"]:
+        fx.owner_commitment(item, created=fx.now - timedelta(days=10))
+    fx.ledger.record_source("t-pre", contact_id=OWNER, session_id="s", messages=[{"role": "user", "content": "hi"}],
+                            scope="person", occurred_at=(fx.now - timedelta(minutes=5)).isoformat(), derive_claims=False)
+    for _ in range(0, 90, 5):
+        await fx.tick()
+        fx.shift(timedelta(minutes=5))
+    assert fx.outreach_rows("outreach_loop") == []
+
+
+async def test_one_check_in_per_quiet_stretch(make):
+    fx = make()
+    fx.owner_spoke(fx.now - 40 * H)
+    for item in ["Renew the passport", "Sort the garage shelves", "Book the boiler service"]:
+        fx.owner_commitment(item, created=fx.now - timedelta(days=10))
+    for _ in range(12):
+        await fx.tick()
+        fx.shift(H)
+    assert len(fx.outreach_rows("outreach_loop")) == 1
+
+
+async def test_a_repeated_or_empty_report_is_never_sent_as_a_finding(make):
+    from test_mind_outreach_reactions import say, shared
+    fx = make()
+    row = await shared(fx)                              # tidal energy, QX-41
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Great find, thanks.", "t-w", "owner-2")
+    repeat = empty = None
+    for week, summary in enumerate([report("QX-41", "tidal energy"),
+                                    "Nothing new on tidal energy this week; no new studies or updates were found."]):
+        fx.shift(timedelta(days=8))
+        fx.owner_spoke()
+        done = await fx.research("tidal energy", summary)
+        await fx.tick()
+        if week == 0:
+            repeat = done
+        else:
+            empty = done
+    assert [r.id for r in fx.outreach_rows("outreach_finding")] == [row.id], "the same item and a null report stay home"
+    assert fx.store.get(repeat.id).result_metadata["outreach"]["state"] == "repeat"
+    assert fx.store.get(empty.id).result_metadata["outreach"]["state"] == "empty"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    fx.shift(timedelta(days=3))
+    await fx.tick()
+    assert not any("QX-41" in p["text"] or "Nothing new" in p["text"] for p in fx.sent if p["type"] == "digest")
+    # A new item on the same topic a week later still goes.
+    fx.shift(timedelta(days=5))
+    fx.owner_spoke()
+    await fx.research("tidal energy", report("RB-17", "tidal energy").replace("A practical study", "New observations"))
+    await fx.tick()
+    assert len(fx.outreach_rows("outreach_finding")) == 2
+
+
+async def test_a_memory_match_needs_the_topic_in_one_sentence_of_the_owners(make):
+    from test_mind_outreach_reactions import say, shared
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Great find, thanks.", "t-w", "owner-2")
+    fx.shift(timedelta(days=2))
+    await say(fx, "My python script for the invoices crashed again.", "t-a", "owner-3")
+    fx.shift(3 * H)
+    await say(fx, "The parcel arrived but the packaging was torn.", "t-b", "owner-3")
+    fx.shift(20 * H)
+    fx.found("python packaging", report("ZX-11", "python packaging"))
+    fx.shift(timedelta(minutes=1))
+    await fx.tick()
+    assert not [r for r in fx.outreach_rows("outreach_finding") if r.context["topic"] == "python packaging"]
+    state = await fx.mind._gather(fx.now)
+    finding = outreach.Finding(id="x", type="research", topic="python packaging", slug="python-packaging",
+                               summary=report("ZX-11", "python packaging"), completed_at=fx.now)
+    assert outreach.relevance(finding, state.outreach)[0] == 0.0
+
+
+async def test_a_finding_whose_message_the_owners_pause_cancelled_goes_to_the_digest(make):
+    from test_mind_outreach_reactions import say
+    fx = make()
+    await say(fx, "I care a lot about tidal energy.", "t-1")
+    done = await fx.research("tidal energy", report("QX-41", "tidal energy"))
+    await fx.mind.tick(force=True)
+    queued, = fx.outreach_rows()
+    await say(fx, "Leave me alone for the rest of today, please.", "t-q", "owner-2")
+    assert fx.store.get(queued.id).status == "cancelled"
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "digest"
+    fx.mind.digest_hour = 8
+    fx.shift(timedelta(hours=20))           # 08:00 next day
+    await fx.tick()
+    fx.shift(timedelta(hours=1))
+    await fx.tick()
+    digests = [p["text"] for p in fx.sent if p["type"] == "digest"]
+    assert len(digests) == 1 and digests[0].count("QX-41") == 1
+    assert not [p for p in fx.sent if p["type"] == "outreach_finding"]

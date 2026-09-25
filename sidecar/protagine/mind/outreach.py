@@ -13,12 +13,18 @@ of their own. A candidate exists only when there is something concrete to say, f
 There is no "anything you need?" type. The answer to a follow-up the owner asked for
 (``outreach_answer``) is requested, and the follow-up itself (``outreach_followup``) is duty's.
 
+A finding must say something: a report that found nothing ("nothing new on X this week") is no
+finding, and one whose sentences were already shared (sent, or listed in a digest) is a repeat; both
+are settled without a message (``settle``).
+
 Value against interruption uses the one ranker: a candidate's ``salience`` is its expected value
 ``EV = relevance x novelty x timeliness`` and its ``cost`` the interruption cost. Hard holds (quiet
-hours, the owner's pause, the daily budget, a muted topic, a topic's backoff) are checked here, so a
-held candidate is never formed and never piles up into a burst; and one unprompted candidate at
-most is proposed per tick, so two findings at once are one interruption. Every message says why,
-quoting what the owner said where the ledger still holds it.
+hours, the owner's pause, the daily budget, the minimum gap after the last outreach, a muted topic,
+a topic's backoff) are checked here, so a held candidate is never formed and never piles up into a
+burst; and one unprompted candidate at most is proposed per tick, so two findings at once are one
+interruption. Every message says why, quoting what the owner said where the ledger still holds it,
+and never claims more than the source it came from (an interest the owner declared, one they asked
+more about, one they seemed keen on, their open item, their own recent sentence, or the mind's own).
 """
 
 from __future__ import annotations
@@ -44,6 +50,13 @@ LOOP_MIN_LEAD = timedelta(hours=48)
 LOOP_MIN_AGE = timedelta(hours=1)
 PRESSURE_FULL_HOURS = 24.0
 TOPIC_BACKOFF = timedelta(hours=24)
+# Unprompted outreach never goes within two hours of the last outreach, so a day's budget is never one burst.
+MIN_GAP = timedelta(hours=2)
+# The owner's turn this close before an outreach went out means they were talking to the assistant: a
+# bare reply after it answers that conversation, not the outreach (``Mind._link``).
+CONVERSATION_GAP = timedelta(minutes=10)
+# Offers that check in on the owner (not news): one per quiet stretch, the pressure restarts after each.
+CHECK_IN_OFFERS = frozenset({"outreach_loop", "outreach_care"})
 TOPIC_BACKOFF_CAP = timedelta(days=30)
 MUTE_HALF_LIFE = timedelta(days=90)
 MUTE_FLOOR = 0.25
@@ -71,16 +84,21 @@ INDEFINITE = "indefinite"
 
 
 IDENTITY_INTEREST = "a declared identity interest"
+# Causes that lowered an interest, never raised it: they say nothing about whose it is.
+LOWERING_CAUSES = ("silence:", "muted:")
+# Causes of an interest the owner welcomed without declaring it: an appraisal that saw it, a reply engaging it.
+WELCOME_CAUSES = ("appraisal:", "engaged:")
 
 
 def interest_origin(causes: Iterable[Any]) -> str:
-    """Who an interest in ``mind_state`` came from, by its causes: ``welcome`` when only appraisals that saw
-    the owner welcome the topic raised it, ``own`` for the agent's identity interest, ``owner`` for anything
-    the owner said or set (a declaration turn, a reaction, the CLI or the API)."""
-    values = [str(cause) for cause in causes or []]
-    if any(IDENTITY_INTEREST not in value and not value.startswith("appraisal:") for value in values):
+    """Who an interest in ``mind_state`` came from, by the causes that raised it: ``welcome`` when only
+    appraisals that saw the owner welcome the topic, or the owner's engaged replies, raised it; ``own`` for
+    the agent's identity interest; ``owner`` for anything the owner said or set (a declaration turn, a
+    "dig deeper", the CLI or the API). A silence or a mute lowered it and says nothing about whose it is."""
+    values = [str(cause) for cause in causes or [] if not str(cause).startswith(LOWERING_CAUSES)]
+    if any(IDENTITY_INTEREST not in value and not value.startswith(WELCOME_CAUSES) for value in values):
         return "owner"
-    if any(value.startswith("appraisal:") for value in values):
+    if any(value.startswith(WELCOME_CAUSES) for value in values):
         return "welcome"
     return "own" if values else "owner"
 
@@ -114,6 +132,7 @@ class Interest:
     level: float = 1.0
     origin: str = "owner"          # owner | welcome | mentioned | own
     turn: Optional[str] = None     # the owner turn that declared it, quoted at render time
+    asked: bool = False            # the owner asked for more on it ("dig deeper"), not only declared it
 
 
 @dataclass
@@ -156,6 +175,7 @@ class Sent:
     verdict: Optional[str] = None
     reaction: Optional[str] = None
     source: str = ""
+    text: str = ""                  # what the message said (a later finding repeating it is no news)
 
 
 @dataclass
@@ -193,6 +213,7 @@ class OutreachInputs:
     quotes: Dict[str, str] = field(default_factory=dict)       # turn id -> the owner's words, while held
     lessons: List[Any] = field(default_factory=list)           # owner-verified outreach lessons
     followups: List[Followup] = field(default_factory=list)
+    seen: List[str] = field(default_factory=list)              # findings the digest listed or holds (30 days)
 
     def paused(self) -> bool:
         return self.paused_until is not None and self.now < self.paused_until
@@ -211,6 +232,9 @@ def pressure(inputs: OutreachInputs, since: Optional[datetime] = None) -> float:
 
 
 def weight(interest: Interest) -> float:
+    """What an interest counts for relevance by its origin; one decayed or muted to nothing counts nothing."""
+    if interest.level <= 0:
+        return 0.0
     if interest.origin in OWNER_ORIGINS:
         return min(1.0, 0.75 + 0.25 * max(0.0, interest.level))
     return MENTIONED_WEIGHT if interest.origin == "mentioned" else OWN_WEIGHT
@@ -266,10 +290,68 @@ def relevance(finding: Finding, inputs: OutreachInputs) -> Tuple[float, Optional
         if shared >= MIN_SHARED and share >= MIN_SHARE and GOAL_WEIGHT * share > best:
             best, source, interest = GOAL_WEIGHT * share, "goal", None
     if inputs.memory:
-        shared, share = overlap(terms(finding.topic), inputs.memory)
-        if shared >= MIN_SHARED and share >= MIN_SHARE and MEMORY_WEIGHT * share > best:
-            best, source, interest = MEMORY_WEIGHT * share, "memory", None
+        # The topic named in one sentence of the owner's, never its words scattered over a month of turns.
+        wanted, said = terms(finding.topic), 0.0
+        for sentence in _SENTENCE.split(inputs.memory):
+            shared, share = overlap(wanted, sentence)
+            if shared >= MIN_SHARED and share >= MIN_SHARE:
+                said = max(said, share)
+        if MEMORY_WEIGHT * said > best:
+            best, source, interest = MEMORY_WEIGHT * said, "memory", None
     return min(1.0, best * lesson_factor(inputs, finding.topic, f"{finding.topic} {text}")), interest, source
+
+
+# A report that found nothing: no finding, whatever its topic words.
+NULL_REPORT = re.compile(
+    r"\b(?:nothing\s+(?:new|notable|of\s+note|relevant|further|else|to\s+report|found|turned\s+up|came\s+up)"
+    r"|no\s+(?:new|fresh|recent|further)\b[^.;:!?]{0,60}?\b(?:found|stud(?:y|ies)|updates?|developments?|news|results?"
+    r"|findings?|information|papers?|items?|changes?|reports?|sources?|articles?)"
+    r"|(?:found|turned\s+up|there\s+(?:is|was|were|are))\s+(?:nothing|no\s+(?:new|relevant|recent))"
+    r"|(?:could|did|can|was|were)(?:n't|\s+not)\s+(?:find|able\s+to\s+find|turn\s+up|locate)\s+(?:anything|any)"
+    r"|no\s+results?|finding\s*[:=]\s*(?:none|nothing|n/?a|null|-)(?=\W|$))",
+    re.IGNORECASE)
+REPEAT_OVERLAP = 0.8
+_TOKEN = re.compile(r"[\w-]+")
+
+
+def _tokens(text: str) -> set:
+    """Words for comparing what was said: codes and numbers kept ("QX-41" is not "RB-17")."""
+    return {word for word in _TOKEN.findall(str(text or "").casefold()) if len(word) > 2 or any(
+        ch.isdigit() for ch in word)}
+
+
+def _sentences(text: str) -> List[str]:
+    return [" ".join(part.split()) for part in _SENTENCE.split(str(text or "")) if part.strip()]
+
+
+def says_something(sentence: str, topic: str) -> bool:
+    """A sentence that reports something: not a null report, and naming more than the topic itself."""
+    if NULL_REPORT.search(sentence):
+        return False
+    return bool(_tokens(sentence) - _tokens(topic) - {"finding", "findings", "report", "update"})
+
+
+def repeated(text: str, inputs: OutreachInputs) -> bool:
+    """Every sentence of ``text`` was already shared: sent in an outreach, or listed in a digest."""
+    mine = [_tokens(sentence) for sentence in _sentences(text)]
+    mine = [tokens for tokens in mine if tokens]
+    if not mine:
+        return False
+    shared = [_tokens(sentence) for said in [*(item.text for item in inputs.sent if item.text), *inputs.seen]
+              for sentence in _sentences(said)]
+    return all(any(tokens <= other or len(tokens & other) / len(tokens | other) >= REPEAT_OVERLAP for other in shared)
+               for tokens in mine)
+
+
+def settle(finding: Finding, inputs: OutreachInputs) -> Optional[str]:
+    """``empty`` for a report that found nothing, ``repeat`` for one already shared, else None. An answer the
+    owner asked for is never settled here: "I looked and found nothing more" is its honest answer."""
+    if finding.requested_by is not None:
+        return None
+    text = excerpt(finding.summary, finding.topic, substantive=True)
+    if not text:
+        return "empty"
+    return "repeat" if repeated(text, inputs) else None
 
 
 def novelty(inputs: OutreachInputs, slug: str, type: str) -> float:
@@ -336,7 +418,8 @@ def interruption_cost(inputs: OutreachInputs) -> float:
 
 def holds(inputs: OutreachInputs, *, slug: str = "", topic: str = "", requested: bool = False) -> Optional[str]:
     """Why nothing may be proposed now, or None. Quiet hours and the owner's pause hold everything;
-    the budget, a mute and a topic's backoff hold what the owner did not ask for."""
+    the budget, the gap after the last outreach, a mute and a topic's backoff hold what the owner did
+    not ask for."""
     if inputs.quiet:
         return "quiet hours"
     if inputs.paused():
@@ -345,6 +428,9 @@ def holds(inputs: OutreachInputs, *, slug: str = "", topic: str = "", requested:
         return None
     if inputs.budget:
         return inputs.budget
+    last = max((item.at for item in inputs.sent), default=None)
+    if last is not None and inputs.now - last < MIN_GAP:
+        return f"the last outreach went out at {last.isoformat()}"
     if slug and muted(inputs, slug, topic):
         return f"the owner does not want messages about {topic}"
     until = backoff_until(inputs, slug) if slug else None
@@ -359,10 +445,13 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLAUSE = re.compile(r"(?<=[.!?;])\s+|\n+")
 
 
-def excerpt(summary: str, topic: str, limit: int = EXCERPT_CHARS) -> str:
+def excerpt(summary: str, topic: str, limit: int = EXCERPT_CHARS, *, substantive: bool = False) -> str:
     """The sentences of a report that bear on the topic (a report that lists everything it read
-    carries unrelated items); the first sentence when none does."""
-    sentences = [" ".join(part.split()) for part in _SENTENCE.split(str(summary or "")) if part.strip()]
+    carries unrelated items); the first sentence when none does. ``substantive``: only sentences that
+    report something (``says_something``), "" when none does."""
+    sentences = _sentences(summary)
+    if substantive:
+        sentences = [sentence for sentence in sentences if says_something(sentence, topic)]
     mine = terms(topic)
     kept = [sentence for sentence in sentences if mine & terms(sentence)] or sentences[:1]
     text = ""
@@ -395,6 +484,8 @@ def _fit(text: str) -> str:
 
 
 def _because(inputs: OutreachInputs, interest: Optional[Interest], source: str, topic: str) -> str:
+    """The reason a finding carries, from the source its relevance came from and no more: the owner's
+    words while the ledger holds them, else what that source is."""
     said = quote(inputs, interest.turn if interest else None, topic)
     if said:
         return f'You said "{said}", so I looked into {topic}'
@@ -404,6 +495,12 @@ def _because(inputs: OutreachInputs, interest: Optional[Interest], source: str, 
         return f"This bears on something you are working on, so I looked into {topic}"
     if source == "memory":
         return f"You have mentioned {topic} lately, so I looked into it"
+    if source == "mentioned":
+        return f"You showed some interest in {topic}, so I looked into it"
+    if source == "own":
+        return f"I have been following {topic} myself, and this looked worth passing on"
+    if interest is not None and interest.asked:
+        return f"You asked me for more on {topic} before, so I looked into it"
     return f"You told me {topic} matters to you, so I looked into it"
 
 
@@ -430,6 +527,8 @@ def _message(type: str, inputs: OutreachInputs, *, key: str, topic: str, text: s
 
 
 def finding_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Candidate]:
+    if settle(finding, inputs):
+        return None
     r, interest, source = relevance(finding, inputs)
     if r <= 0:
         return None
@@ -437,7 +536,7 @@ def finding_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Cand
         interruption_cost(inputs)
     ev = round(r * n * t, 4)
     because = _because(inputs, interest, source, finding.topic)
-    text = f"{because}: {excerpt(finding.summary, finding.topic)} {REPLY_HINT}"
+    text = f"{because}: {excerpt(finding.summary, finding.topic, substantive=True)} {REPLY_HINT}"
     return _message("outreach_finding", inputs, key=f"outreach:finding:{finding.id}", topic=finding.topic,
                     text=text, why=because, ev={"r": round(r, 4), "n": n, "t": round(t, 4), "c": c}, salience=ev,
                     cost=c, source=f"intention:{finding.id}", expires=FINDING_EXPIRES_HOURS,
@@ -446,8 +545,13 @@ def finding_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Cand
 
 
 def loop_candidate(loop: Loop, inputs: OutreachInputs) -> Optional[Candidate]:
+    """An offer of help with the owner's open item after a quiet stretch: the pressure counts from the
+    owner's last turn, the item's creation or the last check-in offer, whichever is latest, so one quiet
+    stretch is one check-in."""
     topic = loop.description
-    p = pressure(inputs, since=loop.created_at)
+    offered = max((item.at for item in inputs.sent if item.type in CHECK_IN_OFFERS), default=None)
+    anchors = [moment for moment in (loop.created_at, offered) if moment is not None]
+    p = pressure(inputs, since=max(anchors) if anchors else None)
     n, c = novelty(inputs, _slug(topic), "outreach_loop"), interruption_cost(inputs)
     ev = round(0.9 * n * p, 4)
     if ev <= 0:
@@ -482,8 +586,8 @@ def care_candidate(care: Care, inputs: OutreachInputs) -> Optional[Candidate]:
 def answer_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Candidate]:
     """The report of a follow-up the owner asked for: requested, so its value is whole and it costs
     nothing to send; only quiet hours and the owner's pause hold it."""
-    if holds(inputs, requested=True):
-        return None
+    if holds(inputs, requested=True) or muted(inputs, finding.slug, finding.topic):
+        return None     # a mute after the request is the owner's later word: it stands
     why = f"You asked me to dig deeper into {finding.topic}"
     text = f"{why}. Here is what I found: {excerpt(finding.summary, finding.topic, limit=260)}"
     check = {"kind": "commitment_resolved", "commitment_id": finding.bound_commitment} \
@@ -606,6 +710,8 @@ def followups(inputs: OutreachInputs) -> List[Candidate]:
 def digest_value(finding: Finding, inputs: OutreachInputs) -> float:
     """What a finding that did not go now is worth in the digest: relevance x novelty. Timeliness is left
     aside (at 48 h it is e^-2: the reason it did not go now), as are holds and interruption."""
+    if settle(finding, inputs):
+        return 0.0
     r, _, _ = relevance(finding, inputs)
     return round(r * novelty(inputs, finding.slug, "outreach_finding"), 4)
 
@@ -624,8 +730,9 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-__all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "bears_on", "Care", "DIGEST_FLOOR", "FINDING_WINDOW", "Finding", "Followup",
-           "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX",
+__all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP", "bears_on", "Care", "DIGEST_FLOOR",
+           "FINDING_WINDOW", "Finding", "Followup", "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MIN_GAP",
+           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NULL_REPORT", "repeated", "says_something", "settle",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
            "followup_candidate", "followups", "holds", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",

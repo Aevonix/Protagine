@@ -685,8 +685,12 @@ three sources, never an empty "anything you need?":
 | Source | Type | When |
 |---|---|---|
 | A **finding** of the mind's own research (research, question, goal step, follow-up), done in the last 48 h | `outreach_finding` | its report bears on what the owner said they care about: an interest they declared, set or welcomed, an open goal or item of theirs, their own recent words |
-| An **open loop**: the owner's own open item, not due within 48 h (duty speaks then), not parked, not a message to someone else | `outreach_loop` | after a quiet stretch: the pressure is the hours since the owner last spoke over 24 |
+| An **open loop**: the owner's own open item, not due within 48 h (duty speaks then), not parked, not a message to someone else | `outreach_loop` | after a quiet stretch: the pressure is the hours over 24 since the owner last spoke (the turn path's mark, or the ledger's newest owner turn when that is later), the item was made, or the last check-in offer went out, whichever is latest: one check-in per quiet stretch |
 | **Care**: the owner said a named thing (never a person) is stressing them or that they are behind on it | `outreach_care` | within hours of saying it, while the thing is open |
+
+A finding must say something new. A report that found nothing ("nothing new on X this week", "finding:
+none") is no finding, and one whose sentences were all shared already (sent in an outreach, or listed
+in a digest, in the last month) is a repeat; both are settled without a message and never listed.
 
 **Value against interruption.** A candidate's salience is its expected value, `relevance ×
 novelty × timeliness`; its cost is the interruption, `min(0.9, 0.35 e^(-m/60) + 0.15 s + 0.10 k +
@@ -694,33 +698,47 @@ novelty × timeliness`; its cost is the interruption, `min(0.9, 0.35 e^(-m/60) +
 messages, the hour's "not now" mark). The one ranker decides with its act threshold, the feedback
 multiplier (type and topic, never `reach_out:<owner>`) and affect. Quiet hours, the owner's pause,
 the daily budget (`budgets.outreach_per_day`, separate from `owner_messages_per_day`, so outreach
-never takes a reminder's slot), a muted topic and a topic's backoff (`24 h × 2^streak`) hold a
-candidate before it forms, so nothing piles up into a burst; and the tick forms at most one
-unprompted outreach, so two findings at once are one interruption. A finding worth it but not sent
+never takes a reminder's slot), the two-hour gap after the last outreach, a muted topic and a
+topic's backoff (`24 h × 2^streak`) hold a candidate before it forms, so nothing piles up into a
+burst and a day's budget is never spent inside an hour; and the tick forms at most one unprompted
+outreach, so two findings at once are one interruption. A finding worth it but not sent
 in its window goes to the digest ("Found for you"); so do offers that went unsent or were put off.
 
 **Every message says why**, from a template that quotes what the owner said, read from the ledger
-at render time (erasing the turn erases the quote); no model call composes owner outreach.
+at render time (erasing the turn erases the quote); no model call composes owner outreach. The
+reason never claims more than its source: "you told me X matters" only for an interest the owner
+declared or set, "you asked me for more on X" for one they asked more about, "you seemed keen on X"
+for one they welcomed, "you have mentioned X lately" only when one sentence of theirs names X, and
+the agent's own interest says it is its own. A silence or a mute lowers an interest and never
+changes whose it is.
 
 **Direction from reactions.** Every owner turn reaches `Mind.owner_turn` from `turns/sync`, read
 by deterministic classifiers (`P/mind/reactions.py`). A reply links to the newest open outreach
-(sent in the last day, unanswered) whose topic it names, or by position when it is the owner's
-first turn since that outreach and reads as a reply. What is learned lives where the mind already
-learns:
+(sent in the last day, unanswered) whose topic it names. A position link, for words that need one
+("not now", "tell me more", a bare "not useful"), needs all of: a short or referring reply, the
+owner's first turn since that outreach, the outreach the newest thing the mind sent them, the owner
+not mid-conversation with the assistant when it went out (their turn before it ten minutes or more
+earlier), and a turn that is not about something else (no request of its own naming what the
+outreach did not say, no redo of the assistant's work). What a linked turn says about the outreach
+is only what is about it: "not interested in the fern stuff, but dig deeper into X" is a positive
+on X, and "find out when the last train leaves" is no reaction at all. What is learned lives where
+the mind already learns:
 
 | The owner says | Effect |
 |---|---|
 | "dig deeper", "find out", "tell me more" | verdict `useful` (type and topic feedback up), interest +1, a duty follow-up with the owner's words quoted as data; its report is sent back as `outreach_answer` at no cost; a promise the assistant made in the same reply is kept when the answer is sent |
-| "not interested", "not useful", "drop it" | verdict `not_useful`, the topic muted for months (a similar one too), its interest 0, what waits on it cancelled |
+| "not interested", "not useful", "drop it" | verdict `not_useful`, the topic muted for months (a similar one too), its interest 0 (curiosity stops researching it), what waits on it cancelled, an answer on it not yet sent held |
 | "not now" | a four-hour pause, the hour's timing mark, the item in the digest |
-| "leave me alone today" | a pause until the owner's next day |
-| "stop checking in" (or the contact opt-out phrases) | a pause until the owner resumes it, what is queued cancelled at once; reminders and requested answers keep going; `may_contact` is never touched |
+| "leave me alone today" ("not today", "I need to focus" only as a reply to an outreach) | a pause until the owner's next day; a finding it cancelled goes to the digest |
+| "stop checking in" (or the contact opt-out phrases; a bare "stop" only as a reply to an outreach, since the owner types it to halt a turn) | a pause until the owner resumes it, what is queued cancelled at once; reminders and requested answers keep going; `may_contact` is never touched |
 | "keep me posted on X", "I care about X" | an owner interest in X (a mute on it lifted) |
 | "stressed about X", "behind on X" | care for X (72 h), matched to the owner's open item on it |
 | silence for a day | `ignored` (weak): the interest ×0.8, the streak raises the next cost |
 
 Two appraisal nets back the phrases: the owner's opt-out the appraisal saw pauses outreach, and an
-owner dismissal after a send is a negative on it. The night's lesson stage reads rated outreach as
+owner dismissal after a send is a negative on it when it names the outreach's topic, or names nothing
+and is the owner's first event after the newest outreach. A turn carrying an open ask's code is that
+ask's answer and no reaction, though an explicit stop in it still applies. The night's lesson stage reads rated outreach as
 results the owner verified; a lesson on a topic halves (pitfall) or lifts (strategy) the next
 finding's relevance. Recovery: "you can check in again", `protagine mind outreach on`,
 `POST /v1/mind/outreach`.

@@ -14,9 +14,10 @@ from test_mind_outreach_loop import H, OWNER, Fx, make, report  # noqa: F401  (m
 
 
 async def shared(fx, topic="tidal energy", code="QX-41", turn="t-declare", research=True):
-    """The owner declares ``topic``, the mind researches it and shares the finding; the outreach row."""
+    """The owner declares ``topic``, the mind researches it and shares the finding a quarter of an hour later
+    (after the conversation, so a bare reply can answer it by position); the outreach row."""
     await say(fx, f"I care a lot about {topic}; anything new on it is worth hearing about.", turn)
-    fx.shift(timedelta(minutes=1))
+    fx.shift(timedelta(minutes=15))
     if research:
         await fx.research(topic, report(code, topic))
     else:
@@ -411,3 +412,183 @@ async def test_a_reply_in_the_same_second_as_the_send_still_answers_it(make):
     assert fx.store.get(row.id).completed_at.microsecond == 400000
     fx.now = fx.now.replace(microsecond=0)          # the reply, stamped to the whole second
     assert (await say(fx, "That tidal energy item you sent: not now.", "t-same", "owner-2"))["linked"] == row.id
+
+
+# -- a reply is to the outreach only when it can be (review of M11) ----------------------------------------
+
+def followups(fx):
+    return [item for item in fx.store.intentions(kind=["task"], limit=100) if item.type == "outreach_followup"]
+
+
+@pytest.mark.parametrize("text", ["Can you find out when the last train leaves?", "Look into flights to Lisbon for May.",
+                                  "Tell me more about the weather tomorrow.", "Keep going with the draft.",
+                                  "That was not useful, try again with a shorter version.",
+                                  "Can you book the dentist? Not today, maybe Friday."])
+async def test_a_short_turn_about_something_else_is_no_reaction_to_the_outreach(make, text):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(5 * H)
+    summary = await say(fx, text, "t-other", "owner-2")
+    await fx.tick()
+    assert summary["linked"] is None and reaction(fx, row) == {}, summary
+    assert followups(fx) == [] and fx.store.get(row.id).verdict is None
+    state = fx.mind.state()["outreach"]
+    assert state["muted"] == [] and state["paused_until"] is None
+
+
+async def test_a_bare_reply_hours_later_still_answers_the_outreach(make):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(5 * H)
+    summary = await say(fx, "Tell me more.", "t-more", "owner-2")
+    await fx.tick()
+    assert summary["linked"] == row.id and reaction(fx, row)["class"] == "positive" and len(followups(fx)) == 1
+
+
+async def test_misread_requests_never_chain_into_unbudgeted_answers(make):
+    fx = make(config={"budgets": {"outreach_per_day": 1}})
+    await shared(fx)
+    for round_, ask in enumerate(["Can you find out when the last train leaves?", "Look into flights to Lisbon for May.",
+                                  "Can you find out if the pharmacy is open?"]):
+        fx.shift(2 * H)
+        await say(fx, ask, f"t-r{round_}", "owner-2")
+        await fx.tick()
+    assert followups(fx) == [] and [p["type"] for p in fx.sent] == ["outreach_finding"]
+
+
+async def test_a_yes_please_mid_conversation_answers_the_conversation(make):
+    """An outreach that went out while the owner was talking to the assistant cannot be told apart from the
+    assistant's own question by a bare reply: it is linked only by naming it."""
+    fx = make()
+    await say(fx, "I care a lot about tidal energy.", "t-1")
+    fx.shift(timedelta(minutes=1))
+    fx.found("tidal energy", report("QX-41", "tidal energy"))
+    fx.shift(timedelta(minutes=1))
+    await say(fx, "Can you book a table for two at the usual place tonight?", "t-2")
+    fx.shift(timedelta(seconds=30))
+    await fx.tick()
+    row, = fx.outreach_rows("outreach_finding")
+    fx.shift(timedelta(seconds=40))
+    summary = await say(fx, "Yes, please.", "t-3")
+    await fx.tick()
+    assert summary["linked"] is None and reaction(fx, row) == {} and followups(fx) == []
+    fx.shift(timedelta(minutes=2))
+    named = await say(fx, "And yes, dig deeper into the tidal energy one.", "t-4")
+    assert named["linked"] == row.id and reaction(fx, row)["class"] == "positive"
+
+
+async def test_a_bare_reply_after_another_message_from_the_mind_is_not_linked_to_the_older_outreach(make):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=30))
+    fx.owner_commitment("Send the signed lease back", due=fx.now - H)
+    await fx.tick()
+    assert [p["type"] for p in fx.sent][-1] == "commitment_reminder"
+    fx.shift(timedelta(minutes=5))
+    summary = await say(fx, "Not now.", "t-busy", "owner-2")
+    assert summary["linked"] is None and reaction(fx, row) == {}
+
+
+async def test_a_mixed_reply_reads_the_part_about_the_linked_topic(make):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    summary = await say(fx, "Not interested in the fern stuff, but dig deeper into tidal energy.", "t-mix", "owner-2")
+    await fx.tick()
+    assert summary["linked"] == row.id and reaction(fx, row)["class"] == "positive"
+    assert fx.store.get(row.id).verdict == "useful" and fx.mind.mind_state.get("outreach.mute:tidal-energy") is None
+    assert fx.mind.mind_state.get("outreach.mute:fern") is not None and len(followups(fx)) == 1
+
+
+async def test_a_bare_stop_halts_a_turn_and_pauses_nothing_unless_it_answers_an_outreach(make):
+    fx = make()
+    summary = await say(fx, "stop", "t-stop")
+    assert "stop" in summary["classes"] and fx.mind.state()["outreach"]["paused_until"] is None
+    fx2 = make()
+    row = await shared(fx2)
+    fx2.shift(timedelta(minutes=20))
+    replied = await say(fx2, "STOP", "t-stop", "owner-2")
+    assert replied["linked"] == row.id and fx2.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+async def test_a_vague_pause_inside_a_request_pauses_nothing_and_an_explicit_one_always_does(make):
+    fx = make()
+    for turn, text in enumerate(["Can you book the dentist? Not today, maybe Friday.", "I need to focus."]):
+        await say(fx, text, f"t-{turn}")
+        assert fx.mind.state()["outreach"]["paused_until"] is None, text
+    await say(fx, "No messages today, please.", "t-explicit")
+    assert fx.mind.state()["outreach"]["paused_until"] is not None
+
+
+async def test_an_ask_code_turn_is_no_reaction_but_its_explicit_stop_still_applies(make):
+    fx = make()
+    row = await shared(fx)
+    fx.store.create_intention(
+        kind="task", type="research", title="x", drive="curiosity", cls="internal", decision="ask",
+        decision_reason="r", status="asked", dedup_key="ask-k7m", ask_code="K7M", hermes_kind="none", created_at=fx.now)
+    fx.shift(timedelta(minutes=20))
+    summary = await say(fx, "yes k7m. And please stop checking in with me.", "t-ask", "owner-2")
+    assert summary["answer"] is True and summary["linked"] is None and reaction(fx, row) == {}
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+async def test_an_ask_code_that_spells_a_word_is_matched_only_as_typed_in_capitals(make):
+    fx = make()
+    fx.store.create_intention(
+        kind="task", type="research", title="x", drive="curiosity", cls="internal", decision="ask",
+        decision_reason="r", status="asked", dedup_key="ask-the", ask_code="THE", hermes_kind="none", created_at=fx.now)
+    summary = await say(fx, "Please stop checking in with me, I will ask when I need the help.", "t-stop")
+    assert not summary.get("answer") and fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+    assert (await say(fx, "yes THE", "t-yes", "owner-2")).get("answer") is True
+
+
+async def test_a_mute_after_asking_for_more_holds_the_answer_on_that_topic(make):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = followups(fx)
+    fx.shift(timedelta(minutes=20))
+    await say(fx, "Actually I am not interested in tidal energy after all.", "t-no", "owner-3")
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The tidal energy study ran at KD-83.")
+    fx.shift(timedelta(minutes=1))
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer") == []
+    assert fx.store.get(task.id).result_metadata["outreach"]["state"] == "muted"
+    assert reaction(fx, row)["class"] == "positive"
+
+
+async def test_an_unrelated_dismissal_seen_by_the_appraisal_touches_no_outreach(make):
+    fx = make()
+    first = await shared(fx, "tidal energy", "QX-41")
+    fx.shift(3 * H)
+    second = await shared(fx, "fern species", "RB-17", turn="t-2", research=False)
+    events = []
+
+    class Appraisals:
+        def view(self, *_, **__):
+            return {"records": []}
+
+        def affect_events(self, *, since, limit=1000):
+            return [event for event in events if event["occurred_at"] >= since]
+
+        def pending_jobs(self, **_):
+            return {"pending": 0, "running": 0}
+    fx.mind.appraisals = Appraisals()
+    fx.shift(timedelta(minutes=10))
+    events.append({"ref": "o-1", "kind": "dismissed", "topic": "the dentist booking", "turn_id": "t-dentist",
+                   "occurred_at": fx.now.timestamp(), "created_at": fx.now.timestamp()})
+    await fx.tick()
+    assert fx.store.get(first.id).verdict is None and fx.store.get(second.id).verdict is None
+    assert fx.mind.mind_state.items("outreach.mute:") == []
+    # A dismissal that names nothing, the owner's first event after the newest outreach, is a negative on that one.
+    fx2 = make()
+    row = await shared(fx2)
+    fx2.mind.appraisals = Appraisals()
+    events[:] = [{"ref": "o-3", "kind": "dismissed", "topic": "", "turn_id": "t-meh",
+                  "occurred_at": fx2.now.timestamp() + 60, "created_at": fx2.now.timestamp() + 60}]
+    fx2.shift(timedelta(minutes=10))
+    await fx2.tick()
+    assert fx2.store.get(row.id).verdict == "not_useful"
