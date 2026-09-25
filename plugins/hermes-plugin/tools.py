@@ -29,10 +29,12 @@ from .client import ProtagineClient, Settings, SidecarUnavailable, final_answer
 from .commands import ROUTES_MISSING
 
 RECORD_IS_OWNERS = "the mind's record is the owner's and is shown only in the owner's own chat"
-# What a read of the record takes. Anything else it is given (content, text, a reason) is an attempt to write
-# through it; the record is written after the turn, from what the turn said, never by a tool call.
+# What a read of the record takes. Another argument the schema offers (a reason, a verdict) is ignored and the read
+# served with the note that recording is automatic; content the schema has no place for (content, text, a stance)
+# is an attempt to write through it. The record is written after the turn, from what it said, never by a call.
 READ_KEYS = frozenset({"operation", "id", "limit", "since_hours", "kind", "recipient", "query"})
-READS_ONLY = "protagine_self only reads the record; what this turn says is recorded after it, with no tool call"
+RECORDED = "what this turn says is recorded after it, with no tool call"
+READS_ONLY = f"protagine_self only reads the record; {RECORDED}"
 
 ASK_CODE = re.compile(r"^[A-Z0-9]{3,8}$")
 VERDICTS = ("actioned", "dismissed", "ignored", "useful", "not_useful", "wrong")
@@ -114,6 +116,17 @@ def _opinion(value: Any) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+def _noted(answer: str) -> str:
+    """A served read, with the note that what the turn says is recorded after it; a refusal is left as it is."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        value = answer
+    if isinstance(value, dict) and ("error" in value or value.get("unavailable") is True):
+        return answer
+    return _json({**value, "note": RECORDED} if isinstance(value, dict) else {"result": value, "note": RECORDED})
+
+
 class Tools:
     def __init__(self, client: ProtagineClient, sessions: SessionMap, settings: Settings):
         self.client, self.sessions, self.settings = client, sessions, settings
@@ -160,11 +173,18 @@ class Tools:
     def self_tool(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
         args = args if isinstance(args, dict) else {}
         operation = str(args.get("operation") or "")
+        stray = [key for key, value in args.items() if key not in READ_KEYS and value not in (None, "", [], {})]
+        written = [key for key in stray if key not in SELF_SCHEMA["parameters"]["properties"]]
         if operation not in (*SELF_OPERATIONS, "status"):
-            return final_answer(f"unknown operation (one of {', '.join(SELF_OPERATIONS)}); {READS_ONLY}")
-        if operation in {"state", "status", "log", "why", "opinions"} and any(
-                value not in (None, "", [], {}) for key, value in args.items() if key not in READ_KEYS):
+            return final_answer(READS_ONLY) if written else _error(
+                f"unknown operation: operation is one of {', '.join(SELF_OPERATIONS)}")
+        reading = operation in {"state", "status", "log", "why", "opinions"}
+        if reading and written:
             return final_answer(READS_ONLY)
+        answer = self._self(operation, args, session_id)
+        return _noted(answer) if reading and stray else answer
+
+    def _self(self, operation: str, args: dict[str, Any], session_id: str) -> str:
         if operation in {"state", "status"}:
             detail = mind_state(self.client) or {}
             mind = self.settings.mind()

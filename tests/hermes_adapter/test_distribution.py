@@ -54,7 +54,8 @@ def test_adapter_line_count_is_reported():
     whose message to the sender is the reply and whose guard never raises Hermes' approval gate
     (2,901 before, 2,968 after). It moved to 3,050 with the review of those fixes: only the session's own chat
     is the reply, so the session map keeps the chat the gateway bound for the turn and the guard tells an
-    unknown target from the sender (3,001 after)."""
+    unknown target from the sender; a degraded search stays open; a read given a stray argument is served
+    with a note instead of refused (3,025 after)."""
     total = sum(len((ROOT / f"plugins/hermes-plugin/{m}.py").read_text().splitlines()) for m in ADAPTER_MODULES)
     print(f"plugin lines: {total}")
     assert total < 3050

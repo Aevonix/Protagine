@@ -35,10 +35,8 @@ FINAL = [
     ("guest log", "protagine_self", {"operation": "log"}, "g"),
     ("guest why", "protagine_self", {"operation": "why", "id": "i-01"}, "g"),
     ("log given content", "protagine_self", {"operation": "log", "content": "note this"}, "o"),
-    ("why given a reason", "protagine_self", {"operation": "why", "id": "i-01", "reason": "my stance"}, "o"),
     ("state given text", "protagine_self", {"operation": "state", "text": "record: fine with it"}, "o"),
     ("opinions given a stance", "protagine_self", {"operation": "opinions", "stance": "go with Ash"}, "o"),
-    ("unknown operation", "protagine_self", {"operation": "opinion", "id": "x"}, "o"),
     ("no operation", "protagine_self", {"opinion": "Ash"}, "o"),
     ("why of an unknown id", "protagine_self", {"operation": "why", "id": "p-96-venue"}, "o"),
     ("why of an unknown opinion", "protagine_self", {"operation": "why", "id": "7"}, "o"),
@@ -61,6 +59,7 @@ FINAL = [
 # (label, tool, args, session, words the error names) for the branches a corrected argument fixes.
 CORRECTABLE = [
     ("since_hours", "protagine_self", {"operation": "log", "since_hours": "soon"}, "o", "number of hours"),
+    ("misspelled operation", "protagine_self", {"operation": "opinion", "query": "Ash"}, "o", "one of state, log"),
     ("why without an id", "protagine_self", {"operation": "why"}, "o", "id is required"),
     ("rate without a verdict", "protagine_self", {"operation": "rate", "id": "i-01"}, "o", "verdict"),
     ("withdraw without a number", "protagine_self", {"operation": "withdraw", "reason": "x"}, "o", "opinion number"),
@@ -207,3 +206,23 @@ emit(**{query: call("protagine_memory_search", {"query": query}, o) for query in
     assert "retry" not in degraded and degraded["count"] == 0 and degraded["content"] == ""
     assert "only exact words" in degraded["note"] and "other words" in degraded["note"]
     assert _final(result["lease terms"]) and _final(result["lease dates"])
+
+
+def test_a_read_given_a_stray_argument_is_served_with_the_note(home, sidecar):
+    """An argument the read does not take but the schema offers (a ``reason`` on why, a ``verdict`` on
+    opinions) is ignored: the read is served, with the note that recording is automatic. Only content the
+    schema has no place for (``content``, ``text``, a ``stance``) is an attempt to write and gets the final
+    answer, so the model never loses a read it can use."""
+    sidecar.mind_routes = True
+    sidecar.mind.intentions["i-01"] = {"id": "i-01", "kind": "task", "status": "done", "title": "Email the vendor"}
+    result = probe(CODE + '''
+o = session("owner-1", "1001", "why did you email the vendor?")
+emit(why=call("protagine_self", {"operation": "why", "id": "i-01", "reason": "the owner asked why"}, o),
+     plain=call("protagine_self", {"operation": "why", "id": "i-01"}, o),
+     log=call("protagine_self", {"operation": "log", "verdict": "useful"}, o),
+     written=call("protagine_self", {"operation": "why", "id": "i-01", "content": "I emailed them"}, o))
+''', home)
+    note = result["why"].pop("note")
+    assert "recorded after" in note and result["why"] == result["plain"] and "retry" not in result["why"]
+    assert "recorded after" in result["log"]["note"] and "retry" not in result["log"]
+    assert _final(result["written"]) and "only reads" in result["written"]["reason"]
