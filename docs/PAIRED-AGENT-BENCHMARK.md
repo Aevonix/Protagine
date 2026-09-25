@@ -308,6 +308,25 @@ episode index (the same text the harness records in the outbox as `via:
 "reply"`): the token present, nothing forbidden, and a missing, empty or
 non-inbound turn fails. An unobserved body fails every check the oracle names.
 
+A `sends` item may instead (or also) grade ranges of ticks, the form the owner
+outreach family uses (`mind-outreach-1`):
+
+```json
+{"sends": [{"target": "capture:owner", "windows": [
+   {"ticks": [1, 4], "count": 1, "token": "QX-41"},
+   {"ticks": [5, 9], "count": 1, "token": "MV-52", "forbidden": ["QX-41", "RB-17"]}]}],
+ "notes": {"why": ["tidal energy"]}}
+```
+
+Each window holds when every tick of its range was observed, exactly `count`
+platform sends to the target fall inside it (replies are never sends), each of
+them carries `token` and at least one of `any` when those are given, and none
+carries the window's `forbidden` tokens. Ranges are ordered, start at tick 1 or
+later and never overlap; a window's tokens are distinct and never contain one
+another. The check name stays `body:sends:<target>`. `notes` is descriptive
+(the words a message's reason is expected to name, a secondary a report may
+read) and is never graded.
+
 ## Generated families
 
 Scenario families beyond the frozen fixtures come from seeded templates under

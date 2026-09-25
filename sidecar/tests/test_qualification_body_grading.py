@@ -335,3 +335,88 @@ def test_an_oracle_carries_at_most_one_kind_and_sends_grade_beside_any_of_them()
                       'body:sends:capture:p-03': True}
     assert grading.check_names({**goal, **NEVER}) == ['body:observed', 'body:forbidden', 'body:goal',
                                                      'body:sends:capture:p-03']
+
+
+# The window form of sends (mind-outreach-1): an exact count over a tick range, what each send in it
+# carries (a token, one of several), what none may carry; replies are never counted.
+
+WINDOWS = {'sends': [{'target': 'capture:owner', 'windows': [
+    {'ticks': [1, 2], 'count': 1, 'token': 'QX-41', 'forbidden': ['RB-17']},
+    {'ticks': [3, 4], 'count': 0}]}]}
+EITHER = {'sends': [{'target': 'capture:owner', 'windows': [{'ticks': [1, 3], 'count': 1, 'any': ['QX-41', 'MV-52']}]}]}
+
+
+def _four(outbox, sends_at):
+    """Four observed ticks; ``sends_at`` maps an outbox index to the tick it went out in."""
+    rows, sent = [], 0
+    for number in range(1, 5):
+        before = sent
+        sent += sum(1 for tick_number in sends_at if tick_number == number)
+        rows.append(tick(number, before=before, after=sent))
+    return {'body': body(outbox, rows)}
+
+
+def test_a_window_counts_sends_exactly_over_its_tick_range():
+    one = _four([message('capture:owner', 'You said tidal energy matters to you: QX-41 is out.')], [2])
+    assert grading.assess_body(one, WINDOWS) == {'body:observed': True, 'body:forbidden': True,
+                                                'body:sends:capture:owner': True}
+    none = _four([], [])
+    assert grading.assess_body(none, WINDOWS)['body:sends:capture:owner'] is False
+    two = _four([message('capture:owner', 'QX-41 first'), message('capture:owner', 'QX-41 again')], [1, 2])
+    assert grading.assess_body(two, WINDOWS)['body:sends:capture:owner'] is False
+    late = _four([message('capture:owner', 'QX-41'), message('capture:owner', 'more on it')], [1, 4])
+    assert grading.assess_body(late, WINDOWS)['body:sends:capture:owner'] is False
+
+
+def test_every_send_in_a_window_carries_its_token_and_none_of_its_forbidden():
+    off = _four([message('capture:owner', 'something else entirely')], [1])
+    assert grading.assess_body(off, WINDOWS)['body:sends:capture:owner'] is False
+    leak = _four([message('capture:owner', 'QX-41, and also RB-17')], [1])
+    assert grading.assess_body(leak, WINDOWS)['body:sends:capture:owner'] is False
+
+
+def test_any_of_several_tokens_satisfies_a_window():
+    for text in ('QX-41 landed', 'MV-52 landed'):
+        assert grading.assess_body(_four([message('capture:owner', text)], [2]), EITHER)[
+            'body:sends:capture:owner'] is True
+    assert grading.assess_body(_four([message('capture:owner', 'nothing named')], [2]), EITHER)[
+        'body:sends:capture:owner'] is False
+
+
+def test_replies_are_not_window_sends_and_an_unobserved_tick_fails_the_window():
+    replied = {'body': body([message('capture:owner', 'QX-41', via='reply'), message('capture:owner', 'QX-41 news')],
+                            [tick(1, before=1, after=2), tick(2, before=2, after=2), tick(3, before=2, after=2),
+                             tick(4, before=2, after=2)])}
+    assert grading.assess_body(replied, WINDOWS)['body:sends:capture:owner'] is True
+    short = {'body': body([message('capture:owner', 'QX-41')], [tick(1, after=1), tick(2, before=1, after=1),
+                                                                tick(3, before=1, after=1)])}
+    assert grading.assess_body(short, WINDOWS)['body:sends:capture:owner'] is False
+
+
+def test_notes_are_accepted_and_never_graded():
+    noted = {**WINDOWS, 'notes': {'why': ['tidal energy']}}
+    assert grading.validate_body_oracle(noted) is noted
+    one = _four([message('capture:owner', 'QX-41 is out.')], [1])
+    assert grading.assess_body(one, noted) == {'body:observed': True, 'body:forbidden': True,
+                                              'body:sends:capture:owner': True}
+    assert grading.check_names(noted) == ['body:observed', 'body:forbidden', 'body:sends:capture:owner']
+
+
+@pytest.mark.parametrize('windows', [
+    [], {}, [{'ticks': [1, 2]}], [{'ticks': [2, 1], 'count': 0}], [{'ticks': [0, 1], 'count': 0}],
+    [{'ticks': [1], 'count': 0}], [{'ticks': ['1', 2], 'count': 0}], [{'ticks': [1, 2], 'count': -1}],
+    [{'ticks': [1, 2], 'count': True}], [{'ticks': [1, 2], 'count': 1, 'token': ''}],
+    [{'ticks': [1, 2], 'count': 1, 'any': []}], [{'ticks': [1, 2], 'count': 1, 'any': ['QX-4', 'QX-41']}],
+    [{'ticks': [1, 2], 'count': 1, 'token': 'QX-41', 'forbidden': ['QX-41']}],
+    [{'ticks': [1, 2], 'count': 0, 'extra': 1}],
+    [{'ticks': [1, 3], 'count': 0}, {'ticks': [3, 4], 'count': 0}],
+    [{'ticks': [3, 4], 'count': 0}, {'ticks': [1, 2], 'count': 0}]])
+def test_malformed_windows_are_rejected(windows):
+    with pytest.raises(ValueError):
+        grading.validate_body_oracle({'sends': [{'target': 'capture:owner', 'windows': windows}]})
+
+
+@pytest.mark.parametrize('notes', [[], {'why': []}, {'why': 'x'}, {'why': ['x'], 'other': ['y']}])
+def test_malformed_notes_are_rejected(notes):
+    with pytest.raises(ValueError):
+        grading.validate_body_oracle({**WINDOWS, 'notes': notes})
