@@ -45,6 +45,21 @@ UTC = timezone.utc
 # State (editable agent / default-contact timezone)                           #
 # --------------------------------------------------------------------------- #
 
+# A host's arrival stamp in front of a message (Hermes gateway message timestamps: ``[Tue 2026-04-28
+# 13:40:53 CEST]``, or the older ``[2026-04-13T17:02:06+0200]``) says when the message came. It is not
+# a date the message asks about, nor words to search for: every stamped message carries it.
+ARRIVAL_STAMP = re.compile(
+    r"^\s*\[(?:[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: [A-Za-z0-9_+\-/:]+)?"
+    r"|\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*")
+
+
+def strip_arrival_stamps(text: str) -> str:
+    """``text`` without its leading arrival stamps (several in a row are all removed)."""
+    while (match := ARRIVAL_STAMP.match(text)) is not None:
+        text = text[match.end():]
+    return text
+
+
 def _state_dir() -> Path:
     return Path(os.environ.get("PROTAGINE_STATE_DIR", os.path.expanduser("~/.protagine")))
 
