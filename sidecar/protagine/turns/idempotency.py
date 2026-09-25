@@ -730,9 +730,11 @@ class TurnIdempotencyLedger:
         # The arrival stamp is when the question came, in every stamped message alike: not search terms.
         text = strip_arrival_stamps(query[:4096])
         # An identifier ("p-72", "B-12", "4.2m") is searched as the phrase of its pieces, first: split
-        # into one- and two-letter words it never took part, so a fact was found by its subject alone.
+        # into one- and two-letter words it never took part, so a fact was found by its subject alone. One
+        # whose pieces are all words the search keeps anyway ("answer.json") needs no phrase of its own.
         identifiers = list(dict.fromkeys(
-            piece.lower() for piece in re.findall(r"[^\W_]+(?:[-./][^\W_]+)+", text)))[:4]
+            piece.lower() for piece in re.findall(r"[^\W_]+(?:[-./][^\W_]+)+", text)
+            if any(len(part) <= 2 for part in re.findall(r"\w+", piece))))[:4]
         words = list(dict.fromkeys(
             [*identifiers, *(word.lower() for word in re.findall(r"\w+", text)
                              if len(word) > 2 and word.lower() not in stop)]
