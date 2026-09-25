@@ -813,12 +813,13 @@ class Affect:
         return found.note() if found is not None else ""
 
     def section_lines(self, limit: int = SECTION_CHARS) -> List[str]:
-        """The consumer notes, then the tone line; whole lines drop from the end to fit ``limit``."""
+        """The consumer notes for the decision context; whole lines drop from the end to fit ``limit``. The
+        tone line is self-report only (``state``): a mood in the decision context had no decision value."""
         try:
             view = self.view()
             if view is None or limit < 2:
                 return []
-            lines = [*view.notes(), *([view.line] if view.line else [])]
+            lines = list(view.notes())
             while len(lines) > 1 and len("\n".join(lines)) > limit:
                 lines.pop()
             if lines and len(lines[0]) > limit:

@@ -6,6 +6,12 @@ line, whose built-in arm profiles replace the pilot's overlay file for the two g
 pilot and its n are placeholders until the M6 development build lands (section 6); the gate's
 own numbers land in the run's report, never here. 2026-09-24: the mechanism arm is a built-in
 profile (`full-affect-plus-rules`, switch `plus_affect_rules`); no arm is declared in a file.
+2026-09-24, after the dev pilot (i2ac): the mechanism rule was applied to the dev results (rules
+6/6, 5/6, 2/3 against the state's 4/6, 3/6, 0/3 on overload, priority and aggregate), so with only
+the affect flag on the `overload` and `priority` consumers now read the rule table
+(`affect_rules.RULE_CONSUMERS`); `strategy_switch` and `satiation` keep the state, which also stays
+for self-report. The Mind section no longer carries the tone line or idle curiosity (an interest).
+`full` therefore changed meaning (section 4); the dev pilot's numbers describe the old `full`.
 
 ## 1. Hypothesis
 
@@ -50,7 +56,7 @@ and `plus_affect_rules`:
 
 | Arm | Mind section | Role in the gate |
 |---|---|---|
-| `full` | built-in: `mind.faculties.affect: true` (the release-candidate value), `mind.faculties.affect_rules: false`; every other faculty at its release-candidate value | treatment |
+| `full` | built-in: `mind.faculties.affect: true` (the release-candidate value), `mind.faculties.affect_rules: false`; every other faculty at its release-candidate value. Since 2026-09-24 the measured consumers (`overload`, `priority`, so `aggregate` too) read the rule table and `strategy_switch` and `satiation` the decaying state (`affect.source: mixed`); no tone line in the decision context | treatment |
 | `full-affect` | built-in: `full` with `mind.faculties.affect: false` | **comparator** (`--reference-arm full-affect`): the faculty claim |
 | `full-affect-plus-rules` | built-in: `full` with `mind.faculties.affect: false` and `mind.faculties.affect_rules: true` (every consumer reads the frozen stateless rule table of `P/mind/affect_rules.py` over the same snapshot the state reads; no decaying state and no tone line) | mechanism arm, read per consumer |
 

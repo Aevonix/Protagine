@@ -102,4 +102,18 @@ def test_the_rules_are_pure_and_route_every_consumer():
     assert list(inspect.signature(affect_rules.view).parameters) == ["inputs"]
     view = affect_rules.view(snapshot)
     assert dict(view.route) == {name: "rules" for name in CONSUMERS} and view.line == ""
-    assert affect_rules.RULE_CONSUMERS == frozenset(), "the gate decides the wiring; none at M6"
+
+
+def test_the_measured_consumers_read_the_rules_by_default():
+    """The plan's mechanism rule, applied from the affect dev pilot (families/mind-affect-1.md, 2026-09-24): the
+    rules arm tied or beat the decaying state on every measured consumer, so overload and priority (the aggregate
+    template reads both) read the rule table with only the affect flag on. strategy_switch and satiation are not
+    measured yet and keep the state, which also stays for self-report."""
+    from protagine.mind.affect import Affect
+
+    assert affect_rules.RULE_CONSUMERS == frozenset({"overload", "priority"})
+    default = Affect(None, store=None)
+    assert default.route() == {"strategy_switch": "state", "overload": "rules", "priority": "rules",
+                               "satiation": "state"} and default.source == "mixed"
+    assert set(Affect(None, store=None, rules_on=True).route().values()) == {"rules"}
+    assert Affect(None, store=None, state_on=False).route() == {}

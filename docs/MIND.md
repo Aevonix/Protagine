@@ -370,7 +370,8 @@ decision is the strategy switch's question, which turns an `act` into an
 The **tone** is one calm line from the state alone, in three bands (under 0.2
 "a little", under 0.45 "somewhat", otherwise "quite"), for example "Mood:
 somewhat frustrated about the quarterly figures; a little uneasy." No stronger
-word is ever used.
+word is ever used. It is self-report only: it never rides in the decision
+context (the Mind section).
 
 **Switches.** `mind.faculties.affect` (on): the state is kept and every
 consumer reads it. `mind.faculties.affect_rules` (off): every consumer reads
@@ -381,9 +382,13 @@ two dismissals in 7 days hold optional nudges), and the rules replace the
 state: nothing is kept and no tone renders, whatever `affect` says, so the
 two switches make three modes (off, the state, the rules) and no unmeasured
 mix. With both off, affect reads and writes nothing. Which consumers read
-their rule after the affect family's gate is a code constant
+their rule with only `affect` on is a code constant
 (`affect_rules.RULE_CONSUMERS`, with the state kept for self-report and
-tone), never a setting, and neither switch has an environment variable.
+tone), never a setting, and neither switch has an environment variable. Since
+the affect dev pilot (2026-09-24) it holds `overload` and `priority`: under the
+plan's mechanism rule the rules arm tied or beat the state on every measured
+consumer (the aggregate template reads both). `strategy_switch` and `satiation`
+are not measured yet and read the state.
 
 **Self-report.** `protagine_self state`, `GET /v1/mind/state` (`affect`) and
 `protagine mind status` show each level with its cited causes (`failed
@@ -395,8 +400,9 @@ expectation:<id>`), the load, which source each consumer reads (`source`:
 
 An owner turn's `/context/assemble` carries a `protagine-mind` section of at
 most 600 characters: the affect notes (a strategy switch, what is due soon and
-not started, "Stretched", "Holding back optional nudges") and the tone line,
-then "On my mind" (the broadcast set), "Working toward" (open goals) and
+not started, "Stretched", "Holding back optional nudges"), then "On my mind"
+(the broadcast set, less idle curiosity, an interest's research: in a decision it
+points at the optional work the consumers postpone), "Working toward" (open goals) and
 "Waiting for your say on" (open asks with their codes). Affect's lines come
 first but take only the room the others leave, at most 360 characters, and
 drop whole lines from the end to fit, so they never cut the open asks. Guests never see it. With `faculties.broadcast` off the concerns are neither shown

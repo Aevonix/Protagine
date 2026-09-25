@@ -2223,15 +2223,18 @@ class Mind:
     def section(self, *, limit: int = MIND_SECTION_CHARS) -> str:
         """The Mind section of an owner turn's context: at most ``limit`` characters.
 
-        Affect's notes and its calm tone line come first but take only the room the rest leaves
-        (at most 360 characters), so they never cut the open asks. Stances and the turn's lesson
+        Affect's notes come first but take only the room the rest leaves (at most 360 characters),
+        so they never cut the open asks. The broadcast leaves out idle curiosity (an interest's
+        research): in a decision it points at the optional work the consumers postpone. A question
+        curiosity raised (a contradiction for the owner) stays. Stances and the turn's lesson
         ride their own sections (``protagine-stances``, ``protagine-lessons``), built from the
         turn's text.
         """
         if not self.enabled:
             return ""
         lines: List[str] = []
-        broadcast = self.broadcast()
+        broadcast = [concern for concern in self.broadcast()
+                     if not (concern.drive == "curiosity" and concern.kind == "interest")]
         if broadcast:
             lines.append("On my mind: " + "; ".join(f"{c.summary}"[:120] for c in broadcast) + ".")
         goals = [self.goals.render(goal) for goal in self.goals.open()]
