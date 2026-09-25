@@ -173,9 +173,22 @@ def _zone(tz: str):
 
 
 def now_utc() -> datetime:
-    """The one wall clock: ``time.time``, which Hermes' clock and the mind's read too. A host that shifts it
-    (the paired harness's body clock) shifts every "Now" line with it."""
+    """The one wall clock: ``time.time``, which Hermes' clock and the mind's read too. Every "now" in the
+    sidecar, a stamp a store writes or a comparison the mind makes, reads it (never ``datetime.now``, which
+    a host's shift of ``time.time`` does not reach), so a host that shifts it (the paired harness's body
+    clock) moves them all together."""
     return datetime.fromtimestamp(time.time(), UTC)
+
+
+def ledger_stamp() -> str:
+    """``now_utc`` in the format of the ledger's SQLite stamps (``strftime('%Y-%m-%dT%H:%M:%fZ', 'now')``), for
+    a stamp the mind compares with its clock (a turn's ``ingested_at``): SQLite reads the real clock."""
+    return now_utc().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def now_local() -> datetime:
+    """Naive local time from the same clock, for the older components that keep naive stamps."""
+    return datetime.fromtimestamp(time.time())
 
 
 def now_in(tz: str) -> datetime:

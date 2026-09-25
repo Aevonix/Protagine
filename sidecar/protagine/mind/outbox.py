@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from protagine.initiatives.models import StoredInitiative
 
 from .audit import NOTICE_TYPES, _clip
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class Outbox:
     def __init__(self, store: Any, *, owner_id: str | None, clock=None) -> None:
         self.store = store
         self.owner_id = owner_id
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.on_sent = None   # callable(row) set by the tick: a sent message may settle what it was for
 
     # -- the queue --------------------------------------------------------------

@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from protagine.util.temporal import now_utc
 
 DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 DEFAULT_BACKUPS = 4
@@ -171,7 +172,7 @@ def configure_runtime_logging(path=None, *, max_bytes=None, backups=None, redire
         sys.stdout = _LoggedStream('protagine.stdout', logging.INFO)
         sys.stderr = _LoggedStream('protagine.stderr', logging.ERROR)
     policy = {'schema': 'ProtagineRuntimeLoggingV1', 'path': str(path),
-        'writer_pid': os.getpid(), 'configured_at': datetime.now(timezone.utc).isoformat(),
+        'writer_pid': os.getpid(), 'configured_at': now_utc().isoformat(),
         'handler': 'logging.handlers.RotatingFileHandler', 'max_bytes': max_bytes,
         'backup_count': backups, 'max_record_chars': MAX_RECORD_CHARS,
         'python_stdio': bool(redirect_stdio), 'routine_poll_routes': sorted(POLL_ROUTES),

@@ -55,6 +55,7 @@ from protagine.config import (
     save_identity,
     write_api_key,
 )
+from protagine.util.temporal import now_utc
 
 ADAPTER_DISTRIBUTION = "protagine-hermes"
 HERMES_DISTRIBUTION = "hermes-agent"
@@ -82,7 +83,7 @@ def _say(message: str = "") -> None:
 
 
 def _utc_stamp() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return now_utc().strftime("%Y%m%dT%H%M%SZ")
 
 
 def _run(command: list[str], *, timeout: int = 900, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -1097,7 +1098,7 @@ def _legacy_key(home: Path, env: dict[str, str]) -> str:
     keyring = home / LEGACY_KEYRING
     if not keyring.is_file():
         return configured
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = now_utc()
     usable: list[str] = []
     try:
         document = json.loads(keyring.read_text(encoding="utf-8"))

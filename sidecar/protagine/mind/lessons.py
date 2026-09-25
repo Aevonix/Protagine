@@ -29,6 +29,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +254,7 @@ class Lessons:
         self.store = store
         self.owner_id = owner_id or None
         self.autobiography = autobiography
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.enabled = bool(enabled)
         self.mind_state = mind_state
 

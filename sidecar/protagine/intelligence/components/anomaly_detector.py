@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import logging
+from protagine.util.temporal import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +289,7 @@ class AnomalyDetector:
 
         direction = "above" if observed > baseline else "below"
         return Anomaly(
-            id=f"anomaly-{entity_id}-{metric}-{datetime.now().isoformat()}",
+            id=f"anomaly-{entity_id}-{metric}-{now_local().isoformat()}",
             type=anomaly_type,
             description=(
                 f"{metric} for {entity_id} is {direction} baseline: "

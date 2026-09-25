@@ -204,10 +204,13 @@ Model calls made by workers are observed like every other call.
 
 **Clock.** `advance_clock` shifts `time.time` (kanban timestamps and claims) and
 `hermes_time.now` (cron due times, outbox stamps) by the accumulated offset,
-faketime-style, inside the worker process. The mind, the sidecar's "Now" and the
-plugin's "Current Time" read `time.time`, so every clock the model sees moves
-together. Monotonic clocks are untouched, so real timeouts still hold. The offset
-survives process restarts.
+faketime-style, inside the worker process. Every "now" in the sidecar and the
+plugins reads `time.time` (the sidecar through `temporal.now_utc`): the mind's
+clock, the stamps its stores write and compare, the sidecar's "Now" and the
+plugin's "Current Time", so every clock the model sees and every clock the mind
+compares moves together. SQLite's own clock stamps bookkeeping rows only.
+Monotonic clocks are untouched, so real timeouts still hold. The offset survives
+process restarts.
 
 **Draining before a restart or a clock advance.** Before each `advance_clock` and
 before a declared restart the worker waits for the arm's background queues: the

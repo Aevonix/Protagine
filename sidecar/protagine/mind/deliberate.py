@@ -41,6 +41,7 @@ from .affect import plan_hash
 from .concerns import Concern
 from .drives import task_body
 from .rank import Candidate
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,7 @@ class Deliberation:
                  max_calls_per_tick: int = MAX_CALLS_PER_TICK, tokens_allowed: Callable[[], bool] | None = None,
                  enabled: bool = True, budgets: Any = None) -> None:
         self.router = router
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.max_calls_per_tick = max(0, int(max_calls_per_tick))
         self.tokens_allowed = tokens_allowed or (lambda: True)
         self.enabled = enabled

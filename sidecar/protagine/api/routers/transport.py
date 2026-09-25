@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from protagine.api.auth import request_authority
+from protagine.util.temporal import now_utc
 
 router = APIRouter(prefix='/v1/host/transport', tags=['transport'])
 
@@ -41,7 +42,7 @@ def reconcile_receipts(waits, comms, row):
     for receipt in receipts:
         match = comms.match_reply(contact_id=row['contact_id'], outbound_ref=receipt['external_ref'],
             since_iso=start,
-            until_iso=datetime.now(timezone.utc).isoformat())
+            until_iso=now_utc().isoformat())
         # Preserve the actual provider link alongside its receipt-proven logical
         # delivery alias. A text mention of an outbound reference never gets here.
         if match['status'] == 'matched':

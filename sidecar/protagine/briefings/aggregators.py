@@ -18,6 +18,7 @@ from datetime import date as _date, datetime, timedelta as _timedelta, timezone
 from typing import Any, List, Optional, Protocol, runtime_checkable
 
 from .models import CalendarEvent
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,7 @@ class AnomalyDetectorAggregator:
     def _aware(dt: Optional[datetime]) -> datetime:
         # the detector stamps naive LOCAL datetimes
         if dt is None:
-            return datetime.now(timezone.utc)
+            return now_utc()
         if dt.tzinfo is None:
             return dt.astimezone()
         return dt
@@ -455,7 +456,7 @@ class GoalStoreAggregator:
         return [self._summary(g, "blocked") for g in self._goals(status="blocked")]
 
     def get_completing_soon(self, hours: float = 4.0) -> List[GoalSummary]:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         out = []
         for g in self._goals(status="active"):
             dl = self._aware(getattr(g, "deadline", None))

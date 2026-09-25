@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
+from protagine.util.temporal import now_utc
 
 
 @dataclass
@@ -26,7 +27,7 @@ class SessionReport:
     pending: List[str]
     notified_user: bool
     metadata: Dict[str, Any]
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
 
 
 class SessionReportStore:
@@ -59,7 +60,7 @@ class SessionReportStore:
         limit: int = 10,
     ) -> List[SessionReport]:
         """Return recent reports for a contact, filtered by age and capped."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        cutoff = now_utc() - timedelta(hours=hours)
         reports = self._reports.get(contact_id, [])
         recent = []
         for r in reports:

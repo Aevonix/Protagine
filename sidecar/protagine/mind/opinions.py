@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .drives import _utc, failure_signature
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -597,7 +598,7 @@ class Opinions:
         self.store = store
         self.initiatives = initiatives
         self.enabled = bool(enabled)
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
 
     # -- B.3 approach opinions -----------------------------------------------------------------
 
@@ -615,7 +616,7 @@ class Opinions:
         head = self.store.head(subject_kind="approach", subject=signature, topic=APPROACH_TOPIC)
         status = (head or {}).get("status")
         if _missed(row, outcome, check_result):
-            now = _utc(self.clock()) or datetime.now(timezone.utc)
+            now = _utc(self.clock()) or now_utc()
             history = [item for item in self.initiatives.intentions(kind=["task"], since=now - OUTCOME_WINDOW,
                                                                     limit=2000)
                        if item.outcome in {"done", "failed"} and failure_signature(_row_dict(item)) == signature]

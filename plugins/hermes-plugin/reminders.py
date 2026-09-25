@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import time
 from typing import Any
 
 from protagine_hermes.capture import SessionMap
@@ -98,7 +99,7 @@ class Reminders:
         if current.get("status") != "current":
             return final_answer(f"this source has no current precise deadline ({current.get('status')})")
         run_at = _instant(current["deadline_at"]) - timedelta(seconds=lead)
-        if run_at <= datetime.now(timezone.utc):
+        if run_at <= datetime.fromtimestamp(time.time(), timezone.utc):   # Hermes' clock and the model's "Now"
             raise ValueError("the reminder time has already passed; choose a smaller lead")
         from cron.scheduler import create_job_with_scheduler_registration
         from tools.cronjob_job_args import _origin_from_env

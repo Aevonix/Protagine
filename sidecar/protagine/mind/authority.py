@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+from protagine.util.temporal import now_utc
 
 LEVELS = ("off", "suggest", "standard", "trusted")
 CLASSES = ("internal", "owner", "contact", "external", "floor")
@@ -274,7 +275,7 @@ class Authority:
         self.policy = policy
         self.store = store
         self.owner_id = owner_id
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self._enabled_override: Optional[bool] = None
 
     # -- state ----------------------------------------------------------------

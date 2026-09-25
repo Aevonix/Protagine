@@ -28,6 +28,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from protagine.util.temporal import now_utc
 
 UA = "Protagine-Feed-Collector/1.0"
 
@@ -371,7 +372,7 @@ def stage_collect(cfg):
         print(f"  {label}: {len(got)} new items", file=sys.stderr)
     all_items.sort(key=lambda x: x["score"], reverse=True)
 
-    now = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %I:%M %p %Z")
+    now = now_utc().astimezone().strftime("%Y-%m-%d %I:%M %p %Z")
     queue_path = os.path.expanduser(cfg["queue_path"])
     os.makedirs(os.path.dirname(queue_path), exist_ok=True)
     with open(queue_path, "w", encoding="utf-8") as f:

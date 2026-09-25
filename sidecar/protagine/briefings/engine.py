@@ -19,6 +19,7 @@ from protagine.briefings.models import (
     SectionEngagementRecord,
 )
 from protagine.briefings.store import BriefingStore
+from protagine.util.temporal import now_utc
 
 
 class BriefingEngine:
@@ -80,7 +81,7 @@ class BriefingEngine:
         if briefing_type == BriefingType.TACTICAL:
             raise ValueError("Use fire_tactical() for tactical briefings")
 
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         scores = self._engagement.get_section_scores()
 
         if briefing_type == BriefingType.DAILY:
@@ -231,7 +232,7 @@ class BriefingEngine:
             section_name=section_name,
             briefing_id=briefing_id,
             signal=signal,
-            recorded_at=datetime.now(timezone.utc),
+            recorded_at=now_utc(),
         )
         self._engagement.record(record)
         if signal == "read":
@@ -253,7 +254,7 @@ class BriefingEngine:
             briefing_type=briefing.briefing_type,
             sections=[s.name for s in active],
             engaged_sections=engaged,
-            delivered_at=datetime.now(timezone.utc),
+            delivered_at=now_utc(),
             total_anomalies=0,
             active_goals=0,
         )

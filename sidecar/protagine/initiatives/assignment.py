@@ -10,6 +10,7 @@ Provides:
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,7 @@ class AssignmentEngine:
         max_per_hour = getattr(agent, "max_initiatives_per_hour", 0) or 0
         if max_per_hour > 0:
             try:
-                since = datetime.now(timezone.utc) - timedelta(hours=1)
+                since = now_utc() - timedelta(hours=1)
                 recent = self._initiative_store.count_agent_assignments_since(
                     agent.agent_id, since
                 )

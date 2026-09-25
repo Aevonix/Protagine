@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import logging
+from protagine.util.temporal import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class SelfReflector:
             reflection = await self._reflect_on_tool_usage()
         else:
             reflection = Reflection(
-                id=f"reflect-{area}-{datetime.now().isoformat()}",
+                id=f"reflect-{area}-{now_local().isoformat()}",
                 area=area,
                 score=0.5,
                 issues=[f"No reflection handler for area: {area}"],
@@ -160,7 +161,7 @@ class SelfReflector:
             improvements.append("Maintain current quality standards")
 
         return Reflection(
-            id=f"reflect-responses-{datetime.now().isoformat()}",
+            id=f"reflect-responses-{now_local().isoformat()}",
             area="response_quality",
             score=score,
             issues=issues,
@@ -202,7 +203,7 @@ class SelfReflector:
             improvements.append("Consider expanding memory retention window")
 
         return Reflection(
-            id=f"reflect-memory-{datetime.now().isoformat()}",
+            id=f"reflect-memory-{now_local().isoformat()}",
             area="memory_recall",
             score=score,
             issues=issues,
@@ -244,7 +245,7 @@ class SelfReflector:
             improvements.append("Tool usage patterns are effective; continue monitoring")
 
         return Reflection(
-            id=f"reflect-tools-{datetime.now().isoformat()}",
+            id=f"reflect-tools-{now_local().isoformat()}",
             area="tool_usage",
             score=score,
             issues=issues,

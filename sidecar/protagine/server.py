@@ -15,6 +15,7 @@ from pathlib import Path
 
 # CLI and direct service starts use the same selected private instance.
 from protagine.util.instance import load_environment
+from protagine.util.temporal import now_utc
 load_environment()
 
 from fastapi import FastAPI
@@ -842,7 +843,7 @@ async def lifespan(app: FastAPI):
     from protagine.telemetry import TelemetryStore
     telemetry = TelemetryStore()
     telemetry.load()  # restore last_*_at across restart (v0.21.0)
-    telemetry.started_at = datetime.now(timezone.utc)
+    telemetry.started_at = now_utc()
     app.state.telemetry = telemetry
     set_telemetry(telemetry)
     logger.info("TelemetryStore initialized")

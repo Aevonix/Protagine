@@ -21,6 +21,7 @@ from .audit import render_log, render_stats
 from .authority import CLASSES, LEVELS
 from .outcomes import VERDICTS
 from .tick import CONSOLIDATION_WAIT_S, OFF_MARKER
+from protagine.util.temporal import now_utc
 
 COMMANDS = ("status", "log", "why", "asks", "yes", "no", "rate", "level", "reset", "off", "on", "tick", "stats",
             "concerns", "goals", "interest", "consolidate", "narrative", "opinions", "lessons")
@@ -179,7 +180,7 @@ def run(args: argparse.Namespace) -> int:
             except SystemExit as exc:
                 marker = _state_dir(sidecar) / OFF_MARKER
                 marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text(f"{args.reason} at {datetime.now(timezone.utc).isoformat()}\n", encoding="utf-8")
+                marker.write_text(f"{args.reason} at {now_utc().isoformat()}\n", encoding="utf-8")
                 value = {"enabled": False, "reason": args.reason, "note": f"sidecar unreachable ({exc}); marker written"}
                 note = value["note"]
             _emit(value, as_json=as_json, text=f"mind off ({note}). Unstarted mind tasks are archived at the next "

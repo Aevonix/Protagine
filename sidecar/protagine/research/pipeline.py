@@ -36,6 +36,7 @@ from protagine.research.artifact import (
     ArtifactOutline,
     ArtifactRenderer,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,8 @@ class PipelineRun:
     review: Optional[ReviewResult] = None
 
     # Timing
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
+    updated_at: datetime = field(default_factory=lambda: now_utc())
     completed_at: Optional[datetime] = None
 
     # Stage durations (seconds)
@@ -109,7 +110,7 @@ class PipelineRun:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def touch(self, stage: Optional[PipelineStage] = None) -> None:
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = now_utc()
         if stage:
             self.current_stage = stage
 
@@ -259,7 +260,7 @@ class ResearchPipeline:
 
             run.status = PipelineStatus.COMPLETED
             run.current_stage = PipelineStage.DONE
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = now_utc()
             logger.info(
                 "ResearchPipeline: run %s completed in %.1fs",
                 run.id,

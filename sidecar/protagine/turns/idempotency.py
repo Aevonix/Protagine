@@ -30,6 +30,7 @@ from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from protagine.util.temporal import ledger_stamp
 
 # How long a 'processing' reservation is trusted before an identical retry may
 # take it over. Comfortably longer than any live ingestion so a slow first
@@ -367,9 +368,9 @@ class TurnIdempotencyLedger:
             encoded = json.dumps(messages, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
             conn.execute(
                 "INSERT INTO turn_sources "
-                "(turn_id, content_sha256, contact_id, session_id, scope, messages_json, occurred_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (turn_id, digest, contact_id, session_id, scope, encoded, occurred_at),
+                "(turn_id, content_sha256, contact_id, session_id, scope, messages_json, occurred_at, ingested_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (turn_id, digest, contact_id, session_id, scope, encoded, occurred_at, ledger_stamp()),
             )
             from .source_channels import record as record_channel
             record_channel(conn, turn_id=turn_id, contact_id=contact_id,

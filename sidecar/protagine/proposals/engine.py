@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from protagine.proposals.models import Proposal
+from protagine.util.temporal import now_utc
 
 _THINK_PREFIX = re.compile(r"^\[self-directed thinking\]\s*", re.IGNORECASE)
 
@@ -110,5 +111,5 @@ def proposal_to_payload(p: Proposal) -> Dict[str, Any]:
         "entity_type": "proposal",
         "channel_hint": "dm",
         "context": {},
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now_utc().isoformat(),
     }

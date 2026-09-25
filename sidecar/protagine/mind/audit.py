@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from protagine.redact import redact_sensitive_text
 
 from protagine.initiatives.models import StoredInitiative
+from protagine.util.temporal import now_utc
 
 MAX_TEXT = 400
 # The mind's reporting to the owner: never a drive's work, never a contact message. The last four
@@ -117,7 +118,7 @@ def why(store: Any, intention_id: str) -> Optional[Dict[str, Any]]:
 def stats(store: Any, *, now: Optional[datetime] = None, days: int = 7,
           ledger_turns: Optional[int] = None) -> Dict[str, Any]:
     """The in-vivo panel (evals section 8), descriptive only."""
-    now = now or datetime.now(timezone.utc)
+    now = now or now_utc()
     since = now - timedelta(days=days)
     rows = store.intentions(since=since, limit=5000)
     acted = [row for row in rows if row.decision == "act" and row.type not in NOTICE_TYPES

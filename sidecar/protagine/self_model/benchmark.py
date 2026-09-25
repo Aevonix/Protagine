@@ -39,6 +39,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ def _now() -> float:
 
 
 def week_id(dt: Optional[datetime] = None) -> str:
-    dt = dt or datetime.now(timezone.utc)
+    dt = dt or now_utc()
     return dt.strftime("%G-W%V")
 
 
@@ -161,7 +162,7 @@ def week_window(week: str) -> Tuple[datetime, datetime]:
 
 
 def previous_week(dt: Optional[datetime] = None) -> str:
-    dt = dt or datetime.now(timezone.utc)
+    dt = dt or now_utc()
     return week_id(dt - timedelta(days=7))
 
 

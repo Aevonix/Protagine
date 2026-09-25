@@ -20,6 +20,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 @dataclass
@@ -54,7 +55,7 @@ def _iso(ts: float):
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
     except (ValueError, OverflowError, OSError):
-        return datetime.now(timezone.utc).isoformat()
+        return now_utc().isoformat()
 
 
 def _slug(value: str) -> str:

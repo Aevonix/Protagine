@@ -33,6 +33,7 @@ from .models import (
     TacticalBriefingContent,
     WeeklyBriefingContent,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class BriefingComposer:
         blocked = self._goal.get_blocked_goals()
         completing_soon = self._goal.get_completing_soon()
 
-        since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        since = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
         rel_changes = self._rel.get_notable_changes(since=since)
 
         anomalies = self._anomaly.get_active_anomalies()

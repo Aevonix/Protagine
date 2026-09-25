@@ -169,6 +169,7 @@ from protagine.api.schemas.host import (
     ContextDigestSessionReport,
     ContextDigestResponse,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -5691,7 +5692,7 @@ async def connect_remote_agent(body: AgentConnectRequest) -> AgentConnectRespons
     # The node certificate is UNSIGNED: this instance holds no signing key (the
     # chain went with M8), so the remote-agent handshake cannot verify it. The
     # remote multi-agent surface stays experimental; see docs/MULTI_AGENT.md.
-    issued_at = datetime.now(timezone.utc)
+    issued_at = now_utc()
     node_cert = AgentNodeCert(
         protagine_id=protagine_id,
         node_id=node_id,
@@ -5783,7 +5784,7 @@ async def agent_heartbeat(agent_id: str, body: AgentHeartbeatRequest) -> Dict[st
     updates = {
         "status": body.status,
         "current_assignments": body.current_assignments,
-        "last_seen_at": datetime.now(timezone.utc),
+        "last_seen_at": now_utc(),
     }
     if body.metadata:
         updates["metadata"] = body.metadata
@@ -6182,7 +6183,7 @@ async def refresh_initiative_context(initiative_id: str) -> InitiativeResponse:
             initiative_id,
             context=fresh,
             status="cancelled",
-            cancelled_at=datetime.now(timezone.utc).isoformat(),
+            cancelled_at=now_utc().isoformat(),
             cancelled_by="context_refresh",
             cancelled_reason="condition_cleared",
             stale_reason="condition_cleared",
@@ -6275,7 +6276,7 @@ async def snooze_task(
     success = _goals_store.snooze_task(task_id, hours, reason)
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
-    snoozed_until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    snoozed_until = (now_utc() + timedelta(hours=hours)).isoformat()
     return {"success": True, "task_id": task_id, "snoozed_until": snoozed_until}
 
 
@@ -6359,7 +6360,7 @@ async def respond_to_initiative(
 @router.get("/agent-snapshot", response_model=AgentSnapshotResponse)
 async def agent_snapshot() -> AgentSnapshotResponse:
     """Return a comprehensive snapshot of Protagine state for agent evaluation."""
-    now = datetime.now(timezone.utc)
+    now = now_utc()
 
     # Telemetry
     thresholds = {"tick": _tick_stale_hours(_mind())}
@@ -6414,7 +6415,7 @@ async def agent_snapshot() -> AgentSnapshotResponse:
 @router.post("/agent-snapshot/record-outreach", response_model=RecordOutreachResponse)
 async def record_outreach(body: RecordOutreachRequest) -> RecordOutreachResponse:
     """Record that the agent proactively messaged the owner."""
-    now = datetime.now(timezone.utc)
+    now = now_utc()
     outreach_at = now.isoformat()
     if _telemetry is not None:
         await _telemetry.touch("last_agent_outreach_at")
@@ -6496,7 +6497,7 @@ async def context_digest(
     Combines recent session reports, pending initiatives, system state,
     and outreach history into a single response.
     """
-    now = datetime.now(timezone.utc)
+    now = now_utc()
 
     # Session reports
     session_reports = []

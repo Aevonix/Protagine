@@ -25,6 +25,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from protagine.util.temporal import now_utc
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional
 from zoneinfo import ZoneInfo
@@ -1636,7 +1637,7 @@ class Mind:
 
     @staticmethod
     def _sent_at(row: StoredInitiative) -> datetime:
-        return _utc(row.completed_at) or _utc(row.created_at) or datetime.now(timezone.utc)
+        return _utc(row.completed_at) or _utc(row.created_at) or now_utc()
 
     def _messages_by_contact(self, now: datetime) -> Dict[str, List[StoredInitiative]]:
         """The mind's messages to each contact over the social history, newest first."""

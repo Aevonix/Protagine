@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class PatternStore:
         Returns the created or updated pattern dict.
         """
         confidence = max(0.0, min(1.0, confidence))
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         meta_json = json.dumps(metadata) if metadata else None
 
         # Upsert: increment frequency if key exists.
@@ -214,7 +215,7 @@ class PatternStore:
 
         Returns count of deactivated patterns.
         """
-        cutoff = datetime.now(timezone.utc).isoformat()
+        cutoff = now_utc().isoformat()
         # Simple approach: deactivate patterns with low frequency.
         cursor = self._conn.execute(
             "UPDATE patterns SET active = 0 WHERE frequency < ? AND active = 1",

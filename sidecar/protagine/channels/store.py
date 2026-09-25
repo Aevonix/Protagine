@@ -19,6 +19,7 @@ from typing import Optional
 
 from protagine.channels.manifest import ChannelManifest
 from protagine.migrations import run_migrations_sync
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class ChannelStore:
         Raises ValueError on token mismatch (409 at the API layer).
         """
         conn = self._require_conn()
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
 
         existing = self.get(manifest.channel_key)
 
@@ -160,7 +161,7 @@ class ChannelStore:
     def touch(self, channel_key: str) -> None:
         """Update last_seen_at for the given channel."""
         conn = self._require_conn()
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         conn.execute(
             "UPDATE channels SET last_seen_at = ? WHERE channel_key = ?",
             (now, channel_key),

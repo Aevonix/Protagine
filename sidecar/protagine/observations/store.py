@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class ObservationStore:
         observed_at: Optional[datetime] = None,
     ) -> Observation:
         """Upsert the latest snapshot for one entity."""
-        observed_at = observed_at or datetime.now(timezone.utc)
+        observed_at = observed_at or now_utc()
         self._db.execute(
             """
             INSERT INTO observations (domain, entity_id, payload, observed_at, reported_by)
@@ -205,7 +206,7 @@ class ObservationStore:
 
     def prune(self, older_than_days: float = 30.0) -> int:
         """Drop snapshots nothing has refreshed in a long time."""
-        cutoff = datetime.now(timezone.utc).timestamp() - older_than_days * 86400
+        cutoff = now_utc().timestamp() - older_than_days * 86400
         cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
         cur = self._db.execute(
             "DELETE FROM observations WHERE observed_at < ?", [cutoff_iso]
@@ -253,7 +254,7 @@ class ObservationStore:
             return None
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - stamp).total_seconds()
+        return (now_utc() - stamp).total_seconds()
 
     def summary(self) -> Dict[str, Dict[str, Any]]:
         """Per-domain counts and freshness."""

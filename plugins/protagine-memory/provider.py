@@ -318,7 +318,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     def _is_circuit_open(self) -> bool:
         if self._circuit_open_until is None:
             return False
-        if datetime.now(timezone.utc).timestamp() > self._circuit_open_until:
+        if _ttime.monotonic() > self._circuit_open_until:   # a breaker times real seconds, whatever the wall clock
             self._circuit_open_until = None
             self._connection_failures = 0
             return False
@@ -328,7 +328,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._connection_status = "degraded"
         self._connection_failures += 1
         if self._connection_failures >= 3:
-            self._circuit_open_until = datetime.now(timezone.utc).timestamp() + 60
+            self._circuit_open_until = _ttime.monotonic() + 60
             logger.warning("Protagine: circuit breaker opened for 60s after %d failures", self._connection_failures)
 
     def _record_connection_success(self) -> None:
@@ -659,7 +659,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             sender = {"platform": turn_platform or "unknown", "user_id": turn_sender, "display_name": "",
                       "group_id": turn_chat if turn_chat and turn_chat != turn_sender else ""}
         url, headers = self.sidecar_url, self._headers()
-        self._last_sync_attempt = datetime.now(timezone.utc).isoformat()
+        self._last_sync_attempt = datetime.fromtimestamp(_ttime.time(), timezone.utc).isoformat()
         self._last_sync_error = None
 
         def _sync():
@@ -757,7 +757,8 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             if not args.get("new_due_at"):
                 return json.dumps({"error": "new_due_at is required to snooze"})
             body = {"due_at": args["new_due_at"], "metadata": {
-                "snoozed_by": "agent", "snoozed_at": datetime.now(timezone.utc).isoformat(), "note": reason or ""}}
+                "snoozed_by": "agent", "snoozed_at": datetime.fromtimestamp(_ttime.time(), timezone.utc).isoformat(),
+                "note": reason or ""}}
         try:
             with httpx.Client(timeout=5) as client:
                 resp = client.patch(f"{self.sidecar_url}/v1/host/commitments/{commitment_id}",

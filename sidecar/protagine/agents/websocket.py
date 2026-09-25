@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from fastapi import WebSocket, WebSocketDisconnect
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class WebSocketManager:
             # Register connection
             self._active_connections[agent_id] = websocket
             self._connection_info[agent_id] = {
-                "connected_at": datetime.now(timezone.utc),
+                "connected_at": now_utc(),
                 "client_ip": client_ip,
                 "last_pong": time.time(),
             }
@@ -380,7 +381,7 @@ class WebSocketManager:
             # Heartbeat response
             await self._agent_store.update(
                 agent_id,
-                last_seen_at=datetime.now(timezone.utc),
+                last_seen_at=now_utc(),
             )
 
         else:
@@ -416,7 +417,7 @@ class WebSocketManager:
                 await websocket.send_json({
                     "type": "ping",
                     "seq": seq,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": now_utc().isoformat(),
                 })
             except Exception as e:
                 logger.error("Failed to send ping to agent %s: %s", agent_id, e)
