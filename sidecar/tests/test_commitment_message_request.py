@@ -480,3 +480,31 @@ def test_a_deliverable_to_a_name_the_owner_goes_by_is_theirs_with_its_content(tm
                  owner_text="Email me the Q3 revenue number.", turn_time=_now(), owner_names=["Robin"])
     row, = _rows(store)
     assert row["metadata"]["kind"] == "deliverable" and row["metadata"]["content"] == "Q3 revenue was 4.2 million."
+
+
+async def test_a_capture_cancelled_during_the_request_review_hands_the_job_back(tmp_path, monkeypatch):
+    """A drain's budget runs out while the review pass is judging the owner's request: the job is handed back
+    at once, uncharged and unleased, so the owner's next capture is not held behind it."""
+    import asyncio
+    from contextlib import closing
+    store, ledger, extractor = _setup(tmp_path, monkeypatch)
+    said = f"{LANDLORD} owes me the signed lease. If {LANDLORD} has not sent it by 5, chase them yourself."
+    asked = f"If {LANDLORD} has not sent it by 5, chase them yourself."
+    _turn(ledger, "t-1", said)
+    item = _item(f"Chase {LANDLORD} for the signed lease", counterpart=LANDLORD,
+                 metadata=_check_in(LANDLORD, asked=asked, topic="the signed lease"))
+
+    class _StuckReview(_Router):
+        async def complete(self, messages, *, context=None, **kwargs):
+            if (context or {}).get("task") == "source_claim_review":
+                await asyncio.Event().wait()
+            return await super().complete(messages, context=context, **kwargs)
+
+    summary = await extractor.drain(_StuckReview([item], keep=True), budget_seconds=0.5)
+    assert summary["recorded"] == 0
+    with closing(ledger._connect()) as conn:
+        job = dict(conn.execute("SELECT * FROM commitment_runs WHERE turn_id='t-1'").fetchone())
+    assert (job["status"], job["attempts"], job["lease_until"]) == ("pending", 0, 0)
+    assert await extractor.process_one(_Router([item], keep=True)) is True
+    row, = _rows(store)
+    assert row["metadata"]["grant"] == "owner"

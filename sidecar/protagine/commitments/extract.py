@@ -1577,7 +1577,17 @@ class CommitmentExtractor:
         return summary
 
     async def _run(self, job, router, commitments) -> Dict[str, Any]:
-        """Process one leased job; the ``record_items`` result, or {} when nothing landed."""
+        """Process one leased job; the ``record_items`` result, or {} when nothing landed. A cancellation at any
+        await of the attempt (a drain's budget, a shutdown: during extraction, the request review or a name
+        lookup) hands the job straight back, uncharged and unleased (``_release``), so the person's later
+        captures are never held behind an abandoned lease."""
+        try:
+            return await self._attempt(job, router, commitments)
+        except asyncio.CancelledError:
+            self._release(job)
+            raise
+
+    async def _attempt(self, job, router, commitments) -> Dict[str, Any]:
         try:
             source = self._source(job["turn_id"])
             if source is None:
@@ -1617,9 +1627,6 @@ class CommitmentExtractor:
                          "response_schema": RESPONSE_SCHEMA}), deadline + 5)
             items, settled = self._settle_interests(parse_items(final_text(response)), existing=existing,
                                                     interests=interests, person_id=person_id, turn_id=job["turn_id"])
-        except asyncio.CancelledError:
-            self._release(job)
-            raise
         except Exception as error:
             defect = _output_defect(error)
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)
