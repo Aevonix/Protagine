@@ -605,32 +605,31 @@ def _plain(value: Any) -> str:
     return " ".join(unicodedata.normalize("NFC", str(value or "").casefold()).split())
 
 
-def _identity(description: Any, due_at: Any, metadata: Any) -> tuple:
+IDENTITY_KEYS = ("kind", "obligor", "counterpart", "recipient")
+
+
+def _matter(description: Any, metadata: Any) -> tuple:
+    """What an item is, its deadline aside: its kind, obligor, counterpart and recipient, and its description
+    (``_plain``)."""
     metadata = metadata if isinstance(metadata, dict) else {}
+    return (*(_plain(metadata.get(key)) for key in IDENTITY_KEYS), _plain(description))
+
+
+def _identity(description: Any, due_at: Any, metadata: Any) -> tuple:
     due = _utc(due_at)
-    return (*(_plain(metadata.get(key)) for key in ("kind", "obligor", "counterpart", "recipient")),
-            due.isoformat() if due is not None else None, _plain(description))
+    return (*_matter(description, metadata), due.isoformat() if due is not None else None)
 
 
-_WORDING_FILLER = frozenset("a an the to for of on by with and my your their his her its our".split())
-
-
-def _wording(text: Any) -> frozenset:
-    from protagine.commitments.store import _normalize_desc
-    return frozenset(word for word in _normalize_desc(str(text or "")).split() if word not in _WORDING_FILLER)
-
-
-def _restated(listed: List[Dict[str, Any]], norm: str, due_at: Any, kind: Any) -> Optional[Dict[str, Any]]:
-    """The one listed open item a new item restates with a different deadline, or None. A restatement is of
-    the same kind (a reminder never moves a check-in) and has the item's own wording (its words, articles and
-    prepositions aside); a similar item (another number, another document, one more word: "the Q4 report",
-    "the lease renewal form") is never one, and the listed deadline stays."""
+def _restated(listed: List[Dict[str, Any]], description: Any, due_at: Any,
+              metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The one listed open item a new item restates with a different deadline, or None. A restatement is the
+    same item exactly (``_matter``: the identity the duplicate check uses, its deadline aside); any other
+    wording, kind or party is another item, recorded as its own row, and the listed deadline stays."""
     due = _utc(due_at)
-    wording = _wording(norm)
-    if due is None or not wording:
+    matter = _matter(description, metadata)
+    if due is None or not matter[-1]:
         return None
-    alike = [row for row in listed if _wording(row.get("description")) == wording
-             and _plain((row.get("metadata") or {}).get("kind")) == _plain(kind)]
+    alike = [row for row in listed if _matter(row.get("description"), row.get("metadata")) == matter]
     if len(alike) != 1:
         return None
     listed_due = _utc(alike[0].get("due_at"))
@@ -884,11 +883,12 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     owner's words asking for a message may refer back to (``request_problem``).
     A new item is skipped as a duplicate only when an open item is the same item exactly (``_identity``),
     or when its description is exactly (``_plain``) that of an extraction rejected as invalid or a
-    duplicate. Nothing is merged into another item. A new item with the wording and kind of one listed
-    item and a different deadline (``_restated``) moves it, compare-and-set, as a ``reschedule`` would.
+    duplicate. Nothing is merged into another item. A new item that is one listed item exactly, its
+    deadline aside (``_restated``), with a different deadline moves it, compare-and-set, as a
+    ``reschedule`` would; anything else is a new row.
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
-    from protagine.commitments.store import CommitmentConflict, _normalize_desc
+    from protagine.commitments.store import CommitmentConflict
     items = [_with_defaults(item) for item in items if isinstance(item, dict)]
     listed = list(existing[:OPEN_ITEMS_LISTED])
     known = {row.get("id"): _identity(row.get("description"), row.get("due_at"), row.get("metadata"))
@@ -973,17 +973,31 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             logger.info("commitment candidate dropped for %s: an obligation between two other people", person_id)
             others += 1
             continue
-        again = None if confirmed else _restated(
-            [row for row in listed if row.get("id") not in {*updated, *resolved}], _normalize_desc(description),
-            item.get("due_at"), stated.get("kind"))
+        metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
+                                    description=description, confirmed=confirmed)
+        if metadata is not None:
+            for field in ("counterpart", "obligor"):
+                value = str(item.get(field) or "").strip()[:120]
+                if value:
+                    metadata[field] = value
+            if _due_text(item, owner_text):
+                metadata["due_text"] = _due_text(item, owner_text)
+            if turn_id:
+                metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
+            if not item.get("due_at") and owner_text and asks_no_reminders(owner_text):
+                # Held from its first mention: undated because the person wants no word about it.
+                metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
+        again = None if confirmed or metadata is None else _restated(
+            [row for row in listed if row.get("id") not in {*updated, *resolved}], description,
+            item.get("due_at"), metadata)
         if again is not None:
             # The person restating a listed item with a new time moves it, written against what was listed.
             due_at = _utc(item.get("due_at")).isoformat()
-            metadata = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note},
-                        "due_text": _due_text(item, owner_text)}
-            metadata.update(_heads_up_patch(again, due_at, None))
+            restate = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note},
+                       "due_text": _due_text(item, owner_text)}
+            restate.update(_heads_up_patch(again, due_at, None))
             try:
-                row = commitment_store.update(again["id"], due_at=due_at, metadata=metadata,
+                row = commitment_store.update(again["id"], due_at=due_at, metadata=restate,
                                               expect={"description": again.get("description"),
                                                       "due_at": again.get("due_at")})
                 if row is not None:
@@ -998,22 +1012,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if _plain(description) in blocked:
             skipped += 1
             continue
-        metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
-                                    description=description, confirmed=confirmed)
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes
             continue
-        for field in ("counterpart", "obligor"):
-            value = str(item.get(field) or "").strip()[:120]
-            if value:
-                metadata[field] = value
-        if _due_text(item, owner_text):
-            metadata["due_text"] = _due_text(item, owner_text)
-        if turn_id:
-            metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
-        if not item.get("due_at") and owner_text and asks_no_reminders(owner_text):
-            # Held from its first mention: undated because the person wants no word about it.
-            metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
         this = _identity(description[:1000], item.get("due_at"), metadata)
         # A row moved or closed by this turn is judged by the store as it is now.
         if any(same == this for key, same in known.items() if key not in {*updated, *resolved}):

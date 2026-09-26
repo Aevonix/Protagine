@@ -601,3 +601,28 @@ def test_the_same_wording_is_another_item_when_any_other_part_differs(tmp_path, 
                    counterpart=other.get("counterpart", "p-41"), obligor=other.get("obligor", "owner"))
     result = _record(store, [item], existing=[listed] if change != "due" else [])
     assert result["skipped_duplicates"] == 0 and len(_open(store)) == 2, change
+
+
+# --- a restatement is of the same item exactly -----------------------------------------------------------
+
+def test_a_restatement_moves_only_the_listed_item_that_is_the_same_item_exactly(tmp_path):
+    """A reminder "Pay the $100 invoice" and a check-in "Pay the €100 invoice" are listed, both due at 10;
+    a reminder "Pay the €100 invoice" at 11 is neither of them restated (another object, another kind): it is
+    its own row, and both listed deadlines stay. Wording beyond case, spacing and composition (an article
+    dropped) is not a restatement either."""
+    store = CommitmentStore(tmp_path / "c.db")
+    dollar = store.create(person_id=OWNER, description="Pay the $100 invoice", due_at=_at(60),
+                          source_type="cognition", metadata={"kind": "reminder", "obligor": "owner"})
+    euro = store.create(person_id=OWNER, description="Pay the €100 invoice", due_at=_at(60),
+                        source_type="cognition", metadata={"kind": "check_in", "recipient": "p-41",
+                                                           "obligor": "owner"})
+    listed = [dollar, euro]
+    result = _record(store, [_reminder("Pay the €100 invoice", _at(120))], existing=listed)
+    assert result["updated"] == [] and len(result["created"]) == 1
+    dropped = _record(store, [_reminder("Pay $100 invoice", _at(120))], existing=listed)
+    assert dropped["updated"] == [] and len(dropped["created"]) == 1
+    rows = {row["id"]: row["due_at"][:16] for row in _open(store)}
+    assert len(rows) == 4 and rows[dollar["id"]] == rows[euro["id"]] == _at(60)[:16]
+    # The same item exactly, up to case, spacing and composition, is still moved.
+    moved = _record(store, [_reminder("  PAY the $100   invoice", _at(90))], existing=[dollar])
+    assert moved["updated"] == [dollar["id"]] and store.get(dollar["id"])["due_at"][:16] == _at(90)[:16]
