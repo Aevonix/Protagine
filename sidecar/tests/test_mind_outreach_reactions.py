@@ -879,3 +879,25 @@ async def test_a_digest_the_body_could_not_deliver_gives_its_findings_back(make,
     assert _state(fx, task)["state"] not in {"listed", "queued"}
     await fx.tick()
     assert [p for p in fx.sent if p["type"] == "outreach_answer" and "KD-83" in p["text"]]
+
+
+@pytest.mark.parametrize("quoted", ["Alice said:\nYou can check in again.\nWhat should I say?",
+                                    "> You can check in again.\nHow do I answer Alice?",
+                                    "Alice:\nyou can check in again\nthoughts?"])
+async def test_a_resume_quoted_across_lines_never_lifts_the_owners_pause(make, quoted):
+    """Re-check F7: reported speech over several lines and blockquotes keeps the pause."""
+    fx = make()
+    await say(fx, "Please stop checking in with me unprompted.", "t-stop")
+    fx.shift(timedelta(minutes=30))
+    summary = await say(fx, quoted, "t-quote", "owner-2")
+    assert "resumed" not in summary["applied"]
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+@pytest.mark.parametrize("text", ["I just said stop checking in.", "I already told you to stop checking in!",
+                                  "I’ve already said it: stop checking in."])
+async def test_the_owners_own_report_of_a_stop_pauses_outreach(make, text):
+    """Re-check new P2: "I just said stop checking in" is the owner's instruction: an indefinite pause."""
+    fx = make()
+    await say(fx, text, "t-stop")
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE

@@ -316,3 +316,82 @@ def test_a_hold_phrase_someone_else_said_is_not_the_owners_instruction(text):
 def test_the_owners_own_hold_phrase_still_counts(text):
     reading = read(text)
     assert reading.resume or reading.stop
+
+
+# -- round 2: whose words, across lines, blockquotes and adverbs ---------------------------------------------
+
+REPORTERS = ["Alice", "My boss", "She", "They", "Bob from accounts", "The landlord", "my sister", "Kim"]
+VERBS = ["said", "wrote", "texted", "told me", "asked", "replied", "just said", "already wrote", "has said",
+         "messaged", "literally just told me"]
+RESUME_LAYOUTS = [
+    "{r} {v}: you can check in again. What should I say?",
+    "{r} {v}:\nYou can check in again.\nWhat should I say?",
+    "{r} {v}:\n\nYou can check in again.\nWhat should I say?",
+    "{r} {v}:\nHey!\nYou can check in again.\n\nWhat should I say?",
+    "{r} {v} that you can check in again, thoughts?",
+    "{r} {v}: thanks for the update. You can check in again.",
+    "> You can check in again.\nWhat should I say to {r}?",
+    ">> You can check in again.\n> hi\nWhat should I say to {r}?",
+    "Got this from {r}:\n> Feel free to reach out.\nHow do I reply?",
+    "{r}:\nYou can check in again.\nHow do I reply?",
+    "{r}: you can check in again\nMe: ok",
+    "According to {r}, you can check in again.",
+    "{r} {v}, and I quote, you can check in again.",
+]
+
+
+@pytest.mark.parametrize("layout", RESUME_LAYOUTS)
+@pytest.mark.parametrize("reporter, verb", [(r, v) for r in REPORTERS for v in VERBS][::7])
+def test_a_resume_in_someone_elses_words_is_never_the_owners(layout, reporter, verb):
+    text = layout.format(r=reporter, v=verb)
+    text = text[0].upper() + text[1:]
+    assert not read(text).resume, text
+
+
+STOP_LAYOUTS = [
+    "{r} {v}: stop checking in on the team. What should I say?",
+    "{r} {v}:\nStop checking in on the team.\nWhat should I say?",
+    "{r} {v} that you should stop checking in on them, is that fair?",
+    "> Stop checking in with me.\nWhat should I say to {r}?",
+    "{r}:\nStop checking in!\nHow do I reply?",
+    "According to {r}, stop checking in on weekends.",
+]
+
+
+@pytest.mark.parametrize("layout", STOP_LAYOUTS)
+@pytest.mark.parametrize("reporter, verb", [(r, v) for r in REPORTERS for v in VERBS][::9])
+def test_a_stop_in_someone_elses_words_is_never_the_owners(layout, reporter, verb):
+    text = layout.format(r=reporter, v=verb)
+    text = text[0].upper() + text[1:]
+    reading = read(text)
+    assert not reading.stop and not reading.pause_today, text
+
+
+@pytest.mark.parametrize("text", [
+    "I just said stop checking in.", "I already told you to stop checking in.", "I've already said it: stop checking in.",
+    "As I said, stop checking in.", "Like I told you, no more check-ins.", "I literally just told you to stop checking in.",
+    "I said it twice now, stop checking in!", "We already asked you to stop checking in.",
+    "I told you yesterday: stop checking in.", "I've told you before, stop messaging me.",
+    "Alice said hi. Anyway, stop checking in.", "Alice said:\n> hi there\n\nStop checking in.",
+    "i just said stop checking in", "I just said stop checking in.\nThanks.",
+    "I’ve already told you, stop checking in.", "I just said: stop checking in!",
+])
+def test_the_owners_own_report_of_their_stop_is_a_stop(text):
+    """Re-check new P2: "just", "already" and other adverbs or auxiliaries are never taken for the speaker."""
+    assert read(text).stop, text
+
+
+@pytest.mark.parametrize("text", [
+    "You can check in again, I said.", "I just said you can check in again.",
+    "I already told you: you can check in again.", "Alice said hi.\n\nYou can check in again.",
+    "Like I said, feel free to reach out.", "I’ve said it already, you can check in again.",
+])
+def test_the_owners_own_report_of_their_resume_is_a_resume(text):
+    assert read(text).resume, text
+
+
+@pytest.mark.parametrize("text", ["I never said you can check in again.", "I didn't say stop checking in.",
+                                  "I did not tell you to stop checking in.", "I haven't said you can check in again."])
+def test_what_the_owner_says_they_did_not_say_is_no_instruction(text):
+    reading = read(text)
+    assert not reading.resume and not reading.stop, text
