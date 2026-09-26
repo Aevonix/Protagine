@@ -603,12 +603,21 @@ class ServedWindow:
             served = self._served.get(key, "")
         if not served or not records:
             return ""
-        lines, notes = served.split("\n"), []
-        for record in records:
-            if any(asserts_superseded(line, record) for line in lines):
-                notes.append(correction_line(record))
-            if len(notes) >= self._lines:
-                break
+        lines, owed = served.split("\n"), []
+        for order, record in enumerate(records):
+            stale = shown = -1
+            for index, line in enumerate(lines):
+                state = line_state(line, record)
+                if state == "stale":
+                    stale = index
+                elif state == "current":
+                    shown = index
+            # Owed while the last time this record's line was served it showed a replaced value: a correction or
+            # a line with the current value served after it has been delivered, and is not repeated.
+            if stale > shown:
+                owed.append((-stale, order, record))
+        # The most recently served stale values first; the ones past the bound are owed to the next turn.
+        notes = [correction_line(record) for _, _, record in sorted(owed, key=lambda row: row[:2])[:self._lines]]
         return ("Earlier context in this conversation showed values the record has since superseded:\n"
                 + "\n".join(notes)) if notes else ""
 

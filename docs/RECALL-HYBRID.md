@@ -196,7 +196,12 @@ the current one.
 The host replays earlier turns' context as it was. The sidecar keeps, per
 conversation and in memory only, what it served; when a value served earlier has
 been superseded since, the new turn carries a pinned "Corrections to earlier
-context" section naming the old value and the current one. That record is
+context" section naming the record, the old value and the current one. A
+correction is owed while the last line of that record the conversation was
+served showed a replaced value; once a correction (or a line showing the
+current value) has been served after it, it is delivered and not repeated. At
+most eight are listed per turn, the most recently served stale values first;
+the rest follow in the next turns. That record is
 bounded, per process and lost on restart, so after a restart only the current
 turn's lines are annotated.
 

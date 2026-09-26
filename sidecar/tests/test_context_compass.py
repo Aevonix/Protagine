@@ -336,6 +336,8 @@ async def test_a_value_served_earlier_and_superseded_since_is_corrected_in_that_
     correction = second["protagine-corrections"]["body"]
     assert '"the corner office" (design review): [superseded: now "the front lobby" since 2026-09-18]' in correction
     assert compass.dead_value_lines(correction, [VENUE]) == 0
+    # Delivered: the next turn of the conversation does not repeat it.
+    assert "protagine-corrections" not in await post(app, "and now?")
     # Another conversation was never served the old value.
     assert "protagine-corrections" not in await post(app, "anything else?", session="s-other")
 
@@ -458,3 +460,18 @@ async def test_a_long_chain_resolves_every_version_to_the_value_held_now(tmp_pat
         conn.execute("UPDATE source_claims SET retracted_by=? WHERE id=?", (ids[0], ids[20]))
         conn.commit()
     assert compass.claim_supersessions(ledger, contact_id="contact-a", session_id="later") == []
+
+
+def test_corrections_beyond_one_turns_share_reach_later_turns_and_are_not_repeated():
+    """Finding 5: a correction once served is delivered; the next turn carries the ones still owed."""
+    key = ("viewer", "s-1")
+    rows = [commitment(f"c-{n}", f"Task {n}", f"2026-10-{n + 1:02d}T09:00:00+00:00", f"2026-09-{n + 1:02d}T09:00:00+00:00")
+            for n in range(9)]
+    compass.SERVED.remember(key, "\n".join(commitment_line(f"c-{n}", f"Task {n}", f"2026-09-{n + 1:02d}T09:00:00+00:00")
+                                           for n in range(9)))
+    records, emitted = compass.commitment_reschedules(rows), []
+    for _ in range(3):
+        note = compass.SERVED.corrections(key, records)
+        emitted.extend(line for line in note.split("\n") if line.startswith("- "))
+        compass.SERVED.remember(key, note)
+    assert sorted(line.split(" ")[1] for line in emitted) == sorted(f"id=c-{n};" for n in range(9))
