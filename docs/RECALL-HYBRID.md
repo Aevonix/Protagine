@@ -188,7 +188,10 @@ found superseded by nothing; a cycle, a chain past 4,096 claims, or an erased or
 unattributed successor asserts nothing) and the listed commitments' previous deadlines. A line is a record's
 only by identity: it carries the commitment's `id=`, or the claim's id or the
 `turn:` of the source that stated it. Shared subject words, or the same value on
-another record's line, never count. A record's line counts when it carries the
+another record's line, never count. Values are matched in the line's words (a
+JSON record read as its string values, identifiers and timestamps left out), so
+a value of any length counts on its own record's line and a "42" inside a
+timestamp does not. A record's line counts when it carries the
 old value without the current one, or a note whose value the record has since
 replaced (a deadline moved twice), or, on a commitment line, a due other than
 the current one.

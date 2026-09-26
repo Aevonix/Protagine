@@ -75,6 +75,7 @@ _SKIP_KEY = re.compile(r"(?:^|_)(?:id|ids|sha256|hash|uri|version|anchor|anchors
                        r"|^source|^evidence_ref$|^(?:kind|state|role|operation|validity_basis|representation|"
                        r"applicability|epistemic_state|claim_status|content_format|conversation_context|"
                        r"confidence|excerpt_truncated|precision)$")
+_VALUE_KEYS = frozenset({"value", "quote", "content", "text", "description", "label"})  # words, whatever they look like
 _IDENTIFIER = re.compile(r"^(?:[0-9a-f]{16,}|[\w.:-]*\d{4}-\d\d-\d\dT[\w.:+-]*|turn:\S+|claim:\S+)$", re.I)
 
 
@@ -178,7 +179,7 @@ def _strings(value, key=""):
         if key and _SKIP_KEY.search(key):
             return
         text = value.strip()
-        if text and not _IDENTIFIER.match(text):
+        if text and (key in _VALUE_KEYS or not _IDENTIFIER.match(text)):
             yield text
     elif isinstance(value, dict):
         for name, item in value.items():
@@ -188,8 +189,9 @@ def _strings(value, key=""):
             yield from _strings(item, key)
 
 
-def _readable(text: str) -> str:
-    """What the judge reads: the words of an item, without identifiers, hashes and timestamps."""
+def _readable(text: str, *, fallback: bool = True) -> str:
+    """What the judge reads: the words of an item, without identifiers, hashes and timestamps. Without
+    ``fallback`` a record with no words reads as nothing (never as its identifiers)."""
     body = re.sub(r"^[-•*] ", "", text.strip())
     if not body.startswith("{"):
         return body
@@ -206,7 +208,7 @@ def _readable(text: str) -> str:
             words.append(body[position:])
             break
         words.extend(_strings(value))
-    return " ".join(words) or body
+    return " ".join(words) or (body if fallback else "")
 
 
 def _document(item: _Item, title: str, passages: dict[str, str]) -> str:
@@ -430,7 +432,7 @@ def _normal(value: str) -> str:
 
 def _pattern(value: str):
     text = _normal(value)
-    if len(text) < 3:
+    if not re.search(r"\w", text):
         return None
     return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(word) for word in text.split()) + r"(?!\w)", re.I)
 
@@ -460,11 +462,14 @@ def line_state(line: str, record: Superseded) -> str | None:
     if not _carries(line, record):
         return None
     text, notes = _notes(line)
+    # Values are matched in the line's words, never in its identifiers and timestamps: identity already makes it
+    # the record's line, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not.
+    content = _readable(text, fallback=False)
     current = _pattern(record.current)
-    if any(_same(value, record.current) for value in notes) or (current is not None and current.search(text)):
+    if any(_same(value, record.current) for value in notes) or (current is not None and current.search(content)):
         return "current"
     old = _pattern(record.old)
-    shown = (old is not None and bool(old.search(text))) or any(_same(value, record.old) for value in notes)
+    shown = (old is not None and bool(old.search(content))) or any(_same(value, record.old) for value in notes)
     if not shown and record.kind == "rescheduled":
         due = _DUE.search(text)  # a commitment line's own due field: any due but the current one is replaced
         shown = due is not None and not _same(due.group(1), record.current)

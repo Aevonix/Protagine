@@ -475,3 +475,18 @@ def test_corrections_beyond_one_turns_share_reach_later_turns_and_are_not_repeat
         emitted.extend(line for line in note.split("\n") if line.startswith("- "))
         compass.SERVED.remember(key, note)
     assert sorted(line.split(" ")[1] for line in emitted) == sorted(f"id=c-{n};" for n in range(9))
+
+
+def test_a_short_value_on_its_own_record_is_corrected():
+    """Finding 6: a two-character value is marked on a line of the source that stated it."""
+    record = claim_record("42", "43", "s-locker", subject="locker code")
+    line = quote_line("s-locker", "My locker code is 42.")
+    sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)]
+    assert body_of(compass.annotate_superseded(sections, [record])).endswith('[superseded: now "43" since 2026-09-19]')
+    compass.SERVED.remember(("viewer", "s-1"), line)
+    assert '"43"' in compass.SERVED.corrections(("viewer", "s-1"), [record])
+    # Not a digit inside the line's own timestamps, and not on another source's line.
+    timed = "- " + json.dumps({"kind": "source_quote", "source": "turn:s-locker",
+                               "reported_at": "2026-09-10T09:42:00+00:00"}) + ' "My locker moved."'
+    other = quote_line("s-gym", "Bring 42 towels.")
+    assert compass.dead_value_lines("\n".join([timed, other]), [record]) == 0
