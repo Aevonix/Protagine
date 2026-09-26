@@ -626,3 +626,18 @@ def test_a_restatement_moves_only_the_listed_item_that_is_the_same_item_exactly(
     # The same item exactly, up to case, spacing and composition, is still moved.
     moved = _record(store, [_reminder("  PAY the $100   invoice", _at(90))], existing=[dollar])
     assert moved["updated"] == [dollar["id"]] and store.get(dollar["id"])["due_at"][:16] == _at(90)[:16]
+
+
+def test_a_duplicate_is_decided_against_the_rows_as_they_are_when_recorded(tmp_path):
+    """The turn listed "Call the bank"; the row was edited to "Call the lawyer" before the capture recorded
+    the same bank reminder. The listing is not what is stored: the reminder is recorded. A row stored since
+    the listing, the same item exactly, is the duplicate instead."""
+    store = CommitmentStore(tmp_path / "c.db")
+    listed = store.create(person_id=OWNER, description="Call the bank", due_at=_at(60), source_type="cognition",
+                          metadata={"kind": "reminder", "obligor": "owner"})
+    store.update(listed["id"], description="Call the lawyer")
+    result = _record(store, [_reminder("Call the bank", _at(60))], existing=[listed])
+    assert result["skipped_duplicates"] == 0 and len(result["created"]) == 1
+    assert sorted(row["description"] for row in _open(store)) == ["Call the bank", "Call the lawyer"]
+    again = _record(store, [_reminder("Call the bank", _at(60))], existing=[])
+    assert again["skipped_duplicates"] == 1 and again["created"] == [] and len(_open(store)) == 2

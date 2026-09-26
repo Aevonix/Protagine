@@ -882,7 +882,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     ``conversation_text`` is the recent conversation the extractor saw: with the listed items, what the
     owner's words asking for a message may refer back to (``request_problem``).
     A new item is skipped as a duplicate only when an open item is the same item exactly (``_identity``),
-    or when its description is exactly (``_plain``) that of an extraction rejected as invalid or a
+    decided by the store over the person's open rows inside the insert's own transaction (never from
+    ``existing``, which may be stale), or when its description is exactly (``_plain``) that of an extraction rejected as invalid or a
     duplicate. Nothing is merged into another item. A new item that is one listed item exactly, its
     deadline aside (``_restated``), with a different deadline moves it, compare-and-set, as a
     ``reschedule`` would; anything else is a new row.
@@ -891,8 +892,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     from protagine.commitments.store import CommitmentConflict
     items = [_with_defaults(item) for item in items if isinstance(item, dict)]
     listed = list(existing[:OPEN_ITEMS_LISTED])
-    known = {row.get("id"): _identity(row.get("description"), row.get("due_at"), row.get("metadata"))
-             for row in existing}
     # A rejected extraction (invalid, duplicate) is a hard block on the same wording; an item
     # withdrawn or dismissed as obsolete is shown to the model as a closed item but a fresh, clear
     # commitment to it may be recorded again.
@@ -1016,12 +1015,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             ignored += 1       # a cadence only the owner sets, with whole minutes
             continue
         this = _identity(description[:1000], item.get("due_at"), metadata)
-        # A row moved or closed by this turn is judged by the store as it is now.
-        if any(same == this for key, same in known.items() if key not in {*updated, *resolved}):
-            skipped += 1
-            continue
         try:
-            # The store checks the person's open rows again in the insert's own transaction.
+            # The only duplicate decision: the store's, over the person's open rows as they are now, in the
+            # insert's own transaction (the turn's listing may be stale).
             row = commitment_store.create(
                 person_id=person_id, description=description[:1000],
                 dedupe=lambda other: _identity(other.get("description"), other.get("due_at"),
@@ -1037,7 +1033,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             skipped += 1
         else:
             created.append(row.get("id"))
-            known[row.get("id")] = this
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
             "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
             "between_others": others, "owner_reminders": reminders}
