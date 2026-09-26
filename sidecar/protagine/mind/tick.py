@@ -2243,10 +2243,13 @@ class Mind:
                                             expires_at=window or now + TASK_WINDOW)
         elif decision == "ask":
             code = code or row.ask_code or new_ask_code(self.store.open_ask_codes())
+            # The words asked about are the words sent: fixed now, hidden values hidden in both (audit).
+            frozen = audit.frozen_for_ask(row, owner_id=self.owner_id)
             updated = self.store.transition(row.id, "asked", action="asked", at=now, decision="ask",
                                             decision_reason=verdict.reason, cls=verdict.cls, ask_code=code,
                                             expires_at=ask_expiry(now, self.policy),
-                                            details={"code": code, "notice": verdict.notice})
+                                            details={"code": code, "notice": verdict.notice},
+                                            **({"context": frozen} if frozen is not None else {}))
         elif decision == "drop":
             updated = self.store.transition(row.id, "dropped", action="dropped", at=now, decision="drop",
                                             decision_reason=verdict.reason, cls=verdict.cls, outcome="denied",
@@ -3205,15 +3208,32 @@ class Mind:
         goals = [self.goals.render(goal) for goal in self.goals.open()]
         if goals:
             lines.append("Working toward: " + "; ".join(goal_lines(goals)) + ".")
-        asks = self.store.intentions(status=["asked"], limit=5)
-        if asks:
-            lines.append("Waiting for your say on: " + "; ".join(
-                f"[{row.ask_code}] {row.description}"[:100] for row in asks if row.ask_code) + ".")
+        lines.extend(self._waiting_lines(limit - len("\n".join(lines)) - (1 if lines else 0)))
         room = limit - len("\n".join(lines)) - (1 if lines else 0)
         text = "\n".join([*self.feelings.section_lines(min(SECTION_CHARS, room)), *lines])
         if len(text) > limit:
             text = text[: limit - 1].rstrip() + "…"
         return text
+
+    def _waiting_lines(self, room: int) -> List[str]:
+        """The open asks for the packet. A message ask carries its code with its exact words (``asked_words``,
+        what the yes sends); one whose words do not fit is named without its code, so it is never answered
+        in conversation from a title."""
+        asks = [row for row in self.store.intentions(status=["asked"], limit=5) if row.ask_code]
+        others = [f"[{row.ask_code}] {row.description}"[:100] for row in asks if audit.asked_words(row) is None]
+        lines = ["Waiting for your say on: " + "; ".join(others) + "."] if others else []
+        room -= len("\n".join(lines)) + (1 if lines else 0)
+        for row in asks:
+            words = audit.asked_words(row)
+            if words is None:
+                continue
+            line = f"Waiting for your say on: [{row.ask_code}] a message to {row.entity_id}: \"{words}\""
+            if len(line) > room:
+                line = f"A message to {row.entity_id} waits for your say; its words are in the ask notice."
+            if len(line) <= room:
+                lines.append(line)
+                room -= len(line) + 1
+        return lines
 
     def state(self) -> Dict[str, Any]:
         now = self.clock()

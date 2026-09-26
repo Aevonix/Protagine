@@ -47,13 +47,41 @@ def outgoing_text(row: StoredInitiative) -> str:
     return str(_context(row).get("text") or row.description or "")
 
 
+def hidden_text(text: str) -> str:
+    """``text`` with every value ``redact_sensitive_text`` hides hidden, to its fixpoint: one pass may leave a
+    part of a value (``notfor...act``) that the next hides, and any later rendering (which redacts again) must
+    show these very characters."""
+    for _ in range(8):
+        hidden = redact_sensitive_text(text)
+        if hidden == text:
+            return text
+        text = hidden
+    return text
+
+
+def frozen_for_ask(row: StoredInitiative, *, owner_id: str | None) -> Optional[Dict[str, Any]]:
+    """The context a message takes as it is asked about: its words fixed as the text it sends, with every value
+    ``redact_sensitive_text`` hides hidden in the send itself when it goes to anyone but the owner (``hidden``
+    marks that). None when nothing changes. What the owner approves and what leaves are then one string."""
+    if row.kind != "message":
+        return None
+    context = _context(row)
+    words = outgoing_text(row)
+    to_owner = bool(owner_id) and (row.entity_id or owner_id) == owner_id
+    shown = words if to_owner else hidden_text(words)
+    if context.get("text") == shown:
+        return None
+    return {**context, "text": shown, **({"hidden": True} if shown != words else {})}
+
+
 def asked_words(row: StoredInitiative) -> Optional[str]:
-    """The exact words an open ask on a message would send once the owner says yes, secrets redacted and never
-    shortened; None for anything else. Every place the owner is asked (the ask notice, the digest, ``asks``,
-    ``why``) shows them: a yes approves what the owner saw, never a title standing in for the text."""
+    """The exact words an open ask on a message sends once the owner says yes (``outgoing_text``, byte for byte:
+    the ask fixed them, secrets already hidden for a contact, ``frozen_for_ask``); None for anything else. Every
+    place the owner is asked (the ask notice, the digest, ``asks``, ``why``, the context packet) shows them: a
+    yes approves what the owner saw, never a title standing in for the text."""
     if row.kind != "message" or row.status != "asked":
         return None
-    return redact_sensitive_text(outgoing_text(row))
+    return outgoing_text(row)
 
 
 def ask_line(row: StoredInitiative, *, limit: int = 140, reason: bool = False) -> str:
@@ -61,7 +89,8 @@ def ask_line(row: StoredInitiative, *, limit: int = 140, reason: bool = False) -
     line = f"[{row.ask_code}] {_clip(row.description, limit)}"
     words = asked_words(row)
     if words is not None:
-        line += f"\n  would send to {row.entity_id}: \"{words}\""
+        hidden = " (private values are hidden in the message itself)" if _context(row).get("hidden") else ""
+        line += f"\n  would send to {row.entity_id}{hidden}: \"{words}\""
     return line + (f" ({row.decision_reason})" if reason else "")
 
 

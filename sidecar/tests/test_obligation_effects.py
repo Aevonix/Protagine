@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from protagine.commitments import extract
 from protagine.commitments.extract import record_items
 from protagine.commitments.store import CommitmentStore
@@ -215,6 +217,61 @@ async def test_the_owner_sees_the_exact_words_a_contact_report_would_send_before
     assert listed["message"] == words
     assert words in audit.why(fx.store, report.id)["sentence"]
     assert words in fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard")
+
+
+SECRETS = "Owner private phone +14155552671; PASSWORD=notforthiscontact"
+
+
+def _every_preview(fx, report):
+    """Every place the owner is shown an ask: the ask notice, ``asks``, ``why``, the digest and the context
+    packet's waiting line."""
+    notice = fx.mind.outbox.notify_asks([report], force=True)
+    listed, = [item for item in fx.mind.asks() if item["ask_code"] == report.ask_code]
+    return {"notice": notice.context["text"], "asks": listed["message"],
+            "why": audit.why(fx.store, report.id)["sentence"],
+            "digest": fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard"),
+            "packet": fx.mind.section()}
+
+
+@pytest.mark.parametrize("summary", [
+    f"Delivery is Friday. {SECRETS}.",
+    f"Delivery is Friday.\n{SECRETS}\nToken: sk-abcdefghijklmnopqrstuvwxyz0123456789",
+    "Delivery is Friday, nothing private.",
+])
+async def test_the_words_the_owner_approves_are_byte_for_byte_the_words_sent(fx, summary):
+    """Re-check F2: a redacted preview approved an unredacted send. What the owner is shown in every place is
+    exactly what the contact receives after the yes: a value hidden from the preview is hidden in the send."""
+    from protagine.mind.outbox import message_payload
+    from protagine.redact import redact_sensitive_text
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done", summary=summary)
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    assert report.status == "asked" and report.ask_code
+    fx.shift(minutes=1)
+    previews = _every_preview(fx, report)
+    await fx.mind.answer(report.ask_code, yes=True, contact_id=OWNER)
+    sent, = [p for p in await fx.mind.outbox_ready() if p["id"] == report.id]
+    words = sent["text"]
+    assert words == message_payload(fx.store.get(report.id), owner_id=OWNER)["text"]
+    assert words == redact_sensitive_text(words)                  # nothing the preview would hide goes out
+    assert "notforthiscontact" not in words and "4155552671" not in words
+    for where, shown in previews.items():
+        assert words in shown, where
+    assert previews["asks"] == words
+
+
+async def test_the_packet_never_offers_a_message_ask_by_its_title_alone(fx):
+    """The conversational context shows a waiting message's exact words with its code, or no code to answer
+    at all: an owner never approves in conversation what they could not read."""
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done", summary="Delivery is Friday. " + "More detail. " * 60)
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    section = fx.mind.section()
+    words = audit.outgoing_text(report)
+    assert report.ask_code not in section and "its words are in the ask notice" in section
+    assert words not in section
 
 
 async def test_owner_reports_go_through_authority_and_never_take_a_reminders_budget(fx):
