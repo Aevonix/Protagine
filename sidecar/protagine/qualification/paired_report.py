@@ -783,6 +783,17 @@ def _unescaped(text):
     return _LITERAL.sub(read, text)
 
 
+def _note_value(note):
+    """The value a note states, read from its JSON literal (escaped quotes and brackets are part of the value)."""
+    literal = _LITERAL.search(note)
+    if literal is None:
+        return note
+    try:
+        return json.loads(literal.group())
+    except ValueError:
+        return literal.group()[1:-1]
+
+
 def _dead_values(directory, members):
     """Forbidden (superseded) values the model was shown as current, per arm; counts only."""
     from protagine.memory.compass import shows, tokens  # the context's own tokenizer: values are whole words
@@ -833,8 +844,10 @@ def _dead_values(directory, members):
             # Every forbidden value the line shows needs its own answer: a note stating one of the artifact's
             # expected values, or a field whose expected value the line itself shows. One field's answer never
             # covers another field's stale value; two notes answer two versions of one field.
-            notes = [tokens(note) for note in _SUPERSEDED_NOTE.findall(line)]
-            bare = tokens(_SUPERSEDED_NOTE.sub(' ', line))
+            # Notes are found on the line as served, before any escape is decoded: an escaped quote or bracket in a
+            # note's value is part of the value and never ends the note.
+            notes = [tokens(_note_value(note)) for note in _SUPERSEDED_NOTE.findall(line)]
+            bare = tokens(_unescaped(_SUPERSEDED_NOTE.sub(' ', line)))
             for forbidden, fields in pairs:
                 shown = sum(shows(bare, value) for value in forbidden)
                 if not shown:
@@ -844,7 +857,7 @@ def _dead_values(directory, members):
                 if shown > answers:
                     return True
             return False
-        count = sum(1 for text in blocks for line in (_unescaped(raw) for raw in text.split('\n')) if dead(line))
+        count = sum(1 for text in blocks for line in text.split('\n') if dead(line))
         lines += count
         with_dead += bool(count)
     return {'episodes_observed': observed, 'episodes_with_dead_values': with_dead, 'dead_value_lines': lines,

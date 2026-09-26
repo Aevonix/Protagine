@@ -289,3 +289,12 @@ def test_short_values_are_matched_as_whole_words(tmp_path):
         'Ships to Belarus and the 1420 depot.',   # "us" and "42" only inside other words
         'Locker 42 and the US office.']))         # both shown, neither answered
     assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_notes_are_read_before_their_escapes_are_decoded(tmp_path):
+    """Round 3, new P2: an escaped quote or bracket inside a note's value never ends the note."""
+    note = '[superseded: now ' + json.dumps('Mark "[done]" on Tuesday') + ']'
+    named = '[superseded id=c-1: now ' + json.dumps('Tuesday "draft]" moved') + ' since 2026-09-19]'
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday')], '\n'.join([
+        'Status ' + note, 'Plan ' + named, 'Every Tuesday. ' + note]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
