@@ -497,8 +497,10 @@ def asserts_superseded(line: str, record: Superseded) -> bool:
     return line_state(line, record) == "stale"
 
 
-def annotate_superseded(sections: list, records: list[Superseded], *, per_line: int = 2) -> list:
-    """Every line that asserts a superseded value gains the current value and date; nothing is removed."""
+def annotate_superseded(sections: list, records: list[Superseded]) -> list:
+    """Every line that asserts a superseded value gains the current value and date, one note per value it
+    asserts (no cap: a line with one note still counts as stale for every value left unmarked); nothing is
+    removed."""
     if not records:
         return sections
     result = []
@@ -507,8 +509,6 @@ def annotate_superseded(sections: list, records: list[Superseded], *, per_line: 
         for i, line in enumerate(lines):
             notes = []
             for record in records:
-                if len(notes) >= per_line:
-                    break
                 if asserts_superseded(line, record) and record.note() not in notes:
                     notes.append(record.note())
             if notes:

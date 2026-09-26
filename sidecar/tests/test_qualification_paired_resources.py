@@ -230,3 +230,19 @@ def test_dead_values_are_matched_in_decoded_text(tmp_path):
     block = '- {"source": "turn:s-meet"} ' + json.dumps('We meet at Café Central.')
     member = dead_value_member(tmp_path, [spec('Café Central', 'Main Library')], block)
     assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_a_note_answers_only_for_the_value_it_corrects(tmp_path):
+    """Three superseded facts on one line with two notes: the third is still shown as current."""
+    specs = [spec('locker 42', 'locker 43'), spec('blue door', 'green door'), spec('tuesday', 'thursday')]
+    line = 'Locker 42, the blue door, every Tuesday.'
+    partial = line + ' [superseded: now "locker 43"] [superseded: now "green door"]'
+    marked = partial + ' [superseded: now "Thursday"]'
+    member = dead_value_member(tmp_path, specs, '\n'.join([partial, marked]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+    # A note with a value the spec does not expect answers for nothing; a spec without expected values
+    # counts its forbidden value wherever it is shown.
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday'),
+                                          {'path': 'answer.json', 'forbidden': ['r14-erased']}],
+                               'Every Tuesday. [superseded: now "Monday"]\nCode r14-erased [superseded: now "x"]')
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 2

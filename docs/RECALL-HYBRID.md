@@ -196,7 +196,11 @@ a value of any length counts on its own record's line and a "42" inside a
 timestamp does not. A record's line counts when it carries the
 old value without the current one, or a note whose value the record has since
 replaced (a deadline moved twice), or, on a commitment line, a due other than
-the current one.
+the current one. A line gains one note per superseded value it shows, with no
+cap, and a note answers only for the value it corrects: a line with notes for
+two of three stale values still counts as stale. The paired report's
+dead-value secondary counts the same way per artifact: a note answers only for
+the artifact whose expected value it states.
 
 The host replays earlier turns' context as it was. The sidecar keeps, per
 conversation and in memory only, what it served; when a value served earlier has

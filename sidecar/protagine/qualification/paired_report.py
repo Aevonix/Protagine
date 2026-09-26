@@ -749,10 +749,13 @@ def _tick_output(rows, cases):
 
 DEAD_VALUE_BASIS = (
     'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
-    'lines of the injected memory context that show a forbidden value with no expected value and no "[superseded:" '
-    'note. JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is '
+    'lines of the injected memory context that show, outside a "[superseded:" note, a value an artifact forbids '
+    'while the line (its notes included) shows none of the values that same artifact expects; a note answers only '
+    'for the artifact whose expected value it states, and an artifact that expects no value counts its forbidden '
+    'value wherever it is shown. JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is '
     'copied.')
 _MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
+_SUPERSEDED_NOTE = re.compile(r'\[superseded:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
 
 
 def _message_text(content):
@@ -788,13 +791,16 @@ def _dead_values(directory, members):
         case = (member or {}).get('case') or {}
         specs = [spec for spec in (case.get('oracle') or {}).get('artifacts', [])
                  if isinstance(spec, dict) and spec.get('forbidden')]
-        forbidden = {value.casefold() for spec in specs for value in spec['forbidden']
-                     if isinstance(value, str) and value.strip()}
-        if not forbidden or not case.get('id'):
+        # Each artifact pairs its forbidden values with its own expected ones: a note stating one artifact's
+        # expected value says nothing about another artifact's forbidden value on the same line.
+        pairs = [({value.casefold() for value in spec['forbidden'] if isinstance(value, str) and value.strip()},
+                  {value.casefold() for item in spec.get('assertions', [])
+                   if isinstance(item, dict) and item.get('op') == 'label_one_of'
+                   for value in item.get('value', []) if isinstance(value, str) and len(value.strip()) >= 3})
+                 for spec in specs]
+        pairs = [(forbidden, expected) for forbidden, expected in pairs if forbidden]
+        if not pairs or not case.get('id'):
             continue
-        expected = {value.casefold() for spec in specs for item in spec.get('assertions', [])
-                    if isinstance(item, dict) and item.get('op') == 'label_one_of'
-                    for value in item.get('value', []) if isinstance(value, str) and len(value.strip()) >= 3}
         path = root / member['path'] / 'attempts' / case['id'] / 'private-trace.jsonl'
         blocks = None
         try:
@@ -821,9 +827,12 @@ def _dead_values(directory, members):
         if blocks is None:
             continue
         observed += 1
+        def dead(line):
+            bare = _SUPERSEDED_NOTE.sub(' ', line)
+            return any(any(value in bare for value in forbidden) and not any(value in line for value in expected)
+                       for forbidden, expected in pairs)
         count = sum(1 for text in blocks for line in (_unescaped(raw).casefold() for raw in text.split('\n'))
-                    if '[superseded:' not in line and any(value in line for value in forbidden)
-                    and not any(value in line for value in expected))
+                    if dead(line))
         lines += count
         with_dead += bool(count)
     return {'episodes_observed': observed, 'episodes_with_dead_values': with_dead, 'dead_value_lines': lines,

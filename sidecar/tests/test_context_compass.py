@@ -506,3 +506,16 @@ def test_escaped_values_are_decoded_before_matching():
     remainder = '- {"source": "turn:s-meet"} said: ' + json.dumps("Meet at Café Central.")
     correction = "- turn:s-meet; " + json.dumps("Café Central") + " (meeting place): noted"
     assert compass.dead_value_lines("\n".join([remainder, correction]), [record]) == 2
+
+
+def test_every_superseded_value_on_a_line_is_marked_and_a_partly_marked_line_still_counts():
+    """Finding 8: no per-line cap, and a note answers only for the value it corrects."""
+    records = [claim_record("42", "43", "s-1"), claim_record("blue", "green", "s-1"),
+               claim_record("Tuesday", "Thursday", "s-1")]
+    line = quote_line("s-1", "Locker 42, the blue door, every Tuesday.")
+    annotated = body_of(compass.annotate_superseded(
+        [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)], records))
+    assert all(f'now "{record.current}"' in annotated for record in records)
+    assert compass.dead_value_lines(annotated, records) == 0
+    partial = line + ' [superseded: now "43" since 2026-09-19] [superseded: now "green" since 2026-09-19]'
+    assert compass.dead_value_lines(partial, records) == 1
