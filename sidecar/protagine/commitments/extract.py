@@ -616,29 +616,35 @@ def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set
     return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
 
 
-# Times and dates are read as times, never as a matter or an identifier: "remind me at 17:00" differs from the
-# item only by when, which the due times decide (the same word, its heads-up, a word after).
-_TIME_WORDS = frozenset("""
-noon midday midnight tonight morning mornings afternoon evening evenings night overnight eod eow cob asap oclock
-monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun weekend
-january february march april may june july august september october november december
-jan feb mar apr jun jul aug sep sept oct nov dec next last early later latest end half quarter past
-""".split())
+# The word's own time is set aside before its wording is compared, and only that: a time or a date said as WHEN
+# (after a temporal preposition, "at 17:00", "on Oct 2 at 4pm", "in 2 hours", "this evening", "tomorrow at 9"),
+# which the due times decide (the same word, its heads-up, a word after). A month, a date, a weekday or an
+# ordinal anywhere else names the object ("the May report", "invoice 2026-10-02", "the Monday rota", "the 2nd
+# draft", "the report for June") and is kept: two documents stay two items. When in doubt it is kept.
 _MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|"
            r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_WEEKDAYS = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
 _CLOCK_NUMBERS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
-_TIME = re.compile(rf"""(?ix)
-    \b\d{{4}}-\d{{1,2}}-\d{{1,2}}(?:[t\s]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?(?!\w)          # 2026-10-02[ 16:00]
-  | \b\d{{1,2}}(?::\d{{2}})?\s*[ap]\.?\s?m\b\.?                                   # 5pm, 5 pm, 5:00 p.m.
-  | \b\d{{1,2}}:\d{{2}}(?::\d{{2}})?(?!\w)                                          # 17:00
-  | \b\d{{1,2}}h\d{{2}}\b                                                         # 17h00
-  | \b(?:{_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b                # Oct 2, October 2nd 2026
-  | \b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_MONTHS})\b(?:\s+\d{{4}})?           # 2nd of October
-  | \b\d{{1,2}}[/.]\d{{1,2}}[/.]\d{{2,4}}\b                                         # 2/10/2026
-  | \b(?:on|by|before|after|until|till|from)\s+(?:the\s+)?\d{{1,2}}(?:/\d{{1,2}}|st|nd|rd|th)\b   # on 2/10, by the 3rd
-  | \b(?:at|by|before|after|until|till|around|from)\s+(?:\d{{1,4}}|{_CLOCK_NUMBERS})\b(?![-_./#:]\w)  # at 9, at five
-  | \b(?:in|within|after|for)\s+(?:\d+|an?|one|two|three|few|a\s+few|a\s+couple\s+of|couple\s+of)\s+
-        (?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b                          # in 2 hours
+_WHEN_EXPR = rf"""(?:
+    \d{{4}}-\d{{1,2}}-\d{{1,2}}(?:[t\s]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?(?!\w)                   # 2026-10-02[ 16:00]
+  | \d{{1,2}}(?::\d{{2}})?\s*[ap]\.?\s?m\b\.?                                        # 5pm, 5:00 p.m.
+  | \d{{1,2}}:\d{{2}}(?::\d{{2}})?(?!\w) | \d{{1,2}}h\d{{2}}\b                          # 17:00, 17h00
+  | (?:{_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b                     # Oct 2, October 2nd 2026
+  | \d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_MONTHS})\b(?:\s+\d{{4}})?                # 2nd of October
+  | \d{{1,2}}[/.]\d{{1,2}}(?:[/.]\d{{2,4}})?\b                                           # 2/10, 2/10/2026
+  | (?:the\s+)?\d{{1,2}}(?:st|nd|rd|th)\b                                               # the 3rd
+  | (?:{_WEEKDAYS})\b\.? | (?:{_MONTHS})\b\.?(?!\s*\d)                                  # Friday, May
+  | (?:the\s+)?(?:morning|afternoon|evening|night|weekend|week|month|year|noon|midday|midnight)\b
+  | (?:the\s+)?end\s+of\s+(?:the\s+)?(?:day|week|month)\b | eod\b | eow\b | cob\b | asap\b
+  | (?:\d+|an?|one|two|three|few|a\s+few|a\s+couple\s+of|couple\s+of)\s+
+        (?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b                             # 2 hours (after in)
+)"""
+# A bare number or clock word is a time only after a clock preposition ("at 9", "by five"), never "room 9".
+_CLOCK = rf"(?:(?:at|by|before|after|until|till|around)\s+(?:\d{{1,4}}|{_CLOCK_NUMBERS})\b(?![-_./#:]\w)(?:\s*o'?clock)?)"
+_WHEN_PREP = r"(?:at|by|on|before|after|until|till|around|due|in|within|this|next)"
+_OWN_TIME = re.compile(rf"""(?ix)
+    (?<![\w-])(?: {_CLOCK} | {_WHEN_PREP}\s+{_WHEN_EXPR} | (?:today|tonight|tomorrow|tmrw|asap)\b )
+    (?: \s*,?\s* (?: {_CLOCK} | (?:{_WHEN_PREP}\s+)?{_WHEN_EXPR} ) )*
 """)
 # Nouns an identifier follows ("invoice A", "plan B", "room X"): the letter after one is that identifier.
 _IDENTIFIER_NOUNS = frozenset("""
@@ -654,14 +660,14 @@ _SHORT_STOP = frozenset("a i am an as at be by do go he hi if in is it me my no 
 
 
 def _content(description: Any, parties: set) -> tuple:
-    """``(matter words, identifiers)`` of an item's wording, its times and dates set aside. An identifier is kept
+    """``(matter words, identifiers)`` of an item's wording, its own time set aside (``_OWN_TIME``). An identifier is kept
     whole: a token holding a digit, an underscore or a ``#`` ("AB_12", "p-41", "2.1", "report_v2"), a hyphen or
     dot joining a part of at most two characters ("a-1"), a word of one or two letters that is no function word
     ("AB"), and a single letter after an identifier noun ("invoice A"). Everything else of three letters or more
     that carries meaning is a matter word. Parties' own names and ids are neither."""
-    text = str(description or "").translate(_APOSTROPHES)
+    text = _OWN_TIME.sub(" ", str(description or "").translate(_APOSTROPHES))
     text = re.sub(r"'s\b", "", text).replace("'", "")
-    text = _TIME.sub(" ", text)
+    text = re.sub(r"\bmay\b", " ", text)       # the modal verb, lowercase; "May" the month is a matter word
     names = {token.casefold() for name in parties for token in _TOKEN.findall(str(name).translate(_APOSTROPHES))}
     names |= {part for name in names for part in re.split(r"[-_./#]", name)}
     words, identifiers, previous = set(), set(), ""
@@ -679,7 +685,7 @@ def _content(description: Any, parties: set) -> tuple:
             identifiers.add(token)
         else:
             words |= {part for part in parts
-                      if len(part) >= 3 and part not in _MATTER_STOP and part not in _TIME_WORDS}
+                      if len(part) >= 3 and part not in _MATTER_STOP}
         previous = token
     return words, identifiers
 

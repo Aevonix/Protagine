@@ -13,9 +13,12 @@ moves a listed one only with that item's own wording.
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from protagine.commitments import extract
 from protagine.commitments.extract import owner_reminder, record_items
@@ -427,3 +430,68 @@ def test_the_same_reminder_said_twice_at_the_same_time_is_one_item(tmp_path):
     first = _record(store, [_reminder("Remind me to call the bank at 5pm", _at(60))])
     again = _record(store, [_reminder("Remind me to call the bank at 5pm", _at(60))], existing=_open(store))
     assert len(first["created"]) == 1 and again["created"] == [] and len(_open(store)) == 1
+
+
+# -- round 3: only the word's own time is set aside; a month, a date or an ordinal naming the object is kept ----
+
+# Object phrases that differ only by a month, a date, a weekday or an ordinal: two documents, never one.
+DATED_PAIRS = [
+    ("May report", "June report"), ("the March figures", "the April figures"),
+    ("invoice 2026-10-02", "invoice 2026-10-03"), ("the Oct 2 memo", "the Oct 3 memo"),
+    ("the 2/10 statement", "the 3/10 statement"), ("the Monday rota", "the Tuesday rota"),
+    ("the first draft", "the second draft"), ("the 2nd draft", "the 3rd draft"),
+    ("the report for May", "the report for June"), ("the last report", "the next report"),
+    ("the 5pm slides", "the 6pm slides"), ("the 2 October invoice", "the 3 October invoice"),
+    ("the September statement", "the October statement"), ("the Q3 May pack", "the Q3 June pack"),
+]
+OWN_TIMES = ["", "at 17:00", "at 5pm", "tomorrow at 9", "on Friday at 4:30pm", "on 2026-10-02 at 16:00",
+             "on Oct 2 at 4pm", "in 2 hours", "at noon", "this evening", "before 17:00 tomorrow"]
+
+
+def _distinct(tmp, item, word, due_word):
+    store = CommitmentStore(tmp / "c.db")
+    result = _record(store, [_create(item, _at(120), counterpart="p-41"),
+                             _reminder(word, due_word, counterpart="p-41")])
+    assert result["folded"] == 0 and result["skipped_duplicates"] == 0, (item, word)
+    assert sorted(row["description"] for row in _open(store)) == sorted([item, word]), (item, word)
+    listed_store = CommitmentStore(tmp / "listed.db")
+    row = listed_store.create(person_id=OWNER, description=item, due_at=_at(120), source_type="cognition",
+                              metadata={"counterpart": "p-41", "obligor": "owner"})
+    result = _record(listed_store, [_reminder(word, due_word, counterpart="p-41")], existing=[row])
+    assert result["folded"] == 0 and result["skipped_duplicates"] == 0 and len(_open(listed_store)) == 2, (item, word)
+
+
+def test_the_reviewers_may_and_june_reports_and_invoice_dates_are_two_items(tmp_path):
+    """Re-check round 2, item 3: "Send p-41 May report" and "Remind me to send p-41 June report" at the same
+    deadline, and invoices 2026-10-02 and 2026-10-03, are two documents: two rows."""
+    for index, (item, word) in enumerate([("Send p-41 May report", "Remind me to send p-41 June report"),
+                                          ("Send p-41 invoice 2026-10-02", "Remind me to send p-41 invoice 2026-10-03")]):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        store = CommitmentStore(directory / "c.db")
+        result = _record(store, [_create(item, _at(60), counterpart="p-41"), _reminder(word, _at(60), counterpart="p-41")])
+        assert result["folded"] == 0 and len(_open(store)) == 2, (item, word)
+
+
+@settings(max_examples=60, deadline=None)
+@given(pair=st.sampled_from(DATED_PAIRS), when=st.sampled_from(OWN_TIMES), swap=st.booleans(),
+       minutes=st.sampled_from([60, 120]))
+def test_a_month_date_weekday_or_ordinal_naming_the_object_keeps_two_items(pair, when, swap, minutes):
+    """Property: whatever time the reminder is for (at the deadline or before it), and whichever side names
+    which, two objects that differ by a month, a date, a weekday or an ordinal stay two items."""
+    first, second = pair[::-1] if swap else pair
+    with tempfile.TemporaryDirectory() as directory:
+        _distinct(Path(directory), f"Send p-41 {first}", f"Remind me to send p-41 {second} {when}".strip(), _at(minutes))
+
+
+@settings(max_examples=40, deadline=None)
+@given(obj=st.sampled_from([side for pair in DATED_PAIRS for side in pair]),
+       when=st.sampled_from([time for time in OWN_TIMES if time]))
+def test_the_same_dated_object_with_the_words_own_time_is_the_items_heads_up(obj, when):
+    """Property: the same object, dates and months included, with the reminder's own time phrase set aside, is
+    the item's heads-up (one row)."""
+    with tempfile.TemporaryDirectory() as directory:
+        store = CommitmentStore(Path(directory) / "c.db")
+        result = _record(store, [_create(f"Send p-41 {obj}", _at(120), counterpart="p-41"),
+                                 _reminder(f"Remind me to send p-41 {obj} {when}", _at(60), counterpart="p-41")])
+        assert result["folded"] == 1 and len(_open(store)) == 1, (obj, when)
