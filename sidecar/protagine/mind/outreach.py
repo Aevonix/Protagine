@@ -676,14 +676,14 @@ ANSWER_KIND = "answer"
 
 
 def binds_followup(record: Mapping[str, Any], item: Followup) -> bool:
-    """Whether an assistant promise captured from the owner's reply is the follow-up that reply asked for. The
-    decision is typed: capture recorded it as an answer to find out and report back (``ANSWER_KIND``), and it is
-    about the follow-up's topic. What the finding shared, or the reply's other words, never make an action an
-    answer: "Cancel the tidal energy pilot trial" is not the research on tidal energy, whatever was shared about
-    the trial, so delivering the research never marks it done. The caller also requires the reply's own turn and
-    a single such promise."""
+    """Whether an assistant promise is the follow-up an owner's reply asked for: an answer (find out and report
+    back, ``ANSWER_KIND``) that capture linked to THAT outreach (``metadata.outreach``, recorded only when the
+    reply was linked to the outreach and the extractor marked the promise as following it up). Never by type
+    and topic: "find out whether my grant application was approved", said in the same reply and about the same
+    subject, is its own question, so delivering the research never closes it; duty keeps it."""
     metadata = record.get("metadata") if isinstance(record.get("metadata"), Mapping) else {}
-    return metadata.get("kind") == ANSWER_KIND and similar(item.topic, str(record.get("description") or ""))
+    return (metadata.get("kind") == ANSWER_KIND and bool(item.outreach_id)
+            and str(metadata.get("outreach") or "") == str(item.outreach_id))
 
 
 def followup_candidate(item: Followup, inputs: OutreachInputs) -> Candidate:

@@ -1313,9 +1313,9 @@ class Mind:
 
     def _followups(self, now: datetime, inputs: DriveInputs) -> List[outreach_functions.Followup]:
         """The owner's "dig deeper" (or "yes, help me with it") replies of the last week not yet made a task.
-        The follow-up keeps an assistant promise only when that is certain: captured from that very reply
-        (``metadata.source_turn`` is the reply's turn), typed an answer about the topic (``outreach.binds_followup``),
-        and the only such promise of the turn. Any other promise is its own obligation, which duty keeps.
+        The follow-up keeps an assistant promise only when capture linked it to that very outreach (the reply
+        was linked to it and the extractor marked the promise as following it up: ``outreach.binds_followup``),
+        and it is the only one. Any other promise is its own obligation, which duty keeps.
         ``words`` carries the reply's turn id until the ledger is read."""
         o = outreach_functions
         replies = []
@@ -1331,19 +1331,34 @@ class Mind:
             item = o.Followup(outreach_id=row.id, topic=topic, slug=slug(topic),
                               shared=o.excerpt(str(context.get("text") or ""), topic, limit=300), words=turn,
                               offer=row.type in {"outreach_loop", "outreach_care"})
-            answers = [record for record in inputs.commitments if turn and self._assistant_answer_of(record, turn)]
-            bound = [record for record in answers if o.binds_followup(record, item)]
-            if len(answers) == 1 and len(bound) == 1:
+            bound = [record for record in inputs.commitments
+                     if self._assistant_answer(record) and o.binds_followup(record, item)]
+            if len(bound) == 1:
                 item.commitment, item.commitment_due = str(bound[0]["id"]), _utc(bound[0].get("due_at"))
             items.append(item)
         return items
 
-    def _assistant_answer_of(self, record: Dict[str, Any], turn: str) -> bool:
-        """An open answer the assistant promised on ``turn`` (capture's ``source_turn`` and ``kind``)."""
+    def _assistant_answer(self, record: Dict[str, Any]) -> bool:
+        """An open answer the assistant promised (capture's ``kind``), whoever it was promised to find out."""
         metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-        return (str(metadata.get("source_turn") or "") == turn and metadata.get("kind") == outreach_functions.ANSWER_KIND
+        return (metadata.get("kind") == outreach_functions.ANSWER_KIND
                 and drive_functions._obligor(record, metadata, str(record.get("person_id") or "") or None,
                                              self.owner_id) == "assistant")
+
+    def outreach_replied(self, turn_id: str) -> Optional[Dict[str, str]]:
+        """The outreach the owner's turn ``turn_id`` replied to (``owner_turn`` linked it and recorded the
+        reaction), or None: what capture tells the extractor, so that only the promise following THAT outreach up
+        is linked to it (``outreach.binds_followup``). Reads only."""
+        if not (self.faculties.get("outreach") and self.owner_id and turn_id):
+            return None
+        for row in self.store.intentions(kind=["message"], since=self.clock() - timedelta(days=7), limit=500,
+                                         recipient=self.owner_id):
+            if row.type in OUTREACH_MESSAGES and str(self._reaction(row).get("turn") or "") == str(turn_id):
+                context = row.context if isinstance(row.context, dict) else {}
+                topic = str(context.get("topic") or row.description)[:160]
+                return {"id": str(row.id), "topic": topic,
+                        "text": outreach_functions.excerpt(str(context.get("text") or ""), topic, limit=300)}
+        return None
 
     def _digested(self, now: datetime) -> List[str]:
         """What the digest listed, or holds to list, of the last month's findings: shared already, so a later

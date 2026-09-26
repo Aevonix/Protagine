@@ -154,8 +154,9 @@ async def test_a_followup_keeps_the_promise_captured_from_the_reply_and_duty_for
     await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
     promise = fx.commitments.create(person_id=OWNER, description="Send the owner the tidal energy details",
                                     due_at=(fx.now + 2 * H).isoformat(), source_type="cognition",
-                                    metadata={"obligor": "assistant", "source_turn": "t-dig", "kind": "answer"})
-    with fx.commitments._connect() as conn:          # captured from the reply, on the mind's clock
+                                    metadata={"obligor": "assistant", "source_turn": "t-dig", "kind": "answer",
+                                              "outreach": row.id})
+    with fx.commitments._connect() as conn:          # captured from the reply (linked to it), on the mind's clock
         conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), promise["id"]))
     await fx.tick()
     task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
@@ -684,11 +685,12 @@ async def test_a_quoted_stop_never_pauses_outreach(make):
 
 
 def test_only_an_answer_the_turn_asked_for_keeps_a_followup():
-    """Round 2: the binding is typed. A promise binds only when capture typed it an answer (finding out and
-    reporting back) and it is about the topic; what the finding shared never makes an action an answer."""
+    """The binding is typed and linked: a promise binds only when capture typed it an answer (finding out and
+    reporting back) linked to that outreach; what the finding shared never makes an action an answer."""
     item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
                              shared="The tidal energy board will cancel the pilot trial next week.")
-    answer = {"description": "Find out the tidal energy study's field site", "metadata": {"kind": "answer"}}
+    answer = {"description": "Find out the tidal energy study's field site",
+              "metadata": {"kind": "answer", "outreach": "o-1"}}
     assert outreach.binds_followup(answer, item)
     for record in ({"description": "Cancel the tidal energy pilot trial", "metadata": {}},
                    {"description": "Cancel the tidal energy pilot trial", "metadata": None},
@@ -697,8 +699,8 @@ def test_only_an_answer_the_turn_asked_for_keeps_a_followup():
                    {"description": "Research kelp farming", "metadata": {"kind": "answer"}}):
         assert not outreach.binds_followup(record, item), record
     offer = outreach.Followup(outreach_id="o-2", topic="parcel receipt", slug="parcel-receipt", shared="", offer=True)
-    assert outreach.binds_followup({"description": "Look into the parcel receipt", "metadata": {"kind": "answer"}},
-                                   offer)
+    assert outreach.binds_followup({"description": "Look into the parcel receipt",
+                                    "metadata": {"kind": "answer", "outreach": "o-2"}}, offer)
     assert not outreach.binds_followup({"description": "Draft the parcel receipt email", "metadata": {}}, offer)
 
 
@@ -961,3 +963,112 @@ async def test_a_held_matter_holds_its_finding_and_its_followup_and_the_answer_w
 def test_every_apostrophe_and_wording_of_no_reminders_holds(said):
     from protagine.commitments.extract import asks_no_reminders
     assert asks_no_reminders(said), said
+
+
+# -- round 3: a follow-up binds only the promise capture linked to THAT outreach --------------------------------
+
+class _CaptureRouter:
+    supports_function_routing = True
+
+    def __init__(self, items):
+        self.items, self.prompts = items, []
+
+    def function_deadline_seconds(self, *, context=None):
+        return 20
+
+    async def complete(self, messages, *, context=None, **_):
+        import json
+        from types import SimpleNamespace
+        self.prompts.append(messages[1]["content"])
+        return SimpleNamespace(content=json.dumps(self.items))
+
+
+def _answer_item(description, **metadata):
+    return {"action": "create", "target": None, "description": description, "due_at": None, "priority": 70,
+            "source_type": "cognition", "metadata": {"kind": "answer", **metadata}, "listed_due": None,
+            "counterpart": None, "obligor": "assistant"}
+
+
+async def _exchange(fx, text, reply, turn, session="owner-1"):
+    """An owner turn with the assistant's reply, queued for capture, then through the turn path's hook."""
+    fx.ledger.record_source(turn, contact_id=OWNER, session_id=session, scope="person", occurred_at=fx.now.isoformat(),
+                            messages=[{"role": "user", "content": text}, {"role": "assistant", "content": reply}])
+    return await fx.mind.owner_turn(text, turn_id=turn, occurred_at=fx.now, session_id=session)
+
+
+DIG_AND_ASK = ("Dig deeper into the tidal energy item. Also find out whether my tidal energy grant application "
+               "was approved.")
+
+
+async def test_research_never_fulfils_a_separate_answer_asked_in_the_dig_reply(make):
+    """Re-check round 2, item 4: the reply asks for the dig and a separate question; capture records the question
+    as the turn's sole, correctly typed answer promise. The research answer goes, and the question stays open."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, DIG_AND_ASK, "t-dig", "owner-2")
+    grant = _promise(fx, "Find out whether the owner's tidal energy grant application was approved", turn="t-dig",
+                     kind="answer")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(grant["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_capture_links_only_the_promise_that_follows_up_that_outreach(make):
+    """The reply is linked to the outreach when capture runs: the promise the extractor marks as following that
+    outreach up carries its id; the separate question does not, nor does a forged id. The dig binds the linked
+    promise alone: delivering the research fulfils it, and the grant question stays duty's."""
+    from protagine.commitments.extract import CommitmentExtractor
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await _exchange(fx, DIG_AND_ASK, "I will dig deeper and find out about the application.", "t-dig", "owner-2")
+    capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments, interests=lambda: fx.mind)
+    router = _CaptureRouter([_answer_item("Dig deeper into the tidal energy item and report back", follows_up=True),
+                             _answer_item("Find out whether the owner's tidal energy grant application was approved",
+                                          outreach=row.id)])
+    assert await capture.process_one(router) is True
+    assert "replies to the assistant's own earlier message" in router.prompts[0] and "tidal energy" in router.prompts[0]
+    rows = {item["description"]: item for item in fx.commitments.list(status=["pending"], person_id=OWNER)["commitments"]}
+    dig = rows["Dig deeper into the tidal energy item and report back"]
+    grant = rows["Find out whether the owner's tidal energy grant application was approved"]
+    assert dig["metadata"]["outreach"] == row.id and "follows_up" not in dig["metadata"]
+    assert "outreach" not in grant["metadata"]
+    with fx.commitments._connect() as conn:
+        conn.execute("UPDATE commitments SET made_at=?", (fx.now.isoformat(),))
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert task.context["bound_commitment"] == dig["id"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.commitments.get(dig["id"])["status"] == "fulfilled"
+    assert fx.commitments.get(grant["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_a_turn_linked_to_no_outreach_links_no_promise(make):
+    from protagine.commitments.extract import CommitmentExtractor
+    fx = make()
+    await _exchange(fx, "Find out whether my tidal energy grant application was approved.", "I will find out.", "t-ask")
+    capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments, interests=lambda: fx.mind)
+    router = _CaptureRouter([_answer_item("Find out whether the grant application was approved", follows_up=True)])
+    assert await capture.process_one(router) is True
+    assert "replies to the assistant's own earlier message" not in router.prompts[0]
+    row, = fx.commitments.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert "outreach" not in row["metadata"] and "follows_up" not in row["metadata"]
+
+
+def test_a_promise_binds_only_the_outreach_it_was_linked_to():
+    item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy", shared="")
+    linked = {"description": "Report back on it", "metadata": {"kind": "answer", "outreach": "o-1"}}
+    assert outreach.binds_followup(linked, item)
+    for record in ({"description": "Find out more about tidal energy", "metadata": {"kind": "answer"}},
+                   {"description": "Find out more about tidal energy", "metadata": {"kind": "answer", "outreach": "o-2"}},
+                   {"description": "Cancel the tidal energy trial", "metadata": {"kind": "reminder", "outreach": "o-1"}},
+                   {"description": "Report back on it", "metadata": None}):
+        assert not outreach.binds_followup(record, item), record

@@ -425,7 +425,8 @@ def _local(turn_time: str, timezone_name: str) -> str:
 
 def build_prompt(*, user_message: str, assistant_message: str, conversation_text: str,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]], turn_time: str = "",
-                 timezone_name: str = "", speaker: str = "", interests: List[str] = ()) -> str:
+                 timezone_name: str = "", speaker: str = "", interests: List[str] = (),
+                 replying_to: Optional[Dict[str, str]] = None) -> str:
     parts = []
     if turn_time:
         local = _local(turn_time, timezone_name)
@@ -437,6 +438,12 @@ def build_prompt(*, user_message: str, assistant_message: str, conversation_text
     parts.append("This turn, verbatim:\n"
                  f"  They said: {user_message}\n"
                  f"  Assistant replied: {assistant_message}\n")
+    if replying_to:
+        parts.append(f"\nThis turn replies to the assistant's own earlier message about \"{replying_to.get('topic')}\": "
+                     f"\"{replying_to.get('text')}\". Mark only the assistant's promise to follow THAT message up "
+                     "(find out more about what it said and report back) with metadata "
+                     "{\"kind\":\"answer\",\"follows_up\":true}. Any other request of the turn, about the same "
+                     "subject included, is its own item without follows_up.\n")
     if existing:
         parts.append("\nAlready-recorded OPEN items for this person, numbered (a change to one of these is an "
                      "action with its number as target, never a new item; mentioning one again is NOT an item):")
@@ -1300,6 +1307,27 @@ def _landed(result: Dict[str, Any]) -> int:
     return sum(len(result.get(key) or ()) for key in ("created", "updated", "resolved", "settled_interests"))
 
 
+# The kind of the assistant's promise to find something out and report it back (``mind.outreach.ANSWER_KIND``).
+ANSWER_KIND = "answer"
+
+
+def link_followups(items: List[Any], replying_to: Optional[Dict[str, str]]) -> List[Any]:
+    """The extractor's items with the one link capture records: ``metadata.outreach`` (the outreach's id) on an
+    answer the extractor marked as following up the outreach this turn replied to (``follows_up``), only when
+    the turn was linked to one. The model's own ``follows_up`` and ``outreach`` are never stored."""
+    for item in items:
+        metadata = item.get("metadata") if isinstance(item, dict) else None
+        if not isinstance(metadata, dict):
+            continue
+        metadata = dict(metadata)
+        marked = metadata.pop("follows_up", None) is True
+        metadata.pop("outreach", None)
+        if marked and replying_to and replying_to.get("id") and metadata.get("kind") == ANSWER_KIND:
+            metadata["outreach"] = str(replying_to["id"])
+        item["metadata"] = metadata
+    return items
+
+
 class CommitmentExtractor:
     """One durable job per person-scoped turn, processed on the router."""
 
@@ -1580,6 +1608,17 @@ class CommitmentExtractor:
             return []
         return [str(topic) for topic in topics if str(topic or "").strip()][:OPEN_INTERESTS_LISTED]
 
+    def _outreach_replied(self, person_id: str, turn_id: str) -> Optional[Dict[str, str]]:
+        """The outreach the owner's turn replied to, as the running mind linked it (``Mind.outreach_replied``)."""
+        mind = self._mind(person_id)
+        lookup = getattr(mind, "outreach_replied", None) if mind is not None else None
+        try:
+            found = lookup(turn_id) if callable(lookup) else None
+        except Exception as error:
+            logger.debug("outreach link unavailable (%s)", type(error).__name__)
+            return None
+        return found if isinstance(found, dict) and found.get("id") else None
+
     def _settle_interests(self, items: List[Dict[str, Any]], *, existing: List[Dict[str, Any]],
                           interests: List[str], person_id: str, turn_id: str) -> tuple:
         """``(items left for record_items, interests settled)``: a ``complete`` (answered) or ``cancel`` (no
@@ -1699,6 +1738,7 @@ class CommitmentExtractor:
             existing = listed_first(await self._existing(commitments, person_id, speaker_names),
                                     f"{user_message}\n{assistant_message}")
             interests = self._open_interests(person_id)
+            replying_to = self._outreach_replied(person_id, job["turn_id"])
             rejections = commitments.recent_rejections(limit=6) or []
             from protagine.util.temporal import resolve_communication_timezone
             conversation = self._recent_turns(source)
@@ -1707,7 +1747,8 @@ class CommitmentExtractor:
                                   rejections=rejections,
                                   turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""),
                                   timezone_name=str(job.get("timezone") or resolve_communication_timezone()),
-                                  speaker=await self._speaker(person_id, speaker_names), interests=interests)
+                                  speaker=await self._speaker(person_id, speaker_names), interests=interests,
+                                  replying_to=replying_to)
             deadline = router.function_deadline_seconds(context={"task": TASK})
             if (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
                     or not 0 < deadline <= 600):
@@ -1722,8 +1763,9 @@ class CommitmentExtractor:
                 messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 context={"task": TASK, "allow_fallback": True, "max_output_tokens": OUTPUT_BUDGET_TOKENS,
                          "response_schema": RESPONSE_SCHEMA}), deadline + 5)
-            items, settled = self._settle_interests(parse_items(final_text(response)), existing=existing,
-                                                    interests=interests, person_id=person_id, turn_id=job["turn_id"])
+            items, settled = self._settle_interests(link_followups(parse_items(final_text(response)), replying_to),
+                                                    existing=existing, interests=interests, person_id=person_id,
+                                                    turn_id=job["turn_id"])
         except Exception as error:
             defect = _output_defect(error)
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)
