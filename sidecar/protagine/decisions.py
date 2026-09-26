@@ -151,17 +151,10 @@ class Decider:
         self.transport = transport
         self.points: Dict[str, Point] = dict(POINTS)
         for name, override in (points or {}).items():
-            if name not in self.points or not isinstance(override, Mapping):
+            changes = _override(override) if name in self.points else None
+            if changes is None:
                 logger.warning("decision point override ignored: %s", name)
                 continue
-            changes: Dict[str, Any] = {}
-            if "enabled" in override:
-                changes["enabled"] = bool(override["enabled"])
-            if "temperature" in override:
-                changes["temperature"] = float(override["temperature"])
-            if "abstain" in override:
-                low, high = override["abstain"]
-                changes["abstain"] = (float(low), float(high))
             self.points[name] = replace(self.points[name], **changes)
         self.stats: Dict[str, Counter] = defaultdict(Counter)
 
@@ -184,7 +177,9 @@ class Decider:
             body = await asyncio.wait_for(self._post({"state": state, "questions": {_QUESTION: spec.question()}}),
                                           self.timeout_s)
             decision = self._read(spec, body, (time.monotonic() - started) * 1000)
-        except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError, KeyError) as error:
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:      # whatever went wrong, the caller keeps its existing path
             self.stats[point]["failed"] += 1
             logger.debug("decision %s: no answer (%s)", point, type(error).__name__)
             return None
@@ -231,6 +226,32 @@ class Decider:
         if p_yes <= low:
             return Decision(spec.name, "no", 1.0 - p_yes, probabilities, elapsed_ms)
         return None
+
+
+def _override(override: Any) -> Optional[Dict[str, Any]]:
+    """A point's ``{enabled, temperature, abstain}`` override checked, or None when any of it is unusable (the
+    point then keeps its defaults whole: ``protagine.yaml`` refuses such a section, the environment may not)."""
+    if not isinstance(override, Mapping) or set(override) - {"enabled", "temperature", "abstain"}:
+        return None
+    changes: Dict[str, Any] = {}
+    try:
+        if "enabled" in override:
+            if not isinstance(override["enabled"], bool):
+                return None
+            changes["enabled"] = override["enabled"]
+        if "temperature" in override:
+            temperature = float(override["temperature"])
+            if not (math.isfinite(temperature) and temperature > 0):
+                return None
+            changes["temperature"] = temperature
+        if "abstain" in override:
+            low, high = (float(value) for value in override["abstain"])
+            if not 0.0 <= low <= high <= 1.0:
+                return None
+            changes["abstain"] = (low, high)
+    except (TypeError, ValueError):
+        return None
+    return changes
 
 
 def from_environment(environ: Optional[Mapping[str, str]] = None) -> Decider:

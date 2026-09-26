@@ -194,3 +194,18 @@ def test_the_shared_decider_follows_the_environment(monkeypatch):
     assert decisions.shared().url == ""
     monkeypatch.setenv("PROTAGINE_DECISIONS_URL", URL)
     assert decisions.shared().url == URL and decisions.shared() is decisions.shared()
+
+
+def test_a_malformed_override_or_url_never_breaks_the_caller():
+    environ = {"PROTAGINE_DECISIONS_URL": URL, "PROTAGINE_DECISIONS_POINTS": json.dumps({
+        "opt_out": {"enabled": True, "temperature": "hot"}, "no_reminders": {"enabled": True, "abstain": [0.9, 0.1]},
+        "interest_settled": {"enabled": True, "temperature": -1}, "owner_verdict": {"abstain": 3}})}
+    configured = from_environment(environ)
+    for name in ("opt_out", "no_reminders", "interest_settled", "owner_verdict"):
+        assert configured.setting(name) == POINTS[name], name
+
+
+async def test_an_unusable_url_is_no_answer():
+    ask = Decider("not a url at all", points={"opt_out": {"enabled": True}})
+    assert await ask.decide("opt_out", text="leave it") is None
+    assert ask.stats["opt_out"]["failed"] == 1
