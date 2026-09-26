@@ -15,9 +15,9 @@ logged.
 Superseded values: a line that asserts a value the current record has
 superseded (a changed or corrected claim, a rescheduled commitment) is annotated
 inline with the current value and date; nothing is deleted. A line is a
-record's only by identity: it carries the commitment's id, or the claim's id or
-the source that stated it; shared words or an equal value elsewhere never make
-it one. Earlier turns of a
+record's only by identity: it carries the commitment's or the claim's own id; a
+source message other records share, shared words or an equal value elsewhere
+never make it one, and a line without a record id is never annotated. Earlier turns of a
 conversation are replayed by the host as they were, so values served earlier
 that have since been superseded are listed once more, as corrections, in the
 new turn's context.
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import bisect
-import functools
 import itertools
 import json
 import logging
@@ -67,7 +66,7 @@ PINNED_SECTIONS = frozenset({
 })
 COMMITMENTS = "protagine-commitments"
 CORRECTIONS = "protagine-corrections"
-MARKER = "[superseded:"
+MARKER = "[superseded"
 
 _ITEM_START = re.compile(r"^(?:[-•*] |\{)")
 _PASSAGE = re.compile(r'^- \{"evidence_ref": "(q\d+)"')
@@ -406,44 +405,108 @@ async def select_context(sections: list, query: str, rerank_fn, *, settings: Sel
 class Superseded:
     """A value the current record no longer holds: ``old`` was replaced by ``current`` on ``since``.
 
-    ``keys`` are the record's identity as the context renders it (a commitment's ``id=<id>``; a claim's id and the
-    ``turn:<id>`` of the source that stated it). Only a line carrying one of them states this record's value.
-    ``record`` is the key naming this record alone (never a source other records share): corrections and their
-    delivery are accounted by it."""
+    ``record`` is the record's own id as the context renders it: a commitment's ``id=<id>``, a claim's
+    ``"claim_id"``. Only a line (or, in a line of several records, the part) carrying that id states this record's
+    value; a source message other records share, or equal words, never does."""
     old: str
     current: str
     since: str = ""
     subject: str = ""
     kind: str = "changed"  # changed | corrected | rescheduled
-    keys: tuple = ()
     record: str = ""
 
     def note(self) -> str:
         date = f" since {self.since[:10]}" if self.since else ""
         value = json.dumps(self.current, ensure_ascii=False)
+        head = f"{MARKER} id={self.record}:"
         if self.kind == "rescheduled":
-            return f"{MARKER} rescheduled to {value}{date}]" if self.current else f"{MARKER} due time removed{date}]"
+            return f"{head} rescheduled to {value}{date}]" if self.current else f"{head} due time removed{date}]"
         verb = "corrected to" if self.kind == "corrected" else "now"
-        return f"{MARKER} {verb} {value}{date}]"
+        return f"{head} {verb} {value}{date}]"
 
 
-# A note states a value as current; a later record can supersede that value in turn.
-_NOTE = re.compile(r'\s*\[superseded: (?:(?:now|corrected to|rescheduled to) ("(?:[^"\\]|\\.)*")|due time removed)'
-                   r'(?: since [^\]]*)?\]')
+# A note names its record and states that record's value as current; a later record can supersede that value.
+_NOTE = re.compile(r'\s*\[superseded id=(\S+?): (?:(?:now|corrected to|rescheduled to) ("(?:[^"\\]|\\.)*")'
+                   r'|due time removed)(?: since [^\]]*)?\]')
+_RECORD_FIELDS = ("claim_id", "commitment_id")  # a JSON record's own id; never prior_claim_id or a source
+_TEXT_ID = re.compile(r"(?<![\w.:=-])id=([^\s;,)\]\"]+)")
 
 
-def _notes(line: str) -> tuple[str, list[str]]:
-    """``line`` without its notes, and the values its notes state as current."""
+def _notes(line: str) -> tuple[str, list[tuple[str, str]]]:
+    """``line`` without its notes, and each note's (record id, value stated as current)."""
     values = []
 
     def take(match):
-        literal = match.group(1)
+        literal = match.group(2)
         try:
-            values.append(json.loads(literal) if literal else "")
+            values.append((match.group(1), json.loads(literal) if literal else ""))
         except ValueError:
-            values.append(literal[1:-1])
+            values.append((match.group(1), literal[1:-1]))
         return ""
     return _NOTE.sub(take, line), values
+
+
+@dataclass
+class _Element:
+    """The part of a line that is one record's: its id, its value field when it has one, and its words."""
+    record: str
+    value: str | None = None
+    words: list = field(default_factory=list)
+
+
+def _own_id(value) -> str:
+    return next((value[name] for name in _RECORD_FIELDS if isinstance(value.get(name), str) and value[name]), "") \
+        if isinstance(value, dict) else ""
+
+
+def _walk(value, owner, elements, loose, key=""):
+    if isinstance(value, dict):
+        rid = _own_id(value)
+        if rid:
+            stated = value.get("value")
+            owner = _Element(rid, str(stated) if isinstance(stated, (str, int, float))
+                             and not isinstance(stated, bool) else None)
+            elements.append(owner)
+        for name, item in value.items():
+            if name not in _RECORD_FIELDS and not (rid and name == "value"):  # its value field is read as such
+                _walk(item, owner, elements, loose, str(name))
+    elif isinstance(value, list):
+        for item in value:
+            _walk(item, owner, elements, loose, key)
+    elif isinstance(value, str):
+        if key and _SKIP_KEY.search(key):
+            return
+        text = value.strip()
+        if text and (key in _VALUE_KEYS or not _IDENTIFIER.match(text)):
+            (owner.words if owner is not None else loose).append(text)
+
+
+def _elements(text: str) -> list[_Element]:
+    """The records a line (without its notes) states. A text line is the record of its one ``id=``; a JSON line
+    holds one part per object carrying a record id, and its loose quotation belongs to the record of its first
+    object. A line with no record id, or a text line naming several, states no record."""
+    body = re.sub(r"^[-•*] ", "", text.strip())
+    if not body.startswith("{"):
+        ids = set(_TEXT_ID.findall(body))
+        return [_Element(ids.pop(), None, [_unescaped(body)])] if len(ids) == 1 else []
+    decoder, elements, loose, position, first = json.JSONDecoder(), [], [], 0, None
+    while position < len(body):
+        while position < len(body) and body[position].isspace():
+            position += 1
+        if position >= len(body):
+            break
+        try:
+            value, position = decoder.raw_decode(body, position)
+        except ValueError:
+            loose.append(_unescaped(body[position:]))
+            break
+        count = len(elements)
+        _walk(value, None, elements, loose if first is not None else [])
+        if first is None:  # the element the line's first object is (its own children follow it)
+            first = elements[count] if _own_id(value) else False
+    if first:
+        first.words.extend(loose)
+    return elements
 
 
 def _normal(value: str) -> str:
@@ -458,47 +521,25 @@ def _pattern(value: str):
     return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(word) for word in text.split()) + r"(?!\w)", re.I)
 
 
-@functools.lru_cache(maxsize=4096)
-def _identity(keys: tuple):
-    """A line carries one of ``keys`` as a whole token (``id=c-1`` is not ``id=c-10``)."""
-    keys = [key for key in keys if key]
-    if not keys:
-        return None
-    return re.compile(r"(?<![\w.:=-])(?:" + "|".join(re.escape(key) for key in keys) + r")(?![\w-]|[.:]\w)")
-
-
-def _key_positions(text: str, record: Superseded):
-    """Where ``text`` carries one of the record's keys as a whole token."""
-    pattern = _identity(tuple(record.keys))
-    if pattern is None:
-        return
-    for key in {key for key in record.keys if key}:
-        position = text.find(key)
-        while position >= 0:
-            if pattern.match(text, position):
-                yield position
-            position = text.find(key, position + 1)
-
-
-def _carries(line: str, record: Superseded) -> bool:
-    pattern = _identity(tuple(record.keys))
-    return pattern is not None and bool(pattern.search(line))
-
-
 def _same(value: str, other: str) -> bool:
     return _normal(value) == _normal(other)
 
 
 def line_state(line: str, record: Superseded) -> str | None:
-    """``"current"`` when ``line`` is ``record``'s (it carries the record's identity) and shows the current value, in
-    its words or in a note; ``"stale"`` when it is the record's and shows a value the record replaced, in its words
-    or as a note's current value; otherwise ``None``."""
-    if not _carries(line, record):
+    """``"current"`` when ``line`` states ``record`` (a part of it carries the record's own id) with the current
+    value, in its words or in a note naming the record; ``"stale"`` when it states the record with a value the record
+    replaced; otherwise ``None``."""
+    if not record.record or record.record not in line:
         return None
     text, notes = _notes(line)
-    # Values are matched in the line's words, never in its identifiers and timestamps: identity already makes it
-    # the record's line, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not.
-    content = _readable(text, fallback=False)
+    own = [part for part in _elements(text) if part.record == record.record]
+    notes = [value for rid, value in notes if rid == record.record]
+    if not own and not notes:
+        return None
+    # Values are matched in the record's own words, never in identifiers and timestamps: identity already makes
+    # them the record's, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not.
+    content = " ".join([*(part.value for part in own if part.value is not None),
+                        *(word for part in own for word in part.words)])
     current = _pattern(record.current)
     if any(_same(value, record.current) for value in notes) or (current is not None and current.search(content)):
         return "current"
@@ -506,7 +547,7 @@ def line_state(line: str, record: Superseded) -> str | None:
     shown = (old is not None and bool(old.search(content))) or any(_same(value, record.old) for value in notes)
     if not shown and record.kind == "rescheduled":
         due = _DUE.search(text)  # a commitment line's own due field: any due but the current one is replaced
-        shown = due is not None and not _same(due.group(1), record.current)
+        shown = bool(own) and due is not None and not _same(due.group(1), record.current)
     return "stale" if shown else None
 
 
@@ -516,9 +557,9 @@ def asserts_superseded(line: str, record: Superseded) -> bool:
 
 
 def annotate_superseded(sections: list, records: list[Superseded]) -> list:
-    """Every line that asserts a superseded value gains the current value and date, one note per value it
-    asserts (no cap: a line with one note still counts as stale for every value left unmarked); nothing is
-    removed."""
+    """Every line that states a superseded record's replaced value gains a note naming the record with its current
+    value and date, one per record (a line with one note still counts as stale for every record left unmarked);
+    nothing is removed. A line that carries no record's own id is never annotated."""
     if not records:
         return sections
     result = []
@@ -599,9 +640,7 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
             continue
         records.append(Superseded(old=old_value, current=new_value,
                                   since=str(latest.get("valid_from") or latest.get("observed_at") or "")[:10],
-                                  subject=str(old.get("subject") or ""), kind=kinds[claim_id],
-                                  keys=tuple(key for key in ("turn:" + str(old.get("turn_id") or ""), claim_id)
-                                             if key != "turn:"), record=claim_id))
+                                  subject=str(old.get("subject") or ""), kind=kinds[claim_id], record=claim_id))
     return records
 
 
@@ -615,19 +654,24 @@ def commitment_reschedules(rows: Iterable[dict[str, Any]]) -> list[Superseded]:
         if old and old != str(row.get("due_at") or ""):
             records.append(Superseded(old=old, current=str(row.get("due_at") or ""), kind="rescheduled",
                                       since=str(row.get("updated_at") or "")[:10],
-                                      subject=str(row.get("description") or ""),
-                                      keys=(f"id={row['id']}",) if row.get("id") else (),
-                                      record=f"id={row['id']}" if row.get("id") else ""))
+                                      subject=str(row.get("description") or ""), record=str(row.get("id") or "")))
     return records
 
 
 # -- Earlier turns in the window ------------------------------------------------------------------
 
+def _positions(text: str, needle: str):
+    position = text.find(needle)
+    while position >= 0:
+        yield position
+        position = text.find(needle, position + 1)
+
+
 def correction_line(record: Superseded) -> str:
     """One correction, carrying the record's own identity (never a source other records share) so a later turn can
     tell it was delivered or is stale."""
     subject = f" ({record.subject})" if record.subject else ""
-    return f"- {record.record}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
+    return f"- id={record.record}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
 
 
 class ServedWindow:
@@ -652,8 +696,7 @@ class ServedWindow:
             stale = shown = -1
             # Delivery is accounted per record: only the lines carrying the record's own id (never a source other
             # records share) can be its lines, and a substring scan finds them.
-            own = Superseded(old=record.old, current=record.current, kind=record.kind, keys=(record.record,))
-            carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _key_positions(served, own)})
+            carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _positions(served, record.record)})
             for index in carrying:
                 state = line_state(lines[index], record)
                 if state == "stale":

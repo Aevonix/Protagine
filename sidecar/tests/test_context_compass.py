@@ -10,6 +10,7 @@ conversation is corrected in a later turn.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from contextlib import closing
@@ -198,29 +199,53 @@ def test_settings_come_from_the_environment(monkeypatch):
 
 # -- superseded values --------------------------------------------------------------------------
 
+def cid(name):
+    """A claim id shaped as the ledger makes them."""
+    return "claim:" + hashlib.sha256(name.encode()).hexdigest()
+
+
+def card_line(source, *assertions, subject="event"):
+    """An assertion card as the memory lane renders it: ``assertions`` are (claim id, value[, extra fields])."""
+    members = [{"claim_id": claim, "source": "turn:" + source, "value": value, **(extra[0] if extra else {})}
+               for claim, value, *extra in assertions]
+    return "- " + json.dumps({"kind": "source_quote", "source_uri": "turn:" + source, "content": {
+        "subject": subject, "predicate": "place", "status": "source_assertion", "assertions": members}},
+        ensure_ascii=False)
+
+
+def claim_quote(claim, text, source="s-1", **extra):
+    """A quotation line whose record is one claim."""
+    return "- " + json.dumps({"kind": "source_quote", "claim_id": claim, "source": "turn:" + source, **extra}) + " " \
+        + json.dumps(text)
+
+
 VENUE = Superseded(old="the corner office", current="the front lobby", since="2026-09-18", subject="design review",
-                   kind="changed", keys=("turn:s-old",), record="turn:s-old")
+                   kind="changed", record=cid("venue"))
 DAY = Superseded(old="Monday", current="Thursday", since="2026-09-19", subject="dentist appointment",
-                 keys=("turn:s-dentist",))
+                 record=cid("dentist"))
+
+
+def noted(record):
+    return f'[superseded id={record.record}: now "{record.current}" since {record.since}]'
 
 
 def test_a_line_stating_a_superseded_value_is_annotated_never_removed():
     sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body="\n".join([
-        '- {"source": "turn:s-old"} "The design review is in the corner office."',
-        '- {"source": "turn:s-new"} "The review moved to the front lobby; the corner office is no longer right."',
+        card_line("s-old", (VENUE.record, "the corner office"), subject="design review"),
+        claim_quote(cid("venue-2"), "The review moved to the front lobby; the corner office is no longer right."),
         "- Book a Monday slot for the gym.",
-        '- {"source": "turn:s-dentist"} "The dentist appointment is on Monday."',
+        claim_quote(DAY.record, "The dentist appointment is on Monday."),
     ])), ContextSection(id="protagine-stances", title="Your recorded views", body="- The corner office is too loud."),
         ContextSection(id="protagine-appraisals", title="Relevant working perspective",
-                       body='- {"source": "turn:s-old"} The corner office is where the review is held.')]
+                       body=f'- {{"claim_id": "{VENUE.record}"}} The corner office is where the review is held.')]
     annotated = compass.annotate_superseded(sections, [VENUE, DAY])
     lines = annotated[0].body.split("\n")
-    assert lines[0].endswith('[superseded: now "the front lobby" since 2026-09-18]')
-    assert lines[1] == sections[0].body.split("\n")[1]          # another source's line
+    assert lines[0].endswith(noted(VENUE))
+    assert lines[1] == sections[0].body.split("\n")[1]          # another claim's line
     assert lines[2] == "- Book a Monday slot for the gym."       # a line of no record
-    assert lines[3].endswith('[superseded: now "Thursday" since 2026-09-19]')
+    assert lines[3].endswith(noted(DAY))
     assert annotated[1] is sections[1]                           # the old value, but not the record's line
-    assert annotated[2].body.endswith('[superseded: now "the front lobby" since 2026-09-18]')  # every lane
+    assert annotated[2].body.endswith(noted(VENUE))              # every lane
     assert len(annotated[0].body.split("\n")) == 4
     assert compass.dead_value_lines("\n".join(s.body for s in sections), [VENUE, DAY]) == 3
     assert compass.dead_value_lines("\n".join(s.body for s in annotated), [VENUE, DAY]) == 0
@@ -236,7 +261,7 @@ def test_rescheduled_commitments_are_superseded_deadlines():
     assert record.old == "2026-09-21T09:00:00+00:00" and record.current == "2026-09-22T15:00:00+00:00"
     line = "- [pending] id=c-1; Send the form (due: 2026-09-21T09:00:00+00:00); work=unclaimed"
     assert compass.asserts_superseded(line, record)
-    assert record.note() == '[superseded: rescheduled to "2026-09-22T15:00:00+00:00" since 2026-09-19]'
+    assert record.note() == '[superseded id=c-1: rescheduled to "2026-09-22T15:00:00+00:00" since 2026-09-19]'
 
 
 @pytest.mark.asyncio
@@ -263,8 +288,7 @@ async def test_changed_and_corrected_claims_are_read_from_the_ledger_with_their_
     assert {(r.old, r.current, r.kind) for r in records} == {
         ("the corner office", "the front lobby", "corrected"), ("the east room", "the front lobby", "corrected")}
     assert all(r.subject == "design review" and r.since for r in records)
-    assert {r.keys[0] for r in records} == {"turn:first", "turn:second"}
-    assert all(r.keys[1].startswith("claim:") for r in records)
+    assert len({r.record for r in records}) == 2 and all(r.record.startswith("claim:") for r in records)
     assert compass.claim_supersessions(ledger, contact_id="contact-b", session_id="later") == []
     ledger.erase_sources(contact_id="contact-a", turn_ids=["third"])
     with closing(ledger._connect()) as conn:
@@ -326,7 +350,7 @@ async def test_a_value_served_earlier_and_superseded_since_is_corrected_in_that_
     app, state = route
     monkeypatch.setattr(host, "_reranker", None)
     state.sections = [ContextSection(id="protagine-memory", title="Relevant Memories",
-                                     body='- {"source": "turn:s-old"} "The design review is in the corner office."')]
+                                     body=claim_quote(VENUE.record, "The design review is in the corner office."))]
     first = await post(app, "where is the review")
     assert "protagine-corrections" not in first
     # The owner moves it; the old quote is no longer recalled, but the host replays the earlier turn as it was.
@@ -334,7 +358,7 @@ async def test_a_value_served_earlier_and_superseded_since_is_corrected_in_that_
     state.sections = [ContextSection(id="protagine-stances", title="Your recorded views", body="- Lobbies are loud.")]
     second = await post(app, "anything else?")
     correction = second["protagine-corrections"]["body"]
-    assert '"the corner office" (design review): [superseded: now "the front lobby" since 2026-09-18]' in correction
+    assert f'- id={VENUE.record}; "the corner office" (design review): {noted(VENUE)}' in correction
     assert compass.dead_value_lines(correction, [VENUE]) == 0
     # Delivered: the next turn of the conversation does not repeat it.
     assert "protagine-corrections" not in await post(app, "and now?")
@@ -358,10 +382,9 @@ def quote_line(turn, text, **encoding):
         text, **encoding)
 
 
-def claim_record(old, current, turn, claim_id="", subject="", since="2026-09-19"):
-    """A changed claim as ``claim_supersessions`` makes it: keyed by its claim id and the source that stated it."""
-    return Superseded(old=old, current=current, since=since, subject=subject, kind="changed",
-                      keys=tuple(key for key in ("turn:" + turn, claim_id) if key), record=claim_id or "turn:" + turn)
+def claim_record(old, current, claim, subject="", since="2026-09-19"):
+    """A changed claim as ``claim_supersessions`` makes it: identified by its own claim id."""
+    return Superseded(old=old, current=current, since=since, subject=subject, kind="changed", record=claim)
 
 
 def body_of(sections):
@@ -386,9 +409,9 @@ def test_a_reschedule_marks_only_the_commitment_it_moved():
 
 def test_a_changed_claim_marks_only_lines_from_its_own_record():
     """Finding 1, claims: a multiword old value on an unrelated line or another source is not the record's."""
-    record = claim_record("the corner office", "the front lobby", "s-old", claim_id="claim-7")
+    record = claim_record("the corner office", "the front lobby", "claim-7")
     sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body="\n".join([
-        quote_line("s-old", "The design review is in the corner office."),
+        claim_quote("claim-7", "The design review is in the corner office.", source="s-old"),
         quote_line("s-other", "The corner office has a broken heater."),
         '- {"kind": "source_quote", "content": {"assertions": [{"claim_id": "claim-7", "value": "the corner office"}]}}',
         '- {"kind": "source_quote", "content": {"assertions": [{"claim_id": "claim-70", "value": "the corner office"}]}}',
@@ -479,70 +502,56 @@ def test_corrections_beyond_one_turns_share_reach_later_turns_and_are_not_repeat
 
 def test_a_short_value_on_its_own_record_is_corrected():
     """Finding 6: a two-character value is marked on a line of the source that stated it."""
-    record = claim_record("42", "43", "s-locker", subject="locker code")
-    line = quote_line("s-locker", "My locker code is 42.")
+    record = claim_record("42", "43", cid("locker"), subject="locker code")
+    line = claim_quote(record.record, "My locker code is 42.", source="s-locker")
     sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)]
-    assert body_of(compass.annotate_superseded(sections, [record])).endswith('[superseded: now "43" since 2026-09-19]')
+    assert body_of(compass.annotate_superseded(sections, [record])).endswith(noted(record))
     compass.SERVED.remember(("viewer", "s-1"), line)
     assert '"43"' in compass.SERVED.corrections(("viewer", "s-1"), [record])
-    # Not a digit inside the line's own timestamps, and not on another source's line.
-    timed = "- " + json.dumps({"kind": "source_quote", "source": "turn:s-locker",
-                               "reported_at": "2026-09-10T09:42:00+00:00"}) + ' "My locker moved."'
-    other = quote_line("s-gym", "Bring 42 towels.")
+    # Not a digit inside the line's own timestamps, and not on another claim's line of the same source.
+    timed = claim_quote(record.record, "My locker moved.", source="s-locker", reported_at="2026-09-10T09:42:00+00:00")
+    other = claim_quote(cid("towels"), "Bring 42 towels.", source="s-locker")
     assert compass.dead_value_lines("\n".join([timed, other]), [record]) == 0
 
 
 def test_escaped_values_are_decoded_before_matching():
     """Finding 7: a value serialized with JSON escapes is still the value."""
-    record = claim_record("Café Central", "Main Library", "s-meet")
-    line = quote_line("s-meet", "We meet at Café Central on Fridays.")  # json.dumps defaults: Café
+    record = claim_record("Café Central", "Main Library", cid("meet"))
+    line = claim_quote(record.record, "We meet at Café Central on Fridays.")  # json.dumps defaults: Café
     assert "Caf\\u00e9" in line
     annotated = body_of(compass.annotate_superseded(
         [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)], [record]))
-    assert annotated.endswith('[superseded: now "Main Library" since 2026-09-19]')
-    work = json.dumps({"label": "Café Central booking", "source": "turn:s-meet"})
+    assert annotated.endswith(noted(record))
+    work = json.dumps({"label": "Café Central booking", "claim_id": record.record})
     assert compass.dead_value_lines(work, [record]) == 1
     # Escaped literals outside a parsed JSON record: a text remainder, or a line in the correction shape.
-    remainder = '- {"source": "turn:s-meet"} said: ' + json.dumps("Meet at Café Central.")
-    correction = "- turn:s-meet; " + json.dumps("Café Central") + " (meeting place): noted"
+    remainder = f'- {{"claim_id": "{record.record}"}} said: ' + json.dumps("Meet at Café Central.")
+    correction = f"- id={record.record}; " + json.dumps("Café Central") + " (meeting place): noted"
     assert compass.dead_value_lines("\n".join([remainder, correction]), [record]) == 2
 
 
 def test_every_superseded_value_on_a_line_is_marked_and_a_partly_marked_line_still_counts():
     """Finding 8: no per-line cap, and a note answers only for the value it corrects."""
-    records = [claim_record("42", "43", "s-1"), claim_record("blue", "green", "s-1"),
-               claim_record("Tuesday", "Thursday", "s-1")]
-    line = quote_line("s-1", "Locker 42, the blue door, every Tuesday.")
+    records = [claim_record("42", "43", cid("locker")), claim_record("blue", "green", cid("door")),
+               claim_record("Tuesday", "Thursday", cid("day"))]
+    line = card_line("s-1", (cid("locker"), "Locker 42"), (cid("door"), "the blue door"), (cid("day"), "every Tuesday"))
     annotated = body_of(compass.annotate_superseded(
         [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)], records))
-    assert all(f'now "{record.current}"' in annotated for record in records)
+    assert all(noted(record) in annotated for record in records)
     assert compass.dead_value_lines(annotated, records) == 0
-    partial = line + ' [superseded: now "43" since 2026-09-19] [superseded: now "green" since 2026-09-19]'
+    partial = line + " " + noted(records[0]) + " " + noted(records[1])
     assert compass.dead_value_lines(partial, records) == 1
 
 
 # -- round 3: record identity, record history, one tokenizer --------------------------------------
 
-def claim_id(name):
-    return "claim:" + __import__("hashlib").sha256(name.encode()).hexdigest()
-
-
-def card_line(source, *assertions, subject="event"):
-    """An assertion card as the memory lane renders it: ``assertions`` are (claim id, value[, extra fields])."""
-    members = [{"claim_id": cid, "source": "turn:" + source, "value": value, **(extra[0] if extra else {})}
-               for cid, value, *extra in assertions]
-    return "- " + json.dumps({"kind": "source_quote", "source_uri": "turn:" + source, "content": {
-        "subject": subject, "predicate": "place", "status": "source_assertion", "assertions": members}},
-        ensure_ascii=False)
-
-
 def test_corrections_from_one_source_are_delivered_per_record():
     """Round 3, finding 5: nine claims from one source message each owe their own correction."""
     key = ("viewer", "s-1")
     rooms = ["Alder", "Birch", "Cedar", "Dogwood", "Elm", "Fir", "Ginkgo", "Hazel", "Ironwood"]
-    records = [claim_record(f"the {room} room", "the main hall", "s-1", claim_id=claim_id(room), subject=f"event {n}")
+    records = [claim_record(f"the {room} room", "the main hall", cid(room), subject=f"event {n}")
                for n, room in enumerate(rooms)]
-    compass.SERVED.remember(key, "\n".join(card_line("s-1", (claim_id(room), f"the {room} room")) for room in rooms))
+    compass.SERVED.remember(key, "\n".join(card_line("s-1", (cid(room), f"the {room} room")) for room in rooms))
     counts = []
     for _ in range(3):
         note = compass.SERVED.corrections(key, records)
@@ -551,10 +560,42 @@ def test_corrections_from_one_source_are_delivered_per_record():
     assert counts == [8, 1, 0]
     # The same with the nine claims in one card on one line.
     compass.SERVED.clear()
-    compass.SERVED.remember(key, card_line("s-1", *((claim_id(room), f"the {room} room") for room in rooms)))
+    compass.SERVED.remember(key, card_line("s-1", *((cid(room), f"the {room} room") for room in rooms)))
     counts = []
     for _ in range(3):
         note = compass.SERVED.corrections(key, records)
         counts.append(sum(line.startswith("- ") for line in note.split("\n")))
         compass.SERVED.remember(key, note)
     assert counts == [8, 1, 0]
+
+
+def test_an_annotation_needs_the_line_to_be_the_superseded_record():
+    """Round 3, finding 1: a shared source message or shared words never make a line the record's."""
+    design, heater, successor = cid("design"), cid("heater"), cid("design-2")
+    record = claim_record("the corner office", "the front lobby", design, subject="design review")
+    lines = [
+        card_line("s-1", (heater, "the corner office"), subject="heater"),       # same source and words, other claim
+        quote_line("s-1", "The design review is in the corner office."),         # the source itself: no record id
+        "- " + json.dumps({"evidence_ref": "q1", "source": "turn:s-1", "quote": "The review is in the corner office."}),
+        card_line("s-2", (successor, "the front lobby", {"prior_claim_id": design})),  # cites the old id, is not it
+        "- [pending] Visit the corner office (due: 2026-10-01T09:00:00+00:00)",   # no record id at all
+        card_line("s-1", (design, "the corner office"), subject="design review"),  # the record's own card
+        card_line("s-1", (heater, "the corner office"), (design, "the corner office")),  # both claims on one line
+    ]
+    sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body="\n".join(lines))]
+    annotated = body_of(compass.annotate_superseded(sections, [record])).split("\n")
+    assert [compass.MARKER in line for line in annotated] == [False] * 5 + [True, True]
+    assert annotated[5].endswith(f'[superseded id={design}: now "the front lobby" since 2026-09-19]')
+    assert annotated[6].count(compass.MARKER) == 1
+    assert compass.dead_value_lines("\n".join(lines), [record]) == 2
+    assert compass.dead_value_lines("\n".join(annotated), [record]) == 0
+    # A note answers only for the record it names: the heater's claim moved to the same place is still owed.
+    moved = claim_record("the corner office", "the front lobby", heater, subject="heater")
+    assert compass.dead_value_lines(annotated[6], [record, moved]) == 1
+    both = body_of(compass.annotate_superseded([ContextSection(id="m", title="m", body=lines[6])], [record, moved]))
+    assert both.count(compass.MARKER) == 2 and compass.dead_value_lines(both, [record, moved]) == 0
+    # The served history: the unrelated card and the bare quote owe nothing; the record's own card does.
+    compass.SERVED.remember(("viewer", "s-1"), "\n".join(lines[:5]))
+    assert compass.SERVED.corrections(("viewer", "s-1"), [record]) == ""
+    compass.SERVED.remember(("viewer", "s-1"), lines[5])
+    assert f"id={design};" in compass.SERVED.corrections(("viewer", "s-1"), [record])

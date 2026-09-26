@@ -246,3 +246,11 @@ def test_a_note_answers_only_for_the_value_it_corrects(tmp_path):
                                           {'path': 'answer.json', 'forbidden': ['r14-erased']}],
                                'Every Tuesday. [superseded: now "Monday"]\nCode r14-erased [superseded: now "x"]')
     assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 2
+
+
+def test_a_note_naming_its_record_is_read_as_a_note(tmp_path):
+    """The context names each note's record ([superseded id=<record>: ...]); the counter reads it as a note."""
+    line = ('Standup [superseded id=claim:0a1b: now "Wednesday, was Tuesday" since 2026-09-19]\n'
+            'Review [superseded id=c-1: rescheduled to "Friday, was Tuesday"]')
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday')], line)
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 0

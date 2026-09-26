@@ -749,13 +749,13 @@ def _tick_output(rows, cases):
 
 DEAD_VALUE_BASIS = (
     'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
-    'lines of the injected memory context that show, outside a "[superseded:" note, a value an artifact forbids '
+    'lines of the injected memory context that show, outside a "[superseded" note, a value an artifact forbids '
     'while the line (its notes included) shows none of the values that same artifact expects; a note answers only '
     'for the artifact whose expected value it states, and an artifact that expects no value counts its forbidden '
     'value wherever it is shown. JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is '
     'copied.')
 _MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
-_SUPERSEDED_NOTE = re.compile(r'\[superseded:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
+_SUPERSEDED_NOTE = re.compile(r'\[superseded(?: id=[^\s\]"]+?)?:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
 
 
 def _message_text(content):
