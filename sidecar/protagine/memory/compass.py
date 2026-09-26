@@ -407,13 +407,16 @@ class Superseded:
     """A value the current record no longer holds: ``old`` was replaced by ``current`` on ``since``.
 
     ``keys`` are the record's identity as the context renders it (a commitment's ``id=<id>``; a claim's id and the
-    ``turn:<id>`` of the source that stated it). Only a line carrying one of them states this record's value."""
+    ``turn:<id>`` of the source that stated it). Only a line carrying one of them states this record's value.
+    ``record`` is the key naming this record alone (never a source other records share): corrections and their
+    delivery are accounted by it."""
     old: str
     current: str
     since: str = ""
     subject: str = ""
     kind: str = "changed"  # changed | corrected | rescheduled
     keys: tuple = ()
+    record: str = ""
 
     def note(self) -> str:
         date = f" since {self.since[:10]}" if self.since else ""
@@ -598,7 +601,7 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
                                   since=str(latest.get("valid_from") or latest.get("observed_at") or "")[:10],
                                   subject=str(old.get("subject") or ""), kind=kinds[claim_id],
                                   keys=tuple(key for key in ("turn:" + str(old.get("turn_id") or ""), claim_id)
-                                             if key != "turn:")))
+                                             if key != "turn:"), record=claim_id))
     return records
 
 
@@ -613,16 +616,18 @@ def commitment_reschedules(rows: Iterable[dict[str, Any]]) -> list[Superseded]:
             records.append(Superseded(old=old, current=str(row.get("due_at") or ""), kind="rescheduled",
                                       since=str(row.get("updated_at") or "")[:10],
                                       subject=str(row.get("description") or ""),
-                                      keys=(f"id={row['id']}",) if row.get("id") else ()))
+                                      keys=(f"id={row['id']}",) if row.get("id") else (),
+                                      record=f"id={row['id']}" if row.get("id") else ""))
     return records
 
 
 # -- Earlier turns in the window ------------------------------------------------------------------
 
 def correction_line(record: Superseded) -> str:
-    """One correction, carrying the record's identity so a later turn can tell it was delivered or is stale."""
+    """One correction, carrying the record's own identity (never a source other records share) so a later turn can
+    tell it was delivered or is stale."""
     subject = f" ({record.subject})" if record.subject else ""
-    return f"- {record.keys[0]}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
+    return f"- {record.record}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
 
 
 class ServedWindow:
@@ -642,9 +647,13 @@ class ServedWindow:
         lines, owed = served.split("\n"), []
         starts = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
         for order, record in enumerate(records):
+            if not record.record:
+                continue
             stale = shown = -1
-            # Only the lines carrying the record's identity can be its lines: a substring scan finds them.
-            carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _key_positions(served, record)})
+            # Delivery is accounted per record: only the lines carrying the record's own id (never a source other
+            # records share) can be its lines, and a substring scan finds them.
+            own = Superseded(old=record.old, current=record.current, kind=record.kind, keys=(record.record,))
+            carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _key_positions(served, own)})
             for index in carrying:
                 state = line_state(lines[index], record)
                 if state == "stale":

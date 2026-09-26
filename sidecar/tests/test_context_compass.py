@@ -199,7 +199,7 @@ def test_settings_come_from_the_environment(monkeypatch):
 # -- superseded values --------------------------------------------------------------------------
 
 VENUE = Superseded(old="the corner office", current="the front lobby", since="2026-09-18", subject="design review",
-                   kind="changed", keys=("turn:s-old",))
+                   kind="changed", keys=("turn:s-old",), record="turn:s-old")
 DAY = Superseded(old="Monday", current="Thursday", since="2026-09-19", subject="dentist appointment",
                  keys=("turn:s-dentist",))
 
@@ -361,7 +361,7 @@ def quote_line(turn, text, **encoding):
 def claim_record(old, current, turn, claim_id="", subject="", since="2026-09-19"):
     """A changed claim as ``claim_supersessions`` makes it: keyed by its claim id and the source that stated it."""
     return Superseded(old=old, current=current, since=since, subject=subject, kind="changed",
-                      keys=tuple(key for key in ("turn:" + turn, claim_id) if key))
+                      keys=tuple(key for key in ("turn:" + turn, claim_id) if key), record=claim_id or "turn:" + turn)
 
 
 def body_of(sections):
@@ -519,3 +519,42 @@ def test_every_superseded_value_on_a_line_is_marked_and_a_partly_marked_line_sti
     assert compass.dead_value_lines(annotated, records) == 0
     partial = line + ' [superseded: now "43" since 2026-09-19] [superseded: now "green" since 2026-09-19]'
     assert compass.dead_value_lines(partial, records) == 1
+
+
+# -- round 3: record identity, record history, one tokenizer --------------------------------------
+
+def claim_id(name):
+    return "claim:" + __import__("hashlib").sha256(name.encode()).hexdigest()
+
+
+def card_line(source, *assertions, subject="event"):
+    """An assertion card as the memory lane renders it: ``assertions`` are (claim id, value[, extra fields])."""
+    members = [{"claim_id": cid, "source": "turn:" + source, "value": value, **(extra[0] if extra else {})}
+               for cid, value, *extra in assertions]
+    return "- " + json.dumps({"kind": "source_quote", "source_uri": "turn:" + source, "content": {
+        "subject": subject, "predicate": "place", "status": "source_assertion", "assertions": members}},
+        ensure_ascii=False)
+
+
+def test_corrections_from_one_source_are_delivered_per_record():
+    """Round 3, finding 5: nine claims from one source message each owe their own correction."""
+    key = ("viewer", "s-1")
+    rooms = ["Alder", "Birch", "Cedar", "Dogwood", "Elm", "Fir", "Ginkgo", "Hazel", "Ironwood"]
+    records = [claim_record(f"the {room} room", "the main hall", "s-1", claim_id=claim_id(room), subject=f"event {n}")
+               for n, room in enumerate(rooms)]
+    compass.SERVED.remember(key, "\n".join(card_line("s-1", (claim_id(room), f"the {room} room")) for room in rooms))
+    counts = []
+    for _ in range(3):
+        note = compass.SERVED.corrections(key, records)
+        counts.append(sum(line.startswith("- ") for line in note.split("\n")))
+        compass.SERVED.remember(key, note)
+    assert counts == [8, 1, 0]
+    # The same with the nine claims in one card on one line.
+    compass.SERVED.clear()
+    compass.SERVED.remember(key, card_line("s-1", *((claim_id(room), f"the {room} room") for room in rooms)))
+    counts = []
+    for _ in range(3):
+        note = compass.SERVED.corrections(key, records)
+        counts.append(sum(line.startswith("- ") for line in note.split("\n")))
+        compass.SERVED.remember(key, note)
+    assert counts == [8, 1, 0]
