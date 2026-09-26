@@ -541,3 +541,48 @@ async def test_capture_never_records_a_message_to_a_third_party_due_as_the_turn_
     assert len(result["created"]) == 1 and result["ignored_actions"] == 3
     kept = store.get(result["created"][0])
     assert kept["metadata"]["kind"] == "notice" and kept["due_at"].startswith(NOTICE["due_at"][:16])
+
+
+async def test_a_notice_formed_before_the_request_review_is_the_owners_reminder_when_it_would_go(make, monkeypatch):
+    """An owner-granted notice the previous release formed and approved, from a row whose request the review
+    never confirmed ("tell me if it is late" misread as a word to the contact), is read again against its
+    commitment when it may leave: never sent to the contact, and the owner's reminder takes its place."""
+    from protagine.mind import drives
+    fx = make([contact(CONTACT, may_contact="ask")], config={"quiet_hours": "22:00-07:00"})
+    fx.now = T0.replace(hour=22, minute=30)
+    fx.commitments.create(person_id=OWNER, description=NOTICE["description"],
+                          due_at=(fx.now + timedelta(minutes=10)).isoformat(), source_type="cognition",
+                          metadata={**NOTICE["metadata"], "counterpart": CONTACT, "obligor": "assistant"})
+    with monkeypatch.context() as previous:          # the release before the review: every stored grant stood
+        previous.setattr(drives, "request_confirmed", lambda metadata: True)
+        fx.shift(timedelta(minutes=10) + PAST)
+        formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "commitment_notice" and formed["status"] == "approved"
+    fx.shift(timedelta(hours=8, minutes=30))         # upgraded while quiet hours held it
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert fx.store.get(formed["id"]).status == "cancelled"
+    later = [entry for _ in range(2) for entry in (await fx.tick())["formed"]]
+    sent = await fx.send_all()
+    assert [entry["type"] for entry in later] == ["commitment_reminder"]
+    assert [p["recipient"] for p in sent] == [OWNER]
+    assert all(row.status == "cancelled" for row in fx.messages_to(CONTACT))
+
+
+async def test_an_asked_notice_formed_before_the_request_review_never_goes_on_the_owners_yes(make, monkeypatch):
+    """The same stored grant to a name the store matched only by name waited for the owner's word: their yes
+    after the upgrade sends nothing to the contact either."""
+    from protagine.mind import drives
+    fx = make([contact(CONTACT, may_contact="auto", name="Sam")])
+    fx.commitments.create(person_id=OWNER, description=NOTICE["description"],
+                          due_at=(fx.now + timedelta(minutes=10)).isoformat(), source_type="cognition",
+                          metadata={**NOTICE["metadata"], "recipient": "Sam", "counterpart": "Sam",
+                                    "obligor": "assistant"})
+    with monkeypatch.context() as previous:
+        previous.setattr(drives, "request_confirmed", lambda metadata: True)
+        fx.shift(timedelta(minutes=10) + PAST)
+        formed, = [entry for entry in (await fx.tick())["formed"] if entry["type"] == "commitment_notice"]
+    asked = fx.store.get(formed["id"])
+    assert asked.status == "asked" and asked.entity_id == CONTACT
+    await fx.mind.answer(asked.ask_code, yes=True, contact_id=OWNER)
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert fx.store.get(formed["id"]).status == "cancelled"

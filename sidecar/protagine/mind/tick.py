@@ -92,6 +92,9 @@ CONSOLIDATION_WAIT_S = 300.0
 # future, or away, makes them stale.
 DUE_TYPES = frozenset({"commitment_overdue", "commitment_reminder", "commitment_deliverable", "commitment_notice",
                        "commitment_check_in"})
+# The owner-granted message to a third party: it stands only while its commitment is still a message the
+# owner's confirmed request asked for (``drives.granted_message``), however long it waited to leave.
+GRANTED_TYPES = frozenset({"commitment_notice", "commitment_check_in"})
 # The owner-granted message to a third party is the obligation itself: once it is sent the
 # commitment it was raised for is done. So is the answer to a follow-up the owner asked for, when the
 # assistant promised it in the same reply (``outreach_answer`` bound to that promise).
@@ -613,8 +616,10 @@ class Mind:
     def _commitment_stale_reason(self, row: StoredInitiative) -> Optional[str]:
         """Why an intention about a commitment row no longer fits the row: the row is gone, a
         conversation pushed its deadline out (or put it on hold) after the intention was approved,
-        or a heads-up came due before it went out. ``dispatch`` and the outbox check this too, so
-        a push-out is safe across ticks."""
+        a heads-up came due before it went out, or a message to a third party no longer stands on
+        the owner's confirmed request for it to that recipient (one formed by an earlier release, or
+        before the recipient changed: the owner's reminder takes its place). ``dispatch`` and the
+        outbox check this too, so a push-out is safe across ticks."""
         ident = str(row.source_id)
         try:
             record = self.commitments.get(ident)
@@ -636,6 +641,11 @@ class Mind:
             warn_at = drive_functions.heads_up_at(record, due)
             if warn_at is None or warn_at > now:
                 return f"commitment {ident} no longer wants a heads-up now"
+        if row.type in GRANTED_TYPES:
+            granted = drive_functions.granted_message(record, owner_id=self.owner_id)
+            if granted is None or granted[1] != row.entity_id:
+                return (f"commitment {ident} is no confirmed request of the owner's to message {row.entity_id}; "
+                        f"it is the owner's reminder")
         return None
 
     def _invalidated(self, row: StoredInitiative) -> bool:
