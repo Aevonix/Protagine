@@ -10,6 +10,7 @@ exports the values the sidecar process reads through ``os.environ``.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import re
@@ -103,6 +104,10 @@ DEFAULTS: dict[str, Any] = {
             "outreach": True,       # owner outreach: the social drive turned toward the owner (M11)
         },
     },
+    # The fast decision layer (``protagine.decisions``): a decision model's endpoint, the time one answer may
+    # take, and per decision point ``{enabled, temperature, abstain: [lo, hi]}`` over the measured defaults.
+    # No url: every point keeps its existing path.
+    "decisions": {"url": "", "timeout_ms": 250, "points": {}},
     # The model-backed source projections (claim extraction, appraisal, capture, media descriptions):
     # jobs queued a day or more before this release started drain at most this many an hour; new turns
     # are projected at once. 0 leaves that backlog pending.
@@ -148,6 +153,9 @@ RESERVED_ENVIRONMENT: dict[str, str] = {
     "PROTAGINE_RERANKER_PROVIDER": "router.rerank_url",
     "PROTAGINE_RERANKER_BASE_URL": "router.rerank_url",
     "PROTAGINE_RERANKER_MODEL": "router.rerank_model",
+    "PROTAGINE_DECISIONS_URL": "decisions.url",
+    "PROTAGINE_DECISIONS_TIMEOUT_MS": "decisions.timeout_ms",
+    "PROTAGINE_DECISIONS_POINTS": "decisions.points",
 }
 _SECRET_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
 
@@ -324,10 +332,61 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or grace < 0:
         raise ConfigError("mind.heads_up_grace_minutes must be a non-negative number of minutes")
     mind["heads_up_grace_minutes"] = float(grace)
+    data["decisions"] = _validate_decisions(data.get("decisions"))
     rate = data["projections"].get("backlog_per_hour", 12)
     if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0 <= rate < float("inf"):
         raise ConfigError("projections.backlog_per_hour must be a non-negative number (0 leaves the backlog pending)")
     return data
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value == value and abs(value) != float("inf") else None
+
+
+def _validate_decisions(value: Any) -> dict[str, Any]:
+    """``decisions``: ``url`` (http or https, or empty), ``timeout_ms`` (1 to 5000) and ``points``, each a known
+    decision point with ``enabled``, ``temperature`` (above 0) and ``abstain`` ([lo, hi], 0 <= lo <= hi <= 1)."""
+    from protagine.decisions import POINTS
+    value = {} if value is None else value
+    if not isinstance(value, dict):
+        raise ConfigError("decisions must be a mapping with url, timeout_ms and points")
+    url = str(value.get("url") or "").strip()
+    if url and not re.match(r"^https?://[^\s/]+(?:/\S*)?$", url):
+        raise ConfigError("decisions.url must be an http(s) URL, or empty to keep every point on its existing path")
+    timeout = _number(value.get("timeout_ms", 250))
+    if timeout is None or not 1 <= timeout <= 5000:
+        raise ConfigError("decisions.timeout_ms must be a number of milliseconds from 1 to 5000")
+    points = value.get("points") or {}
+    if not isinstance(points, dict):
+        raise ConfigError("decisions.points must be a mapping of decision points")
+    checked: dict[str, dict[str, Any]] = {}
+    for name, entry in points.items():
+        where = f"decisions.points.{name}"
+        if name not in POINTS:
+            raise ConfigError(f"{where}: no such decision point ({', '.join(sorted(POINTS))})")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping with enabled, temperature and/or abstain")
+        unknown = sorted(set(entry) - {"enabled", "temperature", "abstain"})
+        if unknown:
+            raise ConfigError(f"{where}: unknown key {unknown[0]} (enabled, temperature or abstain)")
+        result: dict[str, Any] = {}
+        if "enabled" in entry:
+            result["enabled"] = _parse_bool(entry["enabled"], field_name=f"{where}.enabled")
+        if "temperature" in entry:
+            temperature = _number(entry["temperature"])
+            if temperature is None or temperature <= 0:
+                raise ConfigError(f"{where}.temperature must be a number above 0")
+            result["temperature"] = temperature
+        if "abstain" in entry:
+            band = entry["abstain"]
+            bounds = [_number(item) for item in band] if isinstance(band, (list, tuple)) and len(band) == 2 else []
+            if len(bounds) != 2 or None in bounds or not 0 <= bounds[0] <= bounds[1] <= 1:
+                raise ConfigError(f"{where}.abstain must be [lo, hi] with 0 <= lo <= hi <= 1")
+            result["abstain"] = bounds
+        checked[str(name)] = result
+    return {"url": url, "timeout_ms": timeout if timeout % 1 else int(timeout), "points": checked}
 
 
 def _validate_task_types(value: Any) -> dict[str, dict[str, int]]:
@@ -640,6 +699,13 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_RERANKER_BASE_URL"] = str(config.get("router.rerank_url"))
         values["PROTAGINE_RERANKER_MODEL"] = str(config.get("router.rerank_model"))
         values["PROTAGINE_RECALL_RERANK"] = "on"
+    if config.get("decisions.url"):
+        # The fast decision layer: its endpoint, its time limit and the per-point overrides, read by
+        # ``protagine.decisions.from_environment``; without a url nothing is exported and every point is off.
+        values["PROTAGINE_DECISIONS_URL"] = str(config.get("decisions.url"))
+        values["PROTAGINE_DECISIONS_TIMEOUT_MS"] = str(config.get("decisions.timeout_ms"))
+        if config.get("decisions.points"):
+            values["PROTAGINE_DECISIONS_POINTS"] = json.dumps(config.get("decisions.points"), sort_keys=True)
     # The mapping says explicitly what the keys above only imply (validated: PROTAGINE_
     # names, none that a key already owns), so it lands over the derived values and under
     # the process environment.

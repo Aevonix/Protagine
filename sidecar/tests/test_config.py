@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 
 import pytest
@@ -366,3 +367,49 @@ def test_reserved_names_cover_every_export_the_keys_derive(home):
     derived = set(environ) - {"HERMES_HOME", "PROTAGINE_RECALL_RERANK"}
     assert derived <= set(config.RESERVED_ENVIRONMENT), derived - set(config.RESERVED_ENVIRONMENT)
     assert "PROTAGINE_HOME" in derived and "PROTAGINE_EMBED_DIMS" in derived
+
+
+# -- the fast decision layer (protagine.decisions) ------------------------------------------------------------
+
+def test_the_decision_section_is_exported_only_with_an_endpoint(home):
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert not any(name.startswith("PROTAGINE_DECISIONS") for name in environ)
+    save_config({**config.DEFAULTS, "decisions": {
+        "url": "http://127.0.0.1:9/", "timeout_ms": 300,
+        "points": {"opt_out": {"enabled": "on", "temperature": 2, "abstain": [0.1, 0.95]}}}}, home)
+    loaded = load_config(home, environ={})
+    assert loaded.get("decisions.points.opt_out") == {"enabled": True, "temperature": 2.0, "abstain": [0.1, 0.95]}
+    environ = {}
+    apply_environment(loaded, environ=environ)
+    assert environ["PROTAGINE_DECISIONS_URL"] == "http://127.0.0.1:9/"
+    assert environ["PROTAGINE_DECISIONS_TIMEOUT_MS"] == "300"
+    assert json.loads(environ["PROTAGINE_DECISIONS_POINTS"]) == {
+        "opt_out": {"enabled": True, "temperature": 2.0, "abstain": [0.1, 0.95]}}
+    from protagine.decisions import from_environment
+    decider = from_environment(environ)
+    assert decider.enabled("opt_out") and decider.timeout_s == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize("section,message", [
+    ({"url": "ftp://host"}, "decisions.url"),
+    ({"timeout_ms": 0}, "decisions.timeout_ms"),
+    ({"timeout_ms": 60000}, "decisions.timeout_ms"),
+    ({"points": {"anything": {"enabled": True}}}, "decisions.points.anything"),
+    ({"points": {"opt_out": {"temperature": 0}}}, "decisions.points.opt_out.temperature"),
+    ({"points": {"opt_out": {"abstain": [0.9, 0.1]}}}, "decisions.points.opt_out.abstain"),
+    ({"points": {"opt_out": {"abstain": [0.1]}}}, "decisions.points.opt_out.abstain"),
+    ({"points": {"opt_out": {"threshold": 0.5}}}, "decisions.points.opt_out"),
+    ({"points": {"opt_out": {"enabled": "maybe"}}}, "decisions.points.opt_out.enabled"),
+])
+def test_a_malformed_decision_section_is_refused_by_name(home, section, message):
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": section}))
+    with pytest.raises(ConfigError, match=message.replace(".", r"\.")):
+        load_config(home, environ={})
+
+
+def test_the_decision_environment_has_one_place(home):
+    for name in ("PROTAGINE_DECISIONS_URL", "PROTAGINE_DECISIONS_TIMEOUT_MS", "PROTAGINE_DECISIONS_POINTS"):
+        (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"environment": {name: "x"}}))
+        with pytest.raises(ConfigError, match="decisions"):
+            load_config(home, environ={})
